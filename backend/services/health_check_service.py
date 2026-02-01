@@ -117,49 +117,6 @@ class HealthCheckService:
             'timestamp': datetime.utcnow().isoformat()
         }
     
-    def _check_llamacloud_health(self) -> Dict[str, Any]:
-        """Check LlamaCloud API health"""
-        try:
-            api_key = os.environ.get('LLAMA_CLOUD_API_KEY')
-            if not api_key:
-                return {
-                    'status': 'unhealthy',
-                    'error': 'API key not configured',
-                    'timestamp': datetime.utcnow().isoformat()
-                }
-            
-            # Test API accessibility
-            headers = {'Authorization': f'Bearer {api_key}'}
-            start_time = time.time()
-            
-            response = requests.get(
-                'https://api.cloud.llamaindex.ai/api/v1/health',
-                headers=headers,
-                timeout=10
-            )
-            
-            response_time = time.time() - start_time
-            
-            if response.status_code == 200:
-                return {
-                    'status': 'healthy',
-                    'response_time_ms': round(response_time * 1000, 2),
-                    'timestamp': datetime.utcnow().isoformat()
-                }
-            else:
-                return {
-                    'status': 'unhealthy',
-                    'error': f'API returned status {response.status_code}',
-                    'timestamp': datetime.utcnow().isoformat()
-                }
-                
-        except Exception as e:
-            return {
-                'status': 'unhealthy',
-                'error': str(e),
-                'timestamp': datetime.utcnow().isoformat()
-            }
-    
     def _check_google_maps_health(self) -> Dict[str, Any]:
         """Check Google Maps API health"""
         try:

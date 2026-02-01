@@ -9,17 +9,19 @@ from datetime import datetime
 from typing import List, Dict, Tuple, Any
 
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, ToolMessage, AIMessage
+import json
 
 from backend.llm.config import config
 from backend.llm.types import MainWorkflowState
 from backend.llm.utils.system_prompts import get_system_prompt
-from backend.llm.utils.model_factory import get_llm
 from backend.llm.prompts import get_summary_human_content, get_citation_extraction_prompt, get_final_answer_prompt
 from backend.llm.utils.block_id_formatter import format_document_with_block_ids
 from backend.llm.tools.citation_mapping import create_citation_tool
 from backend.llm.tools.agent_actions import create_agent_action_tools
-from backend.llm.nodes.retrieval_nodes import detect_query_characteristics
+from backend.llm.utils.query_characteristics import detect_query_characteristics
+from backend.llm.tools.document_retriever_tool import create_document_retrieval_tool
+from backend.llm.tools.chunk_retriever_tool import create_chunk_retrieval_tool
 
 logger = logging.getLogger(__name__)
 
@@ -1468,12 +1470,21 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
     Latency: ~1-2 seconds for LLM call
     """
 
-    doc_outputs = state['document_outputs']
+    doc_outputs = state.get('document_outputs', []) or []
     user_query = state.get('user_query', '')
+    
+    # REMOVED: Document type filtering - we trust the retrieval system's ranking.
+    # If agent node found chunks, they're for the current query.
+    # State is reset in views.py for each new query, preventing stale documents.
+    
+    # Check agent mode BEFORE returning hard-coded response
+    is_agent_mode = state.get('is_agent_mode', False)
 
-    if not doc_outputs:
-        logger.warning("[SUMMARIZE_RESULTS] No document outputs to summarize")
-        # Provide a helpful message when no documents are found
+    # CRITICAL FIX: Don't return hard-coded response if agent mode is enabled
+    # The LLM should use tools to find documents instead
+    if not doc_outputs and not is_agent_mode:
+        logger.warning("[SUMMARIZE_RESULTS] No document outputs to summarize and agent mode disabled")
+        # Only provide hard-coded message in reader mode (no tools available)
         return {
             "final_summary": f"I couldn't find any documents that directly match your query: \"{user_query}\".\n\n"
             "This could be because:\n"
@@ -1484,6 +1495,17 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
             "- \"bedrooms and bathrooms\"\n"
             "- \"property specifications\"\n"
             "- \"property details\""
+        }
+    
+    # CRITICAL: If agent mode is enabled but no doc_outputs, DO NOT generate a response
+    # The LLM should not hallucinate - we need to go to no_results_node instead
+    if not doc_outputs and is_agent_mode:
+        logger.error("[SUMMARIZE_RESULTS] ⚠️ CRITICAL: No document outputs but agent mode enabled - LLM should NOT generate response without documents!")
+        logger.error("[SUMMARIZE_RESULTS] This indicates chunk retrieval failed. Returning empty response to trigger no_results_node.")
+        return {
+            "final_summary": None,  # Signal to go to no_results_node
+            "document_outputs": [],
+            "agent_actions": []
         }
 
     if config.simple_mode:
@@ -1506,14 +1528,31 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
             lines.append(f"...and {len(doc_outputs) - 5} more documents.")
         return {"final_summary": "\n".join(lines)}
 
-    # Use user-selected model from state (with fallback to config default)
-    model_preference = state.get('model_preference')
-    llm = get_llm(model_preference, temperature=0)
-    logger.info(f"[SUMMARIZE_RESULTS] Using model: {model_preference or 'gpt-4o-mini (default)'}")
+    llm = ChatOpenAI(
+        api_key=config.openai_api_key,
+        model=config.openai_model,
+        temperature=0,
+    )
 
-    # Summarize ALL document outputs (no artificial limits)
-    # Performance limits were removed to restore original retrieval behavior
-    logger.info(f"[SUMMARIZE_RESULTS] Summarizing ALL {len(doc_outputs)} document outputs")
+    # PERFORMANCE OPTIMIZATION: Limit document outputs for summarization based on detail_level
+    # Concise mode: 7 docs (fast summary)
+    # Detailed mode: 20 docs (comprehensive summary)
+    detail_level = state.get('detail_level', 'concise')
+    if detail_level == 'detailed':
+        max_docs_for_summary = int(os.getenv("MAX_DOCS_FOR_SUMMARY_DETAILED", "20"))
+        logger.info(f"[SUMMARIZE_RESULTS] Detailed mode: summarizing up to {max_docs_for_summary} documents")
+    else:
+        max_docs_for_summary = int(os.getenv("MAX_DOCS_FOR_SUMMARY", "7"))
+        logger.info(f"[SUMMARIZE_RESULTS] Concise mode: summarizing up to {max_docs_for_summary} documents")
+    
+    if len(doc_outputs) > max_docs_for_summary:
+        logger.info(
+            "[SUMMARIZE_RESULTS] Limiting summary to top %d documents (out of %d) for %s processing",
+            max_docs_for_summary,
+            len(doc_outputs),
+            detail_level
+        )
+        doc_outputs = doc_outputs[:max_docs_for_summary]
     
     # Format outputs with block IDs and build metadata lookup tables (for citation mapping)
     # OPTIMIZATION: Pre-allocate metadata_lookup_tables with expected size to reduce reallocations
@@ -1530,36 +1569,6 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
         'hybrid': 0,
         'unknown': 0
     }
-    
-    # GLOBAL BLOCK ID COUNTER: Ensures unique block IDs across ALL documents
-    # This prevents citation collisions when multiple documents have overlapping block IDs
-    # e.g., Doc A: BLOCK_CITE_ID_1-5, Doc B: BLOCK_CITE_ID_6-10, Doc C: BLOCK_CITE_ID_11-15
-    global_block_id_counter = 1
-    
-    def _renumber_block_ids(content: str, old_metadata: dict, start_id: int) -> tuple:
-        """Renumber block IDs in content and metadata to start from start_id."""
-        if not old_metadata:
-            return content, {}, start_id
-        
-        new_content = content
-        new_metadata = {}
-        
-        # Sort by original block ID number to ensure consistent ordering
-        sorted_old_ids = sorted(
-            old_metadata.keys(),
-            key=lambda x: int(x.split('_')[-1]) if x.split('_')[-1].isdigit() else 0
-        )
-        
-        current_id = start_id
-        for old_id in sorted_old_ids:
-            new_id = f"BLOCK_CITE_ID_{current_id}"
-            # Replace in content (both in tags and references)
-            new_content = new_content.replace(old_id, new_id)
-            # Copy metadata with new key
-            new_metadata[new_id] = old_metadata[old_id].copy()
-            current_id += 1
-        
-        return new_content, new_metadata, current_id
     
     for idx, output in enumerate(doc_outputs):
         doc_id = output.get('doc_id', '')
@@ -1590,27 +1599,16 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
         
         if is_formatted and output.get('formatted_content') and output.get('formatted_metadata_table'):
             # Use pre-formatted content from processing_nodes
-            # BUT renumber block IDs to ensure global uniqueness
-            pre_formatted_content = output.get('formatted_content')
-            pre_metadata_table = output.get('formatted_metadata_table')
-            
-            # Renumber block IDs to continue from global counter
-            formatted_content, metadata_table, global_block_id_counter = _renumber_block_ids(
-                pre_formatted_content, pre_metadata_table, global_block_id_counter
-            )
+            formatted_content = output.get('formatted_content')
+            metadata_table = output.get('formatted_metadata_table')
             logger.debug(
-                f"[SUMMARIZE_RESULTS] Renumbered pre-formatted content for doc {doc_id[:8]} "
-                f"(now has IDs up to {global_block_id_counter - 1})"
+                f"[SUMMARIZE_RESULTS] Using pre-formatted content for doc {doc_id[:8]}"
             )
         else:
             # Format document with block IDs (for citation mapping)
-            # Use global counter to ensure unique IDs across all documents
-            formatted_content, metadata_table, global_block_id_counter = format_document_with_block_ids(
-                output, starting_block_id=global_block_id_counter
-            )
+            formatted_content, metadata_table = format_document_with_block_ids(output)
             logger.debug(
-                f"[SUMMARIZE_RESULTS] Formatted doc {doc_id[:8]} in summarize_results "
-                f"(IDs up to {global_block_id_counter - 1})"
+                f"[SUMMARIZE_RESULTS] Formatted doc {doc_id[:8]} in summarize_results"
             )
         
         # Format with document header
@@ -1744,7 +1742,11 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
     phase1_start = time.time()
     
     # PHASE 1: Citation Extraction (with tools)
-    citation_llm = get_llm(model_preference, temperature=0).bind_tools(
+    citation_llm = ChatOpenAI(
+        api_key=config.openai_api_key,
+        model=config.openai_model,
+        temperature=0,
+    ).bind_tools(
         [citation_tool],
         tool_choice="auto"
     )
@@ -1768,102 +1770,10 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
         if "shutdown" in error_msg or "closed" in error_msg or "cannot schedule" in error_msg:
             logger.error(f"[SUMMARIZE_RESULTS] Event loop error - {llm_error}")
             raise
-        
-        # Enhanced error logging with error type and details
-        error_type = type(llm_error).__name__
-        error_message = str(llm_error)
-        
-        # Initialize error classification variables first to avoid UnboundLocalError
-        is_timeout = False
-        is_rate_limit = False
-        is_credit_low = False
-        is_api_error = False
-        
-        # Log error attributes for debugging (wrap in try-except to avoid errors during error handling)
-        error_attrs = {}
-        try:
-            if hasattr(llm_error, 'status_code'):
-                error_attrs['status_code'] = getattr(llm_error, 'status_code')
-            if hasattr(llm_error, 'response'):
-                try:
-                    if hasattr(llm_error.response, 'status_code'):
-                        error_attrs['response_status_code'] = llm_error.response.status_code
-                except Exception:
-                    pass  # Ignore errors when accessing response attributes
-        except Exception:
-            pass  # Ignore errors when accessing error attributes
-        
-        logger.error(f"[SUMMARIZE_RESULTS] Error during Phase 1: {error_type}: {error_message}", exc_info=True)
-        if error_attrs:
-            logger.error(f"[SUMMARIZE_RESULTS] Error attributes: {error_attrs}")
-        
-        # Check for specific error types to provide better context
-        # More specific rate limit detection - only match actual API rate limit errors
-        try:
-            is_timeout = "timeout" in error_message.lower() or "timed out" in error_message.lower()
-            # Rate limit: Check for HTTP 429 status code or specific rate limit error patterns from API providers
-            # Only match if it's clearly an API rate limit, not just any mention of "rate limit"
-            is_rate_limit = (
-                "429" in error_message or  # HTTP status code
-                (hasattr(llm_error, 'status_code') and getattr(llm_error, 'status_code') == 429) or  # Direct status code
-                (hasattr(llm_error, 'response') and hasattr(llm_error.response, 'status_code') and llm_error.response.status_code == 429) or  # Response status code
-                ("rate limit" in error_message.lower() and ("api" in error_message.lower() or "request" in error_message.lower() or "quota" in error_message.lower() or "rpm" in error_message.lower() or "tpm" in error_message.lower()))  # Only if clearly API-related
-            )
-            is_credit_low = "credit balance is too low" in error_message.lower() or "insufficient credits" in error_message.lower() or "billing" in error_message.lower()
-            is_api_error = "api" in error_type.lower() or "openai" in error_type.lower() or "anthropic" in error_type.lower()
-        except Exception as classification_error:
-            logger.error(f"[SUMMARIZE_RESULTS] Error during error classification: {classification_error}")
-            # Variables already initialized to False above
-        
-        logger.debug(f"[SUMMARIZE_RESULTS] Error classification - is_rate_limit: {is_rate_limit}, is_timeout: {is_timeout}, is_api_error: {is_api_error}")
-        
-        # Automatic fallback to OpenAI when Anthropic credits are low
-        if is_credit_low:
-            logger.warning("[SUMMARIZE_RESULTS] Anthropic API credit balance too low - automatically falling back to OpenAI")
-            try:
-                fallback_llm = get_llm('gpt-4o-mini', temperature=0)
-                # Re-bind citation tool for fallback
-                fallback_llm = fallback_llm.bind_tools([citation_tool], tool_choice="auto")
-                logger.info("[SUMMARIZE_RESULTS] Retrying Phase 1 with OpenAI fallback...")
-                citation_response = await fallback_llm.ainvoke(citation_messages)
-                logger.info("[SUMMARIZE_RESULTS] Phase 1 complete (using OpenAI fallback)")
-                # Continue processing with fallback response
-            except Exception as fallback_error:
-                logger.error(f"[SUMMARIZE_RESULTS] Fallback to OpenAI also failed: {fallback_error}")
-                user_error_msg = "Anthropic API credit balance is too low, and OpenAI fallback also failed. Please add credits to your Anthropic account or check your OpenAI API key."
-                return {
-                    "final_summary": user_error_msg,
-                    "citations": [],
-                    "document_outputs": doc_outputs,
-                    "relevant_documents": state.get('relevant_documents', [])
-                }
         else:
-            # Other errors - return error message
-            if is_timeout:
-                logger.error("[SUMMARIZE_RESULTS] LLM request timed out during citation extraction - may need to increase timeout or check API status")
-                user_error_msg = "The request timed out during citation extraction. Please try again with a shorter query or fewer documents."
-            elif is_rate_limit:
-                logger.error("[SUMMARIZE_RESULTS] Rate limit exceeded during citation extraction - consider implementing backoff/retry")
-                user_error_msg = "Rate limit exceeded. Please wait a moment and try again."
-            elif is_api_error:
-                logger.error(f"[SUMMARIZE_RESULTS] API error from provider during citation extraction: {error_message}")
-                # Check for common API errors
-                if "invalid_api_key" in error_message.lower() or "authentication" in error_message.lower():
-                    user_error_msg = "API authentication error. Please check your API key configuration."
-                elif "model" in error_message.lower() and ("not found" in error_message.lower() or "invalid" in error_message.lower()):
-                    user_error_msg = f"Model error: {model_preference or 'default model'} may not be available. Please try a different model."
-                else:
-                    user_error_msg = f"API error during citation extraction: {error_type}. Please try again or contact support."
-            else:
-                # Generic error - log full details but show user-friendly message
-                logger.error(f"[SUMMARIZE_RESULTS] Unexpected error during Phase 1: {error_type}: {error_message}")
-                user_error_msg = "I encountered an error while processing your query. Please try again."
-            
-            # Log model preference for debugging
-            logger.error(f"[SUMMARIZE_RESULTS] Error occurred with model_preference: {model_preference}")
-            
+            logger.error(f"[SUMMARIZE_RESULTS] Error during Phase 1: {llm_error}", exc_info=True)
             return {
-                "final_summary": user_error_msg,
+                "final_summary": "I encountered an error while processing your query. Please try again.",
                 "citations": [],
                 "document_outputs": doc_outputs,
                 "relevant_documents": state.get('relevant_documents', [])
@@ -1898,16 +1808,44 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
     
     # AGENT MODE: Check if we should bind agent action tools
     is_agent_mode = state.get('is_agent_mode', False)
+    
+    # REMOVED: Don't force agent mode - respect the state
+    # If agent mode is False, it means frontend/user wants reader mode
+    # The LLM should only use tools when agent mode is explicitly enabled
+    route_decision = state.get('route_decision')
+    
+    logger.info(f"[SUMMARIZE_RESULTS] Agent mode: {is_agent_mode} (route_decision: {route_decision}, doc_outputs: {len(doc_outputs) if doc_outputs else 0})")
+    
+    if not is_agent_mode and not doc_outputs:
+        logger.warning(
+            "[SUMMARIZE_RESULTS] Agent mode is disabled and no documents found - "
+            "LLM cannot use retrieval tools. Consider enabling agent mode for document searches."
+        )
+    
     agent_action_instance = None
     
     if is_agent_mode:
         # Create agent action tools for proactive document display
+        # NOTE: Retrieval tools (retrieve_documents, retrieve_chunks) are now handled by
+        # the unified agent node in the graph.
+        # This node only needs UI action tools (open_document, navigate_to_property_by_name).
         agent_tools, agent_action_instance = create_agent_action_tools()
-        logger.info(f"[SUMMARIZE_RESULTS] Agent mode enabled - binding {len(agent_tools)} agent tools")
-        answer_llm = get_llm(model_preference, temperature=0).bind_tools(agent_tools, tool_choice="auto")
+        
+        logger.info(f"[SUMMARIZE_RESULTS] Agent mode enabled - binding {len(agent_tools)} agent tools (UI actions only)")
+        # NOTE: Using "auto" allows LLM to choose when to use tools
+        # The fallback mechanism below will handle cases where LLM only makes tool calls without text
+        answer_llm = ChatOpenAI(
+            api_key=config.openai_api_key,
+            model=config.openai_model,
+            temperature=0,
+        ).bind_tools(agent_tools, tool_choice="auto")
     else:
         # Reader mode: No agent tools
-        answer_llm = get_llm(model_preference, temperature=0)
+        answer_llm = ChatOpenAI(
+            api_key=config.openai_api_key,
+            model=config.openai_model,
+            temperature=0,
+        )
     
     # Check if this is a citation query (user clicked on a citation)
     citation_context = state.get("citation_context")
@@ -1924,120 +1862,88 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
     
     answer_messages = [system_msg, HumanMessage(content=answer_prompt)]
     
-    try:
-        logger.info(f"[SUMMARIZE_RESULTS] Phase 2: Generating answer... (agent_mode={is_agent_mode})")
-        answer_response = await answer_llm.ainvoke(answer_messages)
-        logger.info("[SUMMARIZE_RESULTS] Phase 2 complete")
-    except Exception as llm_error:
-        # Enhanced error logging with error type and details
-        error_type = type(llm_error).__name__
-        error_message = str(llm_error)
-        
-        # Initialize error classification variables first to avoid UnboundLocalError
-        is_timeout = False
-        is_rate_limit = False
-        is_credit_low = False
-        is_api_error = False
-        
-        # Log error attributes for debugging (wrap in try-except to avoid errors during error handling)
-        error_attrs = {}
-        try:
-            if hasattr(llm_error, 'status_code'):
-                error_attrs['status_code'] = getattr(llm_error, 'status_code')
-            if hasattr(llm_error, 'response'):
-                try:
-                    if hasattr(llm_error.response, 'status_code'):
-                        error_attrs['response_status_code'] = llm_error.response.status_code
-                except Exception:
-                    pass  # Ignore errors when accessing response attributes
-        except Exception:
-            pass  # Ignore errors when accessing error attributes
-        
-        logger.error(f"[SUMMARIZE_RESULTS] Error during Phase 2: {error_type}: {error_message}", exc_info=True)
-        if error_attrs:
-            logger.error(f"[SUMMARIZE_RESULTS] Error attributes: {error_attrs}")
-        
-        # Check for specific error types to provide better context
-        # More specific rate limit detection - only match actual API rate limit errors
-        try:
-            is_timeout = "timeout" in error_message.lower() or "timed out" in error_message.lower()
-            # Rate limit: Check for HTTP 429 status code or specific rate limit error patterns from API providers
-            # Only match if it's clearly an API rate limit, not just any mention of "rate limit"
-            is_rate_limit = (
-                "429" in error_message or  # HTTP status code
-                (hasattr(llm_error, 'status_code') and getattr(llm_error, 'status_code') == 429) or  # Direct status code
-                (hasattr(llm_error, 'response') and hasattr(llm_error.response, 'status_code') and llm_error.response.status_code == 429) or  # Response status code
-                ("rate limit" in error_message.lower() and ("api" in error_message.lower() or "request" in error_message.lower() or "quota" in error_message.lower() or "rpm" in error_message.lower() or "tpm" in error_message.lower()))  # Only if clearly API-related
-            )
-            is_credit_low = "credit balance is too low" in error_message.lower() or "insufficient credits" in error_message.lower() or "billing" in error_message.lower()
-            is_api_error = "api" in error_type.lower() or "openai" in error_type.lower() or "anthropic" in error_type.lower()
-        except Exception as classification_error:
-            logger.error(f"[SUMMARIZE_RESULTS] Error during error classification: {classification_error}")
-            # Variables already initialized to False above
-        
-        logger.debug(f"[SUMMARIZE_RESULTS] Error classification - is_rate_limit: {is_rate_limit}, is_timeout: {is_timeout}, is_api_error: {is_api_error}")
-        
-        # Automatic fallback to OpenAI when Anthropic credits are low
-        if is_credit_low:
-            logger.warning("[SUMMARIZE_RESULTS] Anthropic API credit balance too low - automatically falling back to OpenAI")
-            try:
-                fallback_llm = get_llm('gpt-4o-mini', temperature=0)
-                if is_agent_mode:
-                    # Recreate agent tools for fallback
-                    agent_tools, _ = create_agent_action_tools()
-                    fallback_llm = fallback_llm.bind_tools(agent_tools, tool_choice="auto")
-                logger.info("[SUMMARIZE_RESULTS] Retrying Phase 2 with OpenAI fallback...")
-                answer_response = await fallback_llm.ainvoke(answer_messages)
-                logger.info("[SUMMARIZE_RESULTS] Phase 2 complete (using OpenAI fallback)")
-                # Continue processing with fallback response
-            except Exception as fallback_error:
-                logger.error(f"[SUMMARIZE_RESULTS] Fallback to OpenAI also failed: {fallback_error}")
-                user_error_msg = "Anthropic API credit balance is too low, and OpenAI fallback also failed. Please add credits to your Anthropic account or check your OpenAI API key."
-                return {
-                    "final_summary": user_error_msg,
-                    "citations": citations_from_state,
-                    "document_outputs": doc_outputs,
-                    "relevant_documents": state.get('relevant_documents', [])
-                }
-        else:
-            # Other errors - return error message
-            if is_timeout:
-                logger.error("[SUMMARIZE_RESULTS] LLM request timed out - may need to increase timeout or check API status")
-                user_error_msg = "The request timed out. Please try again with a shorter query or fewer documents."
-            elif is_rate_limit:
-                logger.error("[SUMMARIZE_RESULTS] Rate limit exceeded - consider implementing backoff/retry")
-                user_error_msg = "Rate limit exceeded. Please wait a moment and try again."
-            elif is_api_error:
-                logger.error(f"[SUMMARIZE_RESULTS] API error from provider: {error_message}")
-                # Check for common API errors
-                if "invalid_api_key" in error_message.lower() or "authentication" in error_message.lower():
-                    user_error_msg = "API authentication error. Please check your API key configuration."
-                elif "model" in error_message.lower() and ("not found" in error_message.lower() or "invalid" in error_message.lower()):
-                    user_error_msg = f"Model error: {model_preference or 'default model'} may not be available. Please try a different model."
-                else:
-                    user_error_msg = f"API error: {error_type}. Please try again or contact support."
-            else:
-                # Generic error - log full details but show user-friendly message
-                logger.error(f"[SUMMARIZE_RESULTS] Unexpected error: {error_type}: {error_message}")
-                user_error_msg = "I encountered an error generating the response. Please try again."
-            
-            # Log model preference for debugging
-            logger.error(f"[SUMMARIZE_RESULTS] Error occurred with model_preference: {model_preference}, agent_mode: {is_agent_mode}")
-            
-            # Return error response - user will see this in UI
-            return {
-                "final_summary": user_error_msg,
-                "citations": citations_from_state,
-                "document_outputs": doc_outputs,
-                "relevant_documents": state.get('relevant_documents', [])
-            }
+    # NOTE: Retrieval is now handled by the unified agent node
+    # This node assumes document_outputs is already populated from agent node.
+    # We only need to handle UI action tools (open_document, navigate_to_property_by_name) if in agent mode.
     
-    # Extract answer text
-    summary = ''
-    if hasattr(answer_response, 'content'):
-        summary = str(answer_response.content).strip() if answer_response.content else ''
-    elif isinstance(answer_response, str):
-        summary = answer_response.strip()
+    try:
+        # CRITICAL: Do not generate response if there are no documents
+        if not doc_outputs or len(doc_outputs) == 0:
+            logger.error(f"[SUMMARIZE_RESULTS] ⚠️ CRITICAL: Attempted to generate answer with 0 document outputs!")
+            logger.error(f"[SUMMARIZE_RESULTS] This will cause hallucinations. Returning empty response.")
+            return {
+                "final_summary": None,  # Signal to go to no_results_node
+                "document_outputs": [],
+                "agent_actions": []
+            }
+        
+        logger.info(f"[SUMMARIZE_RESULTS] Generating answer from {len(doc_outputs)} document outputs (agent_mode={is_agent_mode})")
+        
+        # DEBUG: Log the prompt length and document outputs count
+        logger.debug(f"[SUMMARIZE_RESULTS] Prompt length: {len(answer_prompt)} chars, Document outputs: {len(doc_outputs)}")
+        if doc_outputs:
+            logger.debug(f"[SUMMARIZE_RESULTS] First doc_output keys: {list(doc_outputs[0].keys()) if doc_outputs[0] else 'empty'}")
+            logger.debug(f"[SUMMARIZE_RESULTS] First doc_output output length: {len(str(doc_outputs[0].get('output', ''))) if doc_outputs[0] else 0} chars")
+        
+        # Single LLM call - no iterative tool calling for retrieval
+        answer_response = await answer_llm.ainvoke(answer_messages)
+        
+        # DEBUG: Log LLM response details
+        logger.debug(f"[SUMMARIZE_RESULTS] LLM response type: {type(answer_response)}")
+        if hasattr(answer_response, 'content'):
+            logger.debug(f"[SUMMARIZE_RESULTS] LLM response content type: {type(answer_response.content)}, length: {len(str(answer_response.content)) if answer_response.content else 0} chars")
+            logger.debug(f"[SUMMARIZE_RESULTS] LLM response content (first 200 chars): {str(answer_response.content)[:200] if answer_response.content else 'None'}...")
+        if hasattr(answer_response, 'tool_calls'):
+            logger.debug(f"[SUMMARIZE_RESULTS] LLM response tool_calls: {len(answer_response.tool_calls) if answer_response.tool_calls else 0}")
+        
+        # Process UI action tool calls if any (open_document, navigate_to_property_by_name)
+        # These are handled after getting the answer
+        if hasattr(answer_response, 'tool_calls') and answer_response.tool_calls:
+            logger.info(f"[SUMMARIZE_RESULTS] LLM made {len(answer_response.tool_calls)} UI action tool call(s)")
+            # UI action tools are processed below in the agent action processing section
+        
+        # Extract answer text
+        summary = ''
+        if hasattr(answer_response, 'content'):
+            summary = str(answer_response.content).strip() if answer_response.content else ''
+            logger.debug(f"[SUMMARIZE_RESULTS] Extracted summary from content: {len(summary)} chars")
+            if not summary:
+                logger.warning(f"[SUMMARIZE_RESULTS] ⚠️ LLM returned empty content! Response content was: {repr(answer_response.content)}")
+                # CRITICAL: If LLM made tool calls but no text, we need to force it to generate text
+                # This happens when LLM only makes tool calls without generating an answer
+                if hasattr(answer_response, 'tool_calls') and answer_response.tool_calls:
+                    logger.warning(f"[SUMMARIZE_RESULTS] LLM made {len(answer_response.tool_calls)} tool calls but no text content - forcing text generation")
+                    # Re-invoke LLM with explicit instruction to generate text
+                    force_text_prompt = answer_prompt + "\n\n**CRITICAL**: You must provide a complete answer in text. Use tools for UI actions, but also write the full answer in your response."
+                    force_text_messages = [system_msg, HumanMessage(content=force_text_prompt)]
+                    try:
+                        force_text_response = await answer_llm.ainvoke(force_text_messages)
+                        if hasattr(force_text_response, 'content') and force_text_response.content:
+                            summary = str(force_text_response.content).strip()
+                            logger.info(f"[SUMMARIZE_RESULTS] Generated summary after forcing text: {len(summary)} chars")
+                            # Still process tool calls from original response
+                            if hasattr(force_text_response, 'tool_calls') and force_text_response.tool_calls:
+                                # Merge tool calls if needed
+                                if not hasattr(answer_response, 'tool_calls') or not answer_response.tool_calls:
+                                    answer_response.tool_calls = force_text_response.tool_calls
+                        else:
+                            logger.error(f"[SUMMARIZE_RESULTS] ⚠️ Even after forcing text, LLM returned empty content!")
+                    except Exception as force_error:
+                        logger.error(f"[SUMMARIZE_RESULTS] Error forcing text generation: {force_error}", exc_info=True)
+        elif isinstance(answer_response, str):
+            summary = answer_response.strip()
+            logger.debug(f"[SUMMARIZE_RESULTS] Extracted summary from string: {len(summary)} chars")
+        else:
+            logger.warning(f"[SUMMARIZE_RESULTS] ⚠️ LLM response has unexpected type: {type(answer_response)}, no content found")
+        
+    except Exception as llm_error:
+        logger.error(f"[SUMMARIZE_RESULTS] Error during answer generation: {llm_error}", exc_info=True)
+        return {
+            "final_summary": "I encountered an error generating the response. Please try again.",
+            "citations": citations_from_state,
+            "document_outputs": doc_outputs,
+            "relevant_documents": state.get('relevant_documents', [])
+        }
     
     # AGENT MODE: Process agent action tool calls (open_document, navigate_to_property)
     agent_actions = []

@@ -315,7 +315,6 @@ class ProcessingHistoryService:
     def get_document_processing_history(self, document_id: str) -> list:
         """
         Get complete processing history for a document.
-        Tries Supabase first, falls back to PostgreSQL.
         
         Args:
             document_id: UUID of the document
@@ -323,36 +322,6 @@ class ProcessingHistoryService:
         Returns:
             List of processing history records
         """
-        # Try Supabase first (primary source)
-        if self.use_supabase:
-            try:
-                result = self.supabase.table('document_processing_history')\
-                    .select('*')\
-                    .eq('document_id', document_id)\
-                    .order('started_at')\
-                    .execute()
-                
-                if result.data:
-                    # Convert Supabase format to serialized format
-                    history = []
-                    for record in result.data:
-                        history.append({
-                            'id': record.get('id'),
-                            'document_id': record.get('document_id'),
-                            'step_name': record.get('step_name'),
-                            'step_status': record.get('step_status', '').lower(),
-                            'step_message': record.get('step_message'),
-                            'step_metadata': record.get('step_metadata', {}),
-                            'started_at': record.get('started_at'),
-                            'completed_at': record.get('completed_at'),
-                            'duration_seconds': record.get('duration_seconds')
-                        })
-                    logger.debug(f"✅ Retrieved {len(history)} history records from Supabase for document {document_id}")
-                    return history
-            except Exception as e:
-                logger.warning(f"⚠️ Failed to get history from Supabase: {e}, falling back to PostgreSQL")
-        
-        # Fallback to PostgreSQL
         try:
             history_records = DocumentProcessingHistory.query.filter_by(
                 document_id=document_id
@@ -361,7 +330,7 @@ class ProcessingHistoryService:
             return [record.serialize() for record in history_records]
             
         except Exception as e:
-            logger.error(f"Failed to get processing history from PostgreSQL: {e}")
+            logger.error(f"Failed to get processing history: {e}")
             return []
     
     def get_processing_statistics(self, business_id: str = None) -> Dict[str, Any]:
@@ -450,12 +419,13 @@ class ProcessingHistoryService:
             return {} 
 
     def get_pipeline_progress(self, document_id: str) -> dict:
-        """
-        Get progress of document through its pipeline.
-        Uses Supabase document if available, falls back to PostgreSQL.
-        """
+        """Get progress of document through its pipeline"""
         try:
-            from .supabase_document_service import SupabaseDocumentService
+            # Use Supabase directly instead of SQLAlchemy model
+            # This avoids the classification_reasoning column issue
+            if not self.use_supabase:
+                logger.warning("⚠️ Supabase not available, cannot get pipeline progress")
+                return {'error': 'Supabase not available'}
             
             # Define pipeline steps
             PIPELINE_STEPS = {
@@ -472,31 +442,20 @@ class ProcessingHistoryService:
                 ]
             }
             
-            # Try to get document from Supabase first
-            doc_service = SupabaseDocumentService()
-            document = doc_service.get_document_by_id(document_id)
+            # Get document from Supabase (not SQLAlchemy)
+            doc_result = self.supabase.table('documents').select(
+                'id, status, classification_type, document_summary'
+            ).eq('id', document_id).execute()
             
-            # Fallback to PostgreSQL if not in Supabase
-            if not document:
-                try:
-                    from ..models import Document
-                    sqlalchemy_doc = Document.query.get(document_id)
-                    if sqlalchemy_doc:
-                        document = {
-                            'id': str(sqlalchemy_doc.id),
-                            'classification_type': sqlalchemy_doc.classification_type,
-                            'status': sqlalchemy_doc.status.value if sqlalchemy_doc.status else 'unknown'
-                        }
-                except Exception as e:
-                    logger.warning(f"⚠️ Could not get document from PostgreSQL: {e}")
-            
-            if not document:
+            if not doc_result.data:
                 return {'error': 'Document not found'}
+            
+            document = doc_result.data[0]
                 
             history = self.get_document_processing_history(document_id)
             
             # Determine pipeline type based on classification
-            classification_type = document.get('classification_type') if isinstance(document, dict) else getattr(document, 'classification_type', None)
+            classification_type = document.get('classification_type')
             pipeline_type = 'full' if classification_type in ['valuation_report', 'market_appraisal'] else 'minimal'
             steps = PIPELINE_STEPS[pipeline_type]
             
@@ -504,22 +463,24 @@ class ProcessingHistoryService:
             completed_steps = [h for h in history if h.get('step_status', '').lower() == 'completed']
             failed_steps = [h for h in history if h.get('step_status', '').lower() == 'failed']
             
-            # Get status
-            status = document.get('status') if isinstance(document, dict) else (document.status.value if hasattr(document, 'status') and document.status else 'unknown')
+            # Get status - handle both string and enum values
+            current_status = document.get('status', 'unknown')
+            if isinstance(current_status, dict):
+                current_status = current_status.get('value', 'unknown')
+            elif hasattr(current_status, 'value'):
+                current_status = current_status.value
             
             return {
                 'pipeline_type': pipeline_type,
                 'total_steps': len(steps),
                 'completed_steps': len(completed_steps),
                 'failed_steps': len(failed_steps),
-                'current_step': status,
+                'current_step': current_status,
                 'steps': steps,
                 'history': history
             }
             
         except Exception as e:
             logger.error(f"Error getting pipeline progress: {e}")
-            import traceback
-            logger.error(f"Traceback: {traceback.format_exc()}")
             return {'error': str(e)}
 

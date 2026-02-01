@@ -38,8 +38,21 @@ async def process_documents(state: MainWorkflowState) -> MainWorkflowState:
     """Process each relevant document with the QA subgraph in parallel."""
 
     relevant_docs = state.get("relevant_documents", [])
+    document_outputs = state.get("document_outputs", []) or []
+    
+    # CRITICAL: If relevant_docs is empty but we have document_outputs from agent node,
+    # trust the retrieval system - if chunks were retrieved, they're from the current query.
+    # State is reset in views.py for each new query, so these are not stale.
+    if not relevant_docs and document_outputs:
+        logger.info(
+            f"[PROCESS_DOCUMENTS] No relevant_documents, but found {len(document_outputs)} "
+            f"document_outputs from chunk retrieval - using those (trusting retrieval ranking)"
+        )
+        return {"document_outputs": document_outputs}
+    
     if not relevant_docs:
         logger.warning("[PROCESS_DOCUMENTS] No relevant documents to process")
+        # CRITICAL: Clear any stale document_outputs from previous queries
         return {"document_outputs": []}
     
     # Process ALL relevant documents (no artificial limits)
@@ -54,7 +67,7 @@ async def process_documents(state: MainWorkflowState) -> MainWorkflowState:
         
         if is_individual_chunks:
             # Import helper function
-            from backend.llm.nodes.retrieval_nodes import create_source_chunks_metadata_for_single_chunk
+            from backend.llm.utils.chunk_metadata import create_source_chunks_metadata_for_single_chunk
             
             # Count chunks needing metadata
             chunks_needing_metadata = [chunk for chunk in relevant_docs if not chunk.get('source_chunks_metadata')]
@@ -69,7 +82,7 @@ async def process_documents(state: MainWorkflowState) -> MainWorkflowState:
                 # OPTIMIZATION: Batch fetch metadata for all chunks in parallel
                 if chunks_needing_metadata:
                     try:
-                        from backend.llm.nodes.retrieval_nodes import batch_create_source_chunks_metadata
+                        from backend.llm.utils.chunk_metadata import batch_create_source_chunks_metadata
                         
                         # Extract doc_ids for batch fetching
                         chunk_doc_ids = []

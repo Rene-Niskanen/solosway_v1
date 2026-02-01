@@ -742,8 +742,9 @@ def process_document_classification(self, document_id, file_content, original_fi
             )
             logger.info(f"✅ Updated document status to 'processing' in Supabase")
             
-            # Save file temporarily for parsing
-            with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp_file:
+            # Save file temporarily for parsing (preserve original extension)
+            file_ext = os.path.splitext(original_filename)[1] or '.pdf'
+            with tempfile.NamedTemporaryFile(suffix=file_ext, delete=False) as temp_file:
                 temp_file.write(file_content)
                 temp_file_path = temp_file.name
             
@@ -757,18 +758,26 @@ def process_document_classification(self, document_id, file_content, original_fi
                 
                 reducto = ReductoService()
                 
-                # Parse document - use async for large files (> 1MB)
+                # Parse document - always use async for concurrent file processing
                 # Now uses section-based chunking to maintain document structure
                 file_size_mb = len(file_content) / (1024 * 1024)
-                use_async = file_size_mb > 1.0  # Use async for files > 1MB
+                logger.info(f"📦 Processing file ({file_size_mb:.2f}MB) with async parsing")
                 
-                if use_async:
-                    logger.info(f"📦 Large file detected ({file_size_mb:.2f}MB), using async processing")
+                # Detect if handwritten text is present (cost optimization)
+                from .services.handwritten_detection_service import HandwrittenDetectionService
+                handwritten_detector = HandwrittenDetectionService()
+                handwritten_check = handwritten_detector.detect_handwritten_text(
+                    file_path=temp_file_path,
+                    reducto_service=reducto
+                )
+                needs_agentic = handwritten_check['needs_agentic']
+                logger.info(f"🔍 Handwritten detection: {handwritten_check['reason']} (needs_agentic={needs_agentic})")
                 
                 parse_result = reducto.parse_document(
                     file_path=temp_file_path,
                     return_images=["figure", "table"],
-                    use_async=use_async
+                    use_async=True,  # Always async for concurrent processing
+                    use_agentic=needs_agentic  # Only enable if handwritten detected
                 )
                 
                 job_id = parse_result['job_id']
@@ -782,27 +791,95 @@ def process_document_classification(self, document_id, file_content, original_fi
                 logger.info(f"📸 Found {len(image_urls)} images")
                 logger.info(f"📦 Extracted {len(chunks)} section-based chunks")
                 
-                # Calculate total blocks count
-                total_blocks = sum(len(chunk.get('blocks', [])) for chunk in chunks)
-                chunks_with_blocks = sum(1 for chunk in chunks if chunk.get('blocks'))
-                logger.info(f"📊 Chunk details: {chunks_with_blocks}/{len(chunks)} chunks have blocks, {total_blocks} total blocks")
+                # ========================================================================
+                # PHASE 4: LOCAL ADDRESS EXTRACTION (for file system linking)
+                # ========================================================================
+                property_address = None
+                address_source = None
+                address_hash = None
+                normalized_address = None
                 
-                # Log to processing history
-                try:
-                    history_service.log_step_completion(
-                        history_id=history_id,
-                        step_message=f"Parsing completed: {len(chunks)} chunks, {total_blocks} blocks",
-                        step_metadata={
-                            'reducto_job_id': job_id,
-                            'chunks_count': len(chunks),
-                            'chunks_with_blocks': chunks_with_blocks,
-                            'total_blocks': total_blocks,
-                            'text_length': len(document_text),
-                            'images_count': len(image_urls)
-                        }
-                    )
-                except Exception as log_error:
-                    logger.warning(f"⚠️ Failed to log parsing completion: {log_error}")
+                # Only extract address if local extraction is enabled
+                use_local_extraction = os.environ.get('USE_LOCAL_ADDRESS_EXTRACTION', 'true').lower() == 'true'
+                
+                if use_local_extraction and chunks:
+                    try:
+                        from .services.local_address_extraction_service import LocalAddressExtractionService
+                        from .services.address_service import AddressNormalizationService
+                        from .services.supabase_property_hub_service import SupabasePropertyHubService
+                        
+                        # Extract address using Ollama (for file system linking only)
+                        logger.info("🔍 Starting local address extraction from document chunks...")
+                        address_extractor = LocalAddressExtractionService()
+                        address_result = address_extractor.extract_address_from_chunks(
+                            chunks=chunks[:10],  # First 10 chunks usually contain address
+                            max_chunks=10
+                        )
+                        
+                        # Determine address to use (Priority: Ollama > Filename > None)
+                        if address_result and address_result.get('address'):
+                            property_address = address_result['address']
+                            address_source = 'ollama_extraction'
+                            logger.info(f"📍 Address extracted via Ollama: {property_address}")
+                        else:
+                            # Fallback to filename extraction
+                            logger.info("📍 Ollama extraction failed, trying filename extraction...")
+                            from .services.filename_address_service import FilenameAddressService
+                            filename_service = FilenameAddressService()
+                            filename_address = filename_service.extract_address_from_filename(original_filename)
+                            
+                            if filename_address:
+                                property_address = filename_address
+                                address_source = 'filename'
+                                logger.info(f"📍 Address extracted from filename: {property_address}")
+                            else:
+                                logger.warning("⚠️ No address found (Ollama + filename both failed)")
+                        
+                        # Normalize address and link to property (file system only)
+                        if property_address:
+                            address_service = AddressNormalizationService()
+                            # normalize_address() returns a string, not a dict
+                            normalized_address = address_service.normalize_address(property_address)
+                            # Compute hash separately
+                            address_hash = address_service.compute_address_hash(normalized_address)
+                            
+                            logger.info(f"✅ Address normalized: {normalized_address}")
+                            logger.info(f"✅ Address hash: {address_hash}")
+                            
+                            # Link document to property (file system only, no map display)
+                            property_hub = SupabasePropertyHubService()
+                            
+                            # Build address_data dict for function call (matches function signature)
+                            address_data = {
+                                'original_address': property_address,
+                                'normalized_address': normalized_address,
+                                'address_hash': address_hash,
+                                'formatted_address': normalized_address  # Use normalized as formatted
+                            }
+                            
+                            property_record = property_hub.create_property_with_relationships(
+                                address_data=address_data,
+                                document_id=str(document_id),
+                                business_id=business_id,
+                                extracted_data=None,  # No extraction data (address extraction only)
+                                skip_property_updates=True  # ✅ No property_details = no map display
+                            )
+                            
+                            if property_record and property_record.get('success'):
+                                linked_property_id = property_record.get('property_id')
+                                logger.info(f"✅ Document linked to property (file system only): {linked_property_id}")
+                                
+                                # Store property_id in document_summary for later use
+                                if linked_property_id:
+                                    document_summary['linked_property_id'] = str(linked_property_id)
+                            else:
+                                error_msg = property_record.get('error', 'Unknown error') if property_record else 'No response'
+                                logger.warning(f"⚠️ Failed to link document to property: {error_msg}")
+                        
+                    except Exception as e:
+                        logger.error(f"❌ Address extraction/linking failed: {e}", exc_info=True)
+                        # Continue processing even if address extraction fails
+                        property_address = None
                 
                 # Store job_id and image URLs in metadata (Supabase document_summary JSONB)
                 # Use helper function to safely parse document_summary
@@ -828,6 +905,48 @@ def process_document_classification(self, document_id, file_content, original_fi
                     document_summary['reducto_chunk_count'] = len(chunks)
                     logger.info(f"✅ Stored {len(chunks_data)} chunks with bbox metadata in document metadata")
                 
+                # Store extracted address information (Phase 4: Local Address Extraction)
+                if property_address:
+                    document_summary['extracted_address'] = property_address
+                    document_summary['address_source'] = address_source
+                    if normalized_address:
+                        document_summary['normalized_address'] = normalized_address
+                    if address_hash:
+                        document_summary['address_hash'] = address_hash
+                    logger.info(f"✅ Stored address in document_summary: {property_address} (source: {address_source})")
+                else:
+                    logger.info("ℹ️ No address extracted - document will not be linked to property")
+
+                # Identify boilerplate candidates
+                try:
+                    from backend.services.structure_extraction_service import StructureExtractionService
+                    structure_service = StructureExtractionService()
+
+                    boilerplate_info = structure_service.identify_boilerplate(
+                        document_text=document_text,
+                        chunks=chunks,
+                        threashold_percent=25.0
+                    )
+
+                    # store boilerplate info in document_summary
+                    document_summary['boilerplate_lines'] = boilerplate_info['boilerplate_lines']
+                    document_summary['common_header'] = boilerplate_info['common_header']
+                    document_summary['common_footer'] = boilerplate_info['common_footer']
+
+                    logger.info(
+                        f"Identified {len(boilerplate_info['boilerplate_lines'])} boilerplate lines "
+                        f"({len(boilerplate_info['common_header'])} headers, "
+                        f"{len(boilerplate_info['common_footer'])} footers)"
+                    )
+                
+                except Exception as e:
+                    logger.warning(f"Boilerplate identification failed: {e}")
+                    # continue without boilerplate info 
+                    document_summary['boilerplate_lines'] = []
+                    document_summary['common_header'] = []
+                    document_summary['common_footer'] = []
+
+
                 # Store parsed text and metadata in Supabase
                 doc_storage.update_document_extraction(
                     document_id=str(document_id),
@@ -838,19 +957,51 @@ def process_document_classification(self, document_id, file_content, original_fi
                 
                 # Update document_summary using dedicated method with proper JSONB merging
                 # This ensures job_id, chunks, and other metadata are preserved
-                doc_storage.update_document_summary(
-                    document_id=str(document_id),
-                    business_id=business_id,
-                    updates={
+                summary_updates = {
                         'reducto_job_id': job_id,
                         'reducto_parse_timestamp': datetime.utcnow().isoformat(),
                         'reducto_image_urls': image_urls,
                         'reducto_image_blocks_metadata': image_blocks_metadata,
                         'reducto_chunks': chunks_data if chunks else [],
-                        'reducto_chunk_count': len(chunks) if chunks else 0
-                    },
+                    'reducto_chunk_count': len(chunks) if chunks else 0,
+                        # Add in the boilerplate info 
+                        'boilerplate_lines': document_summary.get('boilerplate_lines', []),
+                    'common_header': document_summary.get('common_header', []),
+                    'common_footer': document_summary.get('common_footer', [])
+                }
+                
+                # Add address information if extracted (Phase 4)
+                if property_address:
+                    summary_updates['extracted_address'] = property_address
+                    summary_updates['address_source'] = address_source
+                    if normalized_address:
+                        summary_updates['normalized_address'] = normalized_address
+                    if address_hash:
+                        summary_updates['address_hash'] = address_hash
+                    if 'linked_property_id' in document_summary:
+                        summary_updates['linked_property_id'] = document_summary['linked_property_id']
+                    logger.info(f"✅ Including address in document_summary: {property_address} (source: {address_source})")
+                
+                doc_storage.update_document_summary(
+                    document_id=str(document_id),
+                    business_id=business_id,
+                    updates=summary_updates,
                     merge=True  # Merge with existing document_summary to preserve other fields
                 )
+                
+                # Also update property_id in documents table if linked (Phase 4)
+                if property_address and 'linked_property_id' in document_summary:
+                    linked_property_id = document_summary['linked_property_id']
+                    try:
+                        from .services.supabase_document_service import SupabaseDocumentService
+                        doc_service = SupabaseDocumentService()
+                        doc_service.update_document(
+                            document_id=str(document_id),
+                            document_data={'property_id': linked_property_id}
+                        )
+                        logger.info(f"✅ Updated property_id in documents table: {linked_property_id}")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Failed to update property_id in documents table: {e}")
                 
                 # Also update status (separate call)
                 doc_storage.update_document_status(
@@ -867,18 +1018,33 @@ def process_document_classification(self, document_id, file_content, original_fi
                 # - address_hash (from extraction)
                 # This eliminates duplicate embeddings and ensures metadata is complete.
                 
-                # Classify using Reducto Extract
-                classification = reducto.classify_document(job_id)
+                # Feature flag: Use local address extraction instead of Reducto
+                use_local_extraction = os.environ.get('USE_LOCAL_ADDRESS_EXTRACTION', 'true').lower() == 'true'
                 
-                # Convert string confidence to numeric for compatibility
-                confidence_numeric = convert_confidence_to_numeric(classification['confidence'])
-                
-                classification_result = {
-                    'type': classification['document_type'],
-                    'confidence': confidence_numeric,
-                    'reasoning': f"Reducto classification: {classification['document_type']} (confidence: {classification['confidence']})",
-                    'method': 'reducto_extract'
-                }
+                if use_local_extraction:
+                    # Skip Reducto classification (cost optimization)
+                    # Use default classification - local model will extract address
+                    classification_result = {
+                        'type': 'other_documents',  # Default classification
+                        'confidence': 0.5,
+                        'reasoning': 'Classification skipped for cost optimization (use RAG for document queries)',
+                        'method': 'default'
+                    }
+                    logger.info("ℹ️ Reducto classification skipped (USE_LOCAL_ADDRESS_EXTRACTION=true)")
+                else:
+                    # Use Reducto classification (legacy mode for testing/comparison)
+                    logger.info("🔄 Using Reducto classification (USE_LOCAL_ADDRESS_EXTRACTION=false)")
+                    classification = reducto.classify_document(job_id)
+                    
+                    # Convert string confidence to numeric for compatibility
+                    confidence_numeric = convert_confidence_to_numeric(classification['confidence'])
+                    
+                    classification_result = {
+                        'type': classification['document_type'],
+                        'confidence': confidence_numeric,
+                        'reasoning': f"Reducto classification: {classification['document_type']} (confidence: {classification['confidence']})",
+                        'method': 'reducto_extract'
+                    }
                 
                 # parsed_text and job_id already stored above via update_document_summary
                 # Just ensure classification metadata is also stored
@@ -912,14 +1078,7 @@ def process_document_classification(self, document_id, file_content, original_fi
                     )
                 
             except Exception as e:
-                logger.error(f"❌ Reducto parsing/extraction failed: {e}")
-                logger.error(f"   Document ID: {document_id}")
-                logger.error(f"   Filename: {original_filename}")
-                logger.error(f"   File size: {len(file_content)} bytes")
-                logger.error(f"   Error type: {type(e).__name__}")
-                import traceback
-                logger.error(f"   Traceback: {traceback.format_exc()}")
-                
+                logger.error(f"Reducto extraction failed: {e}")
                 # Use fallback text extraction
                 document_text = f"Document: {original_filename}\nSize: {len(file_content)} bytes"
                 # Store fallback text in Supabase
@@ -937,12 +1096,11 @@ def process_document_classification(self, document_id, file_content, original_fi
                         step_message=f"Text extraction completed with fallback: {len(document_text)} characters",
                         step_metadata={
                             'text_length': len(document_text),
-                            'fallback_used': True,
-                            'extraction_error': str(e),
-                            'error_type': type(e).__name__,
-                            'provider': 'reducto'
-                        }
-                    )
+                        'fallback_used': True,
+                        'extraction_error': str(e),
+                        'provider': 'reducto'
+                    }
+                )
             
                 # If Reducto failed, we still need classification_result for error handling
                 if classification_result is None:
@@ -1135,8 +1293,9 @@ def process_document_minimal_extraction(self, document_id, file_content, origina
                 business_id=business_id
             )
 
-            # save file temporarily for parsing
-            with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp_file:
+            # save file temporarily for parsing (preserve original extension)
+            file_ext = os.path.splitext(original_filename)[1] or '.pdf'
+            with tempfile.NamedTemporaryFile(suffix=file_ext, delete=False) as temp_file:
                 temp_file.write(file_content)
                 temp_file_path = temp_file.name
             
@@ -1182,12 +1341,23 @@ def process_document_minimal_extraction(self, document_id, file_content, origina
                     # If no job_id after retries, only then parse (shouldn't happen in normal flow)
                     logger.warning("⚠️ No job_id found, parsing document now (this should be rare)...")
                     file_size_mb = len(file_content) / (1024 * 1024)
-                    use_async = file_size_mb > 1.0
+                    logger.info(f"📦 Processing file ({file_size_mb:.2f}MB) with async parsing")
+                    
+                    # Detect if handwritten text is present (cost optimization)
+                    from .services.handwritten_detection_service import HandwrittenDetectionService
+                    handwritten_detector = HandwrittenDetectionService()
+                    handwritten_check = handwritten_detector.detect_handwritten_text(
+                        file_path=temp_file_path,
+                        reducto_service=reducto
+                    )
+                    needs_agentic = handwritten_check['needs_agentic']
+                    logger.info(f"🔍 Handwritten detection: {handwritten_check['reason']} (needs_agentic={needs_agentic})")
                     
                     parse_result = reducto.parse_document(
                         file_path=temp_file_path,
                         return_images=["figure", "table"],
-                        use_async=use_async
+                        use_async=True,  # Always async for concurrent processing
+                        use_agentic=needs_agentic  # Only enable if handwritten detected
                     )
                     job_id = parse_result['job_id']
                     document_text = parse_result['document_text']
@@ -1213,21 +1383,30 @@ def process_document_minimal_extraction(self, document_id, file_content, origina
                         additional_data={'document_summary': document_summary}
                     )
                 
-                # Validate job_id before extraction (after potential re-parsing)
-                if not job_id or not isinstance(job_id, str) or not job_id.strip():
-                    logger.error(f"❌ Cannot extract: job_id is invalid: {job_id}")
-                    raise ValueError(f"job_id must be a non-empty string, got: {type(job_id)} = {job_id}")
-                        
-                # Extract with schema using Reducto (uses jobid://{job_id} format internally)
-                logger.info(f"🔄 Extracting minimal data with Reducto schema for: {classification_type} (job_id: {job_id})")
-                extraction = reducto.extract_with_schema(
-                    job_id=job_id,
-                                schema=extraction_schema,
-                    system_prompt="Extract minimal property information from this document."
-                )
+                # Feature flag: Use local address extraction instead of Reducto
+                use_local_extraction = os.environ.get('USE_LOCAL_ADDRESS_EXTRACTION', 'true').lower() == 'true'
                 
-                extracted_data = extraction['data']
-                logger.info("✅ Reducto minimal extraction completed successfully")
+                if use_local_extraction:
+                    # Skip Reducto extraction (cost optimization)
+                    # Local address extraction will be done in Phase 4 integration
+                    extracted_data = {}
+                    logger.info("ℹ️ Reducto extraction skipped (USE_LOCAL_ADDRESS_EXTRACTION=true - use local Ollama for address extraction)")
+                else:
+                    # Use Reducto extraction (legacy mode for testing/comparison)
+                    # Validate job_id before extraction (after potential re-parsing)
+                    if not job_id or not isinstance(job_id, str) or not job_id.strip():
+                        logger.error(f"❌ Cannot extract: job_id is invalid: {job_id}")
+                        raise ValueError(f"job_id must be a non-empty string, got: {type(job_id)} = {job_id}")
+                            
+                    logger.info(f"🔄 Extracting minimal data with Reducto schema for: {classification_type} (job_id: {job_id})")
+                    extraction = reducto.extract_with_schema(
+                        job_id=job_id,
+                        schema=extraction_schema,
+                        system_prompt="Extract minimal property information from this document."
+                    )
+                    
+                    extracted_data = extraction['data']
+                    logger.info("✅ Reducto minimal extraction completed successfully")
                     
             except Exception as e:
                 logger.error(f"⚠️ Reducto extraction failed: {e}, using fallback")
@@ -1343,20 +1522,7 @@ def process_document_minimal_extraction(self, document_id, file_content, origina
             logger.info("🔄 Starting document vector embedding for minimal extraction...")
             
             document_vectors_stored = 0
-            # Handle business_id that might be a company name (legacy) or UUID
-            try:
-                business_uuid = str(UUID(str(business_id))) if business_id else None
-            except (ValueError, TypeError):
-                # business_id is not a UUID (e.g., "SoloSway"), try to get UUID from mapping
-                try:
-                    from .services.supabase_auth_service import SupabaseAuthService
-                    auth_service = SupabaseAuthService()
-                    business_uuid = auth_service.get_business_uuid(business_id)
-                    if not business_uuid:
-                        business_uuid = auth_service.ensure_business_uuid(business_id)
-                except Exception as lookup_error:
-                    logger.warning(f"Failed to lookup business UUID: {lookup_error}")
-                    business_uuid = None
+            business_uuid = business_id  # Use business_id directly (already UUID format)
             
             try:
                 from .services.vector_service import SupabaseVectorService
@@ -1412,39 +1578,53 @@ def process_document_minimal_extraction(self, document_id, file_content, origina
                         
                         # Use Reducto chunks if available, otherwise chunk manually
                         if reducto_chunks:
+                            try:
+                                from backend.services.structure_extraction_service import StructureExtractionService
+                                structure_service = StructureExtractionService()
+
+                                # get document_summary to check if boilerplate already identified
+                                document_summary = get_document_summary_safe(document)
+
+                                if not document_summary.get('boilerplate_lines'):
+                                    # boilerplate not yet identified, done now
+                                    boilerplate_info = structure_service.identify_boilerplate(
+                                        document_text=document_text,
+                                        chunks=reducto_chunks,
+                                        threashold_percent=25.0
+                                    )
+
+                                    # store in document_summary
+                                    document_summary['boilerplate_lines'] = boilerplate_info['boilerplate_lines']
+                                    document_summary['common_header'] = boilerplate_info['common_header']
+                                    document_summary['common_footer'] = boilerplate_info['common_footer']
+
+                                    # update in database
+                                    doc_storage.update_document_summary(
+                                        document_id=str(document_id),
+                                        business_id=business_id,
+                                        updates={
+                                            'boilerplate_lines': boilerplate_info['boilerplate_lines'],
+                                            'common_header': boilerplate_info['common_header'],
+                                            'common_footer': boilerplate_info['common_footer']
+                                        },
+                                        merge=True
+                                    )
+
+                                    logger.info(f"Identified boilerplate during minimal extraction")
+                            except Exception as e:
+                                logger.warning(f"Boilerplate identification failed: {e}")
+
                             # Extract chunk texts for embedding (use embed if available, fallback to content)
                             chunk_texts = []
                             chunk_metadata_list = []
-                            chunks_filtered_count = 0
-                            total_blocks_count = 0
                             
-                            logger.info(f"🔄 Processing {len(reducto_chunks)} chunks for embedding...")
-                            
-                            for i, chunk in enumerate(reducto_chunks):
+                            for chunk in reducto_chunks:
                                 # Prefer embed (optimized for embeddings), fallback to content
                                 embed_text = chunk.get('embed', '')
                                 content_text = chunk.get('content', '')
                                 
                                 # Choose text to embed
                                 text_to_embed = embed_text if embed_text else content_text
-                                
-                                # Track blocks
-                                blocks = chunk.get('blocks', [])
-                                total_blocks_count += len(blocks)
-                                
-                                # FALLBACK: If chunk has no embed/content, extract text from blocks
-                                if not text_to_embed:
-                                    if blocks:
-                                        # Extract text from all blocks
-                                        block_texts = []
-                                        for block in blocks:
-                                            if isinstance(block, dict):
-                                                block_text = block.get('text', '') or block.get('content', '')
-                                                if block_text:
-                                                    block_texts.append(block_text)
-                                        if block_texts:
-                                            text_to_embed = ' '.join(block_texts)
-                                            logger.info(f"✅ Extracted text from {len(block_texts)} blocks for chunk {i+1} (chunk had no embed/content)")
                                 
                                 if text_to_embed:
                                     chunk_texts.append(text_to_embed)
@@ -1460,7 +1640,7 @@ def process_document_minimal_extraction(self, document_id, file_content, origina
                                     
                                     chunk_meta = {
                                         'bbox': chunk_bbox,  # Chunk-level bbox
-                                        'blocks': blocks,  # All blocks with bbox
+                                        'blocks': chunk.get('blocks', []),  # All blocks with bbox
                                         'page': chunk_page  # Robustly extracted page number
                                     }
                                     
@@ -1472,16 +1652,9 @@ def process_document_minimal_extraction(self, document_id, file_content, origina
                                         chunk_meta['has_section_header'] = False
                                     
                                     chunk_metadata_list.append(chunk_meta)
-                                else:
-                                    chunks_filtered_count += 1
-                                    logger.warning(f"⚠️ Chunk {i+1} filtered out - no embed/content text and no block text")
-                                    logger.info(f"   Chunk has blocks: {bool(blocks)}, block count: {len(blocks)}")
                             
                             chunks = chunk_texts
                             logger.info(f"✅ Using Reducto section-based chunks with bbox metadata: {len(chunks)} chunks")
-                            if chunks_filtered_count > 0:
-                                logger.warning(f"⚠️ Filtered out {chunks_filtered_count} chunks (no text content)")
-                            logger.info(f"📊 Chunk processing summary: {len(reducto_chunks)} retrieved → {len(chunks)} chunks with text, {total_blocks_count} total blocks")
                         else:
                             # Fallback: Chunk the document text manually (no bbox metadata)
                             chunks = vector_service.chunk_text(document_text, chunk_size=1200, overlap=None)
@@ -1494,108 +1667,69 @@ def process_document_minimal_extraction(self, document_id, file_content, origina
                             'document_id': str(document_id),
                             'property_id': str(property_id) if property_id else None,
                             'classification_type': classification_type or 'other_documents',
-                            'address_hash': None  # Will be set if available
+                            'address_hash': None,  # Will be set if available
+                            'boilerplate_lines': document_summary.get('boilerplate_lines', [])  # Add boilerplate lines
                         }
                         
                         # Store document vectors with immediate embedding (same as full extraction)
-                        if chunks:
-                            logger.info(f"🚀 Generating embeddings for {len(chunks)} chunks...")
-                            success = vector_service.store_document_vectors(
-                                str(document_id), 
-                                chunks, 
-                                metadata,
-                                chunk_metadata_list=chunk_metadata_list,
-                                lazy_embedding=False  # Immediate embedding - generates embeddings right away
-                            )
+                        success = vector_service.store_document_vectors(
+                            str(document_id), 
+                            chunks, 
+                            metadata,
+                            chunk_metadata_list=chunk_metadata_list,
+                            lazy_embedding=False  # Immediate embedding - generates embeddings right away
+                        )
+                        
+                        if success:
+                            document_vectors_stored = len(chunks)
+                            logger.info(f"✅ Stored {document_vectors_stored} document vectors with embeddings (immediate mode)")
                             
-                            if success:
-                                document_vectors_stored = len(chunks)
-                                logger.info(f"✅ Stored {document_vectors_stored} document vectors with embeddings (immediate mode)")
-                                
-                                # Log to processing history with metrics
-                                try:
-                                    doc_storage.log_processing_step(
-                                        document_id=str(document_id),
-                                        step_name='vector_storage',
-                                        step_status='completed',
-                                        step_message=f"Stored {document_vectors_stored} vectors with embeddings",
-                                        step_metadata={
-                                            'chunks_processed': len(chunks),
-                                            'vectors_stored': document_vectors_stored,
-                                            'chunks_retrieved': len(reducto_chunks) if reducto_chunks else 0,
-                                            'chunks_filtered': chunks_filtered_count if 'chunks_filtered_count' in locals() else 0,
-                                            'total_blocks': total_blocks_count if 'total_blocks_count' in locals() else 0
-                                        },
-                                        business_id=business_id
-                                    )
-                                except Exception as log_error:
-                                    logger.warning(f"⚠️ Failed to log vector storage step: {log_error}")
-                            else:
-                                logger.error(f"❌ Failed to store document vectors")
-                                # Log failure to processing history
-                                try:
-                                    doc_storage.log_processing_step(
-                                        document_id=str(document_id),
-                                        step_name='vector_storage',
-                                        step_status='failed',
-                                        step_message="Failed to store document vectors",
-                                        step_metadata={
-                                            'chunks_processed': len(chunks),
-                                            'chunks_retrieved': len(reducto_chunks) if reducto_chunks else 0,
-                                            'error': 'Vector storage returned False'
-                                        },
-                                        business_id=business_id
-                                    )
-                                except Exception as log_error:
-                                    logger.warning(f"⚠️ Failed to log vector storage failure: {log_error}")
-                        else:
-                            logger.warning(f"⚠️ No chunks to store for document - chunks were filtered out or empty")
-                            logger.warning(f"   Retrieved chunks: {len(reducto_chunks) if reducto_chunks else 0}")
-                            logger.warning(f"   Chunks with text: 0")
-                            # Log this as a warning step
+                            # --- PHASE 5: Generate document summary and embedding ---
+                            # Generate document-level summary and embedding for two-level RAG
                             try:
-                                doc_storage.log_processing_step(
-                                    document_id=str(document_id),
-                                    step_name='vector_storage',
-                                    step_status='failed',
-                                    step_message="No chunks to store - all chunks were filtered out (no text content)",
-                                    step_metadata={
-                                        'chunks_retrieved': len(reducto_chunks) if reducto_chunks else 0,
-                                        'chunks_filtered': chunks_filtered_count if 'chunks_filtered_count' in locals() else len(reducto_chunks) if reducto_chunks else 0,
-                                        'total_blocks': total_blocks_count if 'total_blocks_count' in locals() else 0,
-                                        'error': 'No chunks had embed/content text or extractable block text'
-                                    },
-                                    business_id=business_id
-                                )
-                            except Exception as log_error:
-                                logger.warning(f"⚠️ Failed to log vector storage warning: {log_error}")
+                                from .services.document_summary_service import DocumentSummaryService
+                                from .services.supabase_document_service import SupabaseDocumentService
+                                
+                                summary_service = DocumentSummaryService()
+                                doc_service = SupabaseDocumentService()
+                                
+                                # Get document from database
+                                doc_dict = doc_service.get_document_by_id(str(document_id))
+                                
+                                if doc_dict:
+                                    # Get chunks from database (needed for summary generation)
+                                    db_chunks = doc_service.get_document_chunks(str(document_id))
+                                    
+                                    if db_chunks:
+                                        logger.info(f"🔄 Generating document summary and embedding for {document_id[:8]}...")
+                                        
+                                        # Generate summary and embedding
+                                        success_summary = summary_service.generate_and_update_document_embedding(
+                                            document=doc_dict,
+                                            chunks=db_chunks
+                                        )
+                                        
+                                        if success_summary:
+                                            logger.info(f"✅ Generated document summary and embedding for {document_id[:8]}")
+                                        else:
+                                            logger.warning(f"⚠️ Failed to generate document summary/embedding for {document_id[:8]} (non-fatal)")
+                                    else:
+                                        logger.warning(f"⚠️ No chunks found for document {document_id[:8]}, skipping summary generation")
+                                else:
+                                    logger.warning(f"⚠️ Document {document_id[:8]} not found, skipping summary generation")
+                                    
+                            except Exception as summary_error:
+                                # Non-fatal: document processing should continue even if summary generation fails
+                                logger.warning(f"⚠️ Document summary generation failed (non-fatal): {summary_error}")
+                                import traceback
+                                logger.debug(traceback.format_exc())
+                        else:
+                            logger.error(f"❌ Failed to store document vectors")
                             
                     except Exception as e:
-                        logger.error(f"❌ Error chunking/storing document vectors: {e}")
-                        logger.error(f"   Document ID: {document_id}")
-                        logger.error(f"   Chunks retrieved: {len(reducto_chunks) if reducto_chunks else 0}")
-                        logger.error(f"   Chunks with text: {len(chunks) if 'chunks' in locals() else 0}")
-                        logger.error(f"   Error type: {type(e).__name__}")
+                        logger.error(f"⚠️ Error chunking/storing document vectors: {e}")
                         import traceback
-                        logger.error(f"   Traceback: {traceback.format_exc()}")
-                        
-                        # Log to processing history
-                        try:
-                            doc_storage.log_processing_step(
-                                document_id=str(document_id),
-                                step_name='vector_storage',
-                                step_status='failed',
-                                step_message=f"Error chunking/storing vectors: {str(e)}",
-                                step_metadata={
-                                    'chunks_retrieved': len(reducto_chunks) if reducto_chunks else 0,
-                                    'chunks_processed': len(chunks) if 'chunks' in locals() else 0,
-                                    'error': str(e),
-                                    'error_type': type(e).__name__
-                                },
-                                business_id=business_id
-                            )
-                        except Exception as log_error:
-                            logger.warning(f"⚠️ Failed to log vector storage error: {log_error}")
+                        traceback.print_exc()
                 else:
                     logger.warning("⚠️ No document text available for chunking/embedding")
                     
@@ -1721,27 +1855,7 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                 f.write(file_content)
             
             print(f"Successfully saved direct content to {temp_file_path}")
-            # Handle business_id that might be a company name (legacy) or UUID
-            try:
-                business_uuid = str(UUID(str(business_id))) if business_id else None
-            except (ValueError, TypeError):
-                # business_id is not a UUID (e.g., "SoloSway"), try to get UUID from mapping
-                print(f"⚠️  business_id '{business_id}' is not a UUID, looking up UUID...")
-                try:
-                    from .services.supabase_auth_service import SupabaseAuthService
-                    auth_service = SupabaseAuthService()
-                    business_uuid = auth_service.get_business_uuid(business_id)
-                    if not business_uuid:
-                        # Try ensure_business_uuid which creates mapping if needed
-                        business_uuid = auth_service.ensure_business_uuid(business_id)
-                    print(f"✅ Found business UUID: {business_uuid}")
-                except Exception as lookup_error:
-                    print(f"❌ Failed to lookup business UUID: {lookup_error}")
-                    business_uuid = None
-            
-            if not business_uuid:
-                raise ValueError(f"Could not determine business UUID from business_id: {business_id}")
-            
+            business_uuid = str(UUID(str(business_id))) if business_id else None
             print(f"Processing document for business_id: {business_uuid}")
             print(f"Image extraction directory: {temp_image_dir}")
         
@@ -1788,15 +1902,23 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
             if not job_id:
                 logger.warning("⚠️ No job_id found after retries, parsing document now...")
                 file_size_mb = len(file_content) / (1024 * 1024)
-                use_async = file_size_mb > 1.0
+                logger.info(f"📦 Processing file ({file_size_mb:.2f}MB) with async parsing")
                 
-                if use_async:
-                    print(f"📦 Large file detected ({file_size_mb:.2f}MB), using async processing")
+                # Detect if handwritten text is present (cost optimization)
+                from .services.handwritten_detection_service import HandwrittenDetectionService
+                handwritten_detector = HandwrittenDetectionService()
+                handwritten_check = handwritten_detector.detect_handwritten_text(
+                    file_path=temp_file_path,
+                    reducto_service=reducto
+                )
+                needs_agentic = handwritten_check['needs_agentic']
+                logger.info(f"🔍 Handwritten detection: {handwritten_check['reason']} (needs_agentic={needs_agentic})")
                 
                 parse_result = reducto.parse_document(
                     file_path=temp_file_path,
                     return_images=["figure", "table"],
-                    use_async=use_async
+                    use_async=True,  # Always async for concurrent processing
+                    use_agentic=needs_agentic  # Only enable if handwritten detected
                 )
                 job_id = parse_result['job_id']
                 document_text = parse_result['document_text']
@@ -1849,6 +1971,10 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                 # Get document text from stored parsed_text
                 document_text = document.get('parsed_text') or ""
                 
+                # Initialize variables for stored chunks path
+                image_urls = document_summary.get('reducto_image_urls', [])
+                image_blocks_metadata = document_summary.get('reducto_image_blocks_metadata', [])
+                
                 # PRIORITY 1: Check if we have stored chunks in document_summary (from classification)
                 # This avoids re-parsing or retrieving from Reducto if we already have the data
                 stored_chunks = document_summary.get('reducto_chunks', [])
@@ -1862,8 +1988,41 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                         ])
                         logger.info(f"✅ Reconstructed document text from stored chunks ({len(document_text)} chars)")
                     
-                    # Get image_blocks_metadata from stored chunks if available
-                    image_blocks_metadata = document_summary.get('reducto_image_blocks_metadata', [])
+                    # CRITICAL FIX: Extract image URLs from stored chunk blocks
+                    # Per Reducto docs: blocks with type "Figure" or "Table" should have image_url
+                    if not image_urls:  # Only extract if image_urls is empty
+                        extracted_image_urls = []
+                        extracted_image_metadata = []
+                        
+                        for chunk in stored_chunks:
+                            if isinstance(chunk, dict):
+                                for block in chunk.get('blocks', []):
+                                    if isinstance(block, dict):
+                                        block_type = block.get('type', '')
+                                        block_image_url = block.get('image_url')
+                                        
+                                        # Extract image URLs from Figure/Table blocks
+                                        if block_type in ["Figure", "Table"] and block_image_url:
+                                            extracted_image_urls.append(block_image_url)
+                                            extracted_image_metadata.append({
+                                                'type': block_type,
+                                                'image_url': block_image_url,
+                                                'bbox': block.get('bbox'),
+                                                'content': block.get('content', '')
+                                            })
+                        
+                        if extracted_image_urls:
+                            image_urls = extracted_image_urls
+                            image_blocks_metadata = extracted_image_metadata
+                            logger.info(
+                                f"✅ Extracted {len(image_urls)} image URLs from stored chunk blocks "
+                                f"({len([b for b in extracted_image_metadata if b['type'] == 'Figure'])} figures, "
+                                f"{len([b for b in extracted_image_metadata if b['type'] == 'Table'])} tables)"
+                            )
+                    
+                    # Get image_blocks_metadata from stored chunks if available (fallback)
+                    if not image_blocks_metadata:
+                        image_blocks_metadata = document_summary.get('reducto_image_blocks_metadata', [])
                     
                     # Extract chunks list for later use (vector embedding)
                     chunks = stored_chunks
@@ -2008,14 +2167,22 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                     )
                     logger.info(f"🚀 Started parallel image processing ({len(image_urls)} images)")
                 
+                # Feature flag: Use local address extraction instead of Reducto
+                use_local_extraction = os.environ.get('USE_LOCAL_ADDRESS_EXTRACTION', 'true').lower() == 'true'
+                
                 # Task 2: Get classification if needed
                 future_classification = None
-                if needs_classification:
+                if needs_classification and not use_local_extraction:
+                    # Only use Reducto classification if local extraction is disabled
                     future_classification = executor.submit(
                         reducto.classify_document,
                         job_id
                     )
-                    logger.info(f"🚀 Started parallel classification")
+                    logger.info(f"🚀 Started parallel classification (Reducto)")
+                elif needs_classification and use_local_extraction:
+                    # Skip Reducto classification when using local extraction
+                    logger.info("ℹ️ Classification skipped (USE_LOCAL_ADDRESS_EXTRACTION=true)")
+                    classification_type = 'other_documents'  # Default classification
                 
                 # Wait for classification to complete (needed for extraction)
                 if future_classification:
@@ -2024,20 +2191,28 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                     logger.info(f"✅ Parallel classification completed: {classification_type}")
                 
                 # Task 3: Extract with appropriate schema (after classification ready)
-                # Validate job_id before extraction
-                if not job_id or not isinstance(job_id, str) or not job_id.strip():
-                    logger.error(f"❌ Cannot extract: job_id is invalid: {job_id}")
-                    raise ValueError(f"job_id must be a non-empty string for extraction, got: {type(job_id)} = {job_id}")
-                
-                schema = get_extraction_schema(classification_type)
-                logger.info(f"🚀 Starting parallel extraction with schema: {classification_type} (job_id: {job_id})")
-                future_extraction = executor.submit(
-                    reducto.extract_with_schema,
-                    job_id=job_id.strip(),  # Ensure job_id is clean
-                    schema=schema,
-                    system_prompt="Be precise and thorough. Extract all property details."
-                )
-                logger.info(f"🚀 Started parallel extraction with schema: {classification_type}")
+                future_extraction = None
+                if use_local_extraction:
+                    # Skip Reducto extraction (cost optimization)
+                    # Local address extraction will be done in Phase 4 integration
+                    extracted_data = {}
+                    logger.info("ℹ️ Reducto extraction skipped (USE_LOCAL_ADDRESS_EXTRACTION=true - use local Ollama for address extraction)")
+                else:
+                    # Use Reducto extraction (legacy mode for testing/comparison)
+                    # Validate job_id before extraction
+                    if not job_id or not isinstance(job_id, str) or not job_id.strip():
+                        logger.error(f"❌ Cannot extract: job_id is invalid: {job_id}")
+                        raise ValueError(f"job_id must be a non-empty string for extraction, got: {type(job_id)} = {job_id}")
+                    
+                    schema = get_extraction_schema(classification_type)
+                    logger.info(f"🚀 Starting parallel extraction with schema: {classification_type} (job_id: {job_id})")
+                    future_extraction = executor.submit(
+                        reducto.extract_with_schema,
+                        job_id=job_id.strip(),  # Ensure job_id is clean
+                        schema=schema,
+                        system_prompt="Be precise and thorough. Extract all property details."
+                    )
+                    logger.info(f"🚀 Started parallel extraction with schema: {classification_type}")
                 
                 # Wait for both images and extraction to complete
                 if future_images:
@@ -2050,33 +2225,14 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                 else:
                     logger.info(f"ℹ️ No images to process")
                 
-                try:
+                # Only wait for extraction if it was started (Reducto mode)
+                if future_extraction:
                     extraction = future_extraction.result()
                     extracted_data = extraction['data']
-                    logger.info(f"✅ Parallel extraction completed")
-                except Exception as e:
-                    logger.error(f"❌ Reducto extraction failed: {e}")
-                    logger.error(f"   Job ID: {job_id}")
-                    logger.error(f"   Schema: {classification_type}")
-                    logger.error(f"   Document ID: {document_id}")
-                    # Log extraction failure to processing history
-                    try:
-                        doc_storage.log_processing_step(
-                            document_id=str(document_id),
-                            step_name='extraction',
-                            step_status='failed',
-                            step_message=f"Reducto extraction failed: {str(e)}",
-                            step_metadata={
-                                'reducto_job_id': job_id,
-                                'classification_type': classification_type,
-                                'error': str(e),
-                                'error_type': type(e).__name__
-                            },
-                            business_id=business_id
-                        )
-                    except Exception as log_error:
-                        logger.warning(f"⚠️ Failed to log extraction error: {log_error}")
-                    raise  # Re-raise to trigger fallback handling
+                    logger.info(f"✅ Parallel extraction completed (Reducto)")
+                elif use_local_extraction:
+                    # Local extraction mode - extracted_data already set above
+                    logger.info(f"ℹ️ Using local address extraction (skipped Reducto)")
             
             # Transform to match existing structure
             # Reducto returns: {'data': {'subject_property': {...}}}
@@ -2097,7 +2253,11 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                         'source_document_id': img.get('source_document_id', img['document_id']),
                         'image_index': img['image_index'],
                         'storage_path': img.get('storage_path', ''),
-                        'size_bytes': img.get('size_bytes', 0)
+                        'size_bytes': img.get('size_bytes', 0),
+                        'bbox': img.get('bbox'),  # ADD: Bbox coordinates for citation
+                        'page_number': img.get('page_number'),  # ADD: Page number for citation
+                        'block_type': img.get('block_type'),  # ADD: Block type (Figure/Table)
+                        'original_image_url': img.get('original_image_url')  # ADD: Original Reducto URL
                     }
                     for img in processed_images
                 ]
@@ -2528,35 +2688,13 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                             
                             MAX_CHUNK_SIZE = 30000  # ~7500 tokens, safe margin
                             
-                            chunks_filtered_count = 0
-                            total_blocks_count = 0
-                            logger.info(f"🔄 Processing {len(reducto_chunks)} chunks for embedding...")
-                            
-                            for i, chunk in enumerate(reducto_chunks):
+                            for chunk in reducto_chunks:
                                 # Prefer embed (optimized for embeddings), fallback to content
                                 embed_text = chunk.get('embed', '')
                                 content_text = chunk.get('content', '')
                                 
                                 # Choose text to embed
                                 text_to_embed = embed_text if embed_text else content_text
-                                
-                                # Track blocks
-                                blocks = chunk.get('blocks', [])
-                                total_blocks_count += len(blocks)
-                                
-                                # FALLBACK: If chunk has no embed/content, extract text from blocks
-                                if not text_to_embed:
-                                    if blocks:
-                                        # Extract text from all blocks
-                                        block_texts = []
-                                        for block in blocks:
-                                            if isinstance(block, dict):
-                                                block_text = block.get('text', '') or block.get('content', '')
-                                                if block_text:
-                                                    block_texts.append(block_text)
-                                        if block_texts:
-                                            text_to_embed = ' '.join(block_texts)
-                                            logger.info(f"✅ Extracted text from {len(block_texts)} blocks for chunk {i+1} (chunk had no embed/content)")
                                 
                                 if text_to_embed:
                                     chunk_texts.append(text_to_embed)
@@ -2572,7 +2710,7 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                                     
                                     chunk_meta = {
                                         'bbox': chunk_bbox,  # Chunk-level bbox
-                                        'blocks': blocks,  # All blocks with bbox
+                                        'blocks': chunk.get('blocks', []),  # All blocks with bbox
                                         'page': chunk_page  # Robustly extracted page number
                                     }
                                     
@@ -2584,16 +2722,9 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                                         chunk_meta['has_section_header'] = False
                                     
                                     chunk_metadata_list.append(chunk_meta)
-                                else:
-                                    chunks_filtered_count += 1
-                                    logger.warning(f"⚠️ Chunk {i+1} filtered out - no embed/content text and no block text")
-                                    logger.info(f"   Chunk has blocks: {bool(blocks)}, block count: {len(blocks)}")
                             
                             chunks = chunk_texts
                             logger.info(f"✅ Using Reducto section-based chunks with bbox metadata: {len(chunks)} chunks")
-                            if chunks_filtered_count > 0:
-                                logger.warning(f"⚠️ Filtered out {chunks_filtered_count} chunks (no text content)")
-                            logger.info(f"📊 Chunk processing summary: {len(reducto_chunks)} retrieved → {len(chunks)} chunks with text, {total_blocks_count} total blocks")
                         else:
                             # Fallback: Chunk the document text manually (no bbox metadata)
                             # Use dynamic overlap (None = auto-calculate based on content density)
@@ -2607,109 +2738,62 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                             'document_id': str(document_id),
                             'property_id': str(property_uuids[0]) if property_uuids else None,
                             'classification_type': classification_type or 'valuation_report',
-                            'address_hash': None  # Will be set if available
+                            'address_hash': None,  # Will be set if available
+                            'boilerplate_lines': document_summary.get('boilerplate_lines', [])  # Add boilerplate lines
                         }
                         
                         # Store document vectors with bbox metadata and generate embeddings immediately
                         # Immediate embedding: generates embeddings synchronously for simpler RAG architecture
-                        if chunks:
-                            logger.info(f"🚀 Generating embeddings for {len(chunks)} chunks...")
-                            success = vector_service.store_document_vectors(
-                                str(document_id), 
-                                chunks, 
-                                metadata,
-                                chunk_metadata_list=chunk_metadata_list,
-                                lazy_embedding=False  # Immediate embedding - generates embeddings right away
-                            )
+                        success = vector_service.store_document_vectors(
+                            str(document_id), 
+                            chunks, 
+                            metadata,
+                            chunk_metadata_list=chunk_metadata_list,
+                            lazy_embedding=False  # Immediate embedding - generates embeddings right away
+                        )
+                        
+                        if success:
+                            document_vectors_stored = len(chunks)
+                            logger.info(f"✅ Stored {document_vectors_stored} document vectors with embeddings (immediate mode)")
                             
-                            if success:
-                                document_vectors_stored = len(chunks)
-                                logger.info(f"✅ Stored {document_vectors_stored} document vectors with embeddings (immediate mode)")
-                                
-                                # Log to processing history with metrics
-                                try:
-                                    doc_storage.log_processing_step(
-                                        document_id=str(document_id),
-                                        step_name='vector_storage',
-                                        step_status='completed',
-                                        step_message=f"Stored {document_vectors_stored} vectors with embeddings",
-                                        step_metadata={
-                                            'chunks_processed': len(chunks),
-                                            'vectors_stored': document_vectors_stored,
-                                            'chunks_retrieved': len(reducto_chunks) if reducto_chunks else 0,
-                                            'chunks_filtered': chunks_filtered_count if 'chunks_filtered_count' in locals() else 0,
-                                            'total_blocks': total_blocks_count if 'total_blocks_count' in locals() else 0
-                                        },
-                                        business_id=business_id
-                                    )
-                                except Exception as log_error:
-                                    logger.warning(f"⚠️ Failed to log vector storage step: {log_error}")
-                            else:
-                                logger.error(f"❌ Failed to store document vectors")
-                                # Log failure to processing history
-                                try:
-                                    doc_storage.log_processing_step(
-                                        document_id=str(document_id),
-                                        step_name='vector_storage',
-                                        step_status='failed',
-                                        step_message="Failed to store document vectors",
-                                        step_metadata={
-                                            'chunks_processed': len(chunks),
-                                            'chunks_retrieved': len(reducto_chunks) if reducto_chunks else 0,
-                                            'error': 'Vector storage returned False'
-                                        },
-                                        business_id=business_id
-                                    )
-                                except Exception as log_error:
-                                    logger.warning(f"⚠️ Failed to log vector storage failure: {log_error}")
-                        else:
-                            logger.warning(f"⚠️ No chunks to store for document - chunks were filtered out or empty")
-                            logger.warning(f"   Retrieved chunks: {len(reducto_chunks) if reducto_chunks else 0}")
-                            logger.warning(f"   Chunks with text: 0")
-                            # Log this as a warning step
+                            # --- PHASE 5: Generate document summary and embedding ---
+                            # Generate document-level summary and embedding for two-level RAG
                             try:
-                                doc_storage.log_processing_step(
-                                    document_id=str(document_id),
-                                    step_name='vector_storage',
-                                    step_status='failed',
-                                    step_message="No chunks to store - all chunks were filtered out (no text content)",
-                                    step_metadata={
-                                        'chunks_retrieved': len(reducto_chunks) if reducto_chunks else 0,
-                                        'chunks_filtered': chunks_filtered_count if 'chunks_filtered_count' in locals() else len(reducto_chunks) if reducto_chunks else 0,
-                                        'total_blocks': total_blocks_count if 'total_blocks_count' in locals() else 0,
-                                        'error': 'No chunks had embed/content text or extractable block text'
-                                    },
-                                    business_id=business_id
-                                )
-                            except Exception as log_error:
-                                logger.warning(f"⚠️ Failed to log vector storage warning: {log_error}")
+                                from .services.document_summary_service import DocumentSummaryService
+                                from .services.supabase_document_service import SupabaseDocumentService
+                                
+                                summary_service = DocumentSummaryService()
+                                doc_service = SupabaseDocumentService()
+                                
+                                # Get chunks from database (needed for summary generation)
+                                db_chunks = doc_service.get_document_chunks(str(document_id))
+                                
+                                if db_chunks:
+                                    logger.info(f"🔄 Generating document summary and embedding for {document_id[:8]}...")
+                                    
+                                    # Generate summary and embedding
+                                    success_summary = summary_service.generate_and_update_document_embedding(
+                                        document=document,
+                                        chunks=db_chunks
+                                    )
+                                    
+                                    if success_summary:
+                                        logger.info(f"✅ Generated document summary and embedding for {document_id[:8]}")
+                                    else:
+                                        logger.warning(f"⚠️ Failed to generate document summary/embedding for {document_id[:8]} (non-fatal)")
+                                else:
+                                    logger.warning(f"⚠️ No chunks found for document {document_id[:8]}, skipping summary generation")
+                                    
+                            except Exception as summary_error:
+                                # Non-fatal: document processing should continue even if summary generation fails
+                                logger.warning(f"⚠️ Document summary generation failed (non-fatal): {summary_error}")
+                                import traceback
+                                logger.debug(traceback.format_exc())
                             
                     except Exception as e:
-                        logger.error(f"❌ Error chunking/storing document vectors: {e}")
-                        logger.error(f"   Document ID: {document_id}")
-                        logger.error(f"   Chunks retrieved: {len(reducto_chunks) if reducto_chunks else 0}")
-                        logger.error(f"   Chunks with text: {len(chunks) if 'chunks' in locals() else 0}")
-                        logger.error(f"   Error type: {type(e).__name__}")
+                        print(f"⚠️ Error chunking/storing document vectors: {e}")
                         import traceback
-                        logger.error(f"   Traceback: {traceback.format_exc()}")
-                        
-                        # Log to processing history
-                        try:
-                            doc_storage.log_processing_step(
-                                document_id=str(document_id),
-                                step_name='vector_storage',
-                                step_status='failed',
-                                step_message=f"Error chunking/storing vectors: {str(e)}",
-                                step_metadata={
-                                    'chunks_retrieved': len(reducto_chunks) if reducto_chunks else 0,
-                                    'chunks_processed': len(chunks) if 'chunks' in locals() else 0,
-                                    'error': str(e),
-                                    'error_type': type(e).__name__
-                                },
-                                business_id=business_id
-                            )
-                        except Exception as log_error:
-                            logger.warning(f"⚠️ Failed to log vector storage error: {log_error}")
+                        traceback.print_exc()
                 
                 print(f"✅ Document vector embedding completed: {document_vectors_stored} vectors stored")
                 
@@ -2961,12 +3045,12 @@ def process_document_fast_task(
                 logger.error(f"Failed to save temp file: {e}")
                 raise
             
-            # Step 1: Parse with Reducto (fast, section-based)
+            # Step 1: Parse with Reducto (fast, section-based, always async)
             parse_start_time = time.time()
             try:
                 parse_result = reducto.parse_document_fast(
                     file_path=temp_file_path,
-                    use_sync_for_small=True
+                    use_sync_for_small=False  # Always async for concurrent processing
                 )
                 parse_time = time.time() - parse_start_time
                 logger.info(f"✅ Parse completed in {parse_time:.2f}s")
@@ -2982,6 +3066,52 @@ def process_document_fast_task(
                 raise Exception("No chunks extracted from document")
             
             logger.info(f"✅ Extracted {len(chunks)} section-based chunks, {len(document_text)} chars")
+            
+            # PHASE 2: Extract structure and identify boilerplate
+            try:
+                from backend.services.structure_extraction_service import StructureExtractionService
+                structure_service = StructureExtractionService()
+                
+                # Extract section hierarchy
+                if chunks:
+                    section_metadata = structure_service.extract_section_hierarchy(chunks)
+                    for i, chunk_meta in enumerate(section_metadata):
+                        if i < len(chunks):
+                            chunks[i].update(chunk_meta)
+                
+                # Identify boilerplate
+                boilerplate_info = structure_service.identify_boilerplate(
+                    document_text=document_text,
+                    chunks=chunks,
+                    threashold_percent=25.0
+                )
+                
+                # Store in document_summary
+                doc_storage.update_document_summary(
+                    document_id=document_id,
+                    business_id=business_id,
+                    updates={
+                        'boilerplate_lines': boilerplate_info['boilerplate_lines'],
+                        'common_header': boilerplate_info['common_header'],
+                        'common_footer': boilerplate_info['common_footer']
+                    },
+                    merge=True
+                )
+                
+                logger.info(f"📊 Extracted structure and boilerplate for fast pipeline")
+            except Exception as e:
+                logger.warning(f"⚠️ Structure extraction failed in fast pipeline: {e}")
+            
+            # Get document_summary for boilerplate_lines
+            try:
+                success, document_dict, error = doc_storage.get_document(str(document_id), business_id)
+                if success and document_dict:
+                    document_summary = get_document_summary_safe(document_dict)
+                else:
+                    document_summary = {}
+            except Exception as e:
+                logger.warning(f"Could not retrieve document_summary: {e}")
+                document_summary = {}
             
             # Step 2: Extract chunk texts and metadata with bbox validation (<1s)
             chunk_extract_start_time = time.time()
@@ -3139,7 +3269,8 @@ def process_document_fast_task(
                 'property_id': property_id,  # Already linked - no extraction needed!
                 'classification_type': None,  # Skip classification
                 'address_hash': None,
-                'parsed_text': document_text
+                'parsed_text': document_text,
+                'boilerplate_lines': document_summary.get('boilerplate_lines', [])  # Add boilerplate lines
             }
             
             # Step 4: Store vectors (automatically handles context + embedding)
@@ -3162,6 +3293,47 @@ def process_document_fast_task(
                     raise Exception("Failed to store document vectors")
                 
                 logger.info(f"✅ Embedding and storage completed in {embed_time:.2f}s")
+                
+                # --- PHASE 5: Generate document summary and embedding ---
+                # Generate document-level summary and embedding for two-level RAG
+                try:
+                    from .services.document_summary_service import DocumentSummaryService
+                    from .services.supabase_document_service import SupabaseDocumentService
+                    
+                    summary_service = DocumentSummaryService()
+                    doc_service = SupabaseDocumentService()
+                    
+                    # Get document from database
+                    doc_dict = doc_service.get_document_by_id(document_id)
+                    
+                    if doc_dict:
+                        # Get chunks from database (needed for summary generation)
+                        db_chunks = doc_service.get_document_chunks(document_id)
+                        
+                        if db_chunks:
+                            logger.info(f"🔄 Generating document summary and embedding for {document_id[:8]}...")
+                            
+                            # Generate summary and embedding
+                            success_summary = summary_service.generate_and_update_document_embedding(
+                                document=doc_dict,
+                                chunks=db_chunks
+                            )
+                            
+                            if success_summary:
+                                logger.info(f"✅ Generated document summary and embedding for {document_id[:8]}")
+                            else:
+                                logger.warning(f"⚠️ Failed to generate document summary/embedding for {document_id[:8]} (non-fatal)")
+                        else:
+                            logger.warning(f"⚠️ No chunks found for document {document_id[:8]}, skipping summary generation")
+                    else:
+                        logger.warning(f"⚠️ Document {document_id[:8]} not found, skipping summary generation")
+                        
+                except Exception as summary_error:
+                    # Non-fatal: document processing should continue even if summary generation fails
+                    logger.warning(f"⚠️ Document summary generation failed (non-fatal): {summary_error}")
+                    import traceback
+                    logger.debug(traceback.format_exc())
+                    
             except Exception as e:
                 logger.error(f"❌ Failed to store document vectors: {e}")
                 raise

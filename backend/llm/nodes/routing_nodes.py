@@ -560,23 +560,8 @@ async def fetch_direct_document_chunks(state: MainWorkflowState) -> MainWorkflow
             logger.info(f"⚡ [DIRECT_DOC] Focused retrieval found 0 chunks, falling back to vector search")
             # Continue to normal retrieval below
     
-    # If user_query is provided, delegate to normal retrieval path (query_vector_documents)
-    # This reuses all the proven logic: header retrieval, hybrid search, header detection, etc.
-    if user_query:
-        logger.info(f"[DIRECT_DOC] Delegating to normal retrieval path (query_vector_documents) with document_ids={document_ids}")
-        
-        # Ensure document_ids is set in state for query_vector_documents to use
-        state_with_doc_ids = {**state, "document_ids": document_ids}
-        
-        # Call the normal retrieval function - it already handles document_ids filtering
-        from backend.llm.nodes.retrieval_nodes import query_vector_documents
-        result_state = await query_vector_documents(state_with_doc_ids)
-        
-        # Return the results (query_vector_documents returns {"relevant_documents": [...]})
-        logger.info(f"[DIRECT_DOC] Normal retrieval path returned {len(result_state.get('relevant_documents', []))} chunks")
-        return result_state
-    
-    # Fallback: No query provided - fetch ALL chunks sequentially
+    # Fetch chunks directly from documents (agent will handle query filtering in summarize_results)
+    # This is the fast path - we fetch chunks and let the agent use tools to filter if needed
     try:
         supabase = get_supabase_client()
         retrieved_docs: List[RetrievedDocument] = []

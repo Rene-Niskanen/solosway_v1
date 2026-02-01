@@ -78,12 +78,13 @@ async def answer_question(state: DocumentQAState) -> DocumentQAState:
         )
         return {
             **state,
-            "answer": answer or "Not found in this document.",
+            "answer": answer or "",  # Let LLM handle empty responses naturally
         }
 
     except Exception as exc:  # pylint: disable=broad-except
         logger.error("[DOCUMENT_QA] Error generating answer: %s", exc, exc_info=True)
-        return {**state, "answer": f"Could not process document: {exc}"}
+        # Return empty answer - let summarize_results handle error naturally
+        return {**state, "answer": ""}
 
 
 def build_document_qa_subgraph():

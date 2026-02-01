@@ -1,10 +1,9 @@
 from flask import Blueprint, render_template, request, flash, redirect, url_for, jsonify, current_app, Response
 from flask_login import login_required, current_user, login_user, logout_user
-from .models import Document, DocumentStatus, Property, PropertyDetails, DocumentRelationship, User, UserRole, UserStatus, PropertyCardCache, Project, ProjectStatus, ProjectAccess, db
+from .models import Document, DocumentStatus, Property, PropertyDetails, DocumentRelationship, User, UserRole, UserStatus, PropertyCardCache, db
 from .services.property_enrichment_service import PropertyEnrichmentService
 from .services.supabase_document_service import SupabaseDocumentService
 from .services.supabase_client_factory import get_supabase_client
-from .services.extended_thinking_service import get_thinking_service
 from datetime import datetime
 import os
 import uuid
@@ -18,7 +17,7 @@ import time
 import re
 import math
 import queue
-from .tasks import process_document_task, process_document_fast_task, process_document_with_dual_stores
+from .tasks import process_document_task, process_document_fast_task
 # NOTE: DeletionService is deprecated - use UnifiedDeletionService instead
 # from .services.deletion_service import DeletionService
 from sqlalchemy import text
@@ -26,6 +25,9 @@ from sqlalchemy.exc import OperationalError, ProgrammingError, DatabaseError
 import json
 from uuid import UUID
 # Citations are now stored directly in graph state with bbox coordinates - no processing needed
+# SessionManager for LangGraph checkpointer thread_id management
+from backend.llm.utils.session_manager import session_manager
+
 def _ensure_business_uuid():
     """Ensure the current user has a business UUID and return it as a string."""
     existing = getattr(current_user, "business_id", None)
@@ -69,17 +71,6 @@ def _normalize_uuid_str(value):
     except (ValueError, TypeError):
         return None
 
-
-# DEPRECATED: This function has been moved to UnifiedDeletionService._cleanup_orphan_properties()
-# Kept here for reference during migration. Can be removed after testing.
-# def _cleanup_orphan_supabase_properties(property_ids: set[str] | set) -> list[str]:
-#     """
-#     Remove Supabase property hub records when no documents remain linked to a property.
-#     Returns list of property IDs that were fully removed from Supabase.
-#     
-#     NOTE: This functionality is now handled by UnifiedDeletionService._cleanup_orphan_properties()
-#     """
-#     pass
 
 views = Blueprint('views', __name__)
 
@@ -459,12 +450,26 @@ def query_documents_stream():
         property_id = data.get('propertyId')
         document_ids = data.get('documentIds') or data.get('document_ids', [])  # NEW: Get attached document IDs
         message_history = data.get('messageHistory', [])
-        session_id = data.get('sessionId', f"session_{request.remote_addr}_{int(time.time())}")
+        
+        # NEW: Use SessionManager to generate thread_id for LangGraph checkpointer
+        # This ensures consistent session identification between frontend and backend
+        frontend_session_id = data.get('sessionId')  # Chat ID from frontend (e.g., "chat-1234567890-xyz")
+        business_id = _ensure_business_uuid()
+        
+        # Generate thread_id using SessionManager (resumes conversation if session_id provided)
+        session_id = session_manager.get_thread_id(
+            user_id=current_user.id,
+            business_id=business_id or "no_business",  # Fallback if business not found
+            session_id=frontend_session_id
+        )
+        
         citation_context = data.get('citationContext')  # NEW: Get structured citation metadata (hidden from user)
         response_mode = data.get('responseMode')  # NEW: Response mode for file attachments (fast/detailed/full)
         attachment_context = data.get('attachmentContext')  # NEW: Extracted text from attached files
-        is_agent_mode = data.get('isAgentMode', False)  # AGENT MODE: Enable LLM tool-based actions
-        model_preference = data.get('model', 'gpt-4o-mini')  # MODEL SELECTION: User-selected LLM model
+        is_agent_mode = data.get('isAgentMode', True)  # AGENT MODE: Enable LLM tool-based actions (default to True for new architecture)
+        
+        # CRITICAL: Log agent mode setting for debugging
+        logger.info(f"🔑 [STREAM] isAgentMode from request: {data.get('isAgentMode', 'not provided')}, final is_agent_mode: {is_agent_mode}")
         
         # CRITICAL: Normalize undefined/null/empty values to None for Python
         # Frontend sends undefined which becomes null in JSON, but we want None in Python
@@ -501,7 +506,6 @@ def query_documents_stream():
             f"Document IDs: {document_ids} (count: {len(document_ids)}), "
             f"Session: {session_id}, "
             f"Response Mode: {response_mode or 'None'}, "
-            f"Model: {model_preference}, "
             f"Attachment Context: {attachment_info}"
         )
         
@@ -558,6 +562,13 @@ def query_documents_stream():
                     except Exception as e:
                         logger.warning(f"⚠️ [STREAM] Could not find document for property {property_id}: {e}")
                 
+                # NEW: Create execution event emitter with queue for streaming
+                from queue import Queue
+                from backend.llm.utils.execution_events import ExecutionEventEmitter
+                event_queue = Queue()
+                emitter = ExecutionEventEmitter()
+                emitter.set_stream_queue(event_queue)
+                
                 # Build initial state for LangGraph
                 # Note: conversation_history will be loaded from checkpoint if thread_id exists
                 # Only provide minimal required fields - checkpointing will restore previous state
@@ -572,7 +583,16 @@ def query_documents_stream():
                     "response_mode": response_mode if response_mode else None,  # NEW: Response mode for file attachments (fast/detailed/full) - ensure None not empty string
                     "attachment_context": attachment_context if attachment_context else None,  # NEW: Extracted text from attached files - ensure None not empty dict
                     "is_agent_mode": is_agent_mode,  # AGENT MODE: Enable LLM tool-based actions for proactive document display
-                    "model_preference": model_preference,  # MODEL SELECTION: User-selected LLM model
+                    "execution_events": emitter,  # NEW: Execution event emitter for execution trace
+                    # Reset retry counts and refined query for new queries (prevents stale state)
+                    "document_retry_count": 0,
+                    "chunk_retry_count": 0,
+                    "plan_refinement_count": 0,  # NEW: Reset plan refinement count for new queries
+                    "refined_query": None,  # Reset refined_query to use original user_query
+                    "retrieved_documents": [],  # Reset retrieved_documents
+                    "document_outputs": [],  # Reset document_outputs
+                    "last_document_failure_reason": None,
+                    "last_chunk_failure_reason": None,
                     # conversation_history will be loaded from checkpointer or passed via messageHistory workaround
                 }
                 # #region agent log
@@ -776,33 +796,8 @@ def query_documents_stream():
                     
                     timing.mark("intent_extracted")
                     
-                    # Always emit "Planning next moves" first
-                    planning_reasoning = {
-                        'type': 'reasoning_step',
-                        'step': 'initial',
-                        'action_type': 'planning',
-                        'message': 'Planning next moves',
-                        'timestamp': time.time(),
-                        'details': {'original_query': query}
-                    }
-                    planning_reasoning_json = json.dumps(planning_reasoning)
-                    yield f"data: {planning_reasoning_json}\n\n"
-                    logger.info(f"🟡 [REASONING] Emitted planning reasoning step: {planning_reasoning_json}")
-                    
-                    # If it's a data query (not navigation), switch to "Searching for information"
-                    if not is_navigation_query:
-                        intent_message = extract_query_intent(query)
-                        searching_reasoning = {
-                            'type': 'reasoning_step',
-                            'step': 'searching',
-                        'action_type': 'searching',
-                        'message': intent_message,
-                            'timestamp': time.time() + 0.001,  # Slightly after planning step
-                        'details': {'original_query': query}
-                    }
-                        searching_reasoning_json = json.dumps(searching_reasoning)
-                        yield f"data: {searching_reasoning_json}\n\n"
-                        logger.info(f"🟡 [REASONING] Emitted searching reasoning step: {searching_reasoning_json}")
+                    # REMOVED: Hardcoded fake reasoning steps ("Planning next moves", "Searching for information")
+                    # These were just noise - the agent's real reasoning is visible through tool calls and responses.
                 
                 # Detect if user wants agent to perform UI actions (show me, save, navigate)
                 action_intent = detect_action_intent(query)
@@ -852,7 +847,21 @@ def query_documents_stream():
                             timing.mark("graph_built")
                             logger.info("🟡 [STREAM] Using per-request graph and checkpointer")
                         
-                        config_dict = {"configurable": {"thread_id": session_id}}
+                        # Build config with metadata for LangSmith tracing
+                        # Use user_id from initial_state (already captured before async context)
+                        user_id_from_state = initial_state.get("user_id", "anonymous")
+                        config_dict = {
+                            "configurable": {
+                                "thread_id": session_id,
+                                # Add metadata for LangSmith traces (user context)
+                                "metadata": {
+                                    "user_id": user_id_from_state,
+                                    "business_id": str(business_id) if business_id else "unknown",
+                                    "query_preview": query[:100] if query else "",  # First 100 chars for context
+                                    "endpoint": "stream"
+                                }
+                            }
+                        }
                         
                         # Check for existing session state (follow-up detection)
                         is_followup = False
@@ -930,9 +939,30 @@ def query_documents_stream():
                         # Since we create a new graph for the current loop, we can use astream_events directly
                         timing.mark("graph_execution_start")
                         node_timings = {}  # Track timing per node
+                        
+                        # NEW: Helper to consume execution events from queue
+                        def consume_execution_events():
+                            """Consume execution events from queue and yield them (non-blocking)"""
+                            events_yielded = []
+                            while True:
+                                try:
+                                    event = event_queue.get_nowait()  # Non-blocking
+                                    events_yielded.append(event)
+                                except:
+                                    break
+                            return events_yielded
+                        
                         try:
                             event_stream = graph.astream_events(initial_state, config_dict, version="v2")
                             async for event in event_stream:
+                                # NEW: Consume execution events from queue (non-blocking, after each graph event)
+                                execution_events = consume_execution_events()
+                                for exec_event in execution_events:
+                                    event_data = {
+                                        'type': 'execution_event',
+                                        'payload': exec_event.to_dict()
+                                    }
+                                    yield f"data: {json.dumps(event_data)}\n\n"
                                 event_type = event.get('event')
                                 node_name = event.get("name", "")
                                 
@@ -1094,24 +1124,8 @@ def query_documents_stream():
                                             if reading_timestamp is None:
                                                 reading_timestamp = time.time() - 2.0  # Fallback: 2 seconds before current time
                                             
-                                            # Get relevant_documents from state to match doc_ids (contains raw chunk content)
+                                            # Get relevant_documents from state to match doc_ids
                                             relevant_docs = state_data.get("relevant_documents", [])
-                                            # Build a map of doc_id -> list of raw chunk contents with retrieval metadata
-                                            relevant_docs_by_id = {}
-                                            for rel_doc in relevant_docs:
-                                                doc_id = rel_doc.get('doc_id')
-                                                if doc_id:
-                                                    if doc_id not in relevant_docs_by_id:
-                                                        relevant_docs_by_id[doc_id] = []
-                                                    chunk_content = rel_doc.get('content', '').strip()
-                                                    if chunk_content:
-                                                        relevant_docs_by_id[doc_id].append({
-                                                            'content': chunk_content,
-                                                            'page': rel_doc.get('page_number', 0),
-                                                            'source': rel_doc.get('source', 'unknown'),  # "bm25", "vector", "hybrid", etc.
-                                                            'similarity_score': rel_doc.get('similarity_score', 0.0),
-                                                            'chunk_index': rel_doc.get('chunk_index', 0)
-                                                        })
                                             
                                             # For follow-ups, show a single "Analyzing documents" step
                                             # For first queries, show individual "Read [filename]" steps with preview cards
@@ -1158,109 +1172,16 @@ def query_documents_stream():
                                                     # Increment slightly for each document to maintain order
                                                     reading_step_timestamp = reading_timestamp + (i * 0.01) if reading_timestamp else time.time()
                                                     
-                                                    # Extract individual chunks from source_chunks_metadata (PRIORITY)
-                                                    # This has the ACTUAL chunks the LLM reads, not merged content
-                                                    source_chunks = doc_output.get('source_chunks_metadata', [])
-                                                    search_source = doc_output.get('search_source', doc_output.get('source', 'unknown'))
-                                                    llm_context_blocks = []
-                                                    
-                                                    # PRIORITY: Use source_chunks_metadata - these are the ACTUAL individual chunks
-                                                    if source_chunks:
-                                                        total_chunks = len(source_chunks)
-                                                        for idx, chunk in enumerate(source_chunks):
-                                                            chunk_content = chunk.get('content', '').strip()
-                                                            if chunk_content:
-                                                                llm_context_blocks.append({
-                                                                    'content': chunk_content,
-                                                                    'page': chunk.get('page_number', 0),
-                                                                    'type': 'selected_chunk',
-                                                                    'retrieval_method': chunk.get('source', search_source),
-                                                                    'similarity_score': chunk.get('similarity', chunk.get('similarity_score', 0.0)),
-                                                                    'chunk_index': chunk.get('chunk_index', idx),
-                                                                    'chunk_number': idx + 1,      # 1-indexed for display
-                                                                    'total_chunks': total_chunks   # Total chunk count
-                                                                })
-                                                    
-                                                    # Fallback: Use relevant_docs_by_id only if source_chunks is empty
-                                                    if not llm_context_blocks:
-                                                        doc_id_for_content = doc_output.get('doc_id', '')
-                                                        relevant_chunks = relevant_docs_by_id.get(doc_id_for_content, [])
-                                                        if relevant_chunks:
-                                                            sorted_chunks = sorted(relevant_chunks, key=lambda x: x.get('similarity_score', 0.0), reverse=True)
-                                                            total_chunks = len(sorted_chunks)
-                                                            for idx, chunk in enumerate(sorted_chunks):
-                                                                content = chunk.get('content', '').strip()
-                                                                if content:
-                                                                    llm_context_blocks.append({
-                                                                        'content': content,
-                                                                        'page': chunk.get('page', 0),
-                                                                        'type': 'retrieved_chunk',
-                                                                        'retrieval_method': chunk.get('source', 'unknown'),
-                                                                        'similarity_score': chunk.get('similarity_score', 0.0),
-                                                                        'chunk_index': chunk.get('chunk_index', idx),
-                                                                        'chunk_number': idx + 1,
-                                                                        'total_chunks': total_chunks
-                                                                    })
-                                                    
-                                                    # Final fallback: try output or legacy source_chunks
-                                                    if not llm_context_blocks:
-                                                        output_content = doc_output.get('output', '')
-                                                        source_chunks_legacy = doc_output.get('source_chunks', [])
-                                                        
-                                                        if output_content and len(output_content) > 100:
-                                                            llm_context_blocks.append({
-                                                                'content': output_content,
-                                                                'page': 0,
-                                                                'type': 'output',
-                                                                'retrieval_method': search_source,
-                                                                'similarity_score': 0.0,
-                                                                'chunk_number': 1,
-                                                                'total_chunks': 1
-                                                            })
-                                                        elif source_chunks_legacy:
-                                                            combined = '\n'.join([str(c) for c in source_chunks_legacy if c])
-                                                            if combined:
-                                                                llm_context_blocks.append({
-                                                                    'content': combined,
-                                                                    'page': 0,
-                                                                    'type': 'legacy_chunk',
-                                                                    'retrieval_method': search_source,
-                                                                    'similarity_score': 0.0,
-                                                                    'chunk_number': 1,
-                                                                    'total_chunks': 1
-                                                                })
-                                                    
-                                                    # Build accurate message with chunk count and page info
-                                                    chunk_count = len(llm_context_blocks)
-                                                    # Update chunk_number for all blocks
-                                                    for idx, block in enumerate(llm_context_blocks):
-                                                        block['chunk_number'] = idx + 1
-                                                        block['total_chunks'] = chunk_count
-                                                    
-                                                    # Safely extract page numbers, handling None values
-                                                    pages = sorted(set(
-                                                        p for b in llm_context_blocks 
-                                                        for p in [b.get('page')] 
-                                                        if p is not None and isinstance(p, (int, float)) and p > 0
-                                                    ))
-                                                    if len(pages) > 1:
-                                                        page_info = f" (pages {min(pages)}-{max(pages)})"
-                                                    elif len(pages) == 1:
-                                                        page_info = f" (page {pages[0]})"
-                                                    else:
-                                                        page_info = ""
-                                                    
                                                     reasoning_data = {
                                                         'type': 'reasoning_step',
                                                         'step': f'read_doc_{i}',
                                                         'action_type': 'reading',
-                                                        'message': f'Analyzing {chunk_count} chunk{"s" if chunk_count != 1 else ""} from {display_filename}{page_info}',
+                                                        'message': f'Read {display_filename}',
                                                         'timestamp': reading_step_timestamp,  # Use tracked reading timestamp
                                                         'details': {
                                                             'document_index': i, 
                                                             'filename': filename if filename else None,
-                                                            'doc_metadata': doc_metadata,
-                                                            'llm_context': llm_context_blocks  # Document blocks for visualization
+                                                            'doc_metadata': doc_metadata
                                                         }
                                                     }
                                                     yield f"data: {json.dumps(reasoning_data)}\n\n"
@@ -1324,14 +1245,6 @@ def query_documents_stream():
                                                 # Format citations for frontend (convert List[Citation] to Dict[str, CitationData])
                                                 processed_citations = {}
                                                 
-                                                # Build doc_id -> original_filename lookup from document_outputs
-                                                doc_filename_map = {}
-                                                for doc_output in doc_outputs_from_state:
-                                                    doc_id = doc_output.get('doc_id')
-                                                    filename = doc_output.get('original_filename')
-                                                    if doc_id and filename:
-                                                        doc_filename_map[doc_id] = filename
-                                                
                                                 # Stream citation events immediately
                                                 for citation in citations_from_state:
                                                     citation_num_str = str(citation['citation_number'])
@@ -1347,18 +1260,13 @@ def query_documents_stream():
                                                         citation_bbox = citation_bbox.copy()  # Don't modify original
                                                         citation_bbox['page'] = citation_page  # Update bbox page to match citation page
                                                     
-                                                    # Look up filename from document outputs
-                                                    citation_doc_id = citation.get('doc_id')
-                                                    citation_filename = doc_filename_map.get(citation_doc_id, '')
-                                                    
                                                     citation_data = {
-                                                        'doc_id': citation_doc_id,
+                                                        'doc_id': citation.get('doc_id'),
                                                         'page': citation_page,
                                                         'bbox': citation_bbox,  # Bbox now has correct page number
                                                         'method': citation.get('method', 'block-id-lookup'),
                                                         'block_id': citation.get('block_id'),  # Include block_id for debugging
-                                                        'cited_text': citation.get('cited_text', ''),  # Include cited_text for debugging
-                                                        'original_filename': citation_filename  # Include filename for frontend display
+                                                        'cited_text': citation.get('cited_text', '')  # Include cited_text for debugging
                                                     }
                                                     
                                                     block_id = citation.get('block_id', 'UNKNOWN')
@@ -1439,173 +1347,20 @@ def query_documents_stream():
                                             # Emit "Summarizing content" reasoning step (like Cursor's wand sparkles)
                                             # Use timestamp to ensure it comes after all reading steps
                                             summarize_timestamp = time.time()
-                                            
-                                            # Build summarization context from document_outputs
-                                            # This shows what the LLM sees when creating the final answer
-                                            summarization_context = []
-                                            for doc in doc_outputs_from_state:
-                                                doc_type = (doc.get('classification_type') or 'Document').replace('_', ' ').title()
-                                                filename = doc.get('original_filename', f"Document {doc.get('doc_id', '')[:8]}")
-                                                address = doc.get('property_address', '')
-                                                page_info = doc.get('page_range', 'unknown')
-                                                search_source = doc.get('search_source', 'unknown')
-                                                similarity = doc.get('similarity_score', 0.0)
-                                                output_text = doc.get('output', '')  # The QA output from stage 3
-                                                
-                                                if output_text:  # Only include docs with actual output
-                                                    summarization_context.append({
-                                                        'content': output_text,
-                                                        'doc_type': doc_type,
-                                                        'filename': filename,
-                                                        'address': address,
-                                                        'page_info': page_info,
-                                                        'retrieval_method': search_source,
-                                                        'similarity_score': similarity if isinstance(similarity, (int, float)) else 0.0,
-                                                        'doc_index': len(summarization_context) + 1,
-                                                        'total_docs': doc_count
-                                                    })
-                                            
                                             summarizing_data = {
                                                 'type': 'reasoning_step',
                                                 'step': 'summarizing_content',
                                                 'action_type': 'summarising',
-                                                'message': 'Planning next moves',
+                                                'message': 'Summarising content',
                                                 'timestamp': summarize_timestamp,  # After reading steps
-                                                'details': {
-                                                    'documents_processed': doc_count,
-                                                    'llm_context': summarization_context  # Document QA outputs for visualization
-                                                }
+                                                'details': {'documents_processed': doc_count}
                                             }
                                             yield f"data: {json.dumps(summarizing_data)}\n\n"
-                                            logger.info(f"✨ [STREAM] Emitted 'Summarizing content' reasoning step with {len(summarization_context)} document contexts")
+                                            logger.info("✨ [STREAM] Emitted 'Summarizing content' reasoning step")
                                             
                                             # AGENT-NATIVE: Agent actions are now emitted from frontend when they actually happen
                                             # This ensures "Opening citation view" appears when document actually opens, not before
                                             # (Reasoning steps for agent actions removed - they'll be added by frontend on actual execution)
-                                            
-                                            # Emit "Thinking..." step - Cursor-style LLM reasoning before response
-                                            # Extract key facts from document outputs for synthetic thinking
-                                            thinking_points = []
-                                            seen_facts = set()  # Deduplicate similar facts
-                                            doc_outputs_for_thinking = final_result.get('document_outputs', []) if final_result else []
-                                            
-                                            logger.info(f"🧠 [THINKING] Extracting facts from {len(doc_outputs_for_thinking)} document outputs")
-                                            
-                                            for doc_output in doc_outputs_for_thinking[:5]:  # Check up to 5 docs
-                                                doc_type = doc_output.get('classification_type', 'Document')
-                                                output_text = doc_output.get('output', '')
-                                                
-                                                # Extract meaningful content lines (skip headers, formatting, short lines)
-                                                content_lines = []
-                                                for line in output_text.split('\n'):
-                                                    stripped = line.strip()
-                                                    # Skip empty, short, header, or formatting lines
-                                                    if not stripped or len(stripped) < 20:
-                                                        continue
-                                                    if stripped.startswith('#'):  # Markdown headers
-                                                        continue
-                                                    if stripped.startswith(('---', '***', '===', '```')):  # Dividers/code
-                                                        continue
-                                                    if stripped.startswith(('|', '>', '-', '*', '+')):  # Tables, quotes, lists
-                                                        # Allow list items if they have substantial content
-                                                        if stripped.startswith(('-', '*', '+')) and len(stripped) > 30:
-                                                            content_lines.append(stripped[1:].strip())  # Remove bullet
-                                                        continue
-                                                    content_lines.append(stripped)
-                                                
-                                                if content_lines:
-                                                    # For non-Claude models, show more detail - collect multiple lines and don't truncate
-                                                    # Take up to 3 meaningful content lines (or first 500 chars total)
-                                                    collected_lines = []
-                                                    total_chars = 0
-                                                    max_chars_per_fact = 500  # Increased from 100 to show more detail
-                                                    
-                                                    for line in content_lines[:3]:  # Take up to 3 lines
-                                                        if total_chars + len(line) > max_chars_per_fact:
-                                                            # Add partial line if we have room
-                                                            remaining = max_chars_per_fact - total_chars
-                                                            if remaining > 20:  # Only if meaningful space left
-                                                                collected_lines.append(line[:remaining] + '...')
-                                                            break
-                                                        collected_lines.append(line)
-                                                        total_chars += len(line)
-                                                    
-                                                    # Join lines with newlines for better readability
-                                                    fact = '\n'.join(collected_lines)
-                                                    
-                                                    # Deduplicate: check if we've seen similar content
-                                                    fact_key = fact[:100].lower()  # Use first 100 chars as dedup key (increased from 50)
-                                                    if fact_key not in seen_facts:
-                                                        seen_facts.add(fact_key)
-                                                        thinking_points.append(f"Found in {doc_type}: {fact}")
-                                                        
-                                                        # Stop after 5 unique points (increased from 3 for more detail)
-                                                        if len(thinking_points) >= 5:
-                                                            break
-                                            
-                                            # Check if using Claude model with extended thinking
-                                            is_claude_model = model_preference and model_preference.startswith('claude')
-                                            thinking_service = get_thinking_service()
-                                            use_extended_thinking = is_claude_model and thinking_service.is_available()
-                                            
-                                            if use_extended_thinking:
-                                                # Use Claude's native extended thinking for real-time reasoning
-                                                logger.info(f"🧠 [STREAM] Using Claude extended thinking for model: {model_preference}")
-                                                
-                                                # Emit initial thinking step (will be updated with streaming content)
-                                                thinking_data = {
-                                                    'type': 'reasoning_step',
-                                                    'step': 'thinking',
-                                                    'action_type': 'thinking',
-                                                    'message': 'Thinking...',
-                                                    'timestamp': time.time(),
-                                                    'details': {
-                                                        'thinking_content': '',
-                                                        'is_streaming': True
-                                                    }
-                                                }
-                                                yield f"data: {json.dumps(thinking_data)}\n\n"
-                                                
-                                                # Stream extended thinking from Claude
-                                                thinking_chunks = []
-                                                doc_outputs_for_extended = final_result.get('document_outputs', []) if final_result else []
-                                                
-                                                async for event in thinking_service.stream_thinking_analysis(
-                                                    query=query,
-                                                    document_context="",  # Not needed when using document_outputs
-                                                    document_outputs=doc_outputs_for_extended
-                                                ):
-                                                    if event['type'] == 'thinking_delta':
-                                                        thinking_chunk = event.get('content', '')
-                                                        thinking_chunks.append(thinking_chunk)
-                                                        # Stream each thinking chunk to frontend
-                                                        yield f"data: {json.dumps({'type': 'thinking_chunk', 'content': thinking_chunk})}\n\n"
-                                                    elif event['type'] == 'thinking_end':
-                                                        # Signal thinking is complete
-                                                        full_thinking = ''.join(thinking_chunks)
-                                                        yield f"data: {json.dumps({'type': 'thinking_complete', 'content': full_thinking})}\n\n"
-                                                        logger.info(f"🧠 [STREAM] Extended thinking complete ({len(full_thinking)} chars)")
-                                                
-                                            else:
-                                                # Build synthetic thinking content string
-                                                if thinking_points:
-                                                    thinking_content = '\n'.join([f"- {point}" for point in thinking_points])
-                                                else:
-                                                    # Fallback if no document outputs available
-                                                    thinking_content = "- Analyzing retrieved documents...\n- Synthesizing findings..."
-                                                
-                                                thinking_data = {
-                                                    'type': 'reasoning_step',
-                                                    'step': 'thinking',
-                                                    'action_type': 'thinking',
-                                                    'message': 'Thinking...',
-                                                    'timestamp': time.time(),
-                                                    'details': {
-                                                        'thinking_content': thinking_content
-                                                    }
-                                                }
-                                                yield f"data: {json.dumps(thinking_data)}\n\n"
-                                                logger.info(f"🧠 [STREAM] Emitted synthetic 'Thinking...' step with {len(thinking_points)} points")
                                             
                                             # Stream status
                                             yield f"data: {json.dumps({'type': 'status', 'message': 'Streaming response...'})}\n\n"
@@ -1617,26 +1372,33 @@ def query_documents_stream():
                                             
                                             # Stream in chunks to maintain formatting while still providing smooth streaming
                                             chunk_size = 10  # Stream 10 characters at a time for smooth UX
-                                            streaming_start_time = time.time()
                                             for i in range(0, len(final_summary_from_state), chunk_size):
                                                 if i == 0:
                                                     logger.info("🚀 [STREAM] First chunk streamed IMMEDIATELY from summarize_results")
                                                 chunk = final_summary_from_state[i:i + chunk_size]
                                                 yield f"data: {json.dumps({'type': 'token', 'token': chunk})}\n\n"
                                             
-                                            # Calculate elapsed time for summarization (for adaptive animation in frontend)
-                                            summarization_elapsed_ms = int((time.time() - summarize_timestamp) * 1000)
-                                            yield f"data: {json.dumps({'type': 'summarization_complete', 'elapsed_ms': summarization_elapsed_ms})}\n\n"
-                                            logger.info(f"⏱️ [STREAM] Summarization complete signal emitted (elapsed: {summarization_elapsed_ms}ms)")
-                                            
                                             summary_already_streamed = True
                                             logger.info(f"🚀 [STREAM] Summary fully streamed ({len(final_summary_from_state)} chars) - continuing event loop for cleanup")
                                     
                                     # MERGE state updates from each node (don't overwrite!)
+                                    # CRITICAL: This captures final_summary from extract_final_answer and other nodes
                                     if state_update:
                                         if final_result is None:
                                             final_result = {}
                                         final_result.update(state_update)  # Merge instead of overwrite
+                                        
+                                        # Log important captures for debugging
+                                        if node_name == "extract_final_answer" and state_update.get("final_summary"):
+                                            logger.info(f"🟢 [STREAM] Captured final_summary from extract_final_answer ({len(state_update.get('final_summary', ''))} chars)")
+                                        elif node_name == "agent" and state_update.get("messages"):
+                                            logger.info(f"🟢 [STREAM] Captured messages from agent node ({len(state_update.get('messages', []))} messages)")
+                                    # Also try output field as fallback
+                                    elif output and isinstance(output, dict):
+                                        if final_result is None:
+                                            final_result = {}
+                                        final_result.update(output)
+                                        logger.info(f"🟢 [STREAM] Captured state from {node_name} output field")
                         except Exception as exec_error:
                             error_msg = str(exec_error)
                             # Handle connection timeout errors during graph execution
@@ -1758,25 +1520,6 @@ def query_documents_stream():
                                                 if reading_timestamp is None:
                                                     reading_timestamp = time.time() - 2.0  # Fallback: 2 seconds before current time
                                                 
-                                                # Get relevant_documents from state (contains raw chunk content)
-                                                relevant_docs_second = state_data.get("relevant_documents", [])
-                                                # Build a map of doc_id -> list of raw chunk contents with retrieval metadata
-                                                relevant_docs_by_id_second = {}
-                                                for rel_doc in relevant_docs_second:
-                                                    doc_id = rel_doc.get('doc_id')
-                                                    if doc_id:
-                                                        if doc_id not in relevant_docs_by_id_second:
-                                                            relevant_docs_by_id_second[doc_id] = []
-                                                        chunk_content = rel_doc.get('content', '').strip()
-                                                        if chunk_content:
-                                                            relevant_docs_by_id_second[doc_id].append({
-                                                                'content': chunk_content,
-                                                                'page': rel_doc.get('page_number', 0),
-                                                                'source': rel_doc.get('source', 'unknown'),  # "bm25", "vector", "hybrid", etc.
-                                                                'similarity_score': rel_doc.get('similarity_score', 0.0),
-                                                                'chunk_index': rel_doc.get('chunk_index', 0)
-                                                            })
-                                                
                                                 # Create individual reading steps for each document (for preview cards)
                                                 for i, doc_output in enumerate(doc_outputs):
                                                     filename = doc_output.get('original_filename', '') or ''
@@ -1808,116 +1551,32 @@ def query_documents_stream():
                                                     # Increment slightly for each document to maintain order
                                                     reading_step_timestamp = reading_timestamp + (i * 0.01) if reading_timestamp else time.time()
                                                     
-                                                    # Extract individual chunks from source_chunks_metadata (PRIORITY)
-                                                    # This has the ACTUAL chunks the LLM reads, not merged content
-                                                    source_chunks = doc_output.get('source_chunks_metadata', [])
-                                                    search_source = doc_output.get('search_source', doc_output.get('source', 'unknown'))
-                                                    llm_context_blocks = []
-                                                    
-                                                    # PRIORITY: Use source_chunks_metadata - these are the ACTUAL individual chunks
-                                                    if source_chunks:
-                                                        total_chunks = len(source_chunks)
-                                                        for idx, chunk in enumerate(source_chunks):
-                                                            chunk_content = chunk.get('content', '').strip()
-                                                            if chunk_content:
-                                                                llm_context_blocks.append({
-                                                                    'content': chunk_content,
-                                                                    'page': chunk.get('page_number', 0),
-                                                                    'type': 'selected_chunk',
-                                                                    'retrieval_method': chunk.get('source', search_source),
-                                                                    'similarity_score': chunk.get('similarity', chunk.get('similarity_score', 0.0)),
-                                                                    'chunk_index': chunk.get('chunk_index', idx),
-                                                                    'chunk_number': idx + 1,      # 1-indexed for display
-                                                                    'total_chunks': total_chunks   # Total chunk count
-                                                                })
-                                                    
-                                                    # Fallback: Use relevant_docs_by_id_second only if source_chunks is empty
-                                                    if not llm_context_blocks:
-                                                        doc_id_for_content = doc_output.get('doc_id', '')
-                                                        relevant_chunks = relevant_docs_by_id_second.get(doc_id_for_content, [])
-                                                        if relevant_chunks:
-                                                            sorted_chunks = sorted(relevant_chunks, key=lambda x: x.get('similarity_score', 0.0), reverse=True)
-                                                            total_chunks = len(sorted_chunks)
-                                                            for idx, chunk in enumerate(sorted_chunks):
-                                                                content = chunk.get('content', '').strip()
-                                                                if content:
-                                                                    llm_context_blocks.append({
-                                                                        'content': content,
-                                                                        'page': chunk.get('page', 0),
-                                                                        'type': 'retrieved_chunk',
-                                                                        'retrieval_method': chunk.get('source', 'unknown'),
-                                                                        'similarity_score': chunk.get('similarity_score', 0.0),
-                                                                        'chunk_index': chunk.get('chunk_index', idx),
-                                                                        'chunk_number': idx + 1,
-                                                                        'total_chunks': total_chunks
-                                                                    })
-                                                    
-                                                    # Final fallback: try output or legacy source_chunks
-                                                    if not llm_context_blocks:
-                                                        output_content = doc_output.get('output', '')
-                                                        source_chunks_legacy = doc_output.get('source_chunks', [])
-                                                        
-                                                        if output_content and len(output_content) > 100:
-                                                            llm_context_blocks.append({
-                                                                'content': output_content,
-                                                                'page': 0,
-                                                                'type': 'output',
-                                                                'retrieval_method': search_source,
-                                                                'similarity_score': 0.0,
-                                                                'chunk_number': 1,
-                                                                'total_chunks': 1
-                                                            })
-                                                        elif source_chunks_legacy:
-                                                            combined = '\n'.join([str(c) for c in source_chunks_legacy if c])
-                                                            if combined:
-                                                                llm_context_blocks.append({
-                                                                    'content': combined,
-                                                                    'page': 0,
-                                                                    'type': 'legacy_chunk',
-                                                                    'retrieval_method': search_source,
-                                                                    'similarity_score': 0.0,
-                                                                    'chunk_number': 1,
-                                                                    'total_chunks': 1
-                                                                })
-                                                    
-                                                    # Build accurate message with chunk count and page info
-                                                    chunk_count = len(llm_context_blocks)
-                                                    # Update chunk_number for all blocks
-                                                    for idx, block in enumerate(llm_context_blocks):
-                                                        block['chunk_number'] = idx + 1
-                                                        block['total_chunks'] = chunk_count
-                                                    
-                                                    # Safely extract page numbers, handling None values
-                                                    pages = sorted(set(
-                                                        p for b in llm_context_blocks 
-                                                        for p in [b.get('page')] 
-                                                        if p is not None and isinstance(p, (int, float)) and p > 0
-                                                    ))
-                                                    if len(pages) > 1:
-                                                        page_info = f" (pages {min(pages)}-{max(pages)})"
-                                                    elif len(pages) == 1:
-                                                        page_info = f" (page {pages[0]})"
-                                                    else:
-                                                        page_info = ""
-                                                    
                                                     reasoning_data = {
                                                         'type': 'reasoning_step',
                                                         'step': f'read_doc_{i}',
                                                         'action_type': 'reading',
-                                                        'message': f'Analyzing {chunk_count} chunk{"s" if chunk_count != 1 else ""} from {display_filename}{page_info}',
+                                                        'message': f'Read {display_filename}',
                                                         'timestamp': reading_step_timestamp,  # Use tracked reading timestamp
                                                         'details': {
                                                             'document_index': i, 
                                                             'filename': filename if filename else None,
-                                                            'doc_metadata': doc_metadata,
-                                                            'llm_context': llm_context_blocks  # Document blocks for visualization
+                                                            'doc_metadata': doc_metadata
                                                         }
                                                     }
                                                     yield f"data: {json.dumps(reasoning_data)}\n\n"
                                         
-                                        # Store the state from the last event
+                                        # Store the state from ALL node completions (especially extract_final_answer)
+                                        # CRITICAL: This captures the final_summary from extract_final_answer node
                                         if state_update:
                                             final_result = state_update
+                                            if node_name == "extract_final_answer":
+                                                logger.info(f"🟢 [STREAM] Captured final state from extract_final_answer node")
+                                        # Also try output field as fallback
+                                        elif event_data.get("output"):
+                                            output = event_data.get("output", {})
+                                            if isinstance(output, dict):
+                                                final_result = output
+                                                logger.info(f"🟢 [STREAM] Captured final state from {node_name} output")
                             else:
                                 # Re-raise unexpected errors
                                 raise
@@ -1926,38 +1585,45 @@ def query_documents_stream():
                         # Get the final state from checkpointer (fast - graph already executed)
                         if final_result is None:
                             logger.warning("🟡 [STREAM] No final state from events, reading from checkpointer...")
-                            try:
-                                # Read the latest checkpoint which contains the final state
-                                from langgraph.checkpoint.base import Checkpoint
-                                latest_checkpoint = None
-                                async for checkpoint_tuple in checkpointer.alist(config_dict, limit=1):
-                                    if isinstance(checkpoint_tuple, tuple):
-                                        checkpoint, checkpoint_id = checkpoint_tuple
-                                    else:
-                                        checkpoint = checkpoint_tuple
+                            # Check if checkpointer exists (might be None in stateless mode)
+                            if checkpointer is None:
+                                logger.warning("🟡 [STREAM] No checkpointer available (stateless mode) - using initial_state")
+                                final_result = initial_state
+                            else:
+                                try:
+                                    # Read the latest checkpoint which contains the final state
+                                    from langgraph.checkpoint.base import Checkpoint
+                                    latest_checkpoint = None
+                                    async for checkpoint_tuple in checkpointer.alist(config_dict, limit=1):
+                                        if isinstance(checkpoint_tuple, tuple):
+                                            checkpoint, checkpoint_id = checkpoint_tuple
+                                        else:
+                                            checkpoint = checkpoint_tuple
+                                        
+                                        if hasattr(checkpoint, 'channel_values'):
+                                            latest_checkpoint = checkpoint.channel_values
+                                        elif isinstance(checkpoint, dict):
+                                            latest_checkpoint = checkpoint.get('channel_values', checkpoint)
+                                        break
                                     
-                                    if hasattr(checkpoint, 'channel_values'):
-                                        latest_checkpoint = checkpoint.channel_values
-                                    elif isinstance(checkpoint, dict):
-                                        latest_checkpoint = checkpoint.get('channel_values', checkpoint)
-                                    break
-                                
-                                if latest_checkpoint:
-                                    # Checkpointer returns (state, config) tuple or just state
-                                    if isinstance(latest_checkpoint, tuple) and len(latest_checkpoint) == 2:
-                                        final_result, _ = latest_checkpoint
-                                        logger.info("🟡 [STREAM] Retrieved final state from checkpointer (tuple)")
+                                    if latest_checkpoint:
+                                        # Checkpointer returns (state, config) tuple or just state
+                                        if isinstance(latest_checkpoint, tuple) and len(latest_checkpoint) == 2:
+                                            final_result, _ = latest_checkpoint
+                                            logger.info("🟡 [STREAM] Retrieved final state from checkpointer (tuple)")
+                                        else:
+                                            # Single value returned
+                                            final_result = latest_checkpoint
+                                            logger.info("🟡 [STREAM] Retrieved final state from checkpointer (single value)")
                                     else:
-                                        # Single value returned
-                                        final_result = latest_checkpoint
-                                        logger.info("🟡 [STREAM] Retrieved final state from checkpointer (single value)")
-                                else:
-                                    # Fallback: use ainvoke (will be fast since graph already executed)
-                                    logger.warning("🟡 [STREAM] No checkpoint found, using ainvoke...")
-                                    final_result = await graph.ainvoke(initial_state, config_dict)
-                            except Exception as e:
-                                logger.warning(f"🟡 [STREAM] Could not read checkpointer: {e}, using ainvoke...")
-                                final_result = await graph.ainvoke(initial_state, config_dict)
+                                        # ❌ REMOVED: Don't invoke graph again - causes duplicate messages!
+                                        # Instead use initial_state (graph already executed via astream_events)
+                                        logger.warning("🟡 [STREAM] No checkpoint found, using initial_state (graph already executed)")
+                                        final_result = initial_state
+                                except Exception as e:
+                                    # ❌ REMOVED: Don't invoke graph again - causes duplicate messages!
+                                    logger.warning(f"🟡 [STREAM] Could not read checkpointer: {e}, using initial_state")
+                                    final_result = initial_state
                         else:
                             logger.info("🟡 [STREAM] Using final state captured from events")
                         
@@ -1994,8 +1660,8 @@ def query_documents_stream():
                                 yield f"data: {json.dumps({'type': 'error', 'message': 'No relevant documents found'})}\n\n"
                                 return
                             else:
-                                logger.warning("🟡 [STREAM] No final_summary found in result, generating fallback")
-                                full_summary = "I couldn't generate a summary from the retrieved documents. Please try rephrasing your query."
+                                logger.warning("🟡 [STREAM] No final_summary found in result")
+                                full_summary = ""  # Let agent handle empty responses naturally
                         
                         # Send document count (use doc_outputs if available, otherwise relevant_docs)
                         doc_count = len(doc_outputs) if doc_outputs else len(relevant_docs)
@@ -2098,32 +1764,186 @@ def query_documents_stream():
                                     'cited_text': citation_data.get('cited_text', '')  # Include for smart citation selection
                                 }
                         else:
-                            # FALLBACK: Check for citations list format (used by citation_query handler)
-                            citations_list = final_result.get('citations', [])
-                            if citations_list:
-                                logger.info(f"🟢 [CITATIONS] Using citations list ({len(citations_list)} citations) - likely from citation_query")
-                                for cit in citations_list:
+                            # NEW: Check for chunk_citations from responder_node (chunk-id-based citations)
+                            chunk_citations_list = final_result.get('chunk_citations', [])
+                            if chunk_citations_list:
+                                logger.info(f"🟢 [CITATIONS] Using chunk_citations from responder_node ({len(chunk_citations_list)} citations)")
+                                
+                                # OPTIMIZATION: Batch filename lookups - collect unique doc_ids that need filenames
+                                doc_ids_needing_filenames = set()
+                                citation_doc_id_map = {}  # Map citation_num to doc_id for filename lookup
+                                
+                                for cit in chunk_citations_list:
+                                    citation_num = str(cit.get('citation_number', 1))
+                                    doc_id = cit.get('doc_id', '')
+                                    original_filename = cit.get('original_filename')
+                                    
+                                    # Track citations that need filename lookup
+                                    if doc_id and not original_filename:
+                                        doc_ids_needing_filenames.add(doc_id)
+                                        if citation_num not in citation_doc_id_map:
+                                            citation_doc_id_map[citation_num] = doc_id
+                                
+                                # Batch fetch all missing filenames in one query
+                                filename_map = {}
+                                if doc_ids_needing_filenames:
+                                    try:
+                                        supabase = get_supabase_client()
+                                        # Fetch all filenames in one query using .in() filter
+                                        doc_result = supabase.table('documents')\
+                                            .select('id, original_filename')\
+                                            .in_('id', list(doc_ids_needing_filenames))\
+                                            .execute()
+                                        
+                                        # Build map of doc_id -> filename
+                                        for doc in (doc_result.data or []):
+                                            doc_id = doc.get('id')
+                                            filename = doc.get('original_filename', 'document.pdf')
+                                            if doc_id:
+                                                filename_map[doc_id] = filename
+                                        
+                                        logger.info(f"🟢 [CITATIONS] Batch fetched {len(filename_map)} filenames for {len(doc_ids_needing_filenames)} unique documents")
+                                    except Exception as e:
+                                        logger.warning(f"⚠️ [CITATIONS] Failed to batch fetch filenames: {e}")
+                                
+                                # Process citations with batched filenames
+                                for cit in chunk_citations_list:
                                     citation_num = str(cit.get('citation_number', 1))
                                     doc_id = cit.get('doc_id', '')
                                     page = cit.get('page_number', 0)
                                     bbox = cit.get('bbox', {})
+                                    chunk_id = cit.get('chunk_id', '')
+                                    block_index = cit.get('block_index')
+                                    cited_text = cit.get('cited_text', '')[:60] if cit.get('cited_text') else 'N/A'
                                     
-                                    citations_map_for_frontend[citation_num] = {
-                                        'doc_id': doc_id,
-                                        'page': page,
-                                        'bbox': bbox,
-                                        'method': 'citation-query',
-                                        'block_id': cit.get('block_id', 'citation_source')
-                                    }
+                                    # Get original_filename from citation, batch lookup, or fallback
+                                    original_filename = cit.get('original_filename')
+                                    if not original_filename and doc_id:
+                                        # Use batched filename lookup result
+                                        original_filename = filename_map.get(doc_id, 'document.pdf')
+                                    elif not original_filename:
+                                        original_filename = 'document.pdf'
+                                    
+                                    # Log citation details for debugging
+                                    bbox_str = f"{bbox.get('left', 0):.3f},{bbox.get('top', 0):.3f},{bbox.get('width', 0):.3f}x{bbox.get('height', 0):.3f}" if bbox else "N/A"
+                                    logger.info(
+                                        f"🟢 [CITATIONS] Citation {citation_num} (chunk-id): chunk_id={chunk_id[:20] if chunk_id else 'UNKNOWN'}..., "
+                                        f"block_index={block_index}, doc={doc_id[:8] if doc_id else 'UNKNOWN'}, page={page}, bbox={bbox_str}, "
+                                        f"filename={original_filename}, cited_text='{cited_text}...'"
+                                    )
+                                    
+                                    # Validate BBOX coordinates
+                                    if bbox:
+                                        bbox_left = bbox.get('left', 0)
+                                        bbox_top = bbox.get('top', 0)
+                                        bbox_width = bbox.get('width', 0)
+                                        bbox_height = bbox.get('height', 0)
+                                        
+                                        # Check for fallback BBOX
+                                        is_fallback = (
+                                            bbox_left == 0.0 and bbox_top == 0.0 and
+                                            bbox_width == 1.0 and bbox_height == 1.0
+                                        )
+                                        if is_fallback:
+                                            logger.warning(
+                                                f"⚠️ [CITATIONS] Citation {citation_num} (chunk_id: {chunk_id[:20] if chunk_id else 'UNKNOWN'}...) "
+                                                f"uses fallback BBOX (0,0,1,1) - coordinates may be inaccurate"
+                                            )
+                                        
+                                        # Check for invalid dimensions
+                                        if bbox_width <= 0 or bbox_height <= 0:
+                                            logger.warning(
+                                                f"⚠️ [CITATIONS] Citation {citation_num} (chunk_id: {chunk_id[:20] if chunk_id else 'UNKNOWN'}...) "
+                                                f"has invalid BBOX dimensions: {bbox_width}x{bbox_height}"
+                                            )
+                                    
+                                    # Build structured citation for array format
                                     structured_citations.append({
                                         'id': int(citation_num),
                                         'document_id': doc_id,
                                         'page': page,
                                         'bbox': bbox
                                     })
-                                    logger.info(f"🟢 [CITATIONS] Citation {citation_num}: doc={doc_id[:8] if doc_id else 'UNKNOWN'}, page={page}")
+                                    
+                                    # Build citation map entry for frontend
+                                    citations_map_for_frontend[citation_num] = {
+                                        'doc_id': doc_id,
+                                        'original_filename': original_filename,  # NEW: Include filename for frontend
+                                        'page': page,
+                                        'bbox': bbox,
+                                        'method': cit.get('method', 'chunk-id-lookup'),
+                                        'chunk_id': chunk_id,  # Include chunk_id for debugging
+                                        'block_index': block_index,  # Include block_index for debugging
+                                        'cited_text': cit.get('cited_text', '')  # Include for smart citation selection
+                                    }
                             else:
-                                logger.info("🟡 [CITATIONS] No block ID citations found - citations will be empty")
+                                # FALLBACK: Check for citations list format (used by citation_query handler or direct citations)
+                                citations_list = final_result.get('citations', [])
+                                if citations_list:
+                                    logger.info(f"🟢 [CITATIONS] Using citations list ({len(citations_list)} citations) - likely from citation_query or direct citations")
+                                    
+                                    # OPTIMIZATION: Batch filename lookups for direct citations
+                                    doc_ids_needing_filenames = set()
+                                    citation_doc_id_map = {}
+                                    
+                                    for cit in citations_list:
+                                        citation_num = str(cit.get('citation_number', 1))
+                                        doc_id = cit.get('doc_id', '')
+                                        original_filename = cit.get('original_filename')
+                                        
+                                        # Track citations that need filename lookup
+                                        if doc_id and not original_filename:
+                                            doc_ids_needing_filenames.add(doc_id)
+                                            if citation_num not in citation_doc_id_map:
+                                                citation_doc_id_map[citation_num] = doc_id
+                                    
+                                    # Batch filename lookup
+                                    filename_cache = {}
+                                    if doc_ids_needing_filenames:
+                                        try:
+                                            from backend.services.supabase_client_factory import get_supabase_client
+                                            supabase = get_supabase_client()
+                                            filename_response = supabase.table('documents').select(
+                                                'id, original_filename'
+                                            ).in_('id', list(doc_ids_needing_filenames)).execute()
+                                            
+                                            for doc in filename_response.data or []:
+                                                filename_cache[doc['id']] = doc.get('original_filename', 'unknown')
+                                        except Exception as e:
+                                            logger.warning(f"🟡 [CITATIONS] Failed to batch lookup filenames: {e}")
+                                    
+                                    # Process citations with filenames
+                                    for cit in citations_list:
+                                        citation_num = str(cit.get('citation_number', 1))
+                                        doc_id = cit.get('doc_id', '')
+                                        page = cit.get('page_number', 0)
+                                        bbox = cit.get('bbox', {})
+                                        
+                                        # Get original_filename from citation, cache, or fallback
+                                        original_filename = cit.get('original_filename')
+                                        if not original_filename and doc_id in filename_cache:
+                                            original_filename = filename_cache[doc_id]
+                                        if not original_filename:
+                                            original_filename = 'unknown'
+                                        
+                                        citations_map_for_frontend[citation_num] = {
+                                            'doc_id': doc_id,
+                                            'original_filename': original_filename,  # Include filename for frontend
+                                            'page': page,
+                                            'bbox': bbox,
+                                            'method': cit.get('method', 'direct-id-extraction'),
+                                            'chunk_id': cit.get('chunk_id', ''),
+                                            'cited_text': cit.get('cited_text', '')
+                                        }
+                                        structured_citations.append({
+                                            'id': int(citation_num),
+                                            'document_id': doc_id,
+                                            'page': page,
+                                            'bbox': bbox
+                                        })
+                                        logger.info(f"🟢 [CITATIONS] Citation {citation_num}: doc={doc_id[:8] if doc_id else 'UNKNOWN'}, page={page}, filename={original_filename}")
+                                else:
+                                    logger.info("🟡 [CITATIONS] No citations found (checked processed_citations, chunk_citations, and citations) - citations will be empty")
                                 
                         logger.info(f"🟡 [CITATIONS] Final citation count: {len(structured_citations)} structured, {len(citations_map_for_frontend)} map entries")
                         
@@ -2409,52 +2229,13 @@ def query_documents_stream():
                                         else:
                                             logger.warning(f"🎯 [AGENT_TOOLS] No property found for: '{property_name}'")
                         
-                        # AUTOMATIC CITATION OPENING: If we have citations but no open_document action, automatically open
-                        # This ensures citations always open without relying on keywords or LLM tool calls
-                        has_open_doc = any(a.get('action') == 'open_document' for a in (agent_actions or []))
-                        if is_agent_mode and citations_map_for_frontend and not has_open_doc:
-                            logger.info(f"🎯 [AUTO_OPEN] Citations present but no open_document action - automatically opening")
-                            
-                            # Use SINGLE SOURCE OF TRUTH for citation selection
-                            selected_citation_key, selected_citation = select_best_citation_for_query(
-                                query, 
-                                citations_map_for_frontend,
-                                None  # No preferred citation from LLM
-                            )
-                            
-                            if selected_citation_key and selected_citation:
-                                citation_page = selected_citation.get('page', 1)
-                                bbox = selected_citation.get('bbox')
-                                
-                                # Ensure bbox page matches citation page
-                                if bbox and isinstance(bbox, dict):
-                                    bbox = bbox.copy()
-                                    bbox['page'] = citation_page
-                                
-                                # Emit reasoning step BEFORE agent action
-                                opening_step = {
-                                    'type': 'reasoning_step',
-                                    'step': 'agent_open_document',
-                                    'action_type': 'opening',
-                                    'message': 'Opening citation view & Highlighting content',
-                                    'details': {'citation_number': selected_citation_key, 'reason': 'Automatically opening citation for information query'}
-                                }
-                                yield f"data: {json.dumps(opening_step)}\n\n"
-                                
-                                open_doc_action = {
-                                    'type': 'agent_action',
-                                    'action': 'open_document',
-                                    'params': {
-                                        'doc_id': selected_citation.get('doc_id'),
-                                        'page': citation_page,
-                                        'filename': selected_citation.get('original_filename', ''),
-                                        'bbox': bbox if bbox and isinstance(bbox, dict) else None
-                                    }
-                                }
-                                yield f"data: {json.dumps(open_doc_action)}\n\n"
-                                logger.info(f"🎯 [AUTO_OPEN] Automatically opened citation={selected_citation_key}, doc_id={selected_citation.get('doc_id')}")
-                            else:
-                                logger.warning(f"🎯 [AUTO_OPEN] No suitable citation found to auto-open")
+                        # AUTOMATIC CITATION OPENING: DISABLED
+                        # Citations should be clickable by the user, not automatically opened
+                        # Users can click on citation numbers [1], [2], etc. in the response to open them
+                        # has_open_doc = any(a.get('action') == 'open_document' for a in (agent_actions or []))
+                        # if is_agent_mode and citations_map_for_frontend and not has_open_doc:
+                        #     logger.info(f"🎯 [AUTO_OPEN] Citations present but no open_document action - automatically opening")
+                        #     ... (auto-open logic disabled - citations are clickable instead)
                         
                         # Send complete message with metadata
                         complete_data = {
@@ -2524,8 +2305,43 @@ def query_documents_stream():
                                 error_message[0] = str(e)
                                 chunk_queue.put(f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n")
                         
-                        new_loop.run_until_complete(consume_async_gen())
-                        logger.info("🟠 [STREAM] Event loop completed")
+                        try:
+                            new_loop.run_until_complete(consume_async_gen())
+                        finally:
+                            # Cleanup: Cancel pending tasks before closing event loop
+                            # This reduces "Task was destroyed but it is pending" warnings
+                            try:
+                                # Get all pending tasks
+                                pending = [t for t in asyncio.all_tasks(new_loop) if not t.done()]
+                                if pending:
+                                    # Cancel all pending tasks (e.g., connection pool workers)
+                                    for task in pending:
+                                        if not task.done():
+                                            task.cancel()
+                                    # Give tasks a brief moment to handle cancellation
+                                    # Use a short timeout to avoid blocking
+                                    try:
+                                        new_loop.run_until_complete(
+                                            asyncio.wait_for(
+                                                asyncio.gather(*pending, return_exceptions=True),
+                                                timeout=0.3
+                                            )
+                                        )
+                                    except (asyncio.TimeoutError, Exception):
+                                        # Tasks didn't complete in time - this is OK, they'll be cleaned up
+                                        pass
+                            except Exception:
+                                # Ignore cleanup errors - event loop is closing anyway
+                                pass
+                            
+                            # Close the event loop
+                            try:
+                                new_loop.close()
+                            except Exception:
+                                # Ignore close errors
+                                pass
+                            
+                            logger.info("🟠 [STREAM] Event loop completed and cleaned up")
                     except Exception as e:
                         logger.error(f"🟠 [STREAM] Error in run_async_gen: {e}", exc_info=True)
                         error_occurred.set()
@@ -2614,6 +2430,477 @@ def query_documents_stream():
         response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
         return response, 500
 
+@views.route('/api/llm/sessions/<session_id>', methods=['DELETE', 'OPTIONS'])
+@login_required
+def delete_session(session_id):
+    """
+    Delete all checkpoint data for a session.
+    
+    This allows users to:
+    - Start fresh conversations (clear polluted history)
+    - Clean up old/abandoned sessions
+    - Free up database space
+    
+    Args:
+        session_id: Session ID from frontend chat history (e.g., "chat-1234567890-xyz")
+    
+    Returns:
+        JSON response with success status and deleted thread_id
+    
+    Example:
+        DELETE /api/llm/sessions/chat-1234567890-xyz
+        
+        Response:
+        {
+            "success": true,
+            "message": "Session deleted successfully",
+            "thread_id": "user_1_biz_abc123_sess_chat-1234567890-xyz",
+            "deleted_checkpoints": 5
+        }
+    """
+    # Handle OPTIONS preflight request
+    if request.method == 'OPTIONS':
+        response = jsonify({'status': 'ok'})
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'DELETE, OPTIONS')
+        return response, 200
+    
+    try:
+        logger.info(f"🗑️ [SESSION_DELETE] ========== DELETE SESSION REQUEST ==========")
+        logger.info(f"🗑️ [SESSION_DELETE] Session ID from frontend: {session_id}")
+        logger.info(f"🗑️ [SESSION_DELETE] User ID: {current_user.id}")
+        
+        # Build thread_id from session components
+        business_id = _ensure_business_uuid()
+        logger.info(f"🗑️ [SESSION_DELETE] Business ID: {business_id}")
+        
+        thread_id = session_manager.build_thread_id_for_session(
+            user_id=current_user.id,
+            business_id=business_id or "no_business",
+            session_id=session_id
+        )
+        
+        logger.info(f"🗑️ [SESSION_DELETE] Built thread_id: {thread_id}")
+        logger.info(f"🗑️ [SESSION_DELETE] Starting deletion process...")
+        
+        # Delete from checkpoints tables using Supabase
+        supabase = get_supabase_client()
+        logger.info(f"🗑️ [SESSION_DELETE] Supabase client obtained")
+        
+        # Count checkpoints before deletion (for response)
+        logger.info(f"🗑️ [SESSION_DELETE] Counting checkpoints...")
+        checkpoints_count = supabase.table('checkpoints')\
+            .select('id', count='exact')\
+            .eq('thread_id', thread_id)\
+            .execute()
+        
+        num_checkpoints = checkpoints_count.count if hasattr(checkpoints_count, 'count') else 0
+        logger.info(f"🗑️ [SESSION_DELETE] Found {num_checkpoints} checkpoints to delete")
+        
+        # Delete checkpoints
+        logger.info(f"🗑️ [SESSION_DELETE] Deleting checkpoints...")
+        checkpoints_result = supabase.table('checkpoints')\
+            .delete()\
+            .eq('thread_id', thread_id)\
+            .execute()
+        logger.info(f"🗑️ [SESSION_DELETE] Checkpoints deleted: {len(checkpoints_result.data) if checkpoints_result.data else 0} rows")
+        
+        # Delete checkpoint writes
+        logger.info(f"🗑️ [SESSION_DELETE] Deleting checkpoint_writes...")
+        writes_result = supabase.table('checkpoint_writes')\
+            .delete()\
+            .eq('thread_id', thread_id)\
+            .execute()
+        logger.info(f"🗑️ [SESSION_DELETE] Checkpoint writes deleted: {len(writes_result.data) if writes_result.data else 0} rows")
+        
+        # Delete from chat_sessions table (if exists)
+        logger.info(f"🗑️ [SESSION_DELETE] Deleting from chat_sessions table...")
+        try:
+            chat_sessions_result = supabase.table('chat_sessions')\
+                .delete()\
+                .eq('id', session_id)\
+                .eq('user_id', current_user.id)\
+                .execute()
+            logger.info(f"🗑️ [SESSION_DELETE] Chat sessions deleted: {len(chat_sessions_result.data) if chat_sessions_result.data else 0} rows")
+        except Exception as chat_session_error:
+            # Non-fatal - checkpoints are more important
+            logger.warning(f"🗑️ [SESSION_DELETE] Could not delete from chat_sessions: {chat_session_error}")
+        
+        logger.info(f"🗑️ [SESSION_DELETE] ✅ ========== DELETE COMPLETE ==========")
+        logger.info(f"🗑️ [SESSION_DELETE] Session: {session_id}")
+        logger.info(f"🗑️ [SESSION_DELETE] Thread ID: {thread_id}")
+        logger.info(f"🗑️ [SESSION_DELETE] Checkpoints removed: {num_checkpoints}")
+        logger.info(f"🗑️ [SESSION_DELETE] ==========================================")
+        
+        response = jsonify({
+            'success': True,
+            'message': f'Session {session_id} deleted successfully',
+            'thread_id': thread_id,
+            'deleted_checkpoints': num_checkpoints
+        })
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response, 200
+        
+    except Exception as e:
+        logger.error(f"[SESSION_DELETE] ❌ Error deleting session {session_id}: {e}", exc_info=True)
+        response = jsonify({
+            'success': False,
+            'error': str(e)
+        })
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response, 500
+
+@views.route('/api/llm/sessions', methods=['POST', 'OPTIONS'])
+@login_required
+def create_session():
+    """
+    Create a new chat session record in chat_sessions table.
+    
+    This creates metadata for tracking conversations, including:
+    - Session name/title
+    - Message count
+    - Creation and last message timestamps
+    - Links to checkpointer thread_id
+    
+    Request body:
+        - session_name: Optional name for the session (default: "New Chat")
+        - session_id: Optional frontend session ID (will be auto-generated if not provided)
+    
+    Returns:
+        JSON response with created session record
+    """
+    # Handle OPTIONS preflight
+    if request.method == 'OPTIONS':
+        response = jsonify({'status': 'ok'})
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
+        return response, 200
+    
+    try:
+        data = request.get_json() or {}
+        session_name = data.get('session_name', 'New Chat')
+        frontend_session_id = data.get('session_id')
+        
+        # Build thread_id
+        business_id = _ensure_business_uuid()
+        thread_id = session_manager.get_thread_id(
+            user_id=current_user.id,
+            business_id=business_id or "no_business",
+            session_id=frontend_session_id
+        )
+        
+        # Extract session_id from thread_id for consistency
+        # thread_id format: "user_{user_id}_business_{business_id}_session_{session_id}"
+        parts = thread_id.split('_session_')
+        actual_session_id = parts[1] if len(parts) > 1 else frontend_session_id
+        
+        logger.info(f"[SESSION_CREATE] Creating session for user {current_user.id}: {actual_session_id}")
+        
+        # Create session record in Supabase
+        supabase = get_supabase_client()
+        
+        session_data = {
+            'id': actual_session_id,
+            'user_id': current_user.id,
+            'business_uuid': business_id or "no_business",
+            'thread_id': thread_id,
+            'session_name': session_name,
+            'message_count': 0,
+            'is_archived': False,
+            'created_at': datetime.utcnow().isoformat(),
+            'last_message_at': datetime.utcnow().isoformat()
+        }
+        
+        result = supabase.table('chat_sessions').insert(session_data).execute()
+        
+        logger.info(f"[SESSION_CREATE] ✅ Created session {actual_session_id} in chat_sessions table")
+        
+        response = jsonify({
+            'success': True,
+            'data': result.data[0] if result.data else session_data,
+            'session_id': actual_session_id,
+            'thread_id': thread_id
+        })
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response, 201
+        
+    except Exception as e:
+        logger.error(f"[SESSION_CREATE] ❌ Error creating session: {e}", exc_info=True)
+        response = jsonify({
+            'success': False,
+            'error': str(e)
+        })
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response, 500
+
+@views.route('/api/llm/sessions', methods=['GET', 'OPTIONS'])
+@login_required
+def list_sessions():
+    """
+    List all chat sessions for the current user.
+    
+    Query parameters:
+        - include_archived: Include archived sessions (default: false)
+        - limit: Max number of sessions to return (default: 50)
+        - offset: Pagination offset (default: 0)
+    
+    Returns:
+        JSON response with array of session records sorted by last_message_at (desc)
+    """
+    # Handle OPTIONS preflight
+    if request.method == 'OPTIONS':
+        response = jsonify({'status': 'ok'})
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'GET, OPTIONS')
+        return response, 200
+    
+    try:
+        # Get query parameters
+        include_archived = request.args.get('include_archived', 'false').lower() == 'true'
+        limit = int(request.args.get('limit', 50))
+        offset = int(request.args.get('offset', 0))
+        
+        logger.info(f"[SESSION_LIST] Fetching sessions for user {current_user.id} (archived: {include_archived})")
+        
+        # Query chat_sessions from Supabase
+        supabase = get_supabase_client()
+        
+        query = supabase.table('chat_sessions')\
+            .select('*')\
+            .eq('user_id', current_user.id)\
+            .order('last_message_at', desc=True)\
+            .limit(limit)\
+            .range(offset, offset + limit - 1)
+        
+        if not include_archived:
+            query = query.eq('is_archived', False)
+        
+        result = query.execute()
+        
+        logger.info(f"[SESSION_LIST] ✅ Found {len(result.data)} sessions for user {current_user.id}")
+        
+        response = jsonify({
+            'success': True,
+            'data': result.data,
+            'count': len(result.data),
+            'limit': limit,
+            'offset': offset
+        })
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response, 200
+        
+    except Exception as e:
+        logger.error(f"[SESSION_LIST] ❌ Error listing sessions: {e}", exc_info=True)
+        response = jsonify({
+            'success': False,
+            'error': str(e)
+        })
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response, 500
+
+@views.route('/api/llm/sessions/<session_id>', methods=['GET', 'OPTIONS'])
+@login_required
+def get_session(session_id):
+    """
+    Get a specific chat session with its metadata and optionally load conversation history.
+    
+    Query parameters:
+        - include_messages: Load conversation from checkpointer (default: false)
+    
+    Returns:
+        JSON response with session metadata and optionally messages
+    """
+    # Handle OPTIONS preflight
+    if request.method == 'OPTIONS':
+        response = jsonify({'status': 'ok'})
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'GET, OPTIONS')
+        return response, 200
+    
+    try:
+        include_messages = request.args.get('include_messages', 'false').lower() == 'true'
+        
+        logger.info(f"[SESSION_GET] Fetching session {session_id} for user {current_user.id}")
+        
+        # Get session from Supabase
+        supabase = get_supabase_client()
+        
+        result = supabase.table('chat_sessions')\
+            .select('*')\
+            .eq('id', session_id)\
+            .eq('user_id', current_user.id)\
+            .execute()
+        
+        if not result.data or len(result.data) == 0:
+            logger.warning(f"[SESSION_GET] Session {session_id} not found for user {current_user.id}")
+            response = jsonify({
+                'success': False,
+                'error': 'Session not found or access denied'
+            })
+            response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+            response.headers.add('Access-Control-Allow-Credentials', 'true')
+            return response, 404
+        
+        session_data = result.data[0]
+        response_data = {
+            'success': True,
+            'data': session_data
+        }
+        
+        # Optionally load messages from checkpointer
+        if include_messages:
+            try:
+                # Load conversation from checkpointer
+                from backend.llm.graphs.main_graph import main_graph, checkpointer
+                
+                if checkpointer:
+                    thread_id = session_data['thread_id']
+                    config = {"configurable": {"thread_id": thread_id}}
+                    
+                    # Get latest checkpoint
+                    checkpoint_tuple = checkpointer.get_tuple(config)
+                    
+                    if checkpoint_tuple and checkpoint_tuple.checkpoint:
+                        channel_values = checkpoint_tuple.checkpoint.get('channel_values', {})
+                        messages = channel_values.get('messages', [])
+                        
+                        # Convert messages to serializable format
+                        serialized_messages = []
+                        for msg in messages:
+                            msg_dict = {
+                                'type': msg.__class__.__name__,
+                                'content': getattr(msg, 'content', None)
+                            }
+                            serialized_messages.append(msg_dict)
+                        
+                        response_data['messages'] = serialized_messages
+                        logger.info(f"[SESSION_GET] Loaded {len(serialized_messages)} messages for session {session_id}")
+                else:
+                    logger.warning("[SESSION_GET] Checkpointer not available, cannot load messages")
+            except Exception as msg_error:
+                logger.warning(f"[SESSION_GET] Could not load messages: {msg_error}")
+                response_data['messages_error'] = str(msg_error)
+        
+        response = jsonify(response_data)
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response, 200
+        
+    except Exception as e:
+        logger.error(f"[SESSION_GET] ❌ Error getting session {session_id}: {e}", exc_info=True)
+        response = jsonify({
+            'success': False,
+            'error': str(e)
+        })
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response, 500
+
+@views.route('/api/llm/sessions/<session_id>', methods=['PUT', 'OPTIONS'])
+@login_required
+def update_session(session_id):
+    """
+    Update a chat session's metadata (name, archive status, etc.).
+    
+    Request body (all optional):
+        - session_name: New name for the session
+        - is_archived: Archive/unarchive the session
+        - message_count: Update message count (usually handled automatically)
+    
+    Returns:
+        JSON response with updated session record
+    """
+    # Handle OPTIONS preflight
+    if request.method == 'OPTIONS':
+        response = jsonify({'status': 'ok'})
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'PUT, OPTIONS')
+        return response, 200
+    
+    try:
+        data = request.get_json() or {}
+        
+        logger.info(f"[SESSION_UPDATE] Updating session {session_id} for user {current_user.id}")
+        
+        # Build update data
+        update_data = {}
+        
+        if 'session_name' in data:
+            update_data['session_name'] = data['session_name']
+        
+        if 'is_archived' in data:
+            update_data['is_archived'] = data['is_archived']
+        
+        if 'message_count' in data:
+            update_data['message_count'] = data['message_count']
+        
+        if not update_data:
+            response = jsonify({
+                'success': False,
+                'error': 'No update fields provided'
+            })
+            response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+            response.headers.add('Access-Control-Allow-Credentials', 'true')
+            return response, 400
+        
+        # Add updated timestamp
+        update_data['last_message_at'] = datetime.utcnow().isoformat()
+        
+        # Update session in Supabase
+        supabase = get_supabase_client()
+        
+        result = supabase.table('chat_sessions')\
+            .update(update_data)\
+            .eq('id', session_id)\
+            .eq('user_id', current_user.id)\
+            .execute()
+        
+        if not result.data or len(result.data) == 0:
+            logger.warning(f"[SESSION_UPDATE] Session {session_id} not found for user {current_user.id}")
+            response = jsonify({
+                'success': False,
+                'error': 'Session not found or access denied'
+            })
+            response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+            response.headers.add('Access-Control-Allow-Credentials', 'true')
+            return response, 404
+        
+        logger.info(f"[SESSION_UPDATE] ✅ Updated session {session_id}")
+        
+        response = jsonify({
+            'success': True,
+            'data': result.data[0]
+        })
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response, 200
+        
+    except Exception as e:
+        logger.error(f"[SESSION_UPDATE] ❌ Error updating session {session_id}: {e}", exc_info=True)
+        response = jsonify({
+            'success': False,
+            'error': str(e)
+        })
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response, 500
+
 @views.route('/api/llm/query', methods=['POST', 'OPTIONS'])
 def query_documents():
     """
@@ -2670,11 +2957,19 @@ def query_documents():
     property_id = data.get('propertyId')  # From property attachment
     document_ids = data.get('documentIds') or data.get('document_ids', [])  # NEW: Get attached document IDs
     message_history = data.get('messageHistory', [])
-    session_id = data.get('sessionId', f"session_{request.remote_addr}_{int(time.time())}")
+    
+    # NEW: Use SessionManager to generate thread_id for LangGraph checkpointer
+    frontend_session_id = data.get('sessionId')
+    business_id = _ensure_business_uuid()
+    session_id = session_manager.get_thread_id(
+        user_id=current_user.id,
+        business_id=business_id or "no_business",
+        session_id=frontend_session_id
+    )
+    
     citation_context = data.get('citationContext')  # Get structured citation metadata (hidden from user)
     response_mode = data.get('responseMode')  # NEW: Response mode for file attachments (fast/detailed/full)
     attachment_context = data.get('attachmentContext')  # NEW: Extracted text from attached files
-    model_preference = data.get('model', 'gpt-4o-mini')  # MODEL SELECTION: User-selected LLM model
     
     # Handle documentIds as comma-separated string, array, or single value
     if isinstance(document_ids, str):
@@ -2735,8 +3030,7 @@ def query_documents():
             "document_ids": document_ids if document_ids else None,  # NEW: Pass document IDs for fast path
             "citation_context": citation_context,  # NEW: Pass structured citation metadata (bbox, page, text)
             "response_mode": response_mode if response_mode else None,  # NEW: Response mode for attachments (fast/detailed/full) - ensure None not empty string
-            "attachment_context": attachment_context if attachment_context else None,  # NEW: Extracted text from attached files - ensure None not empty dict
-            "model_preference": model_preference,  # MODEL SELECTION: User-selected LLM model
+            "attachment_context": attachment_context if attachment_context else None  # NEW: Extracted text from attached files - ensure None not empty dict
         }
         
         async def run_query():
@@ -2765,9 +3059,18 @@ def query_documents():
                         graph, _ = await build_main_graph(use_checkpointer=False)
                     timing.mark("graph_built")
                 
+                # Build config with metadata for LangSmith tracing
+                user_id = str(current_user.id) if current_user.is_authenticated else "anonymous"
                 config = {
                     "configurable": {
-                        "thread_id": session_id  # For conversation persistence via checkpointing
+                        "thread_id": session_id,  # For conversation persistence via checkpointing
+                        # Add metadata for LangSmith traces (user context)
+                        "metadata": {
+                            "user_id": user_id,
+                            "business_id": str(business_id) if business_id else "unknown",
+                            "query_preview": query[:100] if query else "",  # First 100 chars for context
+                            "endpoint": "query"
+                        }
                     }
                 }
                 result = await graph.ainvoke(initial_state, config)
@@ -2794,12 +3097,7 @@ def query_documents():
         # Format response for frontend
         final_summary = result.get("final_summary", "")
         
-        # If summary is empty or generic, provide a better fallback
-        if not final_summary or final_summary == "I found some information for you.":
-            if result.get("relevant_documents"):
-                final_summary = f"I found {len(result.get('relevant_documents', []))} relevant document(s), but couldn't extract a specific answer. Please try rephrasing your query."
-            else:
-                final_summary = f"I couldn't find any documents matching your query: \"{query}\". Try using more general terms or rephrasing your question."
+        # Let agent handle empty responses naturally - no hard-coded fallbacks
         
         response_data = {
             "query": query,
@@ -3433,32 +3731,28 @@ def proxy_upload():
         filename = secure_filename(file.filename)
         
         # Check for exact duplicates before uploading (safety net - frontend should catch this first)
+        # Only block duplicates from the SAME user AND business
         from .services.supabase_document_service import SupabaseDocumentService
         doc_service = SupabaseDocumentService()
         supabase = doc_service.supabase
-        
-        # Get current user ID
-        user_id = str(current_user.id) if current_user.is_authenticated else None
-        if not user_id:
-            return jsonify({'error': 'User not authenticated'}), 401
         
         existing_docs = supabase.table('documents')\
             .select('id, original_filename, file_size')\
             .eq('original_filename', filename)\
             .eq('business_uuid', business_uuid_str)\
-            .eq('uploaded_by_user_id', user_id)\
+            .eq('uploaded_by_user_id', current_user.id)\
             .execute()
         
         if existing_docs.data:
-            # Check for exact duplicate (same filename, business, user, and size)
+            # Check for exact duplicate (same filename and size from same user)
             file_size = file.content_length or 0
             exact_duplicate = next((doc for doc in existing_docs.data if doc.get('file_size') == file_size), None)
             
             if exact_duplicate:
-                logger.warning(f"🛑 [PROXY-UPLOAD] Blocked exact duplicate: {filename} ({file_size} bytes) for user {user_id}")
+                logger.warning(f"🛑 [PROXY-UPLOAD] Blocked exact duplicate: {filename} ({file_size} bytes) for user {current_user.id}")
                 return jsonify({
                     'success': False,
-                    'error': f'A document with the same name and size already exists: "{filename}". Please rename the file or delete the existing document first.',
+                    'error': f'You already have a document with the same name and size: "{filename}". Please rename the file or delete your existing document first.',
                     'is_duplicate': True,
                     'existing_document_id': exact_duplicate['id']
                 }), 409  # 409 Conflict
@@ -3587,11 +3881,8 @@ def proxy_upload():
                 except Exception as rel_error:
                     logger.warning(f"Failed to create document relationship (non-fatal): {rel_error}")
             
-            # Check if processing should be skipped (e.g., during project creation)
-            skip_processing = request.form.get('skip_processing', '').lower() in ('true', '1', 'yes')
-            
-            # Trigger fast processing if property_id is provided AND processing is not skipped
-            if property_id and not skip_processing:
+            # Trigger fast processing if property_id is provided
+            if property_id:
                 try:
                     logger.info(f"⚡ [PROXY-UPLOAD] Property ID provided ({property_id}), queuing fast processing task...")
                     # Queue fast processing task (property_id already known - no extraction needed)
@@ -3606,8 +3897,6 @@ def proxy_upload():
                 except Exception as e:
                     logger.error(f"❌ [PROXY-UPLOAD] Failed to queue fast processing task: {e}", exc_info=True)
                     # Don't fail the upload - document is already created and uploaded
-            elif skip_processing:
-                logger.info(f"⏸️ [PROXY-UPLOAD] Processing skipped (skip_processing flag set) - document {doc_id} will remain in 'UPLOADED' status")
             else:
                 logger.warning(f"⚠️ [PROXY-UPLOAD] No property_id provided - document {doc_id} will remain in 'UPLOADED' status (no processing pipeline activated)")
             
@@ -3638,14 +3927,8 @@ def proxy_upload():
 @login_required
 def check_duplicate_document():
     """
-    Check if a document with the same filename, business ID, and user ID already exists.
+    Check if a document with the same filename and size already exists.
     Returns information about potential duplicates.
-    
-    Duplicate criteria:
-    - Same original_filename
-    - Same business_uuid (business_id)
-    - Same uploaded_by_user_id (user_id)
-    - Same file_size (for exact duplicates)
     """
     # Handle CORS preflight
     if request.method == 'OPTIONS':
@@ -3670,21 +3953,17 @@ def check_duplicate_document():
             return jsonify({'error': 'User is not associated with a business'}), 400
         
         # Check for duplicates in Supabase
+        # Only check for duplicates from the SAME user AND business
         from .services.supabase_document_service import SupabaseDocumentService
         doc_service = SupabaseDocumentService()
         supabase = doc_service.supabase
-        
-        # Get current user ID
-        user_id = str(current_user.id) if current_user.is_authenticated else None
-        if not user_id:
-            return jsonify({'error': 'User not authenticated'}), 401
         
         # Query for documents with same filename, business, AND user
         result = supabase.table('documents')\
             .select('id, original_filename, file_size, created_at')\
             .eq('original_filename', filename)\
             .eq('business_uuid', business_uuid_str)\
-            .eq('uploaded_by_user_id', user_id)\
+            .eq('uploaded_by_user_id', current_user.id)\
             .execute()
         
         if result.data and len(result.data) > 0:
@@ -3692,7 +3971,7 @@ def check_duplicate_document():
             exact_duplicate = next((doc for doc in result.data if doc.get('file_size') == file_size), None)
             
             if exact_duplicate:
-                # Exact duplicate - same filename and size
+                # Exact duplicate - same filename and size from same user
                 return jsonify({
                     'is_duplicate': True,
                     'is_exact_duplicate': True,
@@ -3709,7 +3988,7 @@ def check_duplicate_document():
                     'is_duplicate': True,
                     'is_exact_duplicate': False,
                     'existing_documents': result.data,
-                    'message': f'A document with the name "{filename}" already exists with a different file size.'
+                    'message': f'You already have a document named "{filename}" with a different file size.'
                 }), 200
         
         # No duplicates found
@@ -3996,32 +4275,28 @@ def upload_document():
         filename = secure_filename(file.filename)
         
         # Check for exact duplicates before uploading (safety net - frontend should catch this first)
+        # Only block duplicates from the SAME user AND business
         from .services.supabase_document_service import SupabaseDocumentService
         doc_service = SupabaseDocumentService()
         supabase = doc_service.supabase
-        
-        # Get current user ID
-        user_id = str(current_user.id) if current_user.is_authenticated else None
-        if not user_id:
-            return jsonify({'error': 'User not authenticated'}), 401
         
         existing_docs = supabase.table('documents')\
             .select('id, original_filename, file_size')\
             .eq('original_filename', filename)\
             .eq('business_uuid', business_uuid_str)\
-            .eq('uploaded_by_user_id', user_id)\
+            .eq('uploaded_by_user_id', current_user.id)\
             .execute()
         
         if existing_docs.data:
-            # Check for exact duplicate (same filename, business, user, and size)
+            # Check for exact duplicate (same filename and size from same user)
             file_size = file.content_length or 0
             exact_duplicate = next((doc for doc in existing_docs.data if doc.get('file_size') == file_size), None)
             
             if exact_duplicate:
-                logger.warning(f"🛑 [UPLOAD] Blocked exact duplicate: {filename} ({file_size} bytes) for user {user_id}")
+                logger.warning(f"🛑 [UPLOAD] Blocked exact duplicate: {filename} ({file_size} bytes) for user {current_user.id}")
                 return jsonify({
                     'success': False,
-                    'error': f'A document with the same name and size already exists: "{filename}". Please rename the file or delete the existing document first.',
+                    'error': f'You already have a document with the same name and size: "{filename}". Please rename the file or delete your existing document first.',
                     'is_duplicate': True,
                     'existing_document_id': exact_duplicate['id']
                 }), 409  # 409 Conflict
@@ -4374,12 +4649,12 @@ def delete_folder(folder_id):
             'message': 'Folder deletion attempted (may have been localStorage only)'
         }), 200
 
-@views.route('/api/documents/<uuid:document_id>', methods=['GET', 'DELETE', 'OPTIONS'])
-@login_required
-def get_or_delete_document(document_id):
+@views.route('/api/documents/<uuid:document_id>', methods=['DELETE', 'OPTIONS'])
+def delete_document_standard(document_id):
     """
-    Get document metadata (GET) or delete document (DELETE).
-    Matches RESTful pattern: /api/documents/<id>
+    Standardized deletion endpoint for documents.
+    Matches RESTful pattern: /api/documents/<id> (DELETE)
+    Deletes a document from S3, Supabase stores, and its metadata record from the database.
     """
     # Handle CORS preflight - MUST be first, before authentication check
     if request.method == 'OPTIONS':
@@ -4387,75 +4662,38 @@ def get_or_delete_document(document_id):
         response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
         response.headers.add('Access-Control-Allow-Credentials', 'true')
         response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
-        response.headers.add('Access-Control-Allow-Methods', 'GET, DELETE, OPTIONS')
+        response.headers.add('Access-Control-Allow-Methods', 'DELETE, OPTIONS')
         response.headers.add('Access-Control-Max-Age', '3600')
         return response, 200
     
-    # GET request - return document metadata
-    if request.method == 'GET':
-        try:
-            from .services.supabase_document_service import SupabaseDocumentService
-            doc_service = SupabaseDocumentService()
-            document = doc_service.get_document_by_id(str(document_id))
-            
-            if not document:
-                response = jsonify({'error': 'Document not found'})
-                response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
-                response.headers.add('Access-Control-Allow-Credentials', 'true')
-                return response, 404
-            
-            # Check authorization - document can have business_id (varchar) or business_uuid (uuid)
-            # Compare against both current_user.business_id and company_name
-            doc_business_id = document.get('business_id')
-            doc_business_uuid = document.get('business_uuid')
-            user_business_id = str(current_user.business_id) if current_user.business_id else None
-            user_company_name = current_user.company_name
-            
-            # Allow access if any of these match
-            is_authorized = (
-                (doc_business_id and user_company_name and str(doc_business_id) == str(user_company_name)) or
-                (doc_business_uuid and user_business_id and str(doc_business_uuid) == user_business_id) or
-                (doc_business_id and user_business_id and str(doc_business_id) == user_business_id)
-            )
-            
-            if not is_authorized:
-                logger.warning(f"Unauthorized access to document {document_id}: doc_business_id={doc_business_id}, doc_business_uuid={doc_business_uuid}, user_business_id={user_business_id}, user_company_name={user_company_name}")
-                response = jsonify({'error': 'Unauthorized'})
-                response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
-                response.headers.add('Access-Control-Allow-Credentials', 'true')
-                return response, 403
-            
-            # Return document metadata
-            response = jsonify(document)
-            response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
-            response.headers.add('Access-Control-Allow-Credentials', 'true')
-            return response, 200
-            
-        except Exception as e:
-            logger.error(f"Error fetching document {document_id}: {e}", exc_info=True)
-            response = jsonify({'error': 'Internal server error'})
-            response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
-            response.headers.add('Access-Control-Allow-Credentials', 'true')
-            return response, 500
+    # Require login for actual DELETE request
+    if not current_user.is_authenticated:
+        response = jsonify({
+            'success': False,
+            'error': 'Authentication required'
+        })
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'DELETE, OPTIONS')
+        return response, 401
     
-    # DELETE request - delete document
-    if request.method == 'DELETE':
-        logger.info(f"🗑️ DELETE /api/documents/{document_id} called by {current_user.email}")
-        result = _perform_document_deletion(document_id)
-        
-        # Ensure CORS headers are present in the response
-        if isinstance(result, tuple):
-            response_obj, status_code = result
-        else:
-            response_obj = result
-            status_code = 200
-        
-        if hasattr(response_obj, 'headers'):
-            response_obj.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
-            response_obj.headers.add('Access-Control-Allow-Credentials', 'true')
-            response_obj.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
-        
-        return result
+    logger.info(f"🗑️ DELETE /api/documents/{document_id} called by {current_user.email}")
+    result = _perform_document_deletion(document_id)
+    
+    # Ensure CORS headers are present in the response
+    if isinstance(result, tuple):
+        response_obj, status_code = result
+    else:
+        response_obj = result
+        status_code = 200
+    
+    if hasattr(response_obj, 'headers'):
+        response_obj.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response_obj.headers.add('Access-Control-Allow-Credentials', 'true')
+        response_obj.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+    
+    return result
 
 @views.route('/api/documents/<uuid:document_id>/processing-history', methods=['GET'])
 @login_required
@@ -4487,190 +4725,6 @@ def get_document_processing_history(document_id):
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-@views.route('/api/documents/<uuid:document_id>/status/stream', methods=['GET'])
-@login_required
-def stream_document_status(document_id):
-    """
-    Server-Sent Events endpoint for real-time document processing status updates.
-    Streams status changes, stage transitions, errors, and metrics.
-    """
-    from flask import Response, stream_with_context
-    import time
-    
-    def generate():
-        """Generator function for SSE stream"""
-        try:
-            from .services.supabase_document_service import SupabaseDocumentService
-            from .services.processing_history_service import ProcessingHistoryService
-            from .services.supabase_client_factory import get_supabase_client
-            import json
-            
-            doc_service = SupabaseDocumentService()
-            history_service = ProcessingHistoryService()
-            supabase = get_supabase_client()
-            
-            last_status = None
-            last_history_count = 0
-            poll_interval = 1.0  # Poll every 1 second during active processing
-            max_polls = 600  # Max 10 minutes of polling
-            
-            for poll_count in range(max_polls):
-                # Get current document status
-                document = doc_service.get_document_by_id(str(document_id))
-                if not document:
-                    yield f"data: {json.dumps({'type': 'error', 'message': 'Document not found'})}\n\n"
-                    break
-                
-                # Check authorization
-                doc_business_id = document.get('business_id')
-                doc_business_uuid = document.get('business_uuid')
-                user_business_id = str(current_user.business_id) if current_user.business_id else None
-                user_company_name = current_user.company_name
-                
-                is_authorized = (
-                    (doc_business_id and user_company_name and str(doc_business_id) == str(user_company_name)) or
-                    (doc_business_uuid and user_business_id and str(doc_business_uuid) == user_business_id) or
-                    (doc_business_id and user_business_id and str(doc_business_id) == user_business_id)
-                )
-                
-                if not is_authorized:
-                    yield f"data: {json.dumps({'type': 'error', 'message': 'Unauthorized'})}\n\n"
-                    break
-                
-                current_status = document.get('status', 'unknown')
-                
-                # Get processing history
-                progress = history_service.get_pipeline_progress(str(document_id))
-                history = progress.get('history', [])
-                current_history_count = len(history)
-                
-                # Get document_summary for metrics
-                document_summary = document.get('document_summary')
-                if isinstance(document_summary, str):
-                    try:
-                        document_summary = json.loads(document_summary)
-                    except:
-                        document_summary = {}
-                elif document_summary is None:
-                    document_summary = {}
-                
-                # Extract metrics
-                reducto_chunks = document_summary.get('reducto_chunks', [])
-                chunks_retrieved = len(reducto_chunks) if reducto_chunks else 0
-                total_blocks = sum(len(chunk.get('blocks', [])) for chunk in reducto_chunks) if reducto_chunks else 0
-                
-                # Get vector count
-                vectors_result = supabase.table('document_vectors')\
-                    .select('id', count='exact')\
-                    .eq('document_id', str(document_id))\
-                    .execute()
-                vectors_stored = vectors_result.count if hasattr(vectors_result, 'count') else 0
-                
-                # Extract errors
-                errors = []
-                for step in history:
-                    if step.get('step_status', '').lower() == 'failed':
-                        errors.append({
-                            'stage': step.get('step_name', 'unknown'),
-                            'error': step.get('step_message', 'Unknown error'),
-                            'timestamp': step.get('completed_at') or step.get('started_at'),
-                            'details': step.get('step_metadata', {})
-                        })
-                
-                # Determine current stage
-                current_stage = 'unknown'
-                if current_status == 'processing':
-                    started_steps = [s for s in history if s.get('step_status', '').lower() == 'started']
-                    completed_steps = [s for s in history if s.get('step_status', '').lower() == 'completed']
-                    
-                    if started_steps:
-                        current_stage = started_steps[-1].get('step_name', 'unknown')
-                    elif completed_steps:
-                        last_completed = completed_steps[-1].get('step_name', '').lower()
-                        if 'classification' in last_completed:
-                            current_stage = 'extraction'
-                        elif 'extraction' in last_completed:
-                            current_stage = 'chunking'
-                        elif 'chunk' in last_completed or 'parse' in last_completed:
-                            current_stage = 'embedding'
-                        elif 'embed' in last_completed or 'vector' in last_completed:
-                            current_stage = 'vector_storage'
-                        else:
-                            current_stage = 'processing'
-                    else:
-                        current_stage = 'initializing'
-                elif current_status == 'completed':
-                    current_stage = 'completed'
-                elif current_status == 'failed':
-                    current_stage = 'failed'
-                
-                # Build stage_details
-                vector_storage_step = next((s for s in history if s.get('step_name') == 'vector_storage'), None)
-                chunks_after_filtering = 0
-                chunks_filtered = 0
-                if vector_storage_step and vector_storage_step.get('step_metadata'):
-                    metadata = vector_storage_step['step_metadata']
-                    chunks_after_filtering = metadata.get('chunks_processed', 0)
-                    chunks_filtered = metadata.get('chunks_filtered', 0)
-                else:
-                    chunks_after_filtering = vectors_stored
-                    chunks_filtered = chunks_retrieved - vectors_stored if chunks_retrieved > vectors_stored else 0
-                
-                stage_details = {
-                    'chunks_retrieved': chunks_retrieved,
-                    'chunks_after_filtering': chunks_after_filtering,
-                    'chunks_filtered': chunks_filtered,
-                    'total_blocks': total_blocks,
-                    'vectors_stored': vectors_stored,
-                    'reducto_job_id': document_summary.get('reducto_job_id'),
-                    'last_error': errors[-1]['error'] if errors else None
-                }
-                
-                # Send update if status changed or new history entry
-                if current_status != last_status or current_history_count > last_history_count:
-                    update_data = {
-                        'type': 'status_update',
-                        'status': current_status,
-                        'current_stage': current_stage,
-                        'stage_details': stage_details,
-                        'errors': errors,
-                        'metrics': {
-                            'chunks_retrieved': chunks_retrieved,
-                            'chunks_after_filtering': chunks_after_filtering,
-                            'chunks_filtered': chunks_filtered,
-                            'vectors_stored': vectors_stored,
-                            'blocks_count': total_blocks
-                        },
-                        'pipeline_progress': progress
-                    }
-                    yield f"data: {json.dumps(update_data)}\n\n"
-                    
-                    last_status = current_status
-                    last_history_count = current_history_count
-                
-                # Stop if completed or failed
-                if current_status in ['completed', 'failed', 'processed']:
-                    yield f"data: {json.dumps({'type': 'complete', 'status': current_status})}\n\n"
-                    break
-                
-                time.sleep(poll_interval)
-            
-            # Send final complete event
-            yield f"data: {json.dumps({'type': 'complete', 'status': 'timeout'})}\n\n"
-            
-        except Exception as e:
-            logger.error(f"Error in status stream: {e}")
-            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
-    
-    return Response(
-        stream_with_context(generate()),
-        mimetype='text/event-stream',
-        headers={
-            'Cache-Control': 'no-cache',
-            'X-Accel-Buffering': 'no'
-        }
-    )
-
 @views.route('/api/documents/<uuid:document_id>/status', methods=['GET'])
 @login_required
 def get_document_status(document_id):
@@ -4701,106 +4755,10 @@ def get_document_status(document_id):
             logger.warning(f"Unauthorized access to document {document_id}: doc_business_id={doc_business_id}, doc_business_uuid={doc_business_uuid}, user_business_id={user_business_id}, user_company_name={user_company_name}")
             return jsonify({'error': 'Unauthorized'}), 403
         
-        # Get processing history from Supabase
+        # Get processing history (still from PostgreSQL for now)
         from .services.processing_history_service import ProcessingHistoryService
         history_service = ProcessingHistoryService()
         progress = history_service.get_pipeline_progress(str(document_id))
-        
-        # Get document_summary for metrics
-        import json
-        document_summary = document.get('document_summary')
-        if isinstance(document_summary, str):
-            try:
-                document_summary = json.loads(document_summary)
-            except:
-                document_summary = {}
-        elif document_summary is None:
-            document_summary = {}
-        
-        # Extract metrics from document_summary
-        reducto_chunks = document_summary.get('reducto_chunks', [])
-        chunks_retrieved = len(reducto_chunks) if reducto_chunks else 0
-        total_blocks = sum(len(chunk.get('blocks', [])) for chunk in reducto_chunks) if reducto_chunks else 0
-        
-        # Get vector count from document_vectors table
-        from .services.supabase_client_factory import get_supabase_client
-        supabase = get_supabase_client()
-        vectors_result = supabase.table('document_vectors')\
-            .select('id', count='exact')\
-            .eq('document_id', str(document_id))\
-            .execute()
-        vectors_stored = vectors_result.count if hasattr(vectors_result, 'count') else 0
-        
-        # Extract errors from processing history
-        errors = []
-        if progress.get('history'):
-            for step in progress['history']:
-                if step.get('step_status', '').lower() == 'failed':
-                    errors.append({
-                        'stage': step.get('step_name', 'unknown'),
-                        'error': step.get('step_message', 'Unknown error'),
-                        'timestamp': step.get('completed_at') or step.get('started_at'),
-                        'details': step.get('step_metadata', {})
-                    })
-        
-        # Determine current stage based on status and history
-        current_stage = 'unknown'
-        stage_details = {}
-        
-        if document.get('status') == 'processing':
-            # Determine stage from last completed step
-            if progress.get('history'):
-                completed_steps = [s for s in progress['history'] if s.get('step_status', '').lower() == 'completed']
-                started_steps = [s for s in progress['history'] if s.get('step_status', '').lower() == 'started']
-                
-                if started_steps:
-                    current_stage = started_steps[-1].get('step_name', 'unknown')
-                elif completed_steps:
-                    last_completed = completed_steps[-1].get('step_name', '')
-                    # Infer next stage
-                    if 'classification' in last_completed.lower():
-                        current_stage = 'extraction'
-                    elif 'extraction' in last_completed.lower():
-                        current_stage = 'chunking'
-                    elif 'chunk' in last_completed.lower() or 'parse' in last_completed.lower():
-                        current_stage = 'embedding'
-                    elif 'embed' in last_completed.lower() or 'vector' in last_completed.lower():
-                        current_stage = 'vector_storage'
-                    else:
-                        current_stage = 'processing'
-                else:
-                    current_stage = 'initializing'
-            else:
-                current_stage = 'initializing'
-        elif document.get('status') == 'completed':
-            current_stage = 'completed'
-        elif document.get('status') == 'failed':
-            current_stage = 'failed'
-        
-        # Build stage_details from metrics
-        stage_details = {
-            'chunks_retrieved': chunks_retrieved,
-            'total_blocks': total_blocks,
-            'vectors_stored': vectors_stored,
-            'reducto_job_id': document_summary.get('reducto_job_id'),
-            'last_error': errors[-1]['error'] if errors else None
-        }
-        
-        # Calculate chunks_after_filtering from processing history
-        vector_storage_step = None
-        if progress.get('history'):
-            for step in progress['history']:
-                if step.get('step_name') == 'vector_storage' and step.get('step_metadata'):
-                    vector_storage_step = step
-                    break
-        
-        if vector_storage_step and vector_storage_step.get('step_metadata'):
-            metadata = vector_storage_step['step_metadata']
-            stage_details['chunks_after_filtering'] = metadata.get('chunks_processed', 0)
-            stage_details['chunks_filtered'] = metadata.get('chunks_filtered', 0)
-        else:
-            stage_details['chunks_after_filtering'] = vectors_stored  # Best guess
-            stage_details['chunks_filtered'] = chunks_retrieved - vectors_stored if chunks_retrieved > vectors_stored else 0
         
         response_data = {
             'success': True,
@@ -4808,27 +4766,16 @@ def get_document_status(document_id):
                 'status': document.get('status', 'unknown'),
                 'classification_type': document.get('classification_type'),
                 'classification_confidence': document.get('classification_confidence'),
-                'pipeline_progress': {
-                    **progress,
-                    'current_stage': current_stage,
-                    'stage_details': stage_details,
-                    'errors': errors,
-                    'metrics': {
-                        'chunks_retrieved': chunks_retrieved,
-                        'chunks_after_filtering': stage_details.get('chunks_after_filtering', 0),
-                        'chunks_filtered': stage_details.get('chunks_filtered', 0),
-                        'vectors_stored': vectors_stored,
-                        'blocks_count': total_blocks
-                    }
-                }
+                'pipeline_progress': progress
             }
         }
         
-        # 🔍 DEBUG: Log what we're sending to frontend
-        logger.info(f"📤 STATUS API RESPONSE for {document_id}:")
-        logger.info(f"   status: '{document.get('status')}' (type: {type(document.get('status')).__name__})")
-        logger.info(f"   classification: {document.get('classification_type')}")
-        logger.info(f"   Full response: {response_data}")
+        # Minimal logging - only log if status is not completed (reduces log noise)
+        # Completed documents are polled frequently by frontend, so we skip logging them
+        doc_status = document.get('status', 'unknown')
+        if doc_status != 'completed':
+            logger.info(f"📊 Document {document_id} status: {doc_status}")
+        # Completed documents: no logging (frontend will stop polling soon)
         
         return jsonify(response_data), 200
         
@@ -5093,9 +5040,11 @@ def api_dashboard():
         # Get user's properties (still from PostgreSQL for now)
         properties = []
         try:
+            # Convert UUID to string for text column comparison
+            business_id_str = str(business_uuid) if business_uuid else None
             properties = (
                 Property.query
-                .filter_by(business_id=business_uuid)
+                .filter_by(business_id=business_id_str)
                 .order_by(Property.created_at.desc())
                 .limit(10)
                 .all()
@@ -5287,121 +5236,6 @@ def _perform_document_deletion(document_id):
     
     return jsonify(response_data), result.http_status
 
-@views.route('/api/properties/<uuid:property_id>', methods=['DELETE', 'OPTIONS'])
-def delete_property_standard(property_id):
-    """
-    Standardized deletion endpoint for properties.
-    Matches RESTful pattern: /api/properties/<id> (DELETE)
-    Deletes a property and all associated data from Supabase.
-    """
-    # Handle CORS preflight - MUST be first, before authentication check
-    if request.method == 'OPTIONS':
-        response = jsonify({})
-        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
-        response.headers.add('Access-Control-Allow-Credentials', 'true')
-        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
-        response.headers.add('Access-Control-Allow-Methods', 'DELETE, OPTIONS')
-        response.headers.add('Access-Control-Max-Age', '3600')
-        return response, 200
-    
-    # Require login for actual DELETE request
-    if not current_user.is_authenticated:
-        response = jsonify({
-            'success': False,
-            'error': 'Authentication required'
-        })
-        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
-        response.headers.add('Access-Control-Allow-Credentials', 'true')
-        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
-        response.headers.add('Access-Control-Allow-Methods', 'DELETE, OPTIONS')
-        return response, 401
-    
-    logger.info(f"🗑️ DELETE /api/properties/{property_id} called by {current_user.email}")
-    
-    try:
-        # Get business_id from session
-        business_id = _ensure_business_uuid()
-        if not business_id:
-            response = jsonify({
-                'success': False,
-                'error': 'User not associated with a business'
-            })
-            response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
-            response.headers.add('Access-Control-Allow-Credentials', 'true')
-            return response, 400
-        
-        # Verify property exists and belongs to user's business
-        from .services.supabase_client_factory import get_supabase_client
-        supabase = get_supabase_client()
-        
-        property_result = supabase.table('properties').select('id, business_id').eq('id', str(property_id)).execute()
-        
-        if not property_result.data or len(property_result.data) == 0:
-            response = jsonify({
-                'success': False,
-                'error': 'Property not found'
-            })
-            response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
-            response.headers.add('Access-Control-Allow-Credentials', 'true')
-            return response, 404
-        
-        property_data = property_result.data[0]
-        property_business_id = property_data.get('business_id')
-        
-        # Check authorization - property can have business_id (varchar) or business_uuid (uuid)
-        user_business_id = str(current_user.business_id) if current_user.business_id else None
-        user_company_name = current_user.company_name
-        
-        is_authorized = (
-            (property_business_id and user_company_name and str(property_business_id) == str(user_company_name)) or
-            (property_business_id and user_business_id and str(property_business_id) == user_business_id) or
-            (property_business_id and str(property_business_id) == business_id)
-        )
-        
-        if not is_authorized:
-            logger.warning(f"Unauthorized access to property {property_id}: property_business_id={property_business_id}, user_business_id={user_business_id}, user_company_name={user_company_name}")
-            response = jsonify({
-                'success': False,
-                'error': 'Unauthorized'
-            })
-            response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
-            response.headers.add('Access-Control-Allow-Credentials', 'true')
-            return response, 403
-        
-        # Use UnifiedDeletionService for property deletion
-        from .services.unified_deletion_service import UnifiedDeletionService
-        deletion_service = UnifiedDeletionService()
-        
-        result = deletion_service.delete_property_complete(
-            property_id=str(property_id),
-            business_id=business_id
-        )
-        
-        # Build response
-        response_data = result.to_dict()
-        response_data['property_id'] = str(property_id)
-        response_data['results'] = result.operations  # For backwards compatibility
-        
-        response = jsonify(response_data)
-        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
-        response.headers.add('Access-Control-Allow-Credentials', 'true')
-        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
-        response.headers.add('Access-Control-Allow-Methods', 'DELETE, OPTIONS')
-        
-        return response, result.http_status
-        
-    except Exception as e:
-        logger.error(f"❌ Error deleting property {property_id}: {e}", exc_info=True)
-        response = jsonify({
-            'success': False,
-            'error': str(e)
-        })
-        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
-        response.headers.add('Access-Control-Allow-Credentials', 'true')
-        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
-        response.headers.add('Access-Control-Allow-Methods', 'DELETE, OPTIONS')
-        return response, 500
-
 @views.route('/api/upload-file', methods=['POST'])
 @login_required
 def upload_file_to_gateway():
@@ -5565,102 +5399,6 @@ def process_document(document_id):
         
     except Exception as e:
         return jsonify({'error': f'Failed to start processing: {str(e)}'}), 500
-
-@views.route('/api/documents/<uuid:document_id>/reprocess', methods=['POST', 'OPTIONS'])
-@login_required
-def reprocess_document(document_id):
-    """
-    Reprocess a document to regenerate embeddings and BBOX data.
-    Supports 'full' (re-embed + bbox) or 'bbox_only' (update bbox, preserve embeddings) modes.
-    """
-    # Handle CORS preflight
-    if request.method == 'OPTIONS':
-        response = jsonify({})
-        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
-        response.headers.add('Access-Control-Allow-Credentials', 'true')
-        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
-        response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
-        response.headers.add('Access-Control-Max-Age', '3600')
-        return response, 200
-    
-    try:
-        data = request.get_json() or {}
-        mode = data.get('mode', 'full')  # 'full' or 'bbox_only'
-        
-        document = Document.query.get(document_id)
-        if not document:
-            response = jsonify({'success': False, 'error': 'Document not found'})
-            response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
-            response.headers.add('Access-Control-Allow-Credentials', 'true')
-            return response, 404
-        
-        if str(document.business_id) != str(current_user.business_id):
-            response = jsonify({'success': False, 'error': 'Unauthorized'})
-            response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
-            response.headers.add('Access-Control-Allow-Credentials', 'true')
-            return response, 403
-        
-        logger.info(f"🔄 Reprocessing document {document_id} in {mode} mode")
-        
-        # Get file content from S3
-        try:
-            aws_access_key = os.environ['AWS_ACCESS_KEY_ID']
-            aws_secret_key = os.environ['AWS_SECRET_ACCESS_KEY']
-            aws_region = os.environ.get('AWS_REGION') or os.environ.get('AWS_DEFAULT_REGION', 'us-east-1')
-            invoke_url = os.environ['API_GATEWAY_INVOKE_URL']
-            bucket_name = os.environ['S3_UPLOAD_BUCKET']
-            
-            # Download file from S3
-            final_url = f"{invoke_url.rstrip('/')}/{bucket_name}/{document.s3_path}"
-            auth = AWS4Auth(aws_access_key, aws_secret_key, aws_region, 's3')
-            response = requests.get(final_url, auth=auth, timeout=300)
-            response.raise_for_status()
-            file_content = response.content
-            
-        except Exception as e:
-            logger.error(f"Failed to download file for reprocessing: {e}")
-            response = jsonify({'success': False, 'error': f'Failed to download file: {str(e)}'})
-            response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
-            response.headers.add('Access-Control-Allow-Credentials', 'true')
-            return response, 500
-        
-        # Trigger reprocessing task
-        try:
-            from backend.tasks import process_document_with_dual_stores
-            
-            # For 'bbox_only' mode, we'd need a different task, but for now use full reprocess
-            # TODO: Implement bbox_only mode that preserves embeddings
-            task = process_document_with_dual_stores.delay(
-                document_id=str(document.id),
-                file_content=file_content,
-                original_filename=document.original_filename,
-                business_id=str(document.business_id)
-            )
-            
-            result = jsonify({
-                'success': True,
-                'message': f'Document reprocessing started in {mode} mode',
-                'task_id': task.id,
-                'document_id': str(document_id),
-                'mode': mode
-            })
-            result.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
-            result.headers.add('Access-Control-Allow-Credentials', 'true')
-            return result, 200
-            
-        except Exception as e:
-            logger.error(f"Failed to start reprocessing: {e}")
-            response = jsonify({'success': False, 'error': f'Failed to start reprocessing: {str(e)}'})
-            response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
-            response.headers.add('Access-Control-Allow-Credentials', 'true')
-            return response, 500
-            
-    except Exception as e:
-        logger.error(f"Error in reprocess_document: {e}")
-        response = jsonify({'success': False, 'error': str(e)})
-        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
-        response.headers.add('Access-Control-Allow-Credentials', 'true')
-        return response, 500
 
 # ============================================================================
 # PROPERTY LINKING ENDPOINTS (Additional endpoints for property node management)
@@ -6778,42 +6516,6 @@ def link_document_to_property(document_id):
         except Exception as rel_error:
             logger.warning(f"Failed to create Supabase relationship (non-fatal): {rel_error}")
         
-        # Trigger fast processing if document hasn't been processed yet
-        # This handles documents uploaded with skip_processing=true
-        if document.status == DocumentStatus.UPLOADED:
-            try:
-                # Get file content from S3 to trigger processing
-                aws_access_key = os.environ.get('AWS_ACCESS_KEY_ID')
-                aws_secret_key = os.environ.get('AWS_SECRET_ACCESS_KEY')
-                aws_region = os.environ.get('AWS_REGION') or os.environ.get('AWS_DEFAULT_REGION', 'us-east-1')
-                invoke_url = os.environ.get('API_GATEWAY_INVOKE_URL')
-                bucket_name = os.environ.get('S3_UPLOAD_BUCKET')
-                
-                if aws_access_key and aws_secret_key and invoke_url and bucket_name:
-                    # Download file from S3
-                    final_url = f"{invoke_url.rstrip('/')}/{bucket_name}/{document.s3_path}"
-                    auth = AWS4Auth(aws_access_key, aws_secret_key, aws_region, 's3')
-                    file_response = requests.get(final_url, auth=auth, timeout=30)
-                    file_response.raise_for_status()
-                    file_content = file_response.content
-                    
-                    # Queue fast processing task
-                    business_uuid_str = _ensure_business_uuid()
-                    if business_uuid_str:
-                        task = process_document_fast_task.delay(
-                            document_id=str(document_id),
-                            file_content=file_content,
-                            original_filename=document.original_filename,
-                            business_id=business_uuid_str,
-                            property_id=property_id
-                        )
-                        logger.info(f"⚡ [LINK-PROPERTY] Queued fast processing task {task.id} for document {document_id} (property {property_id})")
-                else:
-                    logger.warning("⚠️ [LINK-PROPERTY] Missing AWS credentials - cannot trigger document processing")
-            except Exception as process_error:
-                logger.warning(f"⚠️ [LINK-PROPERTY] Failed to trigger processing (non-fatal): {process_error}")
-                # Don't fail the link operation if processing fails
-        
         return jsonify({
             'success': True,
             'message': 'Document linked to property'
@@ -7442,383 +7144,6 @@ def remove_duplicate_documents():
         
     except Exception as e:
         logger.error(f"❌ [REMOVE-DUPLICATES] Error: {e}", exc_info=True)
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
-
-
-# ---------------------------------------------------------------------------
-# Projects API Endpoints
-# ---------------------------------------------------------------------------
-
-@views.route('/api/projects', methods=['GET'])
-@login_required
-def get_projects():
-    """Get all projects for the current user, optionally filtered by status"""
-    try:
-        status_filter = request.args.get('status')
-        
-        query = Project.query.filter_by(user_id=current_user.id)
-        
-        if status_filter:
-            try:
-                status_enum = ProjectStatus(status_filter)
-                query = query.filter_by(status=status_enum)
-            except ValueError:
-                return jsonify({
-                    'success': False,
-                    'error': f'Invalid status: {status_filter}. Must be one of: active, negotiating, archived'
-                }), 400
-        
-        projects = query.order_by(Project.updated_at.desc()).all()
-        
-        return jsonify({
-            'success': True,
-            'data': {
-                'projects': [p.serialize() for p in projects],
-                'total': len(projects)
-            }
-        })
-        
-    except Exception as e:
-        logger.error(f"❌ [GET-PROJECTS] Error: {e}", exc_info=True)
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
-
-
-@views.route('/api/projects/<project_id>', methods=['GET'])
-@login_required
-def get_project(project_id):
-    """Get a single project by ID"""
-    try:
-        project = Project.query.filter_by(
-            id=project_id,
-            user_id=current_user.id
-        ).first()
-        
-        if not project:
-            return jsonify({
-                'success': False,
-                'error': 'Project not found'
-            }), 404
-        
-        return jsonify({
-            'success': True,
-            'data': project.serialize()
-        })
-        
-    except Exception as e:
-        logger.error(f"❌ [GET-PROJECT] Error: {e}", exc_info=True)
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
-
-
-@views.route('/api/projects', methods=['POST'])
-@login_required
-def create_project():
-    """Create a new project"""
-    try:
-        data = request.get_json()
-        
-        if not data:
-            return jsonify({
-                'success': False,
-                'error': 'No data provided'
-            }), 400
-        
-        # Validate required fields
-        if not data.get('title'):
-            return jsonify({
-                'success': False,
-                'error': 'Title is required'
-            }), 400
-        
-        if not data.get('client_name'):
-            return jsonify({
-                'success': False,
-                'error': 'Client name is required'
-            }), 400
-        
-        # Parse status
-        status = ProjectStatus.ACTIVE
-        if data.get('status'):
-            try:
-                # Convert string to enum - handle both 'active' and 'ACTIVE' formats (converts to uppercase)
-                status_str = data['status'].upper()
-                if status_str == 'ACTIVE':
-                    status = ProjectStatus.ACTIVE
-                elif status_str == 'NEGOTIATING':
-                    status = ProjectStatus.NEGOTIATING
-                elif status_str == 'ARCHIVED':
-                    status = ProjectStatus.ARCHIVED
-                else:
-                    return jsonify({
-                        'success': False,
-                        'error': f'Invalid status: {data["status"]}. Must be one of: ACTIVE, NEGOTIATING, ARCHIVED'
-                    }), 400
-            except (ValueError, AttributeError):
-                return jsonify({
-                    'success': False,
-                    'error': f'Invalid status: {data["status"]}'
-                }), 400
-        
-        # Parse due date
-        due_date = None
-        if data.get('due_date'):
-            try:
-                due_date = datetime.fromisoformat(data['due_date'].replace('Z', '+00:00'))
-            except (ValueError, AttributeError):
-                return jsonify({
-                    'success': False,
-                    'error': 'Invalid due_date format. Use ISO format.'
-                }), 400
-        
-        # Create project
-        project = Project(
-            user_id=current_user.id,
-            client_name=data['client_name'],
-            client_logo_url=data.get('client_logo_url'),
-            title=data['title'],
-            description=data.get('description'),
-            status=status,
-            tags=data.get('tags', []),
-            tool=data.get('tool'),
-            budget_min=data.get('budget_min'),
-            budget_max=data.get('budget_max'),
-            due_date=due_date,
-            thumbnail_url=data.get('thumbnail_url'),
-            message_count=data.get('message_count', 0)
-        )
-        
-        db.session.add(project)
-        db.session.commit()
-        
-        logger.info(f"✅ [CREATE-PROJECT] Created project: {project.title} (ID: {project.id})")
-        
-        return jsonify({
-            'success': True,
-            'data': project.serialize()
-        }), 201
-        
-    except Exception as e:
-        db.session.rollback()
-        logger.error(f"❌ [CREATE-PROJECT] Error: {e}", exc_info=True)
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
-
-
-@views.route('/api/projects/<project_id>', methods=['PUT'])
-@login_required
-def update_project(project_id):
-    """Update an existing project"""
-    try:
-        project = Project.query.filter_by(
-            id=project_id,
-            user_id=current_user.id
-        ).first()
-        
-        if not project:
-            return jsonify({
-                'success': False,
-                'error': 'Project not found'
-            }), 404
-        
-        data = request.get_json()
-        if not data:
-            return jsonify({
-                'success': False,
-                'error': 'No data provided'
-            }), 400
-        
-        # Update fields if provided
-        if 'client_name' in data:
-            project.client_name = data['client_name']
-        if 'client_logo_url' in data:
-            project.client_logo_url = data['client_logo_url']
-        if 'title' in data:
-            project.title = data['title']
-        if 'description' in data:
-            project.description = data['description']
-        if 'status' in data:
-            try:
-                project.status = ProjectStatus(data['status'])
-            except ValueError:
-                return jsonify({
-                    'success': False,
-                    'error': f'Invalid status: {data["status"]}'
-                }), 400
-        if 'tags' in data:
-            project.tags = data['tags']
-        if 'tool' in data:
-            project.tool = data['tool']
-        if 'budget_min' in data:
-            project.budget_min = data['budget_min']
-        if 'budget_max' in data:
-            project.budget_max = data['budget_max']
-        if 'due_date' in data:
-            if data['due_date']:
-                try:
-                    project.due_date = datetime.fromisoformat(data['due_date'].replace('Z', '+00:00'))
-                except (ValueError, AttributeError):
-                    return jsonify({
-                        'success': False,
-                        'error': 'Invalid due_date format. Use ISO format.'
-                    }), 400
-            else:
-                project.due_date = None
-        if 'thumbnail_url' in data:
-            project.thumbnail_url = data['thumbnail_url']
-        if 'message_count' in data:
-            project.message_count = data['message_count']
-        
-        db.session.commit()
-        
-        logger.info(f"✅ [UPDATE-PROJECT] Updated project: {project.title} (ID: {project.id})")
-        
-        return jsonify({
-            'success': True,
-            'data': project.serialize()
-        })
-        
-    except Exception as e:
-        db.session.rollback()
-        logger.error(f"❌ [UPDATE-PROJECT] Error: {e}", exc_info=True)
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
-
-
-@views.route('/api/projects/<project_id>', methods=['DELETE'])
-@login_required
-def delete_project(project_id):
-    """Delete a project"""
-    try:
-        project = Project.query.filter_by(
-            id=project_id,
-            user_id=current_user.id
-        ).first()
-        
-        if not project:
-            return jsonify({
-                'success': False,
-                'error': 'Project not found'
-            }), 404
-        
-        project_title = project.title
-        db.session.delete(project)
-        db.session.commit()
-        
-        logger.info(f"✅ [DELETE-PROJECT] Deleted project: {project_title} (ID: {project_id})")
-        
-        return jsonify({
-            'success': True,
-            'message': f'Project "{project_title}" deleted successfully'
-        })
-        
-    except Exception as e:
-        db.session.rollback()
-        logger.error(f"❌ [DELETE-PROJECT] Error: {e}", exc_info=True)
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
-
-
-@views.route('/api/projects/<uuid:project_id>/access', methods=['POST', 'OPTIONS'])
-@login_required
-def add_project_access(project_id):
-    """Add team member access to a project"""
-    # Handle CORS preflight
-    if request.method == 'OPTIONS':
-        response = jsonify({})
-        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
-        response.headers.add('Access-Control-Allow-Credentials', 'true')
-        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
-        response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
-        response.headers.add('Access-Control-Max-Age', '3600')
-        return response, 200
-    
-    try:
-        data = request.get_json()
-        email = data.get('email')
-        access_level = data.get('access_level', 'viewer')
-        
-        if not email:
-            return jsonify({
-                'success': False,
-                'error': 'Email is required'
-            }), 400
-        
-        # Validate access level
-        if access_level not in ['viewer', 'editor']:
-            return jsonify({
-                'success': False,
-                'error': 'Invalid access level. Must be "viewer" or "editor"'
-            }), 400
-        
-        # Get project and verify ownership
-        project = Project.query.get_or_404(project_id)
-        
-        if project.user_id != current_user.id:
-            return jsonify({
-                'success': False,
-                'error': 'Unauthorized - you can only add access to your own projects'
-            }), 403
-        
-        # Check if access already exists
-        existing_access = ProjectAccess.query.filter_by(
-            project_id=project_id,
-            user_email=email.lower()
-        ).first()
-        
-        if existing_access:
-            # Update existing access
-            existing_access.access_level = access_level
-            existing_access.status = 'pending'  # Reset to pending if updating
-            db.session.commit()
-            
-            logger.info(f"✅ [PROJECT-ACCESS] Updated access for {email} to project {project.title}")
-            
-            return jsonify({
-                'success': True,
-                'data': existing_access.serialize(),
-                'message': 'Access updated successfully'
-            }), 200
-        
-        # Create new access record
-        import secrets
-        invitation_token = secrets.token_urlsafe(32)
-        
-        project_access = ProjectAccess(
-            project_id=project_id,
-            user_email=email.lower(),
-            invited_by_user_id=current_user.id,
-            access_level=access_level,
-            status='pending',
-            invitation_token=invitation_token
-        )
-        
-        db.session.add(project_access)
-        db.session.commit()
-        
-        logger.info(f"✅ [PROJECT-ACCESS] Added access for {email} to project {project.title}")
-        
-        return jsonify({
-            'success': True,
-            'data': project_access.serialize()
-        }), 201
-        
-    except Exception as e:
-        db.session.rollback()
-        logger.error(f"❌ [PROJECT-ACCESS] Error: {e}", exc_info=True)
         return jsonify({
             'success': False,
             'error': str(e)

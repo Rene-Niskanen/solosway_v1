@@ -416,9 +416,43 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
     loadDocument();
   }, [docId, previewFiles]);
 
+  // Clear old document state when docId changes (but only if we had a previous document)
+  useEffect(() => {
+    // Track previous docId to detect changes
+    const prevDocId = currentDocIdRefForPdf.current;
+    
+    // Only clear if we had a previous document AND docId actually changed AND new docId is valid
+    // Don't clear on initial mount (when prevDocId is null and docId is set for first time)
+    if (prevDocId !== null && prevDocId !== docId && docId) {
+      console.log(`🔄 [DOCUMENT] Clearing old document (${prevDocId}) before loading new one (${docId})`);
+      
+      // Clear PDF document
+      setPdfDocument(null);
+      
+      // Clear rendered pages
+      setRenderedPages(new Map());
+      
+      // Reset rendering state
+      hasRenderedRef.current = false;
+      // DON'T clear currentDocIdRefForPdf here - let it be updated when new PDF loads successfully
+      firstPageCacheRef.current = null;
+      
+      // Reset zoom state
+      setManualZoom(null);
+      setBaseScale(1.0);
+      setVisualScale(1.0);
+      setTotalPages(0);
+      
+      // Note: didAutoScrollToHighlightRef will reset naturally when new document loads
+    }
+  }, [docId]);
+
   // Load PDF with PDF.js and cache first page for instant scale calculation
   useEffect(() => {
-    if (!previewUrl || blobType !== 'application/pdf' || pdfDocument) return;
+    if (!previewUrl || blobType !== 'application/pdf') return;
+    
+    // If we already have a PDF document loaded for this docId, skip reloading
+    if (pdfDocument && currentDocIdRefForPdf.current === docId) return;
     
     const loadPdf = async () => {
       try {
@@ -431,6 +465,8 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
           const firstPage = await cachedPdf.getPage(1);
           const naturalViewport = firstPage.getViewport({ scale: 1.0 });
           firstPageCacheRef.current = { page: firstPage, viewport: naturalViewport };
+          // Update ref AFTER successful load
+          currentDocIdRefForPdf.current = docId;
           return;
         }
         
@@ -445,6 +481,8 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
         const firstPage = await pdf.getPage(1);
         const naturalViewport = firstPage.getViewport({ scale: 1.0 });
         firstPageCacheRef.current = { page: firstPage, viewport: naturalViewport };
+        // Update ref AFTER successful load
+        currentDocIdRefForPdf.current = docId;
       } catch (error) {
         console.error('Failed to load PDF:', error);
       }

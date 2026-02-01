@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 from langchain_core.tools import StructuredTool
 
 from backend.llm.types import Citation
+from backend.services.supabase_client_factory import get_supabase_client
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +38,7 @@ def verify_citation_match(cited_text: str, block_content: str) -> Dict[str, Any]
     Verify that cited_text matches block_content.
     
     Args:
-        cited_text: Text the LLM is citing (e.g., "90-day value: £1,950,000")
+        cited_text: Text the LLM is citing
         block_content: Actual content of the block being cited
     
     Returns:
@@ -857,6 +858,328 @@ class CitationTool:
         return f"✅ Citation {citation_number} recorded for {block_id}"
 
 
+def match_citation_to_chunk(chunk_id: str, cited_text: str) -> Dict[str, Any]:
+    """
+    Match cited text to a specific block within a chunk and return bbox coordinates.
+    
+    This function:
+    1. Fetches the chunk from the database using chunk_id
+    2. Extracts the blocks array from the chunk
+    3. Matches the cited_text to the best matching block
+    4. Returns precise bbox coordinates for that block
+    
+    Args:
+        chunk_id: The UUID of the chunk from retrieve_chunks tool
+        cited_text: The exact text from the chunk that should be cited (use original chunk_text, not a paraphrase)
+    
+    Returns:
+        Dict with citation data including bbox coordinates:
+        {
+            'chunk_id': str,
+            'document_id': str,
+            'block_id': int,  # Index in blocks array
+            'bbox': {
+                'left': float,
+                'top': float,
+                'width': float,
+                'height': float,
+                'page': int,
+                'original_page': int (optional)
+            },
+            'page': int,
+            'cited_text': str,
+            'matched_block_content': str,
+            'confidence': 'high'|'medium'|'low',
+            'method': 'chunk-id-lookup'
+        }
+        
+    Raises:
+        ValueError: If chunk_id is invalid or chunk not found
+    """
+    if not chunk_id:
+        raise ValueError("chunk_id is required")
+    
+    if not cited_text:
+        raise ValueError("cited_text is required")
+    
+    try:
+        # Fetch chunk from database
+        supabase = get_supabase_client()
+        response = supabase.table('document_vectors').select(
+            'id, document_id, chunk_index, page_number, bbox, blocks'
+        ).eq('id', chunk_id).single().execute()
+        
+        if not response.data:
+            logger.warning(f"[CHUNK_CITATION] Chunk {chunk_id[:20]}... not found in database")
+            raise ValueError(f"Chunk {chunk_id} not found in database")
+        
+        chunk_data = response.data
+        document_id = chunk_data.get('document_id')
+        blocks = chunk_data.get('blocks', [])
+        
+        if not blocks:
+            logger.warning(
+                f"[CHUNK_CITATION] Chunk {chunk_id[:20]}... has no blocks array. "
+                f"Using chunk-level bbox as fallback."
+            )
+            # Fallback to chunk-level bbox if no blocks
+            chunk_bbox = chunk_data.get('bbox', {})
+            page = chunk_data.get('page_number', chunk_bbox.get('page', 0))
+            
+            return {
+                'chunk_id': chunk_id,
+                'document_id': document_id,
+                'block_id': None,  # No block-level match
+                'bbox': {
+                    'left': chunk_bbox.get('left', 0.0),
+                    'top': chunk_bbox.get('top', 0.0),
+                    'width': chunk_bbox.get('width', 0.0),
+                    'height': chunk_bbox.get('height', 0.0),
+                    'page': page,
+                    'original_page': chunk_bbox.get('original_page', page)
+                },
+                'page': page,
+                'cited_text': cited_text,
+                'matched_block_content': None,
+                'confidence': 'low',
+                'method': 'chunk-id-lookup-fallback'
+            }
+        
+        # Match cited_text to best block within chunk
+        best_match = None
+        best_score = -1
+        best_confidence = 'low'
+        
+        for block_index, block in enumerate(blocks):
+            block_content = block.get('content', '')
+            if not block_content:
+                continue
+            
+            # Use existing verify_citation_match function
+            verification = verify_citation_match(cited_text, block_content)
+            
+            # Calculate match score
+            score = 0
+            if verification['confidence'] == 'high':
+                score += 100
+            elif verification['confidence'] == 'medium':
+                score += 50
+            else:
+                score += 10
+            
+            # Bonus for exact phrase match
+            if verification.get('matched_terms') and 'exact_phrase_match' in verification['matched_terms']:
+                score += 50
+            
+            # Bonus for numeric matches
+            numeric_matches = verification.get('numeric_matches', [])
+            if numeric_matches:
+                score += len(numeric_matches) * 30
+            
+            # Update best match if this score is higher
+            if score > best_score:
+                best_score = score
+                best_match = {
+                    'block_index': block_index,
+                    'block': block,
+                    'verification': verification
+                }
+                best_confidence = verification['confidence']
+        
+        if not best_match:
+            logger.warning(
+                f"[CHUNK_CITATION] No matching block found for cited_text in chunk {chunk_id[:20]}... "
+                f"cited_text: '{cited_text[:50]}...'"
+            )
+            # Fallback to chunk-level bbox
+            chunk_bbox = chunk_data.get('bbox', {})
+            page = chunk_data.get('page_number', chunk_bbox.get('page', 0))
+            
+            return {
+                'chunk_id': chunk_id,
+                'document_id': document_id,
+                'block_id': None,
+                'bbox': {
+                    'left': chunk_bbox.get('left', 0.0),
+                    'top': chunk_bbox.get('top', 0.0),
+                    'width': chunk_bbox.get('width', 0.0),
+                    'height': chunk_bbox.get('height', 0.0),
+                    'page': page,
+                    'original_page': chunk_bbox.get('original_page', page)
+                },
+                'page': page,
+                'cited_text': cited_text,
+                'matched_block_content': None,
+                'confidence': 'low',
+                'method': 'chunk-id-lookup-no-match'
+            }
+        
+        # Extract bbox from best matching block
+        block_bbox = best_match['block'].get('bbox', {})
+        page = block_bbox.get('page', chunk_data.get('page_number', 0))
+        
+        result = {
+            'chunk_id': chunk_id,
+            'document_id': document_id,
+            'block_id': best_match['block_index'],
+            'bbox': {
+                'left': round(float(block_bbox.get('left', 0.0)), 4),
+                'top': round(float(block_bbox.get('top', 0.0)), 4),
+                'width': round(float(block_bbox.get('width', 0.0)), 4),
+                'height': round(float(block_bbox.get('height', 0.0)), 4),
+                'page': int(page) if page is not None else 0,
+            },
+            'page': int(page) if page is not None else 0,
+            'cited_text': cited_text,
+            'matched_block_content': best_match['block'].get('content', ''),
+            'confidence': best_confidence,
+            'method': 'chunk-id-lookup'
+        }
+        
+        # Add original_page if available
+        if 'original_page' in block_bbox:
+            result['bbox']['original_page'] = block_bbox['original_page']
+        
+        logger.info(
+            f"[CHUNK_CITATION] ✅ Matched citation for chunk {chunk_id[:20]}... "
+            f"(block_index: {best_match['block_index']}, confidence: {best_confidence}, "
+            f"page: {result['page']})"
+        )
+        
+        return result
+        
+    except Exception as e:
+        logger.error(
+            f"[CHUNK_CITATION] ❌ Error matching citation to chunk {chunk_id[:20]}...: {e}",
+            exc_info=True
+        )
+        raise
+
+
+class ChunkCitationInput(BaseModel):
+    """Input schema for chunk citation tool."""
+    chunk_id: str = Field(
+        ...,
+        description="The UUID of the chunk from retrieve_chunks tool (e.g., '550e8400-e29b-41d4-a716-446655440000')"
+    )
+    cited_text: str = Field(
+        ...,
+        description="The exact text from the chunk that you want to cite. Use the original text from chunk_text, not a paraphrase. Example: 'Market Value: £1,950,000'"
+    )
+
+
+def create_chunk_citation_tool() -> StructuredTool:
+    """
+    Create a LangChain StructuredTool for matching citations to chunks.
+    
+    This tool allows the LLM to cite specific text from chunks by:
+    1. Providing the chunk_id (from retrieve_chunks tool)
+    2. Providing the exact cited_text (original text from chunk, not a paraphrase)
+    3. Getting back precise bbox coordinates for that text
+    
+    Returns:
+        LangChain StructuredTool instance
+    """
+    tool_description = """
+## PURPOSE
+Maps citations to precise bbox coordinates by matching cited text to blocks within a chunk.
+
+This tool fetches the chunk's blocks from the database and finds the specific block that contains your cited text, returning precise bbox coordinates for highlighting.
+
+## WHEN TO USE
+- **IMMEDIATELY after receiving chunks from retrieve_chunks tool**
+- When you identify a relevant chunk that contains information you want to cite
+- **BEFORE generating your final answer** - capture citations during chunk analysis
+- For each relevant fact in each chunk you receive
+
+## HOW IT WORKS
+1. You provide the chunk_id (from the chunk you received from retrieve_chunks)
+2. You provide the exact cited_text (the original text from chunk_text, not a paraphrase)
+3. The tool fetches the chunk's blocks from the database
+4. The tool matches your cited_text to the specific block within the chunk
+5. The tool returns precise bbox coordinates for that block
+
+## PARAMETERS
+
+### chunk_id (REQUIRED)
+- The UUID of the chunk from retrieve_chunks tool
+- Example: "550e8400-e29b-41d4-a716-446655440000"
+- This is the 'chunk_id' field from the retrieve_chunks result
+
+### cited_text (REQUIRED)
+- The exact text from the chunk that you want to cite
+- **CRITICAL: Use the original text from chunk_text, not a paraphrase**
+- Example: "Market Value: £1,950,000"
+- Example: "Valuation date: 15 March 2024"
+- Example: "Valuer: John Smith MRICS"
+
+## RETURN VALUE
+{
+    'chunk_id': str,
+    'document_id': str,
+    'block_id': int,  # Index in blocks array
+    'bbox': {
+        'left': float,
+        'top': float,
+        'width': float,
+        'height': float,
+        'page': int
+    },
+    'page': int,
+    'cited_text': str,
+    'matched_block_content': str,
+    'confidence': 'high'|'medium'|'low',
+    'method': 'chunk-id-lookup'
+}
+
+## EXAMPLES
+
+### Example 1: Basic Usage
+1. Call retrieve_chunks(query="property valuation", document_ids=["doc1"])
+   → Returns: [{"chunk_id": "chunk1", "chunk_text": "Market Value: £1,950,000\\nValuation date: 15 March 2024", ...}]
+
+2. **IMMEDIATELY** call match_citation_to_chunk(
+       chunk_id="chunk1",
+       cited_text="Market Value: £1,950,000"
+   )
+   → Returns: {bbox: {...}, page: 1, confidence: 'high', ...}
+
+3. Then generate your answer with the citation
+
+### Example 2: Multiple Citations from Same Chunk
+1. Receive chunk from retrieve_chunks:
+   {"chunk_id": "chunk1", "chunk_text": "Market Value: £1,950,000\\n90-day value: £1,800,000\\nValuation date: 15 March 2024", ...}
+
+2. For each relevant fact, call match_citation_to_chunk:
+   - match_citation_to_chunk(chunk_id="chunk1", cited_text="Market Value: £1,950,000")
+   - match_citation_to_chunk(chunk_id="chunk1", cited_text="90-day value: £1,800,000")
+   - match_citation_to_chunk(chunk_id="chunk1", cited_text="Valuation date: 15 March 2024")
+
+3. Collect all citation results
+4. Generate answer with citations
+
+### Example 3: Multiple Chunks
+1. Receive multiple chunks from retrieve_chunks
+2. For each chunk, identify relevant facts
+3. For each fact, call match_citation_to_chunk with that chunk's chunk_id
+4. Generate answer with all citations
+
+## IMPORTANT NOTES
+- **Call this tool IMMEDIATELY after receiving chunks, not after generating your answer**
+- Use the **original text from chunk_text**, not a paraphrase
+- This ensures accurate citation mapping
+- The tool automatically finds the best matching block within the chunk
+- Confidence levels: 'high' (exact match), 'medium' (close match), 'low' (fuzzy match)
+"""
+    
+    return StructuredTool.from_function(
+        func=match_citation_to_chunk,
+        name="match_citation_to_chunk",
+        description=tool_description,
+        args_schema=ChunkCitationInput
+    )
+
+
 def create_citation_tool(
     metadata_lookup_tables: Dict[str, Dict[str, Dict[str, Any]]]
 ) -> Tuple[StructuredTool, CitationTool]:
@@ -895,9 +1218,9 @@ You are in Phase 1: Citation Extraction. You MUST call this tool for EVERY factu
 
 **⚠️ CRITICAL FOR VALUATION QUERIES:**
 If the user is asking about "value" or "valuation", you MUST cite:
-- Primary Market Value (e.g., "Market Value: £2,300,000")
-- ALL reduced marketing period values (e.g., "90-day value: £1,950,000", "180-day value: £2,050,000")
-- Market Rent (e.g., "Market Rent: £6,000 per calendar month")
+- Primary Market Value (e.g., "Market Value: £X,XXX,XXX")
+- ALL reduced marketing period values (e.g., "90-day value: £X,XXX,XXX", "180-day value: £X,XXX,XXX")
+- Market Rent (e.g., "Market Rent: £X,XXX per calendar month")
 - **DO NOT** skip any valuation scenarios - search through ALL document extracts, including later pages (28-30+)
 
 **HOW TO USE:**
@@ -909,15 +1232,15 @@ If the user is asking about "value" or "valuation", you MUST cite:
    - cited_text: The factual claim (exact text or your paraphrase)
 
 **EXAMPLES:**
-- cite_source(block_id="BLOCK_CITE_ID_42", citation_number=1, cited_text="Market Value: £2,300,000")
-  - ✅ CORRECT: Block 42 contains "Market Value: £2,300,000"
-- cite_source(block_id="BLOCK_CITE_ID_15", citation_number=2, cited_text="Valuation date: 12th February 2024")
-  - ✅ CORRECT: Block 15 contains "12th February 2024"
-- cite_source(block_id="BLOCK_CITE_ID_7", citation_number=3, cited_text="Valuer: Sukhbir Tiwana MRICS")
-  - ✅ CORRECT: Block 7 contains "Sukhbir Tiwana MRICS"
-- cite_source(block_id="BLOCK_CITE_ID_531", citation_number=3, cited_text="90-day value: £1,950,000")
-  - ❌ WRONG: Block 531 contains "under offer at £2,400,000" (different value!)
-  - ✅ CORRECT: Find the block that contains "£1,950,000" and "90-day" and use that block_id instead
+- cite_source(block_id="BLOCK_CITE_ID_42", citation_number=1, cited_text="Market Value: £X,XXX,XXX")
+  - ✅ CORRECT: Block 42 contains "Market Value: £X,XXX,XXX"
+- cite_source(block_id="BLOCK_CITE_ID_15", citation_number=2, cited_text="Valuation date: DD Month YYYY")
+  - ✅ CORRECT: Block 15 contains "DD Month YYYY"
+- cite_source(block_id="BLOCK_CITE_ID_7", citation_number=3, cited_text="Valuer: Example Valuer MRICS")
+  - ✅ CORRECT: Block 7 contains "Example Valuer MRICS"
+- cite_source(block_id="BLOCK_CITE_ID_531", citation_number=3, cited_text="90-day value: £X,XXX,XXX")
+  - ❌ WRONG: Block 531 contains "under offer at £X,XXX,XXX" (different value!)
+  - ✅ CORRECT: Find the block that contains "£X,XXX,XXX" and "90-day" and use that block_id instead
 
 **CRITICAL:**
 - You MUST call this tool multiple times (minimum 3-5 calls for most queries)
