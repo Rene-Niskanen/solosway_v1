@@ -26,6 +26,8 @@ import { useChatHistory } from './ChatHistoryContext';
 import { backendApi } from '../services/backendApi';
 import { QuickStartBar } from './QuickStartBar';
 import { ReasoningSteps, ReasoningStep } from './ReasoningSteps';
+import { ExecutionTrace, ExecutionEvent } from './ExecutionTrace';
+import { AnalysingIndicator } from './AnalysingIndicator';
 import { ResponseModeChoice } from './FileChoiceStep';
 import { ModeSelector } from './ModeSelector';
 import { useMode } from '../contexts/ModeContext';
@@ -2633,7 +2635,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     selectedDocumentIds?: string[]; // Document IDs selected when query was sent
     selectedDocumentNames?: string[]; // Document names for display
     isLoading?: boolean;
-    reasoningSteps?: ReasoningStep[]; // Reasoning steps for this message
+    reasoningSteps?: ReasoningStep[]; // Reasoning steps for this message (legacy)
+    executionEvents?: Array<{ type: string; description: string; metadata?: any; timestamp: number; event_id: string; parent_event_id?: string }>; // NEW: Execution trace events
     citations?: Record<string, CitationData>; // NEW: Citations with bbox metadata
     fromCitation?: boolean; // NEW: Flag to indicate if query came from citation action
     citationBboxData?: {
@@ -3624,6 +3627,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   );
                 });
               },
+              undefined, // onExecutionEvent (not used in citation queries)
               citationContext || undefined, // citationContext (from citation click)
               responseMode, // responseMode (from file choice)
               attachmentContext, // attachmentContext (extracted text from files)
@@ -4234,6 +4238,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         fileSize = existingFile.size || 0;
       } else {
         // Download document only if not already loaded
+        // OPTIMIZATION: The download is already async, but we can optimize further
+        // by opening the viewer with docId and letting it handle loading state
         console.log('📥 [CITATION] Downloading document (not in cache)');
         const downloadUrl = `${backendUrl}/api/files/download?document_id=${docId}`;
         
@@ -4268,7 +4274,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
 
       // Ensure the ExpandedCardView can open instantly without a second download.
       // (StandaloneExpandedCardView now reuses PreviewContext cache when available.)
-      preloadFile(fileData);
+      // Only preload if not already cached to avoid duplicate work
+      if (!existingFile || !existingFile.file) {
+        preloadFile(fileData);
+      }
 
       // NEW: Validate bbox before using it
       const validateBbox = (bbox: any): boolean => {
@@ -5116,6 +5125,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   original_filename: citation.data.original_filename
                 };
               },
+              undefined, // onExecutionEvent (not used in initial queries)
               // citationContext: Pass structured citation metadata (hidden from user, for LLM)
               citationContext || undefined,
               undefined, // responseMode
@@ -6076,7 +6086,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 type: 'response',
                 text: finalText,
                   isLoading: false,
-                  reasoningSteps: existingMessage?.reasoningSteps || [], // Preserve reasoning steps
+                  reasoningSteps: existingMessage?.reasoningSteps || [], // Preserve reasoning steps (legacy)
+                  executionEvents: existingMessage?.executionEvents || [], // NEW: Preserve execution events
                     citations: mergedCitations // Merged citations applied once
               };
               
@@ -6299,6 +6310,30 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               if (docId) {
                 preloadDocumentById(docId, citation.data.original_filename);
               }
+            },
+            // onExecutionEvent: Handle execution trace events (NEW)
+            (event: { type: string; description: string; metadata?: any; timestamp: number; event_id: string; parent_event_id?: string }) => {
+              console.log('🔍 SideChatPanel: Received execution event:', event);
+              
+              setChatMessages(prev => {
+                const updated = prev.map(msg => {
+                  if (msg.id === loadingResponseId) {
+                    const existingEvents = msg.executionEvents || [];
+                    // Avoid duplicates by checking event_id
+                    if (existingEvents.some(e => e.event_id === event.event_id)) {
+                      return msg;
+                    }
+                    
+                    return { 
+                      ...msg, 
+                      executionEvents: [...existingEvents, event as any] 
+                    };
+                  }
+                  return msg;
+                });
+                persistedChatMessagesRef.current = updated;
+                return updated;
+              });
             },
             // citationContext: Pass structured citation metadata (hidden from user, for LLM)
             // ALWAYS pass citationContext when available - it contains document_id, page_number, block_id
@@ -6837,7 +6872,21 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             position: 'relative',
             minHeight: '1px' // Prevent collapse
           }}>
-          {message.reasoningSteps?.length > 0 && (showReasoningTrace || message.isLoading) && (
+          {/* NEW: Show "thinking..." indicator at appropriate times */}
+          {message.isLoading && (
+            <AnalysingIndicator
+              isLoading={message.isLoading}
+              hasExecutionEvents={(message.executionEvents?.length || 0) > 0}
+              hasText={!!message.text}
+              executionEventsCount={message.executionEvents?.length || 0}
+            />
+          )}
+          
+          {/* NEW: Show execution trace (preferred) or reasoning steps (legacy) */}
+          {message.executionEvents && message.executionEvents.length > 0 && (
+            <ExecutionTrace key={`execution-${finalKey}`} events={message.executionEvents as ExecutionEvent[]} isLoading={message.isLoading} hasText={!!message.text} />
+          )}
+          {!message.executionEvents && message.reasoningSteps?.length > 0 && (showReasoningTrace || message.isLoading) && (
             <ReasoningSteps key={`reasoning-${finalKey}`} steps={message.reasoningSteps} isLoading={message.isLoading} hasResponseText={!!message.text} isAgentMode={isAgentMode} />
           )}
             {/* Show bouncing dot only after ALL reading is complete - right before response text arrives */}

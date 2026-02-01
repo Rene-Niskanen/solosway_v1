@@ -51,8 +51,8 @@ def retrieve_documents(
     query: str,
     query_type: Optional[str] = None,
     document_types: Optional[List[str]] = None,
-    top_k: int = 20,
-    min_score: float = 0.7,
+    top_k: Optional[int] = None,
+    min_score: Optional[float] = None,
     business_id: Optional[str] = None,
     search_goal: Optional[str] = None
 ) -> List[Dict]:
@@ -97,6 +97,12 @@ def retrieve_documents(
         Returns empty list if no documents meet the score threshold (triggers retry).
     """
     try:
+        # Handle None defaults
+        if top_k is None:
+            top_k = 20
+        if min_score is None:
+            min_score = 0.7
+        
         if not query or not query.strip():
             logger.warning("Empty query provided to retrieve_documents")
             return []
@@ -168,6 +174,9 @@ def retrieve_documents(
             else:
                 # Specific queries: more lenient than default (0.2 instead of 0.3)
                 # This helps catch documents that might have lower similarity but are still relevant
+                # Handle None min_score
+                if min_score is None:
+                    min_score = 0.7  # Default
                 search_threshold = min(min_score, 0.2)  # Use lower of min_score or 0.2
                 logger.debug(f"   Specific query - using threshold: {search_threshold}")
             
@@ -434,29 +443,15 @@ def retrieve_documents(
             )
             logger.debug(f"   Using heuristic classification (LLM query_type not provided)")
         
-        # Set threshold based on classification and search_goal
-        # SPECIAL CASE: Summarize queries get very lenient threshold
-        if search_goal == "summarize":
-            # Summarize queries: very lenient (0.1) - prioritize keyword matching over similarity
-            guardrail_threshold = 0.1
-            logger.debug(f"   Summarize query → very lenient threshold: {guardrail_threshold}")
-        elif is_broad_query:
-            # Broad queries: use lower threshold (0.15) regardless of min_score
-            # This ensures broad queries like "property documents" return results
-            guardrail_threshold = 0.15
-            logger.debug(f"   Broad query → threshold: {guardrail_threshold}")
-        else:
-            # Specific queries: use more lenient threshold (0.2 instead of 0.3)
-            # This helps catch documents with lower similarity that are still relevant
-            guardrail_threshold = max(0.2, min_score * 0.3)  # More lenient: 30% of min_score or 0.2, whichever is higher
-            logger.debug(f"   Specific query → lenient threshold: {guardrail_threshold}")
-        
-        # Filter results above threshold (returns all that meet quality bar, not just top one)
-        filtered_results = [r for r in results if r['score'] >= guardrail_threshold]
+        # REMOVED: Redundant guardrail threshold filtering
+        # The vector search threshold already filters at the database level (0.15 for broad, 0.2 for specific)
+        # The final fused scores are already filtered by the vector search, so no need for another filter layer
+        # Use all results from fusion - the vector search threshold is sufficient
+        filtered_results = results
         
         if not filtered_results:
             logger.warning(
-                f"⚠️ No documents above threshold {guardrail_threshold}. "
+                f"⚠️ No documents found. "
                 f"Top score was {results[0]['score'] if results else 'N/A'}. "
                 f"Returning empty list to trigger retry/fallback."
             )

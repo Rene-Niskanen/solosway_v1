@@ -16,6 +16,10 @@ from .supabase_client_factory import get_supabase_client
 from .text_cleaning_service import TextCleaningService
 from .chunk_quality_service import ChunkQualityService
 from .chunk_validation_service import ChunkValidationService
+from .section_header_extractor import (
+    extract_section_header_from_blocks,
+    extract_keywords
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1143,6 +1147,12 @@ class SupabaseVectorService:
             
             # Prepare records for insertion
             records = []
+            
+            # Phase 1 & 2: Track current section header for propagation
+            current_section_header = None
+            current_section_title = None
+            current_section_level = None
+            
             for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
                 chunk_meta = chunk_metadata_list[i] if chunk_metadata_list and i < len(chunk_metadata_list) else {}
                 
@@ -1174,30 +1184,70 @@ class SupabaseVectorService:
                 
                 chunk_blocks = chunk_meta.get('blocks', [])
                 
-                # Extract section header metadata if present
-                section_header = chunk_meta.get('section_header') if chunk_meta else None
-                normalized_header = chunk_meta.get('normalized_header') if chunk_meta else None
-                section_keywords = chunk_meta.get('section_keywords', []) if chunk_meta else []
-                has_section_header = chunk_meta.get('has_section_header', False) if chunk_meta else False
-                section_title = chunk_meta.get('section_title') if chunk_meta else None
-                section_level = chunk_meta.get('section_level') if chunk_meta else None
+                # PHASE 1: Extract section header from blocks array (primary source)
+                section_header_info = None
+                if chunk_blocks and isinstance(chunk_blocks, list):
+                    section_header_info = extract_section_header_from_blocks(chunk_blocks)
                 
-                # Store section header info in metadata JSONB (create metadata dict if needed)
-                chunk_metadata_jsonb = {}
-                if has_section_header and section_header:
-                    chunk_metadata_jsonb = {
-                        'section_header': section_header,
-                        'section_title': section_title,  # Store section_title for better retrieval
-                        'section_level': section_level,  # Store section level (1, 2, 3)
-                        'normalized_header': normalized_header,
-                        'section_keywords': section_keywords,
-                        'has_section_header': True
+                # PHASE 2: Propagate section header if no new one found
+                if section_header_info:
+                    # New section header found - update current section
+                    current_section_header = section_header_info['section_header']
+                    current_section_title = section_header_info['section_title']
+                    current_section_level = section_header_info['section_level']
+                    logger.debug(f"📑 [SECTION_HEADER] Chunk {i}: Found new section header '{current_section_header}' (level {current_section_level})")
+                elif current_section_header:
+                    # No new header, but we have a current section - propagate it
+                    section_header_info = {
+                        "section_header": current_section_header,
+                        "section_title": current_section_title,
+                        "section_level": current_section_level,
+                        "page_number": None,  # Not from this chunk
+                        "bbox": None
                     }
-                elif chunk_meta:
+                    logger.debug(f"📑 [SECTION_HEADER] Chunk {i}: Propagating section '{current_section_header}'")
+                
+                # Fallback: Check chunk_meta for section header (legacy support)
+                if not section_header_info:
+                    section_header = chunk_meta.get('section_header') if chunk_meta else None
+                    section_title = chunk_meta.get('section_title') if chunk_meta else None
+                    section_level = chunk_meta.get('section_level') if chunk_meta else None
+                    normalized_header = chunk_meta.get('normalized_header') if chunk_meta else None
+                    has_section_header = chunk_meta.get('has_section_header', False) if chunk_meta else False
+                    
+                    if has_section_header and section_header:
+                        section_header_info = {
+                            "section_header": section_header,
+                            "section_title": section_title or normalized_header,
+                            "section_level": section_level or 2,  # Default to level 2
+                            "page_number": chunk_page,
+                            "bbox": chunk_bbox
+                        }
+                        # Update current section for propagation
+                        current_section_header = section_header
+                        current_section_title = section_title or normalized_header
+                        current_section_level = section_level or 2
+                
+                # Store section header info in metadata JSONB
+                chunk_metadata_jsonb = {}
+                if section_header_info:
+                    # Extract keywords from section header
+                    section_keywords = extract_keywords(section_header_info['section_header'])
+                    
+                    chunk_metadata_jsonb = {
+                        'section_header': section_header_info['section_header'],
+                        'section_title': section_header_info['section_title'],  # Normalized title (used as section_id)
+                        'section_level': section_header_info['section_level'],  # Hierarchy level (1, 2, 3)
+                        'normalized_header': section_header_info['section_title'],  # Same as section_title
+                        'section_keywords': section_keywords,
+                        'has_section_header': (section_header_info.get('page_number') is not None)  # True if header is in this chunk
+                    }
+                else:
+                    # No section header (document start, before first header)
                     chunk_metadata_jsonb = {
                         'has_section_header': False,
-                        'section_title': section_title if section_title else None,  # Store even if no header detected
-                        'section_level': section_level if section_level else None
+                        'section_title': None,
+                        'section_level': None
                     }
                 
                 # Extract image blocks from chunk_blocks for citation purposes
@@ -1378,12 +1428,20 @@ class SupabaseVectorService:
                         f"{blocks_invalid} blocks invalid (skipped)"
                     )
                 
+                # PHASE 3: Include section header in chunk_text for LLM visibility
+                chunk_text_for_storage = chunk  # Original chunk text
+                if section_header_info and section_header_info.get('section_header'):
+                    # Prepend section header to chunk text
+                    section_prefix = f"[Section: {section_header_info['section_header']}]\n\n"
+                    chunk_text_for_storage = section_prefix + chunk_text_for_storage
+                    logger.debug(f"📑 [SECTION_HEADER] Chunk {i}: Added section prefix to chunk_text")
+                
                 record = {
                     'id': str(uuid.uuid4()),
                     'document_id': document_id,
                     'property_id': metadata.get('property_id'),
-                    'chunk_text': chunk,  # Original chunk (for display/citations)
-                    'chunk_text_clean': cleaned_chunks[i] if not lazy_embedding else None,  # Clean text (for embedding)
+                    'chunk_text': chunk_text_for_storage,  # Includes section header prefix if available
+                    'chunk_text_clean': cleaned_chunks[i] if not lazy_embedding else None,  # Clean text (for embedding) - NO section prefix
                     'chunk_context': chunk_context,  # Generated context (for reference)
                     'chunk_quality_score': quality_scores[i] if i < len(quality_scores) else None,  # Quality score (0.0-1.0)
                     'embedding': embedding,  # Embedding of cleaned chunk (or None for lazy)

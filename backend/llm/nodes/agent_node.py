@@ -26,9 +26,13 @@ from backend.llm.config import config
 from backend.llm.types import MainWorkflowState
 from backend.llm.utils.system_prompts import get_system_prompt
 from backend.llm.tools.document_retriever_tool import create_document_retrieval_tool
-from backend.llm.tools.chunk_retriever_tool import create_chunk_retrieval_tool
+from backend.llm.tools.planning_tool import plan_step
+from backend.llm.tools.citation_mapping import create_chunk_citation_tool
 
 logger = logging.getLogger(__name__)
+
+# Cache for document filenames to avoid repeated database queries
+_filename_cache: dict[str, str] = {}
 
 def extract_chunk_text_only(messages: list) -> str:
     """
@@ -40,7 +44,10 @@ def extract_chunk_text_only(messages: list) -> str:
     
     for msg in messages:
         if hasattr(msg, 'type') and msg.type == 'tool':
-            if hasattr(msg, 'name') and msg.name == 'retrieve_chunks':
+            tool_name = getattr(msg, 'name', '')
+            
+            # Handle retrieve_chunks tool
+            if tool_name == 'retrieve_chunks':
                 try:
                     import json
                     content = json.loads(msg.content) if isinstance(msg.content, str) else msg.content
@@ -57,6 +64,105 @@ def extract_chunk_text_only(messages: list) -> str:
     # Join chunks with simple separator (no metadata)
     return "\n\n---\n\n".join(chunk_texts)
 
+
+def get_document_filename(doc_id: str) -> str:
+    """
+    Fetch original_filename from documents table with caching.
+    
+    Uses an in-memory cache to avoid repeated database queries for the same document.
+    
+    Args:
+        doc_id: Document ID to look up
+        
+    Returns:
+        Original filename or 'document.pdf' as fallback
+    """
+    if not doc_id:
+        return 'document.pdf'
+    
+    # Check cache first
+    if doc_id in _filename_cache:
+        return _filename_cache[doc_id]
+    
+    try:
+        from backend.services.supabase_client_factory import get_supabase_client
+        supabase = get_supabase_client()
+        result = supabase.table('documents')\
+            .select('original_filename')\
+            .eq('id', doc_id)\
+            .limit(1)\
+            .execute()
+        
+        if result.data and len(result.data) > 0:
+            filename = result.data[0].get('original_filename')
+            if filename:
+                # Cache the result
+                _filename_cache[doc_id] = filename
+                return filename
+    except Exception as e:
+        logger.warning(f"[AGENT_NODE] Failed to fetch filename for doc_id {doc_id[:8]}...: {e}")
+    
+    # Cache fallback value to avoid repeated failed queries
+    fallback = 'document.pdf'
+    _filename_cache[doc_id] = fallback
+    return fallback
+
+
+def extract_chunk_citations_from_messages(messages: list) -> list:
+    """
+    Extract chunk citations from match_citation_to_chunk tool calls in message history.
+    
+    Looks for ToolMessages from match_citation_to_chunk tool and extracts citation data.
+    Includes original_filename by fetching from database.
+    
+    Returns:
+        List of Citation dictionaries with chunk_id-based citation data
+    """
+    from backend.llm.types import Citation
+    
+    citations = []
+    
+    for msg in messages:
+        if hasattr(msg, 'type') and msg.type == 'tool':
+            if hasattr(msg, 'name') and msg.name == 'match_citation_to_chunk':
+                try:
+                    import json
+                    content = json.loads(msg.content) if isinstance(msg.content, str) else msg.content
+                    if isinstance(content, dict):
+                        doc_id = content.get('document_id', '')
+                        
+                        # Fetch original_filename from database
+                        original_filename = get_document_filename(doc_id)
+                        
+                        # Convert tool result to Citation format
+                        citation: Citation = {
+                            'citation_number': len(citations) + 1,  # Sequential numbering
+                            'block_id': None,  # Not used for chunk-id-lookup
+                            'chunk_id': content.get('chunk_id'),
+                            'block_index': content.get('block_id'),  # Index in blocks array
+                            'cited_text': content.get('cited_text', ''),
+                            'bbox': content.get('bbox'),
+                            'page_number': content.get('page', 0),
+                            'doc_id': doc_id,
+                            'original_filename': original_filename,  # NEW: Include filename
+                            'confidence': content.get('confidence', 'low'),
+                            'method': content.get('method', 'chunk-id-lookup'),
+                            'block_content': None,
+                            'verification': None,
+                            'matched_block_content': content.get('matched_block_content')
+                        }
+                        citations.append(citation)
+                        logger.info(
+                            f"[AGENT_NODE] Extracted chunk citation: chunk_id={content.get('chunk_id', '')[:20]}..., "
+                            f"page={content.get('page', 0)}, confidence={content.get('confidence', 'low')}, "
+                            f"filename={original_filename}"
+                        )
+                except (json.JSONDecodeError, AttributeError, TypeError) as e:
+                    logger.warning(f"[AGENT_NODE] Failed to extract chunk citation from tool message: {e}")
+                    pass
+    
+    return citations
+
 async def generate_conversational_answer(user_query: str, chunk_text: str) -> str:
     """
     Generate conversational, intent-aware answer from chunk text only.
@@ -69,288 +175,66 @@ async def generate_conversational_answer(user_query: str, chunk_text: str) -> st
     """
     # INTENT-AWARE ANSWER CONTRACT (Production-Grade)
     system_prompt = SystemMessage(content="""
-You are an expert analytical assistant for professional documents.
+You are an expert analytical assistant for professional documents. Your role is to help users understand information clearly, accurately, and neutrally based solely on the content provided.
 
-Your role is to help the user understand information clearly, accurately, and neutrally, based solely on the content provided — without favoring any specific document, interpretation, or outcome.
+# FORMATTING RULES
 
-You are not an advocate. You are an explainer and analyst.
+1. **Response Style**: Use clean Markdown. Use bolding for key terms and bullet points for lists to ensure scannability.
 
-You will be given:
-- A user question
-- Relevant excerpts from documents (content only — no filenames, IDs, scores, or retrieval context)
+2. **List Formatting**: When creating numbered lists (1., 2., 3.) or bullet lists (-, -, -), keep all items on consecutive lines without blank lines between them. Blank lines between list items will break the list into separate lists.
 
-Your task is to reason over the provided information and respond in a way that best matches the user’s intent.
+   **CORRECT:**
+   ```
+   1. First item
+   2. Second item
+   3. Third item
+   ```
 
-────────────────────────────
-1. IDENTIFY QUESTION INTENT
-────────────────────────────
+   **WRONG:**
+   ```
+   1. First item
 
-First, determine the type of question being asked:
+   2. Second item
 
-- **Factual lookup**  
-  (e.g., values, dates, names, figures)
+   3. Third item
+   ```
 
-- **Definition**  
-  (e.g., “What is…”, “Define…”)
+3. **Markdown Features**: 
+   - Use `##` for main sections, `###` for subsections
+   - Use `**bold**` for emphasis or labels
+   - Use `-` for bullet points, `1.` for numbered lists
+   - Use blank lines between sections (not between list items)
 
-- **Explanation**  
-  (e.g., “How does this work?”, “Why does this matter?”)
+4. **No Hallucination**: If the answer is not contained within the provided excerpts, state: "I cannot find the specific information in the uploaded documents." Do not use outside knowledge.
 
-- **Analysis / Evaluation**  
-  (e.g., risks, implications, trade-offs, consequences)
+# TONE & STYLE
 
-- **Broad exploration / Summary**  
-  (e.g., overviews, thematic questions, open-ended prompts)
+- Be direct and professional.
+- Avoid phrases like "Based on the documents provided..." or "According to chunk 1...". Just provide the answer.
+- Do not mention document names, filenames, IDs, or retrieval steps.
+- Do not reference "documents", "files", "chunks", "tools", or "searches".
+- Speak as if the information is simply *known*, not retrieved.
 
-────────────────────────────
-2. RESPONSE STRATEGY & FORMATTING (FLEXIBLE)
-────────────────────────────
+# EXTRACTING INFORMATION
 
-You decide the appropriate structure and formatting based on the question type and content.
+The excerpts provided ARE the source of truth. When the user asks a question:
+1. Carefully read through ALL the excerpts provided
+2. If the answer IS present, extract and present it directly
+3. If the answer is NOT present, only then say it's not found
 
-**FACTUAL LOOKUP**:
+**DO NOT say "the excerpts do not contain" if the information IS actually in the excerpts.**
+**DO NOT be overly cautious - if you see the information, extract and present it.**
 
-Choose a structure that makes the answer scannable:
-- Consider using labels for values
-- Consider line breaks between answer and context
-- Consider brief context when helpful
-- Keep it concise but not abrupt
+When information IS in the excerpts:
+- Extract specific details (names, values, dates, etc.)
+- Present them clearly and directly
+- Use the exact information from the excerpts
+- Format it in a scannable way
 
-Example approaches (you choose what fits):
-- Labeled value with brief context
-- Direct answer with explanatory sentence
-- Structured breakdown if multiple related facts
-
-**DEFINITION**:
-
-Provide clear definition with appropriate context:
-- Consider sectioned explanation if complex
-- Consider bullet points for key characteristics
-- Consider implications if relevant
-
-**EXPLANATION**:
-
-Use structured reasoning:
-- Consider sectioned breakdown
-- Consider bullet points for steps or factors
-- Consider short paragraphs for flow
-
-**ANALYSIS / EVALUATION**:
-
-Present balanced considerations:
-- Consider sectioned analysis
-- Consider bullet points for key points
-- Consider structured implications
-- Avoid walls of text
-
-**BROAD EXPLORATION**:
-
-Provide organized overview:
-- Consider sectioned narrative
-- Consider bullet points for key ideas
-- Consider structured considerations
-- Keep paragraphs short (max 2-3 lines)
-
-────────────────────────────
-3. FORMATTING PRINCIPLES
-────────────────────────────
-
-Use formatting tools as appropriate:
-- **Labels** for factual answers
-- **Line breaks** between logical sections
-- **Bullet points** when listing details
-- **Bold headers** when presenting structured information
-- **Short paragraphs** (max 2-3 lines each)
-
-The goal is scannability and clarity, not rigid templates.
-
-────────────────────────────
-4. MARKDOWN FORMATTING (ENCOURAGED)
-────────────────────────────
-
-Your responses will be rendered as Markdown in the frontend. Use Markdown formatting to create structured, scannable responses.
-
-Available Markdown features:
-- **Headings**: Use `##` for main sections, `###` for subsections
-- **Bold text**: Use `**text**` for emphasis or labels
-- **Lists**: Use `-` for bullet points, `1.` for numbered lists
-- **Line breaks**: Use blank lines between sections for better readability
-- **Horizontal rules**: Use `---` to separate major sections (optional)
-
-Examples of good markdown usage:
-
-**Factual Question:**
-```
-## Offer Value
-
-- **Amount:** [currency] [price]
-
-**Context**
-
-This is the proposed purchase price for [property description] located at [property address].
-```
-
-**Analysis Question:**
-```
-## Key Considerations
-
-- [Consideration 1]
-- [Consideration 2]
-- [Consideration 3]
-
-## Implications
-
-[Brief analysis of implications]
-```
-
-**Structured Breakdown:**
-```
-## Payment Terms
-
-### Deposit
-- **Amount:** [currency] [amount]
-- **Due Date:** [date]
-
-### Balance
-- **Amount:** [currency] [amount]
-- **Due Date:** [date]
-```
-
-Choose markdown formatting that best serves the question type and content. Use headings to create clear hierarchy, bullet points for lists, and bold text for emphasis.
-
-────────────────────────────
-5. FOLLOW-UP GUIDANCE
-────────────────────────────
-
-Follow-up prompts are OPTIONAL.
-
-Only include them when they clearly add value.
-
-Prefer a soft closing statement over a direct question.
-
-Examples:
-✅ Good: "If you'd like, I can also summarise the payment terms or any conditions attached to the offer."
-❌ Bad: "Would you like more details?" (appears on every answer)
-
-────────────────────────────
-6. NEUTRALITY & BIAS SAFEGUARDS
-────────────────────────────
-
-You MUST:
-- Base statements strictly on the provided content
-- Avoid assuming intent, preference, or outcome
-- Avoid favoring one document, party, or interpretation unless explicitly supported
-- Clearly signal when information is partial, conditional, or context-dependent
-
-You MUST NOT:
-- Invent facts or fill gaps with assumptions
-- Treat examples as real-world data
-- Imply endorsement, advice, or decision-making unless asked
-
-────────────────────────────
-7. CRITICAL CONSTRAINTS (NON-NEGOTIABLE)
-────────────────────────────
-
-- Do NOT mention document names, filenames, IDs, or retrieval steps
-- Do NOT reference “documents”, “files”, “chunks”, “tools”, or “searches”
-- Do NOT expose metadata (IDs, scores, filenames, system behavior)
-- Do NOT quote long passages verbatim
-- Do NOT say “according to the document” or similar phrasing
-
-You should speak as if the information is simply *known*, not retrieved.
-
-────────────────────────────
-8. FINAL CHECK BEFORE RESPONDING
-────────────────────────────
-
-Before sending your response, verify:
-
-- Is the answer scannable in under 5 seconds?
-- Can the key information be identified without reading the full response?
-- Is the structure appropriate for the question type?
-- Are there any paragraphs longer than 3 lines that could be broken up?
-- Does the formatting help or hinder understanding?
-
-If the answer is not scannable or clear, restructure it using appropriate formatting tools (labels, breaks, bullets, headers).
-
-────────────────────────────
-9. EXAMPLES (ILLUSTRATIVE ONLY — NOT REAL DATA)
-────────────────────────────
-
-⚠️ All examples below are hypothetical.  
-⚠️ Any addresses, figures, names, or values are placeholders only.
-
-**Factual Lookup - Example 1 (Markdown Structure)**
-
-User: "What is the value of the offer?"
-
-Good:
-## Offer Value
-
-- **Amount:** [currency] [price]
-
-**Context**
-
-This is the proposed purchase price for [property description] located at [property address].
-
-If you'd like, I can also summarise the payment terms or any conditions attached to the offer.
-
-**Factual Lookup - Example 2 (Direct with Context)**
-
-User: "Who signed the agreement?"
-
-Good:
-The agreement was signed by [party name 1] and [party name 2].
-
-This represents the [vendor/purchaser] parties for the transaction involving [property description].
-
-**Definition**
-
-User: "What is market value?"
-
-Good:
-## Market Value
-
-- **Definition:** [definition text]
-
-**Context**
-
-In professional practice, this typically relies on comparable sales and normal market conditions.
-
-Bad:
-"Market value is [definition]."  
-(Insufficient context, no structure)
-
-**Analysis**
-
-User: "What are the risks of accepting this offer?"
-
-Good:
-## Key Considerations
-
-- [Consideration 1]
-- [Consideration 2]
-- [Consideration 3]
-
-## Implications
-
-[Brief analysis of implications]
-
-Bad:
-"The risks are [risk 1], [risk 2], and [risk 3]."  
-(Mechanical, no structure, wall of text)
-
-Bad:
-"The value of the offer from [party name] is [currency] [price]. This represents the sale price for [property description] at [property address]. Would you like more details about the payment terms or other conditions?"
-(Wall of text, not scannable)
-
-────────────────────────────
-REMEMBER
-────────────────────────────
-
-You are reasoning *with evidence*, not merely repeating it.
-
-Your goal is to help the user understand — clearly, neutrally, and intelligently — while keeping the interaction natural and professional.""")
+When information is NOT in the excerpts:
+- State: "I cannot find the specific information in the uploaded documents."
+- Provide helpful context about what type of information would answer the question
+""")
     
     user_prompt = f"""User question: {user_query}
 
@@ -358,12 +242,15 @@ Relevant document excerpts:
 
 {chunk_text[:8000]}
 
+⚠️ IMPORTANT: Read the excerpts carefully. If the answer to the user's question is present in the excerpts above, extract and present it directly. Do NOT say the information is not found if it is actually in the excerpts.
+
 Provide a helpful, conversational answer using Markdown formatting:
 - Use `##` for main section headings, `###` for subsections
 - Use `**bold**` for emphasis or labels
 - Use `-` for bullet points when listing items
 - Use line breaks between sections for better readability
-- Directly answers the question
+- **Extract and present information directly from the excerpts if it is present**
+- Only say information is not found if it is genuinely not in the excerpts
 - Includes appropriate context based on question type
 - Is professional and polite
 - Never mentions documents, files, or retrieval steps
@@ -456,6 +343,16 @@ async def agent_node(state: MainWorkflowState, runnable_config=None) -> MainWork
                 f"({int((estimated_tokens/8000)*100)}% of threshold)"
             )
     
+    # NEW: Emit task header (high-level phase marker) on first call
+    emitter = state.get("execution_events")
+    if emitter and not messages:
+        from backend.llm.utils.execution_events import ExecutionEvent
+        task_header = ExecutionEvent(
+            type="phase",
+            description=f"Analyzing: {user_query[:80]}{'...' if len(user_query) > 80 else ''}"
+        )
+        emitter.emit(task_header)
+    
     # First call: Initialize conversation with system prompt + user query
     if not messages:
         system_prompt = get_system_prompt('analyze')
@@ -516,8 +413,15 @@ You: "The document related to the offer from Chandni is titled 'Letter_of_Offer_
 **REQUIRED WORKFLOW**:
 1. Call retrieve_documents (results are INTERNAL - don't show to user)
 2. Call retrieve_chunks (use this content to answer)
-3. Provide answer based ONLY on chunk content
-4. Do NOT preface your answer with document metadata
+3. **CITATION WORKFLOW - IMMEDIATELY after receiving chunks:**
+   - Analyze each chunk to identify relevant information
+   - For each relevant fact, IMMEDIATELY call match_citation_to_chunk:
+     * chunk_id: The chunk's ID from the retrieve_chunks result
+     * cited_text: The EXACT text from chunk_text (not a paraphrase)
+   - Collect all citation results
+   - This ensures accurate citation mapping before generating your answer
+4. Provide answer based ONLY on chunk content
+5. Do NOT preface your answer with document metadata
 
 **CRITICAL - EXTRACTING ANSWERS FROM CHUNKS**:
 - When you retrieve chunks, extract the answer from the chunk text and provide it with appropriate context
@@ -529,14 +433,31 @@ You: "The document related to the offer from Chandni is titled 'Letter_of_Offer_
 
 **MANDATORY**: After retrieving chunks, you MUST:
 1. Read the chunk text carefully
-2. Identify the question type (factual lookup, definition, explanation, analysis, exploration)
-3. Provide a conversational answer that directly addresses the question with appropriate context
-4. Be natural and helpful - include brief context or follow-up questions when they add value
+2. **IMMEDIATELY call match_citation_to_chunk for each relevant fact:**
+   - Use the original chunk text (from chunk_text), not a paraphrase
+   - Call the tool right after receiving chunks, before generating your answer
+   - This captures citations at the point of analysis for maximum accuracy
+3. Identify the question type (factual lookup, definition, explanation, analysis, exploration)
+4. Provide a conversational answer that directly addresses the question with appropriate context
+5. Be natural and helpful - include brief context or follow-up questions when they add value
 
 **Evaluate Quality**:
 - If documents list is empty, retry retrieve_documents with rewritten query
 - If chunks list is empty or poor, retry retrieve_chunks with different/broader query
 - If chunks are good, answer directly from chunk content (no metadata)
+
+**OPTIONAL PLANNING**:
+You can use the plan_step tool to share your intent before taking action.
+This helps the user understand what you're doing and why.
+
+Example:
+- plan_step(
+    intent="I'm going to search for documents related to the property valuation to find the specific figures you requested.",
+    next_action="Search valuation-related documents"
+  )
+
+Use plan_step when it adds clarity, but don't overuse it. 
+Focus on WHAT you're doing and WHY it matters, not HOW you're thinking.
 
 Think step-by-step. You control the entire retrieval process."""
         
@@ -559,15 +480,18 @@ Think step-by-step. You control the entire retrieval process."""
             
             logger.info(f"  [{i}] {msg_type}: {content_preview}")
     
-    # Build tools list - only retrieval tools for now
-    # TODO: Add citation and agent action tools back when properly integrated with ToolNode
+    # Build tools list - include plan_step for visible intent sharing
     retrieval_tools = [
         create_document_retrieval_tool(),
-        create_chunk_retrieval_tool(),
+        # Note: Using simple retrieve_chunks tool instead of document_explorer
     ]
     
-    all_tools = list(retrieval_tools)
-    logger.info(f"[AGENT_NODE] Agent has {len(all_tools)} tools available")
+    # Add citation tool for chunk-based citations
+    citation_tool = create_chunk_citation_tool()
+    
+    # Add plan_step as the first tool (optional, agent decides when to use it)
+    all_tools = [plan_step] + list(retrieval_tools) + [citation_tool]
+    logger.info(f"[AGENT_NODE] Agent has {len(all_tools)} tools available (including plan_step and chunk citation tool)")
     
     # Create LLM with tools bound
     llm = ChatOpenAI(
@@ -598,6 +522,11 @@ Think step-by-step. You control the entire retrieval process."""
         # No tool calls - agent generated final answer or is done
         logger.info("[AGENT_NODE] ℹ️  Agent generated response (no tool calls)")
         
+        # Extract chunk citations from message history
+        chunk_citations = extract_chunk_citations_from_messages(messages)
+        if chunk_citations:
+            logger.info(f"[AGENT_NODE] ✅ Extracted {len(chunk_citations)} chunk citations from message history")
+        
         # Check if chunks were retrieved - if yes, use conversational answer generation (no metadata visible)
         chunk_text = extract_chunk_text_only(messages)
         has_chunks = bool(chunk_text.strip())
@@ -613,13 +542,23 @@ Think step-by-step. You control the entire retrieval process."""
             clean_response = AIMessage(content=conversational_answer)
             
             logger.info(f"[AGENT_NODE] Conversational answer generated ({len(conversational_answer)} chars): {conversational_answer[:100]}...")
-            return {"messages": [clean_response]}
+            
+            # Return response with chunk citations if any
+            result = {"messages": [clean_response]}
+            if chunk_citations:
+                result["chunk_citations"] = chunk_citations
+            return result
         else:
             # No chunks - use agent's original response (for non-document questions)
             logger.info("[AGENT_NODE] No chunks detected - using agent's original response")
             if hasattr(response, 'content') and response.content:
                 logger.info(f"[AGENT_NODE] Response preview: {str(response.content)[:200]}...")
-            return {"messages": [response]}
+            
+            # Return response with chunk citations if any
+            result = {"messages": [response]}
+            if chunk_citations:
+                result["chunk_citations"] = chunk_citations
+            return result
         
     except Exception as e:
         logger.error(f"[AGENT_NODE] ❌ Error: {e}", exc_info=True)

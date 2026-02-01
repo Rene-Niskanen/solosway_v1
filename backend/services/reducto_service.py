@@ -948,8 +948,8 @@ class ReductoService:
                             logger.debug(f"🔍 Extracted chunk_content length: {len(chunk_content)} chars")
                         else:
                             chunk_content = chunk.content if hasattr(chunk, 'content') else (getattr(chunk, 'text', '') if hasattr(chunk, 'text') else '')
-                            chunk_embed = chunk.embed if hasattr(chunk, 'embed') else ''
-                            chunk_enriched = getattr(chunk, 'enriched', None)  # NEW: Get enriched content
+                        chunk_embed = chunk.embed if hasattr(chunk, 'embed') else ''
+                        chunk_enriched = getattr(chunk, 'enriched', None)  # NEW: Get enriched content
                         
                         # Extract ALL blocks with full metadata (not just image blocks)
                         chunk_blocks = []

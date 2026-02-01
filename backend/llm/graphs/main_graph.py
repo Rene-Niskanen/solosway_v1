@@ -11,6 +11,31 @@ import os
 
 logger = logging.getLogger(__name__)
 
+# ============================================================================
+# LangSmith Tracing Initialization
+# ============================================================================
+# Map LANGSMITH_* environment variables to LANGCHAIN_* (LangChain standard)
+# This allows using either naming convention in .env file
+if not os.getenv("LANGCHAIN_TRACING_V2") and os.getenv("LANGSMITH_TRACING"):
+    os.environ["LANGCHAIN_TRACING_V2"] = os.getenv("LANGSMITH_TRACING", "false")
+    
+if not os.getenv("LANGCHAIN_API_KEY") and os.getenv("LANGSMITH_API_KEY"):
+    os.environ["LANGCHAIN_API_KEY"] = os.getenv("LANGSMITH_API_KEY", "")
+    
+if not os.getenv("LANGCHAIN_PROJECT") and os.getenv("LANGSMITH_PROJECT"):
+    os.environ["LANGCHAIN_PROJECT"] = os.getenv("LANGSMITH_PROJECT", "")
+
+# Also check for direct LANGCHAIN_* variables (standard naming)
+if os.getenv("LANGCHAIN_TRACING_V2", "").lower() == "true":
+    project = os.getenv("LANGCHAIN_PROJECT", "default")
+    api_key_set = bool(os.getenv("LANGCHAIN_API_KEY"))
+    if api_key_set:
+        logger.info(f"✅ LangSmith tracing enabled (project: {project})")
+    else:
+        logger.warning("⚠️ LangSmith tracing enabled but LANGCHAIN_API_KEY not set")
+else:
+    logger.info("ℹ️ LangSmith tracing disabled (set LANGCHAIN_TRACING_V2=true or LANGSMITH_TRACING=true to enable)")
+
 # Conditional import for checkpointer (only needed if use_checkpointer=True)
 try:
     from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver  # type: ignore
@@ -34,8 +59,15 @@ from backend.llm.nodes.agent_node import agent_node
 from backend.llm.nodes.no_results_node import no_results_node
 # NEW: Context manager for automatic summarization
 from backend.llm.nodes.context_manager_node import context_manager_node
+# NEW: Planner → Executor → Responder architecture
+from backend.llm.nodes.planner_node import planner_node
+from backend.llm.nodes.executor_node import executor_node
+from backend.llm.nodes.evaluator_node import evaluator_node
+from backend.llm.contracts.node_contracts import RouterContract
+from backend.llm.nodes.responder_node import responder_node
 # LangGraph prebuilt components
 from langgraph.prebuilt import ToolNode
+from backend.llm.nodes.tool_execution_node import ExecutionAwareToolNode
 from langgraph.types import RetryPolicy
 from typing import Literal
 from langchain_core.messages import SystemMessage
@@ -76,12 +108,16 @@ async def create_checkpointer_for_current_loop():
         db_url = get_supabase_db_url_for_checkpointer()  # Use session pooler for checkpointer
         
         try:
-            checkpointer = await AsyncPostgresSaver.from_conn_string(
+            raw_checkpointer = await AsyncPostgresSaver.from_conn_string(
                 db_url,
                 prepare_threshold=0,  # Directly disable prepared statements
                 autocommit=True
             )
-            logger.info("✅ Checkpointer created using from_conn_string (prepared statements disabled)")
+            # Wrap checkpointer to filter out execution_events before serialization
+            from backend.llm.utils.checkpointer_wrapper import FilteredCheckpointSaver
+            checkpointer = FilteredCheckpointSaver(raw_checkpointer)
+            logger.info("✅ Checkpointer created using from_conn_string (prepared statements disabled, execution_events filtered)")
+            pool = None  # Not needed for from_conn_string path
         except (AttributeError, TypeError, Exception) as from_string_error:
             # from_conn_string might not be available or might not accept these parameters
             # Fall back to pool-based approach with connection wrapper
@@ -130,9 +166,18 @@ async def create_checkpointer_for_current_loop():
                     timeout=20,
                 )
                 logger.info("✅ Checkpointer pool created (prepared statement errors will be handled gracefully)")
-        
-        # Create checkpointer instance for this event loop
-        checkpointer = AsyncPostgresSaver(pool)
+            
+            # Create checkpointer instance for this event loop (pool path only)
+            raw_checkpointer = AsyncPostgresSaver(pool)
+            
+            # Store pool reference in checkpointer for cleanup
+            # This allows us to close the pool properly when the event loop shuts down
+            raw_checkpointer._pool = pool
+            
+            # Wrap checkpointer to filter out execution_events before serialization
+            from backend.llm.utils.checkpointer_wrapper import FilteredCheckpointSaver
+            checkpointer = FilteredCheckpointSaver(raw_checkpointer)
+            logger.info("✅ Wrapped checkpointer to exclude execution_events from serialization")
         
         # Setup tables with timeout to prevent hanging
         # Idempotent - safe to call multiple times
@@ -292,10 +337,44 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
     builder.add_node("context_manager", context_manager_node)
     logger.info("✅ Added context_manager node (auto-summarize at 8k tokens)")
     
-    # NEW: Unified Agent Node (replaces query_analysis_node, document_retrieval_node, chunk_retrieval_node)
+    # NEW: Planner → Executor → Responder architecture
+    builder.add_node("planner", planner_node)
+    """
+    Planner Node
+    - Generates structured JSON execution plan from user query
+    - Output: execution_plan (structured plan with objective and steps)
+    - Emits plan as execution event (visible to user)
+    """
+    
+    builder.add_node("executor", executor_node)
+    """
+    Executor Node
+    - Executes steps from execution plan sequentially
+    - Calls tools directly (retrieve_documents, retrieve_chunks)
+    - Emits execution events for each step
+    - Output: execution_results (results from each step)
+    """
+    
+    builder.add_node("evaluator", evaluator_node)
+    """
+    Evaluator Node
+    - Evaluates plan execution and result sufficiency
+    - Routes: executor (continue), planner (refine), or responder (answer)
+    - Emits evaluation events
+    """
+    
+    builder.add_node("responder", responder_node)
+    """
+    Responder Node
+    - Generates final answer from execution results
+    - Uses conversational answer generation
+    - Output: final_summary
+    """
+    
+    # KEEP: Unified Agent Node (fallback for non-planner paths)
     builder.add_node("agent", agent_node)
     """
-    Unified Agent Node
+    Unified Agent Node (Fallback)
     - Handles query analysis (inline)
     - Calls retrieve_documents() and retrieve_chunks() tools autonomously
     - Handles semantic retries (LLM decides when to retry)
@@ -312,10 +391,12 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
         create_chunk_retrieval_tool(),
     ]
     
-    # Add tools node with retry policy for execution failures
+    # Add execution-aware tools node with retry policy for execution failures
+    # NEW: ExecutionAwareToolNode wraps ToolNode to emit execution events
+    execution_aware_tool_node = ExecutionAwareToolNode(tools=retrieval_tools)
     builder.add_node(
         "tools",
-        ToolNode(tools=retrieval_tools),
+        execution_aware_tool_node,
         retry_policy=RetryPolicy(
             max_attempts=3,
             retry_on=(ConnectionError, TimeoutError, Exception)
@@ -446,9 +527,10 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
     )
     logger.debug("START -> [navigation_action|citation_query|attachment_fast|direct_chunks|context_manager]")
     
-    # Context manager → agent (always - after checking/summarizing tokens)
-    builder.add_edge("context_manager", "agent")
-    logger.debug("Edge: context_manager -> agent (after token check/summarization)")
+    # Context manager → planner (NEW: Planner → Executor → Responder architecture)
+    # OLD: builder.add_edge("context_manager", "agent") - replaced with planner flow
+    builder.add_edge("context_manager", "planner")
+    logger.debug("Edge: context_manager -> planner (after token check/summarization)")
     
     # NAVIGATION PATH: handle → format (INSTANT, skips ALL retrieval - just emits agent actions)
     builder.add_edge("handle_navigation_action", "format_response")
@@ -666,11 +748,55 @@ Proceed immediately with chunk retrieval.""")
     builder.add_edge("force_chunks", "agent")
     logger.debug("Edge: force_chunks -> agent (loop back for chunk retrieval)")
     
-    # Tools → Agent (loop back)
+    # NEW: Planner → Executor → Evaluator → Responder flow
+    # Context manager → Planner (start planning flow)
+    builder.add_edge("context_manager", "planner")
+    logger.debug("Edge: context_manager -> planner")
+    
+    # Planner → Executor (execute first step)
+    builder.add_edge("planner", "executor")
+    logger.debug("Edge: planner -> executor")
+    
+    # Executor → Evaluator (evaluate execution)
+    builder.add_edge("executor", "evaluator")
+    logger.debug("Edge: executor -> evaluator")
+    
+    # Evaluator → Routes based on execution status
+    # CENTRALIZED ROUTER - Single owner of flow control
+    def centralized_router(state: MainWorkflowState) -> Literal["executor", "planner", "responder", "END"]:
+        """
+        CENTRALIZED ROUTER - Single owner of "what happens next".
+        
+        This is the ONLY place that decides flow control.
+        Nodes never decide routing - they only emit events.
+        
+        Uses RouterContract.route() for all routing decisions.
+        """
+        decision = RouterContract.route(state)
+        logger.info(f"[ROUTER] Decision: {decision['next_node']} - {decision['reason']}")
+        return decision["next_node"]
+    
+    builder.add_conditional_edges(
+        "evaluator",
+        centralized_router,  # ← Single source of truth
+        {
+            "executor": "executor",  # Continue executing steps
+            "planner": "planner",  # Refine plan (if results insufficient)
+            "responder": "responder",  # Generate answer
+            "END": END  # Error state
+        }
+    )
+    logger.debug("Conditional: evaluator -> [executor|planner|responder|END] (centralized router)")
+    
+    # Responder → END
+    builder.add_edge("responder", END)
+    logger.debug("Edge: responder -> END")
+    
+    # KEEP: Tools → Agent (loop back) for fallback agent path
     builder.add_edge("tools", "agent")
     logger.debug("Edge: tools -> agent (loop back)")
     
-    # Extract final answer → END
+    # KEEP: Extract final answer → END (for fallback agent path)
     builder.add_edge("extract_final_answer", END)
     logger.debug("Edge: extract_final_answer -> END")
     

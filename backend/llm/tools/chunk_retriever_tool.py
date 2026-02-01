@@ -19,27 +19,10 @@ logger = logging.getLogger(__name__)
 
 
 class ChunkRetrievalInput(BaseModel):
-    """Input schema for chunk retrieval tool."""
+    """Input schema for chunk retrieval tool - simplified for Golden Path RAG."""
     query: str = Field(description="User query to find relevant chunks")
-    query_type: Optional[Literal["broad", "specific"]] = Field(
-        None,
-        description=(
-            "Query classification for adaptive threshold control. "
-            "'broad' for general chunk searches - uses lower threshold. "
-            "'specific' for precise chunk searches - uses higher threshold. "
-            "If not provided, system uses heuristic classification."
-        )
-    )
     document_ids: List[str] = Field(
         description="List of document IDs from Level 1 retrieval (retrieve_documents)"
-    )
-    top_k: int = Field(
-        5,
-        description="Number of chunks per document to retrieve before global reranking (default: 5)"
-    )
-    min_score: float = Field(
-        0.6,
-        description="Minimum similarity score threshold (default: 0.6)"
     )
     business_id: Optional[str] = Field(
         None,
@@ -50,58 +33,27 @@ class ChunkRetrievalInput(BaseModel):
 def retrieve_chunks(
     query: str,
     document_ids: List[str],
-    query_type: Optional[str] = None,
-    top_k: int = 5,
-    min_score: float = 0.6,
-    business_id: Optional[str] = None,
-    search_goal: Optional[str] = None
+    business_id: Optional[str] = None
 ) -> List[Dict]:
     """
-    Retrieve relevant chunks within selected documents.
+    Retrieve relevant chunks within selected documents - Smart retrieval layer.
     
     This is Level 2 retrieval - searches chunks ONLY within the specified documents.
     Use this AFTER retrieve_documents().
     
-    The tool uses hybrid search (vector + keyword) on chunks:
-    1. Vector similarity search on chunk embeddings (semantic)
-    2. Keyword search on chunk_text for exact matches (lexical)
-    3. Collects all chunks from all documents
-    4. Sorts globally by similarity score (not per document)
-    5. Reranks and selects top 8-15 chunks total (prevents context explosion)
+    All intelligence happens here:
+    - Heuristic query profile detection (fact/explanation/summary)
+    - Adaptive top_k, min_score, per_doc_limit based on query type
+    - Hybrid search (vector + keyword)
+    - Global reranking
     
     Args:
         query: User query (e.g., "What is the market value?")
         document_ids: List of document IDs from Level 1 retrieval
-        query_type: Optional query classification ("broad" or "specific"). 
-            "broad" for general chunk searches - uses lower threshold. 
-            "specific" for precise chunk searches - uses higher threshold. 
-            If None, uses heuristic classification.
-        top_k: Number of chunks per document to retrieve before reranking (default: 5)
-            For "summarize" queries, this is automatically increased to retrieve all chunks
-        min_score: Minimum similarity score threshold (default: 0.6)
-            For "summarize" queries, this is automatically lowered to 0.0 to get all chunks
         business_id: Optional business UUID to filter results (for multi-tenancy)
-        search_goal: Optional search goal (e.g., "summarize") - affects retrieval strategy
     
     Returns:
-        List of chunks with metadata:
-        [
-            {
-                "chunk_id": "uuid",
-                "document_id": "uuid",
-                "document_filename": "document.pdf",
-                "chunk_index": 0,
-                "chunk_text": "Chunk content...",
-                "chunk_text_clean": "Cleaned chunk...",
-                "page_number": 1,
-                "section_title": "Introduction",
-                "score": 0.85,
-                "metadata": {...}
-            },
-            ...
-        ]
-        
-        Returns empty list if no chunks found or validation fails.
+        List of chunks with metadata (see docstring for structure)
     """
     try:
         # 1. Validate input
@@ -131,7 +83,31 @@ def retrieve_chunks(
         
         logger.debug(f"🔍 Chunk retrieval for {len(valid_document_ids)} documents, query: {query[:50]}...")
         
-        # 2. Generate query embedding using Voyage AI (matches database embeddings)
+        # 2. HEURISTIC: Determine query profile (not LLM-driven)
+        query_lower = query.lower()
+        
+        if any(word in query_lower for word in ['summarize', 'overview', 'all', 'everything', 'complete', 'entire', 'full']):
+            query_profile = "summary"
+            effective_top_k = 80
+            effective_min_score = 0.2
+            per_doc_limit = None  # Unlimited
+            is_summarize_query = True
+        elif any(word in query_lower for word in ['how', 'why', 'explain', 'what is', 'describe', 'tell me about']):
+            query_profile = "explanation"
+            effective_top_k = 25
+            effective_min_score = 0.4
+            per_doc_limit = 8
+            is_summarize_query = False
+        else:
+            query_profile = "fact"
+            effective_top_k = 8
+            effective_min_score = 0.6
+            per_doc_limit = 3
+            is_summarize_query = False
+        
+        logger.info(f"[RETRIEVER] Query profile: {query_profile} (top_k={effective_top_k}, min_score={effective_min_score}, per_doc_limit={per_doc_limit})")
+        
+        # 3. Generate query embedding using Voyage AI (matches database embeddings)
         # CRITICAL: Chunk embeddings use Voyage AI (1024 dimensions) to match database schema
         # This matches the embeddings stored in document_vectors.embedding column
         import os
@@ -175,10 +151,10 @@ def retrieve_chunks(
         
         logger.debug(f"   Query embedding dimension: {len(query_embedding)}")
         
-        # 3. Get Supabase client
+        # 4. Get Supabase client
         supabase = get_supabase_client()
         
-        # 4. Verify documents belong to business_id if provided (for multi-tenancy)
+        # 5. Verify documents belong to business_id if provided (for multi-tenancy)
         if business_id:
             try:
                 from uuid import UUID
@@ -194,18 +170,7 @@ def retrieve_chunks(
             except (ValueError, TypeError):
                 logger.warning(f"   business_id '{business_id}' is not a valid UUID, skipping business filter")
         
-        # 5. Search chunks within each document (HYBRID: Vector + Keyword)
-        # SPECIAL CASE: For "summarize" queries, retrieve ALL chunks (not just similar ones)
-        is_summarize_query = search_goal == "summarize"
-        
-        if is_summarize_query:
-            # For summarize queries: get ALL chunks with very low threshold
-            effective_top_k = 1000  # Get all chunks
-            effective_min_score = 0.0  # No similarity filtering
-            logger.debug(f"   Summarize query detected - retrieving ALL chunks (top_k={effective_top_k}, min_score={effective_min_score})")
-        else:
-            effective_top_k = top_k
-            effective_min_score = min_score
+        # 6. Search chunks within each document (HYBRID: Vector + Keyword)
         
         all_chunks = []
         document_metadata_cache = {}  # Cache document metadata (filename and classification_type)
@@ -218,7 +183,7 @@ def retrieve_chunks(
                     # Summarize: Get ALL chunks directly from database, no similarity filtering
                     logger.debug(f"   Summarize query - getting ALL chunks for document: {doc_id[:8]}...")
                     direct_query = supabase.table('document_vectors').select(
-                        'id, document_id, chunk_index, chunk_text, chunk_text_clean, page_number, metadata'
+                        'id, document_id, chunk_index, chunk_text, chunk_text_clean, page_number, metadata, bbox, blocks'
                     ).eq('document_id', doc_id).order('page_number').order('chunk_index').execute()
                     
                     vector_chunks = direct_query.data or []
@@ -263,7 +228,7 @@ def retrieve_chunks(
                         query_words = [w for w in query_lower.split() if len(w) > 3]  # Only words longer than 3 chars
                         
                         keyword_query = supabase.table('document_vectors').select(
-                            'id, document_id, chunk_index, chunk_text, chunk_text_clean, page_number, metadata'
+                            'id, document_id, chunk_index, chunk_text, chunk_text_clean, page_number, metadata, bbox, blocks'
                         ).eq('document_id', doc_id)
                         
                         # Search in chunk_text
@@ -273,7 +238,7 @@ def retrieve_chunks(
                                 or_conditions.append(f'chunk_text.ilike.%{word}%')
                                 or_conditions.append(f'chunk_text_clean.ilike.%{word}%')
                         
-                        keyword_query = keyword_query.or_(','.join(or_conditions)).limit(top_k).execute()
+                        keyword_query = keyword_query.or_(','.join(or_conditions)).limit(effective_top_k).execute()
                         keyword_chunks = keyword_query.data or []
                         logger.debug(f"   Keyword search found {len(keyword_chunks)} chunks in document {doc_id[:8]}")
                     except Exception as kw_error:
@@ -282,6 +247,7 @@ def retrieve_chunks(
                 
                 # 5c. Combine vector and keyword results (deduplicate by chunk_id)
                 chunks_dict = {}
+                vector_chunk_ids = []  # Track chunk IDs from vector search for bbox lookup
                 logger.info(f"   Processing {len(vector_chunks)} vector_chunks for document {doc_id[:8]}...")
                 for idx, chunk in enumerate(vector_chunks):
                     chunk_id = str(chunk.get('id', ''))
@@ -291,11 +257,45 @@ def retrieve_chunks(
                         chunk_id = f"{doc_id}_{chunk.get('chunk_index', idx)}"
                         logger.info(f"   Chunk {idx} missing 'id', using fallback: {chunk_id[:30]}...")
                     
+                    # Track if bbox is missing (match_chunks RPC might not return it)
+                    if not chunk.get('bbox') or not isinstance(chunk.get('bbox'), dict):
+                        vector_chunk_ids.append(chunk_id)
+                    
                     chunks_dict[chunk_id] = {
                         **chunk,
                         'similarity': float(chunk.get('similarity', 1.0))
                     }
                 logger.info(f"   Added {len(chunks_dict)} chunks to chunks_dict for document {doc_id[:8]}")
+                
+                # 5c.1. Fetch bbox for vector chunks that don't have it (match_chunks RPC might not return bbox)
+                if vector_chunk_ids:
+                    try:
+                        logger.debug(f"   Fetching bbox for {len(vector_chunk_ids)} vector chunks missing bbox...")
+                        bbox_response = supabase.table('document_vectors').select(
+                            'id, bbox, blocks'
+                        ).in_('id', vector_chunk_ids).execute()
+                        
+                        for row in bbox_response.data or []:
+                            chunk_id = str(row.get('id'))
+                            bbox = row.get('bbox')
+                            blocks = row.get('blocks', [])
+                            
+                            if chunk_id in chunks_dict:
+                                # Prefer chunk-level bbox, fallback to first block's bbox
+                                if isinstance(bbox, dict) and bbox.get('left') is not None:
+                                    chunks_dict[chunk_id]['bbox'] = bbox
+                                    logger.debug(f"   ✅ Added chunk-level bbox to {chunk_id[:8]}...")
+                                elif blocks and isinstance(blocks, list) and len(blocks) > 0:
+                                    first_block = blocks[0]
+                                    if isinstance(first_block, dict):
+                                        block_bbox = first_block.get('bbox')
+                                        if isinstance(block_bbox, dict) and block_bbox.get('left') is not None:
+                                            chunks_dict[chunk_id]['bbox'] = block_bbox
+                                            logger.debug(f"   ✅ Added block-level bbox to {chunk_id[:8]}...")
+                                else:
+                                    logger.debug(f"   ⚠️ No valid bbox found for {chunk_id[:8]}... (bbox={bbox}, blocks={len(blocks) if blocks else 0})")
+                    except Exception as bbox_fetch_error:
+                        logger.warning(f"   Failed to fetch bbox for vector chunks: {bbox_fetch_error}")
                 
                 # Add keyword matches with quality-based scoring (skip for summarize queries)
                 if not is_summarize_query and keyword_chunks:
@@ -403,6 +403,14 @@ def retrieve_chunks(
                             logger.warning(f"   Skipping chunk {chunk_id[:20]}... - no chunk text")
                             continue
                         
+                        chunk_bbox = chunk.get('bbox')
+                        # Log bbox status for debugging
+                        if not chunk_bbox or not isinstance(chunk_bbox, dict):
+                            logger.debug(f"   ⚠️ Chunk {chunk_id[:8]}... has no bbox (type: {type(chunk_bbox)})")
+                        
+                        # Include blocks for block-level citation highlighting (more precise than chunk-level)
+                        blocks = chunk.get('blocks', [])
+                        
                         all_chunks.append({
                             'chunk_id': chunk_id,
                             'document_id': doc_id,
@@ -412,6 +420,8 @@ def retrieve_chunks(
                             'chunk_text': chunk.get('chunk_text', ''),
                             'chunk_text_clean': chunk.get('chunk_text_clean', ''),
                             'page_number': chunk.get('page_number', 0),
+                            'bbox': chunk_bbox,  # Chunk-level bbox (fallback)
+                            'blocks': blocks,  # Block-level data for precise citation highlighting
                             'section_title': chunk_metadata.get('section_title') if isinstance(chunk_metadata, dict) else None,
                             'score': round(float(chunk.get('similarity', 1.0)), 4),
                             'metadata': chunk_metadata if isinstance(chunk_metadata, dict) else {}
@@ -436,17 +446,59 @@ def retrieve_chunks(
                 logger.error(f"   This suggests documents might not have chunks in the database.")
             return []
         
-        # 6. Deduplicate chunks by chunk_id
+        # 6. Deduplicate chunks by chunk_id and ensure bbox is available
         seen_chunk_ids = set()
         unique_chunks = []
+        chunks_needing_bbox = []  # Track chunks that need bbox lookup
+        
         for chunk in all_chunks:
             chunk_id = chunk.get('chunk_id')
             if chunk_id and chunk_id not in seen_chunk_ids:
                 seen_chunk_ids.add(chunk_id)
+                # Check if bbox is missing - we'll fetch it later
+                if not chunk.get('bbox') or not isinstance(chunk.get('bbox'), dict):
+                    chunks_needing_bbox.append(chunk_id)
                 unique_chunks.append(chunk)
             elif not chunk_id:
                 # Include chunks without IDs (shouldn't happen, but handle gracefully)
                 unique_chunks.append(chunk)
+        
+        # 6a. Fetch missing bbox data from database (batch lookup)
+        if chunks_needing_bbox:
+            try:
+                logger.debug(f"   Fetching bbox data for {len(chunks_needing_bbox)} chunks missing bbox...")
+                bbox_response = supabase.table('document_vectors').select(
+                    'id, bbox, blocks'
+                ).in_('id', chunks_needing_bbox).execute()
+                
+                # Create lookup map
+                bbox_lookup = {}
+                for row in bbox_response.data or []:
+                    chunk_id = row.get('id')
+                    bbox = row.get('bbox')
+                    blocks = row.get('blocks', [])
+                    
+                    # Prefer chunk-level bbox, fallback to first block's bbox
+                    if isinstance(bbox, dict) and bbox.get('left') is not None:
+                        bbox_lookup[chunk_id] = bbox
+                    elif blocks and isinstance(blocks, list) and len(blocks) > 0:
+                        # Extract bbox from first block
+                        first_block = blocks[0]
+                        if isinstance(first_block, dict):
+                            block_bbox = first_block.get('bbox')
+                            if isinstance(block_bbox, dict) and block_bbox.get('left') is not None:
+                                bbox_lookup[chunk_id] = block_bbox
+                                logger.debug(f"   Using block bbox for chunk {chunk_id[:8]}...")
+                
+                # Update chunks with bbox data
+                for chunk in unique_chunks:
+                    chunk_id = chunk.get('chunk_id')
+                    if chunk_id in bbox_lookup:
+                        chunk['bbox'] = bbox_lookup[chunk_id]
+                        logger.debug(f"   ✅ Added bbox to chunk {chunk_id[:8]}...")
+            except Exception as bbox_error:
+                logger.warning(f"   Failed to fetch bbox data: {bbox_error}")
+                # Continue without bbox - citations will still work but without highlighting
         
         logger.debug(f"   Deduplicated: {len(all_chunks)} → {len(unique_chunks)} chunks")
         
@@ -506,6 +558,66 @@ def retrieve_chunks(
                 logger.warning(f"   Global reranking failed (non-fatal): {rerank_error}")
                 # Continue with existing scores if reranking fails
         
+        # 6.6. Per-document chunk limits: Prevent lower-scoring documents from dominating
+        # 7. Group chunks by document and apply per-document limits based on query profile
+        if document_ids and len(document_ids) > 1:
+            chunks_by_doc = {}
+            for chunk in unique_chunks:
+                doc_id = chunk['document_id']
+                if doc_id not in chunks_by_doc:
+                    chunks_by_doc[doc_id] = []
+                chunks_by_doc[doc_id].append(chunk)
+            
+            # Apply per-document limits based on query profile
+            if per_doc_limit is not None:
+                limited_chunks = []
+                for i, doc_id in enumerate(document_ids):
+                    doc_chunks = chunks_by_doc.get(doc_id, [])
+                    # Sort chunks by score within this document
+                    doc_chunks.sort(key=lambda x: x['score'], reverse=True)
+                    
+                    # Use per_doc_limit from query profile
+                    # First doc gets full limit, subsequent docs get slightly less
+                    if i == 0:
+                        max_chunks = per_doc_limit
+                    else:
+                        max_chunks = max(1, int(per_doc_limit * 0.7))  # 70% for subsequent docs
+                    
+                    selected = doc_chunks[:max_chunks]
+                    limited_chunks.extend(selected)
+                    logger.debug(f"   Document {i+1} ({doc_id[:8]}...): {len(doc_chunks)} chunks → {len(selected)} selected (limit: {max_chunks})")
+                
+                unique_chunks = limited_chunks
+                logger.debug(f"   Per-document limits applied: {len(limited_chunks)} chunks total (per_doc_limit={per_doc_limit})")
+            else:
+                # No per-doc limit (summary queries)
+                logger.debug(f"   No per-doc limit (summary query) - keeping all {len(unique_chunks)} chunks")
+        
+        # 6.7. Document-level prioritization: Boost chunks from higher-scoring documents
+        # Documents are passed in order from retrieve_docs (sorted by score), so first = highest score
+        if document_ids and len(document_ids) > 1:
+            doc_priority = {}
+            for i, doc_id in enumerate(document_ids):
+                # First document (highest score) gets weight 1.0, second gets 0.9, etc.
+                # This ensures chunks from the most relevant document are prioritized
+                doc_priority[doc_id] = 1.0 - (i * 0.15)  # 0.15 decrement per position
+            
+            # Apply document priority boost to chunk scores
+            # INCREASED BOOST: Changed from 0.2 to 0.8 for stronger prioritization
+            boosted_count = 0
+            for chunk in unique_chunks:
+                doc_id = chunk['document_id']
+                priority_boost = doc_priority.get(doc_id, 0.5)  # Default 0.5 for unknown docs
+                # Boost score by document priority (but don't exceed 1.0)
+                # First document gets 1.8x boost (1.0 + 1.0 * 0.8), second gets 1.52x (1.0 + 0.85 * 0.8)
+                original_score = chunk['score']
+                chunk['score'] = min(1.0, original_score * (1.0 + priority_boost * 0.8))
+                if priority_boost > 0.5:
+                    boosted_count += 1
+            
+            if boosted_count > 0:
+                logger.debug(f"   Applied document priority boost (0.8x) to {boosted_count} chunks from top documents")
+        
         # 7. Global sorting - depends on search_goal
         if is_summarize_query:
             # For summarize queries: sort by document order (page/chunk_index) for coherence
@@ -533,9 +645,9 @@ def retrieve_chunks(
             if len(unique_chunks) > 0:
                 top_score = unique_chunks[0]['score']
                 # Only filter if top score is significantly above threshold AND there's a quality gap
-                if top_score > min_score * 1.5:  # Top score is well above threshold
+                if top_score > effective_min_score * 1.5:  # Top score is well above threshold
                     # Filter out chunks that are much worse than the best
-                    quality_gap = top_score - min_score
+                    quality_gap = top_score - effective_min_score
                     final_chunks = [c for c in unique_chunks if c['score'] >= (top_score - quality_gap * 0.5)]
                     # Limit to top 15 regardless
                     final_chunks = final_chunks[:15]
@@ -552,6 +664,16 @@ def retrieve_chunks(
             f"(after global reranking from {len(unique_chunks)} total chunks)"
         )
         
+        # 9. Log retrieval quality (Phase 2)
+        log_retrieval_quality(query, valid_document_ids, final_chunks, query_profile)
+        
+        # 10. Optional: Fallback widening if no results for fact queries
+        if not final_chunks and query_profile == "fact":
+            logger.warning("[RETRIEVER] No results for fact query, trying with lower threshold...")
+            effective_min_score = 0.4
+            # Retry with lower threshold (would need to re-run search, but for now just log)
+            logger.warning("[RETRIEVER] Fallback widening not yet implemented - returning empty")
+        
         return final_chunks
         
     except Exception as e:
@@ -559,6 +681,34 @@ def retrieve_chunks(
         import traceback
         logger.debug(traceback.format_exc())
         return []
+
+
+def log_retrieval_quality(
+    query: str,
+    document_ids: List[str],
+    result: List[Dict],
+    query_profile: str
+):
+    """Log retrieval quality metrics for debugging (Phase 2)."""
+    logger.info(f"[RETRIEVAL_QUALITY] Query: '{query[:50]}...'")
+    logger.info(f"[RETRIEVAL_QUALITY] Profile: {query_profile}")
+    logger.info(f"[RETRIEVAL_QUALITY] Docs searched: {len(document_ids)}")
+    logger.info(f"[RETRIEVAL_QUALITY] Chunks returned: {len(result)}")
+    
+    if result:
+        scores = [chunk.get('score', 0) for chunk in result if chunk.get('score')]
+        if scores:
+            logger.info(f"[RETRIEVAL_QUALITY] Score range: {min(scores):.3f} - {max(scores):.3f}")
+            logger.info(f"[RETRIEVAL_QUALITY] Score avg: {sum(scores)/len(scores):.3f}")
+        
+        # Coverage per document
+        doc_coverage = {}
+        for chunk in result:
+            doc_id = chunk.get('document_id', 'unknown')
+            doc_coverage[doc_id] = doc_coverage.get(doc_id, 0) + 1
+        logger.info(f"[RETRIEVAL_QUALITY] Chunks per doc: {dict(list(doc_coverage.items())[:5])}")  # Show first 5
+    else:
+        logger.warning("[RETRIEVAL_QUALITY] ⚠️ NO CHUNKS RETURNED - retrieval failed")
 
 
 def create_chunk_retrieval_tool() -> StructuredTool:
@@ -602,15 +752,10 @@ This is Level 2 retrieval - finds chunks within documents. Use this AFTER retrie
 - Must be a non-empty list
 - These are the documents you want to search within
 
-### top_k (OPTIONAL, default: 5)
-- Number of chunks per document to retrieve before global reranking
-- Range: 1-10 recommended
-- Higher values = more chunks per document, but final result is still limited to 8-15 total
-
-### min_score (OPTIONAL, default: 0.6)
-- Minimum similarity score (0.0-1.0)
-- Higher = stricter matching (fewer but more relevant chunks)
-- Lower = more lenient (more but potentially less relevant chunks)
+**NOTE**: The retriever automatically determines optimal parameters based on query type:
+- Fact queries: 8 chunks, 0.6 threshold
+- Explanation queries: 25 chunks, 0.4 threshold  
+- Summary queries: 80 chunks, 0.2 threshold
 
 ## RETURN VALUE
 List of chunks with:
@@ -650,13 +795,12 @@ List of chunks with:
    )
    → Returns: Chunks from valuation reports
 
-### Example 3: Adjusting Parameters
+### Example 3: Simple Usage
 retrieve_chunks(
     query="property features",
-    document_ids=["uuid1", "uuid2"],
-    top_k=10,  # Get more chunks per document
-    min_score=0.5  # Lower threshold for more results
+    document_ids=["uuid1", "uuid2"]
 )
+# The retriever automatically determines optimal parameters based on query type
 
 ## IMPORTANT NOTES
 - This tool searches WITHIN specified documents only (document scoping)

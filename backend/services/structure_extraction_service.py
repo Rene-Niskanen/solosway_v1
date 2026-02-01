@@ -21,9 +21,15 @@ class StructureExtractionService:
     def extract_section_hierarchy(self, chunks: List[Dict[str, any]]) -> List[Dict[str, any]]:
         """
         Extract section titles and heading levels from chunks.
+        
+        Priority: blocks array > text-based detection
+        
+        Uses Reducto blocks array as primary source for section headers, falling back
+        to text-based detection if blocks don't contain section headers. Propagates
+        section headers to subsequent chunks until a new section header is found.
 
         Args:
-            chunks: List of chunks with 'content' field
+            chunks: List of chunks with 'content' field and optionally 'blocks' array
 
         Returns:
             List of chunk metadata with section hierarchy info added:
@@ -31,38 +37,98 @@ class StructureExtractionService:
                 'section_title': str,
                 'section_level': int, #1, 2, 3, etc.
                 'section_keywords': List[str],
+                'normalized_header': str,
                 'has_section_header': bool
             }
         """
+        from backend.services.section_header_extractor import (
+            extract_section_header_from_blocks,
+            extract_keywords
+        )
         from backend.llm.utils.section_header_detector import detect_section_header
 
         chunk_metadata_list = []
+        current_section = None  # Track current section for propagation
 
         for chunk in chunks:
+            chunk_blocks = chunk.get('blocks', [])
             chunk_text = chunk.get('content', '') or chunk.get('text', '')
+            
+            section_header_info = None
+            chunk_meta = None
 
-            # Detects section header using existing detector
-            header_info = detect_section_header(chunk_text)
-
-            if header_info:
-                # Extract heading level from section title
-                section_level = self._extract_heading_level(chunk_text, header_info.get('section_header', ''))
+            # PHASE 1: Try to extract from blocks first (primary source - Reducto)
+            if chunk_blocks and isinstance(chunk_blocks, list):
+                section_header_info = extract_section_header_from_blocks(chunk_blocks)
+            
+            # PHASE 2: If new section header found, update current section
+            if section_header_info:
+                current_section = {
+                    'section_header': section_header_info['section_header'],
+                    'section_title': section_header_info['section_title'],
+                    'section_level': section_header_info['section_level'],
+                    'page_number': section_header_info.get('page_number'),
+                    'bbox': section_header_info.get('bbox')
+                }
+                
+                # Extract keywords for this section header
+                section_keywords = extract_keywords(section_header_info['section_header'])
                 
                 chunk_meta = {
-                    'section_title': header_info.get('section_header', ''),
-                    'section_level': section_level,
-                    'normalized_header': header_info.get('normalized_header', ''),
-                    'section_keywords': header_info.get('section_keywords', []),
-                    'has_section_header': True
+                    'section_header': section_header_info['section_header'],
+                    'section_title': section_header_info['section_header'],  # Use raw header for display
+                    'section_level': section_header_info['section_level'],
+                    'normalized_header': section_header_info['section_title'],  # Normalized for section_id
+                    'section_keywords': section_keywords,
+                    'has_section_header': True  # Header is in this chunk
                 }
-
-            else:
+                
+            # PHASE 3: Propagate current section if no new header found
+            elif current_section:
+                # Extract keywords for propagated section
+                section_keywords = extract_keywords(current_section['section_header'])
+                
                 chunk_meta = {
-                    'section_title': None,
-                    'section_level': None,
-                    'has_section_header': False
+                    'section_header': current_section['section_header'],
+                    'section_title': current_section['section_header'],  # Use raw header for display
+                    'section_level': current_section['section_level'],
+                    'normalized_header': current_section['section_title'],  # Normalized for section_id
+                    'section_keywords': section_keywords,
+                    'has_section_header': False  # Header not in this chunk, but propagated
                 }
-
+            
+            # PHASE 4: Fallback to text-based detection if blocks don't have headers
+            else:
+                header_info = detect_section_header(chunk_text)
+                
+                if header_info:
+                    # Extract heading level from section title
+                    section_level = self._extract_heading_level(chunk_text, header_info.get('section_header', ''))
+                    
+                    # Update current section for propagation
+                    current_section = {
+                        'section_header': header_info.get('section_header', ''),
+                        'section_title': header_info.get('normalized_header', ''),
+                        'section_level': section_level,
+                        'page_number': None,
+                        'bbox': None
+                    }
+                    
+                    chunk_meta = {
+                        'section_title': header_info.get('section_header', ''),
+                        'section_level': section_level,
+                        'normalized_header': header_info.get('normalized_header', ''),
+                        'section_keywords': header_info.get('section_keywords', []),
+                        'has_section_header': True
+                    }
+                else:
+                    # No section header detected
+                    chunk_meta = {
+                        'section_title': None,
+                        'section_level': None,
+                        'has_section_header': False
+                    }
+            
             chunk_metadata_list.append(chunk_meta)
 
         return chunk_metadata_list

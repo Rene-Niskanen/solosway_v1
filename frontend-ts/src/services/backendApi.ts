@@ -219,6 +219,7 @@ class BackendApiService {
     onReasoningStep?: (step: { step: string; message: string; details: any; action_type?: string; count?: number }) => void,
     onReasoningContext?: (context: { message: string; moment: string }) => void,
     onCitation?: (citation: { citation_number: string; data: any }) => void,
+    onExecutionEvent?: (event: { type: string; description: string; metadata?: any; timestamp: number; event_id: string; parent_event_id?: string }) => void,  // NEW: Execution trace events
     citationContext?: { // Structured citation metadata (hidden from user, for LLM)
       document_id: string;
       page_number: number;
@@ -344,6 +345,12 @@ class BackendApiService {
                 case 'token':
                   accumulatedText += data.token;
                   onToken(data.token);
+                  break;
+                case 'execution_event':
+                  // NEW: Handle execution trace events
+                  if (onExecutionEvent && data.payload) {
+                    onExecutionEvent(data.payload);
+                  }
                   break;
                 case 'documents_found':
                   onStatus?.(`Found ${data.count} relevant document(s)`);
