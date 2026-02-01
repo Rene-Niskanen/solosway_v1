@@ -1511,25 +1511,9 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
     llm = get_llm(model_preference, temperature=0)
     logger.info(f"[SUMMARIZE_RESULTS] Using model: {model_preference or 'gpt-4o-mini (default)'}")
 
-    # PERFORMANCE OPTIMIZATION: Limit document outputs for summarization based on detail_level
-    # Concise mode: 7 docs (fast summary)
-    # Detailed mode: 20 docs (comprehensive summary)
-    detail_level = state.get('detail_level', 'concise')
-    if detail_level == 'detailed':
-        max_docs_for_summary = int(os.getenv("MAX_DOCS_FOR_SUMMARY_DETAILED", "20"))
-        logger.info(f"[SUMMARIZE_RESULTS] Detailed mode: summarizing up to {max_docs_for_summary} documents")
-    else:
-        max_docs_for_summary = int(os.getenv("MAX_DOCS_FOR_SUMMARY", "7"))
-        logger.info(f"[SUMMARIZE_RESULTS] Concise mode: summarizing up to {max_docs_for_summary} documents")
-    
-    if len(doc_outputs) > max_docs_for_summary:
-        logger.info(
-            "[SUMMARIZE_RESULTS] Limiting summary to top %d documents (out of %d) for %s processing",
-            max_docs_for_summary,
-            len(doc_outputs),
-            detail_level
-        )
-        doc_outputs = doc_outputs[:max_docs_for_summary]
+    # Summarize ALL document outputs (no artificial limits)
+    # Performance limits were removed to restore original retrieval behavior
+    logger.info(f"[SUMMARIZE_RESULTS] Summarizing ALL {len(doc_outputs)} document outputs")
     
     # Format outputs with block IDs and build metadata lookup tables (for citation mapping)
     # OPTIMIZATION: Pre-allocate metadata_lookup_tables with expected size to reduce reallocations

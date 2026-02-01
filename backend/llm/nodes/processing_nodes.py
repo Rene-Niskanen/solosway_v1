@@ -42,43 +42,9 @@ async def process_documents(state: MainWorkflowState) -> MainWorkflowState:
         logger.warning("[PROCESS_DOCUMENTS] No relevant documents to process")
         return {"document_outputs": []}
     
-    # PERFORMANCE OPTIMIZATION: Limit number of documents based on query characteristics
-    # Simple queries (value, date, name): 1-2 docs (ultra-fast)
-    # Complex queries (compare, analyze): 3-5 docs
-    # Detailed mode: up to 15 docs
-    detail_level = state.get('detail_level', 'concise')
-    user_query = state.get('user_query', '').lower()
-    
-    # Detect simple queries that only need 1-2 documents
-    simple_query_patterns = [
-        'what is the value', 'what was the value', 'tell me the value',
-        'what is the price', 'how much', 'what is the address',
-        'when was', 'who is the', 'what date', 'valuation date',
-        'market value', 'property value', 'flood risk', 'tenure'
-    ]
-    is_simple_query = any(pattern in user_query for pattern in simple_query_patterns)
-    
-    logger.info(f"[PROCESS_DOCUMENTS] Detail level from state: {detail_level} (type: {type(detail_level).__name__})")
-    
-    if detail_level == 'detailed':
-        max_docs_to_process = int(os.getenv("MAX_DOCS_TO_PROCESS_DETAILED", "15"))
-        logger.info(f"[PROCESS_DOCUMENTS] Detailed mode: processing up to {max_docs_to_process} documents")
-    elif is_simple_query:
-        # OPTIMIZATION: Simple queries only need 1 document (saves ~4s per extra doc!)
-        max_docs_to_process = int(os.getenv("MAX_DOCS_TO_PROCESS_SIMPLE", "1"))
-        logger.info(f"[PROCESS_DOCUMENTS] ⚡ Simple query detected - processing only TOP {max_docs_to_process} document(s)")
-    else:
-        max_docs_to_process = int(os.getenv("MAX_DOCS_TO_PROCESS", "5"))
-        logger.info(f"[PROCESS_DOCUMENTS] Concise mode: processing up to {max_docs_to_process} documents")
-    
-    if len(relevant_docs) > max_docs_to_process:
-        logger.info(
-            "[PROCESS_DOCUMENTS] Limiting processing to top %d documents (out of %d) for %s response",
-            max_docs_to_process,
-            len(relevant_docs),
-            detail_level
-        )
-        relevant_docs = relevant_docs[:max_docs_to_process]
+    # Process ALL relevant documents (no artificial limits)
+    # Performance limits were removed to restore original retrieval behavior
+    logger.info(f"[PROCESS_DOCUMENTS] Processing ALL {len(relevant_docs)} relevant documents")
 
     # NEW: Create source_chunks_metadata for individual chunks when clarify_relevant_docs was skipped
     # This ensures BBOX highlighting works without affecting LLM response quality (chunks remain individual)
