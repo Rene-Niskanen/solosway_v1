@@ -1254,18 +1254,19 @@ def query_documents_stream():
                                                 }
                                                 yield f"data: {json.dumps(analyzing_data)}\n\n"
                                     
-                                            # EARLY DOCUMENT PREPARATION: In agent mode, emit prepare_document action
-                                            # This allows frontend to start loading the document BEFORE answer generation
+                                            # EARLY DOCUMENT PREPARATION DISABLED
+                                            # Previously: emit prepare_document from query_vector_documents results
+                                            # PROBLEM: This used unranked doc_previews[0] which may not be the most
+                                            # relevant document after clarify_relevant_docs re-ranks them.
+                                            # This caused wrong documents to be opened when multiple docs are found.
+                                            # FIX: Rely on the final open_document action (based on citations) which
+                                            # uses the correct document from the re-ranked and processed results.
                                             if is_agent_mode and doc_previews:
-                                                first_doc = doc_previews[0]
-                                                prepare_action = {
-                                                    'type': 'prepare_document',
-                                                    'doc_id': first_doc.get('doc_id'),
-                                                    'filename': first_doc.get('original_filename', ''),
-                                                    'download_url': first_doc.get('download_url', '')
-                                                }
-                                                yield f"data: {json.dumps(prepare_action)}\n\n"
-                                                logger.info(f"📂 [EARLY_PREP] Emitted prepare_document for {first_doc.get('doc_id', '')[:8]}...")
+                                                # Log but don't emit - document will be loaded via open_document action
+                                                logger.info(
+                                                    f"📂 [EARLY_PREP] Skipping early document preparation "
+                                                    f"(will load correct doc via citations) - first in results: {doc_previews[0].get('doc_id', '')[:8]}..."
+                                                )
                                     
                                     elif node_name == "process_documents" and not is_fast_path:
                                         state_data = state_update if state_update else output

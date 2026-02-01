@@ -763,6 +763,13 @@ class BackendApiService {
     });
   }
 
+  async getProcessingQueue(): Promise<ApiResponse<any>> {
+    // Get documents currently in processing queue with their detailed history
+    return this.fetchApi<any>('/api/documents/processing-queue', {
+      method: 'GET',
+    });
+  }
+
   async getDocuments(): Promise<ApiResponse<any>> {
     // Fetch all documents for the business using /api/files endpoint (which wraps SupabaseDocumentService)
     // This endpoint returns { success: true, data: [...] }

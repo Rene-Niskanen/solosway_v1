@@ -261,12 +261,12 @@ export const ExpandedPlanViewer: React.FC<ExpandedPlanViewerProps> = ({
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
-          padding: '4px 12px',
+          padding: '6px 10px',
           backgroundColor: PLAN_STYLES.colors.bgHover,
           borderBottom: `1px solid ${PLAN_STYLES.colors.border}`,
           borderTopLeftRadius: '10px',
           borderTopRightRadius: '10px',
-          minHeight: '32px',
+          minHeight: '36px',
           flexShrink: 0,
         }}
       >
@@ -412,38 +412,38 @@ export const ExpandedPlanViewer: React.FC<ExpandedPlanViewerProps> = ({
               <button
                 onClick={onBuild}
                 disabled={buildStatus !== 'ready'}
-                title={buildStatus === 'ready' ? 'Build plan (⌘↵)' : buildStatus}
+                title={buildStatus === 'ready' ? 'Execute plan (⌘↵)' : buildStatus}
                 style={{
                   display: 'flex',
                   alignItems: 'center',
-                  gap: '3px',
-                  padding: '2px 8px',
-                  borderRadius: '3px',
-                  border: buildStatus === 'ready' ? '1px solid rgba(245, 158, 11, 0.3)' : 'none',
-                  fontSize: '11px',
+                  gap: '4px',
+                  padding: '3px 10px',
+                  borderRadius: PLAN_STYLES.radii.sm,
+                  border: 'none',
+                  fontSize: PLAN_STYLES.sizes.fontSm,
                   fontWeight: 500,
                   cursor: buildStatus !== 'ready' ? 'default' : 'pointer',
                   backgroundColor: buildStatus === 'built' 
-                    ? 'rgba(34, 197, 94, 0.1)' 
+                    ? PLAN_STYLES.colors.green 
                     : buildStatus === 'ready' 
-                    ? 'rgba(245, 158, 11, 0.08)' 
-                    : 'rgba(0,0,0,0.03)',
+                    ? '#F2DEB7' 
+                    : PLAN_STYLES.colors.bgMuted,
                   color: buildStatus === 'ready' 
-                    ? '#b45309' 
+                    ? '#5C4A2A' 
                     : buildStatus === 'built' 
-                    ? '#15803d' 
-                    : '#6B7280',
+                    ? '#FFFFFF' 
+                    : PLAN_STYLES.colors.textMuted,
                   opacity: buildStatus !== 'ready' && buildStatus !== 'built' ? 0.6 : 1,
                   transition: PLAN_STYLES.transitions.fast,
                 }}
               >
                 {buildStatus === 'building' && (
-                  <Loader2 style={{ width: '10px', height: '10px', animation: 'spin 1s linear infinite' }} />
+                  <Loader2 style={{ width: '12px', height: '12px', animation: 'spin 1s linear infinite' }} />
                 )}
-                {buildStatus === 'built' && <Check style={{ width: '10px', height: '10px' }} />}
-                <span>{buildStatus === 'ready' ? 'Build' : buildStatus === 'building' ? 'Building...' : 'Built'}</span>
+                {buildStatus === 'built' && <Check style={{ width: '12px', height: '12px' }} />}
+                <span>{buildStatus === 'ready' ? 'Execute' : buildStatus === 'building' ? 'Building...' : 'Built'}</span>
                 {buildStatus === 'ready' && (
-                  <span style={{ opacity: 0.7, fontSize: '10px', marginLeft: '2px' }}>⌘↵</span>
+                  <span style={{ marginLeft: '4px' }}>⌘<span style={{ position: 'relative', top: '2px' }}>↵</span></span>
                 )}
               </button>
             )

@@ -1547,6 +1547,36 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
         'unknown': 0
     }
     
+    # GLOBAL BLOCK ID COUNTER: Ensures unique block IDs across ALL documents
+    # This prevents citation collisions when multiple documents have overlapping block IDs
+    # e.g., Doc A: BLOCK_CITE_ID_1-5, Doc B: BLOCK_CITE_ID_6-10, Doc C: BLOCK_CITE_ID_11-15
+    global_block_id_counter = 1
+    
+    def _renumber_block_ids(content: str, old_metadata: dict, start_id: int) -> tuple:
+        """Renumber block IDs in content and metadata to start from start_id."""
+        if not old_metadata:
+            return content, {}, start_id
+        
+        new_content = content
+        new_metadata = {}
+        
+        # Sort by original block ID number to ensure consistent ordering
+        sorted_old_ids = sorted(
+            old_metadata.keys(),
+            key=lambda x: int(x.split('_')[-1]) if x.split('_')[-1].isdigit() else 0
+        )
+        
+        current_id = start_id
+        for old_id in sorted_old_ids:
+            new_id = f"BLOCK_CITE_ID_{current_id}"
+            # Replace in content (both in tags and references)
+            new_content = new_content.replace(old_id, new_id)
+            # Copy metadata with new key
+            new_metadata[new_id] = old_metadata[old_id].copy()
+            current_id += 1
+        
+        return new_content, new_metadata, current_id
+    
     for idx, output in enumerate(doc_outputs):
         doc_id = output.get('doc_id', '')
         doc_type = (output.get('classification_type') or 'Property Document').replace('_', ' ').title()
@@ -1576,16 +1606,27 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
         
         if is_formatted and output.get('formatted_content') and output.get('formatted_metadata_table'):
             # Use pre-formatted content from processing_nodes
-            formatted_content = output.get('formatted_content')
-            metadata_table = output.get('formatted_metadata_table')
+            # BUT renumber block IDs to ensure global uniqueness
+            pre_formatted_content = output.get('formatted_content')
+            pre_metadata_table = output.get('formatted_metadata_table')
+            
+            # Renumber block IDs to continue from global counter
+            formatted_content, metadata_table, global_block_id_counter = _renumber_block_ids(
+                pre_formatted_content, pre_metadata_table, global_block_id_counter
+            )
             logger.debug(
-                f"[SUMMARIZE_RESULTS] Using pre-formatted content for doc {doc_id[:8]}"
+                f"[SUMMARIZE_RESULTS] Renumbered pre-formatted content for doc {doc_id[:8]} "
+                f"(now has IDs up to {global_block_id_counter - 1})"
             )
         else:
             # Format document with block IDs (for citation mapping)
-            formatted_content, metadata_table = format_document_with_block_ids(output)
+            # Use global counter to ensure unique IDs across all documents
+            formatted_content, metadata_table, global_block_id_counter = format_document_with_block_ids(
+                output, starting_block_id=global_block_id_counter
+            )
             logger.debug(
-                f"[SUMMARIZE_RESULTS] Formatted doc {doc_id[:8]} in summarize_results"
+                f"[SUMMARIZE_RESULTS] Formatted doc {doc_id[:8]} in summarize_results "
+                f"(IDs up to {global_block_id_counter - 1})"
             )
         
         # Format with document header

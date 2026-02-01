@@ -633,9 +633,9 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
       </button>
 
       <div className="w-full max-w-7xl min-h-full flex flex-col" style={{ padding: '48px 40px' }}>
-        {/* Project Cards Section - top portion, positioned with more left and top padding */}
-        <div className="flex flex-wrap justify-start" style={{ gap: '44px', marginLeft: '48px', marginTop: '24px' }}>
-          {properties.slice(0, 2).map(property => (
+        {/* Project Cards Section - top portion, compact grid for 4+ cards per row */}
+        <div className="flex flex-wrap justify-start" style={{ gap: '20px', marginLeft: '24px', marginTop: '24px' }}>
+          {properties.map(property => (
             <ProjectGlassCard 
               key={property.id} 
               property={property}

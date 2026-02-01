@@ -137,10 +137,10 @@ export const ProjectGlassCard: React.FC<ProjectGlassCardProps> = React.memo(({ p
     <motion.div 
       className="cursor-pointer relative select-none"
       style={{
-        width: '580px',
-        maxWidth: '580px',
+        width: '260px',
+        maxWidth: '260px',
         borderRadius: '10px',
-        padding: '28px',
+        padding: '16px',
         background: 'linear-gradient(145deg, #ffffff 0%, #f8f9fa 100%)',
         boxShadow: isDragOver 
           ? '0 8px 24px rgba(59, 130, 246, 0.2), 0 4px 8px rgba(0, 0, 0, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.9)'
@@ -151,10 +151,10 @@ export const ProjectGlassCard: React.FC<ProjectGlassCardProps> = React.memo(({ p
         outlineOffset: '4px',
       }}
       whileHover={{ 
-        y: -6, 
-        boxShadow: '0 20px 40px -8px rgba(0, 0, 0, 0.15), 0 8px 16px -4px rgba(0, 0, 0, 0.08), inset 0 1px 0 rgba(255, 255, 255, 1)',
+        y: -4, 
+        boxShadow: '0 16px 32px -8px rgba(0, 0, 0, 0.15), 0 6px 12px -4px rgba(0, 0, 0, 0.08), inset 0 1px 0 rgba(255, 255, 255, 1)',
       }}
-      whileTap={{ scale: 0.98, y: -3 }}
+      whileTap={{ scale: 0.98, y: -2 }}
       transition={{ type: 'spring', stiffness: 400, damping: 25 }}
       onClick={onClick}
       onDragOver={handleDragOver}
@@ -162,72 +162,16 @@ export const ProjectGlassCard: React.FC<ProjectGlassCardProps> = React.memo(({ p
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
-      <div className="flex gap-8">
-        {/* Left: Text Content */}
-        <div className="flex-1 min-w-0">
-          {/* Title - Large, dark grey, semibold */}
-          <h2 
-            className="mb-2"
-            style={{
-              fontSize: '26px',
-              fontWeight: 600,
-              color: '#1F2937',
-              lineHeight: 1.2,
-            }}
-          >
-            {propertyName}
-          </h2>
-          
-          {/* Subtitle - Property type */}
-          <p 
-            className="mb-3"
-            style={{
-              fontSize: '15px',
-              color: '#6B7280',
-              fontWeight: 500,
-            }}
-          >
-            {propertyType}
-          </p>
-          
-          {/* Property details row (if available) */}
-          {(property.bedrooms || property.bathrooms || property.size_sqft) && (
-            <div 
-              className="flex gap-4 mb-3"
-              style={{ fontSize: '13px', color: '#6B7280' }}
-            >
-              {property.bedrooms && (
-                <span>{property.bedrooms} bed{property.bedrooms !== 1 ? 's' : ''}</span>
-              )}
-              {property.bathrooms && (
-                <span>{property.bathrooms} bath{property.bathrooms !== 1 ? 's' : ''}</span>
-              )}
-              {property.size_sqft && (
-                <span>{property.size_sqft.toLocaleString()} {property.size_unit || 'sqft'}</span>
-              )}
-            </div>
-          )}
-          
-          {/* Description or address */}
-          <div className="text-xs text-gray-700 leading-relaxed whitespace-pre-wrap">
-            {property.notes || property.description || (
-              property.document_count 
-                ? `Text, images, and documents about ${propertyName}. ${property.formatted_address || property.address || ''}`
-                : property.formatted_address || property.address || 'Property location'
-            )}
-          </div>
-        </div>
-        
-        {/* Right: Nested Floating Preview Card with property image */}
-        <div className="relative flex-shrink-0" style={{ width: '180px', height: '220px' }}>
+      {/* Vertical layout for compact card */}
+      <div className="flex flex-col">
+        {/* Top: Property image */}
+        <div className="relative w-full mb-3" style={{ height: '120px' }}>
           <div 
-            className="overflow-hidden"
+            className="overflow-hidden w-full h-full"
             style={{
-              width: '100%',
-              height: '100%',
-              borderRadius: '8px',
+              borderRadius: '6px',
               background: 'linear-gradient(145deg, #ffffff 0%, #f5f5f5 100%)',
-              boxShadow: '0 6px 16px -2px rgba(0, 0, 0, 0.12), 0 3px 6px -2px rgba(0, 0, 0, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.6)',
+              boxShadow: '0 4px 12px -2px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06)',
               border: '1px solid rgba(0, 0, 0, 0.05)',
             }}
           >
@@ -240,16 +184,58 @@ export const ProjectGlassCard: React.FC<ProjectGlassCardProps> = React.memo(({ p
             />
           </div>
         </div>
+        
+        {/* Bottom: Text Content */}
+        <div className="min-w-0">
+          {/* Title */}
+          <h2 
+            className="mb-1 truncate"
+            style={{
+              fontSize: '15px',
+              fontWeight: 600,
+              color: '#1F2937',
+              lineHeight: 1.3,
+            }}
+          >
+            {propertyName}
+          </h2>
+          
+          {/* Subtitle - Property type */}
+          <p 
+            className="mb-2 truncate"
+            style={{
+              fontSize: '12px',
+              color: '#6B7280',
+              fontWeight: 500,
+            }}
+          >
+            {propertyType}
+          </p>
+          
+          {/* Description - 2 lines max */}
+          <div 
+            className="text-gray-600 leading-snug"
+            style={{ 
+              fontSize: '11px',
+              display: '-webkit-box',
+              WebkitLineClamp: 2,
+              WebkitBoxOrient: 'vertical',
+              overflow: 'hidden',
+            }}
+          >
+            {property.description || property.notes || property.formatted_address || property.address || 'Property location'}
+          </div>
+        </div>
       </div>
       
       {/* OpenAI-style Add Button - appears when dragging over */}
       <div 
         className="absolute flex items-center justify-center pointer-events-none"
         style={{
-          bottom: '16px',
-          right: '16px',
-          width: '40px',
-          height: '40px',
+          bottom: '12px',
+          right: '12px',
+          width: '32px',
+          height: '32px',
           borderRadius: '50%',
           backgroundColor: '#3B82F6',
           boxShadow: '0 4px 12px rgba(59, 130, 246, 0.4)',
@@ -258,7 +244,7 @@ export const ProjectGlassCard: React.FC<ProjectGlassCardProps> = React.memo(({ p
           transition: 'opacity 150ms ease, transform 150ms ease',
         }}
       >
-        <Plus className="w-5 h-5 text-white" strokeWidth={2.5} />
+        <Plus className="w-4 h-4 text-white" strokeWidth={2.5} />
       </div>
     </motion.div>
   );

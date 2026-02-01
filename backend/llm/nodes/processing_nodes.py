@@ -260,9 +260,11 @@ async def process_documents(state: MainWorkflowState) -> MainWorkflowState:
             # OPTIMIZATION: Pre-format document during processing to parallelize with LLM calls
             # This saves time in summarize_results by doing formatting work in parallel
             # Format after all metadata is added to ensure complete data
+            # NOTE: Block IDs start from 1 per-document here. They will be renumbered
+            # in summary_nodes.py to ensure global uniqueness across all documents.
             try:
                 # Format document with block IDs and create metadata lookup table
-                formatted_content, metadata_table = format_document_with_block_ids(result)
+                formatted_content, metadata_table, _ = format_document_with_block_ids(result)
                 
                 # Store formatted content and metadata in result
                 result['formatted_content'] = formatted_content

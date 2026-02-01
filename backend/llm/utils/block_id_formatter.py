@@ -11,7 +11,10 @@ from typing import Dict, Any, Tuple, Optional
 logger = logging.getLogger(__name__)
 
 
-def format_document_with_block_ids(doc_output: dict) -> Tuple[str, Dict[str, Dict[str, Any]]]:
+def format_document_with_block_ids(
+    doc_output: dict,
+    starting_block_id: int = 1
+) -> Tuple[str, Dict[str, Dict[str, Any]], int]:
     """
     Format document content with block IDs embedded and create metadata lookup table.
     
@@ -40,9 +43,11 @@ def format_document_with_block_ids(doc_output: dict) -> Tuple[str, Dict[str, Dic
                     - type: str (optional)
                     - confidence: str (optional)
                 - content: str (chunk-level content, fallback)
+        starting_block_id: int - Starting value for block ID counter (default 1).
+            Use this to ensure globally unique block IDs across multiple documents.
     
     Returns:
-        Tuple[str, Dict[str, Dict[str, Any]]]:
+        Tuple[str, Dict[str, Dict[str, Any]], int]:
             - formatted_content: str - Document content with embedded block IDs
             - metadata_table: dict - Maps block_id -> {
                 'page': int,
@@ -54,6 +59,7 @@ def format_document_with_block_ids(doc_output: dict) -> Tuple[str, Dict[str, Dic
                 'doc_id': str,
                 'confidence': str
             }
+            - next_block_id: int - The next available block ID (for chaining calls)
     """
     doc_content = doc_output.get('output', '')
     source_chunks_metadata = doc_output.get('source_chunks_metadata', [])
@@ -61,7 +67,7 @@ def format_document_with_block_ids(doc_output: dict) -> Tuple[str, Dict[str, Dic
     
     formatted_blocks = []
     metadata_table = {}
-    block_id_counter = 1
+    block_id_counter = starting_block_id
     
     if not source_chunks_metadata:
         logger.warning(
@@ -191,11 +197,14 @@ def format_document_with_block_ids(doc_output: dict) -> Tuple[str, Dict[str, Dic
     
     formatted_content = "\n".join(formatted_blocks)
     
+    # next_block_id is the counter value after all blocks have been assigned
+    # This allows chaining multiple documents with globally unique IDs
+    next_block_id = block_id_counter
     
     logger.info(
         f"[BLOCK_ID_FORMATTER] Formatted doc {doc_id[:8] if doc_id else 'UNKNOWN'} "
-        f"with {len(metadata_table)} block IDs"
+        f"with {len(metadata_table)} block IDs (IDs {starting_block_id} to {next_block_id - 1 if next_block_id > starting_block_id else starting_block_id})"
     )
     
-    return formatted_content, metadata_table
+    return formatted_content, metadata_table, next_block_id
 

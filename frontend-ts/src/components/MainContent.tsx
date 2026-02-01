@@ -3937,16 +3937,16 @@ export const MainContent = ({
                       }}>
                         {/* VELORA Logo - Enlarged to match reference image proportions */}
                         <img 
-                          src="/NB..VELORA..LOGO.png" 
+                          src="/velorabot.com.png" 
                     alt="VELORA" 
                           className="h-auto"
                           style={{ 
-                            width: 'clamp(250px, 22vw, 380px)', // Slightly smaller than before
-                            minWidth: '250px', // Ensure it never gets smaller
-                            maxWidth: '380px', // Can grow on larger screens
+                            width: 'clamp(280px, 26vw, 420px)', // Slightly larger dashboard logo
+                            minWidth: '280px', // Ensure it never gets smaller
+                            maxWidth: '420px', // Can grow on larger screens
                             height: 'auto',
-                            minHeight: '80px', // Slightly reduced minimum height
-                            maxHeight: '150px', // Slightly reduced maximum height
+                            minHeight: '90px', // Slightly larger minimum height
+                            maxHeight: '170px', // Slightly larger maximum height
                             marginBottom: (!effectiveIsVerySmall && !effectiveShouldHideProjects) ? 'clamp(2rem, 4vh, 3rem)' : '0', // Spacing between logo and search bar, use frozen values when transitioning
                             objectFit: 'contain' // Maintain aspect ratio
                           }}

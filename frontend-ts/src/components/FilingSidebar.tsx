@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Search, Plus, Folder, FolderOpen, FileText, File as FileIcon, ChevronRight, MoreVertical, CheckSquare, Square, Upload, MousePointer2, Trash2, ChevronDown, MapPin } from 'lucide-react';
+import { X, Search, Plus, Folder, FolderOpen, FileText, File as FileIcon, ChevronRight, MoreVertical, CheckSquare, Square, Upload, MousePointer2, Trash2, ChevronDown, MapPin, RefreshCw, ListCheck } from 'lucide-react';
 import { useFilingSidebar } from '../contexts/FilingSidebarContext';
 import { backendApi } from '../services/backendApi';
 import { usePreview } from '../contexts/PreviewContext';
@@ -31,6 +31,7 @@ interface Document {
   property_address?: string;
   folder_id?: string;
   s3_path?: string;
+  status?: string; // 'uploaded', 'processing', 'completed', 'failed'
 }
 
 interface Folder {
@@ -220,6 +221,10 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
     itemName: '',
     position: null,
   });
+  
+  // Track documents being reprocessed and successfully reprocessed
+  const [reprocessingDocs, setReprocessingDocs] = useState<Set<string>>(new Set());
+  const [reprocessedDocs, setReprocessedDocs] = useState<Set<string>>(new Set()); // Successfully reprocessed this session
   const newMenuRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
@@ -1224,6 +1229,46 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
     }
   };
 
+  // Handle document reprocessing (for documents stuck in 'uploaded' status)
+  const handleReprocessDocument = async (doc: Document, e: React.MouseEvent) => {
+    e.stopPropagation();
+    
+    if (reprocessingDocs.has(doc.id)) return; // Already reprocessing
+    
+    try {
+      setReprocessingDocs(prev => new Set(prev).add(doc.id));
+      
+      console.log(`🔄 Reprocessing document: ${doc.original_filename} (${doc.id})`);
+      
+      const response = await backendApi.reprocessDocument(doc.id, 'full');
+      
+      if (response.success) {
+        console.log(`✅ Reprocess complete:`, response.data);
+        // Update document status in local state
+        setDocuments(prev => prev.map(d => 
+          d.id === doc.id ? { ...d, status: 'completed' } : d
+        ));
+        // Track as successfully reprocessed (shows tick icon)
+        setReprocessedDocs(prev => new Set(prev).add(doc.id));
+        // Invalidate cache
+        documentCacheRef.current.clear();
+        cacheTimestampRef.current.clear();
+      } else {
+        console.error(`❌ Reprocess failed:`, response.error);
+        alert(`Failed to reprocess document: ${response.error || 'Unknown error'}`);
+      }
+    } catch (error) {
+      console.error('Error reprocessing document:', error);
+      alert('Failed to reprocess document. Please try again.');
+    } finally {
+      setReprocessingDocs(prev => {
+        const next = new Set(prev);
+        next.delete(doc.id);
+        return next;
+      });
+    }
+  };
+
   // Drag and drop handlers
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -1905,42 +1950,42 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
             </div>
 
             {/* Actions Row - Unified Style */}
-            <div className="flex items-center gap-3 w-full" style={{ width: '100%', boxSizing: 'border-box' }}>
+            <div className="flex items-center gap-2 w-full" style={{ width: '100%', boxSizing: 'border-box' }}>
             {/* View Mode Toggle */}
-            <div className="flex items-center gap-0.5 bg-gray-100 rounded-lg p-0.5">
+            <div className="flex items-center gap-0 bg-gray-100 rounded-md p-0.5">
               <button
                 onClick={() => setViewMode('global')}
-                className={`text-[11px] font-medium rounded-none transition-all duration-150 ${
+                className={`text-[10px] font-medium rounded-sm transition-all duration-150 ${
                   viewMode === 'global'
                     ? 'bg-white text-gray-900 shadow-sm'
                     : 'text-gray-600 hover:text-gray-900'
                 }`}
                 style={{
-                  padding: '4px 8px',
-                  height: '24px',
-                  minHeight: '24px'
+                  padding: '3px 6px',
+                  height: '22px',
+                  minHeight: '22px'
                 }}
               >
                 All Files
               </button>
               <button
                 onClick={() => setViewMode('property')}
-                className={`text-[11px] font-medium rounded-none transition-all duration-150 ${
+                className={`text-[10px] font-medium rounded-sm transition-all duration-150 ${
                   viewMode === 'property'
                     ? 'bg-white text-gray-900 shadow-sm'
                     : 'text-gray-600 hover:text-gray-900'
                 }`}
                 style={{
-                  padding: '4px 8px',
-                  height: '24px',
-                  minHeight: '24px'
+                  padding: '3px 6px',
+                  height: '22px',
+                  minHeight: '22px'
                 }}
               >
                 By Property
               </button>
             </div>
 
-            <div className="flex items-center gap-1.5 ml-auto">
+            <div className="flex items-center gap-1 ml-auto">
               {/* Selection Mode Toggle Button */}
               <button
                 onClick={() => {
@@ -1949,17 +1994,15 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                     clearSelection();
                   }
                 }}
-                className={`flex items-center justify-center gap-1.5 px-2 py-1 rounded-none transition-all duration-200 ${
+                className={`flex items-center justify-center gap-1 px-2 py-1 rounded-sm transition-all duration-200 ${
                   isSelectionMode 
                     ? 'text-slate-600' 
                     : 'text-slate-600 hover:text-slate-700'
                 }`}
                 style={{
-                  padding: '4px 8px',
-                  height: '24px',
-                  minHeight: '24px',
-                  minWidth: '70px',
-                  width: '70px',
+                  padding: '3px 6px',
+                  height: '22px',
+                  minHeight: '22px',
                   backgroundColor: isSelectionMode ? '#F9FAFB' : '#FFFFFF',
                   border: isSelectionMode ? '1px solid rgba(203, 213, 225, 0.6)' : '1px solid rgba(203, 213, 225, 0.3)',
                   opacity: 1,
@@ -1977,8 +2020,8 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                 }}
                 title="Select documents"
               >
-                <MousePointer2 className="w-3.5 h-3.5 text-slate-600" strokeWidth={1.5} />
-                <span className="text-slate-600 text-[11px]">Select</span>
+                <MousePointer2 className="w-3 h-3 text-slate-600" strokeWidth={1.5} />
+                <span className="text-slate-600 text-[10px]">Select</span>
               </button>
 
               <div className="relative" ref={newMenuRef}>
@@ -1987,21 +2030,19 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                     e.stopPropagation();
                     setShowNewMenu(!showNewMenu);
                   }}
-                  className="flex items-center justify-center gap-1.5 px-2 py-1 border border-slate-200/60 hover:border-slate-300/80 rounded-none transition-all duration-200"
+                  className="flex items-center justify-center gap-1 px-2 py-1 border border-slate-200/60 hover:border-slate-300/80 rounded-sm transition-all duration-200"
                   style={{
-                    padding: '4px 8px',
-                    height: '24px',
-                    minHeight: '24px',
-                    minWidth: '70px',
-                    width: '70px',
+                    padding: '3px 6px',
+                    height: '22px',
+                    minHeight: '22px',
                     backgroundColor: '#FFFFFF',
                     opacity: 1,
                     backdropFilter: 'none'
                   }}
                   title="Add"
                 >
-                  <Plus className="w-3.5 h-3.5 text-slate-600" strokeWidth={1.5} />
-                  <span className="text-slate-600 text-[11px]">Add</span>
+                  <Plus className="w-3 h-3 text-slate-600" strokeWidth={1.5} />
+                  <span className="text-slate-600 text-[10px]">Add</span>
                 </button>
 
               {/* New Menu Popup - Clean style */}
@@ -2135,7 +2176,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
         )}
 
         {/* Content Area - Clean Background */}
-        <div className="flex-1 overflow-y-auto">
+        <div className="flex-1 overflow-y-auto w-full px-4">
           {isLoading ? (
             <div className="flex items-center justify-center h-full">
               <div className="text-gray-500">Loading...</div>
@@ -2145,13 +2186,13 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
               <div className="text-red-500">{error}</div>
             </div>
           ) : filteredItems.folders.length === 0 && filteredItems.documents.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-full text-gray-500 px-4">
+            <div className="flex flex-col items-center justify-center h-full text-gray-500">
               <FolderOpen className="w-10 h-10 text-gray-300 mb-3" strokeWidth={1.5} />
               <p className="text-[13px] font-medium text-gray-500 mb-1">No documents</p>
               <p className="text-[12px] text-gray-400 text-center">Upload files or adjust your search</p>
             </div>
           ) : (
-            <div className="px-4 py-0.5 space-y-0.5 w-full" style={{ boxSizing: 'border-box' }}>
+            <div className="w-full py-0.5" style={{ boxSizing: 'border-box' }}>
               {/* Folders - Premium Container Design */}
               {filteredItems.folders.map((folder) => {
                 const isSelected = selectedItems.has(folder.id);
@@ -2160,14 +2201,13 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                   key={folder.id}
                   onMouseEnter={() => setHoveredItemId(folder.id)}
                   onMouseLeave={() => setHoveredItemId(null)}
-                  className={`flex items-center gap-2.5 py-2 w-full cursor-pointer group transition-all duration-200 rounded-md border ${
+                  className={`flex items-center gap-2.5 pl-8 pr-3 py-1.5 w-full cursor-pointer group transition-all duration-200 rounded-md border ${
                     isSelectionMode 
                       ? (isSelected 
                           ? 'bg-gray-100/50 border-gray-300/60 hover:border-gray-400/80' 
                           : 'bg-white border-gray-200/60 hover:border-gray-300/80 hover:bg-gray-50/50')
                       : 'bg-white border-gray-200/60 hover:border-gray-300/80 hover:bg-gray-50/50'
                   }`}
-                  style={{ paddingLeft: '0px', paddingRight: '0px' }}
                   onClick={(e) => {
                     if (editingItemId) return;
                     if (isSelectionMode) {
@@ -2318,7 +2358,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                       </div>
                       {/* Documents in this property - Indented sub-items */}
                       {isExpanded && (
-                        <div className="px-4 py-0.5 space-y-0.5">
+                        <div className="px-4 py-0.5">
                           {propertyDocs.map((doc) => {
                             const isLinked = isDocumentLinked(doc);
                             const isSelected = selectedItems.has(doc.id);
@@ -2334,7 +2374,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                                 }}
                                 onMouseEnter={() => setHoveredItemId(doc.id)}
                                 onMouseLeave={() => setHoveredItemId(null)}
-                                className={`flex items-center gap-2.5 py-2 cursor-pointer group transition-all duration-200 rounded-md border px-0 w-full ${
+                                className={`flex items-center gap-2.5 py-1.5 cursor-pointer group transition-all duration-200 rounded-md border pl-8 pr-3 w-full ${
                                   isSelectionMode 
                                     ? (isSelected 
                                         ? 'bg-gray-100/50 border-gray-300/60 hover:border-gray-400/80' 
@@ -2425,15 +2465,54 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                                   )}
                                 </div>
                                 {!editingItemId && (
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleContextMenuClick(e, doc.id);
-                                    }}
-                                    className="p-0.5 hover:bg-gray-100 rounded flex-shrink-0 opacity-0 group-hover:opacity-100 transition-all duration-150"
-                                  >
-                                    <MoreVertical className="w-3 h-3 text-gray-400" strokeWidth={1.5} />
-                                  </button>
+                                  <div className="flex items-center gap-0.5 flex-shrink-0">
+                                    {/* Reprocess button / status indicator */}
+                                    {reprocessingDocs.has(doc.id) ? (
+                                      // Currently reprocessing - show spinning icon
+                                      <div 
+                                        title="Processing document..."
+                                        className="p-0.5 flex-shrink-0"
+                                      >
+                                        <RefreshCw 
+                                          className="w-3 h-3 text-blue-500 animate-spin" 
+                                          strokeWidth={1.5} 
+                                        />
+                                      </div>
+                                    ) : reprocessedDocs.has(doc.id) || doc.status === 'completed' ? (
+                                      // Successfully reprocessed - show tick icon
+                                      <div 
+                                        title="Document fully processed"
+                                        className="p-0.5 flex-shrink-0"
+                                      >
+                                        <ListCheck 
+                                          className="w-3 h-3" 
+                                          strokeWidth={1.5}
+                                          color="#22c55e"
+                                        />
+                                      </div>
+                                    ) : doc.status === 'uploaded' ? (
+                                      // Needs reprocessing - show clickable button
+                                      <button
+                                        onClick={(e) => handleReprocessDocument(doc, e)}
+                                        title="Reprocess document (generate embeddings)"
+                                        className="p-0.5 hover:bg-blue-50 rounded flex-shrink-0 opacity-0 group-hover:opacity-100 transition-all duration-150"
+                                      >
+                                        <RefreshCw 
+                                          className="w-3 h-3 text-blue-500" 
+                                          strokeWidth={1.5} 
+                                        />
+                                      </button>
+                                    ) : null}
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleContextMenuClick(e, doc.id);
+                                      }}
+                                      className="p-0.5 hover:bg-gray-100 rounded flex-shrink-0 opacity-0 group-hover:opacity-100 transition-all duration-150"
+                                    >
+                                      <MoreVertical className="w-3 h-3 text-gray-400" strokeWidth={1.5} />
+                                    </button>
+                                  </div>
                                 )}
                               </div>
                             );
@@ -2445,7 +2524,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                 })
               ) : (
                 // Flat list for global view or when inside a folder - Premium Design
-                <div className="py-0.5 space-y-0.5 w-full" style={{ boxSizing: 'border-box' }}>
+                <div className="py-0.5 w-full" style={{ boxSizing: 'border-box' }}>
                   {filteredItems.documents.map((doc) => {
                   const isLinked = isDocumentLinked(doc);
                   const isSelected = selectedItems.has(doc.id);
@@ -2461,7 +2540,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                       }}
                       onMouseEnter={() => setHoveredItemId(doc.id)}
                       onMouseLeave={() => setHoveredItemId(null)}
-                      className={`flex items-center gap-2.5 px-0 py-2 w-full cursor-pointer group transition-all duration-200 rounded-md border ${
+                      className={`flex items-center gap-2.5 pl-8 pr-3 py-1.5 w-full cursor-pointer group transition-all duration-200 rounded-md border ${
                         isSelectionMode 
                           ? (isSelected 
                               ? 'bg-gray-100/50 border-gray-300/60 hover:border-gray-400/80' 
@@ -2552,15 +2631,54 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                         )}
                       </div>
                       {!editingItemId && (
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleContextMenuClick(e, doc.id);
-                          }}
-                          className="p-0.5 hover:bg-gray-100 rounded flex-shrink-0 opacity-0 group-hover:opacity-100 transition-all duration-150"
-                        >
-                          <MoreVertical className="w-3 h-3 text-gray-400" strokeWidth={1.5} />
-                        </button>
+                        <div className="flex items-center gap-0.5 flex-shrink-0">
+                          {/* Reprocess button / status indicator */}
+                          {reprocessingDocs.has(doc.id) ? (
+                            // Currently reprocessing - show spinning icon
+                            <div 
+                              title="Processing document..."
+                              className="p-0.5 flex-shrink-0"
+                            >
+                              <RefreshCw 
+                                className="w-3 h-3 text-blue-500 animate-spin" 
+                                strokeWidth={1.5} 
+                              />
+                            </div>
+                          ) : reprocessedDocs.has(doc.id) || doc.status === 'completed' ? (
+                            // Successfully reprocessed - show tick icon
+                            <div 
+                              title="Document fully processed"
+                              className="p-0.5 flex-shrink-0"
+                            >
+                              <ListCheck 
+                                className="w-3 h-3" 
+                                strokeWidth={1.5}
+                                color="#22c55e" 
+                              />
+                            </div>
+                          ) : doc.status === 'uploaded' ? (
+                            // Needs reprocessing - show clickable button
+                            <button
+                              onClick={(e) => handleReprocessDocument(doc, e)}
+                              title="Reprocess document (generate embeddings)"
+                              className="p-0.5 hover:bg-blue-50 rounded flex-shrink-0 opacity-0 group-hover:opacity-100 transition-all duration-150"
+                            >
+                              <RefreshCw 
+                                className="w-3 h-3 text-blue-500" 
+                                strokeWidth={1.5} 
+                              />
+                            </button>
+                          ) : null}
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleContextMenuClick(e, doc.id);
+                            }}
+                            className="p-0.5 hover:bg-gray-100 rounded flex-shrink-0 opacity-0 group-hover:opacity-100 transition-all duration-150"
+                          >
+                            <MoreVertical className="w-3 h-3 text-gray-400" strokeWidth={1.5} />
+                          </button>
+                        </div>
                       )}
                     </div>
                   );
