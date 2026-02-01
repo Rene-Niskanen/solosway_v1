@@ -741,7 +741,7 @@ const ExpandedCardView: React.FC<{
         >
           {loading && (
             <div className="absolute inset-0 flex items-center justify-center bg-white z-10">
-              <div className="w-6 h-6 border-2 border-blue-500/30 border-t-blue-500 rounded-full animate-spin" />
+              <div className="w-5 h-5 border-2 border-neutral-200 border-t-neutral-800 rounded-full animate-spin" />
           </div>
           )}
           
@@ -925,7 +925,7 @@ const ExpandedCardView: React.FC<{
                     </div>
                   ) : (
                     <div className="flex items-center justify-center h-full">
-                      <div className="w-6 h-6 border-2 border-blue-500/30 border-t-blue-500 rounded-full animate-spin" />
+                      <div className="w-5 h-5 border-2 border-neutral-200 border-t-neutral-800 rounded-full animate-spin" />
                     </div>
                   )}
                 </div>
@@ -3017,49 +3017,6 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
 
                     {/* Document Grid - Always rendered but hidden when preview is open */}
                     <div className={selectedCardIndex !== null ? 'hidden' : ''}>
-                    {filteredDocuments.length === 0 && showEmptyState && hasFilesFetched ? (
-                        <div className="h-full flex flex-col items-center justify-center text-gray-500">
-                          <div className="w-20 h-20 bg-gray-50 rounded-full flex items-center justify-center mb-4 border border-gray-100">
-                            <Search size={32} className="text-gray-300" />
-                  </div>
-                          <p className="text-lg font-medium text-gray-900 mb-1">No documents found</p>
-                          <p className="text-sm text-gray-500 mb-6">Try adjusting your search or upload a new file.</p>
-                          <button 
-                            className="px-6 py-3 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium rounded-full transition-all shadow-lg shadow-blue-900/20 hover:shadow-blue-600/30 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-                            onClick={() => {
-                              if (!property?.id) {
-                                alert('Please select a property first');
-                                return;
-                              }
-                              if (!canUpload()) {
-                                alert('You do not have permission to upload files. Only editors and owners can upload files to this property.');
-                                return;
-                              }
-                              fileInputRef.current?.click();
-                            }}
-                            disabled={uploading || !property?.id || !canUpload() || isLoadingAccess}
-                            title={
-                              !property?.id 
-                                ? "Please select a property first" 
-                                : !canUpload() 
-                                  ? "You do not have permission to upload files. Only editors and owners can upload files."
-                                  : "Upload document"
-                            }
-                          >
-                            {uploading ? (
-                              <>
-                                <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
-                                <span>Uploading...</span>
-                              </>
-                            ) : (
-                              <>
-                                <Upload size={16} strokeWidth={2.5} />
-                                <span>Upload Document</span>
-                              </>
-                            )}
-                          </button>
-                      </div>
-                    ) : (
                       <div 
                           className="grid gap-6 pb-20" 
                         style={{ 
@@ -3417,7 +3374,6 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                           );
                         })}
             </div>
-                      )}
           </div>
                                 
                     </div>

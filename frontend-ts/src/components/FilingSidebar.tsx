@@ -2374,7 +2374,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                                 }}
                                 onMouseEnter={() => setHoveredItemId(doc.id)}
                                 onMouseLeave={() => setHoveredItemId(null)}
-                                className={`flex items-center gap-2.5 py-1.5 cursor-pointer group transition-all duration-200 rounded-md border pl-8 pr-3 w-full ${
+                                className={`flex items-center gap-2.5 py-1.5 cursor-pointer group transition-all duration-200 rounded-md border pl-3 pr-3 mx-4 ${
                                   isSelectionMode 
                                     ? (isSelected 
                                         ? 'bg-gray-100/50 border-gray-300/60 hover:border-gray-400/80' 
@@ -2540,7 +2540,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                       }}
                       onMouseEnter={() => setHoveredItemId(doc.id)}
                       onMouseLeave={() => setHoveredItemId(null)}
-                      className={`flex items-center gap-2.5 pl-8 pr-3 py-1.5 w-full cursor-pointer group transition-all duration-200 rounded-md border ${
+                      className={`flex items-center gap-2.5 pl-3 pr-3 py-1.5 mx-4 cursor-pointer group transition-all duration-200 rounded-md border ${
                         isSelectionMode 
                           ? (isSelected 
                               ? 'bg-gray-100/50 border-gray-300/60 hover:border-gray-400/80' 

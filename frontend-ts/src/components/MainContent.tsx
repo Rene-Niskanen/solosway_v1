@@ -3937,7 +3937,7 @@ export const MainContent = ({
                       }}>
                         {/* VELORA Logo - Enlarged to match reference image proportions */}
                         <img 
-                          src="/velorabot.com.png" 
+                          src="/(DASH VELORA) Logo - NB.png" 
                     alt="VELORA" 
                           className="h-auto"
                           style={{ 
@@ -5482,9 +5482,10 @@ export const MainContent = ({
               type="button"
               style={{
                 padding: '6px 10px 6px 8px',
-                border: 'none',
+                border: isBrowserFullscreen ? 'none' : '1px solid rgba(0, 0, 0, 0.1)',
                 cursor: 'pointer',
-                backgroundColor: isBrowserFullscreen ? 'rgba(0, 0, 0, 0.04)' : 'transparent'
+                backgroundColor: isBrowserFullscreen ? 'rgba(0, 0, 0, 0.04)' : 'rgba(255, 255, 255, 0.9)',
+                boxShadow: isBrowserFullscreen ? 'none' : '0 1px 3px rgba(0, 0, 0, 0.06)'
               }}
             >
               {isBrowserFullscreen ? (

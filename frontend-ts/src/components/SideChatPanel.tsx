@@ -12567,10 +12567,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               /* Empty chat state - Centered expanded chat bar (like Cursor's new chat) */
               <motion.div
                 key="empty-chat-layout"
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -20, transition: { duration: 0.15 } }}
-                transition={{ duration: 0.25, ease: [0.4, 0, 0.2, 1] }}
+                initial={{ opacity: 1 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0, transition: { duration: 0.1 } }}
+                transition={{ duration: 0 }}
                 ref={contentAreaRef}
                 onClick={(e) => e.stopPropagation()}
                 className="flex-1"
@@ -12830,7 +12830,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             }}
                           >
                             {/* Left side: Mode Selector + Model Selector */}
-                            <div className="flex items-center gap-1" style={{ flexShrink: 1, minWidth: 0 }}>
+                            <div className="flex items-center gap-1" style={{ flexShrink: 1, minWidth: 0, overflow: 'hidden' }}>
                               <ModeSelector compact={isVeryNarrowEmpty || buttonCollapseLevel >= 2} />
                               {/* Hide model selector when very narrow */}
                               {!isVeryNarrowEmpty && <ModelSelector compact={showModelIconOnly} />}
@@ -13756,7 +13756,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           }}
                         >
                           {/* Left Icons: Mode Selector and Model Selector */}
-                          <div className={`flex items-center gap-1 ${isVeryNarrow ? 'justify-start' : ''}`} style={{ flexShrink: 1, minWidth: 0 }}>
+                          <div className={`flex items-center gap-1 ${isVeryNarrow ? 'justify-start' : ''}`} style={{ flexShrink: 1, minWidth: 0, overflow: 'hidden' }}>
                             {/* Mode Selector Dropdown */}
                             {/* - Fullscreen: normal size text (no props)
                                 - Expanded split (wider): small text (small={true})

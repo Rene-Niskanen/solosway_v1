@@ -24,6 +24,7 @@ interface ChatHistoryContextType {
   addChatToHistory: (chat: Omit<ChatHistoryEntry, 'id'>) => string;
   updateChatInHistory: (chatId: string, messages: any[]) => void;
   removeChatFromHistory: (chatId: string) => void;
+  clearAllChats: () => void;
   updateChatTitle: (chatId: string, newTitle: string) => void;
   archiveChat: (chatId: string) => void;
   unarchiveChat: (chatId: string) => void;
@@ -276,6 +277,10 @@ export function ChatHistoryProvider({
     setChatHistory(prev => prev.filter(chat => chat.id !== chatId));
   }, []);
 
+  const clearAllChats = React.useCallback(() => {
+    setChatHistory([]);
+  }, []);
+
   const updateChatTitle = React.useCallback((chatId: string, newTitle: string) => {
     setChatHistory(prev => prev.map(chat => 
       chat.id === chatId 
@@ -339,6 +344,7 @@ export function ChatHistoryProvider({
     addChatToHistory,
     updateChatInHistory,
     removeChatFromHistory,
+    clearAllChats,
     updateChatTitle,
     archiveChat,
     unarchiveChat,
@@ -347,7 +353,7 @@ export function ChatHistoryProvider({
     updateChatStatus,
     updateChatDescription,
     saveChatState
-  }), [chatHistory, addChatToHistory, updateChatInHistory, removeChatFromHistory, updateChatTitle, archiveChat, unarchiveChat, getChatById, updateChatStatus, updateChatDescription, saveChatState]);
+  }), [chatHistory, addChatToHistory, updateChatInHistory, removeChatFromHistory, clearAllChats, updateChatTitle, archiveChat, unarchiveChat, getChatById, updateChatStatus, updateChatDescription, saveChatState]);
 
   return <ChatHistoryContext.Provider value={value}>
       {children}

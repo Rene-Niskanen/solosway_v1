@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { MessageSquare, Clock, Trash2, Plus, Undo2, Sparkles, MoreVertical, Edit, Archive, Folder, ArchiveRestore, Search, Loader, CircleCheck, X } from "lucide-react";
+import { MessageSquare, Plus, MoreVertical, Archive, ArchiveRestore, X, Trash2, Loader2 } from "lucide-react";
 import { useChatHistory } from "./ChatHistoryContext";
 import { useChatPanel } from "../contexts/ChatPanelContext";
 
@@ -29,6 +29,7 @@ export const ChatPanel = ({
   const {
     chatHistory,
     removeChatFromHistory,
+    clearAllChats,
     updateChatTitle,
     archiveChat,
     unarchiveChat,
@@ -45,8 +46,43 @@ export const ChatPanel = ({
     chat: any;
     timeoutId: NodeJS.Timeout;
   } | null>(null);
+  const [showClearConfirm, setShowClearConfirm] = React.useState<boolean>(false);
+  // Track chats that were loading and have now completed (for green outline)
+  const [completedUnseenChats, setCompletedUnseenChats] = React.useState<Set<string>>(new Set());
+  // Track previous loading states to detect completion
+  const prevLoadingChatsRef = React.useRef<Set<string>>(new Set());
+  
+  // Detect when chats complete (transition from loading to completed)
+  React.useEffect(() => {
+    const currentLoadingChats = new Set(
+      chatHistory.filter(chat => chat.status === 'loading').map(chat => chat.id)
+    );
+    
+    // Find chats that were loading but are now completed
+    prevLoadingChatsRef.current.forEach(chatId => {
+      if (!currentLoadingChats.has(chatId)) {
+        // This chat just completed
+        const chat = chatHistory.find(c => c.id === chatId);
+        if (chat && chat.status === 'completed') {
+          setCompletedUnseenChats(prev => new Set([...prev, chatId]));
+        }
+      }
+    });
+    
+    prevLoadingChatsRef.current = currentLoadingChats;
+  }, [chatHistory]);
+  
+  // Mark chat as seen when clicked (remove green outline)
+  const markChatAsSeen = (chatId: string) => {
+    setCompletedUnseenChats(prev => {
+      const newSet = new Set(prev);
+      newSet.delete(chatId);
+      return newSet;
+    });
+  };
   const handleChatClick = (chatId: string) => {
     if (editingChatId === chatId) return;
+    markChatAsSeen(chatId);
     onChatSelect?.(chatId);
   };
 
@@ -197,13 +233,12 @@ export const ChatPanel = ({
           if (openMenuId) setOpenMenuId(null);
         }}
         style={{
-          background: '#F8F8F8',
+          background: '#F4F4F4',
           right: isOpen ? '0px' : '-1000px', // Move off-screen when closed
-          width: isOpen ? `${width}px` : '320px', // Keep width when closed to prevent layout shift
+          width: isOpen ? `${width}px` : '320px',
           transition: 'right 0s ease-out, width 0s ease-out',
           willChange: 'right, width',
           transform: 'translateZ(0)', // Force GPU acceleration
-          borderLeft: '1px solid rgba(226, 232, 240, 0.6)',
         }}
       >
         <AnimatePresence>
@@ -221,10 +256,10 @@ export const ChatPanel = ({
                 duration: 0
               }} 
               className={`h-full w-full flex flex-col ${className || ''}`}
-              style={{ backgroundColor: '#F8F8F8' }}
+              style={{ background: 'transparent' }}
             >
             {/* Header */}
-            <div className="px-4 pt-4 pb-2 border-b border-slate-200/40">
+            <div className="px-4 pt-4 pb-2">
               {archivedChats.length > 0 && (
                 <div className="flex items-center justify-end mb-3">
                   <motion.button
@@ -242,15 +277,15 @@ export const ChatPanel = ({
                 </div>
               )}
               
-              {/* Search Input - Full Width */}
+              {/* Search Input - Minimal Design */}
               <div className="relative mb-3">
                 <input
                   type="text"
-                  placeholder="Search Agents..."
+                  placeholder="Search"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full pl-3 pr-9 py-2 text-xs border border-slate-200/60 hover:border-slate-300/80 rounded-md transition-all duration-200 focus:outline-none focus:border-slate-300 placeholder:text-[#BEBEBE]"
-                  style={{ backgroundColor: '#F2F2F2', color: '#BEBEBE', opacity: 1, backdropFilter: 'none' }}
+                  className="w-full pl-2 pr-8 py-1.5 text-[11px] bg-transparent border-none focus:outline-none placeholder:text-[#A0A0A0]"
+                  style={{ color: '#6B7280' }}
                 />
                 {/* Close Button - Inline with Search Input */}
                 <button
@@ -262,7 +297,7 @@ export const ChatPanel = ({
                   title="Close Agent Sidebar"
                   type="button"
                 >
-                  <X className="w-4 h-4 text-[#BEBEBE] hover:text-slate-500" strokeWidth={1.5} />
+                  <X className="w-4 h-4 text-[#A0A0A0] hover:text-slate-500" strokeWidth={1.5} />
                 </button>
               </div>
               
@@ -286,11 +321,11 @@ export const ChatPanel = ({
 
             {/* Chat List */}
             {showChatHistory && (
-              <div className="flex-1 overflow-y-auto overflow-x-hidden px-2 pt-1 pb-3 scrollbar-thin scrollbar-track-transparent scrollbar-thumb-slate-300/50 hover:scrollbar-thumb-slate-400/70 bg-[#FCFCFC]">
+              <div className="flex-1 overflow-y-auto overflow-x-hidden px-3 pt-2 pb-3 scrollbar-thin scrollbar-track-transparent scrollbar-thumb-slate-300/50 hover:scrollbar-thumb-slate-400/70">
                 {/* Agents Heading */}
                 {displayedChats.length > 0 && (
-                  <div className="px-2 pt-3 pb-1 mb-1">
-                    <h2 className="text-[11px] font-medium text-gray-400">Agents</h2>
+                  <div className="px-0 pt-2 pb-0.5 mb-0.5">
+                    <h2 className="text-[10px] font-medium text-gray-400 pl-3">Agents</h2>
                   </div>
                 )}
                 <AnimatePresence mode="popLayout">
@@ -332,11 +367,15 @@ export const ChatPanel = ({
                           ease: [0.23, 1, 0.32, 1]
                         }} 
                         onClick={() => handleChatClick(chat.id)} 
-                        className={`group relative px-2 py-2 rounded-md cursor-pointer mb-0.5 w-full ${
+                        className={`group relative px-2.5 py-1.5 rounded-md cursor-pointer w-full ${
                           selectedChatId === chat.id 
-                            ? 'bg-slate-100' 
-                            : openMenuId ? '' : 'hover:bg-slate-50/80'
-                        }`}
+                            ? 'bg-[#E3E9F3]/60' 
+                            : openMenuId ? '' : 'hover:bg-[#E5E5E2]'
+                        } ${completedUnseenChats.has(chat.id) ? 'ring-1 ring-green-400/40 mb-2.5' : 'mb-0.5'}`}
+                        style={{ 
+                          borderBottom: '1px solid rgba(0, 0, 0, 0.04)',
+                          ...(completedUnseenChats.has(chat.id) ? { backgroundColor: 'rgba(34, 197, 94, 0.04)' } : {})
+                        }}
                       >
                         {isEditing ? (
                           <div className="flex items-center space-x-2" onClick={(e) => e.stopPropagation()}>
@@ -354,80 +393,29 @@ export const ChatPanel = ({
                             />
                           </div>
                         ) : (
-                          <div className="flex items-center justify-between w-full gap-3">
-                            <div className="flex items-center gap-2.5 flex-1 min-w-0">
-                              {/* Title and Description */}
-                              <div className="flex-1 min-w-0">
-                                <div className="flex items-center gap-2.5 text-[11px] font-medium truncate transition-colors duration-200 text-slate-700 group-hover:text-slate-900">
-                                  {/* Status Icon - Inline with title */}
-                                  {/* CRITICAL: Only show loading if we're CERTAIN the chat is actually running */}
-                                  {/* Conservative approach: If chat has completed messages (responses), it's not loading */}
-                                  <AnimatePresence mode="wait">
-                                    {(() => {
-                                      // Determine if chat is actually loading
-                                      // Conservative check: Only show loading if status is 'loading' AND chat has no completed responses
-                                      const messages = chat.messages || [];
-                                      const hasResponses = messages.some((m: any) => 
-                                        (m.role === 'assistant' || m.type === 'response') && 
-                                        m.content && 
-                                        m.content.trim().length > 0
-                                      );
-                                      
-                                      // A chat is only "loading" if:
-                                      // 1. Status is 'loading' AND
-                                      // 2. Chat has no completed responses yet (either no messages or only queries)
-                                      // If chat has responses, it's completed (even if status says loading - stale status)
-                                      const isActuallyLoading = chat.status === 'loading' && !hasResponses;
-                                      
-                                      return isActuallyLoading ? (
-                                        <motion.div
-                                          key="loading"
-                                          initial={{ opacity: 0, scale: 0.8 }}
-                                          animate={{ opacity: 1, scale: 1 }}
-                                          exit={{ opacity: 0, scale: 0.8 }}
-                                          transition={{ duration: 0.2 }}
-                                        >
-                                          <Loader className="w-3 h-3 text-slate-500 animate-spin flex-shrink-0" />
-                                        </motion.div>
-                                      ) : (
-                                        <motion.div
-                                          key="completed"
-                                          initial={{ opacity: 0, scale: 0.8 }}
-                                          animate={{ opacity: 1, scale: 1 }}
-                                          exit={{ opacity: 0, scale: 0.8 }}
-                                          transition={{ duration: 0.2 }}
-                                        >
-                                          <CircleCheck className="w-3 h-3 text-slate-500 flex-shrink-0" />
-                                        </motion.div>
-                                      );
-                                    })()}
-                                  </AnimatePresence>
-                                  <span className="truncate">{chat.title}</span>
-                                </div>
-                                {chat.description && (
-                                  <div className="text-[9px] text-slate-500 truncate mt-0.5 ml-[18px]">
-                                    {chat.description}
-                                  </div>
-                                )}
-                              </div>
+                          <div className="flex flex-col w-full relative">
+                            {/* Title row */}
+                            <div className="flex items-center gap-1.5 text-[12px] font-normal text-slate-800 truncate pr-5">
+                              {chat.status === 'loading' && (
+                                <Loader2 className="w-3 h-3 text-slate-500 animate-spin flex-shrink-0" />
+                              )}
+                              <span className="truncate">{chat.title}</span>
                             </div>
                             
-                            {/* Timestamp and Menu - swap on hover */}
-                            <div className="flex items-center flex-shrink-0 relative">
-                              {/* Timestamp - visible by default, hidden on hover */}
-                              <span className="text-[9px] text-slate-400 whitespace-nowrap group-hover:opacity-0 transition-opacity duration-150">
-                                {formatTimestamp(new Date(chat.timestamp))}
-                              </span>
+                            {/* Timestamp below title */}
+                            <div className="text-[10px] text-slate-400 mt-0.5">
+                              {formatTimestamp(new Date(chat.timestamp))}
+                            </div>
                             
-                              {/* Three dots - hidden by default, shown on hover (positioned over timestamp) */}
-                              <div className="absolute right-0 top-1/2 -translate-y-1/2">
-                                <button
-                                  onClick={(e) => handleMenuToggle(e, chat.id)}
-                                  className="opacity-0 group-hover:opacity-100 p-1 rounded-md transition-all duration-150 transform hover:scale-110 active:scale-95"
-                                >
-                                  <MoreVertical className="w-4 h-4 text-slate-400 transition-all duration-150" />
-                                </button>
-                                
+                            {/* Three dots menu - positioned top right */}
+                            <div className="absolute right-0 top-0">
+                              <button
+                                onClick={(e) => handleMenuToggle(e, chat.id)}
+                                className="opacity-0 group-hover:opacity-100 p-0.5 rounded transition-all duration-150 transform hover:scale-110 active:scale-95"
+                              >
+                                <MoreVertical className="w-3.5 h-3.5 text-slate-400 transition-all duration-150" />
+                              </button>
+                              
                               {openMenuId === chat.id && (
                                 <motion.div
                                   initial={{ opacity: 0, scale: 0.95, y: -4 }}
@@ -437,7 +425,6 @@ export const ChatPanel = ({
                                   className="absolute right-0 top-8 w-28 rounded-md p-1 z-[9999]"
                                   style={{ 
                                     backgroundColor: '#FFFFFF',
-                                    boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15), 0 1px 3px rgba(0, 0, 0, 0.08)',
                                     isolation: 'isolate'
                                   }}
                                   onClick={(e) => e.stopPropagation()}
@@ -463,7 +450,6 @@ export const ChatPanel = ({
                                   </button>
                                 </motion.div>
                               )}
-                              </div>
                             </div>
                           </div>
                         )}
@@ -474,38 +460,79 @@ export const ChatPanel = ({
               </div>
             )}
 
+            {/* Clear all chats - bottom of panel when chat history is shown */}
+            {showChatHistory && baseChats.length > 0 && (
+              <div className="px-4 py-3 border-t border-slate-200/40 flex-shrink-0 relative">
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setShowClearConfirm(true);
+                  }}
+                  className="w-full py-2 text-[11px] font-medium text-slate-500 hover:text-slate-700 hover:bg-[#E5E5E2] rounded-md transition-colors flex items-center justify-center gap-1.5"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  Clear all chats
+                </button>
+                
+                {/* Confirmation popup */}
+                <AnimatePresence>
+                  {showClearConfirm && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: 10 }}
+                      transition={{ duration: 0.15 }}
+                      className="absolute bottom-full left-4 right-4 mb-2 p-3 bg-white rounded-lg shadow-lg border border-slate-200"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <p className="text-[11px] text-slate-600 mb-3 text-center">
+                        Delete all {baseChats.length} chat{baseChats.length !== 1 ? 's' : ''}?
+                      </p>
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setShowClearConfirm(false);
+                          }}
+                          className="flex-1 py-1.5 text-[11px] font-medium text-slate-600 hover:bg-slate-100 rounded-md transition-colors border border-slate-200"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            clearAllChats();
+                            onNewChat?.();
+                            setShowClearConfirm(false);
+                          }}
+                          className="flex-1 py-1.5 text-[11px] font-medium text-white bg-red-500 hover:bg-red-600 rounded-md transition-colors"
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+            )}
+
             {/* Empty State when no chat history should be shown */}
             {!showChatHistory && (
               <div className="flex-1 flex items-center justify-center p-8">
-                <motion.div 
-                  initial={{
-                    opacity: 0,
-                    y: 20,
-                    scale: 0.95
-                  }} 
-                  animate={{
-                    opacity: 1,
-                    y: 0,
-                    scale: 1
-                  }} 
-                  transition={{
-                    duration: 0.6,
-                    ease: [0.23, 1, 0.32, 1]
-                  }} 
-                  className="text-center max-w-xs"
-                >
-                  <motion.div 
-                    className="w-20 h-20 bg-gradient-to-br from-slate-50 to-slate-100 rounded-3xl flex items-center justify-center mx-auto mb-6 border-2 border-slate-200/40" 
-                  >
+                <div className="text-center max-w-xs">
+                  <div className="w-20 h-20 bg-gradient-to-br from-slate-50 to-slate-100 rounded-3xl flex items-center justify-center mx-auto mb-6 border-2 border-slate-200/40">
                     <MessageSquare className="w-8 h-8 text-slate-500" strokeWidth={1.5} />
-                  </motion.div>
+                  </div>
                   <h3 className="text-slate-800 font-semibold text-xl mb-3 tracking-tight">
                     <span>Start a Conversation</span>
                   </h3>
                   <p className="text-slate-500 text-sm leading-relaxed font-medium">
                     <span>Search for something to begin an intelligent conversation with AI</span>
                   </p>
-                </motion.div>
+                </div>
               </div>
             )}
             </motion.div>

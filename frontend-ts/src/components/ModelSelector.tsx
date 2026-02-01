@@ -93,12 +93,20 @@ export function ModelSelector({ className, compact = false }: ModelSelectorProps
             height: buttonHeight,
             minHeight: buttonHeight,
             whiteSpace: 'nowrap',
-            flexShrink: 0,
+            flexShrink: 1,
+            minWidth: compact ? '24px' : '60px',
+            overflow: 'hidden',
           }}
         >
           {compact && <Sparkles className={iconSize} strokeWidth={2} style={{ color: '#9D9D9D' }} />}
           {showText && (
-            <span style={currentModel.id === miniModelId ? { color: miniTriggerColor } : undefined}>
+            <span style={{
+              ...(currentModel.id === miniModelId ? { color: miniTriggerColor } : {}),
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              flexShrink: 1,
+              minWidth: 0,
+            }}>
               {displayLabel}
             </span>
           )}

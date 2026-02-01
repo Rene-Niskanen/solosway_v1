@@ -99,7 +99,11 @@ export const AuthGuard: React.FC<AuthGuardProps> = ({ children }) => {
   if (isLoading) {
     return (
       <div className="flex h-screen items-center justify-center bg-background">
-        <div className="inline-block h-6 w-6 animate-spin rounded-full border-2 border-solid border-primary border-r-transparent"></div>
+        <div className="flex gap-1">
+          <div className="w-2 h-2 bg-neutral-800 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
+          <div className="w-2 h-2 bg-neutral-800 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
+          <div className="w-2 h-2 bg-neutral-800 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
+        </div>
       </div>
     );
   }
@@ -107,9 +111,13 @@ export const AuthGuard: React.FC<AuthGuardProps> = ({ children }) => {
   // Show loading while redirecting or checking auth
   if (!isAuthenticated) {
     return (
-          <div className="flex h-screen items-center justify-center bg-background">
-        <div className="inline-block h-6 w-6 animate-spin rounded-full border-2 border-solid border-primary border-r-transparent"></div>
-          </div>
+      <div className="flex h-screen items-center justify-center bg-background">
+        <div className="flex gap-1">
+          <div className="w-2 h-2 bg-neutral-800 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
+          <div className="w-2 h-2 bg-neutral-800 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
+          <div className="w-2 h-2 bg-neutral-800 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
+        </div>
+      </div>
     );
   }
 
