@@ -283,7 +283,7 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({
           flexDirection: 'column',
           marginTop: '6px',
           width: '100%',
-          maxWidth: '360px',
+          maxWidth: '420px',
           borderRadius: '8px',
           border: `1px solid ${isHovered || isExpanded ? 'rgba(0, 0, 0, 0.12)' : 'rgba(0, 0, 0, 0.08)'}`,
           backgroundColor: 'transparent',
@@ -390,12 +390,12 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({
         <div
           style={{
             width: '100%',
-                    height: '120px',
+            height: '180px',
             display: 'flex',
             alignItems: 'flex-start',
             justifyContent: 'center',
-                    position: 'relative',
-                    overflow: 'hidden'
+            position: 'relative',
+            overflow: 'hidden'
           }}
         >
           {loading ? (
@@ -512,7 +512,7 @@ export const StackedDocumentPreviews: React.FC<{
         flexDirection: 'column',
         marginTop: '4px',
         width: '100%',
-        maxWidth: '360px',
+        maxWidth: '420px',
         gap: '4px' // Subtle space between stacked cards
       }}
     >

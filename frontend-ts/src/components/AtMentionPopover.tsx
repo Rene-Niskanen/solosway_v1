@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { createPortal } from "react-dom";
-import { MapPin, FileText } from "lucide-react";
+import { FileText, MapPin, Home } from "lucide-react";
 
 export type AtMentionItemType = "property" | "document";
 
@@ -10,6 +10,7 @@ export interface AtMentionItem {
   type: AtMentionItemType;
   id: string;
   primaryLabel: string;
+  secondaryLabel: string;
   payload?: unknown;
 }
 
@@ -17,7 +18,7 @@ export interface AtMentionPopoverProps {
   open: boolean;
   anchorRef: React.RefObject<HTMLElement | null>;
   query: string;
-  placement?: "above" | "below";
+  placement: "above" | "below";
   items: AtMentionItem[];
   selectedIndex: number;
   onSelect: (item: AtMentionItem) => void;
@@ -25,127 +26,171 @@ export interface AtMentionPopoverProps {
   onClose: () => void;
 }
 
+const POPOVER_MAX_HEIGHT = 280;
+const ROW_PADDING = "6px 10px";
+const PRIMARY_FONT_SIZE = "12px";
+const SECONDARY_FONT_SIZE = "11px";
+const SECONDARY_COLOR = "#9CA3AF";
+const HOVER_BG = "#F9FAFB";
+const GAP = 8;
+
 export function AtMentionPopover({
   open,
   anchorRef,
-  query,
-  placement = "below",
+  placement,
   items,
   selectedIndex,
   onSelect,
   onSelectedIndexChange,
   onClose,
 }: AtMentionPopoverProps) {
-  const listRef = React.useRef<HTMLDivElement>(null);
-  const [position, setPosition] = React.useState({ top: 0, left: 0 });
+  const popoverRef = React.useRef<HTMLDivElement>(null);
 
-  React.useEffect(() => {
-    if (!open || !anchorRef.current) return;
-    const rect = anchorRef.current.getBoundingClientRect();
-    setPosition({
-      left: rect.left,
-      top: placement === "below" ? rect.bottom + 4 : rect.top - 4,
-    });
-  }, [open, placement, anchorRef, query]);
-
-  React.useEffect(() => {
-    if (!open || selectedIndex < 0) return;
-    const el = listRef.current?.querySelector(`[data-index="${selectedIndex}"]`);
-    el?.scrollIntoView({ block: "nearest" });
-  }, [open, selectedIndex]);
-
+  // Keyboard: ArrowUp, ArrowDown, Enter, Escape
   React.useEffect(() => {
     if (!open) return;
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onClose();
+        return;
+      }
       if (e.key === "ArrowDown") {
         e.preventDefault();
         onSelectedIndexChange(Math.min(selectedIndex + 1, items.length - 1));
-      } else if (e.key === "ArrowUp") {
+        return;
+      }
+      if (e.key === "ArrowUp") {
         e.preventDefault();
         onSelectedIndexChange(Math.max(selectedIndex - 1, 0));
-      } else if (e.key === "Enter" && items[selectedIndex]) {
+        return;
+      }
+      if (e.key === "Enter" && items[selectedIndex]) {
         e.preventDefault();
         onSelect(items[selectedIndex]);
-      } else if (e.key === "Escape") {
-        e.preventDefault();
-        onClose();
       }
     };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [open, selectedIndex, items, onSelect, onSelectedIndexChange, onClose]);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [open, items, selectedIndex, onSelect, onSelectedIndexChange, onClose]);
 
-  if (!open) return null;
+  // Click outside to close
+  React.useEffect(() => {
+    if (!open) return;
+    const handleMouseDown = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (
+        popoverRef.current?.contains(target) ||
+        anchorRef.current?.contains(target)
+      )
+        return;
+      onClose();
+    };
+    document.addEventListener("mousedown", handleMouseDown);
+    return () => document.removeEventListener("mousedown", handleMouseDown);
+  }, [open, anchorRef, onClose]);
 
-  const content = (
-    <div
-      ref={listRef}
-      style={{
-        position: "fixed",
-        top: placement === "below" ? position.top : undefined,
-        bottom: placement === "above" ? `calc(100vh - ${position.top}px)` : undefined,
-        left: position.left,
-        zIndex: 10000,
-        backgroundColor: "#fff",
-        border: "1px solid #E5E7EB",
-        borderRadius: "8px",
-        boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
-        maxHeight: "200px",
-        overflowY: "auto",
-        minWidth: "200px",
-        maxWidth: "300px",
-        padding: "4px 0",
-      }}
-    >
+  if (!open || !anchorRef.current) return null;
+
+  const rect = anchorRef.current.getBoundingClientRect();
+  const style: React.CSSProperties = {
+    position: "fixed",
+    left: rect.left,
+    width: Math.max(rect.width, 200),
+    maxHeight: POPOVER_MAX_HEIGHT,
+    background: "#FFFFFF",
+    border: "1px solid rgba(229, 231, 235, 0.8)",
+    borderRadius: "10px",
+    boxShadow: "0 2px 8px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04)",
+    overflowY: "auto",
+    zIndex: 10000,
+  };
+  if (placement === "above") {
+    style.bottom = window.innerHeight - rect.top + GAP;
+  } else {
+    style.top = rect.bottom + GAP;
+  }
+
+  const list = (
+    <div ref={popoverRef} style={style} role="listbox">
       {items.length === 0 ? (
         <div
           style={{
-            padding: "8px 12px",
-            fontSize: "13px",
-            color: "#6B7280",
+            padding: ROW_PADDING,
+            fontSize: SECONDARY_FONT_SIZE,
+            color: SECONDARY_COLOR,
           }}
         >
-          No files or properties
+          Type to search files and property pins
         </div>
       ) : (
-        items.map((item, idx) => {
-          const Icon = item.type === "property" ? MapPin : FileText;
-          const isSelected = idx === selectedIndex;
+        items.map((item, index) => {
+          const isSelected = index === selectedIndex;
+          const Icon =
+            item.type === "property" ? (
+              <MapPin
+                size={16}
+                style={{ color: "#6B7280", flexShrink: 0 }}
+                strokeWidth={2}
+              />
+            ) : (
+              <FileText
+                size={16}
+                style={{ color: "#6B7280", flexShrink: 0 }}
+                strokeWidth={2}
+              />
+            );
           return (
             <div
-              key={`${item.type}-${item.id}`}
-              data-index={idx}
+              key={`${item.type}-${item.id}-${index}`}
+              role="option"
+              aria-selected={isSelected}
               onClick={() => onSelect(item)}
-              onMouseEnter={() => onSelectedIndexChange(idx)}
+              onMouseEnter={() => onSelectedIndexChange(index)}
               style={{
+                padding: ROW_PADDING,
+                cursor: "pointer",
+                backgroundColor: isSelected ? HOVER_BG : "transparent",
+                borderBottom:
+                  index < items.length - 1
+                    ? "1px solid rgba(229, 231, 235, 0.3)"
+                    : "none",
                 display: "flex",
                 alignItems: "center",
                 gap: "8px",
-                padding: "6px 12px",
-                cursor: "pointer",
-                backgroundColor: isSelected ? "#F3F4F6" : "transparent",
-                fontSize: "13px",
-                color: "#374151",
+                transition: "background-color 0.15s ease",
               }}
             >
-              <Icon
-                style={{
-                  width: "14px",
-                  height: "14px",
-                  flexShrink: 0,
-                  color: item.type === "property" ? "#10B981" : "#6366F1",
-                }}
-                strokeWidth={2}
-              />
-              <span
-                style={{
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
-                }}
-              >
-                {item.primaryLabel}
-              </span>
+              {Icon}
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div
+                  style={{
+                    fontWeight: 500,
+                    fontSize: PRIMARY_FONT_SIZE,
+                    color: "#111827",
+                    lineHeight: 1.4,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {item.primaryLabel}
+                </div>
+                {item.secondaryLabel ? (
+                  <div
+                    style={{
+                      fontSize: SECONDARY_FONT_SIZE,
+                      color: SECONDARY_COLOR,
+                      lineHeight: 1.4,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {item.secondaryLabel}
+                  </div>
+                ) : null}
+              </div>
             </div>
           );
         })
@@ -153,5 +198,5 @@ export function AtMentionPopover({
     </div>
   );
 
-  return createPortal(content, document.body);
+  return createPortal(list, document.body);
 }

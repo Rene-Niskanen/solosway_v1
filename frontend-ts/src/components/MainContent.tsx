@@ -3937,7 +3937,7 @@ export const MainContent = ({
                       }}>
                         {/* VELORA Logo - Enlarged to match reference image proportions */}
                         <img 
-                          src="/(DASH VELORA) Logo - NB.png" 
+                          src="/faint-velora-logo-nb.png" 
                     alt="VELORA" 
                           className="h-auto"
                           style={{ 

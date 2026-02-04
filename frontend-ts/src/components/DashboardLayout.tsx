@@ -10,6 +10,7 @@ import { ChatHistoryProvider, useChatHistory } from './ChatHistoryContext';
 import { ChatReturnNotification } from './ChatReturnNotification';
 import { ProfileDropdown } from './ProfileDropdown';
 import { backendApi } from '@/services/backendApi';
+import { preloadAtMentionCache } from '@/services/atMentionCache';
 import { FilingSidebarProvider, useFilingSidebar } from '../contexts/FilingSidebarContext';
 import { ChatPanelProvider, useChatPanel } from '../contexts/ChatPanelContext';
 import { ProjectsProvider } from '../contexts/ProjectsContext';
@@ -26,6 +27,11 @@ const DashboardLayoutContent = ({
   const { closeSidebar: closeFilingSidebar } = useFilingSidebar();
   const { togglePanel: toggleChatPanel, closePanel: closeChatPanel, isOpen: isChatPanelOpen } = useChatPanel();
   const [selectedBackground, setSelectedBackground] = React.useState<string>('default-background');
+
+  // Preload @ mention cache (properties + documents) so popover shows results instantly
+  React.useEffect(() => {
+    preloadAtMentionCache().catch(() => {});
+  }, []);
 
   // Load saved background on mount - check for custom uploaded background first
   React.useEffect(() => {

@@ -1,80 +1,67 @@
 "use client";
 
 import * as React from "react";
-import { MapPin, FileText, X } from "lucide-react";
+import { FileText, MapPin } from "lucide-react";
+
+export type AtMentionChipType = "property" | "document";
 
 export interface AtMentionChipProps {
-  kind: "property" | "document";
+  type: AtMentionChipType;
   label: string;
   onRemove?: () => void;
+  className?: string;
+  style?: React.CSSProperties;
 }
 
-export const AtMentionChip: React.FC<AtMentionChipProps> = ({
-  kind,
+/** Blue minimal pill chip for selected file or property in the chat/search bar. */
+export function AtMentionChip({
+  type,
   label,
   onRemove,
-}) => {
-  const Icon = kind === "property" ? MapPin : FileText;
+  className,
+  style,
+}: AtMentionChipProps) {
+  const Icon =
+    type === "property" ? (
+      <MapPin
+        size={14}
+        style={{ color: "#5b6b7a", flexShrink: 0 }}
+        strokeWidth={2}
+      />
+    ) : (
+      <FileText
+        size={14}
+        style={{ color: "#5b6b7a", flexShrink: 0 }}
+        strokeWidth={2}
+      />
+    );
 
   return (
     <span
-      contentEditable={false}
+      className={className}
       style={{
         display: "inline-flex",
         alignItems: "center",
-        gap: "4px",
-        backgroundColor: "#E0EDFF",
-        border: "1px solid #B3D4FF",
-        borderRadius: "6px",
-        padding: "3px 6px",
-        fontSize: "13px",
-        lineHeight: "1.2",
-        color: "#1A56DB",
-        userSelect: "none",
-        verticalAlign: "middle",
-        maxWidth: "180px",
+        gap: "6px",
+        padding: "4px 8px",
+        borderRadius: "9999px",
+        backgroundColor: "#e0e8f7",
+        border: "1px solid rgba(184, 204, 224, 0.8)",
+        fontSize: "12px",
+        fontWeight: 500,
+        color: "#111827",
+        lineHeight: 1.3,
+        maxWidth: "200px",
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        whiteSpace: "nowrap",
+        ...style,
       }}
     >
-      <Icon style={{ width: "12px", height: "12px", flexShrink: 0 }} strokeWidth={2} />
-      <span
-        style={{
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap",
-        }}
-      >
+      {Icon}
+      <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
         {label}
       </span>
-      {onRemove && (
-        <button
-          type="button"
-          onClick={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            onRemove();
-          }}
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            background: "none",
-            border: "none",
-            padding: "0",
-            marginLeft: "2px",
-            cursor: "pointer",
-            color: "#1A56DB",
-            opacity: 0.7,
-          }}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.opacity = "1";
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.opacity = "0.7";
-          }}
-        >
-          <X style={{ width: "12px", height: "12px" }} strokeWidth={2} />
-        </button>
-      )}
     </span>
   );
-};
+}

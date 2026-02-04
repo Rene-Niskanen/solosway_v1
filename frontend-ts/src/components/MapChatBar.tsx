@@ -308,10 +308,10 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
                     maxHeight: '140px', // Match SideChatPanel
                     fontSize: '14px',
                     lineHeight: '20px',
-                    paddingTop: '0px', // Match SideChatPanel
-                    paddingBottom: '0px',
-                    paddingRight: '8px',
-                    paddingLeft: '8px',
+                    paddingTop: '0px',
+                    paddingBottom: '4px',
+                    paddingRight: '12px',
+                    paddingLeft: '6px',
                     scrollbarWidth: 'thin',
                     scrollbarColor: 'rgba(229, 231, 235, 0.5) transparent',
                     overflow: 'hidden',

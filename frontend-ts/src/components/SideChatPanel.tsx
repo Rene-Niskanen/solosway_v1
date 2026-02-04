@@ -58,6 +58,13 @@ export const CHAT_PANEL_WIDTH = {
   DOC_PREVIEW_MIN: 380,
 } as const;
 
+/** Rotating titles for new-chat empty state (ChatGPT-style); one shown per session */
+const EMPTY_CHAT_TITLE_MESSAGES = [
+  'What are you working on?',
+  'What can I help you with today?',
+  'What would you like to accomplish?',
+] as const;
+
 // ============================================================================
 // UNIFIED WIDTH CALCULATION
 // Single function used by both useEffect (parent notification) and inline styles
@@ -480,6 +487,124 @@ const extractMarkdownBlocks = (combined: string): { completeBlocks: string[], re
   return { completeBlocks, remainingBuffer };
 };
 
+// Main-answer tags for Google-style highlight (LLM wraps direct answer; frontend strips and highlights)
+const MAIN_ANSWER_START = '<<<MAIN>>>';
+const MAIN_ANSWER_END = '<<<END_MAIN>>>';
+
+export function parseMainAnswerTags(text: string): { before: string; main: string | null; after: string } | { main: null; fullStrippedText: string } {
+  const startIdx = text.indexOf(MAIN_ANSWER_START);
+  const endIdx = text.indexOf(MAIN_ANSWER_END);
+  if (startIdx === -1 && endIdx === -1) {
+    return { main: null, fullStrippedText: text };
+  }
+  if (startIdx === -1 || endIdx === -1 || endIdx <= startIdx) {
+    // Malformed: strip tags from display and show as one block
+    const stripped = text.split(MAIN_ANSWER_START).join('').split(MAIN_ANSWER_END).join('');
+    return { main: null, fullStrippedText: stripped };
+  }
+  const before = text.slice(0, startIdx).trimEnd();
+  const main = text.slice(startIdx + MAIN_ANSWER_START.length, endIdx).trim();
+  const after = text.slice(endIdx + MAIN_ANSWER_END.length).trimStart();
+  return { before, main, after };
+}
+
+/** When LLM doesn't emit main-answer tags, use first sentence as highlight target (Google-style fallback). */
+export function getFirstSentenceFallback(text: string): { main: string; after: string } | null {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  // First sentence: up to first . ? ! followed by space or end, or first line; cap length
+  const maxFirstSentence = 400;
+  const match = trimmed.match(/^(.+?[.?!])(\s|$)/s);
+  const main = match ? match[1].trim() : trimmed.slice(0, maxFirstSentence).trim();
+  const after = match ? trimmed.slice(match[0].length).trimStart() : trimmed.slice(main.length).trimStart();
+  if (!main) return null;
+  return { main: main.slice(0, maxFirstSentence), after };
+}
+
+/** When LLM doesn't emit MAIN tags, find the first figure (phone, currency, date, or reference number) and highlight only that. */
+export function getFirstFigureFallback(text: string): { before: string; main: string; after: string } | null {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  // Order: phone (UK/international), currency, date, long reference number
+  const phonePattern = /\+\d[\d\s\-\(\)]{8,}/; // e.g. +44 (0) 203 463 8725
+  const currencyPattern = /£\d{1,3}(?:,\d{3})*(?:\.\d+)?|£\d+(?:\.\d+)?\s*(?:million|m)\b/;
+  const datePattern = /\d{1,2}(?:st|nd|rd|th)?\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4}/;
+  const refPattern = /\b\d{10,}\b/;
+  const patterns = [phonePattern, currencyPattern, datePattern, refPattern];
+  for (const re of patterns) {
+    const match = trimmed.match(re);
+    if (match) {
+      const fig = match[0];
+      const idx = trimmed.indexOf(fig);
+      const before = trimmed.slice(0, idx).trimEnd();
+      const after = trimmed.slice(idx + fig.length).trimStart();
+      return { before, main: fig, after };
+    }
+  }
+  return null;
+}
+
+/** When no MAIN tags and no figure: try to highlight first category-style phrase (e.g. Flood Zone 2 (Medium Probability)) instead of whole first sentence. */
+export function getFirstCategoryFallback(text: string): { before: string; main: string; after: string } | null {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  // Allowlist of answer-like category patterns (order matters: more specific first)
+  const categoryPatterns = [
+    /Flood Zone \d+(?:\s*\([^)]+\))?/,  // e.g. "Flood Zone 2 (Medium Probability)"
+    /Flood Zone \d+/,                     // e.g. "Flood Zone 2"
+  ];
+  for (const re of categoryPatterns) {
+    const match = trimmed.match(re);
+    if (match) {
+      const phrase = match[0];
+      const idx = trimmed.indexOf(phrase);
+      const before = trimmed.slice(0, idx).trimEnd();
+      const after = trimmed.slice(idx + phrase.length).trimStart();
+      return { before, main: phrase, after };
+    }
+  }
+  return null;
+}
+
+export const MainAnswerHighlight: React.FC<{
+  children: React.ReactNode;
+  /** When true (streaming), no highlight yet. When false, the swoop animation runs. Omit/undefined = run swoop (e.g. static message). */
+  isStreaming?: boolean;
+}> = ({ children, isStreaming = false }) => {
+  const runSwoop = !isStreaming;
+  return (
+    <span className={`main-answer-highlight${runSwoop ? ' main-answer-highlight-swoop' : ''}`}>
+      <style>{`
+        .main-answer-highlight {
+          display: inline;
+          margin: 0 0.2em;
+          padding: 1px 4px;
+          border-radius: 4px;
+          font-weight: 800;
+          box-decoration-break: clone;
+          -webkit-box-decoration-break: clone;
+          background: linear-gradient(90deg, rgba(220, 228, 238, 0.85) 0%, rgba(220, 228, 238, 0.85) 100%);
+          background-repeat: no-repeat;
+          background-size: 0% 100%;
+        }
+        .main-answer-highlight.main-answer-highlight-swoop {
+          animation: main-answer-highlight-swoop 1.1s cubic-bezier(0.22, 1, 0.36, 1) 0.6s forwards;
+        }
+        @keyframes main-answer-highlight-swoop {
+          to {
+            background-size: 100% 100%;
+          }
+        }
+        .main-answer-highlight p {
+          margin: 0;
+          display: inline;
+        }
+      `}</style>
+      {children}
+    </span>
+  );
+};
+
 const StreamingResponseText: React.FC<{
   text: string;
   isStreaming: boolean;
@@ -488,7 +613,8 @@ const StreamingResponseText: React.FC<{
   renderTextWithCitations: (text: string, citations: any, handleClick: any, seen: Set<string>) => React.ReactNode;
   onTextUpdate?: () => void;
   messageId?: string; // Unique ID for this message to track animation state
-}> = ({ text, isStreaming, citations, handleCitationClick, renderTextWithCitations, onTextUpdate, messageId }) => {
+  skipHighlight?: boolean; // When true (e.g. error messages), do not apply main-answer highlight
+}> = ({ text, isStreaming, citations, handleCitationClick, renderTextWithCitations, onTextUpdate, messageId, skipHighlight }) => {
   const [shouldAnimate, setShouldAnimate] = React.useState(false);
   const hasAnimatedRef = React.useRef(false);
   
@@ -528,7 +654,110 @@ const StreamingResponseText: React.FC<{
   const processedText = React.useMemo(() => {
     return filteredText;
   }, [filteredText]);
-  
+
+  // Helper to ensure balanced bold markers for display (avoid leaking **)
+  const ensureBalancedBoldForDisplay = (text: string): string => {
+    const count = (text.match(/\*\*/g) || []).length;
+    if (count % 2 !== 0) {
+      // Odd number of ** - strip trailing ** if present, otherwise append one
+      if (text.trimEnd().endsWith('**')) {
+        return text.trimEnd().slice(0, -2);
+      }
+      return text + '**';
+    }
+    return text;
+  };
+
+  // Parse main-answer tags for Google-style highlight (before, main, after); strip tags from display
+  const parsedMainAnswer = React.useMemo(() => {
+    if (skipHighlight) {
+      return { main: null, fullStrippedText: processedText };
+    }
+    return parseMainAnswerTags(processedText);
+  }, [processedText, skipHighlight]);
+
+  // When LLM doesn't emit tags: try figure, then category phrase (e.g. Flood Zone 2), then first sentence
+  const fallbackMainAnswer = React.useMemo(() => {
+    if (parsedMainAnswer.main !== null) return null;
+    const stripped = (parsedMainAnswer as { main: null; fullStrippedText: string }).fullStrippedText;
+    const figureFallback = getFirstFigureFallback(stripped);
+    if (figureFallback) return figureFallback;
+    const categoryFallback = getFirstCategoryFallback(stripped);
+    if (categoryFallback) return categoryFallback;
+    const sentenceFallback = getFirstSentenceFallback(stripped);
+    if (sentenceFallback) return { before: '', main: sentenceFallback.main, after: sentenceFallback.after };
+    return null;
+  }, [parsedMainAnswer]);
+
+  // Effective segments: from tags when present, else from first-sentence fallback (skip for error messages)
+  const hasMainAnswerSegment = React.useMemo(() => {
+    if (skipHighlight) return false;
+    if (parsedMainAnswer.main !== null && parsedMainAnswer.main !== '') return true;
+    return !!(fallbackMainAnswer && fallbackMainAnswer.main);
+  }, [skipHighlight, parsedMainAnswer, fallbackMainAnswer]);
+  const effectiveBefore = hasMainAnswerSegment
+    ? (parsedMainAnswer.main !== null
+        ? (parsedMainAnswer as { before: string; main: string; after: string }).before
+        : ('before' in fallbackMainAnswer! ? fallbackMainAnswer!.before : ''))
+    : '';
+  const effectiveMain = hasMainAnswerSegment
+    ? (parsedMainAnswer.main !== null
+        ? (parsedMainAnswer as { before: string; main: string; after: string }).main
+        : (fallbackMainAnswer!.main))
+    : '';
+  const effectiveAfter = hasMainAnswerSegment
+    ? (parsedMainAnswer.main !== null
+        ? (parsedMainAnswer as { before: string; main: string; after: string }).after
+        : (fallbackMainAnswer!.after))
+    : '';
+
+  // Defensive shrink: when MAIN is long and contains intro + value (e.g. "The phone number... is +44 (0) 203 463 8725"), highlight only the value
+  const effectiveSegments = React.useMemo(() => {
+    const before = effectiveBefore;
+    const main = effectiveMain;
+    const after = effectiveAfter;
+    if (!hasMainAnswerSegment || parsedMainAnswer.main === null || main.length <= 80) {
+      return { before, main, after };
+    }
+    const phoneRe = /\+\d[\d\s\-\(\)]{8,}/g;
+    const currencyRe = /£\d{1,3}(?:,\d{3})*(?:\.\d+)?|£\d+(?:\.\d+)?\s*(?:million|m)\b/g;
+    const dateRe = /\d{1,2}(?:st|nd|rd|th)?\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4}/g;
+    const valuePatterns = [phoneRe, currencyRe, dateRe];
+    for (const re of valuePatterns) {
+      const matches = [...main.matchAll(re)];
+      if (matches.length > 0) {
+        const lastMatch = matches[matches.length - 1];
+        const value = lastMatch[0];
+        const idx = lastMatch.index!;
+        const beforeValue = main.slice(0, idx);
+        if (beforeValue.includes(' is ') || beforeValue.trimEnd().endsWith(' is')) {
+          return {
+            before: before + main.slice(0, idx).trimEnd(),
+            main: value,
+            after: main.slice(idx + value.length).trimStart() + (after ? ` ${after}` : ''),
+          };
+        }
+      }
+    }
+    return { before, main, after };
+  }, [effectiveBefore, effectiveMain, effectiveAfter, hasMainAnswerSegment, parsedMainAnswer.main]);
+
+  // Strip orphan ** that split across before/main/after so they don't render as literal (e.g. "...is **" + "£2,300,000" + "** (Two Million...")
+  // Normalize each segment so unpaired ** are closed or stripped (no leakage in any code path).
+  const { trimmedBefore, trimmedMain, trimmedAfter } = React.useMemo(() => {
+    let b = effectiveSegments.before;
+    let a = effectiveSegments.after;
+    if (b.endsWith('**') && a.startsWith('**')) {
+      b = b.slice(0, -2);
+      a = a.slice(2).trimStart();
+    }
+    return {
+      trimmedBefore: ensureBalancedBoldForDisplay(b),
+      trimmedMain: ensureBalancedBoldForDisplay(effectiveSegments.main),
+      trimmedAfter: ensureBalancedBoldForDisplay(a),
+    };
+  }, [effectiveSegments]);
+
   // Process citations on the full text BEFORE ReactMarkdown splits it
   // This ensures citations are matched even if ReactMarkdown splits text across elements
   const processCitationsBeforeMarkdown = (text: string): string => {
@@ -580,11 +809,36 @@ const StreamingResponseText: React.FC<{
     return processedText;
   };
   
-  // Process citations before markdown parsing - use memoized processedText for consistency
-  // Citations are always converted to placeholders for consistent rendering
+  // Process citations before markdown parsing. Single-block path: use fullStrippedText so user never sees tags.
+  // Normalize ** so no leakage in single-block display.
   const textWithCitationPlaceholders = React.useMemo(() => {
+    if (!hasMainAnswerSegment) {
+      const stripped = parsedMainAnswer.main === null
+        ? (parsedMainAnswer as { main: null; fullStrippedText: string }).fullStrippedText
+        : processedText;
+      return processCitationsBeforeMarkdown(ensureBalancedBoldForDisplay(stripped));
+    }
     return processCitationsBeforeMarkdown(processedText);
-  }, [processedText, citations]);
+  }, [processedText, parsedMainAnswer, citations, hasMainAnswerSegment]);
+
+  // For three-part render: citation-processed segments (tags already stripped; use trimmed to avoid leaking **)
+  const beforeWithCitations = React.useMemo(() => processCitationsBeforeMarkdown(trimmedBefore), [trimmedBefore, citations]);
+  const mainWithCitations = React.useMemo(() => processCitationsBeforeMarkdown(trimmedMain), [trimmedMain, citations]);
+  const afterWithCitations = React.useMemo(() => processCitationsBeforeMarkdown(trimmedAfter), [trimmedAfter, citations]);
+
+  // Extend highlight to cover entire fact only when main is short and value-like; avoid extending when main is a full sentence (intro + value)
+  const { mainForHighlight, afterForDisplay } = React.useMemo(() => {
+    const citationAtEnd = /(%%CITATION_(?:SUPERSCRIPT|BRACKET|PENDING)_\d+%%\s*)+$/;
+    const isShortTrailingFact = trimmedAfter.length > 0 && trimmedAfter.length <= 500 && citationAtEnd.test(afterWithCitations.trim());
+    const isShortValueLike = trimmedMain.length <= 60 && !trimmedMain.startsWith('The ');
+    if (isShortTrailingFact && isShortValueLike) {
+      return {
+        mainForHighlight: mainWithCitations + (afterWithCitations ? ` ${afterWithCitations}` : ''),
+        afterForDisplay: '',
+      };
+    }
+    return { mainForHighlight: mainWithCitations, afterForDisplay: afterWithCitations };
+  }, [trimmedAfter, trimmedMain, mainWithCitations, afterWithCitations]);
   
   // Helper to render citation placeholders (no deduplication - show all citations)
   const renderCitationPlaceholder = (placeholder: string, key: string): React.ReactNode => {
@@ -744,6 +998,101 @@ const StreamingResponseText: React.FC<{
     });
   };
 
+  // Markdown components for full-block rendering (no main-answer highlight)
+  const markdownComponents = {
+    p: ({ children }: { children?: React.ReactNode }) => {
+      return <p style={{ 
+        margin: 0, 
+        marginBottom: '10px', 
+        textAlign: 'left',
+        wordWrap: 'break-word',
+        overflowWrap: 'break-word',
+        wordBreak: 'break-word'
+      }}>{processChildrenWithCitations(children)}</p>;
+    },
+    h1: ({ children }: { children?: React.ReactNode }) => {
+      return <h1 style={{ 
+        fontSize: '18px', 
+        fontWeight: 600, 
+        margin: '14px 0 10px 0', 
+        color: '#111827',
+        wordWrap: 'break-word',
+        overflowWrap: 'break-word',
+        wordBreak: 'break-word'
+      }}>{processChildrenWithCitations(children)}</h1>;
+    },
+    h2: () => null, 
+    h3: () => null,
+    ul: ({ children }: { children?: React.ReactNode }) => <ul style={{ 
+      margin: '10px 0', 
+      paddingLeft: 0, 
+      listStylePosition: 'inside',
+      wordWrap: 'break-word',
+      overflowWrap: 'break-word',
+      wordBreak: 'break-word'
+    }}>{children}</ul>,
+    ol: ({ children }: { children?: React.ReactNode }) => <ol style={{ 
+      margin: '10px 0', 
+      paddingLeft: 0, 
+      listStylePosition: 'inside',
+      wordWrap: 'break-word',
+      overflowWrap: 'break-word',
+      wordBreak: 'break-word'
+    }}>{children}</ol>,
+    li: ({ children }: { children?: React.ReactNode }) => {
+      return <li style={{ 
+        marginBottom: '6px',
+        wordWrap: 'break-word',
+        overflowWrap: 'break-word',
+        wordBreak: 'break-word'
+      }}>{processChildrenWithCitations(children)}</li>;
+    },
+    strong: ({ children }: { children?: React.ReactNode }) => {
+      return <strong style={{ 
+        fontWeight: 600,
+        wordWrap: 'break-word',
+        overflowWrap: 'break-word',
+        wordBreak: 'break-word'
+      }}>{processChildrenWithCitations(children)}</strong>;
+    },
+    em: ({ children }: { children?: React.ReactNode }) => {
+      return <em style={{ 
+        fontStyle: 'italic',
+        wordWrap: 'break-word',
+        overflowWrap: 'break-word',
+        wordBreak: 'break-word'
+      }}>{processChildrenWithCitations(children)}</em>;
+    },
+    code: ({ children }: { children?: React.ReactNode }) => <code style={{ 
+      backgroundColor: '#f3f4f6', 
+      padding: '2px 5px', 
+      borderRadius: '4px', 
+      fontSize: '14px', 
+      fontFamily: 'monospace',
+      wordWrap: 'break-word',
+      overflowWrap: 'break-word',
+      wordBreak: 'break-word'
+    }}>{children}</code>,
+    blockquote: ({ children }: { children?: React.ReactNode }) => <blockquote style={{ 
+      borderLeft: '3px solid #d1d5db', 
+      paddingLeft: '12px', 
+      margin: '8px 0', 
+      color: '#6b7280',
+      wordWrap: 'break-word',
+      overflowWrap: 'break-word',
+      wordBreak: 'break-word'
+    }}>{children}</blockquote>,
+    hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '16px 0' }} />,
+  };
+
+  // Inline segment components for three-part main-answer rendering (inline only, no block elements)
+  const inlineSegmentComponents = {
+    p: ({ children }: { children?: React.ReactNode }) => <>{processChildrenWithCitations(children)}</>,
+    strong: ({ children }: { children?: React.ReactNode }) => <strong style={{ fontWeight: 600 }}>{processChildrenWithCitations(children)}</strong>,
+    em: ({ children }: { children?: React.ReactNode }) => <em style={{ fontStyle: 'italic' }}>{processChildrenWithCitations(children)}</em>,
+    code: ({ children }: { children?: React.ReactNode }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2px 5px', borderRadius: '4px', fontSize: '14px', fontFamily: 'monospace' }}>{children}</code>,
+  };
+
   return (
     <>
       <style>{`
@@ -773,97 +1122,17 @@ const StreamingResponseText: React.FC<{
           boxSizing: 'border-box' // Include padding in width calculations
         }}
       >
-        <ReactMarkdown 
-        key={markdownKey}
-        skipHtml={true}
-        components={{
-          p: ({ children }) => {
-            return <p style={{ 
-              margin: 0, 
-              marginBottom: '10px', 
-              textAlign: 'left',
-              wordWrap: 'break-word',
-              overflowWrap: 'break-word',
-              wordBreak: 'break-word'
-            }}>{processChildrenWithCitations(children)}</p>;
-          },
-          h1: ({ children }) => {
-            return <h1 style={{ 
-              fontSize: '18px', 
-              fontWeight: 600, 
-              margin: '14px 0 10px 0', 
-              color: '#111827',
-              wordWrap: 'break-word',
-              overflowWrap: 'break-word',
-              wordBreak: 'break-word'
-            }}>{processChildrenWithCitations(children)}</h1>;
-          },
-          h2: () => null, 
-          h3: () => null,
-          ul: ({ children }) => <ul style={{ 
-            margin: '10px 0', 
-            paddingLeft: 0, 
-            listStylePosition: 'inside',
-            wordWrap: 'break-word',
-            overflowWrap: 'break-word',
-            wordBreak: 'break-word'
-          }}>{children}</ul>,
-          ol: ({ children }) => <ol style={{ 
-            margin: '10px 0', 
-            paddingLeft: 0, 
-            listStylePosition: 'inside',
-            wordWrap: 'break-word',
-            overflowWrap: 'break-word',
-            wordBreak: 'break-word'
-          }}>{children}</ol>,
-          li: ({ children }) => {
-            return <li style={{ 
-              marginBottom: '6px',
-              wordWrap: 'break-word',
-              overflowWrap: 'break-word',
-              wordBreak: 'break-word'
-            }}>{processChildrenWithCitations(children)}</li>;
-          },
-          strong: ({ children }) => {
-            return <strong style={{ 
-              fontWeight: 600,
-              wordWrap: 'break-word',
-              overflowWrap: 'break-word',
-              wordBreak: 'break-word'
-            }}>{processChildrenWithCitations(children)}</strong>;
-          },
-          em: ({ children }) => {
-            return <em style={{ 
-              fontStyle: 'italic',
-              wordWrap: 'break-word',
-              overflowWrap: 'break-word',
-              wordBreak: 'break-word'
-            }}>{processChildrenWithCitations(children)}</em>;
-          },
-          code: ({ children }) => <code style={{ 
-            backgroundColor: '#f3f4f6', 
-            padding: '2px 5px', 
-            borderRadius: '4px', 
-            fontSize: '14px', 
-            fontFamily: 'monospace',
-            wordWrap: 'break-word',
-            overflowWrap: 'break-word',
-            wordBreak: 'break-word'
-          }}>{children}</code>,
-          blockquote: ({ children }) => <blockquote style={{ 
-            borderLeft: '3px solid #d1d5db', 
-            paddingLeft: '12px', 
-            margin: '8px 0', 
-            color: '#6b7280',
-            wordWrap: 'break-word',
-            overflowWrap: 'break-word',
-            wordBreak: 'break-word'
-          }}>{children}</blockquote>,
-          hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '16px 0' }} />,
-        }}
-      >
-        {textWithCitationPlaceholders}
-      </ReactMarkdown>
+        {hasMainAnswerSegment ? (
+          <p style={{ margin: 0, marginBottom: '10px', wordWrap: 'break-word', overflowWrap: 'break-word', wordBreak: 'break-word' }}>
+            {beforeWithCitations ? <ReactMarkdown key={`${markdownKey}-before`} skipHtml={true} components={inlineSegmentComponents}>{beforeWithCitations}</ReactMarkdown> : null}
+            <MainAnswerHighlight isStreaming={isStreaming}>
+              <ReactMarkdown key={`${markdownKey}-main`} skipHtml={true} components={inlineSegmentComponents}>{mainForHighlight}</ReactMarkdown>
+            </MainAnswerHighlight>
+            {afterForDisplay ? <ReactMarkdown key={`${markdownKey}-after`} skipHtml={true} components={inlineSegmentComponents}>{afterForDisplay}</ReactMarkdown> : null}
+          </p>
+        ) : (
+          <ReactMarkdown key={markdownKey} skipHtml={true} components={markdownComponents}>{textWithCitationPlaceholders}</ReactMarkdown>
+        )}
       </div>
     </>
   );
@@ -3883,6 +4152,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   
   const [submittedQueries, setSubmittedQueries] = React.useState<SubmittedQuery[]>([]);
   const [chatMessages, setChatMessages] = React.useState<ChatMessage[]>([]);
+  // True when we're on the empty "new chat" view (no messages yet) - hide Files, New chat, Agents, reasoning toggle in header
+  const isNewChatSection = chatMessages.length === 0;
   // CRITICAL: Ref to track current chatMessages for streaming callbacks (avoids stale closure issues)
   const chatMessagesRef = React.useRef<ChatMessage[]>([]);
   // Keep ref in sync with state
@@ -5205,6 +5476,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               }, // onReasoningStep
               undefined, // onReasoningContext
               undefined, // onCitation
+              undefined, // onExecutionEvent
               undefined, // citationContext
               undefined, // responseMode
               undefined, // attachmentContext
@@ -6585,6 +6857,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   });
                 }
               },
+              undefined, // onExecutionEvent
               citationContext || undefined, // citationContext (from citation click)
               responseMode, // responseMode (from file choice)
               attachmentContext, // attachmentContext (extracted text from files)
@@ -8827,6 +9100,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   original_filename: citation.data.original_filename
                 };
               },
+              undefined, // onExecutionEvent
               // citationContext: Pass structured citation metadata (hidden from user, for LLM)
               citationContext || undefined,
               undefined, // responseMode
@@ -9475,6 +9749,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             undefined, // onReasoningStep
             undefined, // onReasoningContext
             undefined, // onCitation
+            undefined, // onExecutionEvent
             undefined, // citationContext
             undefined, // responseMode
             undefined, // attachmentContext
@@ -10619,6 +10894,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 preloadDocumentById(docId, citation.data.original_filename);
               }
             },
+            undefined, // onExecutionEvent
             // citationContext: Pass structured citation metadata (hidden from user, for LLM)
             // ALWAYS pass citationContext when available - it contains document_id, page_number, block_id
             // for fast-path retrieval when user clicks on a citation
@@ -11095,6 +11371,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   // IMPORTANT: Force messages layout when showPlanViewer is true, even if no chat messages
   // This ensures the PlanViewer is visible when generating a research plan
   const isEmptyChat = chatMessages.length === 0 && !showPlanViewer;
+
+  // One random title per empty-state session (stable while isEmptyChat is true)
+  const emptyStateTitleMessage = useMemo(
+    () =>
+      isEmptyChat
+        ? EMPTY_CHAT_TITLE_MESSAGES[Math.floor(Math.random() * EMPTY_CHAT_TITLE_MESSAGES.length)]
+        : '',
+    [isEmptyChat]
+  );
 
   // CRITICAL: This useMemo MUST be at top level (not inside JSX) to follow React's Rules of Hooks
   // This fixes "Rendered more hooks than during the previous render" error
@@ -11855,8 +12140,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     </button>
                   )}
 
-                  {/* Files Open Button - shown when files sidebar is closed */}
-                  {!isFilingSidebarOpen && (
+                  {/* Files Open Button - shown when files sidebar is closed (hidden on new chat section) */}
+                  {!isNewChatSection && !isFilingSidebarOpen && (
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
@@ -11884,8 +12169,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     </button>
                   )}
 
-                  {/* Files Close Button - shown when files sidebar is open */}
-                  {isFilingSidebarOpen && (
+                  {/* Files Close Button - shown when files sidebar is open (hidden on new chat section) */}
+                  {!isNewChatSection && isFilingSidebarOpen && (
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
@@ -11948,7 +12233,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     )}
                   </button>
 
-                  {/* New Agent Button */}
+                  {/* New chat Button (hidden on new chat section) */}
+                  {!isNewChatSection && (
                   <motion.button
                     onClick={() => {
                       // Save current chat to history if there are messages
@@ -12206,11 +12492,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       </span>
                     )}
                   </motion.button>
+                  )}
                 </div>
                 
-                {/* Center - Chat Title */}
+                {/* Center - Chat Title (hidden on new chat section) */}
                 <div className="flex-1 flex items-center justify-center px-4">
-                  {actualPanelWidth >= 900 ? (
+                  {!isNewChatSection && (actualPanelWidth >= 900 ? (
                     <div className="flex items-center gap-2 max-w-md">
                       {/* Padlock icon (subtle, light gray) - shown by default, hidden when editing */}
                       {!isEditingTitle && (
@@ -12305,11 +12592,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         onClick={(e) => e.stopPropagation()}
                       />
                     </div>
-                  ) : null}
+                  ) : null)}
                 </div>
                 
                 <div className="flex items-center space-x-2">
-                  {/* Agents Sidebar Button */}
+                  {/* Agents Sidebar Button (hidden on new chat section) */}
+                  {!isNewChatSection && (
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
@@ -12351,8 +12639,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       </span>
                     )}
                   </button>
+                  )}
                   
-                  {/* Reasoning trace toggle */}
+                  {/* Reasoning trace toggle (hidden on new chat section) */}
+                  {!isNewChatSection && (
                   <div 
                     className="flex items-center gap-1 rounded-sm hover:bg-[#f0f0f0] transition-all duration-150 cursor-pointer"
                     style={{ 
@@ -12378,6 +12668,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       }`} />
                     </button>
                   </div>
+                  )}
                   
                   <button
                     type="button"
@@ -12485,9 +12776,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       return (
                         <>
                           {isLarge ? (
-                            <Minimize2 className="w-3.5 h-3.5 text-[#666]" strokeWidth={1.75} />
+                            <Minimize2 className="w-4 h-4 text-[#666]" strokeWidth={1.75} />
                           ) : (
-                            <MoveDiagonal className="w-3.5 h-3.5 text-[#666]" strokeWidth={1.75} />
+                            <MoveDiagonal className="w-4 h-4 text-[#666]" strokeWidth={1.75} />
                           )}
                           </>
                       );
@@ -12555,7 +12846,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       cursor: 'pointer'
                     }}
                   >
-                    <X className="w-3.5 h-3.5 text-[#666]" strokeWidth={1.75} />
+                    <X className="w-4 h-4 text-[#666]" strokeWidth={1.75} />
                   </button>
                 </div>
               </div>
@@ -12582,12 +12873,26 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   alignItems: 'center',
                   // Reduce padding for narrow panels
                   padding: actualPanelWidth < 320 ? '0 12px' : '0 32px',
-                  paddingTop: '12vh', // Position input in upper portion like Cursor
+                  paddingTop: '26vh', // Y position of new-chat bar (increase to move down, decrease to move up)
                   minWidth: '200px', // Allow narrower layouts
                   position: 'relative',
                   overflowX: 'hidden'
                 }}
               >
+                {/* Title above chat bar - slightly less bold */}
+                {emptyStateTitleMessage ? (
+                  <h1
+                    className="w-full text-center text-[#111]"
+                    style={{
+                      fontWeight: 400,
+                      fontSize: 'clamp(1.125rem, 3vw, 1.375rem)',
+                      lineHeight: 1.3,
+                      marginBottom: '56px',
+                    }}
+                  >
+                    {emptyStateTitleMessage}
+                  </h1>
+                ) : null}
                 {/* Expanded Chat Input Container */}
                 <div style={{ 
                   width: '100%', 
@@ -12647,21 +12952,23 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       className={`relative flex flex-col ${isSubmitted ? 'opacity-75' : ''}`}
                       onClick={(e) => e.stopPropagation()}
                       style={{
-                        background: isDragOver ? '#F5F5F5' : '#FFFFFF',
-                        border: isDragOver ? '2px dashed #4B5563' : '1px solid #B8BCC4',
-                        boxShadow: 'none', // No shadow for clean empty state look
+                        background: isDragOver ? '#F0F9FF' : 'rgba(255, 255, 255, 0.72)',
+                        backdropFilter: isDragOver ? 'none' : 'blur(16px) saturate(160%)',
+                        WebkitBackdropFilter: isDragOver ? 'none' : 'blur(16px) saturate(160%)',
+                        border: isDragOver ? '2px dashed rgb(36, 41, 50)' : '1px solid #D4D4D4',
+                        boxShadow: isDragOver ? '0 4px 12px 0 rgba(59, 130, 246, 0.15), 0 2px 4px 0 rgba(59, 130, 246, 0.10)' : '0 1px 3px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.04)',
                         position: 'relative',
                         paddingTop: '12px',
                         paddingBottom: '12px',
-                        paddingRight: '16px',
-                        paddingLeft: '16px',
-                        overflow: 'visible',
+                        paddingRight: '12px',
+                        paddingLeft: '12px',
+                        overflow: 'hidden',
                         width: '100%',
                         height: 'auto',
                         minHeight: '160px', // Taller for empty state
                         boxSizing: 'border-box',
-                        borderRadius: '8px', // Match other chat bars
-                        transition: 'background-color 0.2s ease-in-out, border-color 0.2s ease-in-out',
+                        borderRadius: '8px',
+                        transition: 'background-color 0.2s ease-in-out, border-color 0.2s ease-in-out, box-shadow 0.2s ease-in-out',
                       }}
                     >
                       {/* File Attachments Display */}
@@ -12783,8 +13090,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               lineHeight: '22px',
                               paddingTop: '0px',
                               paddingBottom: '4px',
-                              paddingRight: '8px',
-                              paddingLeft: '2px',
+                              paddingRight: '12px',
+                              paddingLeft: '6px',
                               scrollbarWidth: 'thin',
                               scrollbarColor: 'rgba(229, 231, 235, 0.5) transparent',
                               overflow: 'hidden',
@@ -13465,34 +13772,37 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     className={`relative flex flex-col ${isSubmitted ? 'opacity-75' : ''}`}
                     onClick={(e) => e.stopPropagation()} // Prevent clicks from closing agent sidebar
                     style={{
-                      background: isDragOver ? '#F5F5F5' : '#FFFFFF',
-                      border: isDragOver ? '2px dashed #4B5563' : '1px solid #B8BCC4',
+                      background: isDragOver ? '#F0F9FF' : 'rgba(255, 255, 255, 0.72)',
+                      backdropFilter: isDragOver ? 'none' : 'blur(16px) saturate(160%)',
+                      WebkitBackdropFilter: isDragOver ? 'none' : 'blur(16px) saturate(160%)',
+                      border: isDragOver ? '2px dashed rgb(36, 41, 50)' : '1px solid #D4D4D4',
                       boxShadow: isDragOver 
-                        ? '0 4px 12px 0 rgba(75, 85, 99, 0.15), 0 2px 4px 0 rgba(75, 85, 99, 0.1)' 
-                        : 'none',
+                        ? '0 4px 12px 0 rgba(59, 130, 246, 0.15), 0 2px 4px 0 rgba(59, 130, 246, 0.10)' 
+                        : '0 1px 3px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.04)',
                       position: 'relative',
-                      paddingTop: '8px', // Default padding top
-                      paddingBottom: '8px', // Default padding bottom
+                      paddingTop: '12px',
+                      paddingBottom: '12px',
                       paddingRight: '12px',
                       paddingLeft: '12px',
-                      overflow: 'visible',
+                      overflow: 'hidden',
                       width: '100%',
                       height: 'auto',
-                      minHeight: '48px', // Fixed minimum height to prevent expansion when typing starts
+                      minHeight: '60px',
                       boxSizing: 'border-box',
-                      borderRadius: '8px', // Slightly sharper corners
+                      borderRadius: '8px',
                       transition: 'background-color 0.2s ease-in-out, border-color 0.2s ease-in-out, box-shadow 0.2s ease-in-out',
                       zIndex: 2, // Above the bot status overlay
                     }}
                   >
-                  {/* Input row */}
+                  {/* Input row - match SearchBar: gap for spacing to icons */}
                   <div 
                     className="relative flex flex-col w-full" 
                     style={{ 
                       height: 'auto', 
-                      minHeight: '26px',
+                      minHeight: '24px',
                       width: '100%',
-                      minWidth: '0'
+                      minWidth: '0',
+                      gap: '12px'
                     }}
                   >
                     {/* File Attachments Display - Above textarea */}
@@ -13574,24 +13884,24 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       )}
                     </AnimatePresence>
                     
-                    {/* Textarea area - always above */}
+                    {/* Textarea area - match SearchBar: no wrapper margins, parent gap handles spacing */}
                     <div 
                       className="flex items-start w-full"
                       style={{ 
-                        minHeight: '26px', // Minimum height matches textarea minHeight
-                        height: 'auto', // Allow growth but maintain minimum
+                        minHeight: '24px',
+                        height: 'auto',
                         width: '100%',
-                        marginTop: '4px', // Additional padding above textarea
-                        marginBottom: '12px', // Fixed margin - don't change when typing
-                        flexShrink: 0 // Prevent shrinking
+                        marginTop: '0px',
+                        marginBottom: '0px',
+                        flexShrink: 0
                       }}
                     >
                       <div className="flex-1 relative flex items-start w-full" style={{ 
                         overflow: 'visible', 
-                        minHeight: '26px',
+                        minHeight: '28px',
                         width: '100%',
                         minWidth: '0',
-                        paddingRight: '0px' // Ensure no extra padding on right side
+                        alignSelf: 'flex-start' // Match SearchBar for consistent alignment
                       }}>
                         <textarea 
                           ref={inputRef}
@@ -13617,26 +13927,28 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             : "Ask anything..."}
                           className="w-full bg-transparent focus:outline-none font-normal text-gray-900 resize-none [&::-webkit-scrollbar]:w-0.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-gray-200/50 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:hover:bg-gray-300/70 [&::placeholder]:text-[#8E8E8E]"
                           style={{
-                            height: '26px', // Fixed initial height to prevent layout shift when typing starts
-                            minHeight: '26px',
-                            maxHeight: '140px',
+                            height: '28px',
+                            minHeight: '28px',
+                            maxHeight: '220px',
                             fontSize: '14px',
                             lineHeight: '20px',
                             paddingTop: '0px',
-                            paddingBottom: '0px',
-                            paddingRight: '8px',
-                            paddingLeft: '8px',
+                            paddingBottom: '4px',
+                            paddingRight: '12px',
+                            paddingLeft: '6px',
                             scrollbarWidth: 'thin',
                             scrollbarColor: 'rgba(229, 231, 235, 0.5) transparent',
                             overflow: 'hidden',
                             overflowY: 'auto',
                             wordWrap: 'break-word',
-                            transition: 'none', // Remove transition to prevent expansion animation
+                            transition: 'none',
                             resize: 'none',
                             width: '100%',
                             minWidth: '0',
                             color: inputValue ? '#0D0D0D' : undefined,
-                            boxSizing: 'border-box' // Ensure padding is included in height calculation
+                            boxSizing: 'border-box',
+                            verticalAlign: 'top', // Match SearchBar
+                            display: 'block' // Match SearchBar
                           }}
                           autoComplete="off"
                           disabled={isSubmitted}

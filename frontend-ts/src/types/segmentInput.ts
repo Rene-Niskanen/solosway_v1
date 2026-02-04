@@ -1,3 +1,9 @@
+/**
+ * Segment-based input model for inline text + chips (Cursor-style).
+ */
+
+export type SegmentKind = "property" | "document";
+
 export interface TextSegment {
   type: "text";
   value: string;
@@ -5,9 +11,10 @@ export interface TextSegment {
 
 export interface ChipSegment {
   type: "chip";
-  kind: "property" | "document";
+  kind: SegmentKind;
   id: string;
   label: string;
+  /** For property: full property payload for context/attachment. For document: optional. */
   payload?: unknown;
 }
 
@@ -18,20 +25,23 @@ export interface CursorPosition {
   offset: number;
 }
 
-export function isTextSegment(seg: Segment): seg is TextSegment {
-  return seg.type === "text";
+export function isTextSegment(s: Segment): s is TextSegment {
+  return s.type === "text";
 }
 
-export function isChipSegment(seg: Segment): seg is ChipSegment {
-  return seg.type === "chip";
+export function isChipSegment(s: Segment): s is ChipSegment {
+  return s.type === "chip";
 }
 
+/** Plain text only (no chip labels), for submission or display. */
 export function segmentsToPlainText(segments: Segment[]): string {
   return segments
-    .map((seg) => (isTextSegment(seg) ? seg.value : ""))
+    .filter(isTextSegment)
+    .map((s) => s.value)
     .join("");
 }
 
+/** All chip segments for attachments. */
 export function getChipSegments(segments: Segment[]): ChipSegment[] {
   return segments.filter(isChipSegment);
 }

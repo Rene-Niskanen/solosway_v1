@@ -5,8 +5,7 @@ import type { Segment, TextSegment, ChipSegment } from "@/types/segmentInput";
 import { isTextSegment, isChipSegment } from "@/types/segmentInput";
 import { AtMentionChip } from "./AtMentionChip";
 
-export interface SegmentInputProps
-  extends Omit<React.HTMLAttributes<HTMLDivElement>, "onChange"> {
+export interface SegmentInputProps {
   segments: Segment[];
   cursor: { segmentIndex: number; offset: number };
   onSegmentsChange?: (segments: Segment[]) => void;
@@ -22,41 +21,35 @@ export interface SegmentInputProps
   disabled?: boolean;
   className?: string;
   style?: React.CSSProperties;
+  onKeyDown?: (e: React.KeyboardEvent) => void;
   "data-testid"?: string;
 }
 
-export const SegmentInput = React.forwardRef<HTMLDivElement, SegmentInputProps>(function SegmentInput(
-  {
-    segments,
-    cursor,
-    onCursorChange,
-    onInsertText,
-    onBackspace,
-    onDelete,
-    onMoveLeft,
-    onMoveRight,
-    onRemovePropertyChip,
-    onRemoveDocumentChip,
-    placeholder = "",
-    disabled = false,
-    className,
-    style,
-    ...rest
-  },
-  ref
-) {
-  const containerRef = React.useRef<HTMLDivElement>(null);
-  React.useImperativeHandle(ref, () => containerRef.current!);
-  const mergedRef = (el: HTMLDivElement | null) => {
-    (containerRef as React.MutableRefObject<HTMLDivElement | null>).current = el;
-    if (typeof ref === "function") ref(el);
-    else if (ref) (ref as React.MutableRefObject<HTMLDivElement | null>).current = el;
-  };
+export const SegmentInput = React.forwardRef<HTMLDivElement, SegmentInputProps>(function SegmentInput({
+  segments,
+  cursor,
+  onCursorChange,
+  onInsertText,
+  onBackspace,
+  onDelete,
+  onMoveLeft,
+  onMoveRight,
+  onRemovePropertyChip,
+  onRemoveDocumentChip,
+  placeholder = "",
+  disabled = false,
+  className,
+  style,
+  onKeyDown: externalOnKeyDown,
+}, ref) {
+  const internalRef = React.useRef<HTMLDivElement>(null);
+  const containerRef = ref || internalRef;
   const segmentRefs = React.useRef<(HTMLSpanElement | null)[]>([]);
 
+  // Restore selection after segments/cursor change
   React.useLayoutEffect(() => {
     const sel = window.getSelection();
-    const container = containerRef.current;
+    const container = typeof containerRef === 'function' ? null : containerRef?.current;
     if (!sel || !container || !container.contains(sel.anchorNode)) return;
     const idx = cursor.segmentIndex;
     const seg = segments[idx];
@@ -80,129 +73,149 @@ export const SegmentInput = React.forwardRef<HTMLDivElement, SegmentInputProps>(
       sel.removeAllRanges();
       sel.addRange(range);
     }
-  }, [cursor, segments]);
+  }, [segments, cursor]);
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    if (disabled) return;
-    if (e.key === "Backspace") {
-      e.preventDefault();
-      onBackspace?.();
-    } else if (e.key === "Delete") {
-      e.preventDefault();
-      onDelete?.();
-    } else if (e.key === "ArrowLeft") {
-      e.preventDefault();
-      onMoveLeft?.();
-    } else if (e.key === "ArrowRight") {
-      e.preventDefault();
-      onMoveRight?.();
-    } else if (e.key === "Enter") {
-      if (!e.shiftKey) {
+  const handleKeyDown = React.useCallback(
+    (e: React.KeyboardEvent) => {
+      if (disabled) return;
+      if (e.key === "Backspace") {
         e.preventDefault();
-        onInsertText?.("\n");
-      }
-    }
-    rest.onKeyDown?.(e);
-  };
-
-  const handleBeforeInput = (e: React.FormEvent<HTMLDivElement> & { data?: string }) => {
-    if (disabled) return;
-    e.preventDefault();
-    const data = (e as any).data;
-    if (typeof data === "string" && data.length > 0) {
-      onInsertText?.(data);
-    }
-  };
-
-  const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    const container = containerRef.current;
-    if (!container) return;
-    const sel = window.getSelection();
-    if (!sel || sel.rangeCount === 0) return;
-    const range = sel.getRangeAt(0);
-    const node = range.startContainer;
-    const offset = range.startOffset;
-
-    for (let i = 0; i < segmentRefs.current.length; i++) {
-      const el = segmentRefs.current[i];
-      if (!el) continue;
-      if (el.contains(node)) {
-        const seg = segments[i];
-        if (isTextSegment(seg)) {
-          onCursorChange?.(i, Math.min(offset, seg.value.length));
-        } else {
-          onCursorChange?.(i, 0);
-        }
+        onBackspace?.();
         return;
       }
-    }
-  };
+      if (e.key === "Delete") {
+        e.preventDefault();
+        onDelete?.();
+        return;
+      }
+      if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        onMoveLeft?.();
+        return;
+      }
+      if (e.key === "ArrowRight") {
+        e.preventDefault();
+        onMoveRight?.();
+        return;
+      }
+      if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        onInsertText?.(e.key);
+      }
+      // Call external onKeyDown handler if provided
+      externalOnKeyDown?.(e);
+    },
+    [
+      disabled,
+      onBackspace,
+      onDelete,
+      onMoveLeft,
+      onMoveRight,
+      onInsertText,
+      externalOnKeyDown,
+    ]
+  );
 
-  const showPlaceholder =
-    segments.length === 1 &&
-    isTextSegment(segments[0]) &&
-    segments[0].value === "";
+  const handleClick = React.useCallback(
+    (e: React.MouseEvent) => {
+      if (disabled) return;
+      const sel = window.getSelection();
+      if (!sel || sel.rangeCount === 0) return;
+      const range = sel.getRangeAt(0);
+      const container = typeof containerRef === 'function' ? null : containerRef?.current;
+      if (!container || !container.contains(range.startContainer)) return;
+      for (let i = 0; i < segmentRefs.current.length; i++) {
+        const el = segmentRefs.current[i];
+        if (!el) continue;
+        const seg = segments[i];
+        if (isTextSegment(seg)) {
+          const textNode = el.firstChild;
+          if (textNode && (textNode === range.startContainer || el.contains(range.startContainer))) {
+            const offset = range.startContainer === textNode
+              ? range.startOffset
+              : seg.value.length;
+            onCursorChange?.(i, Math.min(offset, seg.value.length));
+            return;
+          }
+        } else {
+          if (el.contains(range.startContainer) || el === range.startContainer) {
+            onCursorChange?.(i, 0);
+            return;
+          }
+        }
+      }
+    },
+    [disabled, segments, onCursorChange]
+  );
+
+  const isEmpty =
+    segments.length === 0 ||
+    (segments.length === 1 && isTextSegment(segments[0]) && segments[0].value === "");
+  const showPlaceholder = isEmpty && placeholder;
 
   return (
     <div
-      ref={mergedRef}
+      ref={ref || internalRef}
       contentEditable={!disabled}
       suppressContentEditableWarning
-      onKeyDown={handleKeyDown}
-      onBeforeInput={handleBeforeInput}
-      onClick={handleClick}
+      role="textbox"
+      aria-multiline
+      tabIndex={0}
       className={className}
       style={{
         outline: "none",
+        minHeight: "22px",
+        fontSize: "14px",
+        lineHeight: "22px",
+        padding: "0",
+        wordWrap: "break-word",
         whiteSpace: "pre-wrap",
-        wordBreak: "break-word",
-        minHeight: "24px",
         ...style,
-        color: showPlaceholder ? "#9CA3AF" : style?.color,
       }}
-      data-testid={rest["data-testid"]}
-      {...rest}
+      onKeyDown={handleKeyDown}
+      onClick={handleClick}
     >
-      {showPlaceholder ? (
-        <span
-          ref={(el) => {
-            segmentRefs.current[0] = el;
-          }}
-          style={{ color: "#9CA3AF" }}
-        >
-          {placeholder}
-        </span>
-      ) : (
-        segments.map((seg, idx) => {
-          if (isTextSegment(seg)) {
-            return (
-              <span
-                key={idx}
-                ref={(el) => {
-                  segmentRefs.current[idx] = el;
-                }}
-              >
-                {seg.value}
-              </span>
-            );
-          } else {
-            return (
+      {segments.map((seg, i) => {
+        if (isTextSegment(seg)) {
+          const isOnlyEmpty = segments.length === 1 && seg.value === "";
+          return (
+            <span
+              key={`t-${i}`}
+              ref={(el) => {
+                segmentRefs.current[i] = el;
+              }}
+              data-segment-index={i}
+              style={isOnlyEmpty && showPlaceholder ? { color: "#8E8E8E" } : undefined}
+            >
+              {isOnlyEmpty && showPlaceholder ? placeholder : seg.value}
+            </span>
+          );
+        }
+        if (isChipSegment(seg)) {
+          return (
+            <span
+              key={`c-${i}`}
+              ref={(el) => {
+                segmentRefs.current[i] = el;
+              }}
+              data-segment-index={i}
+              contentEditable={false}
+              style={{ display: "inline-flex", verticalAlign: "middle" }}
+            >
               <AtMentionChip
-                key={`chip-${seg.id}-${idx}`}
-                kind={seg.kind}
+                type={seg.kind}
                 label={seg.label}
-                onRemove={() => {
-                  if (seg.kind === "property") {
-                    onRemovePropertyChip?.(seg.id);
-                  } else {
-                    onRemoveDocumentChip?.(seg.id);
-                  }
-                }}
+                onRemove={
+                  seg.kind === "property"
+                    ? () => onRemovePropertyChip?.(seg.id)
+                    : () => onRemoveDocumentChip?.(seg.id)
+                }
               />
-            );
-          }
-        })
-      )}
+            </span>
+          );
+        }
+        return null;
+      })}
     </div>
   );
 });

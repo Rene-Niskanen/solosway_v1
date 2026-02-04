@@ -16,7 +16,9 @@ import {
 
 export interface UseSegmentInputOptions {
   initialSegments: Segment[];
+  onInsertPropertyChip?: (payload: unknown) => void;
   onRemovePropertyChip?: (id: string) => void;
+  onInsertDocumentChip?: (id: string, label: string) => void;
   onRemoveDocumentChip?: (id: string) => void;
 }
 
@@ -31,11 +33,11 @@ export interface UseSegmentInputReturn {
   deleteForward: () => void;
   moveCursorLeft: () => void;
   moveCursorRight: () => void;
-  removeRange: (start: number, end: number) => void;
-  setCursorToOffset: (offset: number) => void;
   getPlainText: () => string;
   getChipSegmentsList: () => ChipSegment[];
   getCursorOffset: () => number;
+  setCursorToOffset: (offset: number) => void;
+  removeRange: (start: number, end: number) => void;
 }
 
 function clampCursor(segments: Segment[], cursor: CursorPosition): CursorPosition {
@@ -52,7 +54,9 @@ export function useSegmentInput(
 ): UseSegmentInputReturn {
   const {
     initialSegments,
+    onInsertPropertyChip,
     onRemovePropertyChip,
+    onInsertDocumentChip,
     onRemoveDocumentChip,
   } = options;
 
@@ -73,179 +77,185 @@ export function useSegmentInput(
     [segments]
   );
 
+  // Keep cursor in bounds when segments change
   React.useEffect(() => {
     setCursorState((prev) => clampCursor(segments, prev));
   }, [segments]);
 
   const insertTextAtCursor = React.useCallback(
     (char: string) => {
+      if (!char) return;
       setSegments((prev) => {
-        const segs = [...prev];
-        const { segmentIndex, offset } = clampCursor(segs, cursor);
-        const seg = segs[segmentIndex];
-
-        if (!seg) {
-          // Empty segments array - create first text segment
-          return [{ type: "text", value: char }];
+        const { segmentIndex, offset } = clampCursor(prev, cursor);
+        const seg = prev[segmentIndex];
+        if (!seg || !isTextSegment(seg)) {
+          const newText: TextSegment = { type: "text", value: char };
+          const before = prev.slice(0, segmentIndex);
+          const after = prev.slice(segmentIndex);
+          return [...before, newText, ...after];
         }
-
-        if (isTextSegment(seg)) {
-          const newValue =
-            seg.value.slice(0, offset) + char + seg.value.slice(offset);
-          segs[segmentIndex] = { ...seg, value: newValue };
-          setCursorState({ segmentIndex, offset: offset + char.length });
-        } else {
-          // Chip segment - insert text segment after
-          const newTextSeg: TextSegment = { type: "text", value: char };
-          segs.splice(segmentIndex + 1, 0, newTextSeg);
-          setCursorState({ segmentIndex: segmentIndex + 1, offset: char.length });
+        const newValue =
+          seg.value.slice(0, offset) + char + seg.value.slice(offset);
+        const newSeg: TextSegment = { type: "text", value: newValue };
+        const next = [...prev];
+        next[segmentIndex] = newSeg;
+        return next;
+      });
+      setCursorState((prev) => {
+        const { segmentIndex, offset } = prev;
+        const seg = segments[segmentIndex];
+        if (seg && isTextSegment(seg)) {
+          return { segmentIndex, offset: offset + char.length };
         }
-
-        return segs;
+        return { segmentIndex: segmentIndex + 1, offset: 1 };
       });
     },
-    [cursor]
+    [cursor, segments]
   );
 
   const insertChipAtCursor = React.useCallback(
     (chip: ChipSegment) => {
+      if (chip.kind === "property" && chip.payload) {
+        onInsertPropertyChip?.(chip.payload);
+      } else if (chip.kind === "document") {
+        onInsertDocumentChip?.(chip.id, chip.label);
+      }
       setSegments((prev) => {
-        const segs = [...prev];
-        const { segmentIndex, offset } = clampCursor(segs, cursor);
-        const seg = segs[segmentIndex];
-
-        if (!seg) {
-          return [chip, { type: "text", value: "" }];
+        const { segmentIndex, offset } = clampCursor(prev, cursor);
+        const before = prev.slice(0, segmentIndex);
+        const after = prev.slice(segmentIndex);
+        const current = prev[segmentIndex];
+        if (current && isTextSegment(current) && (offset > 0 || offset < current.value.length)) {
+          const left: TextSegment =
+            offset > 0
+              ? { type: "text", value: current.value.slice(0, offset) }
+              : { type: "text", value: "" };
+          const right: TextSegment =
+            offset < current.value.length
+              ? { type: "text", value: current.value.slice(offset) }
+              : { type: "text", value: "" };
+          const mid: Segment[] = [];
+          if (left.value) mid.push(left);
+          mid.push(chip);
+          if (right.value) mid.push(right);
+          return [...before, ...mid, ...after.slice(1)];
         }
-
-        if (isTextSegment(seg)) {
-          const before = seg.value.slice(0, offset);
-          const after = seg.value.slice(offset);
-          const newSegs: Segment[] = [];
-          if (before) newSegs.push({ type: "text", value: before });
-          newSegs.push(chip);
-          newSegs.push({ type: "text", value: after });
-          segs.splice(segmentIndex, 1, ...newSegs);
-          const chipIdx = segmentIndex + (before ? 1 : 0);
-          setCursorState({ segmentIndex: chipIdx + 1, offset: 0 });
-        } else {
-          segs.splice(segmentIndex + 1, 0, chip, { type: "text", value: "" });
-          setCursorState({ segmentIndex: segmentIndex + 2, offset: 0 });
-        }
-
-        return segs;
+        return [...before, chip, ...after];
       });
+      setCursorState((prev) => ({
+        segmentIndex: prev.segmentIndex + 1,
+        offset: 0,
+      }));
     },
-    [cursor]
+    [cursor, onInsertPropertyChip, onInsertDocumentChip]
   );
 
   const backspace = React.useCallback(() => {
     setSegments((prev) => {
-      const segs = [...prev];
-      const { segmentIndex, offset } = clampCursor(segs, cursor);
-      const seg = segs[segmentIndex];
-
-      if (!seg) return segs;
-
-      if (isTextSegment(seg)) {
-        if (offset > 0) {
-          const newValue = seg.value.slice(0, offset - 1) + seg.value.slice(offset);
-          segs[segmentIndex] = { ...seg, value: newValue };
-          setCursorState({ segmentIndex, offset: offset - 1 });
-        } else if (segmentIndex > 0) {
-          const prevSeg = segs[segmentIndex - 1];
-          if (isChipSegment(prevSeg)) {
-            if (prevSeg.kind === "property") {
-              onRemovePropertyChip?.(prevSeg.id);
-            } else {
-              onRemoveDocumentChip?.(prevSeg.id);
-            }
-            segs.splice(segmentIndex - 1, 1);
-            setCursorState({ segmentIndex: segmentIndex - 1, offset: 0 });
-          } else {
-            // Merge with previous text segment
-            const merged = prevSeg.value + seg.value;
-            segs[segmentIndex - 1] = { type: "text", value: merged };
-            segs.splice(segmentIndex, 1);
-            setCursorState({ segmentIndex: segmentIndex - 1, offset: prevSeg.value.length });
-          }
-        }
-      } else {
-        // Cursor is on a chip - remove it
-        if (isChipSegment(seg)) {
-          if (seg.kind === "property") {
-            onRemovePropertyChip?.(seg.id);
-          } else {
-            onRemoveDocumentChip?.(seg.id);
-          }
-        }
-        segs.splice(segmentIndex, 1);
-        if (segs.length === 0) {
-          segs.push({ type: "text", value: "" });
-        }
-        setCursorState({ segmentIndex: Math.max(0, segmentIndex - 1), offset: 0 });
+      const { segmentIndex, offset } = clampCursor(prev, cursor);
+      const seg = prev[segmentIndex];
+      if (segmentIndex === 0 && offset === 0) return prev;
+      if (seg && isChipSegment(seg) && offset === 1) {
+        if (seg.kind === "property") onRemovePropertyChip?.(seg.id);
+        else onRemoveDocumentChip?.(seg.id);
+        const next = prev.slice(0, segmentIndex).concat(prev.slice(segmentIndex + 1));
+        return next;
       }
-
-      return segs;
+      if (seg && isTextSegment(seg) && offset > 0) {
+        const newValue = seg.value.slice(0, offset - 1) + seg.value.slice(offset);
+        const newSeg: TextSegment = { type: "text", value: newValue };
+        const next = [...prev];
+        next[segmentIndex] = newSeg;
+        return next;
+      }
+      if (seg && isTextSegment(seg) && offset === 0 && segmentIndex > 0) {
+        const prevSeg = prev[segmentIndex - 1];
+        if (isChipSegment(prevSeg)) {
+          if (prevSeg.kind === "property") onRemovePropertyChip?.(prevSeg.id);
+          else onRemoveDocumentChip?.(prevSeg.id);
+          return prev.slice(0, segmentIndex - 1).concat(prev.slice(segmentIndex));
+        }
+        if (isTextSegment(prevSeg)) {
+          const merged: TextSegment = {
+            type: "text",
+            value: prevSeg.value + seg.value,
+          };
+          return prev
+            .slice(0, segmentIndex - 1)
+            .concat([merged], prev.slice(segmentIndex + 1));
+        }
+      }
+      return prev;
     });
-  }, [cursor, onRemovePropertyChip, onRemoveDocumentChip]);
+    setCursorState((prev) => {
+      const { segmentIndex, offset } = prev;
+      const seg = segments[segmentIndex];
+      if (seg && isChipSegment(seg) && offset === 1) {
+        return { segmentIndex: Math.max(0, segmentIndex - 1), offset: 0 };
+      }
+      if (seg && isTextSegment(seg) && offset > 0) {
+        return { segmentIndex, offset: offset - 1 };
+      }
+      if (seg && isTextSegment(seg) && offset === 0 && segmentIndex > 0) {
+        const prevSeg = segments[segmentIndex - 1];
+        if (isTextSegment(prevSeg)) {
+          return { segmentIndex: segmentIndex - 1, offset: prevSeg.value.length };
+        }
+        return { segmentIndex: segmentIndex - 1, offset: 0 };
+      }
+      return prev;
+    });
+  }, [cursor, segments, onRemovePropertyChip, onRemoveDocumentChip]);
 
   const deleteForward = React.useCallback(() => {
     setSegments((prev) => {
-      const segs = [...prev];
-      const { segmentIndex, offset } = clampCursor(segs, cursor);
-      const seg = segs[segmentIndex];
-
-      if (!seg) return segs;
-
-      if (isTextSegment(seg)) {
-        if (offset < seg.value.length) {
-          const newValue = seg.value.slice(0, offset) + seg.value.slice(offset + 1);
-          segs[segmentIndex] = { ...seg, value: newValue };
-        } else if (segmentIndex < segs.length - 1) {
-          const nextSeg = segs[segmentIndex + 1];
-          if (isChipSegment(nextSeg)) {
-            if (nextSeg.kind === "property") {
-              onRemovePropertyChip?.(nextSeg.id);
-            } else {
-              onRemoveDocumentChip?.(nextSeg.id);
-            }
-            segs.splice(segmentIndex + 1, 1);
-          } else {
-            // Merge with next text segment
-            const merged = seg.value + nextSeg.value;
-            segs[segmentIndex] = { type: "text", value: merged };
-            segs.splice(segmentIndex + 1, 1);
-          }
-        }
-      } else {
-        // Cursor is on a chip - remove it
-        if (isChipSegment(seg)) {
-          if (seg.kind === "property") {
-            onRemovePropertyChip?.(seg.id);
-          } else {
-            onRemoveDocumentChip?.(seg.id);
-          }
-        }
-        segs.splice(segmentIndex, 1);
-        if (segs.length === 0) {
-          segs.push({ type: "text", value: "" });
+      const { segmentIndex, offset } = clampCursor(prev, cursor);
+      const seg = prev[segmentIndex];
+      if (seg && isChipSegment(seg) && offset === 0) {
+        if (seg.kind === "property") onRemovePropertyChip?.(seg.id);
+        else onRemoveDocumentChip?.(seg.id);
+        return prev.slice(0, segmentIndex).concat(prev.slice(segmentIndex + 1));
+      }
+      if (seg && isTextSegment(seg) && offset < seg.value.length) {
+        const newValue = seg.value.slice(0, offset) + seg.value.slice(offset + 1);
+        const next = [...prev];
+        next[segmentIndex] = { type: "text", value: newValue };
+        return next;
+      }
+      if (seg && isTextSegment(seg) && offset === seg.value.length && segmentIndex + 1 < prev.length) {
+        const nextSeg = prev[segmentIndex + 1];
+        if (isTextSegment(nextSeg)) {
+          const merged: TextSegment = {
+            type: "text",
+            value: seg.value + nextSeg.value,
+          };
+          return prev
+            .slice(0, segmentIndex)
+            .concat([merged], prev.slice(segmentIndex + 2));
         }
       }
-
-      return segs;
+      return prev;
     });
-  }, [cursor, onRemovePropertyChip, onRemoveDocumentChip]);
+    setCursorState((prev) => clampCursor(segments, prev));
+  }, [cursor, segments, onRemovePropertyChip, onRemoveDocumentChip]);
 
   const moveCursorLeft = React.useCallback(() => {
     setCursorState((prev) => {
       const { segmentIndex, offset } = prev;
-      if (offset > 0) {
+      if (segmentIndex === 0 && offset === 0) return prev;
+      const seg = segments[segmentIndex];
+      if (seg && isTextSegment(seg) && offset > 0) {
         return { segmentIndex, offset: offset - 1 };
-      } else if (segmentIndex > 0) {
+      }
+      if (seg && isChipSegment(seg) && offset === 1) {
+        return { segmentIndex, offset: 0 };
+      }
+      if (offset === 0 && segmentIndex > 0) {
         const prevSeg = segments[segmentIndex - 1];
-        const newOffset = isTextSegment(prevSeg) ? prevSeg.value.length : 0;
-        return { segmentIndex: segmentIndex - 1, offset: newOffset };
+        if (isTextSegment(prevSeg)) {
+          return { segmentIndex: segmentIndex - 1, offset: prevSeg.value.length };
+        }
+        return { segmentIndex: segmentIndex - 1, offset: 0 };
       }
       return prev;
     });
@@ -254,58 +264,24 @@ export function useSegmentInput(
   const moveCursorRight = React.useCallback(() => {
     setCursorState((prev) => {
       const { segmentIndex, offset } = prev;
+      if (segmentIndex >= segments.length - 1) {
+        const last = segments[segments.length - 1];
+        if (isTextSegment(last) && offset === last.value.length) return prev;
+        if (isChipSegment(last) && offset === 1) return prev;
+      }
       const seg = segments[segmentIndex];
-      if (!seg) return prev;
-
-      const maxOffset = isTextSegment(seg) ? seg.value.length : 1;
-      if (offset < maxOffset) {
+      if (seg && isTextSegment(seg) && offset < seg.value.length) {
         return { segmentIndex, offset: offset + 1 };
-      } else if (segmentIndex < segments.length - 1) {
+      }
+      if (seg && isChipSegment(seg) && offset === 0) {
+        return { segmentIndex, offset: 1 };
+      }
+      if (segmentIndex + 1 < segments.length) {
         return { segmentIndex: segmentIndex + 1, offset: 0 };
       }
       return prev;
     });
   }, [segments]);
-
-  const removeRange = React.useCallback(
-    (start: number, end: number) => {
-      setSegments((prev) => {
-        let segs = [...prev];
-        const plainText = segmentsToPlainText(segs);
-        const before = plainText.slice(0, start);
-        const after = plainText.slice(end);
-        // Simple approach: rebuild with just text
-        const newText = before + after;
-        segs = [{ type: "text", value: newText }];
-        setCursorState({ segmentIndex: 0, offset: start });
-        return segs;
-      });
-    },
-    []
-  );
-
-  const setCursorToOffset = React.useCallback(
-    (offset: number) => {
-      let remaining = offset;
-      for (let i = 0; i < segments.length; i++) {
-        const seg = segments[i];
-        const len = isTextSegment(seg) ? seg.value.length : 1;
-        if (remaining <= len) {
-          setCursorState({ segmentIndex: i, offset: remaining });
-          return;
-        }
-        remaining -= len;
-      }
-      // Past end - set to end of last segment
-      if (segments.length > 0) {
-        const lastIdx = segments.length - 1;
-        const lastSeg = segments[lastIdx];
-        const lastLen = isTextSegment(lastSeg) ? lastSeg.value.length : 1;
-        setCursorState({ segmentIndex: lastIdx, offset: lastLen });
-      }
-    },
-    [segments]
-  );
 
   const getPlainText = React.useCallback(() => {
     return segmentsToPlainText(segments);
@@ -315,15 +291,63 @@ export function useSegmentInput(
     return getChipSegments(segments);
   }, [segments]);
 
+  // Get cursor position as plain text offset
   const getCursorOffset = React.useCallback(() => {
     let offset = 0;
-    for (let i = 0; i < cursor.segmentIndex && i < segments.length; i++) {
+    for (let i = 0; i < cursor.segmentIndex; i++) {
       const seg = segments[i];
-      offset += isTextSegment(seg) ? seg.value.length : 1;
+      if (isTextSegment(seg)) {
+        offset += seg.value.length;
+      }
+      // Chips don't contribute to plain text offset
     }
-    offset += cursor.offset;
+    const currentSeg = segments[cursor.segmentIndex];
+    if (currentSeg && isTextSegment(currentSeg)) {
+      offset += cursor.offset;
+    }
     return offset;
   }, [segments, cursor]);
+
+  // Set cursor position based on plain text offset
+  const setCursorToOffset = React.useCallback((targetOffset: number) => {
+    let offset = 0;
+    for (let i = 0; i < segments.length; i++) {
+      const seg = segments[i];
+      if (isTextSegment(seg)) {
+        if (offset + seg.value.length >= targetOffset) {
+          setCursorState({ segmentIndex: i, offset: targetOffset - offset });
+          return;
+        }
+        offset += seg.value.length;
+      }
+      // Skip chips for offset calculation
+    }
+    // If we reach here, set cursor to end
+    const lastIdx = segments.length - 1;
+    const lastSeg = segments[lastIdx];
+    if (lastSeg && isTextSegment(lastSeg)) {
+      setCursorState({ segmentIndex: lastIdx, offset: lastSeg.value.length });
+    } else {
+      setCursorState({ segmentIndex: lastIdx, offset: 0 });
+    }
+  }, [segments]);
+
+  // Remove text from start to end offset (plain text offsets)
+  const removeRange = React.useCallback((start: number, end: number) => {
+    setSegments((prev) => {
+      const plainText = segmentsToPlainText(prev);
+      const newText = plainText.slice(0, start) + plainText.slice(end);
+      // Preserve chips and rebuild text segments
+      const chips = getChipSegments(prev);
+      const result: Segment[] = [];
+      if (newText) {
+        result.push({ type: "text", value: newText });
+      }
+      chips.forEach((chip) => result.push(chip));
+      return result.length > 0 ? result : [{ type: "text", value: "" }];
+    });
+    setCursorState({ segmentIndex: 0, offset: start });
+  }, []);
 
   return {
     segments,
@@ -336,14 +360,15 @@ export function useSegmentInput(
     deleteForward,
     moveCursorLeft,
     moveCursorRight,
-    removeRange,
-    setCursorToOffset,
     getPlainText,
     getChipSegmentsList,
     getCursorOffset,
+    setCursorToOffset,
+    removeRange,
   };
 }
 
+/** Build initial segments from plain text and existing chips (chips appended at end). */
 export function buildInitialSegments(
   plainText: string,
   propertyChips: Array<{ id: string; label: string; payload?: unknown }>,

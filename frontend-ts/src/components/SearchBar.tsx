@@ -279,16 +279,15 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
     segmentInput.removeRange(start, end);
     setAtMentionOpen(false);
     if (item.type === "property") {
-      const att = addPropertyAttachment(item.payload as any);
-      if (att) {
-        segmentInput.insertChipAtCursor({
-          type: "chip",
-          kind: "property",
-          id: att.id,
-          label: att.address,
-          payload: att.property,
-        });
-      }
+      const property = item.payload as { id: string; address: string; [key: string]: unknown };
+      addPropertyAttachment(property as any);
+      segmentInput.insertChipAtCursor({
+        type: "chip",
+        kind: "property",
+        id: property.id,
+        label: property.address || item.primaryLabel,
+        payload: property,
+      });
     } else {
       toggleDocumentSelection(item.id);
       setAtMentionDocumentChips((prev) => [...prev, { id: item.id, label: item.primaryLabel }]);
@@ -1323,14 +1322,14 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                   : (isDragOver ? '#F0F9FF' : 'rgba(255, 255, 255, 0.72)'),
                 backdropFilter: isMapVisible || isDragOver ? 'none' : 'blur(16px) saturate(160%)',
                 WebkitBackdropFilter: isMapVisible || isDragOver ? 'none' : 'blur(16px) saturate(160%)',
+                // ChatGPT-style: very thin 1px border, slightly sharper grey; dashed only on drag.
                 border: isDragOver
                   ? '2px dashed rgb(36, 41, 50)'
-                  // Keep the outline consistently thin (no focus-thickening).
-                  : '1px solid rgba(82, 101, 128, 0.35)',
+                  : '1px solid #D4D4D4',
+                // ChatGPT-style subtle drop shadow: soft lift, minimal offset, light opacity.
                 boxShadow: isDragOver 
                   ? '0 4px 12px 0 rgba(59, 130, 246, 0.15), 0 2px 4px 0 rgba(59, 130, 246, 0.10)' 
-                  // Keep shadow consistent as well; focus should not add a thick halo.
-                  : 'inset 0 1px 0 rgba(255, 255, 255, 0.55), 0 1px 2px rgba(0, 0, 0, 0.08)',
+                  : '0 1px 3px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.04)',
                 paddingTop: '12px',
                 paddingBottom: '12px',
                 paddingRight: '12px',
@@ -1347,7 +1346,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                 // In dashboard mode, cap height so it doesn't expand into the Recent Projects section.
                 maxHeight: isMapVisible ? 'calc(100vh - 96px)' : (isDashboardView ? '220px' : undefined),
                 boxSizing: 'border-box',
-                borderRadius: '12px', // Always 12px rounded corners
+                borderRadius: '8px', // Match SideChatPanel rounded corners
                 // IMPORTANT: don't animate layout (height) while typing; textarea auto-resizes on keystrokes.
                 // Restrict transitions to purely visual properties to avoid "step up" / reflow animations.
                 transition: 'background-color 0.2s ease-in-out, border-color 0.2s ease-in-out, box-shadow 0.2s ease-in-out, opacity 0.2s ease-in-out',
@@ -1427,7 +1426,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                       paddingTop: '0px',
                       paddingBottom: '4px',
                       paddingRight: '12px',
-                      paddingLeft: '8px',
+                      paddingLeft: '6px',
                       color: segmentInput.getPlainText() ? '#0D0D0D' : undefined,
                       boxSizing: 'border-box',
                     }}
@@ -1748,15 +1747,15 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                       type="submit" 
                       onClick={handleSubmit} 
                       initial={{ opacity: 0, scale: 0.8 }}
-                      animate={{ opacity: 1, scale: 1, backgroundColor: '#415C85' }}
+                      animate={{ opacity: 1, scale: 1, backgroundColor: '#4A4A4A' }}
                       exit={{ opacity: 0, scale: 0.8 }}
-                      transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+                      transition={{ duration: 0.15, ease: [0.16, 1, 0.3, 1] }}
                       className={`flex items-center justify-center relative focus:outline-none outline-none ${!isSubmitted ? '' : 'cursor-not-allowed'}`}
                       style={{
-                        width: '32px',
-                        height: '32px',
-                        minWidth: '32px',
-                        minHeight: '32px',
+                        width: '24px',
+                        height: '24px',
+                        minWidth: '24px',
+                        minHeight: '24px',
                         borderRadius: '50%',
                         flexShrink: 0
                       }}
