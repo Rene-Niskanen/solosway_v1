@@ -31,7 +31,9 @@ const ROW_PADDING = "6px 10px";
 const PRIMARY_FONT_SIZE = "12px";
 const SECONDARY_FONT_SIZE = "11px";
 const SECONDARY_COLOR = "#9CA3AF";
-const HOVER_BG = "#F9FAFB";
+const HOVER_BG = "#F3F4F6";
+const SELECTED_BG = "#2563eb"; // Cursor-style blue container
+const SELECTED_TEXT = "#ffffff";
 const GAP = 8;
 
 export function AtMentionPopover({
@@ -90,9 +92,24 @@ export function AtMentionPopover({
     return () => document.removeEventListener("mousedown", handleMouseDown);
   }, [open, anchorRef, onClose]);
 
-  if (!open || !anchorRef.current) return null;
+  if (!open) return null;
 
-  const rect = anchorRef.current.getBoundingClientRect();
+  // Fallback rect when ref not yet set (e.g. first paint) so popover still shows
+  const fallbackTop = window.innerHeight - 120;
+  const fallbackLeft = window.innerWidth / 2 - 200;
+  const fallbackWidth = 400;
+  const fallbackHeight = 40;
+  const rect = anchorRef.current?.getBoundingClientRect() ?? {
+    left: fallbackLeft,
+    top: fallbackTop,
+    width: fallbackWidth,
+    height: fallbackHeight,
+    bottom: fallbackTop + fallbackHeight,
+    right: fallbackLeft + fallbackWidth,
+    x: fallbackLeft,
+    y: fallbackTop,
+    toJSON: () => ({}),
+  };
   const style: React.CSSProperties = {
     position: "fixed",
     left: rect.left,
@@ -126,17 +143,18 @@ export function AtMentionPopover({
       ) : (
         items.map((item, index) => {
           const isSelected = index === selectedIndex;
+          const iconColor = isSelected ? SELECTED_TEXT : "#6B7280";
           const Icon =
             item.type === "property" ? (
               <MapPin
                 size={16}
-                style={{ color: "#6B7280", flexShrink: 0 }}
+                style={{ color: iconColor, flexShrink: 0 }}
                 strokeWidth={2}
               />
             ) : (
               <FileText
                 size={16}
-                style={{ color: "#6B7280", flexShrink: 0 }}
+                style={{ color: iconColor, flexShrink: 0 }}
                 strokeWidth={2}
               />
             );
@@ -150,7 +168,9 @@ export function AtMentionPopover({
               style={{
                 padding: ROW_PADDING,
                 cursor: "pointer",
-                backgroundColor: isSelected ? HOVER_BG : "transparent",
+                backgroundColor: isSelected ? SELECTED_BG : "transparent",
+                borderRadius: "6px",
+                margin: "0 4px",
                 borderBottom:
                   index < items.length - 1
                     ? "1px solid rgba(229, 231, 235, 0.3)"
@@ -167,7 +187,7 @@ export function AtMentionPopover({
                   style={{
                     fontWeight: 500,
                     fontSize: PRIMARY_FONT_SIZE,
-                    color: "#111827",
+                    color: isSelected ? SELECTED_TEXT : "#111827",
                     lineHeight: 1.4,
                     overflow: "hidden",
                     textOverflow: "ellipsis",
@@ -180,7 +200,7 @@ export function AtMentionPopover({
                   <div
                     style={{
                       fontSize: SECONDARY_FONT_SIZE,
-                      color: SECONDARY_COLOR,
+                      color: isSelected ? "rgba(255,255,255,0.9)" : SECONDARY_COLOR,
                       lineHeight: 1.4,
                       overflow: "hidden",
                       textOverflow: "ellipsis",

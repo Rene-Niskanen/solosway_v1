@@ -2,10 +2,10 @@
 
 import * as React from "react";
 import { useMemo } from "react";
-import { createPortal } from "react-dom";
+import { createPortal, flushSync } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { generateAnimatePresenceKey, generateConditionalKey, generateUniqueKey } from '../utils/keyGenerator';
-import { ChevronRight, ChevronDown, ChevronUp, ArrowUp, Paperclip, Mic, Map, X, SquareDashedMousePointer, Scan, Fullscreen, Plus, PanelLeftOpen, PanelRightClose, Trash2, CreditCard, MoveDiagonal, Square, FileText, Image as ImageIcon, File as FileIcon, FileCheck, Minimize, Minimize2, Workflow, Home, FolderOpen, TextCursorInput, Footprints, AudioLines, MessageCircleDashed, Copy, Play, Search, Lock, Pencil, Check } from "lucide-react";
+import { ChevronRight, ChevronDown, ChevronUp, ArrowUp, Paperclip, Mic, Map, X, SquareDashedMousePointer, Scan, Fullscreen, Plus, PanelLeftOpen, PanelRightClose, Trash2, CreditCard, MoveDiagonal, Square, FileText, Image as ImageIcon, File as FileIcon, FileCheck, Minimize, Minimize2, Workflow, Home, FolderOpen, TextCursorInput, Brain, AudioLines, MessageCircleDashed, Copy, Play, Search, Lock, Pencil, Check, Highlighter, SlidersHorizontal, BookOpen } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { FileAttachment, FileAttachmentData } from './FileAttachment';
 import { PropertyAttachment, PropertyAttachmentData } from './PropertyAttachment';
@@ -42,6 +42,10 @@ import { ExpandedPlanViewer } from './ExpandedPlanViewer';
 import { AdjustmentBlock, AdjustmentBlockData } from './AdjustmentBlock';
 import { PlanReasoningSteps, ReasoningStep as PlanReasoningStep } from './PlanReasoningSteps';
 import { diffLines } from 'diff';
+import { AtMentionPopover } from './AtMentionPopover';
+import type { AtMentionItem } from './AtMentionPopover';
+import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover';
+import { getFilteredAtMentionItems, preloadAtMentionCache } from '@/services/atMentionCache';
 
 // ============================================================================
 // CHAT PANEL WIDTH CONSTANTS
@@ -508,64 +512,6 @@ export function parseMainAnswerTags(text: string): { before: string; main: strin
   return { before, main, after };
 }
 
-/** When LLM doesn't emit main-answer tags, use first sentence as highlight target (Google-style fallback). */
-export function getFirstSentenceFallback(text: string): { main: string; after: string } | null {
-  const trimmed = text.trim();
-  if (!trimmed) return null;
-  // First sentence: up to first . ? ! followed by space or end, or first line; cap length
-  const maxFirstSentence = 400;
-  const match = trimmed.match(/^(.+?[.?!])(\s|$)/s);
-  const main = match ? match[1].trim() : trimmed.slice(0, maxFirstSentence).trim();
-  const after = match ? trimmed.slice(match[0].length).trimStart() : trimmed.slice(main.length).trimStart();
-  if (!main) return null;
-  return { main: main.slice(0, maxFirstSentence), after };
-}
-
-/** When LLM doesn't emit MAIN tags, find the first figure (phone, currency, date, or reference number) and highlight only that. */
-export function getFirstFigureFallback(text: string): { before: string; main: string; after: string } | null {
-  const trimmed = text.trim();
-  if (!trimmed) return null;
-  // Order: phone (UK/international), currency, date, long reference number
-  const phonePattern = /\+\d[\d\s\-\(\)]{8,}/; // e.g. +44 (0) 203 463 8725
-  const currencyPattern = /£\d{1,3}(?:,\d{3})*(?:\.\d+)?|£\d+(?:\.\d+)?\s*(?:million|m)\b/;
-  const datePattern = /\d{1,2}(?:st|nd|rd|th)?\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4}/;
-  const refPattern = /\b\d{10,}\b/;
-  const patterns = [phonePattern, currencyPattern, datePattern, refPattern];
-  for (const re of patterns) {
-    const match = trimmed.match(re);
-    if (match) {
-      const fig = match[0];
-      const idx = trimmed.indexOf(fig);
-      const before = trimmed.slice(0, idx).trimEnd();
-      const after = trimmed.slice(idx + fig.length).trimStart();
-      return { before, main: fig, after };
-    }
-  }
-  return null;
-}
-
-/** When no MAIN tags and no figure: try to highlight first category-style phrase (e.g. Flood Zone 2 (Medium Probability)) instead of whole first sentence. */
-export function getFirstCategoryFallback(text: string): { before: string; main: string; after: string } | null {
-  const trimmed = text.trim();
-  if (!trimmed) return null;
-  // Allowlist of answer-like category patterns (order matters: more specific first)
-  const categoryPatterns = [
-    /Flood Zone \d+(?:\s*\([^)]+\))?/,  // e.g. "Flood Zone 2 (Medium Probability)"
-    /Flood Zone \d+/,                     // e.g. "Flood Zone 2"
-  ];
-  for (const re of categoryPatterns) {
-    const match = trimmed.match(re);
-    if (match) {
-      const phrase = match[0];
-      const idx = trimmed.indexOf(phrase);
-      const before = trimmed.slice(0, idx).trimEnd();
-      const after = trimmed.slice(idx + phrase.length).trimStart();
-      return { before, main: phrase, after };
-    }
-  }
-  return null;
-}
-
 export const MainAnswerHighlight: React.FC<{
   children: React.ReactNode;
   /** When true (streaming), no highlight yet. When false, the swoop animation runs. Omit/undefined = run swoop (e.g. static message). */
@@ -577,8 +523,8 @@ export const MainAnswerHighlight: React.FC<{
       <style>{`
         .main-answer-highlight {
           display: inline;
-          margin: 0 0.2em;
-          padding: 1px 4px;
+          margin: 0;
+          padding: 0;
           border-radius: 4px;
           font-weight: 800;
           box-decoration-break: clone;
@@ -614,7 +560,8 @@ const StreamingResponseText: React.FC<{
   onTextUpdate?: () => void;
   messageId?: string; // Unique ID for this message to track animation state
   skipHighlight?: boolean; // When true (e.g. error messages), do not apply main-answer highlight
-}> = ({ text, isStreaming, citations, handleCitationClick, renderTextWithCitations, onTextUpdate, messageId, skipHighlight }) => {
+  showCitations?: boolean; // When false, strip citation markers from text
+}> = ({ text, isStreaming, citations, handleCitationClick, renderTextWithCitations, onTextUpdate, messageId, skipHighlight, showCitations = true }) => {
   const [shouldAnimate, setShouldAnimate] = React.useState(false);
   const hasAnimatedRef = React.useRef(false);
   
@@ -668,99 +615,27 @@ const StreamingResponseText: React.FC<{
     return text;
   };
 
-  // Parse main-answer tags for Google-style highlight (before, main, after); strip tags from display
-  const parsedMainAnswer = React.useMemo(() => {
-    if (skipHighlight) {
-      return { main: null, fullStrippedText: processedText };
-    }
-    return parseMainAnswerTags(processedText);
-  }, [processedText, skipHighlight]);
-
-  // When LLM doesn't emit tags: try figure, then category phrase (e.g. Flood Zone 2), then first sentence
-  const fallbackMainAnswer = React.useMemo(() => {
-    if (parsedMainAnswer.main !== null) return null;
-    const stripped = (parsedMainAnswer as { main: null; fullStrippedText: string }).fullStrippedText;
-    const figureFallback = getFirstFigureFallback(stripped);
-    if (figureFallback) return figureFallback;
-    const categoryFallback = getFirstCategoryFallback(stripped);
-    if (categoryFallback) return categoryFallback;
-    const sentenceFallback = getFirstSentenceFallback(stripped);
-    if (sentenceFallback) return { before: '', main: sentenceFallback.main, after: sentenceFallback.after };
-    return null;
-  }, [parsedMainAnswer]);
-
-  // Effective segments: from tags when present, else from first-sentence fallback (skip for error messages)
-  const hasMainAnswerSegment = React.useMemo(() => {
-    if (skipHighlight) return false;
-    if (parsedMainAnswer.main !== null && parsedMainAnswer.main !== '') return true;
-    return !!(fallbackMainAnswer && fallbackMainAnswer.main);
-  }, [skipHighlight, parsedMainAnswer, fallbackMainAnswer]);
-  const effectiveBefore = hasMainAnswerSegment
-    ? (parsedMainAnswer.main !== null
-        ? (parsedMainAnswer as { before: string; main: string; after: string }).before
-        : ('before' in fallbackMainAnswer! ? fallbackMainAnswer!.before : ''))
-    : '';
-  const effectiveMain = hasMainAnswerSegment
-    ? (parsedMainAnswer.main !== null
-        ? (parsedMainAnswer as { before: string; main: string; after: string }).main
-        : (fallbackMainAnswer!.main))
-    : '';
-  const effectiveAfter = hasMainAnswerSegment
-    ? (parsedMainAnswer.main !== null
-        ? (parsedMainAnswer as { before: string; main: string; after: string }).after
-        : (fallbackMainAnswer!.after))
-    : '';
-
-  // Defensive shrink: when MAIN is long and contains intro + value (e.g. "The phone number... is +44 (0) 203 463 8725"), highlight only the value
-  const effectiveSegments = React.useMemo(() => {
-    const before = effectiveBefore;
-    const main = effectiveMain;
-    const after = effectiveAfter;
-    if (!hasMainAnswerSegment || parsedMainAnswer.main === null || main.length <= 80) {
-      return { before, main, after };
-    }
-    const phoneRe = /\+\d[\d\s\-\(\)]{8,}/g;
-    const currencyRe = /£\d{1,3}(?:,\d{3})*(?:\.\d+)?|£\d+(?:\.\d+)?\s*(?:million|m)\b/g;
-    const dateRe = /\d{1,2}(?:st|nd|rd|th)?\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4}/g;
-    const valuePatterns = [phoneRe, currencyRe, dateRe];
-    for (const re of valuePatterns) {
-      const matches = [...main.matchAll(re)];
-      if (matches.length > 0) {
-        const lastMatch = matches[matches.length - 1];
-        const value = lastMatch[0];
-        const idx = lastMatch.index!;
-        const beforeValue = main.slice(0, idx);
-        if (beforeValue.includes(' is ') || beforeValue.trimEnd().endsWith(' is')) {
-          return {
-            before: before + main.slice(0, idx).trimEnd(),
-            main: value,
-            after: main.slice(idx + value.length).trimStart() + (after ? ` ${after}` : ''),
-          };
-        }
-      }
-    }
-    return { before, main, after };
-  }, [effectiveBefore, effectiveMain, effectiveAfter, hasMainAnswerSegment, parsedMainAnswer.main]);
-
-  // Strip orphan ** that split across before/main/after so they don't render as literal (e.g. "...is **" + "£2,300,000" + "** (Two Million...")
-  // Normalize each segment so unpaired ** are closed or stripped (no leakage in any code path).
-  const { trimmedBefore, trimmedMain, trimmedAfter } = React.useMemo(() => {
-    let b = effectiveSegments.before;
-    let a = effectiveSegments.after;
-    if (b.endsWith('**') && a.startsWith('**')) {
-      b = b.slice(0, -2);
-      a = a.slice(2).trimStart();
-    }
-    return {
-      trimmedBefore: ensureBalancedBoldForDisplay(b),
-      trimmedMain: ensureBalancedBoldForDisplay(effectiveSegments.main),
-      trimmedAfter: ensureBalancedBoldForDisplay(a),
-    };
-  }, [effectiveSegments]);
+  // Parse <<<MAIN>>>...<<<END_MAIN>>> (LLM wraps the direct answer); replace with placeholders so we highlight each segment
+  const { mainSegments, textWithTagsStripped } = React.useMemo(() => {
+    const segments: string[] = [];
+    const text = processedText.replace(/<<<MAIN>>>(.*?)<<<END_MAIN>>>/gs, (_match, content: string) => {
+      segments.push(content.trim());
+      return `%%MAIN_${segments.length - 1}%%`;
+    });
+    return { mainSegments: segments, textWithTagsStripped: text };
+  }, [processedText]);
 
   // Process citations on the full text BEFORE ReactMarkdown splits it
   // This ensures citations are matched even if ReactMarkdown splits text across elements
+  // When showCitations is false, strip citation markers instead of rendering them
   const processCitationsBeforeMarkdown = (text: string): string => {
+    if (!showCitations) {
+      // Strip citation markers: [1], [2], and superscript ¹ ² etc.
+      let stripped = text.replace(/\[(\d+)\]/g, '').replace(/[¹²³⁴⁵⁶⁷⁸⁹]+(?:\d+)?/g, '');
+      // Clean up double spaces or space before punctuation left by removal
+      stripped = stripped.replace(/\s+\./g, '.').replace(/\s+,/g, ',').replace(/\s{2,}/g, ' ');
+      return stripped;
+    }
     if (!citations || Object.keys(citations).length === 0) {
       return text;
     }
@@ -809,36 +684,10 @@ const StreamingResponseText: React.FC<{
     return processedText;
   };
   
-  // Process citations before markdown parsing. Single-block path: use fullStrippedText so user never sees tags.
-  // Normalize ** so no leakage in single-block display.
+  // Process citations before markdown parsing
   const textWithCitationPlaceholders = React.useMemo(() => {
-    if (!hasMainAnswerSegment) {
-      const stripped = parsedMainAnswer.main === null
-        ? (parsedMainAnswer as { main: null; fullStrippedText: string }).fullStrippedText
-        : processedText;
-      return processCitationsBeforeMarkdown(ensureBalancedBoldForDisplay(stripped));
-    }
-    return processCitationsBeforeMarkdown(processedText);
-  }, [processedText, parsedMainAnswer, citations, hasMainAnswerSegment]);
-
-  // For three-part render: citation-processed segments (tags already stripped; use trimmed to avoid leaking **)
-  const beforeWithCitations = React.useMemo(() => processCitationsBeforeMarkdown(trimmedBefore), [trimmedBefore, citations]);
-  const mainWithCitations = React.useMemo(() => processCitationsBeforeMarkdown(trimmedMain), [trimmedMain, citations]);
-  const afterWithCitations = React.useMemo(() => processCitationsBeforeMarkdown(trimmedAfter), [trimmedAfter, citations]);
-
-  // Extend highlight to cover entire fact only when main is short and value-like; avoid extending when main is a full sentence (intro + value)
-  const { mainForHighlight, afterForDisplay } = React.useMemo(() => {
-    const citationAtEnd = /(%%CITATION_(?:SUPERSCRIPT|BRACKET|PENDING)_\d+%%\s*)+$/;
-    const isShortTrailingFact = trimmedAfter.length > 0 && trimmedAfter.length <= 500 && citationAtEnd.test(afterWithCitations.trim());
-    const isShortValueLike = trimmedMain.length <= 60 && !trimmedMain.startsWith('The ');
-    if (isShortTrailingFact && isShortValueLike) {
-      return {
-        mainForHighlight: mainWithCitations + (afterWithCitations ? ` ${afterWithCitations}` : ''),
-        afterForDisplay: '',
-      };
-    }
-    return { mainForHighlight: mainWithCitations, afterForDisplay: afterWithCitations };
-  }, [trimmedAfter, trimmedMain, mainWithCitations, afterWithCitations]);
+    return processCitationsBeforeMarkdown(ensureBalancedBoldForDisplay(textWithTagsStripped));
+  }, [textWithTagsStripped, citations, showCitations]);
   
   // Helper to render citation placeholders (no deduplication - show all citations)
   const renderCitationPlaceholder = (placeholder: string, key: string): React.ReactNode => {
@@ -878,92 +727,12 @@ const StreamingResponseText: React.FC<{
     return placeholder;
   };
   
-  // Helper to wrap structured values (phone numbers, emails, URLs, etc.) in spans to prevent line breaks
-  const wrapStructuredValuesInText = (text: string): React.ReactNode[] => {
-    // Patterns for values that shouldn't break across lines:
-    // 1. Phone numbers: +44 (0) 203 463 8725, +44 203 463 8725, (0) 203 463 8725, etc.
-    // 2. Email addresses: user@example.com
-    // 3. URLs/websites: http://example.com, https://www.example.com, www.example.com, example.com/path
-    // 4. File paths: /path/to/file, C:\path\to\file
-    // 5. IP addresses: 192.168.1.1
-    // 6. Currency amounts with symbols: £1,950,000, $2,300,000, €500,000
-    // 7. Dates with specific formats: 12th February 2024, 2024-02-12
-    // 8. Postcodes: SW1A 1AA, WC1E 7EB
-    
-    const patterns = [
-      // Phone numbers (international formats)
-      /(\+?\d{1,4}[\s\-]?\(?\d{1,4}\)?[\s\-]?\d{1,4}[\s\-]?\d{1,4}[\s\-]?\d{1,4}[\s\-]?\d{1,4}[\s\-]?\d{1,4})/g,
-      // Email addresses
-      /([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/g,
-      // URLs (http/https/www)
-      /(https?:\/\/[^\s<>"{}|\\^`\[\]]+|www\.[^\s<>"{}|\\^`\[\]]+|[a-zA-Z0-9][a-zA-Z0-9-]*[a-zA-Z0-9]*\.[a-zA-Z]{2,}[^\s<>"{}|\\^`\[\]]*)/g,
-      // Currency amounts (with symbols and commas)
-      /([£$€¥]\s?\d{1,3}(?:,\d{3})*(?:\.\d{2})?)/g,
-      // Postcodes (UK format: SW1A 1AA, WC1E 7EB)
-      /([A-Z]{1,2}\d{1,2}[A-Z]?\s?\d[A-Z]{2})/g,
-      // Dates: 12th February 2024, 2024-02-12
-      /(\d{1,2}(?:st|nd|rd|th)?\s+[A-Z][a-z]+\s+\d{4}|\d{4}-\d{2}-\d{2})/g,
-    ];
-    
-    // Combine all matches and sort by position
-    const matches: Array<{ start: number; end: number; text: string }> = [];
-    
-    patterns.forEach(pattern => {
-      let match;
-      while ((match = pattern.exec(text)) !== null) {
-        matches.push({
-          start: match.index,
-          end: match.index + match[0].length,
-          text: match[0]
-        });
-      }
-    });
-    
-    // Sort by start position and remove overlaps (keep first match)
-    matches.sort((a, b) => a.start - b.start);
-    const nonOverlapping: Array<{ start: number; end: number; text: string }> = [];
-    for (const match of matches) {
-      if (nonOverlapping.length === 0 || match.start >= nonOverlapping[nonOverlapping.length - 1].end) {
-        nonOverlapping.push(match);
-      }
-    }
-    
-    // Build result array
-    const parts: React.ReactNode[] = [];
-    let lastIndex = 0;
-    
-    nonOverlapping.forEach((match, idx) => {
-      // Add text before the match
-      if (match.start > lastIndex) {
-        parts.push(<React.Fragment key={`text-${idx}-before`}>{text.substring(lastIndex, match.start)}</React.Fragment>);
-      }
-      // Add structured value wrapped in span
-      // Use word-break: keep-all to prefer keeping the value together, but allow breaking if necessary
-      // This prevents awkward breaks while still allowing text to fit in narrow containers
-      parts.push(
-        <span 
-          key={`structured-${idx}`} 
-          style={{ 
-            wordBreak: 'keep-all', // Prefer not to break, but allow if container is too narrow
-            overflowWrap: 'anywhere', // Allow breaking anywhere if absolutely necessary
-            display: 'inline'
-          }}
-        >
-          {match.text}
-        </span>
-      );
-      lastIndex = match.end;
-    });
-    
-    // Add remaining text
-    if (lastIndex < text.length) {
-      parts.push(<React.Fragment key={`text-${nonOverlapping.length}-after`}>{text.substring(lastIndex)}</React.Fragment>);
-    }
-    
-    return parts.length > 0 ? parts : [<React.Fragment key="text-fallback">{text}</React.Fragment>];
+  // Helper to render plain text (no pattern-based highlighting – highlighting is LLM-driven via <<<MAIN>>> tags only)
+  const renderTextSegment = (text: string): React.ReactNode[] => {
+    return [<React.Fragment key="text-segment">{text}</React.Fragment>];
   };
-  
-  // Helper to process children and replace citation placeholders
+
+  // Helper to process children and replace citation placeholders + MAIN answer placeholders
   const processChildrenWithCitations = (nodes: React.ReactNode): React.ReactNode => {
     return React.Children.map(nodes, child => {
       if (typeof child === 'string') {
@@ -973,17 +742,41 @@ const StreamingResponseText: React.FC<{
         parts.forEach((part, idx) => {
           if (part.startsWith('%%CITATION_')) {
             // Render all citations (including pending) via renderCitationPlaceholder
-            // This ensures consistent rendering during and after streaming
             const citationNode = renderCitationPlaceholder(part, `cit-${idx}-${part}`);
             if (citationNode !== null) {
               result.push(<React.Fragment key={`cit-${idx}-${part}`}>{citationNode}</React.Fragment>);
             }
           } else if (part) {
-            // Wrap structured values (phone numbers, emails, URLs, etc.) in the text part to prevent line breaks
-            const wrappedParts = wrapStructuredValuesInText(part);
-            result.push(...wrappedParts.map((node, wrapIdx) => 
-              React.cloneElement(node as React.ReactElement, { key: `text-${idx}-wrap-${wrapIdx}` })
-            ));
+            // Split by LLM MAIN placeholders (%%MAIN_0%%, %%MAIN_1%%, etc.) so we highlight what the model marked as the answer
+            const mainPlaceholderRe = /%%MAIN_(\d+)%%/g;
+            const mainParts = part.split(mainPlaceholderRe);
+            const nodesToAdd: React.ReactNode[] = [];
+            for (let i = 0; i < mainParts.length; i++) {
+              const segment = mainParts[i];
+              if (i % 2 === 1) {
+                // Odd index = placeholder index (e.g. "0", "1") – LLM decided this is the answer to highlight
+                const n = parseInt(segment, 10);
+                if (n >= 0 && n < mainSegments.length) {
+                  nodesToAdd.push(
+                    skipHighlight ? (
+                      <React.Fragment key={`main-${idx}-${n}`}>{mainSegments[n]}</React.Fragment>
+                    ) : (
+                      <MainAnswerHighlight key={`main-${idx}-${n}`} isStreaming={isStreaming}>
+                        {mainSegments[n]}
+                      </MainAnswerHighlight>
+                    )
+                  );
+                }
+              } else if (segment) {
+                // Even index = text between placeholders; render as-is (no hardcoded patterns – LLM decides what to highlight via MAIN tags)
+                nodesToAdd.push(...renderTextSegment(segment).map((node, wrapIdx) =>
+                  React.isValidElement(node)
+                    ? React.cloneElement(node, { key: `text-${idx}-${i}-${wrapIdx}` })
+                    : <React.Fragment key={`text-${idx}-${i}-${wrapIdx}`}>{node}</React.Fragment>
+                ));
+              }
+            }
+            result.push(...nodesToAdd.length > 0 ? nodesToAdd : [<React.Fragment key={`text-${idx}`}>{part}</React.Fragment>]);
           }
         });
         return result.length > 0 ? result : null;
@@ -1048,12 +841,16 @@ const StreamingResponseText: React.FC<{
       }}>{processChildrenWithCitations(children)}</li>;
     },
     strong: ({ children }: { children?: React.ReactNode }) => {
-      return <strong style={{ 
-        fontWeight: 600,
-        wordWrap: 'break-word',
-        overflowWrap: 'break-word',
-        wordBreak: 'break-word'
-      }}>{processChildrenWithCitations(children)}</strong>;
+      const boldContent = (
+        <strong style={{ 
+          fontWeight: 600,
+          wordWrap: 'break-word',
+          overflowWrap: 'break-word',
+          wordBreak: 'break-word'
+        }}>{processChildrenWithCitations(children)}</strong>
+      );
+      if (skipHighlight) return boldContent;
+      return <MainAnswerHighlight isStreaming={isStreaming}>{boldContent}</MainAnswerHighlight>;
     },
     em: ({ children }: { children?: React.ReactNode }) => {
       return <em style={{ 
@@ -1085,14 +882,6 @@ const StreamingResponseText: React.FC<{
     hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '16px 0' }} />,
   };
 
-  // Inline segment components for three-part main-answer rendering (inline only, no block elements)
-  const inlineSegmentComponents = {
-    p: ({ children }: { children?: React.ReactNode }) => <>{processChildrenWithCitations(children)}</>,
-    strong: ({ children }: { children?: React.ReactNode }) => <strong style={{ fontWeight: 600 }}>{processChildrenWithCitations(children)}</strong>,
-    em: ({ children }: { children?: React.ReactNode }) => <em style={{ fontStyle: 'italic' }}>{processChildrenWithCitations(children)}</em>,
-    code: ({ children }: { children?: React.ReactNode }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2px 5px', borderRadius: '4px', fontSize: '14px', fontFamily: 'monospace' }}>{children}</code>,
-  };
-
   return (
     <>
       <style>{`
@@ -1112,27 +901,17 @@ const StreamingResponseText: React.FC<{
           fontFamily: 'Inter, system-ui, sans-serif', 
           fontWeight: 400,
           position: 'relative',
-          minHeight: '1px', // Prevent collapse
-          contain: 'layout style', // Prevent layout shifts (removed 'paint' to prevent text clipping)
+          minHeight: '1px',
+          contain: 'layout style',
           wordWrap: 'break-word',
           overflowWrap: 'break-word',
           wordBreak: 'break-word',
-          maxWidth: '100%', // Ensure text doesn't overflow container
-          overflow: 'visible', // Allow text to wrap instead of being clipped
-          boxSizing: 'border-box' // Include padding in width calculations
+          maxWidth: '100%',
+          overflow: 'visible',
+          boxSizing: 'border-box'
         }}
       >
-        {hasMainAnswerSegment ? (
-          <p style={{ margin: 0, marginBottom: '10px', wordWrap: 'break-word', overflowWrap: 'break-word', wordBreak: 'break-word' }}>
-            {beforeWithCitations ? <ReactMarkdown key={`${markdownKey}-before`} skipHtml={true} components={inlineSegmentComponents}>{beforeWithCitations}</ReactMarkdown> : null}
-            <MainAnswerHighlight isStreaming={isStreaming}>
-              <ReactMarkdown key={`${markdownKey}-main`} skipHtml={true} components={inlineSegmentComponents}>{mainForHighlight}</ReactMarkdown>
-            </MainAnswerHighlight>
-            {afterForDisplay ? <ReactMarkdown key={`${markdownKey}-after`} skipHtml={true} components={inlineSegmentComponents}>{afterForDisplay}</ReactMarkdown> : null}
-          </p>
-        ) : (
-          <ReactMarkdown key={markdownKey} skipHtml={true} components={markdownComponents}>{textWithCitationPlaceholders}</ReactMarkdown>
-        )}
+        <ReactMarkdown key={markdownKey} skipHtml={true} components={markdownComponents}>{textWithCitationPlaceholders}</ReactMarkdown>
       </div>
     </>
   );
@@ -3124,6 +2903,25 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   const propertySearchPopupRef = React.useRef<HTMLDivElement>(null);
   const propertySearchDebounceRef = React.useRef<NodeJS.Timeout | null>(null);
   
+  // @ mention popover state (files + properties)
+  const [atMentionOpen, setAtMentionOpen] = React.useState<boolean>(false);
+  const [atQuery, setAtQuery] = React.useState<string>('');
+  const [atAnchorIndex, setAtAnchorIndex] = React.useState<number>(-1);
+  const [atItems, setAtItems] = React.useState<AtMentionItem[]>([]);
+  const [atSelectedIndex, setAtSelectedIndex] = React.useState<number>(0);
+  const atCursorOffsetRef = React.useRef<number>(0);
+  
+  React.useEffect(() => {
+    if (!atMentionOpen) {
+      setAtItems([]);
+      return;
+    }
+    setAtItems(getFilteredAtMentionItems(atQuery));
+    preloadAtMentionCache().then(() => {
+      setAtItems(getFilteredAtMentionItems(atQuery));
+    });
+  }, [atMentionOpen, atQuery]);
+  
   // QuickStartBar positioning refs and state
   const chatFormRef = React.useRef<HTMLFormElement>(null);
   const quickStartBarWrapperRef = React.useRef<HTMLDivElement>(null);
@@ -3388,6 +3186,78 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   React.useEffect(() => {
     localStorage.setItem('showReasoningTrace', JSON.stringify(showReasoningTrace));
   }, [showReasoningTrace]);
+
+  // State for blue highlight toggle - persisted to localStorage
+  const [showHighlight, setShowHighlight] = React.useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('showHighlight');
+      if (saved === null) return true; // Default ON
+      const parsed = JSON.parse(saved);
+      return parsed === true;
+    } catch {
+      return true;
+    }
+  });
+  React.useEffect(() => {
+    localStorage.setItem('showHighlight', JSON.stringify(showHighlight));
+  }, [showHighlight]);
+
+  // State for citations toggle - persisted to localStorage
+  const [showCitations, setShowCitations] = React.useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('showCitations');
+      if (saved === null) return true; // Default ON
+      const parsed = JSON.parse(saved);
+      return parsed === true;
+    } catch {
+      return true;
+    }
+  });
+  React.useEffect(() => {
+    localStorage.setItem('showCitations', JSON.stringify(showCitations));
+  }, [showCitations]);
+
+  // Display options popover: hover open/close with delay
+  const [displayOptionsOpen, setDisplayOptionsOpen] = React.useState(false);
+  const displayOptionsOpenTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const displayOptionsCloseTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const HOVER_OPEN_DELAY_MS = 150;
+  const HOVER_CLOSE_DELAY_MS = 200;
+
+  const clearDisplayOptionsOpenTimeout = () => {
+    if (displayOptionsOpenTimeoutRef.current !== null) {
+      clearTimeout(displayOptionsOpenTimeoutRef.current);
+      displayOptionsOpenTimeoutRef.current = null;
+    }
+  };
+  const clearDisplayOptionsCloseTimeout = () => {
+    if (displayOptionsCloseTimeoutRef.current !== null) {
+      clearTimeout(displayOptionsCloseTimeoutRef.current);
+      displayOptionsCloseTimeoutRef.current = null;
+    }
+  };
+
+  React.useEffect(() => {
+    return () => {
+      clearDisplayOptionsOpenTimeout();
+      clearDisplayOptionsCloseTimeout();
+    };
+  }, []);
+
+  const handleDisplayOptionsTriggerEnter = () => {
+    clearDisplayOptionsCloseTimeout();
+    displayOptionsOpenTimeoutRef.current = setTimeout(() => setDisplayOptionsOpen(true), HOVER_OPEN_DELAY_MS);
+  };
+  const handleDisplayOptionsTriggerLeave = () => {
+    clearDisplayOptionsOpenTimeout();
+    displayOptionsCloseTimeoutRef.current = setTimeout(() => setDisplayOptionsOpen(false), HOVER_CLOSE_DELAY_MS);
+  };
+  const handleDisplayOptionsContentEnter = () => {
+    clearDisplayOptionsCloseTimeout();
+  };
+  const handleDisplayOptionsContentLeave = () => {
+    displayOptionsCloseTimeoutRef.current = setTimeout(() => setDisplayOptionsOpen(false), HOVER_CLOSE_DELAY_MS);
+  };
   
   // Sync expanded state with shouldExpand prop
   React.useEffect(() => {
@@ -9318,6 +9188,36 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
 
 
 
+  // Update @ mention popover state from current value and cursor position
+  const updateAtMentionFromInput = React.useCallback((value: string, cursorOffset: number) => {
+    const lastAt = value.slice(0, cursorOffset).lastIndexOf('@');
+    if (lastAt >= 0) {
+      setAtMentionOpen(true);
+      setAtQuery(value.slice(lastAt + 1, cursorOffset));
+      setAtAnchorIndex(lastAt);
+      setAtSelectedIndex(0);
+      atCursorOffsetRef.current = cursorOffset;
+    } else {
+      setAtMentionOpen(false);
+      setAtQuery('');
+      setAtAnchorIndex(-1);
+    }
+  }, []);
+
+  const handleAtSelect = React.useCallback((item: AtMentionItem) => {
+    const cursorEnd = atCursorOffsetRef.current;
+    const start = atAnchorIndex;
+    const label = item.primaryLabel;
+    setInputValue((prev) => prev.slice(0, start) + label + prev.slice(cursorEnd));
+    setAtMentionOpen(false);
+    setAtItems([]);
+    if (item.type === 'property' && item.payload) {
+      addPropertyAttachment(item.payload as Parameters<typeof addPropertyAttachment>[0]);
+    }
+    // Restore focus to input after React updates
+    requestAnimationFrame(() => inputRef.current?.focus());
+  }, [addPropertyAttachment]);
+
   // Handle textarea change with auto-resize logic
   const handleTextareaChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     // CRITICAL: Prevent input from being blocked during new agent creation
@@ -9332,6 +9232,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     const cursorPos = e.target.selectionStart;
     
     setInputValue(value);
+    updateAtMentionFromInput(value, cursorPos);
     
     // Always stay in multi-line layout, just adjust height
     if (inputRef.current) {
@@ -11390,9 +11291,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     
     if (validMessages.length === 0) return [];
     
+    // Only the latest assistant message gets the blue highlight; previous responses do not
+    const lastAssistant = [...validMessages].reverse().find(({ message }) => message.type !== 'query' && message.text);
+    const latestAssistantMessageKey = lastAssistant
+      ? (lastAssistant.message.id || `msg-${lastAssistant.idx}`)
+      : null;
+    
     return validMessages.map(({ message, idx }) => {
       const finalKey = message.id || `msg-${idx}`;
       const isRestored = message.id && restoredMessageIdsRef.current.has(message.id);
+      const isLatestAssistantMessage = latestAssistantMessageKey !== null && finalKey === latestAssistantMessageKey;
       
       if (message.type === 'query') {
         // Truncate query text if from citation
@@ -11723,13 +11631,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 renderTextWithCitations={renderTextWithCitations}
                 onTextUpdate={scrollToBottom}
                 messageId={finalKey}
+                skipHighlight={!isLatestAssistantMessage || !showHighlight}
+                showCitations={showCitations}
               />
             </div>
           )}
         </div>
       );
     }).filter(Boolean);
-  }, [chatMessages, showReasoningTrace, restoredMessageIdsRef, handleCitationClick, onOpenProperty, scrollToBottom, expandedCardViewDoc, propertyAttachments]);
+  }, [chatMessages, showReasoningTrace, showHighlight, showCitations, restoredMessageIdsRef, handleCitationClick, onOpenProperty, scrollToBottom, expandedCardViewDoc, propertyAttachments]);
 
   return (
     <AnimatePresence mode="wait">
@@ -12641,33 +12551,107 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   </button>
                   )}
                   
-                  {/* Reasoning trace toggle (hidden on new chat section) */}
+                  {/* Display options (reasoning trace + answer highlight) – hover popover */}
                   {!isNewChatSection && (
-                  <div 
-                    className="flex items-center gap-1 rounded-sm hover:bg-[#f0f0f0] transition-all duration-150 cursor-pointer"
-                    style={{ 
-                      padding: '5px 8px',
-                      height: '26px'
-                    }}
-                    title={showReasoningTrace ? "Reasoning trace will stay visible after response" : "Reasoning trace will hide after response"}
-                    onClick={() => setShowReasoningTrace(!showReasoningTrace)}
-                  >
-                    <Footprints className="w-3.5 h-3.5 text-[#666]" strokeWidth={1.75} />
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setShowReasoningTrace(!showReasoningTrace);
-                      }}
-                      className={`relative w-7 h-4 rounded-full transition-colors ${
-                        showReasoningTrace ? 'bg-[#10a37f]' : 'bg-[#d1d5db]'
-                      }`}
+                  <Popover open={displayOptionsOpen} onOpenChange={setDisplayOptionsOpen}>
+                    <PopoverTrigger asChild>
+                      <button
+                        type="button"
+                        aria-haspopup="true"
+                        aria-expanded={displayOptionsOpen}
+                        title="Display options – reasoning trace, answer highlight, and citations"
+                        className="flex items-center rounded-sm hover:bg-[#f0f0f0] transition-all duration-150 cursor-pointer border-none bg-transparent"
+                        style={{
+                          padding: actualPanelWidth < 750 ? '5px' : '5px 8px',
+                          height: '26px',
+                          minHeight: '26px',
+                        }}
+                        onMouseEnter={handleDisplayOptionsTriggerEnter}
+                        onMouseLeave={handleDisplayOptionsTriggerLeave}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setDisplayOptionsOpen((prev) => !prev);
+                        }}
+                      >
+                        <SlidersHorizontal className="w-3.5 h-3.5 text-[#666] flex-shrink-0" strokeWidth={1.75} />
+                        {actualPanelWidth >= 750 && (
+                          <span className="text-[12px] font-normal text-[#666] ml-1">Display options</span>
+                        )}
+                      </button>
+                    </PopoverTrigger>
+                    <PopoverContent
+                      align="end"
+                      side="bottom"
+                      sideOffset={4}
+                      onMouseEnter={handleDisplayOptionsContentEnter}
+                      onMouseLeave={handleDisplayOptionsContentLeave}
+                      className="min-w-[200px] w-auto rounded-lg border border-gray-200 bg-white p-3 shadow-md"
+                      onOpenAutoFocus={(e) => e.preventDefault()}
                     >
-                      <span className={`absolute top-0.5 left-0.5 w-3 h-3 bg-white rounded-full shadow-sm transition-transform ${
-                        showReasoningTrace ? 'translate-x-3' : 'translate-x-0'
-                      }`} />
-                    </button>
-                  </div>
+                      <div className="flex flex-col gap-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <Brain className="w-3.5 h-3.5 text-[#666] flex-shrink-0" strokeWidth={1.75} />
+                            <span className="text-[12px] text-[#374151]">Reasoning trace</span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              flushSync(() => setShowReasoningTrace((prev) => !prev));
+                            }}
+                            className={`relative w-7 h-4 flex-shrink-0 rounded-full transition-colors ${
+                              showReasoningTrace ? 'bg-[#10a37f]' : 'bg-[#d1d5db]'
+                            }`}
+                          >
+                            <span className={`absolute top-0.5 left-0.5 w-3 h-3 bg-white rounded-full shadow-sm transition-transform ${
+                              showReasoningTrace ? 'translate-x-3' : 'translate-x-0'
+                            }`} />
+                          </button>
+                        </div>
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <Highlighter className="w-3.5 h-3.5 text-[#666] flex-shrink-0" strokeWidth={1.75} />
+                            <span className="text-[12px] text-[#374151]">Answer highlight</span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setShowHighlight(!showHighlight);
+                            }}
+                            className={`relative w-7 h-4 flex-shrink-0 rounded-full transition-colors ${
+                              showHighlight ? 'bg-[#10a37f]' : 'bg-[#d1d5db]'
+                            }`}
+                          >
+                            <span className={`absolute top-0.5 left-0.5 w-3 h-3 bg-white rounded-full shadow-sm transition-transform ${
+                              showHighlight ? 'translate-x-3' : 'translate-x-0'
+                            }`} />
+                          </button>
+                        </div>
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <BookOpen className="w-3.5 h-3.5 text-[#666] flex-shrink-0" strokeWidth={1.75} />
+                            <span className="text-[12px] text-[#374151]">Citations</span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setShowCitations(!showCitations);
+                            }}
+                            className={`relative w-7 h-4 flex-shrink-0 rounded-full transition-colors ${
+                              showCitations ? 'bg-[#10a37f]' : 'bg-[#d1d5db]'
+                            }`}
+                          >
+                            <span className={`absolute top-0.5 left-0.5 w-3 h-3 bg-white rounded-full shadow-sm transition-transform ${
+                              showCitations ? 'translate-x-3' : 'translate-x-0'
+                            }`} />
+                          </button>
+                        </div>
+                      </div>
+                    </PopoverContent>
+                  </Popover>
                   )}
                   
                   <button
@@ -13069,12 +13053,19 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               if (newAgentRequestedRef.current) {
                                 newAgentRequestedRef.current = false;
                               }
-                              setInputValue(e.target.value);
+                              const v = e.target.value;
+                              const pos = e.target.selectionStart;
+                              setInputValue(v);
+                              updateAtMentionFromInput(v, pos);
                             }}
                             onFocus={() => setIsFocused(true)} 
                             onBlur={() => setIsFocused(false)} 
                             onClick={(e) => e.stopPropagation()}
                             onKeyDown={e => { 
+                              if (atMentionOpen && e.key === 'Enter') {
+                                e.preventDefault();
+                                return;
+                              }
                               if (e.key === 'Enter' && !e.shiftKey) {
                                 e.preventDefault();
                                 handleSubmit(e);
@@ -13109,6 +13100,20 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             rows={3}
                           />
                         </div>
+                        <AtMentionPopover
+                          open={atMentionOpen}
+                          anchorRef={inputRef}
+                          query={atQuery}
+                          placement="above"
+                          items={atItems}
+                          selectedIndex={atSelectedIndex}
+                          onSelect={handleAtSelect}
+                          onSelectedIndexChange={setAtSelectedIndex}
+                          onClose={() => {
+                            setAtMentionOpen(false);
+                            setAtItems([]);
+                          }}
+                        />
                       </div>
                       
                       {/* Mode buttons row - for empty state */}
@@ -13911,6 +13916,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           onBlur={() => setIsFocused(false)} 
                           onClick={(e) => e.stopPropagation()} // Prevent clicks from closing agent sidebar
                           onKeyDown={e => { 
+                            if (atMentionOpen && e.key === 'Enter') {
+                              e.preventDefault();
+                              return;
+                            }
                             if (e.key === 'Enter' && !e.shiftKey) {
                               e.preventDefault();
                               handleSubmit(e);
@@ -14037,6 +14046,20 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             })}
                           </div>
                         )}
+                        <AtMentionPopover
+                          open={atMentionOpen}
+                          anchorRef={inputRef}
+                          query={atQuery}
+                          placement="above"
+                          items={atItems}
+                          selectedIndex={atSelectedIndex}
+                          onSelect={handleAtSelect}
+                          onSelectedIndexChange={setAtSelectedIndex}
+                          onClose={() => {
+                            setAtMentionOpen(false);
+                            setAtItems([]);
+                          }}
+                        />
                       </div>
                     </div>
                     

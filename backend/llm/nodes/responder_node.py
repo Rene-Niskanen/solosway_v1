@@ -24,7 +24,7 @@ from backend.llm.utils.execution_events import ExecutionEvent, ExecutionEventEmi
 from backend.llm.nodes.agent_node import generate_conversational_answer, extract_chunk_citations_from_messages, get_document_filename
 from backend.llm.contracts.validators import validate_responder_output
 from backend.llm.config import config
-from backend.llm.prompts import _get_main_answer_tagging_rule
+from backend.llm.prompts import _get_main_answer_tagging_rule, ensure_main_tags_when_missing
 from backend.llm.tools.citation_mapping import create_chunk_citation_tool, _narrow_bbox_to_cited_line
 from backend.services.supabase_client_factory import get_supabase_client
 
@@ -80,7 +80,7 @@ EvidenceType = Literal["atomic", "clause"]
 class EvidenceAnswerOutput(BaseModel):
     """Structured output for LLM answer with citation numbers (legacy - for backward compatibility)."""
     answer: str = Field(
-        description="The conversational answer with citation numbers embedded. Use figure-first format: <<<MAIN>>>[VALUE]<<<END_MAIN>>> is the [label] [1]. Put ONLY the value/fact in MAIN (e.g. <<<MAIN>>>+44 (0) 203 463 8725<<<END_MAIN>>> or <<<MAIN>>>£2,300,000<<<END_MAIN>>>). Never put introductory words or full sentences inside MAIN. Cite as needed."
+        description="The conversational answer with citation numbers embedded. CRITICAL: You MUST wrap the exact thing the user is looking for in <<<MAIN>>>...<<<END_MAIN>>> (e.g. <<<MAIN>>>£2,300,000<<<END_MAIN>>> or <<<MAIN>>>+44 (0) 203 463 8725<<<END_MAIN>>>). Use figure-first format. Put ONLY the value/fact in MAIN. Never omit MAIN tags. Cite as needed."
     )
     citations: List[int] = Field(
         description="Array of citation numbers used in the answer (e.g., [1, 2, 3])"
@@ -1413,7 +1413,10 @@ When you use information from chunks in your answer:
 - Do not reference "documents", "files", "chunks", "tools", or "searches".
 - Speak as if the information is simply *known*, not retrieved.
 - **Do NOT start your response** with a fragment like "of [property name]" or "of [X]". Start directly with the figure, category, or fact (amount/number/date/category name). Do not start with a topic sentence or heading.
-- **MAIN ANSWER TAGGING (required)** –
+
+**CRITICAL – HIGHLIGHTING THE USER'S ANSWER IS EXTREMELY IMPORTANT**
+You MUST wrap the exact thing the user is looking for in <<<MAIN>>>...<<<END_MAIN>>>. This is mandatory for every response. Never skip this.
+
 {main_tagging_rule}
 
 # EXTRACTING INFORMATION
@@ -1624,7 +1627,10 @@ If citation [1] supports the Market Value and [2] the date, your answer might be
 - Do not reference "documents", "files", "chunks", "tools", or "searches".
 - Speak as if the information is simply *known*, not retrieved.
 - **Do NOT start your response** with a fragment like "of [property name]" or "of [X]". Start directly with the figure, category, or fact (amount/number/date/category name). Do not start with a topic sentence or heading.
-- **MAIN ANSWER TAGGING (required)** –
+
+**CRITICAL – HIGHLIGHTING THE USER'S ANSWER IS EXTREMELY IMPORTANT**
+You MUST wrap the exact thing the user is looking for in <<<MAIN>>>...<<<END_MAIN>>>. This is mandatory for every response. Never skip this.
+
 {main_tagging_rule}
 
 # EXTRACTING INFORMATION
@@ -1971,6 +1977,7 @@ async def responder_node(state: MainWorkflowState, runnable_config=None) -> Main
             formatted_answer = await generate_formatted_answer(
                 user_query, prior_turn_content, execution_results, format_instruction
             )
+            formatted_answer = ensure_main_tags_when_missing(formatted_answer, user_query)
             responder_output = {
                 "final_summary": formatted_answer,
                 "citations": [],
@@ -2017,6 +2024,7 @@ async def responder_node(state: MainWorkflowState, runnable_config=None) -> Main
         try:
             logger.info(f"[RESPONDER] Generating answer with direct citation system...")
             formatted_answer, citations = await generate_answer_with_direct_citations(user_query, execution_results)
+            formatted_answer = ensure_main_tags_when_missing(formatted_answer, user_query)
             
             logger.info(f"[RESPONDER] ✅ Answer generated ({len(formatted_answer)} chars) with {len(citations)} citations")
             

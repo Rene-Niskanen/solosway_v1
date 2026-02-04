@@ -283,8 +283,8 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({
           flexDirection: 'column',
           marginTop: '6px',
           width: '100%',
-          maxWidth: '420px',
-          borderRadius: '8px',
+          maxWidth: '240px',
+          borderRadius: '6px',
           border: `1px solid ${isHovered || isExpanded ? 'rgba(0, 0, 0, 0.12)' : 'rgba(0, 0, 0, 0.08)'}`,
           backgroundColor: 'transparent',
           transition: 'border-color 0.1s ease, box-shadow 0.1s ease',
@@ -298,8 +298,8 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({
           style={{
             display: 'flex',
             alignItems: 'center',
-            gap: '8px',
-            padding: '8px 12px',
+            gap: '6px',
+            padding: '6px 10px',
             cursor: 'pointer',
             backgroundColor: isHovered && !isExpanded ? 'rgba(0, 0, 0, 0.015)' : 'transparent',
             transition: 'background-color 0.1s ease',
@@ -334,7 +334,7 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({
           {/* Filename */}
           <span
             style={{
-              fontSize: '13px',
+              fontSize: '11px',
               fontWeight: 450,
               color: '#374151',
               whiteSpace: 'nowrap',
@@ -378,21 +378,25 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({
               <div
                 onClick={handleOpenDocument}
                 style={{
-                  margin: '0 8px 8px 8px',
-                  borderRadius: '6px',
+                  margin: '0 6px 6px 6px',
+                  borderRadius: '4px',
                   overflow: 'hidden',
-                  backgroundColor: 'transparent',
+                  backgroundColor: '#FAFAFA',
                   cursor: onClick ? 'pointer' : 'default',
                   boxShadow: 'inset 0 1px 2px rgba(0, 0, 0, 0.04)',
-                  border: '1px solid rgba(0, 0, 0, 0.04)'
+                  border: '1px solid rgba(0, 0, 0, 0.04)',
+                  height: '140px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center'
                 }}
               >
         <div
           style={{
             width: '100%',
-            height: '180px',
+            height: '100%',
             display: 'flex',
-            alignItems: 'flex-start',
+            alignItems: 'center',
             justifyContent: 'center',
             position: 'relative',
             overflow: 'hidden'
@@ -402,6 +406,7 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({
             <div style={{
               width: '100%',
               height: '100%',
+              minHeight: '100px',
               background: 'linear-gradient(90deg, #F5F5F5 0%, #EBEBEB 50%, #F5F5F5 100%)',
               backgroundSize: '200% 100%',
               animation: 'preview-shimmer 1.5s ease-in-out infinite'
@@ -411,12 +416,12 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({
               src={thumbnailSrc}
               alt=""
               style={{
-                width: '100%',
+                maxWidth: '100%',
+                maxHeight: '140px',
+                width: 'auto',
                 height: 'auto',
-                objectFit: 'cover',
-                objectPosition: 'top center',
-                transform: 'scale(1.02)',
-                transformOrigin: 'top center'
+                display: 'block',
+                objectFit: 'contain'
               }}
               onError={(e) => {
                 console.error('❌ Failed to load thumbnail image:', original_filename, e);
@@ -432,16 +437,17 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({
               justifyContent: 'center',
               height: '100%',
               width: '100%',
-              gap: '8px'
+              gap: '6px',
+              backgroundColor: 'transparent'
             }}>
-                      {getFileIcon(original_filename, 28, classification_type)}
+              {getFileIcon(original_filename, 24, classification_type)}
               <span style={{
-                        fontSize: '11px',
+                fontSize: '10px',
                 color: '#9CA3AF',
-                        fontWeight: 450,
-                        letterSpacing: '-0.01em'
+                fontWeight: 450,
+                letterSpacing: '-0.01em'
               }}>
-                        Click to open document
+                Click to open
               </span>
             </div>
           )}
@@ -512,7 +518,7 @@ export const StackedDocumentPreviews: React.FC<{
         flexDirection: 'column',
         marginTop: '4px',
         width: '100%',
-        maxWidth: '420px',
+        maxWidth: '240px',
         gap: '4px' // Subtle space between stacked cards
       }}
     >

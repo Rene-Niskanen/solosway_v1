@@ -24,7 +24,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from backend.llm.config import config
 from backend.llm.types import MainWorkflowState
-from backend.llm.prompts import _get_main_answer_tagging_rule
+from backend.llm.prompts import _get_main_answer_tagging_rule, ensure_main_tags_when_missing
 from backend.llm.utils.system_prompts import get_system_prompt
 from backend.llm.tools.document_retriever_tool import create_document_retrieval_tool
 from backend.llm.tools.planning_tool import plan_step
@@ -216,7 +216,10 @@ You are an expert analytical assistant for professional documents. Your role is 
 - Do not mention document names, filenames, IDs, or retrieval steps.
 - Do not reference "documents", "files", "chunks", "tools", or "searches".
 - Speak as if the information is simply *known*, not retrieved.
-- **MAIN ANSWER TAGGING (required)** –
+
+**CRITICAL – HIGHLIGHTING THE USER'S ANSWER IS EXTREMELY IMPORTANT**
+You MUST wrap the exact thing the user is looking for in <<<MAIN>>>...<<<END_MAIN>>>. This is mandatory for every response. The user interface highlights whatever you put inside these tags so the answer stands out. Never skip this.
+
 {main_tagging_rule}
 
 # EXTRACTING INFORMATION
@@ -249,6 +252,8 @@ Relevant document excerpts:
 
 ⚠️ IMPORTANT: Read the excerpts carefully. If the answer to the user's question is present in the excerpts above, extract and present it directly. Do NOT say the information is not found if it is actually in the excerpts.
 
+⚠️ CRITICAL: You MUST wrap the key value or fact that answers the user's question in <<<MAIN>>>...<<<END_MAIN>>> (e.g. <<<MAIN>>>£2,300,000<<<END_MAIN>>> or <<<MAIN>>>Flood Zone 2<<<END_MAIN>>>). Do not omit these tags.
+
 Provide a helpful, conversational answer using Markdown formatting:
 - Use `##` for main section headings, `###` for subsections
 - Use `**bold**` for emphasis or labels
@@ -270,7 +275,8 @@ Answer (use Markdown formatting for structure and clarity):"""
     
     try:
         response = await llm.ainvoke([system_prompt, HumanMessage(content=user_prompt)])
-        return response.content.strip()
+        raw = response.content.strip()
+        return ensure_main_tags_when_missing(raw, user_query)
     except Exception as e:
         logger.error(f"[AGENT_NODE] Error generating conversational answer: {e}")
         return "I encountered an error while generating the answer."

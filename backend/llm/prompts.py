@@ -11,6 +11,7 @@ This file ensures:
 - Version control of prompt changes
 """
 
+import re
 from typing import Dict, Any
 
 # ============================================================================
@@ -109,15 +110,39 @@ def _get_no_unsolicited_content_instructions() -> str:
 
 def _get_main_answer_tagging_rule() -> str:
     """Canonical MAIN tag rule: wrap only the direct answer, never title or lead-in."""
-    return """**MAIN ANSWER TAGGING (required)** – Inside <<<MAIN>>> put ONLY the single value or fact the user asked for (number, date, name, category, phone number). Never include introductory words or the sentence that leads up to it.
+    return """**MAIN ANSWER TAGGING – EXTREMELY IMPORTANT (MANDATORY)**
+You MUST wrap the exact thing the user is looking for in <<<MAIN>>>...<<<END_MAIN>>>. This is non-negotiable. Every answer must highlight the key value, fact, or phrase that directly answers the question. If you omit these tags, the user will not see the answer highlighted.
+
+Inside <<<MAIN>>> put ONLY the single value or fact the user asked for (number, date, name, category, phone number). Never include introductory words or the sentence that leads up to it.
 - **Category/classification questions** (e.g. "what is the flood risk?", "what is the zoning?"): Put ONLY the category label in <<<MAIN>>>, e.g. <<<MAIN>>>Flood Zone 2 (Medium Probability)<<<END_MAIN>>>. Do not put <<<MAIN>>> around the sentence "The flood risk for the [property] is assessed as follows" or "...is categorized as follows"—those are titles; they must NOT be inside <<<MAIN>>>.
+- **Value/amount questions** (e.g. "what is the value?", "how much is the rent?"): Put ONLY the figure in <<<MAIN>>>, e.g. <<<MAIN>>>£2,300,000<<<END_MAIN>>> or <<<MAIN>>>£6,000 per calendar month<<<END_MAIN>>>. Never wrap "The market value is" or similar lead-ins.
 - **Objective/purpose questions** (e.g. "what are the objectives of the stablecoin bill?"): Put ONLY the clause that states the objective or purpose in <<<MAIN>>>, not the lead-in. E.g. "The objective of the stablecoin bill (STABLE Act of 2025) is to <<<MAIN>>>provide for the regulation of payment stablecoins and to address various related purposes<<<END_MAIN>>>." Do NOT wrap "The objective of X is to" in <<<MAIN>>>.
-- **Phone/contact/name queries** (e.g. "what is the phone number of...", "who valued...", "what is the company..."): Put ONLY the value in <<<MAIN>>> (e.g. <<<MAIN>>>+44 (0) 203 463 8725<<<END_MAIN>>> or <<<MAIN>>>MJ Group International Ltd<<<END_MAIN>>>). Never put "The phone number of... is", "The company that valued X, Y, is", or similar lead-ins inside MAIN.
+- **Phone/contact/name queries** (e.g. "what is the phone number of...", "who valued...", "what is the company..."): Put ONLY the value in <<<MAIN>>> (e.g. <<<MAIN>>>+44 (0) 203 463 8725<<<END_MAIN>>> or <<<MAIN>>>MJ Group International Ltd<<<END_MAIN>>> or <<<MAIN>>>Graham Finegold MRICS<<<END_MAIN>>>). Never put "The phone number of... is", "The company that valued X, Y, is", or similar lead-ins inside MAIN.
 - **Never wrap**: A sentence starting with "The [X] for the property is..." or "...is assessed as follows" or "...is categorized as follows"; any heading or title; any phrase that only introduces or describes the answer; any phrase that introduces the value (e.g. "The X of Y is", "The company that... is").
-- **Always wrap**: The value, category name, date, reference, phone number, company name, or (for objective/purpose) only the answer clause that follows "is to" / "are to" / "objectives include".
-- **WRONG**: <<<MAIN>>>The flood risk for the Highlands property is assessed as follows.<<<END_MAIN>>> or <<<MAIN>>>...is categorized as follows.<<<END_MAIN>>> or <<<MAIN>>>The objective of the stablecoin bill... is to provide for the regulation of payment stablecoins.<<<END_MAIN>>> or <<<MAIN>>>The Market Value... is £2,300,000<<<END_MAIN>>> or <<<MAIN>>>The phone number of the company that valued the Highlands property, MJ Group International Ltd, is +44 (0) 203 463 8725<<<END_MAIN>>>
-- **RIGHT**: <<<MAIN>>>Flood Zone 2 (Medium Probability)<<<END_MAIN>>> is the flood risk category. Or: The objective of the bill is to <<<MAIN>>>provide for the regulation of payment stablecoins and to address various related purposes<<<END_MAIN>>>. Or: <<<MAIN>>>£2,300,000<<<END_MAIN>>> is the Market Value. Or: The phone number of the company that valued the Highlands property, MJ Group International Ltd, is <<<MAIN>>>+44 (0) 203 463 8725<<<END_MAIN>>> [1].
+- **Always wrap**: The value, category name, date, reference, phone number, company name, person name, or (for objective/purpose) only the answer clause that follows "is to" / "are to" / "objectives include". When there are multiple direct answers (e.g. market value and market rent), wrap EACH in its own <<<MAIN>>>...<<<END_MAIN>>>.
+- **WRONG**: <<<MAIN>>>The flood risk for the Highlands property is assessed as follows.<<<END_MAIN>>> or <<<MAIN>>>The Market Value... is £2,300,000<<<END_MAIN>>> or <<<MAIN>>>The phone number of the company that valued the Highlands property, MJ Group International Ltd, is +44 (0) 203 463 8725<<<END_MAIN>>>
+- **RIGHT**: <<<MAIN>>>Flood Zone 2 (Medium Probability)<<<END_MAIN>>> is the flood risk category. Or: <<<MAIN>>>£2,300,000<<<END_MAIN>>> is the Market Value. Or: The phone number is <<<MAIN>>>+44 (0) 203 463 8725<<<END_MAIN>>> [1]. Or: The valuers are <<<MAIN>>>Sukhbir Tiwana MRICS<<<END_MAIN>>> and <<<MAIN>>>Graham Finegold MRICS<<<END_MAIN>>>.
 The tags are for display only (hidden from the user); do not repeat them elsewhere."""
+
+
+def ensure_main_tags_when_missing(response_text: str, user_query: str) -> str:
+    """
+    When the LLM omits <<<MAIN>>> tags, wrap the first obvious answer (e.g. currency for value
+    queries) so the frontend can highlight it. Keeps highlighting model-driven; this is a
+    fallback only when the model forgets to tag.
+    """
+    if not response_text or "<<<MAIN>>>" in response_text:
+        return response_text
+    q = user_query.lower().strip()
+    value_keywords = ("value", "how much", "rent", "price", "cost", "worth", "valuation", "market value", "market rent")
+    if not any(kw in q for kw in value_keywords):
+        return response_text
+    # First currency amount (e.g. £2,300,000 or £6,000 per calendar month)
+    m = re.search(r"£\d{1,3}(?:,\d{3})*(?:\.\d{2})?(?:\s+(?:per\s+)?(?:calendar\s+)?(?:month|year|week|day|pcm|pa)\b)?", response_text)
+    if m:
+        start, end = m.span()
+        return response_text[:start] + "<<<MAIN>>>" + m.group(0) + "<<<END_MAIN>>>" + response_text[end:]
+    return response_text
 
 
 # ============================================================================
@@ -272,7 +297,7 @@ Focus your search on information related to or near this cited text.
 
 **INSTRUCTIONS**:
 
-1. **Answer first**: Start with the figure or fact that answers the question (amount, date, name, reference number, or the specific category e.g. "Flood Zone 2 (Medium Probability)") in one flowing sentence. Do not put <<<MAIN>>> around a title or lead-in (e.g. "The flood risk for the property is assessed as follows" or "categorized as follows"). Wrap only the actual answer (e.g. "Flood Zone 2 (Medium Probability)") in <<<MAIN>>>...<<<END_MAIN>>>.
+1. **Answer first**: Start with the figure or fact that answers the question (amount, date, name, reference number, or the specific category e.g. "Flood Zone 2 (Medium Probability)") in one flowing sentence. You MUST wrap the actual answer in <<<MAIN>>>...<<<END_MAIN>>> (e.g. <<<MAIN>>>Flood Zone 2 (Medium Probability)<<<END_MAIN>>> or <<<MAIN>>>£2,300,000<<<END_MAIN>>>). Do not put <<<MAIN>>> around a title or lead-in. This highlighting is mandatory.
 
 {_get_search_instructions("excerpt")}
 
@@ -343,7 +368,7 @@ def get_summary_human_content(
    
    {_get_valuation_extraction_instructions(detail_level, is_valuation_query=(lambda: (lambda q: ('valuation' in q.lower() or 'value' in q.lower() or 'price' in q.lower()))(user_query) or False)())}
 
-4. **Structure & Clarity**: The first token(s) of your response must be the figure or fact that answers the question (amount, number, date, reference, or the specific category/term e.g. "Flood Zone 2 (Medium Probability)"). Write one flowing sentence: [FIGURE] is the [label] [optional context]. Do not start with a title or lead-in (e.g. "The flood risk is assessed as follows" or "categorized as follows"). Wrap only the actual answer in <<<MAIN>>> and <<<END_MAIN>>>—never the title or a generic intro. If you use an H1 (#), its text must start with the answer (e.g. "Flood Zone 2 (Medium Probability)"), not a topic sentence like "The flood risk for the property is assessed as follows" or "categorized as follows." Use H2 (##) for major sections. Make values immediately clear and scannable. Use blank lines between sections.
+4. **Structure & Clarity**: The first token(s) of your response must be the figure or fact that answers the question (amount, number, date, reference, or the specific category/term e.g. "Flood Zone 2 (Medium Probability)"). You MUST wrap that actual answer in <<<MAIN>>> and <<<END_MAIN>>>—this is extremely important so the user sees the answer highlighted. Write one flowing sentence: [FIGURE] is the [label] [optional context]. Do not start with a title or lead-in. Never omit MAIN tags. If you use an H1 (#), its text must start with the answer (e.g. "Flood Zone 2 (Medium Probability)"), not a topic sentence like "The flood risk for the property is assessed as follows" or "categorized as follows." Use H2 (##) for major sections. Make values immediately clear and scannable. Use blank lines between sections.
 
 {_get_entity_normalization_instructions()}
 
@@ -664,11 +689,14 @@ def get_final_answer_prompt(
 **⚠️ FOR VALUATION QUERIES**: Include ALL valuation scenarios found (primary Market Value, 90-day, 180-day, Market Rent) with their assumptions. Do NOT skip any scenarios.
 
 **CANONICAL TEMPLATE STRUCTURE**:
-1. **Primary Answer**: The first line must be or start with the actual answer (figure, category, or fact), e.g. "Flood Zone 2 (Medium Probability) is the flood risk category." Do not use a first line that only states the topic (e.g. "The flood risk for the property is assessed as follows" or "categorized as follows"). Wrap only that answer phrase in <<<MAIN>>>...<<<END_MAIN>>>. For objective/purpose questions, put only the clause that states the objective in <<<MAIN>>>, not "The objective of X is to". Short, direct answer (2-3 sentences max).
+1. **Primary Answer (MANDATORY MAIN TAGGING)**: The first line must be or start with the actual answer (figure, category, or fact). You MUST wrap that answer phrase in <<<MAIN>>>...<<<END_MAIN>>>—highlighting the thing the user is looking for is extremely important. E.g. "<<<MAIN>>>Flood Zone 2 (Medium Probability)<<<END_MAIN>>> is the flood risk category." Do not use a first line that only states the topic. Never omit MAIN tags. Short, direct answer (2-3 sentences max).
 2. **Present Information Directly**: No separate "Key Concepts" section. Present key facts directly in response with citations.
 3. **Optional Sections (H2)**: Process/Steps (only if procedural), Practical Application (only if application guidance needed), Risks/Edge Cases (only if relevant), Next Actions (only if appropriate).
 
 **START OF RESPONSE**: Do NOT start with a fragment like "of [property name]" or "of [X]". Start directly with the figure, category, or fact (amount/number/date/category name). Do not start with a topic sentence or heading.
+
+**EXTREMELY IMPORTANT – HIGHLIGHTING THE USER'S ANSWER IS MANDATORY**
+You MUST wrap the exact thing the user is looking for in <<<MAIN>>>...<<<END_MAIN>>>. Never skip this.
 {category_main_reminder}
 
 {_get_main_answer_tagging_rule()}
@@ -736,7 +764,7 @@ You MUST respond with a valid JSON array of segments. No other text. Each segmen
 2. Citation segment: {{"type": "cite", "anchor_quote": "verbatim phrase from DOCUMENT CONTENT EXTRACTS (exact copy-paste)", "citation_number": N}}
 
 **RULES**:
-- **MAIN ANSWER TAGGING** (apply to text segment content):
+- **MAIN ANSWER TAGGING – EXTREMELY IMPORTANT (MANDATORY)**. You MUST wrap the exact thing the user is looking for in <<<MAIN>>>...<<<END_MAIN>>> inside text segment content. Never omit MAIN tags.
 {main_tagging_rule}
   Respond with a JSON array of segments; MAIN rules above apply to text segment content.
 - anchor_quote MUST be a **verbatim** (exact character-for-character) copy of a phrase from DOCUMENT CONTENT EXTRACTS. Copy-paste the exact wording and numbers from the extracts; do not paraphrase, abbreviate, or change punctuation. Minor changes will break citation resolution and the highlight will not work.
