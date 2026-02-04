@@ -27,6 +27,19 @@ from uuid import UUID
 # Citations are now stored directly in graph state with bbox coordinates - no processing needed
 # SessionManager for LangGraph checkpointer thread_id management
 from backend.llm.utils.session_manager import session_manager
+from backend.config import Config
+
+def _strip_intent_fragment_from_response(text):
+    """Remove leading 'of [property name]' leakage from response (e.g. 'of Highlands' from intent phrase)."""
+    if not text or not isinstance(text, str):
+        return text or ""
+    stripped = text.lstrip()
+    # Remove first line if it is only "of [Word]" or "of [Word1 Word2]" (case-insensitive)
+    m = re.match(r"^of\s+[A-Za-z]+(?:\s+[A-Za-z]+)?\s*(\n|$)", stripped, re.IGNORECASE)
+    if m:
+        stripped = stripped[m.end() :].lstrip()
+    return stripped
+
 
 def _ensure_business_uuid():
     """Ensure the current user has a business UUID and return it as a string."""
@@ -296,6 +309,23 @@ def get_performance_metrics():
             500
         )), 500
 
+
+@views.route('/api/projects', methods=['GET', 'OPTIONS'])
+def get_projects():
+    """Minimal projects endpoint so frontend does not hit CORS on missing route. Returns empty list."""
+    if request.method == 'OPTIONS':
+        response = jsonify({})
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'GET, OPTIONS')
+        response.headers.add('Access-Control-Max-Age', '3600')
+        return response, 200
+    if not current_user.is_authenticated:
+        return jsonify({'success': False, 'error': 'Authentication required'}), 401
+    return jsonify({'success': True, 'data': {'projects': []}}), 200
+
+
 # ============================================================================
 # AI & LLM ENDPOINTS
 # ============================================================================
@@ -345,13 +375,21 @@ def chat_completion():
             'error': str(e)
         }), 500
 
-# Add before_request handler to bypass authentication for OPTIONS requests
+# Add before_request handler to respond to OPTIONS (CORS preflight) with 200 so browser gets HTTP OK
 @views.before_request
 def handle_options_request():
-    """Bypass authentication for OPTIONS requests (CORS preflight)"""
+    """Respond to OPTIONS (CORS preflight) with 200 and CORS headers so preflight always passes."""
     if request.method == 'OPTIONS':
-        # Flask-CORS will handle the response, just return early
-        return None
+        resp = jsonify({})
+        resp.status_code = 200
+        origin = request.headers.get('Origin')
+        if origin and origin in Config.CORS_ORIGINS:
+            resp.headers['Access-Control-Allow-Origin'] = origin
+        resp.headers['Access-Control-Allow-Credentials'] = 'true'
+        resp.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+        resp.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
+        resp.headers['Access-Control-Max-Age'] = '3600'
+        return resp
 
 # Add after_request handler for this blueprint to ensure CORS headers on all responses
 @views.after_request
@@ -692,13 +730,25 @@ def query_documents_stream():
                     words = q.split()
                     potential_names = [w for w in words if len(w) > 2 and w[0].isupper() and w.lower() not in common_words]
                     
-                    # Build the intent message
+                    # Build the intent message: rephrase query as "Finding the [X] of [Y]" (e.g. "Finding the EPC rating of highlands")
                     target_str = ', '.join(targets) if targets else 'information'
-                    if potential_names:
-                        name_str = ' '.join(potential_names[:2])  # Max 2 names
-                        return f"Searching for {target_str} in documents"
-                    else:
-                        return f"Searching for {target_str}"
+                    # Subject from " of X" / " for X" (works for lowercase: "value of highlands")
+                    name_str = None
+                    q_lower = q.lower().strip()
+                    for sep in (' of ', ' for '):
+                        if sep in q_lower:
+                            parts = q_lower.split(sep, 1)
+                            if len(parts) == 2 and parts[1].strip():
+                                name_str = parts[1].strip().split()[0:2]  # 1–2 words
+                                name_str = ' '.join(name_str).title()
+                                break
+                    if not name_str and potential_names:
+                        name_str = ' '.join(potential_names[:2])
+                    if name_str and target_str:
+                        return f"Finding the {target_str} of {name_str}"
+                    if target_str:
+                        return f"Finding the {target_str}"
+                    return "Planning next moves"
                 
                 def detect_action_intent(q: str) -> dict:
                     """
@@ -796,8 +846,17 @@ def query_documents_stream():
                     
                     timing.mark("intent_extracted")
                     
-                    # REMOVED: Hardcoded fake reasoning steps ("Planning next moves", "Searching for information")
-                    # These were just noise - the agent's real reasoning is visible through tool calls and responses.
+                    # Step (1): User intent reframed as reasoning step (replaces "Planning next moves")
+                    intent_message = extract_query_intent(query)
+                    initial_reasoning = {
+                        'type': 'reasoning_step',
+                        'step': 'planning_next_moves',
+                        'action_type': 'planning',
+                        'message': intent_message,
+                        'details': {}
+                    }
+                    yield f"data: {json.dumps(initial_reasoning)}\n\n"
+                    logger.debug(f"🟡 [REASONING] Emitted step (1): {intent_message}")
                 
                 # Detect if user wants agent to perform UI actions (show me, save, navigate)
                 action_intent = detect_action_intent(query)
@@ -895,6 +954,8 @@ def query_documents_stream():
                         
                         # Track which nodes have been processed to avoid duplicate reasoning steps
                         processed_nodes = set()
+                        # Emit "Found N documents" + "Reading Document" only once (executor on_chain_end fires after each step)
+                        executor_found_docs_emitted = False
                         
                         # Track reading timestamp - set when documents are first seen (before summarizing)
                         # This ensures reading steps appear before summarizing in the UI
@@ -958,9 +1019,31 @@ def query_documents_stream():
                                 # NEW: Consume execution events from queue (non-blocking, after each graph event)
                                 execution_events = consume_execution_events()
                                 for exec_event in execution_events:
+                                    payload = exec_event.to_dict()
+                                    # When executor emits "Searched documents" / "Searched for: X" (before retrieve_docs),
+                                    # also emit a reasoning_step so the UI shows "Searching for documents" before "Found N documents"
+                                    # Do NOT convert "Planning search for: ..." or "Finding the ..." (planner's label) to a searching step
+                                    if not is_fast_path and payload.get('type') == 'phase' and (payload.get('metadata') or {}).get('reasoning'):
+                                        label = (payload.get('metadata') or {}).get('label') or payload.get('description', '')
+                                        label_stripped = (label or '').strip()
+                                        if label_stripped.startswith('Planning search for') or label_stripped.startswith('Finding the ') or label_stripped.startswith('Finding '):
+                                            # Planner's step: skip (initial step already shows rephrased intent from extract_query_intent)
+                                            pass
+                                        elif label and ('Searched' in label or 'search' in label.lower()):
+                                            search_message = 'Searching for documents' if label == 'Searched documents' else (f'Searching for documents: {label.replace("Searched for: ", "").strip()}' if label.startswith('Searched for:') else label)
+                                            reasoning_data = {
+                                                'type': 'reasoning_step',
+                                                'step': 'searching_documents',
+                                                'action_type': 'searching',
+                                                'message': search_message,
+                                                'timestamp': time.time(),
+                                                'details': {}
+                                            }
+                                            yield f"data: {json.dumps(reasoning_data)}\n\n"
+                                            logger.info(f"🟡 [REASONING] Emitted searching step (from executor): {search_message}")
                                     event_data = {
                                         'type': 'execution_event',
-                                        'payload': exec_event.to_dict()
+                                        'payload': payload
                                     }
                                     yield f"data: {json.dumps(event_data)}\n\n"
                                 event_type = event.get('event')
@@ -1001,9 +1084,10 @@ def query_documents_stream():
                                             logger.info(f"⏱️ [PERF] Node '{node_name}' took {node_duration:.2f}s")
                                     
                                     # Try to extract state from the event
+                                    # LangGraph astream_events: event["data"] is often the node return value directly (e.g. executor returns {execution_results, ...})
                                     event_data = event.get("data", {})
-                                    state_update = event_data.get("data", {})  # Full state update
-                                    output = event_data.get("output", {})  # Node output only
+                                    state_update = event_data.get("data", {})  # Nested state (if present)
+                                    output = event_data.get("output", {})  # Nested output (if present)
                                     
                                     # Update details based on node output
                                     # SKIP reasoning step emissions for citation queries (ultra-fast path)
@@ -1113,6 +1197,87 @@ def query_documents_stream():
                                                 }
                                                 yield f"data: {json.dumps(prepare_action)}\n\n"
                                                 logger.info(f"📂 [EARLY_PREP] Emitted prepare_document for {first_doc.get('doc_id', '')[:8]}...")
+                                    
+                                    elif node_name == "executor" and not is_fast_path:
+                                        # Planner/Executor path: emit "Found N relevant document(s):" + "Reading Document" once (steps 4–5)
+                                        # Executor on_chain_end fires after each step; only emit on first (after retrieve_docs only)
+                                        state_data = state_update or output or event_data
+                                        execution_results = state_data.get("execution_results", []) or []
+                                        docs_result = None
+                                        for r in execution_results:
+                                            if r.get("action") == "retrieve_docs" and r.get("result"):
+                                                docs_result = r["result"]
+                                                break
+                                        # Emit only once: when we have docs and haven't already (first executor end = 1 result)
+                                        if docs_result and len(docs_result) > 0 and not executor_found_docs_emitted and len(execution_results) == 1:
+                                            executor_found_docs_emitted = True
+                                            doc_names = []
+                                            doc_previews = []
+                                            for doc in docs_result[:10]:
+                                                doc_id = doc.get("document_id") or doc.get("doc_id", "")
+                                                filename = doc.get("filename") or doc.get("original_filename", "") or ""
+                                                classification_type = doc.get("document_type") or doc.get("classification_type", "Document") or "Document"
+                                                display_name = (filename[:32] + "...") if len(filename) > 35 else (filename or classification_type.replace("_", " ").title())
+                                                doc_names.append(display_name)
+                                                doc_previews.append({
+                                                    "doc_id": doc_id,
+                                                    "original_filename": filename if filename else None,
+                                                    "classification_type": classification_type,
+                                                    "page_range": doc.get("page_range", ""),
+                                                    "page_numbers": doc.get("page_numbers", []),
+                                                    "s3_path": doc.get("s3_path", ""),
+                                                    "download_url": f"/api/files/download?document_id={doc_id}" if doc_id else ""
+                                                })
+                                            doc_count = len(docs_result)
+                                            doc_word = "document" if doc_count == 1 else "documents"
+                                            message = f'Found {doc_count} relevant {doc_word}:'
+                                            if reading_timestamp is None:
+                                                reading_timestamp = time.time() + 0.1
+                                            reasoning_data = {
+                                                'type': 'reasoning_step',
+                                                'step': 'found_documents',
+                                                'action_type': 'exploring',
+                                                'message': message,
+                                                'count': doc_count,
+                                                'timestamp': time.time(),
+                                                'details': {
+                                                    'documents_found': doc_count,
+                                                    'document_names': doc_names,
+                                                    'doc_previews': doc_previews
+                                                }
+                                            }
+                                            yield f"data: {json.dumps(reasoning_data)}\n\n"
+                                            # Emit one reading step per document (align with process_documents path for preview cards)
+                                            for i, doc_preview in enumerate(doc_previews):
+                                                display_filename = (doc_preview.get('original_filename') or doc_preview.get('classification_type', 'Document') or 'Document')
+                                                if display_filename and len(display_filename) > 35:
+                                                    display_filename = display_filename[:32] + '...'
+                                                if not display_filename:
+                                                    display_filename = (doc_preview.get('classification_type') or 'Document').replace('_', ' ').title()
+                                                doc_metadata = {
+                                                    'doc_id': doc_preview.get('doc_id', ''),
+                                                    'original_filename': doc_preview.get('original_filename') if doc_preview.get('original_filename') else None,
+                                                    'classification_type': doc_preview.get('classification_type', 'Document') or 'Document',
+                                                    'page_range': doc_preview.get('page_range', ''),
+                                                    'page_numbers': doc_preview.get('page_numbers', []),
+                                                    's3_path': doc_preview.get('s3_path', ''),
+                                                    'download_url': doc_preview.get('download_url', '') or (f"/api/files/download?document_id={doc_preview.get('doc_id')}" if doc_preview.get('doc_id') else '')
+                                                }
+                                                reading_step_timestamp = reading_timestamp + (i * 0.01) if reading_timestamp else time.time()
+                                                reading_data = {
+                                                    'type': 'reasoning_step',
+                                                    'step': f'read_doc_exec_{i}',
+                                                    'action_type': 'reading',
+                                                    'message': f'Read {display_filename}',
+                                                    'timestamp': reading_step_timestamp,
+                                                    'details': {
+                                                        'document_index': i,
+                                                        'filename': doc_preview.get('original_filename'),
+                                                        'doc_metadata': doc_metadata
+                                                    }
+                                                }
+                                                yield f"data: {json.dumps(reading_data)}\n\n"
+                                            logger.debug(f"🟡 [REASONING] Emitted executor found_documents + {len(doc_previews)} reading steps ({doc_count} docs)")
                                     
                                     elif node_name == "process_documents" and not is_fast_path:
                                         state_data = state_update if state_update else output
@@ -1244,6 +1409,13 @@ def query_documents_stream():
                                             try:
                                                 # Format citations for frontend (convert List[Citation] to Dict[str, CitationData])
                                                 processed_citations = {}
+                                                # Jan28th-style: build doc_id -> original_filename from document_outputs for citation display
+                                                doc_filename_map = {}
+                                                for doc_output in (doc_outputs_from_state or []):
+                                                    doc_id = doc_output.get('doc_id')
+                                                    filename = doc_output.get('original_filename')
+                                                    if doc_id and filename:
+                                                        doc_filename_map[doc_id] = filename
                                                 
                                                 # Stream citation events immediately
                                                 for citation in citations_from_state:
@@ -1260,13 +1432,16 @@ def query_documents_stream():
                                                         citation_bbox = citation_bbox.copy()  # Don't modify original
                                                         citation_bbox['page'] = citation_page  # Update bbox page to match citation page
                                                     
+                                                    citation_doc_id = citation.get('doc_id')
+                                                    citation_filename = doc_filename_map.get(citation_doc_id, '')
                                                     citation_data = {
-                                                        'doc_id': citation.get('doc_id'),
+                                                        'doc_id': citation_doc_id,
                                                         'page': citation_page,
                                                         'bbox': citation_bbox,  # Bbox now has correct page number
                                                         'method': citation.get('method', 'block-id-lookup'),
                                                         'block_id': citation.get('block_id'),  # Include block_id for debugging
-                                                        'cited_text': citation.get('cited_text', '')  # Include cited_text for debugging
+                                                        'cited_text': citation.get('cited_text', ''),  # Include cited_text for sub-level bbox
+                                                        'original_filename': citation_filename  # Jan28th: filename for frontend display
                                                     }
                                                     
                                                     block_id = citation.get('block_id', 'UNKNOWN')
@@ -1366,7 +1541,8 @@ def query_documents_stream():
                                             yield f"data: {json.dumps({'type': 'status', 'message': 'Streaming response...'})}\n\n"
                                             
                                             # Stream the final response text directly - preserve all formatting
-                                            # Stream character-by-character to maintain exact formatting (markdown, newlines, spaces)
+                                            # Strip leading "of [property]" leakage (intent phrase fragment) before streaming
+                                            final_summary_from_state = _strip_intent_fragment_from_response(final_summary_from_state or "")
                                             streamed_summary = final_summary_from_state
                                             logger.info("🚀 [STREAM] Streaming final response directly (preserving formatting)")
                                             
@@ -1651,6 +1827,8 @@ def query_documents_stream():
                         # CRITICAL: Use streamed_summary if available (the exact text we streamed) to ensure consistency
                         # Otherwise use final_summary from result
                         full_summary = streamed_summary if streamed_summary else final_result.get('final_summary', '')
+                        # Strip leading "of [property]" leakage (intent phrase fragment) before streaming/complete
+                        full_summary = _strip_intent_fragment_from_response(full_summary or "")
                         
                         # Check if we have a summary (even if doc_outputs is empty, summary means we processed documents)
                         if not full_summary:
@@ -1694,16 +1872,23 @@ def query_documents_stream():
                                 chunk = full_summary[i:i + chunk_size]
                                 yield f"data: {json.dumps({'type': 'token', 'token': chunk})}\n\n"
                         
-                        # Check if we have processed citations from block IDs (new approach)
+                        # Build citations_map_for_frontend to match the SOURCE of the displayed answer.
+                        # Conflict fix: citation numbers (¹²³) in the text must map to the same pipeline
+                        # that produced that text. Prefer processed_citations only when we streamed from
+                        # summarize_results; otherwise the displayed text is from responder → use chunk_citations.
                         processed_citations = final_result.get('processed_citations', {})
-                        
-                        # Build citations_map_for_frontend and structured_citations from block ID citations
+                        chunk_citations_list = final_result.get('chunk_citations', [])
                         citations_map_for_frontend = {}
                         structured_citations = []
                         
-                        if processed_citations:
+                        use_processed = (
+                            summary_already_streamed
+                            and processed_citations
+                        )
+                        if use_processed:
                             logger.info(
-                                f"🟢 [CITATIONS] Using block ID citations ({len(processed_citations)} citations)"
+                                f"🟢 [CITATIONS] Using block ID citations ({len(processed_citations)} citations) "
+                                f"(answer streamed from summarize_results)"
                             )
                             # Convert processed citations from block IDs to frontend format
                             for citation_num, citation_data in processed_citations.items():
@@ -1756,24 +1941,141 @@ def query_documents_stream():
                                                 
                                 # Build citation map entry for frontend
                                 citations_map_for_frontend[citation_num] = {
-                                                        'doc_id': doc_id,
+                                    'doc_id': doc_id,
                                     'page': page,
                                     'bbox': bbox,
                                     'method': citation_data.get('method', 'block-id-lookup'),
                                     'block_id': block_id,  # Include block_id for debugging
-                                    'cited_text': citation_data.get('cited_text', '')  # Include for smart citation selection
+                                    'cited_text': citation_data.get('cited_text', ''),  # Include for sub-level bbox
+                                    'original_filename': citation_data.get('original_filename', '')  # Jan28th: for display
+                                }
+                        elif chunk_citations_list:
+                            # Answer is from responder; citation numbers in text match chunk_citations
+                            logger.info(f"🟢 [CITATIONS] Using chunk_citations from responder_node ({len(chunk_citations_list)} citations)")
+                            
+                            # OPTIMIZATION: Batch filename lookups - collect unique doc_ids that need filenames
+                            doc_ids_needing_filenames = set()
+                            citation_doc_id_map = {}  # Map citation_num to doc_id for filename lookup
+                            
+                            for cit in chunk_citations_list:
+                                citation_num = str(cit.get('citation_number', 1))
+                                doc_id = cit.get('doc_id', '')
+                                original_filename = cit.get('original_filename')
+                                
+                                # Track citations that need filename lookup
+                                if doc_id and not original_filename:
+                                    doc_ids_needing_filenames.add(doc_id)
+                                    if citation_num not in citation_doc_id_map:
+                                        citation_doc_id_map[citation_num] = doc_id
+                            
+                            # Batch fetch all missing filenames in one query
+                            filename_map = {}
+                            if doc_ids_needing_filenames:
+                                try:
+                                    supabase = get_supabase_client()
+                                    # Fetch all filenames in one query using .in() filter
+                                    doc_result = supabase.table('documents')\
+                                        .select('id, original_filename')\
+                                        .in_('id', list(doc_ids_needing_filenames))\
+                                        .execute()
+                                    
+                                    # Build map of doc_id -> filename
+                                    for doc in (doc_result.data or []):
+                                        doc_id = doc.get('id')
+                                        filename = doc.get('original_filename', 'document.pdf')
+                                        if doc_id:
+                                            filename_map[doc_id] = filename
+                                    
+                                    logger.info(f"🟢 [CITATIONS] Batch fetched {len(filename_map)} filenames for {len(doc_ids_needing_filenames)} unique documents")
+                                except Exception as e:
+                                    logger.warning(f"⚠️ [CITATIONS] Failed to batch fetch filenames: {e}")
+                            
+                            # Process citations with batched filenames
+                            for cit in chunk_citations_list:
+                                citation_num = str(cit.get('citation_number', 1))
+                                doc_id = cit.get('doc_id', '')
+                                page = cit.get('page_number', 0)
+                                bbox = cit.get('bbox', {})
+                                chunk_id = cit.get('chunk_id', '')
+                                block_index = cit.get('block_index')
+                                cited_text = cit.get('cited_text', '')[:60] if cit.get('cited_text') else 'N/A'
+                                
+                                # Get original_filename from citation, batch lookup, or fallback
+                                original_filename = cit.get('original_filename')
+                                if not original_filename and doc_id:
+                                    # Use batched filename lookup result
+                                    original_filename = filename_map.get(doc_id, 'document.pdf')
+                                elif not original_filename:
+                                    original_filename = 'document.pdf'
+                                
+                                # Log citation details for debugging
+                                bbox_str = f"{bbox.get('left', 0):.3f},{bbox.get('top', 0):.3f},{bbox.get('width', 0):.3f}x{bbox.get('height', 0):.3f}" if bbox else "N/A"
+                                logger.info(
+                                    f"🟢 [CITATIONS] Citation {citation_num} (chunk-id): chunk_id={chunk_id[:20] if chunk_id else 'UNKNOWN'}..., "
+                                    f"block_index={block_index}, doc={doc_id[:8] if doc_id else 'UNKNOWN'}, page={page}, bbox={bbox_str}, "
+                                    f"filename={original_filename}, cited_text='{cited_text}...'"
+                                )
+                                
+                                # Validate BBOX coordinates
+                                if bbox:
+                                    bbox_left = bbox.get('left', 0)
+                                    bbox_top = bbox.get('top', 0)
+                                    bbox_width = bbox.get('width', 0)
+                                    bbox_height = bbox.get('height', 0)
+                                    
+                                    # Check for fallback BBOX
+                                    is_fallback = (
+                                        bbox_left == 0.0 and bbox_top == 0.0 and
+                                        bbox_width == 1.0 and bbox_height == 1.0
+                                    )
+                                    if is_fallback:
+                                        logger.warning(
+                                            f"⚠️ [CITATIONS] Citation {citation_num} (chunk_id: {chunk_id[:20] if chunk_id else 'UNKNOWN'}...) "
+                                            f"uses fallback BBOX (0,0,1,1) - coordinates may be inaccurate"
+                                        )
+                                    
+                                    # Check for invalid dimensions
+                                    if bbox_width <= 0 or bbox_height <= 0:
+                                        logger.warning(
+                                            f"⚠️ [CITATIONS] Citation {citation_num} (chunk_id: {chunk_id[:20] if chunk_id else 'UNKNOWN'}...) "
+                                            f"has invalid BBOX dimensions: {bbox_width}x{bbox_height}"
+                                        )
+                                
+                                # Build structured citation for array format
+                                structured_citations.append({
+                                    'id': int(citation_num),
+                                    'document_id': doc_id,
+                                    'page': page,
+                                    'bbox': bbox
+                                })
+                                
+                                # Citation mapping fix: include block_id in response for frontend mapping/highlighting
+                                block_id = cit.get('block_id')
+                                if not block_id and (chunk_id or block_index is not None):
+                                    block_id = f"chunk_{chunk_id or 'unknown'}_block_{block_index if block_index is not None else 0}"
+                                # Build citation map entry for frontend
+                                citations_map_for_frontend[citation_num] = {
+                                    'doc_id': doc_id,
+                                    'original_filename': original_filename,  # NEW: Include filename for frontend
+                                    'page': page,
+                                    'bbox': bbox,
+                                    'method': cit.get('method', 'chunk-id-lookup'),
+                                    'block_id': block_id,  # Include block_id for citation mapping (frontend)
+                                    'chunk_id': chunk_id,  # Include chunk_id for debugging
+                                    'block_index': block_index,  # Include block_index for debugging
+                                    'cited_text': cit.get('cited_text', '')  # Include for smart citation selection
                                 }
                         else:
-                            # NEW: Check for chunk_citations from responder_node (chunk-id-based citations)
-                            chunk_citations_list = final_result.get('chunk_citations', [])
-                            if chunk_citations_list:
-                                logger.info(f"🟢 [CITATIONS] Using chunk_citations from responder_node ({len(chunk_citations_list)} citations)")
+                            # FALLBACK: Check for citations list format (used by citation_query handler or direct citations)
+                            citations_list = final_result.get('citations', [])
+                            if citations_list:
+                                logger.info(f"🟢 [CITATIONS] Using citations list ({len(citations_list)} citations) - likely from citation_query or direct citations")
                                 
-                                # OPTIMIZATION: Batch filename lookups - collect unique doc_ids that need filenames
+                                # OPTIMIZATION: Batch filename lookups for direct citations
                                 doc_ids_needing_filenames = set()
-                                citation_doc_id_map = {}  # Map citation_num to doc_id for filename lookup
+                                citation_doc_id_map = {}
                                 
-                                for cit in chunk_citations_list:
+                                for cit in citations_list:
                                     citation_num = str(cit.get('citation_number', 1))
                                     doc_id = cit.get('doc_id', '')
                                     original_filename = cit.get('original_filename')
@@ -1784,166 +2086,54 @@ def query_documents_stream():
                                         if citation_num not in citation_doc_id_map:
                                             citation_doc_id_map[citation_num] = doc_id
                                 
-                                # Batch fetch all missing filenames in one query
-                                filename_map = {}
+                                # Batch filename lookup
+                                filename_cache = {}
                                 if doc_ids_needing_filenames:
                                     try:
+                                        from backend.services.supabase_client_factory import get_supabase_client
                                         supabase = get_supabase_client()
-                                        # Fetch all filenames in one query using .in() filter
-                                        doc_result = supabase.table('documents')\
-                                            .select('id, original_filename')\
-                                            .in_('id', list(doc_ids_needing_filenames))\
-                                            .execute()
+                                        filename_response = supabase.table('documents').select(
+                                            'id, original_filename'
+                                        ).in_('id', list(doc_ids_needing_filenames)).execute()
                                         
-                                        # Build map of doc_id -> filename
-                                        for doc in (doc_result.data or []):
-                                            doc_id = doc.get('id')
-                                            filename = doc.get('original_filename', 'document.pdf')
-                                            if doc_id:
-                                                filename_map[doc_id] = filename
-                                        
-                                        logger.info(f"🟢 [CITATIONS] Batch fetched {len(filename_map)} filenames for {len(doc_ids_needing_filenames)} unique documents")
+                                        for doc in filename_response.data or []:
+                                            filename_cache[doc['id']] = doc.get('original_filename', 'unknown')
                                     except Exception as e:
-                                        logger.warning(f"⚠️ [CITATIONS] Failed to batch fetch filenames: {e}")
+                                        logger.warning(f"🟡 [CITATIONS] Failed to batch lookup filenames: {e}")
                                 
-                                # Process citations with batched filenames
-                                for cit in chunk_citations_list:
+                                # Process citations with filenames
+                                for cit in citations_list:
                                     citation_num = str(cit.get('citation_number', 1))
                                     doc_id = cit.get('doc_id', '')
                                     page = cit.get('page_number', 0)
                                     bbox = cit.get('bbox', {})
-                                    chunk_id = cit.get('chunk_id', '')
-                                    block_index = cit.get('block_index')
-                                    cited_text = cit.get('cited_text', '')[:60] if cit.get('cited_text') else 'N/A'
                                     
-                                    # Get original_filename from citation, batch lookup, or fallback
+                                    # Get original_filename from citation, cache, or fallback
                                     original_filename = cit.get('original_filename')
-                                    if not original_filename and doc_id:
-                                        # Use batched filename lookup result
-                                        original_filename = filename_map.get(doc_id, 'document.pdf')
-                                    elif not original_filename:
-                                        original_filename = 'document.pdf'
+                                    if not original_filename and doc_id in filename_cache:
+                                        original_filename = filename_cache[doc_id]
+                                    if not original_filename:
+                                        original_filename = 'unknown'
                                     
-                                    # Log citation details for debugging
-                                    bbox_str = f"{bbox.get('left', 0):.3f},{bbox.get('top', 0):.3f},{bbox.get('width', 0):.3f}x{bbox.get('height', 0):.3f}" if bbox else "N/A"
-                                    logger.info(
-                                        f"🟢 [CITATIONS] Citation {citation_num} (chunk-id): chunk_id={chunk_id[:20] if chunk_id else 'UNKNOWN'}..., "
-                                        f"block_index={block_index}, doc={doc_id[:8] if doc_id else 'UNKNOWN'}, page={page}, bbox={bbox_str}, "
-                                        f"filename={original_filename}, cited_text='{cited_text}...'"
-                                    )
-                                    
-                                    # Validate BBOX coordinates
-                                    if bbox:
-                                        bbox_left = bbox.get('left', 0)
-                                        bbox_top = bbox.get('top', 0)
-                                        bbox_width = bbox.get('width', 0)
-                                        bbox_height = bbox.get('height', 0)
-                                        
-                                        # Check for fallback BBOX
-                                        is_fallback = (
-                                            bbox_left == 0.0 and bbox_top == 0.0 and
-                                            bbox_width == 1.0 and bbox_height == 1.0
-                                        )
-                                        if is_fallback:
-                                            logger.warning(
-                                                f"⚠️ [CITATIONS] Citation {citation_num} (chunk_id: {chunk_id[:20] if chunk_id else 'UNKNOWN'}...) "
-                                                f"uses fallback BBOX (0,0,1,1) - coordinates may be inaccurate"
-                                            )
-                                        
-                                        # Check for invalid dimensions
-                                        if bbox_width <= 0 or bbox_height <= 0:
-                                            logger.warning(
-                                                f"⚠️ [CITATIONS] Citation {citation_num} (chunk_id: {chunk_id[:20] if chunk_id else 'UNKNOWN'}...) "
-                                                f"has invalid BBOX dimensions: {bbox_width}x{bbox_height}"
-                                            )
-                                    
-                                    # Build structured citation for array format
+                                    citations_map_for_frontend[citation_num] = {
+                                        'doc_id': doc_id,
+                                        'original_filename': original_filename,  # Include filename for frontend
+                                        'page': page,
+                                        'bbox': bbox,
+                                        'method': cit.get('method', 'direct-id-extraction'),
+                                        'block_id': cit.get('block_id', ''),  # Include block_id for citation mapping (frontend)
+                                        'chunk_id': cit.get('chunk_id', ''),
+                                        'cited_text': cit.get('cited_text', '')
+                                    }
                                     structured_citations.append({
                                         'id': int(citation_num),
                                         'document_id': doc_id,
                                         'page': page,
                                         'bbox': bbox
                                     })
-                                    
-                                    # Build citation map entry for frontend
-                                    citations_map_for_frontend[citation_num] = {
-                                        'doc_id': doc_id,
-                                        'original_filename': original_filename,  # NEW: Include filename for frontend
-                                        'page': page,
-                                        'bbox': bbox,
-                                        'method': cit.get('method', 'chunk-id-lookup'),
-                                        'chunk_id': chunk_id,  # Include chunk_id for debugging
-                                        'block_index': block_index,  # Include block_index for debugging
-                                        'cited_text': cit.get('cited_text', '')  # Include for smart citation selection
-                                    }
+                                    logger.info(f"🟢 [CITATIONS] Citation {citation_num}: doc={doc_id[:8] if doc_id else 'UNKNOWN'}, page={page}, filename={original_filename}")
                             else:
-                                # FALLBACK: Check for citations list format (used by citation_query handler or direct citations)
-                                citations_list = final_result.get('citations', [])
-                                if citations_list:
-                                    logger.info(f"🟢 [CITATIONS] Using citations list ({len(citations_list)} citations) - likely from citation_query or direct citations")
-                                    
-                                    # OPTIMIZATION: Batch filename lookups for direct citations
-                                    doc_ids_needing_filenames = set()
-                                    citation_doc_id_map = {}
-                                    
-                                    for cit in citations_list:
-                                        citation_num = str(cit.get('citation_number', 1))
-                                        doc_id = cit.get('doc_id', '')
-                                        original_filename = cit.get('original_filename')
-                                        
-                                        # Track citations that need filename lookup
-                                        if doc_id and not original_filename:
-                                            doc_ids_needing_filenames.add(doc_id)
-                                            if citation_num not in citation_doc_id_map:
-                                                citation_doc_id_map[citation_num] = doc_id
-                                    
-                                    # Batch filename lookup
-                                    filename_cache = {}
-                                    if doc_ids_needing_filenames:
-                                        try:
-                                            from backend.services.supabase_client_factory import get_supabase_client
-                                            supabase = get_supabase_client()
-                                            filename_response = supabase.table('documents').select(
-                                                'id, original_filename'
-                                            ).in_('id', list(doc_ids_needing_filenames)).execute()
-                                            
-                                            for doc in filename_response.data or []:
-                                                filename_cache[doc['id']] = doc.get('original_filename', 'unknown')
-                                        except Exception as e:
-                                            logger.warning(f"🟡 [CITATIONS] Failed to batch lookup filenames: {e}")
-                                    
-                                    # Process citations with filenames
-                                    for cit in citations_list:
-                                        citation_num = str(cit.get('citation_number', 1))
-                                        doc_id = cit.get('doc_id', '')
-                                        page = cit.get('page_number', 0)
-                                        bbox = cit.get('bbox', {})
-                                        
-                                        # Get original_filename from citation, cache, or fallback
-                                        original_filename = cit.get('original_filename')
-                                        if not original_filename and doc_id in filename_cache:
-                                            original_filename = filename_cache[doc_id]
-                                        if not original_filename:
-                                            original_filename = 'unknown'
-                                        
-                                        citations_map_for_frontend[citation_num] = {
-                                            'doc_id': doc_id,
-                                            'original_filename': original_filename,  # Include filename for frontend
-                                            'page': page,
-                                            'bbox': bbox,
-                                            'method': cit.get('method', 'direct-id-extraction'),
-                                            'chunk_id': cit.get('chunk_id', ''),
-                                            'cited_text': cit.get('cited_text', '')
-                                        }
-                                        structured_citations.append({
-                                            'id': int(citation_num),
-                                            'document_id': doc_id,
-                                            'page': page,
-                                            'bbox': bbox
-                                        })
-                                        logger.info(f"🟢 [CITATIONS] Citation {citation_num}: doc={doc_id[:8] if doc_id else 'UNKNOWN'}, page={page}, filename={original_filename}")
-                                else:
-                                    logger.info("🟡 [CITATIONS] No citations found (checked processed_citations, chunk_citations, and citations) - citations will be empty")
+                                logger.info("🟡 [CITATIONS] No citations found (checked processed_citations, chunk_citations, and citations) - citations will be empty")
                                 
                         logger.info(f"🟡 [CITATIONS] Final citation count: {len(structured_citations)} structured, {len(citations_map_for_frontend)} map entries")
                         
@@ -3175,6 +3365,32 @@ def vector_search():
             'success': False,
             'error': str(e)
         }), 500
+
+
+@views.route('/api/citation/block-bbox', methods=['POST', 'OPTIONS'])
+@login_required
+def citation_block_bbox():
+    """
+    Resolve block_id (e.g. chunk_<uuid>_block_1) to block-level bbox for citation highlighting.
+    Used by frontend for block1.1 logic: map citation buttons to the correct sub-block bbox.
+    """
+    if request.method == 'OPTIONS':
+        return '', 200
+    try:
+        data = request.get_json() or {}
+        block_id = data.get('block_id') or (request.args.get('block_id') if request.args else None)
+        cited_text = data.get('cited_text') or (request.args.get('cited_text') if request.args else None)
+        if not block_id:
+            return jsonify({'success': False, 'error': 'block_id required'}), 400
+        from backend.llm.tools.citation_mapping import resolve_block_id_to_bbox
+        result = resolve_block_id_to_bbox(block_id, cited_text=cited_text)
+        if not result:
+            return jsonify({'success': False, 'error': 'Block not found', 'block_id': block_id}), 404
+        return jsonify({'success': True, 'data': result}), 200
+    except Exception as e:
+        logger.exception("citation_block_bbox failed")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 
 # ============================================================================
 # PROPERTY SEARCH & ANALYSIS ENDPOINTS
@@ -4648,6 +4864,59 @@ def delete_folder(folder_id):
             'success': True,
             'message': 'Folder deletion attempted (may have been localStorage only)'
         }), 200
+
+def _add_cors_headers(response):
+    """Add CORS headers to a response so browser allows cross-origin requests."""
+    if hasattr(response, 'headers'):
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+    return response
+
+
+@views.route('/api/documents/<uuid:document_id>', methods=['GET', 'OPTIONS'])
+def get_document_by_id(document_id):
+    """
+    Get a single document's metadata by ID.
+    Matches RESTful pattern: /api/documents/<id> (GET)
+    """
+    if request.method == 'OPTIONS':
+        response = jsonify({})
+        _add_cors_headers(response)
+        response.headers.add('Access-Control-Allow-Methods', 'GET, OPTIONS')
+        response.headers.add('Access-Control-Max-Age', '3600')
+        return response, 200
+
+    if not current_user.is_authenticated:
+        r = jsonify({'error': 'Authentication required'})
+        _add_cors_headers(r)
+        return r, 401
+
+    business_uuid_str = _ensure_business_uuid()
+    if not business_uuid_str:
+        r = jsonify({'error': 'User is not associated with a business'})
+        _add_cors_headers(r)
+        return r, 400
+
+    try:
+        document = Document.query.get(document_id)
+        if not document:
+            r = jsonify({'error': 'Document not found'})
+            _add_cors_headers(r)
+            return r, 404
+        if str(document.business_id) != business_uuid_str:
+            r = jsonify({'error': 'Forbidden'})
+            _add_cors_headers(r)
+            return r, 403
+        r = jsonify(document.serialize())
+        _add_cors_headers(r)
+        return r
+    except Exception as e:
+        logger.exception("GET /api/documents/<id> failed: %s", e)
+        r = jsonify({'error': 'Internal server error'})
+        _add_cors_headers(r)
+        return r, 500
+
 
 @views.route('/api/documents/<uuid:document_id>', methods=['DELETE', 'OPTIONS'])
 def delete_document_standard(document_id):

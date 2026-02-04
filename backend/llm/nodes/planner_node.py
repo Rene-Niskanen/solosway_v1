@@ -8,20 +8,185 @@ Key Principle: Show operational steps (what will be done), not cognitive reasoni
 """
 
 import logging
-import json
-from typing import Dict, Any, Optional, List
+from typing import Any, Optional, List
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from pydantic import BaseModel, Field
 from langchain_core.output_parsers import PydanticOutputParser
 
 from backend.llm.config import config
-from backend.llm.types import MainWorkflowState, ExecutionPlan, ExecutionStep
-from backend.llm.utils.system_prompts import get_system_prompt
-from backend.llm.utils.execution_events import ExecutionEvent, ExecutionEventEmitter
+from backend.llm.types import MainWorkflowState, ExecutionPlan
 from backend.llm.contracts.validators import validate_planner_output
 
 logger = logging.getLogger(__name__)
+
+# --- Constants (tunable in one place) ---
+SHORT_QUERY_WORD_THRESHOLD = 8
+PRIOR_TURN_CONTENT_MAX_CHARS = 8000
+OBJECTIVE_PREVIEW_LEN = 60
+QUERY_LOG_TRUNCATE = 80
+
+REFINE_PATTERNS = (
+    "make that into", "turn that into", "format that as",
+    "can you put that in", "rewrite that as", "put that in a",
+)
+INCOMPLETE_FOLLOWUP_PATTERNS = (
+    "that's not all", "not all of them", "that not all", "add the rest",
+    "what else", "missing some", "incomplete", "and the others", "need more",
+)
+
+QUERY_RULE_NEED_INFER = (
+    "⚠️ The current user message is SHORT or indicates the previous answer was INCOMPLETE. "
+    "You MUST set the \"query\" field in each step to a KEYWORD-RICH query INFERRED from the conversation "
+    "(previous user question + topic of last answer, e.g. \"all valuation figures Highlands property\"). "
+    "Do NOT use the literal current message as the query."
+)
+QUERY_RULE_USE_CURRENT = (
+    "When generating the \"query\" field for each step, use keywords from the CURRENT user query below "
+    "(or a refined version). Conversation history is for context only when the query is self-contained."
+)
+REFINE_HINT = (
+    "\n\nThe user is asking to REFORMAT or REFINE prior information. "
+    "Prefer use_prior_context=true and set format_instruction from their wording."
+)
+INCOMPLETE_HINT = (
+    "\n\nThe user is indicating the previous answer was incomplete. "
+    "Infer a search query from the previous user question and the topic "
+    '(e.g. "all valuation figures for [property]") and use that as the query for both steps.'
+)
+
+PLANNER_SYSTEM_PROMPT = """You are a planning assistant that creates an execution plan. Output ONLY valid JSON (no explanations).
+
+STEPS: You may output 0, 1, or 2 steps.
+
+1. **0 steps** – When the user asks to RESTRUCTURE or FORMAT something already answered (e.g. "make that into a paragraph", "turn that into a bullet list", "format as a short summary"). Set use_prior_context: true and set format_instruction to their exact wording (e.g. "one concise paragraph; copy-paste friendly").
+
+2. **1 step** – When the user wants to REFINE/FORMAT prior answer AND add NEW information (e.g. "make that into a paragraph that also explains the amenities"). Set use_prior_context: true, format_instruction from their wording, and add ONE step to retrieve only the new part (e.g. retrieve_chunks with query "amenities" and document_ids from context if known, or retrieve_docs then retrieve_chunks for that topic only).
+
+3. **2 steps (new question)** – For a brand-new, self-contained question: Step 1 retrieve_docs, Step 2 retrieve_chunks with document_ids from step 1. Use the user's current query as the "query" field for both steps (or a refined keyword version of it).
+
+4. **2 steps (short or context-dependent follow-up)** – When the user sends a SHORT message (e.g. fewer than ~8 words) or a message that implies the previous answer was INCOMPLETE or they want MORE (e.g. "that's not all of them", "that not all of them", "add the rest", "what else", "missing some", "incomplete", "and the others?"). You MUST output 2 steps (retrieve_docs then retrieve_chunks). Set the "query" field in BOTH steps to a KEYWORD-RICH query INFERRED from the conversation: use the PREVIOUS user question and the TOPIC of the last assistant answer (e.g. "all valuation figures Highlands property", "complete valuation figures for Highlands"). Do NOT use the literal current message as the query—it would return no documents.
+
+FIELDS:
+- objective: high-level goal (string)
+- steps: array of 0, 1, or 2 steps. Each step: id, action ("retrieve_docs" or "retrieve_chunks"), query, document_ids (for retrieve_chunks, use ["<from_step_search_docs>"] when from step 1), reasoning_label
+- use_prior_context: true only when user asks to restructure/format something already in the conversation
+- format_instruction: exact format the user asked for (e.g. "one concise paragraph: amenities then planning history; copy-paste friendly") or null
+
+EXAMPLES:
+
+0 steps (format only):
+{"objective": "Restructure prior answer as requested", "steps": [], "use_prior_context": true, "format_instruction": "one short paragraph; copy-paste friendly"}
+
+1 step (format + new info):
+{"objective": "One paragraph: amenities then planning history", "steps": [{"id": "search_chunks", "action": "retrieve_chunks", "query": "amenities of the property", "document_ids": ["<from_step_search_docs>"], "reasoning_label": "Finding amenities"}], "use_prior_context": true, "format_instruction": "one concise paragraph: amenities then planning history; copy-paste friendly"}
+
+2 steps (new question):
+{"objective": "Answer: [USER_QUERY]", "steps": [{"id": "search_docs", "action": "retrieve_docs", "query": "[USER_QUERY]", "reasoning_label": "Searched documents"}, {"id": "search_chunks", "action": "retrieve_chunks", "query": "[USER_QUERY]", "document_ids": ["<from_step_search_docs>"], "reasoning_label": "Reviewed relevant sections"}], "use_prior_context": false, "format_instruction": null}
+
+2 steps (short follow-up – user said "that not all of them" after asking for valuation summary for Highlands):
+{"objective": "Find all valuation figures for Highlands property", "steps": [{"id": "search_docs", "action": "retrieve_docs", "query": "all valuation figures Highlands property", "reasoning_label": "Searched documents"}, {"id": "search_chunks", "action": "retrieve_chunks", "query": "valuation figures Highlands complete list", "document_ids": ["<from_step_search_docs>"], "reasoning_label": "Reviewed relevant sections"}], "use_prior_context": false, "format_instruction": null}
+
+Now generate a plan for the user's query."""
+
+
+def _matches_any(text: str, patterns: tuple) -> bool:
+    """True if text (lowercased) contains any of the given patterns."""
+    return any(p in (text or "").lower() for p in patterns)
+
+
+def _is_short_query(user_query: str) -> bool:
+    """True if the query has fewer than SHORT_QUERY_WORD_THRESHOLD words."""
+    return len((user_query or "").strip().split()) < SHORT_QUERY_WORD_THRESHOLD
+
+
+def _get_last_ai_content(messages: List[Any], max_chars: int = PRIOR_TURN_CONTENT_MAX_CHARS) -> Optional[str]:
+    """Extract content of the last AIMessage in the list, truncated to max_chars."""
+    for msg in reversed(messages or []):
+        if getattr(msg, "__class__", None) and getattr(msg.__class__, "__name__", "") == "AIMessage":
+            content = (getattr(msg, "content", "") or "").strip()
+            if content:
+                return content[:max_chars] if len(content) > max_chars else content
+    return None
+
+
+def _plan_dict_to_execution_plan(plan_dict: Any) -> dict:
+    """Convert parsed Pydantic plan to TypedDict-style execution_plan."""
+    return {
+        "objective": plan_dict.objective,
+        "steps": [
+            {
+                "id": step.id,
+                "action": step.action,
+                "query": step.query,
+                "document_ids": step.document_ids,
+                "reasoning_label": step.reasoning_label,
+                "reasoning_detail": step.reasoning_detail,
+            }
+            for step in plan_dict.steps
+        ],
+        "use_prior_context": getattr(plan_dict, "use_prior_context", False),
+        "format_instruction": getattr(plan_dict, "format_instruction", None),
+    }
+
+
+def _make_fallback_plan(user_query: str) -> dict:
+    """Build a minimal 2-step fallback plan when LLM/parsing fails."""
+    q = user_query or ""
+    return {
+        "objective": f"Answer query: {q}",
+        "steps": [
+            {"id": "search_docs", "action": "retrieve_docs", "query": q, "reasoning_label": "Searched documents", "reasoning_detail": None},
+            {"id": "search_chunks", "action": "retrieve_chunks", "query": q, "document_ids": ["<from_step_search_docs>"], "reasoning_label": "Reviewed relevant sections", "reasoning_detail": None},
+        ],
+        "use_prior_context": False,
+        "format_instruction": None,
+    }
+
+
+def _rephrase_query_to_finding(user_query: str) -> str:
+    """Rephrase user query as 'Finding the [X] of [Y]' for the planning step (e.g. 'Find me the EPC of highlands' -> 'Finding the EPC rating of highlands')."""
+    q = (user_query or "").strip()
+    if not q:
+        return "Planning next moves"
+    q_lower = q.lower()
+    # Strip common lead-in phrases to get the thing they're asking for
+    for lead in ("find me the ", "get me the ", "what is the ", "what's the ", "show me the ", "tell me the ", "give me the "):
+        if q_lower.startswith(lead):
+            rest = q_lower[len(lead):].strip()
+            break
+    else:
+        rest = q_lower
+    # Expand common abbreviations for display (e.g. "epc" -> "EPC rating")
+    display_rest = rest
+    if display_rest.startswith("epc ") or display_rest.startswith("epc of") or display_rest == "epc":
+        display_rest = "EPC rating" + display_rest[3:]  # len("epc") = 3
+    elif display_rest.startswith("mv ") or display_rest.startswith("mv of") or display_rest == "mv":
+        display_rest = "market value" + display_rest[2:]
+    # Capitalise first letter; preserve property/location name (e.g. "highlands")
+    if " of " in display_rest:
+        part, name = display_rest.split(" of ", 1)
+        part = part.strip().capitalize() if part else "information"
+        name = name.strip().title() if name else ""
+        return f"Finding the {part} of {name}" if name else f"Finding the {part}"
+    if " for " in display_rest:
+        part, name = display_rest.split(" for ", 1)
+        part = part.strip().capitalize() if part else "information"
+        name = name.strip().title() if name else ""
+        return f"Finding the {part} for {name}" if name else f"Finding the {part}"
+    return f"Finding the {display_rest.strip().capitalize()}" if display_rest else "Planning next moves"
+
+
+def _log_rewrite_if_applied(execution_plan: dict, user_query: str) -> None:
+    """Log when the first step's query differs from user query (likely rewritten for short follow-up)."""
+    steps = execution_plan.get("steps") or []
+    uq = (user_query or "").strip()
+    if not steps or not uq:
+        return
+    first_q = (steps[0].get("query") or "").strip().lower()
+    uq_lower = uq.lower()
+    if first_q != uq_lower and uq_lower not in first_q:
+        logger.info('[PLANNER] Rewrote short follow-up query -> "%s"', (steps[0].get("query") or "")[:QUERY_LOG_TRUNCATE])
 
 
 class ExecutionStepModel(BaseModel):
@@ -37,7 +202,9 @@ class ExecutionStepModel(BaseModel):
 class ExecutionPlanModel(BaseModel):
     """Pydantic model for execution plan"""
     objective: str = Field(description="High-level goal of the plan")
-    steps: list[ExecutionStepModel] = Field(description="Ordered list of execution steps")
+    steps: list[ExecutionStepModel] = Field(description="Ordered list of execution steps (0, 1, or 2)")
+    use_prior_context: bool = Field(default=False, description="True when user asks to restructure/format prior answer")
+    format_instruction: Optional[str] = Field(default=None, description="User-requested output format (e.g. one concise paragraph)")
 
 
 async def planner_node(state: MainWorkflowState, runnable_config=None) -> MainWorkflowState:
@@ -57,189 +224,90 @@ async def planner_node(state: MainWorkflowState, runnable_config=None) -> MainWo
     Returns:
         Updated state with execution_plan
     """
-    user_query = state.get("user_query", "")
-    messages = state.get("messages", [])
+    user_query = state.get("user_query", "") or ""
+    messages = state.get("messages", []) or []
     emitter = state.get("execution_events")
+    plan_refinement_count = state.get("plan_refinement_count", 0)
     if emitter is None:
         logger.warning("[PLANNER] ⚠️  Emitter is None - reasoning events will not be emitted")
-    business_id = state.get("business_id")
-    plan_refinement_count = state.get("plan_refinement_count", 0)
-    
-    # Increment refinement count if this is a refinement (not the first plan)
-    # A refinement occurs when:
-    # 1. plan_refinement_count > 0 (already refined before)
-    # 2. execution_plan exists (router sent us back to refine)
+
     is_refinement = plan_refinement_count > 0 or state.get("execution_plan") is not None
     if is_refinement:
         plan_refinement_count += 1
-        logger.info(f"[PLANNER] Refining plan (attempt {plan_refinement_count}/3) for query: '{user_query[:80]}...'")
+        logger.info("[PLANNER] Refining plan (attempt %s/3) for query: '%s...'", plan_refinement_count, user_query[:80])
     else:
-        logger.info(f"[PLANNER] Generating initial plan for query: '{user_query[:80]}...'")
-    
-    # Create output parser for structured plan
+        logger.info("[PLANNER] Generating initial plan for query: '%s...'", user_query[:80])
+
     parser = PydanticOutputParser(pydantic_object=ExecutionPlanModel)
-    
-    # Build simplified planner prompt - Golden Path RAG
-    system_prompt_content = """You are a simple planning assistant that creates a 2-step execution plan.
+    system_prompt = SystemMessage(content=PLANNER_SYSTEM_PROMPT)
 
-CRITICAL RULES:
-1. Output ONLY a valid JSON plan (no explanations, no reasoning, no text)
-2. Always generate exactly 2 steps:
-   - Step 1: retrieve_docs with user's query (unchanged)
-   - Step 2: retrieve_chunks with user's query (unchanged) and document_ids from step 1
-3. Pass the user's query through UNCHANGED - do not modify, expand, or interpret it
-4. Use simple reasoning labels like "Searched documents" and "Reviewed relevant sections"
+    is_refine_format = _matches_any(user_query, REFINE_PATTERNS)
+    is_incomplete_followup = _matches_any(user_query, INCOMPLETE_FOLLOWUP_PATTERNS)
+    refine_hint = REFINE_HINT if is_refine_format else ""
+    incomplete_hint = INCOMPLETE_HINT if is_incomplete_followup else ""
 
-EXAMPLE PLAN:
-{
-  "objective": "Answer: [USER_QUERY]",
-  "steps": [
-    {
-      "id": "search_docs",
-      "action": "retrieve_docs",
-      "query": "[USER_QUERY - UNCHANGED]",
-      "reasoning_label": "Searched documents"
-    },
-    {
-      "id": "search_chunks",
-      "action": "retrieve_chunks",
-      "query": "[USER_QUERY - UNCHANGED]",
-      "document_ids": ["<from_step_search_docs>"],
-      "reasoning_label": "Reviewed relevant sections"
-    }
-  ]
-}
-
-Now generate a plan for the user's query."""
-    
-    system_prompt = SystemMessage(content=system_prompt_content)
-    
-    # Use existing messages if available, otherwise create new
     if not messages:
-        prompt = f"""User Query: {user_query}
-
-Generate a structured execution plan to answer this query.
-
-{parser.get_format_instructions()}"""
+        prompt = f"User Query: {user_query}\n\nGenerate a structured execution plan to answer this query.{refine_hint}\n\n{parser.get_format_instructions()}"
         messages_to_use = [system_prompt, HumanMessage(content=prompt)]
     else:
-        # Use existing conversation context BUT focus queries on CURRENT query
-        prompt = f"""Based on the conversation history, generate a structured execution plan for the latest query.
-
-⚠️ CRITICAL: When generating the "query" field for each step, use keywords from the CURRENT user query below, NOT from conversation history. The conversation history is only for understanding context, but search queries must target the current question.
-
-Current User Query: {user_query}
-
-{parser.get_format_instructions()}"""
+        need_infer = _is_short_query(user_query) or is_incomplete_followup
+        query_rule = QUERY_RULE_NEED_INFER if need_infer else QUERY_RULE_USE_CURRENT
+        prompt = f"Based on the conversation history, generate a structured execution plan for the latest query.\n\n{query_rule}\n\nCurrent User Query: {user_query}{refine_hint}{incomplete_hint}\n\n{parser.get_format_instructions()}"
         messages_to_use = [system_prompt] + messages + [HumanMessage(content=prompt)]
-    
-    # Create LLM with structured output
-    llm = ChatOpenAI(
-        api_key=config.openai_api_key,
-        model=config.openai_model,
-        temperature=0,
-    )
-    
+
+    llm = ChatOpenAI(api_key=config.openai_api_key, model=config.openai_model, temperature=0)
+
     try:
-        # Invoke LLM to generate plan
         response = await llm.ainvoke(messages_to_use)
-        
-        # Parse structured output
         plan_dict = parser.parse(response.content)
-        
-        # Convert Pydantic model to TypedDict - simplified
-        execution_plan: ExecutionPlan = {
-            "objective": plan_dict.objective,
-            "steps": [
-                {
-                    "id": step.id,
-                    "action": step.action,
-                    "query": step.query,
-                    "document_ids": step.document_ids,
-                    "reasoning_label": step.reasoning_label,
-                    "reasoning_detail": step.reasoning_detail,
-                }
-                for step in plan_dict.steps
-            ]
-        }
-        
-        logger.info(f"[PLANNER] ✅ Generated plan with {len(execution_plan['steps'])} steps")
-        logger.info(f"[PLANNER] Objective: {execution_plan['objective']}")
-        for i, step in enumerate(execution_plan['steps']):
-            logger.info(f"  [{i}] {step['id']}: {step['action']} - {step.get('query', 'N/A')[:50]}...")
-        
-        # Emit user-facing reasoning events (not internal plan details)
+        execution_plan = _plan_dict_to_execution_plan(plan_dict)
+
+        logger.info("[PLANNER] ✅ Generated plan with %s steps", len(execution_plan["steps"]))
+        logger.info("[PLANNER] Objective: %s", execution_plan["objective"])
+        for i, step in enumerate(execution_plan["steps"]):
+            logger.info("  [%s] %s: %s - %s...", i, step["id"], step["action"], (step.get("query") or "N/A")[:50])
+        _log_rewrite_if_applied(execution_plan, user_query)
+
         if emitter:
-            # Emit user-facing reasoning for the overall plan
-            objective_preview = execution_plan['objective'][:60] + "..." if len(execution_plan['objective']) > 60 else execution_plan['objective']
-            emitter.emit_reasoning(
-                label=f"Planning search for: {objective_preview}",
-                detail=None  # Keep it concise
-            )
-            
-            # Don't emit internal plan structure - that's implementation noise
-            # The executor will emit reasoning events for each step
-        
-        # Add plan message to conversation history
-        from langchain_core.messages import AIMessage
-        plan_message = AIMessage(content=f"Generated execution plan: {execution_plan['objective']} ({len(execution_plan['steps'])} steps)")
-        
-        # Prepare output (after plan_message is defined)
+            # Rephrase user query as "Finding the [X] of [Y]" (e.g. "Finding the EPC rating of highlands")
+            planning_label = _rephrase_query_to_finding(user_query)
+            emitter.emit_reasoning(label=planning_label, detail=None)
+
+        prior_turn_content = None
+        if execution_plan.get("use_prior_context") and messages:
+            prior_turn_content = _get_last_ai_content(messages)
+
+        plan_message = AIMessage(
+            content=f"Generated execution plan: {execution_plan['objective']} ({len(execution_plan['steps'])} steps)"
+        )
         planner_output = {
             "execution_plan": execution_plan,
             "current_step_index": 0,
             "execution_results": [],
             "messages": [plan_message],
-            "plan_refinement_count": plan_refinement_count  # Track refinement count
+            "plan_refinement_count": plan_refinement_count,
+            "prior_turn_content": prior_turn_content,
+            "format_instruction": execution_plan.get("format_instruction"),
         }
-        
-        # Validate output against contract
-        try:
-            validate_planner_output(planner_output)
-        except ValueError as e:
-            logger.error(f"[PLANNER] ❌ Contract violation: {e}")
-            raise
-        
+        validate_planner_output(planner_output)
         return planner_output
-        
+
     except Exception as e:
-        logger.error(f"[PLANNER] ❌ Error generating plan: {e}", exc_info=True)
-        # Fallback: Create a simple 2-step plan
-        fallback_plan: ExecutionPlan = {
-            "objective": f"Answer query: {user_query}",
-            "steps": [
-                {
-                    "id": "search_docs",
-                    "action": "retrieve_docs",
-                    "query": user_query,
-                    "reasoning_label": "Searched documents",
-                    "reasoning_detail": None
-                },
-                {
-                    "id": "search_chunks",
-                    "action": "retrieve_chunks",
-                    "query": user_query,
-                    "document_ids": ["<from_step_search_docs>"],
-                    "reasoning_label": "Reviewed relevant sections",
-                    "reasoning_detail": None
-                }
-            ]
-        }
-        
-        logger.warning(f"[PLANNER] Using fallback plan")
+        logger.error("[PLANNER] ❌ Error generating plan: %s", e, exc_info=True)
+        fallback_plan = _make_fallback_plan(user_query)
+        logger.warning("[PLANNER] Using fallback plan")
         fallback_output = {
             "execution_plan": fallback_plan,
             "current_step_index": 0,
             "execution_results": [],
-            "plan_refinement_count": plan_refinement_count  # Track refinement count
+            "plan_refinement_count": plan_refinement_count,
+            "prior_turn_content": None,
+            "format_instruction": None,
         }
-        
-        # Validate fallback output
         try:
             validate_planner_output(fallback_output)
-        except ValueError as e:
-            logger.error(f"[PLANNER] ❌ Fallback plan contract violation: {e}")
+        except ValueError as val_err:
+            logger.error("[PLANNER] ❌ Fallback plan contract violation: %s", val_err)
             raise
-        
         return fallback_output
 

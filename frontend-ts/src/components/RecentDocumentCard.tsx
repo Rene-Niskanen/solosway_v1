@@ -43,7 +43,7 @@ const getDocumentName = (filename: string): string => {
 
 // Get download URL for a document
 const getDownloadUrl = (doc: DocumentData): string | null => {
-  const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
+  const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5001';
   if (doc.url || doc.download_url || doc.file_url || doc.s3_url) {
     return doc.url || doc.download_url || doc.file_url || doc.s3_url || null;
   } else if (doc.s3_path) {

@@ -34,6 +34,20 @@ async def context_manager_node(state: MainWorkflowState) -> MainWorkflowState:
     Returns:
         Updated state with summarized messages (if triggered) or empty dict (no change)
     """
+    # Inject current user message so planner/responder see full thread (refine/format + follow-up)
+    user_query = (state.get("user_query") or "").strip()
+    if user_query:
+        messages = state.get("messages", [])
+        last_is_same = (
+            messages
+            and hasattr(messages[-1], "__class__")
+            and messages[-1].__class__.__name__ == "HumanMessage"
+            and (getattr(messages[-1], "content", "") or "").strip() == user_query
+        )
+        if not last_is_same:
+            logger.debug(f"[CONTEXT_MGR] Injecting user message ({len(user_query)} chars)")
+            return {"messages": [HumanMessage(content=user_query)]}
+    
     messages = state.get("messages", [])
     
     # Skip if no messages or too few to summarize

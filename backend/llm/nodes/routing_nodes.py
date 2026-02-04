@@ -11,137 +11,10 @@ FAST ROUTER: 4 execution paths for speed optimization
 
 import logging
 from typing import List
-from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage, SystemMessage
 from backend.llm.types import MainWorkflowState, RetrievedDocument
-from backend.llm.config import config
-from backend.llm.utils.model_factory import get_llm
 from backend.services.supabase_client_factory import get_supabase_client
 
 logger = logging.getLogger(__name__)
-
-
-async def detect_navigation_intent_llm(user_query: str) -> dict:
-    """
-    LLM-based detection of navigation intent vs information query.
-    
-    Uses a fast LLM to determine if the user wants to:
-    - NAVIGATE: Go to a property pin on the map (no document search needed)
-    - SEARCH: Find information about a property (needs document search)
-    
-    Returns:
-        dict with keys:
-        - is_navigation: bool - True if this is a navigation request
-        - property_name: str or None - The property name to navigate to
-        - reason: str - Why this decision was made
-    """
-    system_prompt = """You are a query intent classifier for a property appraisal application.
-
-Determine if the user wants to:
-1. NAVIGATE: Physically go to/select a property pin on the map interface
-2. SEARCH: Find information, data, or answers about a property from documents
-
-**NAVIGATE examples** (user wants to click/select a map pin, NOT find information):
-- "take me to the highlands property"
-- "go to the highlands pin"
-- "show me the highlands property on the map"
-- "navigate to 123 main street"
-- "click on the cottage property"
-- "select the highlands pin"
-- "open the map"
-
-**SEARCH examples** (user wants information FROM documents):
-- "what is the flood risk of the highlands property"
-- "show me the valuation for highlands"
-- "tell me about the highlands property"
-- "what are the bedrooms in highlands"
-- "please show me the market value of highlands"
-- "find the inspection report for highlands"
-- "show me details about the highlands"
-
-**KEY DISTINCTION**: 
-- "show me the highlands property" → NAVIGATE (go to the pin)
-- "show me the value of the highlands property" → SEARCH (find information)
-- "show me the highlands on the map" → NAVIGATE (map interaction)
-- "show me information about highlands" → SEARCH (find data)
-
-If the query asks about ANY specific data, value, detail, risk, condition, document, report, or analysis - it's SEARCH.
-If the query only asks to GO TO, SELECT, CLICK, or NAVIGATE to a property/pin/map - it's NAVIGATE.
-
-Respond in this exact format:
-INTENT: NAVIGATE or SEARCH
-PROPERTY: [property name if mentioned, or NONE]
-REASON: [brief explanation]"""
-
-    human_prompt = f'User query: "{user_query}"'
-    
-    try:
-        llm = ChatOpenAI(
-            api_key=config.openai_api_key,
-            model="gpt-4o-mini",
-            temperature=0,
-            timeout=3,  # Fast timeout
-        )
-        
-        response = await llm.ainvoke([
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=human_prompt)
-        ])
-        
-        result = response.content.strip()
-        
-        # Parse the response
-        is_navigation = "INTENT: NAVIGATE" in result.upper()
-        
-        # Extract property name
-        property_name = None
-        for line in result.split('\n'):
-            if line.upper().startswith('PROPERTY:'):
-                prop = line.split(':', 1)[1].strip()
-                if prop.upper() != 'NONE':
-                    property_name = prop.lower()
-                break
-        
-        # Extract reason
-        reason = "LLM classification"
-        for line in result.split('\n'):
-            if line.upper().startswith('REASON:'):
-                reason = line.split(':', 1)[1].strip()
-                break
-        
-        logger.info(f"🧭 [NAV_DETECT] LLM result: is_navigation={is_navigation}, property={property_name}, reason={reason}")
-        
-        return {
-            "is_navigation": is_navigation,
-            "property_name": property_name,
-            "reason": reason
-        }
-        
-    except Exception as e:
-        logger.warning(f"🧭 [NAV_DETECT] LLM detection failed: {e}, defaulting to SEARCH")
-        return {
-            "is_navigation": False,
-            "property_name": None,
-            "reason": f"LLM error, defaulting to search: {str(e)}"
-        }
-
-
-async def detect_navigation_intent_node(state: MainWorkflowState) -> MainWorkflowState:
-    """
-    Node that runs LLM-based navigation intent detection.
-    Only runs in agent mode. Sets navigation_intent in state for router to use.
-    """
-    is_agent_mode = state.get("is_agent_mode", False)
-    user_query = state.get("user_query", "").strip()
-    
-    if not is_agent_mode or not user_query:
-        return {"navigation_intent": None}
-    
-    logger.info(f"🧭 [NAV_DETECT] Running LLM detection for: '{user_query[:60]}...'")
-    
-    result = await detect_navigation_intent_llm(user_query)
-    
-    return {"navigation_intent": result}
 
 
 def route_query(state: MainWorkflowState) -> MainWorkflowState:
@@ -150,7 +23,6 @@ def route_query(state: MainWorkflowState) -> MainWorkflowState:
     
     Routing decisions (in order):
     0. "navigation_action": Navigation queries in agent mode → INSTANT path (~0.1s)
-       (Determined by LLM-based detect_navigation_intent_node)
     1. "attachment_fast": ONLY if attachment_context has content AND response_mode='fast' → FASTEST path (~2s)
     2. "citation_query": ONLY if citation_context has content → FASTEST path (~2s)
     3. "direct_document": User attached file(s) → Fastest path (~2s)
@@ -171,21 +43,38 @@ def route_query(state: MainWorkflowState) -> MainWorkflowState:
     attachment_context = state.get("attachment_context")
     response_mode = state.get("response_mode")
     is_agent_mode = state.get("is_agent_mode", False)
-    navigation_intent = state.get("navigation_intent")  # Set by detect_navigation_intent_node
     
     # PATH -1: NAVIGATION ACTION (INSTANT - NO DOCUMENT RETRIEVAL)
-    # Uses LLM-based detection from detect_navigation_intent_node
-    if is_agent_mode and navigation_intent and navigation_intent.get("is_navigation"):
-        logger.info(f"⚡ [ROUTER] INSTANT PATH: LLM detected navigation: '{user_query}' → {navigation_intent.get('reason')}")
-        return {
-            "route_decision": "navigation_action",
-            "workflow": "navigation",
-            "skip_expansion": True,
-            "skip_vector_search": True,
-            "skip_clarify": True,
-            "skip_process_documents": True,
-            "skip_retrieval": True
-        }
+    # Check for navigation queries FIRST to avoid any document processing
+    if is_agent_mode:
+        navigation_patterns = [
+            "take me to the", "take me to ", "please take me to", "please take me to the",
+            "go to the map", "navigate to the", "please navigate to", "please navigate to the",
+            "show me on the map", "show on map", "find on map", "open the map",
+            "go to map", "click on the", "select the pin", "click the pin",
+            "please show me", "please go to", "please find"
+        ]
+        pin_patterns = [" pin", "property pin", "map pin"]
+        info_keywords = ["value", "price", "cost", "worth", "valuation", "report", 
+                       "inspection", "document", "tell me about", "what is", "how much",
+                       "summary", "details", "information", "data"]
+        
+        is_info_query = any(keyword in user_query for keyword in info_keywords)
+        if not is_info_query:
+            has_navigation_intent = any(pattern in user_query for pattern in navigation_patterns)
+            has_pin_intent = any(pattern in user_query for pattern in pin_patterns)
+            
+            if has_navigation_intent or has_pin_intent:
+                logger.info(f"⚡ [ROUTER] INSTANT PATH: Navigation action detected: '{user_query}'")
+                return {
+                    "route_decision": "navigation_action",
+                    "workflow": "navigation",
+                    "skip_expansion": True,
+                    "skip_vector_search": True,
+                    "skip_clarify": True,
+                    "skip_process_documents": True,
+                    "skip_retrieval": True
+                }
     
     # PATH 0: ATTACHMENT FAST - DISABLED FOR DEBUGGING NORMAL QUERIES
     # Check if attachment_context exists AND has actual text content AND response_mode is 'fast'
@@ -643,7 +532,9 @@ async def handle_attachment_fast(state: MainWorkflowState) -> MainWorkflowState:
     Returns:
         State with final_summary (ready for format_response)
     """
+    from langchain_openai import ChatOpenAI
     from langchain_core.messages import HumanMessage, SystemMessage
+    from backend.llm.config import config
     from backend.llm.prompts import get_attachment_prompt
     
     attachment_context = state.get("attachment_context", {})
@@ -660,9 +551,12 @@ async def handle_attachment_fast(state: MainWorkflowState) -> MainWorkflowState:
     # Get the attachment prompt
     prompt = get_attachment_prompt(response_mode, attachment_context, user_query)
     
-    # Single fast LLM call - use user-selected model
-    model_preference = state.get('model_preference')
-    llm = get_llm(model_preference, temperature=0)
+    # Single fast LLM call
+    llm = ChatOpenAI(
+        api_key=config.openai_api_key,
+        model=config.openai_model,
+        temperature=0,
+    )
     
     system_msg = SystemMessage(content="You are a helpful assistant that answers questions based on provided document content.")
     human_msg = HumanMessage(content=prompt)
@@ -695,7 +589,9 @@ async def handle_citation_query(state: MainWorkflowState) -> MainWorkflowState:
     Returns:
         State with final_summary (ready for format_response)
     """
+    from langchain_openai import ChatOpenAI
     from langchain_core.messages import HumanMessage
+    from backend.llm.config import config
     from backend.llm.utils.system_prompts import get_system_prompt
     from backend.llm.tools.agent_actions import create_agent_action_tools
     from datetime import datetime
@@ -703,7 +599,6 @@ async def handle_citation_query(state: MainWorkflowState) -> MainWorkflowState:
     citation_context = state.get("citation_context", {})
     user_query = state.get("user_query", "")
     is_agent_mode = state.get("is_agent_mode", False)
-    model_preference = state.get('model_preference')
     
     cited_text = citation_context.get("cited_text", "")
     page_number = citation_context.get("page_number", "unknown")
@@ -729,7 +624,6 @@ async def handle_citation_query(state: MainWorkflowState) -> MainWorkflowState:
         }
     
     # Create LLM - bind agent tools if in agent mode
-    # Use user-selected model from state
     agent_action_instance = None
     agent_actions = []
     
@@ -737,9 +631,17 @@ async def handle_citation_query(state: MainWorkflowState) -> MainWorkflowState:
         # Create agent action tools for proactive document display
         agent_tools, agent_action_instance = create_agent_action_tools()
         logger.info(f"⚡ [CITATION_QUERY] Agent mode enabled - binding {len(agent_tools)} agent tools")
-        llm = get_llm(model_preference, temperature=0).bind_tools(agent_tools, tool_choice="auto")
+        llm = ChatOpenAI(
+            api_key=config.openai_api_key,
+            model=config.openai_model,
+            temperature=0,
+        ).bind_tools(agent_tools, tool_choice="auto")
     else:
-        llm = get_llm(model_preference, temperature=0)
+        llm = ChatOpenAI(
+            api_key=config.openai_api_key,
+            model=config.openai_model,
+            temperature=0,
+        )
     
     system_msg = get_system_prompt('analyze')
     
@@ -872,27 +774,55 @@ async def handle_navigation_action(state: MainWorkflowState) -> MainWorkflowStat
     - "show me highlands on the map"
     
     This is an ULTRA-FAST path that:
-    1. Uses property name from LLM-based detect_navigation_intent_node
+    1. Extracts property name from query
     2. Returns agent actions directly (no document search)
     3. Frontend will handle map opening and pin selection
     """
+    import re
     from datetime import datetime
     
     user_query = state.get("user_query", "").strip()
     user_query_lower = user_query.lower()
-    navigation_intent = state.get("navigation_intent", {})
     
     logger.info(f"🧭 [NAVIGATION] Handling navigation action: '{user_query}'")
     
-    # Get property name from LLM detection (set by detect_navigation_intent_node)
-    property_name = navigation_intent.get("property_name") if navigation_intent else None
+    # Extract property name from query
+    property_name = None
     
-    logger.info(f"🧭 [NAVIGATION] LLM-detected property name: '{property_name}'")
+    # Common patterns for property names
+    patterns = [
+        r"take me to (?:the )?([a-zA-Z\s]+?)(?:\s+(?:property|pin|on the map))?$",
+        r"go to (?:the )?([a-zA-Z\s]+?)(?:\s+(?:property|pin))?$",
+        r"navigate to (?:the )?([a-zA-Z\s]+?)(?:\s+(?:property|pin))?$",
+        r"show me (?:the )?([a-zA-Z\s]+?)(?:\s+(?:property|pin|on the map))?$",
+        r"find (?:the )?([a-zA-Z\s]+?)(?:\s+(?:property|pin|on the map))?$",
+        r"where is (?:the )?([a-zA-Z\s]+?)(?:\s+(?:property|pin))?$",
+    ]
     
-    # If no property name from LLM, it might be a map-only request
+    for pattern in patterns:
+        match = re.search(pattern, user_query_lower)
+        if match:
+            property_name = match.group(1).strip()
+            # Clean up common trailing words (including filler words like "please")
+            property_name = re.sub(r'\s+(property|pin|map|on|the|please|now|quickly|asap).*$', '', property_name, flags=re.IGNORECASE).strip()
+            # Also clean if property_name ends with these words
+            property_name = re.sub(r'\s*(property|pin|map|please|now)$', '', property_name, flags=re.IGNORECASE).strip()
+            if property_name:
+                break
+    
+    # If no pattern matched, try to find property-like words
     if not property_name:
-        # Check if it's a map-only navigation
-        logger.info("🧭 [NAVIGATION] No property name - treating as map-only navigation")
+        # Look for known property keywords
+        property_keywords = ["highlands", "highland", "berden", "cottage"]
+        for kw in property_keywords:
+            if kw in user_query_lower:
+                property_name = kw
+                break
+    
+    # If still no property name, it might just be "show me the map"
+    if not property_name and any(phrase in user_query_lower for phrase in ["the map", "go to map", "open map"]):
+        # Just open the map, no specific property
+        logger.info("🧭 [NAVIGATION] Map-only navigation (no specific property)")
         return {
             "final_summary": "Sure thing!\n\nOpening the map for you now...",
             "citations": [],

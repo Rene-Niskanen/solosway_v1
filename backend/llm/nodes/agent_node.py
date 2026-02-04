@@ -24,6 +24,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from backend.llm.config import config
 from backend.llm.types import MainWorkflowState
+from backend.llm.prompts import _get_main_answer_tagging_rule
 from backend.llm.utils.system_prompts import get_system_prompt
 from backend.llm.tools.document_retriever_tool import create_document_retrieval_tool
 from backend.llm.tools.planning_tool import plan_step
@@ -174,7 +175,8 @@ async def generate_conversational_answer(user_query: str, chunk_text: str) -> st
     - NEVER mentions metadata, filenames, or retrieval steps
     """
     # INTENT-AWARE ANSWER CONTRACT (Production-Grade)
-    system_prompt = SystemMessage(content="""
+    main_tagging_rule = _get_main_answer_tagging_rule()
+    system_prompt = SystemMessage(content=f"""
 You are an expert analytical assistant for professional documents. Your role is to help users understand information clearly, accurately, and neutrally based solely on the content provided.
 
 # FORMATTING RULES
@@ -214,18 +216,21 @@ You are an expert analytical assistant for professional documents. Your role is 
 - Do not mention document names, filenames, IDs, or retrieval steps.
 - Do not reference "documents", "files", "chunks", "tools", or "searches".
 - Speak as if the information is simply *known*, not retrieved.
+- **MAIN ANSWER TAGGING (required)** –
+{main_tagging_rule}
 
 # EXTRACTING INFORMATION
 
 The excerpts provided ARE the source of truth. When the user asks a question:
 1. Carefully read through ALL the excerpts provided
-2. If the answer IS present, extract and present it directly
+2. If the answer IS present, extract and present it directly – put the key figure or fact in the opening words
 3. If the answer is NOT present, only then say it's not found
 
 **DO NOT say "the excerpts do not contain" if the information IS actually in the excerpts.**
 **DO NOT be overly cautious - if you see the information, extract and present it.**
 
 When information IS in the excerpts:
+- Put the key figure or fact first (amount, number, date), then add what it refers to
 - Extract specific details (names, values, dates, etc.)
 - Present them clearly and directly
 - Use the exact information from the excerpts

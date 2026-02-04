@@ -4107,7 +4107,6 @@ export const MainContent = ({
                   currentView={currentView}
                   hasPerformedSearch={hasPerformedSearch}
                   isSidebarCollapsed={isSidebarCollapsed}
-                  isTransitioning={isTransitioningFromChatRef.current || isTransitioningFromChat || homeClicked}
                   onFileDrop={(file) => {
                     // This will be handled by SearchBar's handleFileUpload
                     // The prop is just for notification - SearchBar handles the file internally
@@ -4129,7 +4128,6 @@ export const MainContent = ({
                   hasPreviousSession={isMapVisible && !hasPerformedSearch ? !!previousSessionQuery : false}
                   onQuickStartToggle={() => setIsQuickStartBarVisible(!isQuickStartBarVisible)}
                   isQuickStartBarVisible={isQuickStartBarVisible}
-                  onCreateProject={handleCreateProject}
                   // REMOVED initialValue - using simple local state like SideChatPanel
                   // This prevents the typing reset issue completely
                   initialAttachedFiles={(() => {
@@ -4404,7 +4402,6 @@ export const MainContent = ({
               } : undefined}
               onQuickStartToggle={() => setIsQuickStartBarVisible(!isQuickStartBarVisible)}
               isQuickStartBarVisible={isQuickStartBarVisible}
-              onCreateProject={handleCreateProject}
               onPanelToggle={isMapVisible && !hasPerformedSearch ? () => {
                 if (previousSessionQuery) {
                   setMapSearchQuery(previousSessionQuery);
@@ -5172,7 +5169,6 @@ export const MainContent = ({
             currentView={currentView}
             hasPerformedSearch={hasPerformedSearch}
             isSidebarCollapsed={isSidebarCollapsed}
-            previousViewBeforeMap={previousViewBeforeMap}
             onAttachmentsChange={isMapVisible && !hasPerformedSearch ? (attachments) => {
               // Proactively store map attachments when they change
               pendingMapAttachmentsRef.current = attachments;

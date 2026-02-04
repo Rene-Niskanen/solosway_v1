@@ -16,7 +16,7 @@ from typing import Dict, Any, List, Tuple, Optional, Literal
 from dataclasses import dataclass
 from pydantic import BaseModel, Field
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from langgraph.prebuilt import ToolNode
 
 from backend.llm.types import MainWorkflowState, Citation
@@ -24,7 +24,8 @@ from backend.llm.utils.execution_events import ExecutionEvent, ExecutionEventEmi
 from backend.llm.nodes.agent_node import generate_conversational_answer, extract_chunk_citations_from_messages, get_document_filename
 from backend.llm.contracts.validators import validate_responder_output
 from backend.llm.config import config
-from backend.llm.tools.citation_mapping import create_chunk_citation_tool
+from backend.llm.prompts import _get_main_answer_tagging_rule
+from backend.llm.tools.citation_mapping import create_chunk_citation_tool, _narrow_bbox_to_cited_line
 from backend.services.supabase_client_factory import get_supabase_client
 
 # Import from new citation architecture modules
@@ -44,6 +45,34 @@ from backend.llm.citation import (
 
 logger = logging.getLogger(__name__)
 
+
+def _distinctive_values_from_cited_text(cited_text: str) -> List[str]:
+    """
+    Extract distinctive values (numbers, currency, dates) from cited text so we can
+    prefer the block that actually contains the cited figure (e.g. £2,300,000)
+    over a similar block (e.g. "Market Value... 180 days") when multiple blocks
+    in the same chunk have overlapping wording.
+    """
+    if not cited_text or not cited_text.strip():
+        return []
+    values = []
+    # Currency amounts: £2,300,000 or £6,000 (keep as-is for substring match)
+    for m in re.finditer(r"£[\d,]+(?:\.[\d]+)?", cited_text):
+        values.append(m.group(0))
+    # Large numbers with commas (often valuations): 2,300,000
+    for m in re.finditer(r"\b[\d]{1,3}(?:,[\d]{3})+\b", cited_text):
+        val = m.group(0)
+        if val not in values:
+            values.append(val)
+    # Date-like: "12th February 2024" or "February 12, 2024"
+    for m in re.finditer(r"\d{1,2}(?:st|nd|rd|th)?\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4}", cited_text, re.IGNORECASE):
+        values.append(m.group(0))
+    for m in re.finditer(r"(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s+\d{4}", cited_text, re.IGNORECASE):
+        if m.group(0) not in values:
+            values.append(m.group(0))
+    return values
+
+
 # Evidence-First Citation Architecture Types
 EvidenceType = Literal["atomic", "clause"]
 
@@ -51,7 +80,7 @@ EvidenceType = Literal["atomic", "clause"]
 class EvidenceAnswerOutput(BaseModel):
     """Structured output for LLM answer with citation numbers (legacy - for backward compatibility)."""
     answer: str = Field(
-        description="The conversational answer with citation numbers embedded (e.g., 'The property has a market value of [AMOUNT] [1] as of [DATE] [2].')"
+        description="The conversational answer with citation numbers embedded. Use figure-first format: <<<MAIN>>>[VALUE]<<<END_MAIN>>> is the [label] [1]. Put ONLY the value/fact in MAIN (e.g. <<<MAIN>>>+44 (0) 203 463 8725<<<END_MAIN>>> or <<<MAIN>>>£2,300,000<<<END_MAIN>>>). Never put introductory words or full sentences inside MAIN. Cite as needed."
     )
     citations: List[int] = Field(
         description="Array of citation numbers used in the answer (e.g., [1, 2, 3])"
@@ -290,6 +319,11 @@ def extract_citations_with_positions(
         
         # Use the sentence containing the citation as the primary context
         sentence_context = citation_context[sentence_start:sentence_end].strip()
+        # Cited text for sub-level bbox: phrase that should be highlighted (sentence or key value)
+        # Prefer sentence; fallback to short window before marker (often contains "£X" or "value")
+        cited_text_for_bbox = sentence_context if sentence_context else llm_response[max(0, start_position - 80):start_position].strip()
+        if len(cited_text_for_bbox) > 200:
+            cited_text_for_bbox = cited_text_for_bbox[-200:]
         
         # Look up full metadata for this short ID
         metadata = short_id_lookup.get(short_id)
@@ -300,49 +334,53 @@ def extract_citations_with_positions(
             
             blocks = metadata.get('blocks', [])
             if blocks and isinstance(blocks, list) and len(blocks) > 0:
-                # Try to match citation context to the best block
+                # Distinctive values (e.g. £2,300,000, 12th February 2024) so we pick the block
+                # that actually contains the cited figure, not a similar block (e.g. "180 days").
+                distinctive = _distinctive_values_from_cited_text(cited_text_for_bbox)
                 best_match_score = 0
-                
+
                 for block_idx, block in enumerate(blocks):
                     if not isinstance(block, dict):
                         continue
-                    
-                    block_content = (block.get('content', '') or '').lower()
+
+                    block_content_lower = (block.get('content', '') or '').lower()
+                    block_content_raw = (block.get('content', '') or '')
                     block_type = block.get('type', '').lower()
                     block_bbox = block.get('bbox')
-                    
-                    if not block_content or not isinstance(block_bbox, dict):
+
+                    if not block_content_lower or not isinstance(block_bbox, dict):
                         continue
-                    
+
                     # Skip headings/titles (they're usually not what we want to highlight)
                     if block_type in ['title', 'heading']:
                         continue
-                    
+
                     # Calculate match score based on keyword overlap
-                    # Extract keywords from citation context (words > 3 chars)
                     context_words = set(word for word in citation_context.split() if len(word) > 3)
-                    block_words = set(word for word in block_content.split() if len(word) > 3)
-                    
-                    # Calculate overlap
+                    block_words = set(word for word in block_content_lower.split() if len(word) > 3)
                     overlap = len(context_words & block_words)
                     match_score = overlap
-                    
-                    # Use sentence context for more precise matching
+
                     if sentence_context:
                         sentence_words = set(word for word in sentence_context.split() if len(word) > 3)
                         sentence_overlap = len(sentence_words & block_words)
-                        # Weight sentence context more heavily (it's more specific)
                         match_score += sentence_overlap * 2
-                    
-                    # Bonus for longer blocks (more content = more likely to be the main content)
-                    if len(block_content) > 50:
+
+                    if len(block_content_lower) > 50:
                         match_score += 1
-                    
-                    # Bonus for exact phrase matches in the sentence context
-                    if sentence_context and sentence_context in block_content:
+
+                    if sentence_context and sentence_context in block_content_lower:
                         match_score += 10
-                    
-                    # Update best match if this score is higher
+
+                    # When the citation contains distinctive values (e.g. £2,300,000, 12th February 2024),
+                    # only consider blocks that contain at least one of them. Otherwise we can highlight
+                    # the wrong block (e.g. "Market Value... 180 days" instead of "£2,300,000").
+                    if distinctive:
+                        block_has_value = any(val in block_content_raw for val in distinctive)
+                        if not block_has_value:
+                            continue  # skip this block
+                        match_score += 100  # strong bonus for containing the cited value
+
                     if match_score > best_match_score:
                         best_match_score = match_score
                         best_bbox = block_bbox
@@ -350,8 +388,22 @@ def extract_citations_with_positions(
                             'block_index': block_idx,
                             'block_type': block_type,
                             'content_preview': block.get('content', '')[:80],
-                            'match_score': match_score
+                            'match_score': match_score,
+                            'content': block.get('content', '') or '',
                         }
+                
+                # Narrow bbox to the line containing the cited text (avoid highlighting whole block)
+                if best_block_info and cited_text_for_bbox and isinstance(best_bbox, dict):
+                    block_content_for_narrow = best_block_info.get('content', '') or best_block_info.get('content_preview', '')
+                    if block_content_for_narrow:
+                        try:
+                            narrowed = _narrow_bbox_to_cited_line(
+                                block_content_for_narrow, best_bbox, cited_text_for_bbox
+                            )
+                            if narrowed and narrowed != best_bbox:
+                                best_bbox = narrowed
+                        except Exception as e:
+                            logger.debug("Could not narrow bbox to cited line: %s", e)
                 
                 # Log block selection for debugging
                 if best_block_info:
@@ -387,7 +439,8 @@ def extract_citations_with_positions(
                 'doc_id': metadata.get('doc_id'),
                 'original_filename': metadata.get('original_filename', ''),
                 'method': 'direct-id-extraction',
-                'block_info': best_block_info  # For debugging
+                'block_info': best_block_info,  # For debugging
+                'cited_text': cited_text_for_bbox,  # For sub-level bbox: match exact line in block
             }
             citations.append(citation)
             
@@ -499,14 +552,23 @@ def format_citations_for_frontend(
                     f"(left={left}, top={top}, width={width}, height={height}), skipping bbox"
                 )
         
+        # Citation mapping fix: pass through block_index from block_info and set block_id for frontend mapping/highlighting
+        block_index = citation.get('block_index')
+        if block_index is None and citation.get('block_info'):
+            block_index = citation['block_info'].get('block_index')
+        chunk_id = citation.get('chunk_id', '')
+        block_id = citation.get('block_id')
+        if not block_id and (chunk_id or block_index is not None):
+            block_id = f"chunk_{chunk_id or 'unknown'}_block_{block_index if block_index is not None else 0}"
+
         # Create Citation TypedDict-compatible dictionary
         # Note: bbox can be None - frontend will handle opening document on correct page without highlighting
         frontend_citation: Dict[str, Any] = {
             'citation_number': citation.get('citation_number', 0),
-            'chunk_id': citation.get('chunk_id', ''),
-            'block_id': None,  # Not used in direct citation system
-            'block_index': None,  # Not used in direct citation system
-            'cited_text': '',  # Not extracted in direct citation system
+            'chunk_id': chunk_id,
+            'block_id': block_id,  # For citation mapping (frontend) - synthetic from chunk_id + block_index when needed
+            'block_index': block_index,  # Pass through for views.py synthetic block_id when block_id missing
+            'cited_text': citation.get('cited_text', '') or '',  # Include when available
             'bbox': bbox,  # Can be None if bbox data is missing/invalid
             'page_number': citation.get('page_number', 0),
             'doc_id': citation.get('doc_id', ''),
@@ -913,7 +975,7 @@ Claims:
 - Monthly rent amount [citations: 1]
 - Rent due date [citations: 2]
 
-Answer: 'The monthly rent is **[AMOUNT]** [1], which is payable monthly in advance before the 5th day of each month [2].'"""
+Answer: '**[AMOUNT]** [1] is the monthly rent, which is payable monthly in advance before the 5th day of each month [2].'"""
 
     # Human message (~800 tokens)
     human_message_content = f"""Question: {user_query}
@@ -1285,7 +1347,8 @@ async def generate_conversational_answer_with_citations(
     # Raw chunk text removed - LLM will use citation tool based on question
     # This function is used when evidence extraction fails
     # System prompt - reuse existing prompt but add citation instructions
-    system_prompt_content = """
+    main_tagging_rule = _get_main_answer_tagging_rule()
+    system_prompt_content = f"""
 You are an expert analytical assistant for professional documents. Your role is to help users understand information clearly, accurately, and neutrally based solely on the content provided.
 
 # FORMATTING RULES
@@ -1331,7 +1394,7 @@ When you use information from chunks in your answer:
    - cited_text: The EXACT text from that chunk (not a paraphrase)
 3. Call this tool for EVERY piece of information you mention that comes from chunks
 4. **CRITICAL**: After calling match_citation_to_chunk, include citation numbers in your answer text using [1], [2], [3] format
-   - Example: "The offer value is [AMOUNT] [1]. This represents the purchase price [1]. The deposit amount is [AMOUNT] [2]."
+   - Example: "<<<MAIN>>>[AMOUNT]<<<END_MAIN>>> is the offer value [1]. This represents the purchase price [1]. <<<MAIN>>>[AMOUNT]<<<END_MAIN>>> is the deposit [2]."
    - Each citation number corresponds to a match_citation_to_chunk tool call you made
    - Number them sequentially: [1], [2], [3], etc.
 
@@ -1339,7 +1402,7 @@ When you use information from chunks in your answer:
 - Use the original text from chunks, not your paraphrased version
 - Call match_citation_to_chunk BEFORE finishing your answer
 - **Include citation numbers immediately after each piece of information from chunks** - place [1], [2], [3] right after the information within the same sentence or paragraph
-- Example: "The property value is [AMOUNT] [1]. The lease term is one year [2]. The monthly rent is [AMOUNT] [3]."
+- Example: "<<<MAIN>>>[AMOUNT]<<<END_MAIN>>> is the property value [1]. The lease term is one year [2]. <<<MAIN>>>[AMOUNT]<<<END_MAIN>>> is the monthly rent [3]."
 - **DO NOT** wait until the end of your answer to include citations - they must appear inline with the information
 
 # TONE & STYLE
@@ -1349,18 +1412,22 @@ When you use information from chunks in your answer:
 - Do not mention document names, filenames, IDs, or retrieval steps.
 - Do not reference "documents", "files", "chunks", "tools", or "searches".
 - Speak as if the information is simply *known*, not retrieved.
+- **Do NOT start your response** with a fragment like "of [property name]" or "of [X]". Start directly with the figure, category, or fact (amount/number/date/category name). Do not start with a topic sentence or heading.
+- **MAIN ANSWER TAGGING (required)** –
+{main_tagging_rule}
 
 # EXTRACTING INFORMATION
 
 The excerpts provided ARE the source of truth. When the user asks a question:
 1. Carefully read through ALL the excerpts provided
-2. If the answer IS present, extract and present it directly
+2. If the answer IS present, extract and present it directly – put the key fact/number/answer in the opening words
 3. If the answer is NOT present, only then say it's not found
 
 **DO NOT say "the excerpts do not contain" if the information IS actually in the excerpts.**
 **DO NOT be overly cautious - if you see the information, extract and present it.**
 
 When information IS in the excerpts:
+- Put the key figure or fact first (number, date, name), then add what it refers to
 - Extract specific details (names, values, dates, etc.)
 - Present them clearly and directly
 - Use the exact information from the excerpts
@@ -1396,7 +1463,7 @@ When information is NOT in the excerpts:
 - The citation tool will search chunks for the exact text you provide
 - Call match_citation_to_chunk BEFORE finishing your answer
 - **CRITICAL**: Include citation numbers [1], [2], [3] immediately after each piece of information from chunks - place them inline, not at the end
-  * Example: "The property value is [AMOUNT] [1]. This represents the purchase price [1]. The deposit amount is [AMOUNT] [2]."
+  * Example: "<<<MAIN>>>[AMOUNT]<<<END_MAIN>>> is the property value [1]. This represents the purchase price [1]. <<<MAIN>>>[AMOUNT]<<<END_MAIN>>> is the deposit [2]."
   * Number citations sequentially starting from [1]
   * **DO NOT** put all citations at the end - each citation must appear right after its corresponding information
 
@@ -1490,7 +1557,8 @@ async def generate_conversational_answer_with_pre_citations(
     # Format pre-created citations
     citations_display = format_pre_created_citations(pre_created_citations)
     
-    system_prompt_content = """
+    main_tagging_rule = _get_main_answer_tagging_rule()
+    system_prompt_content = f"""
 You are an expert analytical assistant for professional documents. Your role is to help users understand information clearly, accurately, and neutrally based solely on the content provided.
 
 # FORMATTING RULES
@@ -1538,10 +1606,9 @@ You have been provided with pre-created citations below. These citations are alr
 4. Simply include citation numbers in your answer where you reference information from chunks
 5. Place citation numbers immediately after the information you're citing
 
-**EXAMPLE:**
-If citation [1] is "Market Value: [AMOUNT]" and citation [2] is "Valuation date: [DATE]",
-your answer might be:
-"The property has a Market Value of [AMOUNT] [1]. This represents the purchase price [1] as of [DATE] [2]."
+**EXAMPLE:** (figure first; MAIN wraps only the figure)
+If citation [1] supports the Market Value and [2] the date, your answer might be:
+"<<<MAIN>>>[AMOUNT]<<<END_MAIN>>> is the Market Value [1]. This represents the purchase price [1] as of [DATE] [2]."
 
 **IMPORTANT:**
 - Use citation numbers [1], [2], [3] when you reference ANY information from chunks - facts, explanations, definitions, everything
@@ -1556,18 +1623,22 @@ your answer might be:
 - Do not mention document names, filenames, IDs, or retrieval steps.
 - Do not reference "documents", "files", "chunks", "tools", or "searches".
 - Speak as if the information is simply *known*, not retrieved.
+- **Do NOT start your response** with a fragment like "of [property name]" or "of [X]". Start directly with the figure, category, or fact (amount/number/date/category name). Do not start with a topic sentence or heading.
+- **MAIN ANSWER TAGGING (required)** –
+{main_tagging_rule}
 
 # EXTRACTING INFORMATION
 
 The excerpts provided ARE the source of truth. When the user asks a question:
 1. Carefully read through ALL the excerpts provided
-2. If the answer IS present, extract and present it directly
+2. If the answer IS present, extract and present it directly – put the key fact/number/answer in the opening words
 3. If the answer is NOT present, only then say it's not found
 
 **DO NOT say "the excerpts do not contain" if the information IS actually in the excerpts.**
 **DO NOT be overly cautious - if you see the information, extract and present it.**
 
 When information IS in the excerpts:
+- Put the key figure or fact first (number, date, name), then add what it refers to
 - Extract specific details (names, values, dates, etc.)
 - Present them clearly and directly
 - Use the exact information from the excerpts
@@ -1599,7 +1670,7 @@ When information is NOT in the excerpts:
 - Use the citation numbers [1], [2], [3] shown above when you reference ANY information from chunks
 - Do NOT call any tools - citations are pre-created
 - Include citation numbers immediately after the information you're citing
-- Example: "The property value is [AMOUNT] [1]. This represents the purchase price [1] located at [ADDRESS] [2]."
+- Example: "<<<MAIN>>>[AMOUNT]<<<END_MAIN>>> is the property value [1]. This represents the purchase price [1] located at [ADDRESS] [2]."
 
 Provide a helpful, conversational answer using Markdown formatting:
 - Use `##` for main section headings, `###` for subsections
@@ -1700,10 +1771,10 @@ When you use ANY information from a specific excerpt, you MUST include a citatio
 
 Where X is the SOURCE_ID number (1, 2, 3, etc.) that corresponds to the excerpt you're referencing.
 
-**EXAMPLES:**
-- "The property has a Market Value of £500,000 [ID: 1]. This represents the purchase price [ID: 1]."
-- "The rent is £2,000 per month [ID: 2]. This is payable in advance [ID: 2]."
-- "The valuation date is 15th March 2024 [ID: 1], and the property address is 123 Main Street [ID: 3]."
+**EXAMPLES:** (figure first; MAIN wraps only the figure)
+- "£500,000 [ID: 1] is the Market Value. This represents the purchase price [ID: 1]."
+- "£2,000 per month [ID: 2] is the rent. This is payable in advance [ID: 2]."
+- "15th March 2024 [ID: 1] is the valuation date, and 123 Main Street [ID: 3] is the property address."
 
 **RULES:**
 1. **ALWAYS cite when using ANY information from excerpts** - facts, explanations, definitions, everything
@@ -1822,6 +1893,46 @@ async def generate_answer_with_direct_citations(
         return "I encountered an error while generating the answer. Please try again.", []
 
 
+async def generate_formatted_answer(
+    user_query: str,
+    prior_turn_content: Optional[str],
+    execution_results: List[Dict[str, Any]],
+    format_instruction: str,
+) -> str:
+    """
+    Combine prior answer and/or new retrieval into one block formatted per format_instruction.
+    Used for refine/format flows (e.g. "make that into a concise paragraph").
+    """
+    from langchain_openai import ChatOpenAI
+
+    prior_block = ""
+    if prior_turn_content and prior_turn_content.strip():
+        prior_block = f"<prior_answer>\n{prior_turn_content.strip()}\n</prior_answer>\n\n"
+
+    new_block = ""
+    chunks_metadata = extract_chunks_with_metadata(execution_results)
+    if chunks_metadata:
+        chunk_texts = [c.get("chunk_text", "") for c in chunks_metadata if c.get("chunk_text")]
+        if chunk_texts:
+            new_block = "<new_retrieval>\n" + "\n\n---\n\n".join(chunk_texts) + "\n</new_retrieval>\n\n"
+
+    system_content = """You combine prior conversation and/or new retrieval into a single response.
+Output exactly what the user asked for. Follow the format instruction precisely.
+Output one block of text, copy-paste friendly (no meta-commentary, no "Here is...")."""
+
+    user_content = f"""User request: {user_query}
+
+Format instruction: {format_instruction}
+
+{prior_block}{new_block}
+
+Produce one block of text that satisfies the format instruction. Use prior answer and new retrieval as needed. Output only the formatted text."""
+
+    llm = ChatOpenAI(api_key=config.openai_api_key, model=config.openai_model, temperature=0)
+    response = await llm.ainvoke([SystemMessage(content=system_content), HumanMessage(content=user_content)])
+    return (response.content or "").strip()
+
+
 async def responder_node(state: MainWorkflowState, runnable_config=None) -> MainWorkflowState:
     """
     Responder node - generates final answer from execution results.
@@ -1841,6 +1952,8 @@ async def responder_node(state: MainWorkflowState, runnable_config=None) -> Main
     """
     user_query = state.get("user_query", "")
     execution_results = state.get("execution_results", [])
+    prior_turn_content = state.get("prior_turn_content")
+    format_instruction = (state.get("format_instruction") or "").strip()
     emitter = state.get("execution_events")
     if emitter is None:
         logger.warning("[RESPONDER] ⚠️  Emitter is None - reasoning events will not be emitted")
@@ -1848,6 +1961,33 @@ async def responder_node(state: MainWorkflowState, runnable_config=None) -> Main
     refinement_limit_reached = plan_refinement_count >= 3
     
     logger.info(f"[RESPONDER] Generating answer from {len(execution_results)} execution results")
+
+    # Format branch: user asked to restructure/format (refine + copy-paste)
+    if format_instruction:
+        logger.info(f"[RESPONDER] Format path: format_instruction={format_instruction[:80]}...")
+        if emitter:
+            emitter.emit_reasoning(label="Formatting", detail=format_instruction[:60])
+        try:
+            formatted_answer = await generate_formatted_answer(
+                user_query, prior_turn_content, execution_results, format_instruction
+            )
+            responder_output = {
+                "final_summary": formatted_answer,
+                "citations": [],
+                "chunk_citations": [],
+                "messages": [AIMessage(content=formatted_answer)],
+            }
+            validate_responder_output(responder_output)
+            return responder_output
+        except Exception as e:
+            logger.error(f"[RESPONDER] Format path error: {e}", exc_info=True)
+            fallback_msg = "I couldn't reformat that. Please try again."
+            return {
+                "final_summary": fallback_msg,
+                "citations": [],
+                "chunk_citations": [],
+                "messages": [AIMessage(content=fallback_msg)],
+            }
     
     # Extract chunks WITH metadata (chunk_id, chunk_text, document_id)
     chunks_metadata = extract_chunks_with_metadata(execution_results)
@@ -1882,10 +2022,12 @@ async def responder_node(state: MainWorkflowState, runnable_config=None) -> Main
             
             # Prepare output with citations
             # Set both 'citations' and 'chunk_citations' for compatibility with views.py
+            # Append AIMessage so checkpoint has full thread (refine/format + follow-up)
             responder_output = {
                 "final_summary": formatted_answer,
                 "citations": citations if citations else [],
-                "chunk_citations": citations if citations else []  # Also set chunk_citations for views.py processing
+                "chunk_citations": citations if citations else [],  # Also set chunk_citations for views.py processing
+                "messages": [AIMessage(content=formatted_answer)],
             }
             
             # Validate output against contract
@@ -1911,7 +2053,8 @@ async def responder_node(state: MainWorkflowState, runnable_config=None) -> Main
             
             # Prepare error output
             error_output = {
-                "final_summary": error_answer
+                "final_summary": error_answer,
+                "messages": [AIMessage(content=error_answer)],
             }
             
             # Validate error output (should still be valid string)
@@ -1920,7 +2063,8 @@ async def responder_node(state: MainWorkflowState, runnable_config=None) -> Main
             except ValueError as e:
                 logger.error(f"[RESPONDER] ❌ Error output contract violation: {e}")
                 # Fallback to minimal valid output
-                error_output = {"final_summary": "I encountered an error. Please try again."}
+                fallback_msg = "I encountered an error. Please try again."
+                error_output = {"final_summary": fallback_msg, "messages": [AIMessage(content=fallback_msg)]}
             
             if emitter:
                 emitter.emit_reasoning(
@@ -1939,15 +2083,16 @@ async def responder_node(state: MainWorkflowState, runnable_config=None) -> Main
         
         # Check if refinement limit was reached
         if refinement_limit_reached:
-            answer = "I've searched multiple times but couldn't find relevant information to answer your question. This might mean:\n\n- The information isn't in the available documents\n- The query needs to be rephrased with different keywords\n- The documents may need to be re-indexed\n\nPlease try rephrasing your question or providing more specific context."
+            answer = "I couldn't find relevant information for your question. Try rephrasing or using different keywords."
         elif has_documents:
-            answer = "I found relevant documents but couldn't retrieve specific content. Please try rephrasing your question or be more specific."
+            answer = "I found documents but no matching content. Try rephrasing or being more specific."
         else:
-            answer = "I couldn't find relevant information to answer your question. Please try rephrasing or providing more context."
+            answer = "I couldn't find relevant information. Try rephrasing or adding more context."
         
         # Prepare no-results output
         no_results_output = {
-            "final_summary": answer
+            "final_summary": answer,
+            "messages": [AIMessage(content=answer)],
         }
         
         # Validate output

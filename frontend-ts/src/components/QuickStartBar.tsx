@@ -26,7 +26,7 @@ interface QuickStartBarProps {
   onPopupVisibilityChange?: (isVisible: boolean) => void;
   className?: string;
   isInChatPanel?: boolean; // Whether this is being used in the chat panel (for space-saving adjustments)
-  chatInputRef?: React.RefObject<HTMLTextAreaElement | HTMLInputElement>; // Reference to chat input to detect focus
+  chatInputRef?: React.RefObject<HTMLElement | null>; // Reference to chat input (textarea, input, or contenteditable div) to detect focus
 }
 
 // Property Image Thumbnail Component

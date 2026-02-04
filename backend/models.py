@@ -123,7 +123,7 @@ class Document(db.Model):
             'file_type': self.file_type,
             'file_size': self.file_size,
             'business_id': str(self.business_id),
-            'created_at': self.created_at.isoformat(),
+            'created_at': self.created_at.isoformat() if self.created_at is not None else None,
             'status': self.status.name,
             'uploaded_by_user_id': self.uploaded_by_user_id
         }

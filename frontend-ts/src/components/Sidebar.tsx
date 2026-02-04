@@ -307,10 +307,10 @@ export const Sidebar = ({
     unarchiveChat(chatId);
   };
 
-  const handleDeleteChat = async (e: React.MouseEvent, chatId: string) => {
+  const handleDeleteChat = (e: React.MouseEvent, chatId: string) => {
     e.stopPropagation();
     setOpenMenuId(null);
-    await removeChatFromHistory(chatId); // Now async - deletes from both frontend and backend
+    removeChatFromHistory(chatId);
   };
 
   // Filter chats based on archived status

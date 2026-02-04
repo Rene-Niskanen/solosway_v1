@@ -259,7 +259,7 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
       (window as any).__preloadedDocumentCovers = {};
     }
     
-    const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
+    const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5001';
     
     // Process in background without blocking - use requestIdleCallback if available
     const processDoc = async (doc: DocumentData) => {

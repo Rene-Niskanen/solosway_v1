@@ -347,19 +347,19 @@ Parse the query to find the PRIMARY object/information requested. IGNORE context
 
 ### Example 1: General Information Retrieval (AUTOMATIC - No keywords needed)
 User: "What is the property valued at?"
-Your response: "The property has a Market Value of £X,XXX,XXX[1] as of DD Month YYYY[2]..."
+Your response: "£X,XXX,XXX[1] is the Market Value as of DD Month YYYY[2]..."
 → CALL: open_document(citation_number=1, reason="Displays the official valuation figure from the RICS report")
   ✓ Information retrieval query with citations → automatically open
 
 ### Example 2: General Information Retrieval (AUTOMATIC - No keywords needed)
 User: "What is the 90-day value?"
-Your response: "The 90-day marketing period value is £X,XXX,XXX[3]..."
+Your response: "£X,XXX,XXX[3] is the 90-day marketing period value..."
 → CALL: open_document(citation_number=3, reason="Shows the reduced value section with 90-day assumptions")
   ✓ Information retrieval query with citations → automatically open
 
 ### Example 3: General Information Retrieval (AUTOMATIC - No keywords needed)
 User: "Who conducted the valuation?"
-Your response: "The valuation was conducted by Example Valuer MRICS[4]..."
+Your response: "Example Valuer MRICS[4] conducted the valuation..."
 → CALL: open_document(citation_number=4, reason="Shows the valuer's name and RICS credentials on the report")
   ✓ Information retrieval query with citations → automatically open
 

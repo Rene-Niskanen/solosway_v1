@@ -239,7 +239,6 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
   const documentCacheRef = useRef<Map<string, Document[]>>(new Map());
   const cacheTimestampRef = useRef<Map<string, number>>(new Map());
   const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes cache duration
-  const pollingIntervalsRef = useRef<Map<string, NodeJS.Timeout>>(new Map()); // Track polling intervals for cleanup
 
   const { addPreviewFile, setPreviewFiles, setIsPreviewOpen } = usePreview();
 
@@ -448,17 +447,6 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
 
     fetchData();
   }, [isOpen, viewMode, selectedPropertyId]);
-
-  // Cleanup polling intervals on unmount
-  useEffect(() => {
-    return () => {
-      // Clear all polling intervals when component unmounts
-      pollingIntervalsRef.current.forEach((interval) => {
-        clearInterval(interval);
-      });
-      pollingIntervalsRef.current.clear();
-    };
-  }, []);
 
   // Fetch property addresses and document-to-property mappings from property hubs
   useEffect(() => {
@@ -1433,128 +1421,23 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
         // Dispatch upload complete event
         uploadEvents.complete(file.name, result.data?.document_id);
         
-        const documentId = result.data?.document_id;
-        
-        if (documentId) {
-          // OPTIMISTIC UPDATE: Add new document immediately to the list
-          // This ensures the document appears right away, even before backend processing completes
-          const newDocument: Document = {
-            id: documentId,
-            original_filename: file.name,
-            file_type: file.type || 'application/octet-stream',
-            file_size: file.size,
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-            property_id: undefined, // Will be set when linking completes
-            property_address: undefined, // Will be set when linking completes
-            s3_path: undefined // Will be populated from backend
-          };
-          
-          // Merge with existing documents instead of replacing
+        // Invalidate cache for current view
         const uploadCacheKey = viewMode === 'property' && selectedPropertyId
           ? `property_${selectedPropertyId}`
           : 'global';
-          
-          setDocuments(prev => {
-            // Check if document already exists (avoid duplicates)
-            const exists = prev.some(doc => doc.id === documentId);
-            const mergedDocs = exists
-              ? prev.map(doc => doc.id === documentId ? { ...doc, ...newDocument } : doc)
-              : [newDocument, ...prev];
-          
-            // Update cache with merged documents
-            documentCacheRef.current.set(uploadCacheKey, mergedDocs);
-          cacheTimestampRef.current.set(uploadCacheKey, Date.now());
-            
-            return mergedDocs;
-          });
-          
-          // Poll for document status updates to update linking status
-          // This will update the document when property linking completes
-          const pollForUpdates = () => {
-            let pollCount = 0;
-            const maxPolls = 60; // Poll for up to 5 minutes (5s intervals)
-            
-            // Clear any existing polling for this document
-            const existingInterval = pollingIntervalsRef.current.get(documentId);
-            if (existingInterval) {
-              clearInterval(existingInterval);
-            }
-            
-            const pollInterval = setInterval(async () => {
-              pollCount++;
-              
-              try {
-                const statusResponse = await backendApi.getDocumentStatus(documentId);
-                
-                if (statusResponse.success && statusResponse.data) {
-                  const responseData = statusResponse.data as any;
-                  const statusData = responseData.data || responseData;
-                  const status = statusData?.status;
-                  
-                  // Fetch fresh document data to get property_id and property_address
-                  const allDocsResponse = await backendApi.getAllDocuments();
-                  if (allDocsResponse.success && allDocsResponse.data) {
-                    const allDocs = Array.isArray(allDocsResponse.data) 
-                      ? allDocsResponse.data 
-                      : (allDocsResponse.data.documents || []);
-                    
-                    const updatedDoc = allDocs.find((d: any) => d.id === documentId);
-                    
-                    if (updatedDoc) {
-                      const cacheKey = viewMode === 'property' && selectedPropertyId
-                        ? `property_${selectedPropertyId}`
-                        : 'global';
-                      
-                      // Update the document in the list with fresh data
-                      setDocuments(prev => {
-                        const updated = prev.map(doc => 
-                          doc.id === documentId 
-                            ? {
-                                ...doc,
-                                ...updatedDoc,
-                                property_id: updatedDoc.property_id,
-                                property_address: updatedDoc.property_address || updatedDoc.propertyAddress
-                              }
-                            : doc
-                        );
-                        
-                        // Update cache
-                        documentCacheRef.current.set(cacheKey, updated);
-                        
-                        return updated;
-                      });
-                      
-                      // Stop polling when document is completed and linked
-                      if (status === 'completed' && updatedDoc.property_id) {
-                        clearInterval(pollInterval);
-                        pollingIntervalsRef.current.delete(documentId);
-                        console.log(`✅ Document ${documentId} linked to property, stopped polling`);
-                      }
-                    }
-                  }
-                }
-                
-                // Stop polling after max attempts
-                if (pollCount >= maxPolls) {
-                  clearInterval(pollInterval);
-                  pollingIntervalsRef.current.delete(documentId);
-                  console.log(`⏱️ Stopped polling for document ${documentId} after ${maxPolls} attempts`);
-                }
-              } catch (error) {
-                console.error(`Error polling document status for ${documentId}:`, error);
-                // Continue polling on error (might be temporary)
-              }
-            }, 5000); // Poll every 5 seconds
-            
-            // Store interval for cleanup
-            pollingIntervalsRef.current.set(documentId, pollInterval);
-          };
-          
-          // Start polling for updates
-          pollForUpdates();
-        }
+        documentCacheRef.current.delete(uploadCacheKey);
+        cacheTimestampRef.current.delete(uploadCacheKey);
         
+        // Refresh documents list
+        const response = await backendApi.getAllDocuments();
+        if (response.success && response.data) {
+          const docs = Array.isArray(response.data) ? response.data : (response.data.documents || []);
+          setDocuments(docs);
+          
+          // Update cache with new documents
+          documentCacheRef.current.set(uploadCacheKey, docs);
+          cacheTimestampRef.current.set(uploadCacheKey, Date.now());
+        }
         setDuplicateDialog({ isOpen: false, filename: '', fileSize: 0, existingDocuments: [], file: null, isExactDuplicate: false });
       } else {
         // Check if error is due to duplicate (backend safety net)

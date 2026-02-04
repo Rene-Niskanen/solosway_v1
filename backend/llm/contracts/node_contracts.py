@@ -151,9 +151,10 @@ class ResponderInput(TypedDict, total=False):
     execution_events: Optional[Any]  # ExecutionEventEmitter
 
 
-class ResponderOutput(TypedDict):
+class ResponderOutput(TypedDict, total=False):
     """Output contract for responder_node"""
     final_summary: str  # REQUIRED: Must produce answer
+    messages: List[Any]  # Optional: AIMessage list for checkpoint thread (refine/format)
 
 
 class ResponderEventContract:

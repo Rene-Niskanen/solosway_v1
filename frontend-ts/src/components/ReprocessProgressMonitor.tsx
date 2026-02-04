@@ -60,7 +60,7 @@ export const ReprocessProgressMonitor: React.FC<ReprocessProgressMonitorProps> =
     }
 
     // Create SSE connection
-    const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
+    const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5001';
     const url = `${backendUrl}/api/documents/${documentId}/reprocess/progress`;
     
     console.log('🔄 Connecting to SSE progress stream:', url);

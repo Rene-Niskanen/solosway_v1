@@ -656,10 +656,10 @@ export const FloatingChatBubble: React.FC<FloatingChatBubbleProps> = ({
                           components={{
                             p: ({ children }) => <p style={{ margin: 0, padding: 0, display: 'block' }}>{children}</p>,
                             h1: ({ children }) => <h1 style={{ fontSize: '12px', fontWeight: 600, margin: '8px 0 6px 0' }}>{children}</h1>,
-                            h2: ({ children }) => <h2 style={{ fontSize: '11px', fontWeight: 600, margin: '6px 0 4px 0' }}>{children}</h2>,
+                            h2: () => null,
                             h3: ({ children }) => <h3 style={{ fontSize: '11px', fontWeight: 600, margin: '6px 0 3px 0' }}>{children}</h3>,
-                            ul: ({ children }) => <ul style={{ margin: '6px 0', paddingLeft: '16px', listStyleType: 'disc' }}>{children}</ul>,
-                            ol: ({ children }) => <ol style={{ margin: '6px 0', paddingLeft: '16px', listStyleType: 'decimal' }}>{children}</ol>,
+                            ul: ({ children }) => <ul style={{ margin: '6px 0', paddingLeft: '16px' }}>{children}</ul>,
+                            ol: ({ children }) => <ol style={{ margin: '6px 0', paddingLeft: '16px' }}>{children}</ol>,
                             li: ({ children }) => <li style={{ marginBottom: '3px' }}>{children}</li>,
                             strong: ({ children }) => <strong style={{ fontWeight: 600 }}>{children}</strong>,
                             em: ({ children }) => <em style={{ fontStyle: 'italic' }}>{children}</em>,
@@ -751,10 +751,10 @@ export const FloatingChatBubble: React.FC<FloatingChatBubbleProps> = ({
                               return <p style={{ margin: 0, marginBottom: '4px', textAlign: 'left' }}>{processChildren(children)}</p>;
                             },
                             h1: ({ children }) => <h1 style={{ fontSize: '11px', fontWeight: 600, margin: '6px 0 4px 0', color: '#111827', textAlign: 'left' }}>{children}</h1>,
-                            h2: ({ children }) => <h2 style={{ fontSize: '10px', fontWeight: 600, margin: '5px 0 3px 0', color: '#111827', textAlign: 'left' }}>{children}</h2>,
+                            h2: () => null,
                             h3: ({ children }) => <h3 style={{ fontSize: '10px', fontWeight: 600, margin: '4px 0 2px 0', textAlign: 'left' }}>{children}</h3>,
-                            ul: ({ children }) => <ul style={{ margin: '4px 0', paddingLeft: '14px', listStyleType: 'disc', textAlign: 'left' }}>{children}</ul>,
-                            ol: ({ children }) => <ol style={{ margin: '4px 0', paddingLeft: '14px', listStyleType: 'decimal', textAlign: 'left' }}>{children}</ol>,
+                            ul: ({ children }) => <ul style={{ margin: '4px 0', paddingLeft: '14px', textAlign: 'left' }}>{children}</ul>,
+                            ol: ({ children }) => <ol style={{ margin: '4px 0', paddingLeft: '14px', textAlign: 'left' }}>{children}</ol>,
                             li: ({ children }) => <li style={{ marginBottom: '2px', textAlign: 'left' }}>{children}</li>,
                             strong: ({ children }) => {
                               const citationSeen = new Set<string>();
@@ -795,30 +795,6 @@ export const FloatingChatBubble: React.FC<FloatingChatBubbleProps> = ({
                             code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '1px 2px', borderRadius: '2px', fontSize: '9px', fontFamily: 'monospace', textAlign: 'left' }}>{children}</code>,
                             blockquote: ({ children }) => <blockquote style={{ borderLeft: '2px solid #d1d5db', paddingLeft: '10px', margin: '4px 0', color: '#6b7280', textAlign: 'left' }}>{children}</blockquote>,
                             hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '8px 0' }} />,
-                            img: ({ src, alt }) => {
-                              return (
-                                <img 
-                                  src={src || ''} 
-                                  alt={alt || 'Document image'} 
-                                  style={{ 
-                                    maxWidth: '100%', 
-                                    height: 'auto', 
-                                    borderRadius: '4px', 
-                                    margin: '6px 0',
-                                    border: '1px solid #e5e7eb',
-                                    boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.05)',
-                                    cursor: 'pointer'
-                                  }}
-                                  onClick={() => {
-                                    if (src) window.open(src, '_blank');
-                                  }}
-                                  loading="lazy"
-                                  onError={(e) => {
-                                    (e.target as HTMLImageElement).style.display = 'none';
-                                  }}
-                                />
-                              );
-                            },
                           }}
                         >
                           {message.text}

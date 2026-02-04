@@ -21,10 +21,12 @@ class ExecutionStep(TypedDict, total=False):
     metadata: Optional[Dict[str, Any]]  # Additional step-specific data
     use_agent_retrieval: Optional[bool]  # NEW: LLM-determined complexity for retrieve_chunks (True = agent-based, False = direct)
 
-class ExecutionPlan(TypedDict):
+class ExecutionPlan(TypedDict, total=False):
     """Structured plan from planner node"""
     objective: str  # High-level goal
-    steps: List[ExecutionStep]  # Ordered list of actions
+    steps: List[ExecutionStep]  # Ordered list of actions (0, 1, or 2)
+    use_prior_context: Optional[bool]  # True when user asks to restructure/format prior answer
+    format_instruction: Optional[str]  # User-requested output format (e.g. "one concise paragraph")
 
 class RetrievedDocument(TypedDict):
     """Result from vector or SQL retrieval"""
@@ -118,6 +120,8 @@ class MainWorkflowState(TypedDict, total=False):
     current_step_index: int  # Which step executor is on (default: 0)
     execution_results: List[Dict[str, Any]]  # Results from each executed step
     plan_refinement_count: int  # Track how many times plan has been refined (circuit breaker, default: 0, max: 3)
+    prior_turn_content: Optional[str]  # Previous assistant answer when use_prior_context (for refine/format)
+    format_instruction: Optional[str]  # User-requested output format (e.g. "one concise paragraph")
 
 class DocumentQAState(TypedDict, total=False):
     """State for per-document Q&A subgraph"""

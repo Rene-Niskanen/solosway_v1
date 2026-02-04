@@ -48,7 +48,7 @@ const preloadDocumentCoversForProperty = async (docs: any[]) => {
     (window as any).__preloadedDocumentCovers = {};
   }
   
-  const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
+  const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5001';
   
   // Prioritize first 6 documents (visible ones) - load them immediately
   const priorityDocs = docs.slice(0, 6);

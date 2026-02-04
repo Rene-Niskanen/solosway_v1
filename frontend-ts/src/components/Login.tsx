@@ -25,7 +25,7 @@ const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
 
     try {
       // Use the backendApi service for consistent URL handling
-      const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
+      const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5001';
       const response = await fetch(`${backendUrl}/api/login`, {
         method: 'POST',
         headers: {

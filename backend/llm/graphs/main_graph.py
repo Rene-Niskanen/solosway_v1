@@ -74,7 +74,7 @@ from langchain_core.messages import SystemMessage
 
 # NEW: Middleware for context management and retry logic
 try:
-    from langchain.agents.middleware import (
+    from langchain.agents.middleware import (  # type: ignore[import-untyped]
         SummarizationMiddleware,
         ToolRetryMiddleware
     )
@@ -753,9 +753,18 @@ Proceed immediately with chunk retrieval.""")
     builder.add_edge("context_manager", "planner")
     logger.debug("Edge: context_manager -> planner")
     
-    # Planner → Executor (execute first step)
-    builder.add_edge("planner", "executor")
-    logger.debug("Edge: planner -> executor")
+    # Planner → Executor or Responder (0 steps = skip executor, go straight to responder for refine/format)
+    def after_planner(state: MainWorkflowState) -> Literal["executor", "responder"]:
+        steps = state.get("execution_plan") or {}
+        step_list = steps.get("steps", []) if isinstance(steps, dict) else []
+        if len(step_list) == 0:
+            logger.info("[GRAPH] 0-step plan: routing planner → responder (refine/format)")
+            return "responder"
+        logger.debug(f"[GRAPH] {len(step_list)}-step plan: routing planner → executor")
+        return "executor"
+    
+    builder.add_conditional_edges("planner", after_planner, {"executor": "executor", "responder": "responder"})
+    logger.debug("Conditional: planner -> [executor|responder] (0 steps → responder)")
     
     # Executor → Evaluator (evaluate execution)
     builder.add_edge("executor", "evaluator")

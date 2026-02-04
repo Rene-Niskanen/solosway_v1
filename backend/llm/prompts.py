@@ -72,7 +72,7 @@ def _get_valuation_extraction_instructions(detail_level: str = 'concise', is_val
 1. Identify Professional Valuations: Look for "we are of the opinion", "Market Value", MRICS/FRICS. Ignore "under offer", "guide price".
 2. Extract ALL Scenarios: Primary Market Value, 90-day value (if mentioned), 180-day value (if mentioned), Market Rent (if provided). Each with its assumptions.
 3. Search Strategy: Read ENTIRE valuation section - do NOT stop after first figure. Check pages 20-30+ where detailed valuations often appear.
-4. Presentation: Format as £[amount] with assumptions. Start with primary Market Value, then other scenarios."""
+4. Presentation: Put the figure first: £[amount], then label (e.g. '— the Market Value'). Then assumptions. Do not start with 'The Market Value...' or 'The property...'. Include other scenarios after."""
 
 
 def _get_verified_property_details_instructions(is_single_doc: bool = True) -> str:
@@ -88,22 +88,36 @@ def _get_entity_normalization_instructions() -> str:
     return """
 **PRESENTATION FORMAT**:
 1. **Normalize Data**: Each piece of data appears once. Merge duplicates (e.g., "Company: X" and "Valuation Company: X" → ONE section).
-2. **Section Headers**: Use H1 (#) for main title, H2 (##) for major sections (e.g., "Market Value", "Valuers").
-3. **Label-Value Layout**: Use vertical format - label on one line (bold), value on next line (regular text):
+2. **Figure first**: The opening sentence must start with the figure (e.g. £X,XXX,XXX or the number), not "The Market Value..." or "The property...". Example: "£2,300,000 — the Market Value[1]. The property is..."
+3. **Section Headers**: Use H1 for the first section; the H1 text must start with the answer (figure/category), not a topic sentence. Use H2 (##) for major sections (e.g., "Market Value", "Valuers").
+4. **Label-Value Layout**: Use vertical format - label on one line (bold), value on next line (regular text):
    ```
    **Market Value:**
    £X,XXX,XXX[1]
    *Market value with vacant possession, normal marketing period*
    ```
-4. **Citation Markers**: Place [1], [2], [3] immediately after each fact - "£X,XXX,XXX[1]" NOT "£X,XXX,XXX [1]"
-5. **Lists**: Use bullet points for multiple items. Each item on its own line with citation if applicable.
-6. **Remove Noise**: Remove phrases like "The firm responsible for..." - keep only essential information.
+5. **Citation Markers**: Place [1], [2], [3] immediately after each fact - "£X,XXX,XXX[1]" NOT "£X,XXX,XXX [1]"
+6. **Lists**: Use bullet points for multiple items. Each item on its own line with citation if applicable.
+7. **Remove Noise**: Remove phrases like "The firm responsible for..." - keep only essential information.
 """
 
 
 def _get_no_unsolicited_content_instructions() -> str:
     """Simplified instructions for avoiding unsolicited content."""
     return """**Comprehensive but Focused Response**: Provide complete answer with all relevant details. Do NOT repeat the question as a heading. Do NOT add "Additional Context" sections, "Next steps:", or follow-up suggestions. Present all information in well-organized, professional manner."""
+
+
+def _get_main_answer_tagging_rule() -> str:
+    """Canonical MAIN tag rule: wrap only the direct answer, never title or lead-in."""
+    return """**MAIN ANSWER TAGGING (required)** – Inside <<<MAIN>>> put ONLY the single value or fact the user asked for (number, date, name, category, phone number). Never include introductory words or the sentence that leads up to it.
+- **Category/classification questions** (e.g. "what is the flood risk?", "what is the zoning?"): Put ONLY the category label in <<<MAIN>>>, e.g. <<<MAIN>>>Flood Zone 2 (Medium Probability)<<<END_MAIN>>>. Do not put <<<MAIN>>> around the sentence "The flood risk for the [property] is assessed as follows" or "...is categorized as follows"—those are titles; they must NOT be inside <<<MAIN>>>.
+- **Objective/purpose questions** (e.g. "what are the objectives of the stablecoin bill?"): Put ONLY the clause that states the objective or purpose in <<<MAIN>>>, not the lead-in. E.g. "The objective of the stablecoin bill (STABLE Act of 2025) is to <<<MAIN>>>provide for the regulation of payment stablecoins and to address various related purposes<<<END_MAIN>>>." Do NOT wrap "The objective of X is to" in <<<MAIN>>>.
+- **Phone/contact/name queries** (e.g. "what is the phone number of...", "who valued...", "what is the company..."): Put ONLY the value in <<<MAIN>>> (e.g. <<<MAIN>>>+44 (0) 203 463 8725<<<END_MAIN>>> or <<<MAIN>>>MJ Group International Ltd<<<END_MAIN>>>). Never put "The phone number of... is", "The company that valued X, Y, is", or similar lead-ins inside MAIN.
+- **Never wrap**: A sentence starting with "The [X] for the property is..." or "...is assessed as follows" or "...is categorized as follows"; any heading or title; any phrase that only introduces or describes the answer; any phrase that introduces the value (e.g. "The X of Y is", "The company that... is").
+- **Always wrap**: The value, category name, date, reference, phone number, company name, or (for objective/purpose) only the answer clause that follows "is to" / "are to" / "objectives include".
+- **WRONG**: <<<MAIN>>>The flood risk for the Highlands property is assessed as follows.<<<END_MAIN>>> or <<<MAIN>>>...is categorized as follows.<<<END_MAIN>>> or <<<MAIN>>>The objective of the stablecoin bill... is to provide for the regulation of payment stablecoins.<<<END_MAIN>>> or <<<MAIN>>>The Market Value... is £2,300,000<<<END_MAIN>>> or <<<MAIN>>>The phone number of the company that valued the Highlands property, MJ Group International Ltd, is +44 (0) 203 463 8725<<<END_MAIN>>>
+- **RIGHT**: <<<MAIN>>>Flood Zone 2 (Medium Probability)<<<END_MAIN>>> is the flood risk category. Or: The objective of the bill is to <<<MAIN>>>provide for the regulation of payment stablecoins and to address various related purposes<<<END_MAIN>>>. Or: <<<MAIN>>>£2,300,000<<<END_MAIN>>> is the Market Value. Or: The phone number of the company that valued the Highlands property, MJ Group International Ltd, is <<<MAIN>>>+44 (0) 203 463 8725<<<END_MAIN>>> [1].
+The tags are for display only (hidden from the user); do not repeat them elsewhere."""
 
 
 # ============================================================================
@@ -258,6 +272,8 @@ Focus your search on information related to or near this cited text.
 
 **INSTRUCTIONS**:
 
+1. **Answer first**: Start with the figure or fact that answers the question (amount, date, name, reference number, or the specific category e.g. "Flood Zone 2 (Medium Probability)") in one flowing sentence. Do not put <<<MAIN>>> around a title or lead-in (e.g. "The flood risk for the property is assessed as follows" or "categorized as follows"). Wrap only the actual answer (e.g. "Flood Zone 2 (Medium Probability)") in <<<MAIN>>>...<<<END_MAIN>>>.
+
 {_get_search_instructions("excerpt")}
 
 2. **Use Only Provided Context**: Answer ONLY using information in the excerpt. Do NOT use general knowledge or assumptions. Do NOT generate generic lists. If not found after thorough search, respond: "This information is not mentioned in the document excerpt."
@@ -327,7 +343,7 @@ def get_summary_human_content(
    
    {_get_valuation_extraction_instructions(detail_level, is_valuation_query=(lambda: (lambda q: ('valuation' in q.lower() or 'value' in q.lower() or 'price' in q.lower()))(user_query) or False)())}
 
-4. **Structure & Clarity**: Start directly with the final answer. Use H1 (#) for main title, H2 (##) for major sections. Make values immediately clear and scannable. Use blank lines between sections.
+4. **Structure & Clarity**: The first token(s) of your response must be the figure or fact that answers the question (amount, number, date, reference, or the specific category/term e.g. "Flood Zone 2 (Medium Probability)"). Write one flowing sentence: [FIGURE] is the [label] [optional context]. Do not start with a title or lead-in (e.g. "The flood risk is assessed as follows" or "categorized as follows"). Wrap only the actual answer in <<<MAIN>>> and <<<END_MAIN>>>—never the title or a generic intro. If you use an H1 (#), its text must start with the answer (e.g. "Flood Zone 2 (Medium Probability)"), not a topic sentence like "The flood risk for the property is assessed as follows" or "categorized as follows." Use H2 (##) for major sections. Make values immediately clear and scannable. Use blank lines between sections.
 
 {_get_entity_normalization_instructions()}
 
@@ -485,7 +501,7 @@ def get_rics_detailed_prompt_instructions() -> str:
 6. **Comparable Evidence**: Reference comparables used in valuation (if applicable), number of comparables, adjustments made.
 7. **Professional Format**: Use RICS Red Book terminology and structure.
 
-**FORMATTING**: Start with primary Market Value, then other scenarios. State assumptions clearly. Present naturally in flowing narrative style."""
+**FORMATTING**: Put the figure first (e.g. £X,XXX,XXX — the Market Value), then other scenarios. Do not start sentences with 'The Market Value...' or 'The property...'. State assumptions clearly. Present naturally in flowing narrative style."""
 
 
 # ============================================================================
@@ -584,6 +600,12 @@ def get_final_answer_prompt(
 6. Assumptions for EACH scenario
 
 **CRITICAL**: If you see "90-day" or "180-day" mentioned, you MUST include those values. Focus ONLY on valuation figures - do NOT include property features."""
+
+    is_category_query = any(term in user_query_lower for term in ['flood risk', 'flood zone', 'zoning', 'classification', 'category', 'what type', 'what is the risk'])
+    category_main_reminder = ""
+    if is_category_query:
+        category_main_reminder = """
+**CATEGORY/CLASSIFICATION QUERY**: The user is asking for a category or classification (e.g. flood risk). Put <<<MAIN>>> only around the actual category name (e.g. "Flood Zone 2 (Medium Probability)"). Do NOT put <<<MAIN>>> around a sentence like "The flood risk for the [property] is assessed as follows" or "categorized as follows"—that is a title, not the answer."""
     
     if is_citation_query:
         sourcing_rules = """**CITATION QUERY**: ONLY use information from DOCUMENT EXTRACTS above. Focus on information related to the citation context. Do NOT use general knowledge or generic examples."""
@@ -642,9 +664,14 @@ def get_final_answer_prompt(
 **⚠️ FOR VALUATION QUERIES**: Include ALL valuation scenarios found (primary Market Value, 90-day, 180-day, Market Rent) with their assumptions. Do NOT skip any scenarios.
 
 **CANONICAL TEMPLATE STRUCTURE**:
-1. **Primary Answer (H1)**: Use # for main title. Short, direct answer (2-3 sentences max).
+1. **Primary Answer**: The first line must be or start with the actual answer (figure, category, or fact), e.g. "Flood Zone 2 (Medium Probability) is the flood risk category." Do not use a first line that only states the topic (e.g. "The flood risk for the property is assessed as follows" or "categorized as follows"). Wrap only that answer phrase in <<<MAIN>>>...<<<END_MAIN>>>. For objective/purpose questions, put only the clause that states the objective in <<<MAIN>>>, not "The objective of X is to". Short, direct answer (2-3 sentences max).
 2. **Present Information Directly**: No separate "Key Concepts" section. Present key facts directly in response with citations.
 3. **Optional Sections (H2)**: Process/Steps (only if procedural), Practical Application (only if application guidance needed), Risks/Edge Cases (only if relevant), Next Actions (only if appropriate).
+
+**START OF RESPONSE**: Do NOT start with a fragment like "of [property name]" or "of [X]". Start directly with the figure, category, or fact (amount/number/date/category name). Do not start with a topic sentence or heading.
+{category_main_reminder}
+
+{_get_main_answer_tagging_rule()}
 
 **HEADING HIERARCHY**: # H1 → ## H2 → ### H3 (never skip levels). Use bullet points for lists.
 
@@ -666,6 +693,65 @@ def get_final_answer_prompt(
 {_get_entity_normalization_instructions()}
 
 Generate the answer content:"""
+
+
+def get_final_answer_prompt_segments(
+    user_query: str,
+    conversation_history: str,
+    formatted_outputs: str,
+    is_citation_query: bool = False,
+) -> str:
+    """Prompt for answer generation as a JSON array of text/cite segments (anchor-quote citation flow)."""
+    user_query_lower = user_query.lower()
+    is_valuation_query = any(term in user_query_lower for term in ['valuation', 'value', 'price', 'worth', 'cost'])
+    value_only_instructions = ""
+    if any(phrase in user_query_lower for phrase in [
+        'value of', 'what is the value', 'what was the value', 'property valued',
+        'valued at', 'valuation amount', 'valuation figure', 'how much is', 'how much was',
+        'tell me the value', 'tell me the valuation'
+    ]):
+        value_only_instructions = """
+**VALUE-ONLY QUERY**: Include ALL valuation figures: Primary Market Value, 90-day, 180-day, Market Rent, Valuation Date, Valuer. Use anchor_quote from the exact line in the document that states each figure."""
+    if is_citation_query:
+        sourcing_rules = "ONLY use information from DOCUMENT CONTENT EXTRACTS. Do NOT use general knowledge."
+    else:
+        sourcing_rules = "Prefer document content. Only add cite segments for facts from the document extracts. Use anchor_quote as a verbatim copy of the phrase from the extracts."
+    main_tagging_rule = _get_main_answer_tagging_rule()
+    return f"""**USER QUESTION:**
+"{user_query}"
+
+**CONVERSATION HISTORY:**
+{conversation_history}
+
+**DOCUMENT CONTENT EXTRACTS:**
+{formatted_outputs}
+
+{sourcing_rules}
+{value_only_instructions}
+
+**OUTPUT FORMAT - CRITICAL**:
+You MUST respond with a valid JSON array of segments. No other text. Each segment is ONE of:
+
+1. Text segment: {{"type": "text", "content": "your prose here"}}
+2. Citation segment: {{"type": "cite", "anchor_quote": "verbatim phrase from DOCUMENT CONTENT EXTRACTS (exact copy-paste)", "citation_number": N}}
+
+**RULES**:
+- **MAIN ANSWER TAGGING** (apply to text segment content):
+{main_tagging_rule}
+  Respond with a JSON array of segments; MAIN rules above apply to text segment content.
+- anchor_quote MUST be a **verbatim** (exact character-for-character) copy of a phrase from DOCUMENT CONTENT EXTRACTS. Copy-paste the exact wording and numbers from the extracts; do not paraphrase, abbreviate, or change punctuation. Minor changes will break citation resolution and the highlight will not work.
+- Citation numbers must be 1, 2, 3, ... in the order they appear in your answer.
+- For each fact from the documents, use a cite segment with the exact phrase that supports it (e.g. "Market Value: £1,950,000" or "15 March 2024"). The anchor_quote must appear as a substring somewhere in the DOCUMENT CONTENT EXTRACTS above.
+- Do not invent text that is not in the extracts. If you cite something, anchor_quote must be an exact copy of text from the extracts.
+- For valuation queries include ALL valuation figures (Market Value, 90-day, 180-day, Market Rent) with cite segments.
+- Optional: you may include "block_id" (and "doc_id" if known) in a cite segment to pin the citation to a specific block; if omitted, resolution uses anchor_quote only.
+
+**EXAMPLE** (MAIN wraps only the direct answer – category, value, or phone):
+For "What is the flood risk?": [{{"type": "text", "content": "<<<MAIN>>>Flood Zone 2 (Medium Probability)<<<END_MAIN>>> is the flood risk category. "}}, ...]
+For valuation: [{{"type": "text", "content": "<<<MAIN>>>£1,950,000<<<END_MAIN>>> is the estimated Market Value. "}}, {{"type": "cite", "anchor_quote": "Market Value: £1,950,000", "citation_number": 1}}, {{"type": "text", "content": " The property is [name] at [address], as of 15 March 2024."}}]
+For "What is the phone number of the company that valued the property?": [{{"type": "text", "content": "The phone number of the company that valued the Highlands property, MJ Group International Ltd, is <<<MAIN>>>+44 (0) 203 463 8725<<<END_MAIN>>> "}}, {{"type": "cite", "anchor_quote": "+44 (0) 203 463 8725", "citation_number": 1}}]
+
+Respond with ONLY the JSON array, no markdown code fence, no explanation."""
 
 
 # ============================================================================
@@ -750,8 +836,8 @@ def get_response_formatting_prompt(raw_response: str, user_query: str) -> str:
 - Do NOT add periods before citations
 
 **CANONICAL TEMPLATE ENFORCEMENT**:
-1. Verify H1 (#) exists for primary answer. Ensure H2 (##) sections follow proper order.
-2. Verify information ordering: H1 primary answer first, key facts directly with citations, optional sections last.
+1. Verify H1 (#) exists and must contain or start with the direct answer (e.g. the category or value), not only a topic sentence. Ensure H2 (##) sections follow proper order.
+2. Verify information ordering: primary answer (the figure/category that answers the question) first, key facts directly with citations, optional sections last.
 3. Enforce cognitive load: Split paragraphs >50 words, limit lists to 3-5 items, limit paragraphs to 3 sentences.
 4. Apply structure: # H1 → ## H2 → ### H3 hierarchy. Present information naturally - no separate "Key Concepts" sections.
 
@@ -845,10 +931,10 @@ def get_combined_citation_answer_prompt(
 - For valuation queries: include ALL scenarios (90-day, 180-day, Market Rent)
 - Do NOT add periods at end of standalone lines
 
-**EXAMPLE**:
+**EXAMPLE** (figure first – MAIN wraps only the figure; do not start with "The Market Value..."):
 - Block: "Market Value: £X,XXX,XXX"
 - Call: cite_source(block_id="BLOCK_CITE_ID_42", citation_number=1, cited_text="Market Value: £X,XXX,XXX")
-- Write: "The Market Value is £X,XXX,XXX[1] as of DD Month YYYY[2]"
+- Write: "<<<MAIN>>>£X,XXX,XXX<<<END_MAIN>>> is the Market Value[1]. As of DD Month YYYY[2]"
 
 **IMPORTANT**: You MUST return BOTH tool calls AND answer text.
 

@@ -225,6 +225,26 @@ class BackendApiService {
     });
   }
 
+  /**
+   * Resolve block_id (e.g. chunk_<uuid>_block_1) to bbox for citation highlighting.
+   * When citedText is provided, returns sub-level (line) bbox so the correct phrase is highlighted.
+   */
+  async resolveCitationBlockBbox(
+    blockId: string,
+    citedText?: string | null
+  ): Promise<ApiResponse<{
+    doc_id: string;
+    chunk_id: string;
+    block_index: number;
+    page: number;
+    bbox: { left: number; top: number; width: number; height: number; page?: number };
+  }>> {
+    return this.fetchApi('/api/citation/block-bbox', {
+      method: 'POST',
+      body: JSON.stringify({ block_id: blockId, cited_text: citedText || undefined }),
+    });
+  }
+
   async chatCompletion(messages: any[]) {
     return this.fetchApi('/api/llm/chat', {
       method: 'POST',
@@ -267,7 +287,7 @@ class BackendApiService {
     onError: (error: string) => void,
     onStatus?: (message: string) => void
   ): EventSource {
-    const baseUrl = this.baseUrl || 'http://localhost:5002';
+    const baseUrl = this.baseUrl || BACKEND_URL;
     const url = `${baseUrl}/api/llm/query/stream`;
     
     // Create a POST request with SSE
@@ -331,7 +351,7 @@ class BackendApiService {
     // PLAN UPDATE: Existing plan content for updates (when user provides follow-up)
     existingPlan?: string
   ): Promise<void> {
-    const baseUrl = this.baseUrl || 'http://localhost:5002';
+    const baseUrl = this.baseUrl || BACKEND_URL;
     const url = `${baseUrl}/api/llm/query/stream`;
     
     const requestBody: Record<string, any> = {
@@ -583,7 +603,7 @@ class BackendApiService {
     onError?: (error: string) => void,
     onReasoningStep?: (step: { step: string; message: string; details: any; action_type?: string }) => void
   ): Promise<void> {
-    const baseUrl = this.baseUrl || 'http://localhost:5002';
+    const baseUrl = this.baseUrl || BACKEND_URL;
     const url = `${baseUrl}/api/llm/build-plan`;
     
     const requestBody = {
@@ -866,7 +886,7 @@ class BackendApiService {
       (window as any).__preloadedDocumentCovers = {};
     }
     
-    const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
+    const backendUrl = BACKEND_URL;
     
     // Preload images and PDFs (fast)
     const preloadImageOrPdf = async (doc: any) => {

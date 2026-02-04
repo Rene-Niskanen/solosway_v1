@@ -224,21 +224,22 @@ def format_evidence_table_for_llm(
     if 'rent' in query_lower:
         evidence_lines.append("\n**FOR RENT QUERIES:**")
         evidence_lines.append("- You MUST cite ALL rent-related evidence")
-        evidence_lines.append("- Example: 'The monthly rent is [AMOUNT] [1], which includes service charges [2] and is payable monthly [3].'")
+        evidence_lines.append("- Example: '[AMOUNT] [1] is the monthly rent, which includes service charges [2] and is payable monthly [3].'")
         evidence_lines.append("- If multiple rent amounts exist, cite all of them")
     elif 'address' in query_lower:
         evidence_lines.append("\n**FOR ADDRESS QUERIES:**")
         evidence_lines.append("- You MUST cite ALL address-related evidence")
-        evidence_lines.append("- Example: 'The property is located at [PROPERTY_ID] [1], on [STREET_NAME] [2], [CITY] [3].'")
+        evidence_lines.append("- Example: '[PROPERTY_ID] [1] is the property; [STREET_NAME] [2], [CITY] [3] is the address.'")
     elif any(word in query_lower for word in ['date', 'period', 'term', 'when']):
         evidence_lines.append("\n**FOR DATE/PERIOD QUERIES:**")
         evidence_lines.append("- You MUST cite ALL date-related evidence")
-        evidence_lines.append("- Example: 'The lease starts on [START_DATE] [1] and ends on [END_DATE] [2].'")
+        evidence_lines.append("- Example: '[START_DATE] [1] is the lease start and [END_DATE] [2] is the end date.'")
     
     evidence_lines.append("\n**EXAMPLES:**")
-    evidence_lines.append("✅ CORRECT: \"The property has a market value of [AMOUNT] [1] as of [DATE] [2].\"")
-    evidence_lines.append("✅ CORRECT: \"The monthly rent is [AMOUNT] [1], which includes service charges [2] and is payable monthly [3].\"")
+    evidence_lines.append("✅ CORRECT: \"[AMOUNT] [1] is the market value as of [DATE] [2].\"")
+    evidence_lines.append("✅ CORRECT: \"[AMOUNT] [1] is the monthly rent, which includes service charges [2] and is payable monthly [3].\"")
     evidence_lines.append("✅ CORRECT: \"The document does not specify the property's insurance requirements.\"")
+    evidence_lines.append("❌ WRONG: \"The property has a market value of [AMOUNT] [1].\" (lead-in before figure; put figure first)")
     evidence_lines.append("❌ WRONG: \"The property value is approximately [AMOUNT] [1].\" (paraphrasing)")
     evidence_lines.append("❌ WRONG: \"The rent is [AMOUNT] [1].\" (missing service charge citation [2])")
     

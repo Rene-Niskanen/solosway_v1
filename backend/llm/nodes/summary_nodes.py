@@ -15,9 +15,15 @@ import json
 from backend.llm.config import config
 from backend.llm.types import MainWorkflowState
 from backend.llm.utils.system_prompts import get_system_prompt
-from backend.llm.prompts import get_summary_human_content, get_citation_extraction_prompt, get_final_answer_prompt
+from backend.llm.prompts import get_summary_human_content, get_citation_extraction_prompt, get_final_answer_prompt, get_final_answer_prompt_segments
 from backend.llm.utils.block_id_formatter import format_document_with_block_ids
-from backend.llm.tools.citation_mapping import create_citation_tool
+from backend.llm.tools.citation_mapping import (
+    create_citation_tool,
+    build_searchable_blocks_from_metadata_lookup_tables,
+    resolve_anchor_quote_to_bbox,
+    resolve_anchor_quote_to_bbox_fuzzy,
+    resolve_block_id_to_bbox,
+)
 from backend.llm.tools.agent_actions import create_agent_action_tools
 from backend.llm.utils.query_characteristics import detect_query_characteristics
 from backend.llm.tools.document_retriever_tool import create_document_retrieval_tool
@@ -1723,67 +1729,189 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
     # Get system prompt for summarize task
     system_msg = get_system_prompt('summarize')
     
-    # Create citation tool instance
+    # Create citation tool instance (used for fallback Phase 1+2)
     citation_tool, citation_tool_instance = create_citation_tool(metadata_lookup_tables)
-    
-    # ============================================================
-    # 2-PHASE APPROACH (Reliable - Ensures citations work correctly)
-    # ============================================================
-    # Phase 1: Extract citations using tool calls
-    # Phase 2: Generate answer text with citation markers
-    # ============================================================
-    # NOTE: Combined approach doesn't work reliably because OpenAI's tool calling API
-    # often returns tool calls without text content, or text without citation markers.
-    # The 2-phase approach ensures we always get both citations and text with markers.
-    # ============================================================
-    logger.info("[SUMMARIZE_RESULTS] Using 2-phase approach for reliable citations")
     
     import time
     phase1_start = time.time()
     
-    # PHASE 1: Citation Extraction (with tools)
-    citation_llm = ChatOpenAI(
-        api_key=config.openai_api_key,
-        model=config.openai_model,
-        temperature=0,
-    ).bind_tools(
-        [citation_tool],
-        tool_choice="auto"
-    )
+    # CRITICAL: Do not generate response if there are no documents
+    if not doc_outputs or len(doc_outputs) == 0:
+        logger.error("[SUMMARIZE_RESULTS] ⚠️ CRITICAL: No document outputs - returning empty response.")
+        return {
+            "final_summary": None,
+            "document_outputs": [],
+            "agent_actions": []
+        }
     
-    citation_prompt = get_citation_extraction_prompt(
+    # ============================================================
+    # STRUCTURED SEGMENTS (anchor-quote citation flow) - primary path
+    # ============================================================
+    segments_used = False
+    summary = ''
+    citations_from_state = []
+    answer_response = None
+    citation_context = state.get("citation_context")
+    is_citation_query = bool(citation_context and citation_context.get("cited_text"))
+    is_agent_mode = state.get('is_agent_mode', False)
+    agent_action_instance = None
+    
+    searchable_blocks = build_searchable_blocks_from_metadata_lookup_tables(metadata_lookup_tables)
+    segments_prompt = get_final_answer_prompt_segments(
         user_query=state['user_query'],
         conversation_history=history_context,
-        search_summary=search_summary,
         formatted_outputs=formatted_outputs_str,
-        metadata_lookup_tables=metadata_lookup_tables
+        is_citation_query=is_citation_query,
     )
-    
-    citation_messages = [system_msg, HumanMessage(content=citation_prompt)]
-    
     try:
-        logger.info("[SUMMARIZE_RESULTS] Phase 1: Extracting citations...")
-        citation_response = await citation_llm.ainvoke(citation_messages)
-        logger.info("[SUMMARIZE_RESULTS] Phase 1 complete")
-    except Exception as llm_error:
-        error_msg = str(llm_error).lower()
-        if "shutdown" in error_msg or "closed" in error_msg or "cannot schedule" in error_msg:
-            logger.error(f"[SUMMARIZE_RESULTS] Event loop error - {llm_error}")
-            raise
-        else:
-            logger.error(f"[SUMMARIZE_RESULTS] Error during Phase 1: {llm_error}", exc_info=True)
-            return {
-                "final_summary": "I encountered an error while processing your query. Please try again.",
-                "citations": [],
-                "document_outputs": doc_outputs,
-                "relevant_documents": state.get('relevant_documents', [])
-            }
+        segments_llm = ChatOpenAI(
+            api_key=config.openai_api_key,
+            model=config.openai_model,
+            temperature=0,
+        )
+        seg_resp = await segments_llm.ainvoke([system_msg, HumanMessage(content=segments_prompt)])
+        raw = (seg_resp.content or '').strip()
+        if raw.startswith('```'):
+            raw = re.sub(r'^```\w*\n?', '', raw)
+            raw = re.sub(r'\n?```\s*$', '', raw)
+        segments = json.loads(raw)
+        if isinstance(segments, list) and len(segments) > 0:
+            summary_parts = []
+            citations_by_num = {}
+            for seg in segments:
+                if seg.get('type') == 'text':
+                    summary_parts.append(seg.get('content', ''))
+                elif seg.get('type') == 'cite':
+                    anchor = (seg.get('anchor_quote') or '').strip()
+                    num = seg.get('citation_number')
+                    block_id_from_seg = seg.get('block_id')
+                    doc_id_from_seg = seg.get('doc_id')
+                    if num is not None:
+                        resolved = None
+                        if block_id_from_seg and metadata_lookup_tables:
+                            resolved = resolve_block_id_to_bbox(
+                                block_id_from_seg,
+                                metadata_lookup_tables,
+                                doc_id_hint=doc_id_from_seg,
+                            )
+                            if resolved:
+                                logger.debug(
+                                    "[SUMMARIZE_RESULTS] Resolved citation %s by block_id from segment",
+                                    num,
+                                )
+                        if not resolved:
+                            resolved = resolve_anchor_quote_to_bbox(anchor, searchable_blocks)
+                        if not resolved and searchable_blocks:
+                            logger.warning(
+                                "[SUMMARIZE_RESULTS] Anchor quote not found (exact match); blocks=%d, anchor_preview=%s",
+                                len(searchable_blocks),
+                                (anchor[:60] + '...') if len(anchor) > 60 else anchor,
+                            )
+                            resolved = resolve_anchor_quote_to_bbox_fuzzy(anchor, searchable_blocks)
+                            if resolved:
+                                logger.info(
+                                    "[SUMMARIZE_RESULTS] Used fuzzy anchor match for citation %s (confidence=low)",
+                                    num,
+                                )
+                        if resolved:
+                            citations_by_num[num] = {
+                                'citation_number': num,
+                                'doc_id': resolved.get('doc_id', ''),
+                                'page_number': resolved.get('page', 0),
+                                'bbox': resolved.get('bbox'),
+                                'block_id': resolved.get('block_id', ''),
+                                'cited_text': anchor,
+                                'method': resolved.get('method', 'anchor-quote-lookup'),
+                                'confidence': resolved.get('confidence', 'high'),
+                                'original_filename': None,
+                            }
+                        else:
+                            logger.warning(
+                                "[SUMMARIZE_RESULTS] Anchor quote not found (exact and fuzzy); blocks=%d, anchor_preview=%s",
+                                len(searchable_blocks),
+                                (anchor[:60] + '...') if len(anchor) > 60 else anchor,
+                            )
+                            citations_by_num[num] = {
+                                'citation_number': num,
+                                'doc_id': '',
+                                'page_number': 0,
+                                'bbox': None,
+                                'block_id': None,
+                                'cited_text': anchor,
+                                'method': 'anchor-quote-lookup',
+                                'confidence': 'low',
+                                'original_filename': None,
+                            }
+                        summary_parts.append(f'[{num}]')
+            summary = ''.join(summary_parts)
+            citations_from_state = [citations_by_num[k] for k in sorted(citations_by_num.keys())]
+            segments_used = True
+            answer_response = None
+            logger.info(
+                "[SUMMARIZE_RESULTS] Segments flow succeeded: %d chars, %d citations",
+                len(summary), len(citations_from_state),
+            )
+    except (json.JSONDecodeError, TypeError, KeyError) as seg_err:
+        logger.warning(
+            "[SUMMARIZE_RESULTS] Segments flow failed (falling back to Phase 1+2): %s",
+            seg_err,
+        )
+    except Exception as seg_err:
+        logger.warning(
+            "[SUMMARIZE_RESULTS] Segments flow error (falling back to Phase 1+2): %s",
+            seg_err,
+            exc_info=True,
+        )
     
-    # Process tool calls (citations) from Phase 1
-    citations_from_state = []
-    if hasattr(citation_response, 'tool_calls') and citation_response.tool_calls:
-        logger.info(f"[SUMMARIZE_RESULTS] Processing {len(citation_response.tool_calls)} citation tool calls...")
-        for tool_call in citation_response.tool_calls:
+    # ============================================================
+    # FALLBACK: 2-PHASE APPROACH (Phase 1 tool calls + Phase 2 answer)
+    # ============================================================
+    if not segments_used:
+        logger.info("[SUMMARIZE_RESULTS] Using 2-phase approach for reliable citations")
+        
+        # PHASE 1: Citation Extraction (with tools)
+        citation_llm = ChatOpenAI(
+            api_key=config.openai_api_key,
+            model=config.openai_model,
+            temperature=0,
+        ).bind_tools(
+            [citation_tool],
+            tool_choice="auto"
+        )
+        
+        citation_prompt = get_citation_extraction_prompt(
+            user_query=state['user_query'],
+            conversation_history=history_context,
+            search_summary=search_summary,
+            formatted_outputs=formatted_outputs_str,
+            metadata_lookup_tables=metadata_lookup_tables
+        )
+        
+        citation_messages = [system_msg, HumanMessage(content=citation_prompt)]
+        
+        try:
+            logger.info("[SUMMARIZE_RESULTS] Phase 1: Extracting citations...")
+            citation_response = await citation_llm.ainvoke(citation_messages)
+            logger.info("[SUMMARIZE_RESULTS] Phase 1 complete")
+        except Exception as llm_error:
+            error_msg = str(llm_error).lower()
+            if "shutdown" in error_msg or "closed" in error_msg or "cannot schedule" in error_msg:
+                logger.error(f"[SUMMARIZE_RESULTS] Event loop error - {llm_error}")
+                raise
+            else:
+                logger.error(f"[SUMMARIZE_RESULTS] Error during Phase 1: {llm_error}", exc_info=True)
+                return {
+                    "final_summary": "I encountered an error while processing your query. Please try again.",
+                    "citations": [],
+                    "document_outputs": doc_outputs,
+                    "relevant_documents": state.get('relevant_documents', [])
+                }
+        
+        # Process tool calls (citations) from Phase 1
+        citations_from_state = []
+        if hasattr(citation_response, 'tool_calls') and citation_response.tool_calls:
+            logger.info(f"[SUMMARIZE_RESULTS] Processing {len(citation_response.tool_calls)} citation tool calls...")
+            for tool_call in citation_response.tool_calls:
                 tool_name = tool_call.get('name') if isinstance(tool_call, dict) else getattr(tool_call, 'name', None)
                 if tool_name == 'cite_source':
                     tool_args = tool_call.get('args', {}) if isinstance(tool_call, dict) else getattr(tool_call, 'args', {})
@@ -1796,154 +1924,116 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
                             )
                         except Exception as tool_error:
                             logger.error(f"[SUMMARIZE_RESULTS] Error processing citation: {tool_error}")
+            
+            citations_from_state = citation_tool_instance.citations
+            logger.info(f"[SUMMARIZE_RESULTS] Extracted {len(citations_from_state)} citations")
         
-        citations_from_state = citation_tool_instance.citations
-        logger.info(f"[SUMMARIZE_RESULTS] Extracted {len(citations_from_state)} citations")
-    
-    phase1_end = time.time()
-    logger.info(f"[SUMMARIZE_RESULTS] Phase 1 took {phase1_end - phase1_start:.2f}s")
-    
-    # PHASE 2: Generate Answer (with agent tools in Agent mode)
-    phase2_start = time.time()
-    
-    # AGENT MODE: Check if we should bind agent action tools
-    is_agent_mode = state.get('is_agent_mode', False)
-    
-    # REMOVED: Don't force agent mode - respect the state
-    # If agent mode is False, it means frontend/user wants reader mode
-    # The LLM should only use tools when agent mode is explicitly enabled
-    route_decision = state.get('route_decision')
-    
-    logger.info(f"[SUMMARIZE_RESULTS] Agent mode: {is_agent_mode} (route_decision: {route_decision}, doc_outputs: {len(doc_outputs) if doc_outputs else 0})")
-    
-    if not is_agent_mode and not doc_outputs:
-        logger.warning(
-            "[SUMMARIZE_RESULTS] Agent mode is disabled and no documents found - "
-            "LLM cannot use retrieval tools. Consider enabling agent mode for document searches."
-        )
-    
-    agent_action_instance = None
-    
-    if is_agent_mode:
-        # Create agent action tools for proactive document display
-        # NOTE: Retrieval tools (retrieve_documents, retrieve_chunks) are now handled by
-        # the unified agent node in the graph.
-        # This node only needs UI action tools (open_document, navigate_to_property_by_name).
-        agent_tools, agent_action_instance = create_agent_action_tools()
+        phase1_end = time.time()
+        logger.info(f"[SUMMARIZE_RESULTS] Phase 1 took {phase1_end - phase1_start:.2f}s")
         
-        logger.info(f"[SUMMARIZE_RESULTS] Agent mode enabled - binding {len(agent_tools)} agent tools (UI actions only)")
-        # NOTE: Using "auto" allows LLM to choose when to use tools
-        # The fallback mechanism below will handle cases where LLM only makes tool calls without text
-        answer_llm = ChatOpenAI(
-            api_key=config.openai_api_key,
-            model=config.openai_model,
-            temperature=0,
-        ).bind_tools(agent_tools, tool_choice="auto")
-    else:
-        # Reader mode: No agent tools
-        answer_llm = ChatOpenAI(
-            api_key=config.openai_api_key,
-            model=config.openai_model,
-            temperature=0,
-        )
-    
-    # Check if this is a citation query (user clicked on a citation)
-    citation_context = state.get("citation_context")
-    is_citation_query = bool(citation_context and citation_context.get("cited_text"))
-    
-    answer_prompt = get_final_answer_prompt(
-        user_query=state['user_query'],
-        conversation_history=history_context,
-        formatted_outputs=formatted_outputs_str,
-        citations=citations_from_state,
-        is_citation_query=is_citation_query,  # Pass flag to adjust prompt
-        is_agent_mode=is_agent_mode  # Pass agent mode to enable tool instructions in prompt
-    )
-    
-    answer_messages = [system_msg, HumanMessage(content=answer_prompt)]
-    
-    # NOTE: Retrieval is now handled by the unified agent node
-    # This node assumes document_outputs is already populated from agent node.
-    # We only need to handle UI action tools (open_document, navigate_to_property_by_name) if in agent mode.
-    
-    try:
-        # CRITICAL: Do not generate response if there are no documents
-        if not doc_outputs or len(doc_outputs) == 0:
-            logger.error(f"[SUMMARIZE_RESULTS] ⚠️ CRITICAL: Attempted to generate answer with 0 document outputs!")
-            logger.error(f"[SUMMARIZE_RESULTS] This will cause hallucinations. Returning empty response.")
-            return {
-                "final_summary": None,  # Signal to go to no_results_node
-                "document_outputs": [],
-                "agent_actions": []
-            }
+        # PHASE 2: Generate Answer (with agent tools in Agent mode)
+        phase2_start = time.time()
+        is_agent_mode = state.get('is_agent_mode', False)
+        route_decision = state.get('route_decision')
+        logger.info(f"[SUMMARIZE_RESULTS] Agent mode: {is_agent_mode} (route_decision: {route_decision}, doc_outputs: {len(doc_outputs) if doc_outputs else 0})")
         
-        logger.info(f"[SUMMARIZE_RESULTS] Generating answer from {len(doc_outputs)} document outputs (agent_mode={is_agent_mode})")
+        if not is_agent_mode and not doc_outputs:
+            logger.warning(
+                "[SUMMARIZE_RESULTS] Agent mode is disabled and no documents found - "
+                "LLM cannot use retrieval tools. Consider enabling agent mode for document searches."
+            )
         
-        # DEBUG: Log the prompt length and document outputs count
-        logger.debug(f"[SUMMARIZE_RESULTS] Prompt length: {len(answer_prompt)} chars, Document outputs: {len(doc_outputs)}")
-        if doc_outputs:
-            logger.debug(f"[SUMMARIZE_RESULTS] First doc_output keys: {list(doc_outputs[0].keys()) if doc_outputs[0] else 'empty'}")
-            logger.debug(f"[SUMMARIZE_RESULTS] First doc_output output length: {len(str(doc_outputs[0].get('output', ''))) if doc_outputs[0] else 0} chars")
-        
-        # Single LLM call - no iterative tool calling for retrieval
-        answer_response = await answer_llm.ainvoke(answer_messages)
-        
-        # DEBUG: Log LLM response details
-        logger.debug(f"[SUMMARIZE_RESULTS] LLM response type: {type(answer_response)}")
-        if hasattr(answer_response, 'content'):
-            logger.debug(f"[SUMMARIZE_RESULTS] LLM response content type: {type(answer_response.content)}, length: {len(str(answer_response.content)) if answer_response.content else 0} chars")
-            logger.debug(f"[SUMMARIZE_RESULTS] LLM response content (first 200 chars): {str(answer_response.content)[:200] if answer_response.content else 'None'}...")
-        if hasattr(answer_response, 'tool_calls'):
-            logger.debug(f"[SUMMARIZE_RESULTS] LLM response tool_calls: {len(answer_response.tool_calls) if answer_response.tool_calls else 0}")
-        
-        # Process UI action tool calls if any (open_document, navigate_to_property_by_name)
-        # These are handled after getting the answer
-        if hasattr(answer_response, 'tool_calls') and answer_response.tool_calls:
-            logger.info(f"[SUMMARIZE_RESULTS] LLM made {len(answer_response.tool_calls)} UI action tool call(s)")
-            # UI action tools are processed below in the agent action processing section
-        
-        # Extract answer text
-        summary = ''
-        if hasattr(answer_response, 'content'):
-            summary = str(answer_response.content).strip() if answer_response.content else ''
-            logger.debug(f"[SUMMARIZE_RESULTS] Extracted summary from content: {len(summary)} chars")
-            if not summary:
-                logger.warning(f"[SUMMARIZE_RESULTS] ⚠️ LLM returned empty content! Response content was: {repr(answer_response.content)}")
-                # CRITICAL: If LLM made tool calls but no text, we need to force it to generate text
-                # This happens when LLM only makes tool calls without generating an answer
-                if hasattr(answer_response, 'tool_calls') and answer_response.tool_calls:
-                    logger.warning(f"[SUMMARIZE_RESULTS] LLM made {len(answer_response.tool_calls)} tool calls but no text content - forcing text generation")
-                    # Re-invoke LLM with explicit instruction to generate text
-                    force_text_prompt = answer_prompt + "\n\n**CRITICAL**: You must provide a complete answer in text. Use tools for UI actions, but also write the full answer in your response."
-                    force_text_messages = [system_msg, HumanMessage(content=force_text_prompt)]
-                    try:
-                        force_text_response = await answer_llm.ainvoke(force_text_messages)
-                        if hasattr(force_text_response, 'content') and force_text_response.content:
-                            summary = str(force_text_response.content).strip()
-                            logger.info(f"[SUMMARIZE_RESULTS] Generated summary after forcing text: {len(summary)} chars")
-                            # Still process tool calls from original response
-                            if hasattr(force_text_response, 'tool_calls') and force_text_response.tool_calls:
-                                # Merge tool calls if needed
-                                if not hasattr(answer_response, 'tool_calls') or not answer_response.tool_calls:
-                                    answer_response.tool_calls = force_text_response.tool_calls
-                        else:
-                            logger.error(f"[SUMMARIZE_RESULTS] ⚠️ Even after forcing text, LLM returned empty content!")
-                    except Exception as force_error:
-                        logger.error(f"[SUMMARIZE_RESULTS] Error forcing text generation: {force_error}", exc_info=True)
-        elif isinstance(answer_response, str):
-            summary = answer_response.strip()
-            logger.debug(f"[SUMMARIZE_RESULTS] Extracted summary from string: {len(summary)} chars")
+        agent_action_instance = None
+        if is_agent_mode:
+            agent_tools, agent_action_instance = create_agent_action_tools()
+            logger.info(f"[SUMMARIZE_RESULTS] Agent mode enabled - binding {len(agent_tools)} agent tools (UI actions only)")
+            answer_llm = ChatOpenAI(
+                api_key=config.openai_api_key,
+                model=config.openai_model,
+                temperature=0,
+            ).bind_tools(agent_tools, tool_choice="auto")
         else:
-            logger.warning(f"[SUMMARIZE_RESULTS] ⚠️ LLM response has unexpected type: {type(answer_response)}, no content found")
+            answer_llm = ChatOpenAI(
+                api_key=config.openai_api_key,
+                model=config.openai_model,
+                temperature=0,
+            )
         
-    except Exception as llm_error:
-        logger.error(f"[SUMMARIZE_RESULTS] Error during answer generation: {llm_error}", exc_info=True)
-        return {
-            "final_summary": "I encountered an error generating the response. Please try again.",
-            "citations": citations_from_state,
-            "document_outputs": doc_outputs,
-            "relevant_documents": state.get('relevant_documents', [])
-        }
+        answer_prompt = get_final_answer_prompt(
+            user_query=state['user_query'],
+            conversation_history=history_context,
+            formatted_outputs=formatted_outputs_str,
+            citations=citations_from_state,
+            is_citation_query=is_citation_query,
+            is_agent_mode=is_agent_mode
+        )
+        
+        answer_messages = [system_msg, HumanMessage(content=answer_prompt)]
+        
+        # NOTE: Retrieval is now handled by the unified agent node.
+        # We only need to handle UI action tools if in agent mode.
+        try:
+            # CRITICAL: Do not generate response if there are no documents
+            if not doc_outputs or len(doc_outputs) == 0:
+                logger.error(f"[SUMMARIZE_RESULTS] ⚠️ CRITICAL: Attempted to generate answer with 0 document outputs!")
+                logger.error(f"[SUMMARIZE_RESULTS] This will cause hallucinations. Returning empty response.")
+                return {
+                    "final_summary": None,  # Signal to go to no_results_node
+                    "document_outputs": [],
+                    "agent_actions": []
+                }
+            
+            logger.info(f"[SUMMARIZE_RESULTS] Generating answer from {len(doc_outputs)} document outputs (agent_mode={is_agent_mode})")
+            logger.debug(f"[SUMMARIZE_RESULTS] Prompt length: {len(answer_prompt)} chars, Document outputs: {len(doc_outputs)}")
+            if doc_outputs:
+                logger.debug(f"[SUMMARIZE_RESULTS] First doc_output keys: {list(doc_outputs[0].keys()) if doc_outputs[0] else 'empty'}")
+                logger.debug(f"[SUMMARIZE_RESULTS] First doc_output output length: {len(str(doc_outputs[0].get('output', ''))) if doc_outputs[0] else 0} chars")
+            
+            answer_response = await answer_llm.ainvoke(answer_messages)
+            logger.debug(f"[SUMMARIZE_RESULTS] LLM response type: {type(answer_response)}")
+            if hasattr(answer_response, 'content'):
+                logger.debug(f"[SUMMARIZE_RESULTS] LLM response content type: {type(answer_response.content)}, length: {len(str(answer_response.content)) if answer_response.content else 0} chars")
+                logger.debug(f"[SUMMARIZE_RESULTS] LLM response content (first 200 chars): {str(answer_response.content)[:200] if answer_response.content else 'None'}...")
+            if hasattr(answer_response, 'tool_calls'):
+                logger.debug(f"[SUMMARIZE_RESULTS] LLM response tool_calls: {len(answer_response.tool_calls) if answer_response.tool_calls else 0}")
+            if hasattr(answer_response, 'tool_calls') and answer_response.tool_calls:
+                logger.info(f"[SUMMARIZE_RESULTS] LLM made {len(answer_response.tool_calls)} UI action tool call(s)")
+            
+            summary = ''
+            if hasattr(answer_response, 'content'):
+                summary = str(answer_response.content).strip() if answer_response.content else ''
+                logger.debug(f"[SUMMARIZE_RESULTS] Extracted summary from content: {len(summary)} chars")
+                if not summary:
+                    logger.warning(f"[SUMMARIZE_RESULTS] ⚠️ LLM returned empty content! Response content was: {repr(answer_response.content)}")
+                    if hasattr(answer_response, 'tool_calls') and answer_response.tool_calls:
+                        logger.warning(f"[SUMMARIZE_RESULTS] LLM made {len(answer_response.tool_calls)} tool calls but no text content - forcing text generation")
+                        force_text_prompt = answer_prompt + "\n\n**CRITICAL**: You must provide a complete answer in text. Use tools for UI actions, but also write the full answer in your response."
+                        force_text_messages = [system_msg, HumanMessage(content=force_text_prompt)]
+                        try:
+                            force_text_response = await answer_llm.ainvoke(force_text_messages)
+                            if hasattr(force_text_response, 'content') and force_text_response.content:
+                                summary = str(force_text_response.content).strip()
+                                logger.info(f"[SUMMARIZE_RESULTS] Generated summary after forcing text: {len(summary)} chars")
+                                if hasattr(force_text_response, 'tool_calls') and force_text_response.tool_calls:
+                                    if not hasattr(answer_response, 'tool_calls') or not answer_response.tool_calls:
+                                        answer_response.tool_calls = force_text_response.tool_calls
+                            else:
+                                logger.error(f"[SUMMARIZE_RESULTS] ⚠️ Even after forcing text, LLM returned empty content!")
+                        except Exception as force_error:
+                            logger.error(f"[SUMMARIZE_RESULTS] Error forcing text generation: {force_error}", exc_info=True)
+            elif isinstance(answer_response, str):
+                summary = answer_response.strip()
+                logger.debug(f"[SUMMARIZE_RESULTS] Extracted summary from string: {len(summary)} chars")
+            else:
+                logger.warning(f"[SUMMARIZE_RESULTS] ⚠️ LLM response has unexpected type: {type(answer_response)}, no content found")
+        except Exception as llm_error:
+            logger.error(f"[SUMMARIZE_RESULTS] Error during answer generation: {llm_error}", exc_info=True)
+            return {
+                "final_summary": "I encountered an error generating the response. Please try again.",
+                "citations": citations_from_state,
+                "document_outputs": doc_outputs,
+                "relevant_documents": state.get('relevant_documents', [])
+            }
     
     # AGENT MODE: Process agent action tool calls (open_document, navigate_to_property)
     agent_actions = []
@@ -2178,8 +2268,8 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
     
     # Renumber citations based on order of appearance in response
     # This ensures citations are sequential (1, 2, 3...) based on when they appear in text
-    # Only renumber if we have citations from Phase 1
-    if citations_from_state and summary:
+    # Only renumber when using Phase 1+2 (segments flow already has citations in order)
+    if not segments_used and citations_from_state and summary:
         summary, citations_from_state = _renumber_citations_by_appearance(summary, citations_from_state, metadata_lookup_tables)
     
     summary_complete_time = time.time()
