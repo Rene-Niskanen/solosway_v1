@@ -46,6 +46,7 @@ function exitFullscreen(): Promise<void> {
   return Promise.reject(new Error("Exit fullscreen not supported"));
 }
 
+/** Provides fullscreen state; keyboard shortcut ⌘F to toggle is handled in MainContent. */
 export function BrowserFullscreenProvider({ children }: { children: React.ReactNode }) {
   const [isBrowserFullscreen, setIsBrowserFullscreen] = React.useState<boolean>(() =>
     typeof document !== "undefined" && !!getFullscreenElement()

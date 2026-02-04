@@ -13,6 +13,7 @@ export interface SegmentInputProps {
   onInsertText?: (char: string) => void;
   onBackspace?: () => void;
   onDelete?: () => void;
+  onDeleteSelection?: (startPlainOffset: number, endPlainOffset: number) => void;
   onMoveLeft?: () => void;
   onMoveRight?: () => void;
   onRemovePropertyChip?: (id: string) => void;
@@ -32,6 +33,7 @@ export const SegmentInput = React.forwardRef<HTMLDivElement, SegmentInputProps>(
   onInsertText,
   onBackspace,
   onDelete,
+  onDeleteSelection,
   onMoveLeft,
   onMoveRight,
   onRemovePropertyChip,
@@ -45,6 +47,50 @@ export const SegmentInput = React.forwardRef<HTMLDivElement, SegmentInputProps>(
   const internalRef = React.useRef<HTMLDivElement>(null);
   const containerRef = ref || internalRef;
   const segmentRefs = React.useRef<(HTMLSpanElement | null)[]>([]);
+
+  function segmentOffsetToPlain(segmentIndex: number, segmentOffset: number, segs: Segment[]): number {
+    let plain = 0;
+    for (let i = 0; i < segmentIndex; i++) {
+      const s = segs[i];
+      if (isTextSegment(s)) plain += s.value.length;
+    }
+    const segAt = segs[segmentIndex];
+    if (segAt && isTextSegment(segAt)) {
+      plain += Math.min(segmentOffset, segAt.value.length);
+    }
+    return plain;
+  }
+
+  function nodeToSegmentOffset(
+    node: Node | null,
+    offset: number,
+    refs: (HTMLSpanElement | null)[],
+    segs: Segment[]
+  ): { segmentIndex: number; segmentOffset: number } | null {
+    if (!node) return null;
+    for (let i = 0; i < refs.length; i++) {
+      const span = refs[i];
+      if (!span) continue;
+      const seg = segs[i];
+      if (isTextSegment(seg)) {
+        const textNode = span.firstChild;
+        if (textNode && node === textNode) {
+          return { segmentIndex: i, segmentOffset: Math.min(offset, seg.value.length) };
+        }
+        if (node === span) {
+          const segOffset = offset === 0 ? 0 : seg.value.length;
+          return { segmentIndex: i, segmentOffset: segOffset };
+        }
+      }
+      if (isChipSegment(seg)) {
+        if (span === node || span.contains(node)) {
+          const segOffset = offset === 0 ? 0 : 1;
+          return { segmentIndex: i, segmentOffset: segOffset };
+        }
+      }
+    }
+    return null;
+  }
 
   // Restore selection after segments/cursor change
   React.useLayoutEffect(() => {
@@ -78,12 +124,30 @@ export const SegmentInput = React.forwardRef<HTMLDivElement, SegmentInputProps>(
   const handleKeyDown = React.useCallback(
     (e: React.KeyboardEvent) => {
       if (disabled) return;
-      if (e.key === "Backspace") {
-        e.preventDefault();
-        onBackspace?.();
-        return;
-      }
-      if (e.key === "Delete") {
+      if (e.key === "Backspace" || e.key === "Delete") {
+        const sel = window.getSelection();
+        if (sel && sel.rangeCount > 0) {
+          const range = sel.getRangeAt(0);
+          if (!range.collapsed) {
+            const container = typeof containerRef === "function" ? null : containerRef?.current;
+            if (container?.contains(range.startContainer) && container.contains(range.endContainer)) {
+              const startPos = nodeToSegmentOffset(range.startContainer, range.startOffset, segmentRefs.current, segments);
+              const endPos = nodeToSegmentOffset(range.endContainer, range.endOffset, segmentRefs.current, segments);
+              if (startPos != null && endPos != null && onDeleteSelection) {
+                const startPlain = segmentOffsetToPlain(startPos.segmentIndex, startPos.segmentOffset, segments);
+                const endPlain = segmentOffsetToPlain(endPos.segmentIndex, endPos.segmentOffset, segments);
+                e.preventDefault();
+                onDeleteSelection(Math.min(startPlain, endPlain), Math.max(startPlain, endPlain));
+                return;
+              }
+            }
+          }
+        }
+        if (e.key === "Backspace") {
+          e.preventDefault();
+          onBackspace?.();
+          return;
+        }
         e.preventDefault();
         onDelete?.();
         return;
@@ -99,6 +163,11 @@ export const SegmentInput = React.forwardRef<HTMLDivElement, SegmentInputProps>(
         return;
       }
       if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        if (e.key === " ") {
+          setSpellCheckAfterSpace(true);
+        } else {
+          setSpellCheckAfterSpace(false);
+        }
         e.preventDefault();
         onInsertText?.(e.key);
       }
@@ -109,10 +178,12 @@ export const SegmentInput = React.forwardRef<HTMLDivElement, SegmentInputProps>(
       disabled,
       onBackspace,
       onDelete,
+      onDeleteSelection,
       onMoveLeft,
       onMoveRight,
       onInsertText,
       externalOnKeyDown,
+      segments,
     ]
   );
 
@@ -153,6 +224,10 @@ export const SegmentInput = React.forwardRef<HTMLDivElement, SegmentInputProps>(
     (segments.length === 1 && isTextSegment(segments[0]) && segments[0].value === "");
   const showPlaceholder = isEmpty && placeholder;
 
+  const [isFocused, setIsFocused] = React.useState(false);
+  const [spellCheckAfterSpace, setSpellCheckAfterSpace] = React.useState(false);
+  const spellCheck = !isFocused || spellCheckAfterSpace;
+
   return (
     <div
       ref={ref || internalRef}
@@ -172,6 +247,12 @@ export const SegmentInput = React.forwardRef<HTMLDivElement, SegmentInputProps>(
         whiteSpace: "pre-wrap",
         ...style,
       }}
+      spellCheck={spellCheck}
+      onFocus={() => {
+        setIsFocused(true);
+        setSpellCheckAfterSpace(false);
+      }}
+      onBlur={() => setIsFocused(false)}
       onKeyDown={handleKeyDown}
       onClick={handleClick}
     >

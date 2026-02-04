@@ -223,7 +223,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
   const [atAnchorIndex, setAtAnchorIndex] = useState(-1);
   const [atItems, setAtItems] = useState<AtMentionItem[]>([]);
   const [atSelectedIndex, setAtSelectedIndex] = useState(0);
-  const [atPlacement, setAtPlacement] = useState<'above' | 'below'>('below');
+  const [atPlacement] = useState<'above' | 'below'>('above'); // Always above so dropdown doesn't cover chat bar
 
   const initialSegments = useMemo(
     () =>
@@ -334,6 +334,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
   // QuickStartBar positioning refs and state (for map view)
   const searchFormRef = useRef<HTMLFormElement>(null);
   const searchContainerRef = useRef<HTMLDivElement>(null);
+  const atMentionAnchorRef = useRef<HTMLDivElement>(null); // Input row ref so popover sits directly under input
   const quickStartBarWrapperRef = useRef<HTMLDivElement>(null);
   const [quickStartBarBottom, setQuickStartBarBottom] = useState<string>('calc(100% + 12px)');
   
@@ -1322,10 +1323,10 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                   : (isDragOver ? '#F0F9FF' : 'rgba(255, 255, 255, 0.72)'),
                 backdropFilter: isMapVisible || isDragOver ? 'none' : 'blur(16px) saturate(160%)',
                 WebkitBackdropFilter: isMapVisible || isDragOver ? 'none' : 'blur(16px) saturate(160%)',
-                // ChatGPT-style: very thin 1px border, slightly sharper grey; dashed only on drag.
+                // Pixel-perfect: very thin light grey border when not dragging.
                 border: isDragOver
                   ? '2px dashed rgb(36, 41, 50)'
-                  : '1px solid #D4D4D4',
+                  : '1px solid #E0E0E0',
                 // ChatGPT-style subtle drop shadow: soft lift, minimal offset, light opacity.
                 boxShadow: isDragOver 
                   ? '0 4px 12px 0 rgba(59, 130, 246, 0.15), 0 2px 4px 0 rgba(59, 130, 246, 0.10)' 
@@ -1389,8 +1390,9 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                 gap: isMapVisible ? '0' : '12px' // Match SideChatPanel: no gap in map view, use gap in dashboard
               }}
             >
-              {/* Inline text + chips (SegmentInput) */}
+              {/* Inline text + chips (SegmentInput) - ref used as popover anchor so it sits directly under input */}
               <div 
+                ref={atMentionAnchorRef}
                 className="flex items-start w-full"
                 style={{ minHeight: '24px', width: '100%', marginTop: isMapVisible ? '4px' : '0px', marginBottom: isMapVisible ? '12px' : '0px', paddingTop: 0, paddingBottom: 0 }}
               >
@@ -1409,6 +1411,10 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                     }}
                     onBackspace={segmentInput.backspace}
                     onDelete={segmentInput.deleteForward}
+                    onDeleteSelection={(start, end) => {
+                      segmentInput.removeRange(start, end);
+                      segmentInput.setCursorToOffset(start);
+                    }}
                     onMoveLeft={segmentInput.moveCursorLeft}
                     onMoveRight={segmentInput.moveCursorRight}
                     onRemovePropertyChip={removePropertyAttachment}
@@ -1427,7 +1433,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                       paddingBottom: '4px',
                       paddingRight: '12px',
                       paddingLeft: '6px',
-                      color: segmentInput.getPlainText() ? '#0D0D0D' : undefined,
+                      color: segmentInput.getPlainText() ? '#333333' : undefined,
                       boxSizing: 'border-box',
                     }}
                     onKeyDown={(e) => {
@@ -1445,7 +1451,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
               </div>
               <AtMentionPopover
                 open={atMentionOpen}
-                anchorRef={searchContainerRef}
+                anchorRef={atMentionAnchorRef}
                 query={atQuery}
                 placement={atPlacement}
                 items={atItems}

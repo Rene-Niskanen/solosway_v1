@@ -615,6 +615,12 @@ const StreamingResponseText: React.FC<{
     return text;
   };
 
+  // Insert paragraph breaks before bold section labels (e.g. **Flood Zone 2:**, **Surface Water Flooding:**)
+  // so multi-section answers render with visual separation instead of one long paragraph
+  const ensureParagraphBreaksBeforeBoldSections = (text: string): string => {
+    return text.replace(/(\.\s*|\s-\s)\s*\*\*([^*]+):\*\*/g, '$1\n\n**$2:**');
+  };
+
   // Parse <<<MAIN>>>...<<<END_MAIN>>> (LLM wraps the direct answer); replace with placeholders so we highlight each segment
   const { mainSegments, textWithTagsStripped } = React.useMemo(() => {
     const segments: string[] = [];
@@ -684,9 +690,11 @@ const StreamingResponseText: React.FC<{
     return processedText;
   };
   
-  // Process citations before markdown parsing
+  // Process citations before markdown parsing (and insert paragraph breaks before bold section labels)
   const textWithCitationPlaceholders = React.useMemo(() => {
-    return processCitationsBeforeMarkdown(ensureBalancedBoldForDisplay(textWithTagsStripped));
+    const withBold = ensureBalancedBoldForDisplay(textWithTagsStripped);
+    const withSections = ensureParagraphBreaksBeforeBoldSections(withBold);
+    return processCitationsBeforeMarkdown(withSections);
   }, [textWithTagsStripped, citations, showCitations]);
   
   // Helper to render citation placeholders (no deduplication - show all citations)
@@ -916,6 +924,22 @@ const StreamingResponseText: React.FC<{
     </>
   );
 };
+
+// Memoize so highlight/text only re-renders when content changes, not when chat title, reasoning toggle, etc. change
+function streamingResponseTextAreEqual(
+  prev: React.ComponentProps<typeof StreamingResponseText>,
+  next: React.ComponentProps<typeof StreamingResponseText>
+): boolean {
+  return (
+    prev.text === next.text &&
+    prev.isStreaming === next.isStreaming &&
+    prev.messageId === next.messageId &&
+    prev.skipHighlight === next.skipHighlight &&
+    prev.showCitations === next.showCitations &&
+    prev.citations === next.citations
+  );
+}
+const StreamingResponseTextMemo = React.memo(StreamingResponseText, streamingResponseTextAreEqual);
 
 // Component for displaying property thumbnail in search results
 const PropertyImageThumbnail: React.FC<{ property: PropertyData }> = ({ property }) => {
@@ -8608,7 +8632,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           }, 50);
         });
         
-        // CRITICAL: Automatically open document preview if persisted messages have citations
+        // CRITICAL: Only auto-open document from citations when this chat does NOT already have
+        // a document preview (e.g. in ChatStateStore from a previous visit). Re-entering a chat
+        // already restores the preview from the store; opening again causes duplicate opens/spamming.
+        const existingDocForChat = currentChatId ? getChatState(currentChatId)?.documentPreview : null;
+        if (existingDocForChat) {
+          // Chat already has a document preview (re-entered); skip auto-open to prevent spamming
+          return;
+        }
+        
+        // Automatically open document preview if persisted messages have citations
         // Find the last response message with citations and open the first citation's document
         for (let i = persistedMessages.length - 1; i >= 0; i--) {
           const msg = persistedMessages[i];
@@ -9441,7 +9474,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         })();
       }
     }
-  }, [isVisible, query, restoreChatId, getChatById, currentChatId, clearPropertyAttachments, updateChatStatus, openExpandedCardView]);
+  }, [isVisible, query, restoreChatId, getChatById, currentChatId, clearPropertyAttachments, updateChatStatus, openExpandedCardView, getChatState]);
 
 
 
@@ -11880,7 +11913,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               minHeight: '1px', // Prevent collapse
               contain: 'layout style' // Prevent layout shifts (removed 'paint' to prevent text clipping)
             }}>
-              <StreamingResponseText
+              <StreamingResponseTextMemo
                 text={message.text}
                 isStreaming={message.isLoading || false} // Allow streaming to continue
                 citations={message.citations}
@@ -12651,7 +12684,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       >
                         <SlidersHorizontal className="w-3.5 h-3.5 text-[#666] flex-shrink-0" strokeWidth={1.75} />
                         {actualPanelWidth >= 750 && (
-                          <span className="text-[12px] font-normal text-[#666] ml-1">Response</span>
+                          <span className="text-[12px] font-normal text-[#666] ml-1.5">Response</span>
                         )}
                       </button>
                     </PopoverTrigger>
@@ -12901,7 +12934,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         background: isDragOver ? '#F0F9FF' : 'rgba(255, 255, 255, 0.72)',
                         backdropFilter: isDragOver ? 'none' : 'blur(16px) saturate(160%)',
                         WebkitBackdropFilter: isDragOver ? 'none' : 'blur(16px) saturate(160%)',
-                        border: isDragOver ? '2px dashed rgb(36, 41, 50)' : '1px solid #D4D4D4',
+                        border: isDragOver ? '2px dashed rgb(36, 41, 50)' : '1px solid #E0E0E0',
                         boxShadow: isDragOver ? '0 4px 12px 0 rgba(59, 130, 246, 0.15), 0 2px 4px 0 rgba(59, 130, 246, 0.10)' : '0 1px 3px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.04)',
                         position: 'relative',
                         paddingTop: '12px',
@@ -13032,6 +13065,23 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                 e.preventDefault();
                                 handleSubmit(e);
                               }
+                              if (e.key === 'Backspace' || e.key === 'Delete') {
+                                const ta = e.target as HTMLTextAreaElement;
+                                const start = ta.selectionStart;
+                                const end = ta.selectionEnd;
+                                if (start !== end) {
+                                  e.preventDefault();
+                                  const newValue = inputValue.slice(0, start) + inputValue.slice(end);
+                                  setInputValue(newValue);
+                                  updateAtMentionFromInput(newValue, start);
+                                  setTimeout(() => {
+                                    if (inputRef.current) {
+                                      inputRef.current.setSelectionRange(start, start);
+                                      inputRef.current.focus();
+                                    }
+                                  }, 0);
+                                }
+                              }
                             }} 
                             placeholder="Ask anything..."
                             className="w-full bg-transparent focus:outline-none font-normal text-gray-900 resize-none [&::-webkit-scrollbar]:w-0.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-gray-200/50 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:hover:bg-gray-300/70 [&::placeholder]:text-[#8E8E8E]"
@@ -13044,7 +13094,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               paddingTop: '0px',
                               paddingBottom: '4px',
                               paddingRight: '12px',
-                              paddingLeft: '6px',
+                              paddingLeft: '12px',
                               scrollbarWidth: 'thin',
                               scrollbarColor: 'rgba(229, 231, 235, 0.5) transparent',
                               overflow: 'hidden',
@@ -13054,7 +13104,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               resize: 'none',
                               width: '100%',
                               minWidth: '0',
-                              color: inputValue ? '#0D0D0D' : undefined,
+                              color: inputValue ? '#333333' : undefined,
                               boxSizing: 'border-box'
                             }}
                             autoComplete="off"
@@ -13742,7 +13792,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       background: isDragOver ? '#F0F9FF' : 'rgba(255, 255, 255, 0.72)',
                       backdropFilter: isDragOver ? 'none' : 'blur(16px) saturate(160%)',
                       WebkitBackdropFilter: isDragOver ? 'none' : 'blur(16px) saturate(160%)',
-                      border: isDragOver ? '2px dashed rgb(36, 41, 50)' : '1px solid #D4D4D4',
+                      border: isDragOver ? '2px dashed rgb(36, 41, 50)' : '1px solid #E0E0E0',
                       boxShadow: isDragOver 
                         ? '0 4px 12px 0 rgba(59, 130, 246, 0.15), 0 2px 4px 0 rgba(59, 130, 246, 0.10)' 
                         : '0 1px 3px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.04)',
@@ -13887,6 +13937,24 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               handleSubmit(e);
                             }
                             if (e.key === 'Backspace' || e.key === 'Delete') {
+                              const ta = e.target as HTMLTextAreaElement;
+                              const start = ta.selectionStart;
+                              const end = ta.selectionEnd;
+                              if (start !== end) {
+                                e.preventDefault();
+                                const newValue = inputValue.slice(0, start) + inputValue.slice(end);
+                                setInputValue(newValue);
+                                updateAtMentionFromInput(newValue, start);
+                                isDeletingRef.current = true;
+                                setTimeout(() => {
+                                  isDeletingRef.current = false;
+                                  if (inputRef.current) {
+                                    inputRef.current.setSelectionRange(start, start);
+                                    inputRef.current.focus();
+                                  }
+                                }, 0);
+                                return;
+                              }
                               isDeletingRef.current = true;
                               setTimeout(() => {
                                 isDeletingRef.current = false;
@@ -13906,7 +13974,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             paddingTop: '0px',
                             paddingBottom: '4px',
                             paddingRight: '12px',
-                            paddingLeft: '6px',
+                            paddingLeft: '12px',
                             scrollbarWidth: 'thin',
                             scrollbarColor: 'rgba(229, 231, 235, 0.5) transparent',
                             overflow: 'hidden',
@@ -13916,7 +13984,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             resize: 'none',
                             width: '100%',
                             minWidth: '0',
-                            color: inputValue ? '#0D0D0D' : undefined,
+                            color: inputValue ? '#333333' : undefined,
                             boxSizing: 'border-box',
                             verticalAlign: 'top', // Match SearchBar
                             display: 'block' // Match SearchBar

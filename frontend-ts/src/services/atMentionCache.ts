@@ -78,6 +78,7 @@ export function preloadAtMentionCache(): Promise<void> {
       const docList = normalizeDocList(documentsRes.success ? documentsRes.data : null);
       const propertyItems = buildPropertyItems(propertyList);
       const docItems = buildDocItems(docList);
+      // Documents first so files show in the list; then properties alongside
       cachedItems = [...docItems, ...propertyItems];
     } catch (err) {
       console.warn('@ mention cache preload failed:', err);

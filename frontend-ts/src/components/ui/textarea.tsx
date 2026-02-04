@@ -4,7 +4,9 @@ import { cn } from "@/lib/utils";
 
 export interface TextareaProps extends React.TextareaHTMLAttributes<HTMLTextAreaElement> {}
 
-const Textarea = React.forwardRef<HTMLTextAreaElement, TextareaProps>(({ className, ...props }, ref) => {
+const Textarea = React.forwardRef<HTMLTextAreaElement, TextareaProps>(({ className, spellCheck, onFocus, onBlur, ...props }, ref) => {
+  const [isFocused, setIsFocused] = React.useState(false);
+  const spellCheckOnlyWhenBlurred = spellCheck === undefined;
   return (
     <textarea
       className={cn(
@@ -12,6 +14,15 @@ const Textarea = React.forwardRef<HTMLTextAreaElement, TextareaProps>(({ classNa
         className,
       )}
       ref={ref}
+      spellCheck={spellCheckOnlyWhenBlurred ? !isFocused : spellCheck}
+      onFocus={(e) => {
+        setIsFocused(true);
+        onFocus?.(e);
+      }}
+      onBlur={(e) => {
+        setIsFocused(false);
+        onBlur?.(e);
+      }}
       {...props}
     />
   );

@@ -347,10 +347,10 @@ const DashboardLayoutContent = ({
     }
   }, [isSidebarCollapsed]);
 
-  // Keyboard shortcut handler (Cmd/Ctrl + E) to toggle sidebar open/closed
+  // Keyboard shortcut: ⌘E toggles sidebar open/closed (label in Sidebar.tsx Navigation)
   React.useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Cmd/Ctrl + E to toggle sidebar open/closed (not expand)
+      // ⌘E (Cmd/Ctrl + E) to toggle sidebar open/closed (not expand)
       if ((e.metaKey || e.ctrlKey) && e.key === 'e') {
         const target = e.target as HTMLElement;
         

@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { createPortal } from "react-dom";
-import { FileText, MapPin, Home } from "lucide-react";
+import { FileText, MapPin } from "lucide-react";
 
 export type AtMentionItemType = "property" | "document";
 
@@ -26,15 +26,19 @@ export interface AtMentionPopoverProps {
   onClose: () => void;
 }
 
-const POPOVER_MAX_HEIGHT = 280;
-const ROW_PADDING = "6px 10px";
+const POPOVER_MAX_HEIGHT = 180;
+const POPOVER_MAX_WIDTH = 280;
+const GAP = 5;
+const CONTAINER_RADIUS = 7;
+const ROW_PADDING = "5px 11px";
+const FOCUSED_ROW_BG = "#F0F0F0";
+const PRIMARY_COLOR = "#333333";
 const PRIMARY_FONT_SIZE = "12px";
-const SECONDARY_FONT_SIZE = "11px";
-const SECONDARY_COLOR = "#9CA3AF";
-const HOVER_BG = "#F3F4F6";
-const SELECTED_BG = "#2563eb"; // Cursor-style blue container
-const SELECTED_TEXT = "#ffffff";
-const GAP = 8;
+const SECONDARY_COLOR = "#999999";
+const SECONDARY_FONT_SIZE = "10px";
+const ICON_COLOR = "#333333";
+const ICON_SIZE = 13;
+const ROW_GAP = 5;
 
 export function AtMentionPopover({
   open,
@@ -113,12 +117,13 @@ export function AtMentionPopover({
   const style: React.CSSProperties = {
     position: "fixed",
     left: rect.left,
-    width: Math.max(rect.width, 200),
+    width: Math.min(Math.max(rect.width, 200), POPOVER_MAX_WIDTH),
     maxHeight: POPOVER_MAX_HEIGHT,
     background: "#FFFFFF",
-    border: "1px solid rgba(229, 231, 235, 0.8)",
-    borderRadius: "10px",
-    boxShadow: "0 2px 8px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04)",
+    border: "none",
+    borderRadius: CONTAINER_RADIUS,
+    boxShadow: "0 2px 12px rgba(0, 0, 0, 0.08)",
+    overflow: "hidden",
     overflowY: "auto",
     zIndex: 10000,
   };
@@ -136,6 +141,8 @@ export function AtMentionPopover({
             padding: ROW_PADDING,
             fontSize: SECONDARY_FONT_SIZE,
             color: SECONDARY_COLOR,
+            borderTopLeftRadius: CONTAINER_RADIUS,
+            borderTopRightRadius: CONTAINER_RADIUS,
           }}
         >
           Type to search files and property pins
@@ -143,18 +150,17 @@ export function AtMentionPopover({
       ) : (
         items.map((item, index) => {
           const isSelected = index === selectedIndex;
-          const iconColor = isSelected ? SELECTED_TEXT : "#6B7280";
           const Icon =
             item.type === "property" ? (
               <MapPin
-                size={16}
-                style={{ color: iconColor, flexShrink: 0 }}
+                size={ICON_SIZE}
+                style={{ color: ICON_COLOR, flexShrink: 0 }}
                 strokeWidth={2}
               />
             ) : (
               <FileText
-                size={16}
-                style={{ color: iconColor, flexShrink: 0 }}
+                size={ICON_SIZE}
+                style={{ color: ICON_COLOR, flexShrink: 0 }}
                 strokeWidth={2}
               />
             );
@@ -168,49 +174,48 @@ export function AtMentionPopover({
               style={{
                 padding: ROW_PADDING,
                 cursor: "pointer",
-                backgroundColor: isSelected ? SELECTED_BG : "transparent",
-                borderRadius: "6px",
-                margin: "0 4px",
-                borderBottom:
-                  index < items.length - 1
-                    ? "1px solid rgba(229, 231, 235, 0.3)"
-                    : "none",
+                backgroundColor: isSelected ? FOCUSED_ROW_BG : "transparent",
                 display: "flex",
                 alignItems: "center",
-                gap: "8px",
+                gap: ROW_GAP,
                 transition: "background-color 0.15s ease",
+                ...(index === 0
+                  ? { borderTopLeftRadius: CONTAINER_RADIUS, borderTopRightRadius: CONTAINER_RADIUS }
+                  : {}),
               }}
             >
               {Icon}
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div
+              <span
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  fontWeight: 500,
+                  fontSize: PRIMARY_FONT_SIZE,
+                  color: PRIMARY_COLOR,
+                  lineHeight: 1.4,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {item.primaryLabel}
+              </span>
+              {item.secondaryLabel ? (
+                <span
                   style={{
-                    fontWeight: 500,
-                    fontSize: PRIMARY_FONT_SIZE,
-                    color: isSelected ? SELECTED_TEXT : "#111827",
+                    flexShrink: 0,
+                    fontSize: SECONDARY_FONT_SIZE,
+                    color: SECONDARY_COLOR,
                     lineHeight: 1.4,
                     overflow: "hidden",
                     textOverflow: "ellipsis",
                     whiteSpace: "nowrap",
+                    maxWidth: "120px",
                   }}
                 >
-                  {item.primaryLabel}
-                </div>
-                {item.secondaryLabel ? (
-                  <div
-                    style={{
-                      fontSize: SECONDARY_FONT_SIZE,
-                      color: isSelected ? "rgba(255,255,255,0.9)" : SECONDARY_COLOR,
-                      lineHeight: 1.4,
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      whiteSpace: "nowrap",
-                    }}
-                  >
-                    {item.secondaryLabel}
-                  </div>
-                ) : null}
-              </div>
+                  {item.secondaryLabel}
+                </span>
+              ) : null}
             </div>
           );
         })

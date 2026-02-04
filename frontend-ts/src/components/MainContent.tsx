@@ -2144,11 +2144,11 @@ export const MainContent = ({
   // Browser Fullscreen API - shared state so all fullscreen buttons show "Exit" when active
   const { isBrowserFullscreen, toggleBrowserFullscreen } = useBrowserFullscreen();
 
-  // Keyboard shortcut handler (Cmd/Ctrl + Shift + F) to toggle fullscreen
+  // Keyboard shortcut handler (Cmd/Ctrl + F) to toggle fullscreen
   React.useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Cmd/Ctrl + Shift + F to toggle fullscreen
-      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === 'f') {
+      // Cmd/Ctrl + F to toggle fullscreen (no Shift - F for fullscreen)
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key === 'f') {
         const target = e.target as HTMLElement;
         
         // Check if we're in an editable element (input, textarea, or contenteditable)

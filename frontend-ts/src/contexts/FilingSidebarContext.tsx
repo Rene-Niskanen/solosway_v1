@@ -104,11 +104,11 @@ export const FilingSidebarProvider: React.FC<{ children: React.ReactNode }> = ({
     setIsResizingState(resizing);
   }, []);
 
-  // Keyboard shortcut handler (Cmd/Ctrl + F)
+  // Keyboard shortcut handler (Cmd/Ctrl + Option + E) for file sidebar (Cmd+Shift+E is main sidebar)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Cmd/Ctrl + F to toggle sidebar
-      if ((e.metaKey || e.ctrlKey) && e.key === 'f') {
+      // Cmd/Ctrl + Option/Alt + E to toggle file sidebar
+      if ((e.metaKey || e.ctrlKey) && e.altKey && e.key === 'e') {
         // Only prevent default if we're not in an input/textarea
         const target = e.target as HTMLElement;
         if (target.tagName !== 'INPUT' && target.tagName !== 'TEXTAREA') {

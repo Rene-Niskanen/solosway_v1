@@ -64,12 +64,12 @@ export function ModeSelector({ className, compact = false, small = false, large 
   }, [setMode]);
 
   const showText = large || !compact; // Always show text when large, otherwise show unless compact (icon only)
-  const textSize = small ? '10px' : '12px'; // Use default text size (12px) when large, smaller (10px) when small
+  const textSize = small ? '10px' : '12px'; // Default text size (12px when large, 10px when small)
   const iconSize = compact ? "w-4 h-4" : "w-3.5 h-3.5"; // Default icon size
-  const buttonHeight = '22px'; // Default button height (2px higher than 20px)
-  const gapClass = showText ? 'gap-1.5' : ''; // Add gap when showing text
-  const paddingClass = compact ? 'px-2 py-0.5' : 'px-2.5 py-0.5'; // Padding without gap (gap is separate) - reduced py from 1 to 0.5
-  
+  const buttonHeight = '22px'; // Default button height
+  const gapClass = showText ? 'gap-2.5' : ''; // Gap between icon and label text
+  const paddingClass = compact ? 'px-2 py-0.5' : 'px-2.5 py-0.5'; // Padding - reduced py from 1 to 0.5
+
   // Set background color based on mode: beige for Agent, light grey for Reader, light green for Plan
   const backgroundColor = mode === 'agent' ? '#F2DEB6' : mode === 'plan' ? '#EBF1DE' : '#E5E7EB';
   // Set text and icon color: darker orange for Agent, dark green for Plan, black for Reader

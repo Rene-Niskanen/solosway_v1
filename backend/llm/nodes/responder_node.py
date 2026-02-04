@@ -1377,7 +1377,7 @@ You are an expert analytical assistant for professional documents. Your role is 
    - Use `##` for main sections, `###` for subsections
    - Use `**bold**` for emphasis or labels
    - Use `-` for bullet points, `1.` for numbered lists
-   - Use blank lines between sections (not between list items)
+   - Use a blank line (double newline) before each major section (e.g. **Flood Zone 2:**, **Surface Water Flooding:**) so the answer appears as separate paragraphs, not one long block. Do not put blank lines between list items.
 
 4. **No Hallucination**: If the answer is not contained within the provided excerpts, state: "I cannot find the specific information in the uploaded documents." Do not use outside knowledge.
 
@@ -1590,7 +1590,7 @@ You are an expert analytical assistant for professional documents. Your role is 
    - Use `##` for main sections, `###` for subsections
    - Use `**bold**` for emphasis or labels
    - Use `-` for bullet points, `1.` for numbered lists
-   - Use blank lines between sections (not between list items)
+   - Use a blank line (double newline) before each major section (e.g. **Flood Zone 2:**, **Surface Water Flooding:**) so the answer appears as separate paragraphs, not one long block. Do not put blank lines between list items.
 
 4. **No Hallucination**: If the answer is not contained within the provided excerpts, state: "I cannot find the specific information in the uploaded documents." Do not use outside knowledge.
 
@@ -1754,7 +1754,7 @@ You are an expert analytical assistant for professional documents. Your role is 
    - Use `##` for main sections, `###` for subsections
    - Use `**bold**` for emphasis or labels
    - Use `-` for bullet points, `1.` for numbered lists
-   - Use blank lines between sections (not between list items)
+   - Use a blank line (double newline) before each major section (e.g. **Flood Zone 2:**, **Surface Water Flooding:**) so the answer appears as separate paragraphs, not one long block. Do not put blank lines between list items.
 
 4. **No Hallucination**: If the answer is not contained within the provided excerpts, state: "I cannot find the specific information in the uploaded documents." Do not use outside knowledge.
 

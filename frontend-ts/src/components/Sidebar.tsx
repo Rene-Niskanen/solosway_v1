@@ -518,10 +518,10 @@ export const Sidebar = ({
               </div>
             </div>
 
-            {/* Quick Actions Label */}
-            <div className="px-4 mt-4 mb-2">
+            {/* Navigation — ⌘E toggles sidebar open/closed (handler in DashboardLayout) */}
+            <div className="px-4 mt-4 mb-2" title="Toggle sidebar (⌘E)">
               <div className="flex items-center justify-between">
-                <span className="text-[11px] font-normal text-gray-400 uppercase tracking-wider">Quick actions</span>
+                <span className="text-[11px] font-normal text-gray-400 uppercase tracking-wider">Navigation</span>
                 <span className="text-[10px] text-gray-400 font-normal px-1.5 py-0.5 rounded bg-white/80">⌘E</span>
               </div>
             </div>

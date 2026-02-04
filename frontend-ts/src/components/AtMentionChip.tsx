@@ -13,9 +13,14 @@ export interface AtMentionChipProps {
   style?: React.CSSProperties;
 }
 
-/** Cursor-style blue pill chip for selected file or property in the chat/search bar. */
-const CHIP_BG = "#2563eb";
-const CHIP_TEXT = "#ffffff";
+/** Cursor-style light blue pill chip for selected file or property (pixel-perfect). */
+const CHIP_BG = "#F0F8FF";
+const CHIP_TEXT = "#333333";
+const CHIP_ICON_SIZE = 14;
+const CHIP_PADDING = "6px 10px";
+const CHIP_RADIUS = 14;
+const CHIP_GAP = 8;
+const CHIP_FONT_SIZE = "14px";
 
 export function AtMentionChip({
   type,
@@ -27,13 +32,13 @@ export function AtMentionChip({
   const Icon =
     type === "property" ? (
       <MapPin
-        size={14}
+        size={CHIP_ICON_SIZE}
         style={{ color: CHIP_TEXT, flexShrink: 0 }}
         strokeWidth={2}
       />
     ) : (
       <FileText
-        size={14}
+        size={CHIP_ICON_SIZE}
         style={{ color: CHIP_TEXT, flexShrink: 0 }}
         strokeWidth={2}
       />
@@ -45,12 +50,12 @@ export function AtMentionChip({
       style={{
         display: "inline-flex",
         alignItems: "center",
-        gap: "6px",
-        padding: "4px 8px",
-        borderRadius: "9999px",
+        gap: CHIP_GAP,
+        padding: CHIP_PADDING,
+        borderRadius: CHIP_RADIUS,
         backgroundColor: CHIP_BG,
-        border: "1px solid rgba(37, 99, 235, 0.9)",
-        fontSize: "12px",
+        border: "none",
+        fontSize: CHIP_FONT_SIZE,
         fontWeight: 500,
         color: CHIP_TEXT,
         lineHeight: 1.3,
