@@ -18,7 +18,7 @@ import { useSystem } from '@/contexts/SystemContext';
 import { backendApi } from '@/services/backendApi';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogOverlay } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { MapPin, Palette, Bell, Shield, Globe, Monitor, LibraryBig, Upload, BarChart3, Database, Settings, User, CloudUpload, Image, Map, Fullscreen, Minimize2, Plus, ArrowUp, Folder, Layers, Check, Focus, Contrast, Search, Loader2, ArrowRight, ArrowLeft } from 'lucide-react';
+import { MapPin, Palette, Bell, Shield, Globe, Monitor, LibraryBig, Upload, BarChart3, Database, Settings, User, CloudUpload, Image, Map, Fullscreen, Minimize, Minimize2, Plus, ArrowUp, Folder, Layers, Check, Focus, Contrast, Search, Loader2, ArrowRight, ArrowLeft } from 'lucide-react';
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import { DocumentPreviewModal } from './DocumentPreviewModal';
@@ -5473,33 +5473,35 @@ export const MainContent = ({
                 e.preventDefault();
                 toggleBrowserFullscreen();
               }}
-              className="flex items-center gap-2 rounded-md hover:bg-[#f5f5f5] active:bg-[#ebebeb] transition-all duration-150"
+              className="group flex items-center rounded-md py-1.5 pl-2 pr-2 hover:bg-[#f5f5f5] hover:pr-3 active:bg-[#ebebeb] duration-150"
               title={isBrowserFullscreen ? "Exit fullscreen (⌘⇧F)" : "Fullscreen (⌘⇧F)"}
               type="button"
               style={{
-                padding: '6px 10px 6px 8px',
                 border: isBrowserFullscreen ? 'none' : '1px solid rgba(0, 0, 0, 0.1)',
                 cursor: 'pointer',
                 backgroundColor: isBrowserFullscreen ? 'rgba(0, 0, 0, 0.04)' : 'rgba(255, 255, 255, 0.9)',
-                boxShadow: isBrowserFullscreen ? 'none' : '0 1px 3px rgba(0, 0, 0, 0.06)'
+                boxShadow: isBrowserFullscreen ? 'none' : '0 1px 3px rgba(0, 0, 0, 0.06)',
+                transition: 'background-color 150ms ease, box-shadow 150ms ease, border-color 150ms ease'
               }}
             >
               {isBrowserFullscreen ? (
-                <Minimize2 className="w-4 h-4 text-[#6B7280]" strokeWidth={2} />
+                <Minimize className="w-4 h-4 text-[#6B7280] flex-shrink-0" strokeWidth={2} />
               ) : (
-                <Fullscreen className="w-4 h-4 text-[#6B7280]" strokeWidth={2} />
+                <Fullscreen className="w-4 h-4 text-[#6B7280] flex-shrink-0" strokeWidth={2} />
               )}
-              <span className="text-[13px] font-medium text-[#374151] leading-none">
-                {isBrowserFullscreen ? "Exit" : "Fullscreen"}
-              </span>
-              <span 
-                className="text-[10px] text-[#9CA3AF] font-medium px-1.5 py-0.5 rounded bg-[#F3F4F6] leading-none"
-                style={{
-                  fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-                  letterSpacing: '0.01em'
-                }}
-              >
-                ⌘⇧F
+              <span className="inline-flex items-center gap-2 min-w-0 w-0 overflow-hidden opacity-0 whitespace-nowrap transition-none group-hover:w-auto group-hover:min-w-0 group-hover:opacity-100 group-hover:ml-1.5">
+                <span className="text-[13px] font-medium text-[#374151] leading-none">
+                  {isBrowserFullscreen ? "Exit fullscreen" : "Fullscreen"}
+                </span>
+                <span
+                  className="text-[10px] text-[#9CA3AF] font-medium px-1.5 py-0.5 rounded bg-[#F3F4F6] leading-none shrink-0"
+                  style={{
+                    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+                    letterSpacing: '0.01em'
+                  }}
+                >
+                  ⌘⇧F
+                </span>
               </span>
             </button>
           </div>
@@ -5767,6 +5769,7 @@ export const MainContent = ({
           }
         })()}
         isSmallSidebarMode={!isSidebarCollapsed}
+        hideCloseButton={inChatMode}
       />
 
       {/* Fullscreen Property View - Chat + Property Details split */}

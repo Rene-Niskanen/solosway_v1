@@ -45,6 +45,8 @@ interface Folder {
 interface FilingSidebarProps {
   sidebarWidth?: number;
   isSmallSidebarMode?: boolean;
+  /** When true, hide the header close button (e.g. when in chat – close is in View dropdown). */
+  hideCloseButton?: boolean;
 }
 
 // Component for displaying pending file with image preview
@@ -144,7 +146,8 @@ const PendingFileItem: React.FC<{
 
 export const FilingSidebar: React.FC<FilingSidebarProps> = ({ 
   sidebarWidth,
-  isSmallSidebarMode = false 
+  isSmallSidebarMode = false,
+  hideCloseButton = false
 }) => {
   const {
     isOpen,
@@ -1638,17 +1641,19 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
         >
         {/* Header - Unified Design */}
         <div className="px-4 pt-4 pb-1 border-b border-gray-100 w-full" style={{ boxSizing: 'border-box' }}>
-          {/* Close Button */}
-          <div className="flex justify-end mb-3">
-            <button
-              onClick={closeSidebar}
-              className="w-8 h-8 flex items-center justify-center text-gray-400 hover:text-gray-600 hover:bg-gray-50 transition-colors"
-              aria-label="Close sidebar"
-            >
-              <div className="w-4 h-4 flex items-center justify-center">
-                <X className="w-4 h-4" strokeWidth={1.5} />
-              </div>
-            </button>
+          {/* Close Button - hidden in chat (close is in View dropdown); spacer keeps layout from shifting */}
+          <div className="flex justify-end mb-3 min-h-[2rem]">
+            {!hideCloseButton ? (
+              <button
+                onClick={closeSidebar}
+                className="w-8 h-8 flex items-center justify-center text-gray-400 hover:text-gray-600 hover:bg-gray-50 transition-colors"
+                aria-label="Close sidebar"
+              >
+                <div className="w-4 h-4 flex items-center justify-center">
+                  <X className="w-4 h-4" strokeWidth={1.5} />
+                </div>
+              </button>
+            ) : null}
           </div>
 
           {/* Drag and Drop Upload Area */}

@@ -5,7 +5,7 @@ import { useMemo } from "react";
 import { createPortal, flushSync } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { generateAnimatePresenceKey, generateConditionalKey, generateUniqueKey } from '../utils/keyGenerator';
-import { ChevronRight, ChevronDown, ChevronUp, ArrowUp, Paperclip, Mic, Map, X, SquareDashedMousePointer, Scan, Fullscreen, Plus, PanelLeftOpen, PanelRightClose, Trash2, CreditCard, MoveDiagonal, Square, FileText, Image as ImageIcon, File as FileIcon, FileCheck, Minimize, Minimize2, Workflow, Home, FolderOpen, TextCursorInput, Brain, AudioLines, MessageCircleDashed, Copy, Play, Search, Lock, Pencil, Check, Highlighter, SlidersHorizontal, BookOpen } from "lucide-react";
+import { ChevronRight, ChevronDown, ChevronUp, ArrowUp, Paperclip, Mic, Map, X, SquareDashedMousePointer, Scan, Fullscreen, Plus, PanelLeftOpen, PanelRightClose, PictureInPicture2, Trash2, CreditCard, MoveDiagonal, Square, FileText, Image as ImageIcon, File as FileIcon, FileCheck, Minimize, Minimize2, Workflow, Home, FolderOpen, TextCursorInput, Brain, AudioLines, MessageCircleDashed, Copy, Play, Search, Lock, Pencil, Check, Highlighter, SlidersHorizontal, BookOpen } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { FileAttachment, FileAttachmentData } from './FileAttachment';
 import { PropertyAttachment, PropertyAttachmentData } from './PropertyAttachment';
@@ -3217,7 +3217,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     localStorage.setItem('showCitations', JSON.stringify(showCitations));
   }, [showCitations]);
 
-  // Display options popover: hover open/close with delay
+  // Response popover: hover open/close with delay
   const [displayOptionsOpen, setDisplayOptionsOpen] = React.useState(false);
   const displayOptionsOpenTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const displayOptionsCloseTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -3258,7 +3258,42 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   const handleDisplayOptionsContentLeave = () => {
     displayOptionsCloseTimeoutRef.current = setTimeout(() => setDisplayOptionsOpen(false), HOVER_CLOSE_DELAY_MS);
   };
-  
+
+  // View options popover (Sidebar, Files, New chat, Fullscreen): same hover open/close pattern
+  const [viewOptionsOpen, setViewOptionsOpen] = React.useState(false);
+  const viewOptionsOpenTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const viewOptionsCloseTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clearViewOptionsOpenTimeout = () => {
+    if (viewOptionsOpenTimeoutRef.current != null) {
+      clearTimeout(viewOptionsOpenTimeoutRef.current);
+      viewOptionsOpenTimeoutRef.current = null;
+    }
+  };
+  const clearViewOptionsCloseTimeout = () => {
+    if (viewOptionsCloseTimeoutRef.current != null) {
+      clearTimeout(viewOptionsCloseTimeoutRef.current);
+      viewOptionsCloseTimeoutRef.current = null;
+    }
+  };
+  React.useEffect(() => {
+    return () => {
+      clearViewOptionsOpenTimeout();
+      clearViewOptionsCloseTimeout();
+    };
+  }, []);
+  const handleViewOptionsTriggerEnter = () => {
+    clearViewOptionsCloseTimeout();
+    viewOptionsOpenTimeoutRef.current = setTimeout(() => setViewOptionsOpen(true), HOVER_OPEN_DELAY_MS);
+  };
+  const handleViewOptionsTriggerLeave = () => {
+    clearViewOptionsOpenTimeout();
+    viewOptionsCloseTimeoutRef.current = setTimeout(() => setViewOptionsOpen(false), HOVER_CLOSE_DELAY_MS);
+  };
+  const handleViewOptionsContentEnter = () => { clearViewOptionsCloseTimeout(); };
+  const handleViewOptionsContentLeave = () => {
+    viewOptionsCloseTimeoutRef.current = setTimeout(() => setViewOptionsOpen(false), HOVER_CLOSE_DELAY_MS);
+  };
+
   // Sync expanded state with shouldExpand prop
   React.useEffect(() => {
     console.log('🔄 SideChatPanel: shouldExpand changed', { shouldExpand, isExpanded, isFullscreenMode, isPropertyDetailsOpen, isNavigatingTask: isNavigatingTaskRef.current });
@@ -3766,7 +3801,82 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   
   // Use ChatStateStore document preview if available, fall back to legacy PreviewContext
   const expandedCardViewDoc = chatStateDocumentPreview || legacyExpandedCardViewDoc;
-  
+
+  // Whether chat panel is in "large" width (>= 600px) for View area minimise/expand
+  const isChatLarge = React.useMemo(() => {
+    const isDocumentPreviewOpen = isPropertyDetailsOpen || !!expandedCardViewDoc;
+    const { widthPx } = calculateChatPanelWidth({
+      draggedWidth,
+      isExpanded,
+      isFullscreenMode,
+      isDocumentPreviewOpen,
+      isPropertyDetailsOpen,
+      sidebarWidth,
+      chatPanelWidth,
+      isChatPanelOpen,
+      isManualFullscreen: isManualFullscreenRef.current,
+    });
+    return widthPx >= 600;
+  }, [draggedWidth, isExpanded, isFullscreenMode, isPropertyDetailsOpen, expandedCardViewDoc, sidebarWidth, chatPanelWidth, isChatPanelOpen]);
+
+  // Standalone Minimise shows for 10s after Expand; standalone Expand shows for 10s after Minimise
+  const [hasUserExpandedFromView, setHasUserExpandedFromView] = React.useState(false);
+  const [hasUserMinimisedFromView, setHasUserMinimisedFromView] = React.useState(false);
+  const minimiseExpandTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const MINIMISE_EXPAND_BUTTON_VISIBLE_MS = 10_000;
+
+  React.useEffect(() => {
+    return () => {
+      if (minimiseExpandTimeoutRef.current) clearTimeout(minimiseExpandTimeoutRef.current);
+    };
+  }, []);
+
+  const handleMinimiseChat = React.useCallback(() => {
+    if (minimiseExpandTimeoutRef.current) {
+      clearTimeout(minimiseExpandTimeoutRef.current);
+      minimiseExpandTimeoutRef.current = null;
+    }
+    setHasUserExpandedFromView(false);
+    setHasUserMinimisedFromView(true); // Show standalone Expand for 10s
+    if (isFullscreenMode) {
+      setIsFullscreenMode(false);
+      isFullscreenFromDashboardRef.current = false;
+      isManualFullscreenRef.current = false;
+    }
+    setDraggedWidth(CHAT_PANEL_WIDTH.COLLAPSED);
+    setIsExpanded(false);
+    lockedWidthRef.current = null;
+    if (onChatWidthChange) onChatWidthChange(CHAT_PANEL_WIDTH.COLLAPSED);
+    minimiseExpandTimeoutRef.current = setTimeout(() => {
+      minimiseExpandTimeoutRef.current = null;
+      setHasUserMinimisedFromView(false); // Hide standalone Expand after 10s
+    }, MINIMISE_EXPAND_BUTTON_VISIBLE_MS);
+  }, [isFullscreenMode, onChatWidthChange]);
+
+  const handleExpandChat = React.useCallback(() => {
+    if (minimiseExpandTimeoutRef.current) {
+      clearTimeout(minimiseExpandTimeoutRef.current);
+      minimiseExpandTimeoutRef.current = null;
+    }
+    setHasUserMinimisedFromView(false);
+    setHasUserExpandedFromView(true); // Show standalone Minimise for 10s
+    setIsExpanded(true);
+    setIsFullscreenMode(true);
+    isFullscreenFromDashboardRef.current = true;
+    isManualFullscreenRef.current = true;
+    setJustEnteredFullscreen(true);
+    setDraggedWidth(null);
+    lockedWidthRef.current = null;
+    const chatPanelOffset = isChatPanelOpen ? chatPanelWidth : 0;
+    const newWidth = window.innerWidth - sidebarWidth - chatPanelOffset;
+    if (onChatWidthChange) onChatWidthChange(newWidth);
+    setTimeout(() => setJustEnteredFullscreen(false), 100);
+    minimiseExpandTimeoutRef.current = setTimeout(() => {
+      minimiseExpandTimeoutRef.current = null;
+      setHasUserExpandedFromView(false); // Hide standalone Minimise after 10s
+    }, MINIMISE_EXPAND_BUTTON_VISIBLE_MS);
+  }, [isChatPanelOpen, chatPanelWidth, sidebarWidth, onChatWidthChange]);
+
   // Calculate and notify parent of chat panel width changes
   // Uses unified calculateChatPanelWidth for consistent width calculation
   React.useEffect(() => {
@@ -4391,7 +4501,154 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     }
   }, [currentChatId, initializeChatState]);
   // ========== END CHAT STATE STORE INTEGRATION ==========
-  
+
+  // New chat handler (used by View dropdown)
+  const handleNewChatClick = React.useCallback(() => {
+    if (chatMessages.length > 0) {
+      const firstQuery = chatMessages.find(m => m.type === 'query');
+      const preview = firstQuery?.text || 'New chat';
+      const savedChatId = addChatToHistory({
+        title: chatTitle || '',
+        timestamp: new Date().toISOString(),
+        preview,
+        messages: chatMessages.map(m => ({
+          role: m.type === 'query' ? 'user' : 'assistant',
+          content: m.text || '',
+          attachments: m.attachments || [],
+          propertyAttachments: m.propertyAttachments || [],
+          citations: m.citations || {}
+        }))
+      });
+      if (currentChatId && savedChatId !== currentChatId && chatTitle) {
+        updateChatTitle(savedChatId, chatTitle);
+      }
+    }
+    const hasLoadingMessage = chatMessages.some(msg => msg.isLoading);
+    const existingChat = currentChatId ? getChatById(currentChatId) : null;
+    const hasRunningQueryInHistory = existingChat?.status === 'loading';
+    const hasRunningQuery = hasLoadingMessage || hasRunningQueryInHistory;
+    if (hasRunningQuery) {
+      const currentMessages = chatMessagesRef.current;
+      if (currentChatId && currentMessages.length > 0) {
+        updateChatInHistory(currentChatId, currentMessages.map(msg => ({
+          role: msg.type === 'query' ? 'user' : 'assistant',
+          content: msg.text || '',
+          attachments: msg.attachments || [],
+          propertyAttachments: msg.propertyAttachments || [],
+          citations: msg.citations || {}
+        })));
+        const bufferedState = getBufferedState(currentChatId);
+        bufferedState.messages = [...currentMessages];
+        bufferedState.status = currentMessages.some(msg => msg.isLoading) ? 'loading' : 'completed';
+        bufferedState.isLoading = currentMessages.some(msg => msg.isLoading);
+        const loadingMsg = currentMessages.find(msg => msg.isLoading);
+        if (loadingMsg?.text) bufferedState.accumulatedText = loadingMsg.text;
+        if (loadingMsg?.reasoningSteps?.length) {
+          bufferedState.reasoningSteps = [...loadingMsg.reasoningSteps];
+          const lastStep = loadingMsg.reasoningSteps[loadingMsg.reasoningSteps.length - 1];
+          if (lastStep) bufferedState.lastReasoningStep = lastStep;
+        }
+        bufferedState.lastUpdate = Date.now();
+        if (expandedCardViewDoc) {
+          bufferedState.documentPreview = {
+            docId: expandedCardViewDoc.docId,
+            filename: expandedCardViewDoc.filename,
+            highlight: expandedCardViewDoc.highlight ? {
+              fileId: expandedCardViewDoc.highlight.fileId,
+              bbox: expandedCardViewDoc.highlight.bbox,
+              doc_id: expandedCardViewDoc.highlight.doc_id,
+              block_id: expandedCardViewDoc.highlight.block_id || '',
+              block_content: expandedCardViewDoc.highlight.block_content,
+              original_filename: expandedCardViewDoc.highlight.original_filename
+            } : undefined
+          };
+        }
+      }
+      setInputValue("");
+      setAttachedFiles([]);
+      attachedFilesRef.current = [];
+      clearPropertyAttachments();
+      setSelectionModeActive(false);
+      setIsSubmitted(false);
+      setIsFocused(false);
+      setChatTitle('');
+      setIsTitleStreaming(false);
+      setStreamedTitle('');
+      setIsEditingTitle(false);
+      setEditingTitleValue('');
+      persistedChatMessagesRef.current = [];
+      restoredMessageIdsRef.current = new Set();
+      isFirstCitationRef.current = true;
+      if (inputRef.current) {
+        inputRef.current.value = "";
+        inputRef.current.style.height = 'auto';
+      }
+      setChatMessages([]);
+      setSubmittedQueries([]);
+      setCurrentChatId(null);
+      currentChatIdRef.current = null;
+      activeChatIdRef.current = null;
+      if (expandedCardViewDoc) {
+        closeExpandedCardView();
+        documentPreviewOwnerRef.current = null;
+      }
+      if (onNewChat) onNewChat();
+    } else {
+      if (currentChatId) {
+        const bufferedState = getBufferedState(currentChatId);
+        const currentMessages = chatMessagesRef.current;
+        if (currentMessages.length > 0) {
+          bufferedState.messages = [...currentMessages];
+          bufferedState.status = 'completed';
+          bufferedState.isLoading = false;
+          bufferedState.lastUpdate = Date.now();
+        }
+        if (expandedCardViewDoc) {
+          bufferedState.documentPreview = {
+            docId: expandedCardViewDoc.docId,
+            filename: expandedCardViewDoc.filename,
+            highlight: expandedCardViewDoc.highlight ? {
+              fileId: expandedCardViewDoc.highlight.fileId,
+              bbox: expandedCardViewDoc.highlight.bbox,
+              doc_id: expandedCardViewDoc.highlight.doc_id,
+              block_id: expandedCardViewDoc.highlight.block_id || '',
+              block_content: expandedCardViewDoc.highlight.block_content,
+              original_filename: expandedCardViewDoc.highlight.original_filename
+            } : undefined
+          };
+        }
+      }
+      setChatMessages([]);
+      setSubmittedQueries([]);
+      persistedChatMessagesRef.current = [];
+      restoredMessageIdsRef.current = new Set();
+      setInputValue("");
+      setAttachedFiles([]);
+      clearPropertyAttachments();
+      setSelectionModeActive(false);
+      setIsSubmitted(false);
+      setIsFocused(false);
+      isFirstCitationRef.current = true;
+      setCurrentChatId(null);
+      currentChatIdRef.current = null;
+      activeChatIdRef.current = null;
+      setChatTitle('');
+      setIsTitleStreaming(false);
+      setStreamedTitle('');
+      setIsEditingTitle(false);
+      setEditingTitleValue('');
+      if (expandedCardViewDoc) {
+        closeExpandedCardView();
+        documentPreviewOwnerRef.current = null;
+      }
+      if (inputRef.current) {
+        inputRef.current.value = "";
+        inputRef.current.style.height = 'auto';
+      }
+      if (onNewChat) onNewChat();
+    }
+  }, [chatMessages, currentChatId, chatTitle, addChatToHistory, updateChatTitle, getChatById, updateChatInHistory, getBufferedState, closeExpandedCardView, clearPropertyAttachments, onNewChat, expandedCardViewDoc]);
+
   // Track last processed newAgentTrigger to prevent infinite loops
   const lastProcessedTriggerRef = React.useRef<number>(0);
   
@@ -11959,7 +12216,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               }}
             >
               <div 
-                className="flex items-center justify-between group"
+                className="grid grid-cols-[1fr_auto_1fr] items-center gap-2 group"
                 onMouseMove={(e) => {
                   if (editButtonRef.current && actualPanelWidth >= 940) {
                     const buttonRect = editButtonRef.current.getBoundingClientRect();
@@ -11981,105 +12238,36 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   setIsNearEditButton(false);
                 }}
               >
-                <div className="flex items-center space-x-2">
-                  {/* Sidebar Open Button - shown when sidebar is closed */}
-                  {!isMainSidebarOpen && (
+                <div className="flex items-center space-x-2 min-w-0">
+                  {/* View dropdown: Sidebar, Files, New chat, Fullscreen. When Sidebar/Files/Expand are active, Close/Exit appears beside the dropdown; fullscreen is exit-only inside the dropdown. */}
+                  {isMainSidebarOpen && (
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
                         e.preventDefault();
-                        // Ensure we're calling the main sidebar toggle
-                        if (onSidebarToggle) {
-                          onSidebarToggle();
-                        }
+                        if (onSidebarToggle) onSidebarToggle();
                       }}
-                      className={`flex items-center ${actualPanelWidth >= 600 ? 'gap-1' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150`}
-                      title="Open sidebar"
+                      className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150`}
+                      title="Close sidebar"
                       type="button"
                       style={{
-                        padding: actualPanelWidth >= 600 ? '5px 8px' : '5px',
+                        padding: actualPanelWidth >= 750 ? '5px 8px' : '5px',
                         height: '26px',
                         minHeight: '26px',
                         border: 'none',
                         position: 'relative',
                         zIndex: 10001,
                         pointerEvents: 'auto',
-                        cursor: 'pointer'
+                        cursor: 'pointer',
+                        backgroundColor: 'rgba(0, 0, 0, 0.04)'
                       }}
                     >
-                      <PanelLeftOpen className="w-3.5 h-3.5 text-[#666]" strokeWidth={1.75} />
-                      {actualPanelWidth >= 600 && (
-                        <span className="text-[12px] font-normal text-[#666]">Sidebar</span>
+                      <PanelRightClose className="w-3.5 h-3.5 text-[#666] scale-x-[-1]" strokeWidth={1.75} />
+                      {actualPanelWidth >= 750 && (
+                        <span className="text-[12px] font-normal text-[#666]">Close</span>
                       )}
                     </button>
                   )}
-
-                  {/* Sidebar Close Button - shown when sidebar is open */}
-                  {isMainSidebarOpen && (
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        e.preventDefault();
-                        // Ensure we're calling the main sidebar toggle, not the filing sidebar toggle
-                        if (onSidebarToggle) {
-                          onSidebarToggle();
-                        }
-                      }}
-                    className={`flex items-center ${actualPanelWidth >= 600 ? 'gap-1' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150`}
-                    title="Close"
-                    type="button"
-                    style={{
-                      padding: actualPanelWidth >= 600 ? '5px 8px' : '5px',
-                      height: '26px',
-                      minHeight: '26px',
-                      border: 'none',
-                      position: 'relative',
-                      zIndex: 10001,
-                      pointerEvents: 'auto',
-                      cursor: 'pointer',
-                      backgroundColor: 'rgba(0, 0, 0, 0.04)'
-                    }}
-                  >
-                    <PanelRightClose
-                      className="w-3.5 h-3.5 text-[#666] scale-x-[-1]"
-                      strokeWidth={1.75}
-                    />
-                    {actualPanelWidth >= 600 && (
-                      <span className="text-[12px] font-normal text-[#666]">Close</span>
-                    )}
-                    </button>
-                  )}
-
-                  {/* Files Open Button - shown when files sidebar is closed (hidden on new chat section) */}
-                  {!isNewChatSection && !isFilingSidebarOpen && (
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        e.preventDefault();
-                        toggleFilingSidebar();
-                      }}
-                    className={`flex items-center ${actualPanelWidth >= 600 ? 'gap-1' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150`}
-                    title="Toggle Files sidebar"
-                    type="button"
-                    style={{
-                      padding: actualPanelWidth >= 600 ? '5px 8px' : '5px',
-                      height: '26px',
-                      minHeight: '26px',
-                      border: 'none',
-                      position: 'relative',
-                      zIndex: 10001,
-                      pointerEvents: 'auto',
-                      cursor: 'pointer'
-                    }}
-                  >
-                    <FolderOpen className="w-3.5 h-3.5 text-[#666]" strokeWidth={1.75} />
-                    {actualPanelWidth >= 600 && (
-                      <span className="text-[12px] font-normal text-[#666]">Files</span>
-                    )}
-                    </button>
-                  )}
-
-                  {/* Files Close Button - shown when files sidebar is open (hidden on new chat section) */}
                   {!isNewChatSection && isFilingSidebarOpen && (
                     <button
                       onClick={(e) => {
@@ -12087,332 +12275,220 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         e.preventDefault();
                         toggleFilingSidebar();
                       }}
-                    className={`flex items-center ${actualPanelWidth >= 600 ? 'gap-1' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150`}
-                    title="Close Files"
-                    type="button"
-                    style={{
-                      padding: actualPanelWidth >= 600 ? '5px 8px' : '5px',
-                      height: '26px',
-                      minHeight: '26px',
-                      border: 'none',
-                      position: 'relative',
-                      zIndex: 10001,
-                      pointerEvents: 'auto',
-                      cursor: 'pointer',
-                      backgroundColor: 'rgba(0, 0, 0, 0.04)'
-                    }}
-                  >
-                    <FolderOpen className="w-3.5 h-3.5 text-[#666]" strokeWidth={1.75} />
-                    {actualPanelWidth >= 600 && (
-                      <span className="text-[12px] font-normal text-[#666]">Close Files</span>
-                    )}
+                      className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150`}
+                      title="Close Files"
+                      type="button"
+                      style={{
+                        padding: actualPanelWidth >= 750 ? '5px 8px' : '5px',
+                        height: '26px',
+                        minHeight: '26px',
+                        border: 'none',
+                        position: 'relative',
+                        zIndex: 10001,
+                        pointerEvents: 'auto',
+                        cursor: 'pointer',
+                        backgroundColor: 'rgba(0, 0, 0, 0.04)'
+                      }}
+                    >
+                      <FolderOpen className="w-3.5 h-3.5 text-[#666]" strokeWidth={1.75} />
+                      {actualPanelWidth >= 750 && (
+                        <span className="text-[12px] font-normal text-[#666]">Close</span>
+                      )}
                     </button>
                   )}
-
-                  {/* Browser Fullscreen Button */}
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      e.preventDefault();
-                      toggleBrowserFullscreen();
-                    }}
-                    className={`flex items-center ${actualPanelWidth >= 600 ? 'gap-1' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150`}
-                    title={isBrowserFullscreen ? "Exit fullscreen" : "Fullscreen"}
-                    type="button"
-                    style={{
-                      padding: actualPanelWidth >= 600 ? '5px 8px' : '5px',
-                      height: '26px',
-                      minHeight: '26px',
-                      border: 'none',
-                      position: 'relative',
-                      zIndex: 10001,
-                      pointerEvents: 'auto',
-                      cursor: 'pointer',
-                      backgroundColor: isBrowserFullscreen ? 'rgba(0, 0, 0, 0.04)' : 'transparent'
-                    }}
-                  >
-                    {isBrowserFullscreen ? (
+                  {/* Exit fullscreen: not shown outside dropdown in chat – use View → Fullscreen/Exit */}
+                  {isChatLarge && hasUserExpandedFromView && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        handleMinimiseChat();
+                      }}
+                      className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150`}
+                      title="Minimise chat"
+                      type="button"
+                      style={{
+                        padding: actualPanelWidth >= 750 ? '5px 8px' : '5px',
+                        height: '26px',
+                        minHeight: '26px',
+                        border: 'none',
+                        position: 'relative',
+                        zIndex: 10001,
+                        pointerEvents: 'auto',
+                        cursor: 'pointer',
+                        backgroundColor: 'rgba(0, 0, 0, 0.04)'
+                      }}
+                    >
                       <Minimize2 className="w-3.5 h-3.5 text-[#666]" strokeWidth={1.75} />
-                    ) : (
-                      <Fullscreen className="w-3.5 h-3.5 text-[#666]" strokeWidth={1.75} />
-                    )}
-                    {actualPanelWidth >= 600 && (
-                      <span className="text-[12px] font-normal text-[#666]">
-                        {isBrowserFullscreen ? "Exit" : "Fullscreen"}
-                      </span>
-                    )}
-                  </button>
-
-                  {/* New chat Button (hidden on new chat section) */}
-                  {!isNewChatSection && (
-                  <motion.button
-                    onClick={() => {
-                      // Save current chat to history if there are messages
-                      if (chatMessages.length > 0) {
-                        const firstQuery = chatMessages.find(m => m.type === 'query');
-                        const preview = firstQuery?.text || 'New chat';
-                        const savedChatId = addChatToHistory({
-                          title: chatTitle || '', // Use current chat title if available
-                          timestamp: new Date().toISOString(),
-                          preview,
-                          messages: chatMessages.map(m => ({
-                            role: m.type === 'query' ? 'user' : 'assistant',
-                            content: m.text || '',
-                            attachments: m.attachments || [],
-                            propertyAttachments: m.propertyAttachments || [],
-                            citations: m.citations || {} // Include citations for clickable buttons
-                          }))
-                        });
-                        
-                        // Update chat ID if we have one
-                        if (currentChatId && savedChatId !== currentChatId) {
-                          // If title was set, update it in the saved chat
-                          if (chatTitle) {
-                            updateChatTitle(savedChatId, chatTitle);
-                          }
-                        }
-                      }
-                      
-                      // Check if there's a running query (either in UI state or chat history)
-                      const hasLoadingMessage = chatMessages.some(msg => msg.isLoading);
-                      const existingChat = currentChatId ? getChatById(currentChatId) : null;
-                      const hasRunningQueryInHistory = existingChat?.status === 'loading';
-                      const hasRunningQuery = hasLoadingMessage || hasRunningQueryInHistory;
-                      
-                      if (hasRunningQuery) {
-                        // CRITICAL: Save current chat to history BEFORE clearing UI state
-                        // This ensures the running query's state is preserved
-                        // Use chatMessagesRef.current for consistency
-                        const currentMessages = chatMessagesRef.current;
-                        if (currentChatId && currentMessages.length > 0) {
-                          // Convert chatMessages to history format and save
-                          const historyMessages = currentMessages.map(msg => ({
-                            role: msg.type === 'query' ? 'user' : 'assistant',
-                            content: msg.text || '',
-                            attachments: msg.attachments || [],
-                            propertyAttachments: msg.propertyAttachments || [],
-                            citations: msg.citations || {}
-                          }));
-                          updateChatInHistory(currentChatId, historyMessages);
-                          console.log('💾 SideChatPanel: Saved running query state to history before new agent:', currentChatId);
-                          
-                          // CRITICAL: Save messages AND document preview to buffer
-                          // This ensures streaming callbacks can continue updating the buffered state
-                          // AND the state is properly restored when returning to this chat
-                          const bufferedState = getBufferedState(currentChatId);
-                          
-                          // Save messages to buffer (with their original IDs for streaming callback matching)
-                          bufferedState.messages = [...currentMessages];
-                          bufferedState.status = currentMessages.some(msg => msg.isLoading) ? 'loading' : 'completed';
-                          bufferedState.isLoading = currentMessages.some(msg => msg.isLoading);
-                          
-                          // Save accumulated text from loading message
-                          const loadingMsg = currentMessages.find(msg => msg.isLoading);
-                          if (loadingMsg && loadingMsg.text) {
-                            bufferedState.accumulatedText = loadingMsg.text;
-                          }
-                          
-                          // Save reasoning steps from loading message
-                          if (loadingMsg && loadingMsg.reasoningSteps) {
-                            bufferedState.reasoningSteps = [...loadingMsg.reasoningSteps];
-                            const lastStep = loadingMsg.reasoningSteps[loadingMsg.reasoningSteps.length - 1];
-                            if (lastStep) {
-                              bufferedState.lastReasoningStep = lastStep;
-                            }
-                          }
-                          
-                          bufferedState.lastUpdate = Date.now();
-                          console.log('💾 SideChatPanel: Saved messages to buffer before new agent:', {
-                            messageCount: currentMessages.length,
-                            isLoading: bufferedState.isLoading,
-                            reasoningStepsCount: bufferedState.reasoningSteps.length
-                          });
-                          
-                          // Save document preview state to buffer if document is open
-                          if (expandedCardViewDoc) {
-                            bufferedState.documentPreview = {
-                              docId: expandedCardViewDoc.docId,
-                              filename: expandedCardViewDoc.filename,
-                              highlight: expandedCardViewDoc.highlight ? {
-                                fileId: expandedCardViewDoc.highlight.fileId,
-                                bbox: expandedCardViewDoc.highlight.bbox, // bbox already contains page
-                                doc_id: expandedCardViewDoc.highlight.doc_id,
-                                block_id: expandedCardViewDoc.highlight.block_id || '',
-                                block_content: expandedCardViewDoc.highlight.block_content,
-                                original_filename: expandedCardViewDoc.highlight.original_filename
-                              } : undefined
-                            };
-                            console.log('💾 SideChatPanel: Saved document preview to buffer before new agent:', bufferedState.documentPreview);
-                          }
-                        }
-                        
-                        // Preserve currentChatId conceptually (it's in history)
-                        // But clear it in UI to force new chat creation on next query
-                        
-                        // Clear only UI input state for new query
-                        setInputValue("");
-                        setAttachedFiles([]);
-                        attachedFilesRef.current = [];
-                        clearPropertyAttachments();
-                        setSelectionModeActive(false);
-                        setIsSubmitted(false);
-                        setIsFocused(false);
-                        
-                        // Clear title state (new chat will get new title)
-                        setChatTitle('');
-                        setIsTitleStreaming(false);
-                        setStreamedTitle('');
-                        setIsEditingTitle(false);
-                        setEditingTitleValue('');
-                        
-                        // Clear persisted messages ref (new query will start fresh)
-                        persistedChatMessagesRef.current = [];
-                        restoredMessageIdsRef.current = new Set();
-                        
-                        // Reset first citation flag for new chat session
-                        isFirstCitationRef.current = true;
-                        
-                        // Reset textarea if it exists
-                        if (inputRef.current) {
-                          inputRef.current.value = "";
-                          inputRef.current.style.height = 'auto';
-                        }
-                        
-                        // CRITICAL: Clear chatMessages in UI (but they're saved to history above)
-                        // This allows the UI to show empty state for new query
-                        // The running query will continue updating its history entry in background
-                        setChatMessages([]);
-                        setSubmittedQueries([]);
-                        
-                        // Set currentChatId to null to force new chat creation on next query
-                        // The running query's chatId is preserved in history, so it can continue updating
-                        setCurrentChatId(null);
-                        currentChatIdRef.current = null; // Also update ref synchronously to avoid stale closure issues
-                        activeChatIdRef.current = null; // Also clear active chat to prevent response routing to old chat
-                        
-                        // CRITICAL: Close document preview for new agent (it's saved to buffer above)
-                        // This prevents document view leakage between agents
-                        if (expandedCardViewDoc) {
-                          closeExpandedCardView();
-                          documentPreviewOwnerRef.current = null;
-                        }
-                        
-                        // Notify parent to clear query prop (allows new query to be entered)
-                        if (onNewChat) {
-                          onNewChat();
-                        }
-                        
-                        console.log('🆕 SideChatPanel: Cleared UI for new agent while preserving running query:', {
-                          preservedChatId: existingChat?.id,
-                          runningQueryStatus: existingChat?.status
-                        });
-                      } else {
-                        // No running query - still need to save state to buffer BEFORE clearing
-                        // This ensures state is restored when returning to this chat
-                        if (currentChatId) {
-                          const bufferedState = getBufferedState(currentChatId);
-                          
-                          // Always save current messages to buffer
-                          const currentMessages = chatMessagesRef.current;
-                          if (currentMessages.length > 0) {
-                            bufferedState.messages = [...currentMessages];
-                            bufferedState.status = 'completed';
-                            bufferedState.isLoading = false;
-                            bufferedState.lastUpdate = Date.now();
-                            console.log('💾 SideChatPanel: Saved messages to buffer before new agent (no running query):', {
-                              messageCount: currentMessages.length
-                            });
-                          }
-                          
-                          // Save document preview state to buffer if document is open
-                          if (expandedCardViewDoc) {
-                            bufferedState.documentPreview = {
-                              docId: expandedCardViewDoc.docId,
-                              filename: expandedCardViewDoc.filename,
-                              highlight: expandedCardViewDoc.highlight ? {
-                                fileId: expandedCardViewDoc.highlight.fileId,
-                                bbox: expandedCardViewDoc.highlight.bbox, // bbox already contains page
-                                doc_id: expandedCardViewDoc.highlight.doc_id,
-                                block_id: expandedCardViewDoc.highlight.block_id || '',
-                                block_content: expandedCardViewDoc.highlight.block_content,
-                                original_filename: expandedCardViewDoc.highlight.original_filename
-                              } : undefined
-                            };
-                            console.log('💾 SideChatPanel: Saved document preview to buffer before new agent (no running query):', bufferedState.documentPreview);
-                          }
-                        }
-                        
-                        // Clear all state as before (existing behavior)
-                        setChatMessages([]);
-                        setSubmittedQueries([]);
-                        persistedChatMessagesRef.current = [];
-                        restoredMessageIdsRef.current = new Set();
-                        setInputValue("");
-                        setAttachedFiles([]);
-                        clearPropertyAttachments();
-                        setSelectionModeActive(false);
-                        setIsSubmitted(false);
-                        setIsFocused(false);
-                        isFirstCitationRef.current = true;
-                        setCurrentChatId(null);
-                        currentChatIdRef.current = null; // Also update ref synchronously to avoid stale closure issues
-                        activeChatIdRef.current = null; // Also clear active chat to prevent response routing to old chat
-                        setChatTitle('');
-                        setIsTitleStreaming(false);
-                        setStreamedTitle('');
-                        setIsEditingTitle(false);
-                        setEditingTitleValue('');
-                        
-                        // CRITICAL: Close document preview for new agent (it's saved to buffer above)
-                        // This prevents document view leakage between agents
-                        if (expandedCardViewDoc) {
-                          closeExpandedCardView();
-                          documentPreviewOwnerRef.current = null;
-                        }
-                        
-                        if (inputRef.current) {
-                          inputRef.current.value = "";
-                          inputRef.current.style.height = 'auto';
-                        }
-                        
-                        if (onNewChat) {
-                          onNewChat();
-                        }
-                      }
-                    }}
-                    whileHover={{ backgroundColor: '#f0f0f0' }}
-                    whileTap={{ backgroundColor: '#e8e8e8' }}
-                    className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1' : 'justify-center'} rounded-sm transition-all duration-150`}
-                    style={{
-                      padding: actualPanelWidth < 750 ? '5px' : '5px 8px',
-                      height: '26px',
-                      minHeight: '26px',
-                      border: 'none',
-                      position: 'relative',
-                      zIndex: 10001,
-                      pointerEvents: 'auto',
-                      cursor: 'pointer'
-                    }}
-                    title="New chat"
-                  >
-                    <Plus className="w-3.5 h-3.5 text-[#666]" strokeWidth={1.75} />
-                    {actualPanelWidth >= 750 && (
-                      <span className="text-[12px] font-normal text-[#666]">
-                        New chat
-                      </span>
-                    )}
-                  </motion.button>
+                      {actualPanelWidth >= 750 && (
+                        <span className="text-[12px] font-normal text-[#666]">Minimise</span>
+                      )}
+                    </button>
                   )}
+                  {!isChatLarge && hasUserMinimisedFromView && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        handleExpandChat();
+                      }}
+                      className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150`}
+                      title="Expand chat"
+                      type="button"
+                      style={{
+                        padding: actualPanelWidth >= 750 ? '5px 8px' : '5px',
+                        height: '26px',
+                        minHeight: '26px',
+                        border: 'none',
+                        position: 'relative',
+                        zIndex: 10001,
+                        pointerEvents: 'auto',
+                        cursor: 'pointer',
+                        backgroundColor: 'rgba(0, 0, 0, 0.04)'
+                      }}
+                    >
+                      <MoveDiagonal className="w-3.5 h-3.5 text-[#666]" strokeWidth={1.75} />
+                      {actualPanelWidth >= 750 && (
+                        <span className="text-[12px] font-normal text-[#666]">Expand</span>
+                      )}
+                    </button>
+                  )}
+                  <Popover open={viewOptionsOpen} onOpenChange={setViewOptionsOpen}>
+                    <PopoverTrigger asChild>
+                      <button
+                        type="button"
+                        aria-haspopup="true"
+                        aria-expanded={viewOptionsOpen}
+                        title="View – sidebar, files, new chat, fullscreen"
+                        className="flex items-center rounded-sm hover:bg-[#f0f0f0] transition-all duration-150 cursor-pointer border-none bg-transparent"
+                        style={{
+                          padding: actualPanelWidth < 750 ? '5px' : '5px 8px',
+                          height: '26px',
+                          minHeight: '26px',
+                        }}
+                        onMouseEnter={handleViewOptionsTriggerEnter}
+                        onMouseLeave={handleViewOptionsTriggerLeave}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setViewOptionsOpen((prev) => !prev);
+                        }}
+                      >
+                        <PictureInPicture2 className="w-3.5 h-3.5 text-[#666] flex-shrink-0" strokeWidth={1.75} />
+                        {actualPanelWidth >= 750 && (
+                          <span className="text-[12px] font-normal text-[#666] ml-2">View</span>
+                        )}
+                      </button>
+                    </PopoverTrigger>
+                    <PopoverContent
+                      align="start"
+                      side="bottom"
+                      sideOffset={4}
+                      onMouseEnter={handleViewOptionsContentEnter}
+                      onMouseLeave={handleViewOptionsContentLeave}
+                      className="min-w-[200px] w-auto rounded-lg border border-gray-200 bg-white p-3 shadow-md"
+                      onOpenAutoFocus={(e) => e.preventDefault()}
+                    >
+                      <div className="flex flex-col gap-1">
+                        {!isMainSidebarOpen && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setViewOptionsOpen(false);
+                              if (onSidebarToggle) onSidebarToggle();
+                            }}
+                            className="flex items-center gap-2 w-full rounded-sm px-2 py-2 text-left hover:bg-[#f5f5f5] text-[12px] text-[#374151]"
+                          >
+                            <PanelLeftOpen className="w-3.5 h-3.5 text-[#666] flex-shrink-0" strokeWidth={1.75} />
+                            Sidebar
+                          </button>
+                        )}
+                        {!isNewChatSection && !isFilingSidebarOpen && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setViewOptionsOpen(false);
+                              toggleFilingSidebar();
+                            }}
+                            className="flex items-center gap-2 w-full rounded-sm px-2 py-2 text-left hover:bg-[#f5f5f5] text-[12px] text-[#374151]"
+                          >
+                            <FolderOpen className="w-3.5 h-3.5 text-[#666] flex-shrink-0" strokeWidth={1.75} />
+                            Files
+                          </button>
+                        )}
+                        {!isNewChatSection && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setViewOptionsOpen(false);
+                              handleNewChatClick();
+                            }}
+                            className="flex items-center gap-2 w-full rounded-sm px-2 py-2 text-left hover:bg-[#f5f5f5] text-[12px] text-[#374151]"
+                          >
+                            <Plus className="w-3.5 h-3.5 text-[#666] flex-shrink-0" strokeWidth={1.75} />
+                            New chat
+                          </button>
+                        )}
+                        {isChatLarge ? (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setViewOptionsOpen(false);
+                              handleMinimiseChat();
+                            }}
+                            className="flex items-center gap-2 w-full rounded-sm px-2 py-2 text-left hover:bg-[#f5f5f5] text-[12px] text-[#374151]"
+                          >
+                            <Minimize2 className="w-3.5 h-3.5 text-[#666] flex-shrink-0" strokeWidth={1.75} />
+                            Minimise
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setViewOptionsOpen(false);
+                              handleExpandChat();
+                            }}
+                            className="flex items-center gap-2 w-full rounded-sm px-2 py-2 text-left hover:bg-[#f5f5f5] text-[12px] text-[#374151]"
+                          >
+                            <MoveDiagonal className="w-3.5 h-3.5 text-[#666] flex-shrink-0" strokeWidth={1.75} />
+                            Expand
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            e.preventDefault();
+                            // Call fullscreen first so it runs in the same user gesture (browser requirement)
+                            void toggleBrowserFullscreen();
+                            setViewOptionsOpen(false);
+                          }}
+                          className="flex items-center gap-2 w-full rounded-sm px-2 py-2 text-left hover:bg-[#f5f5f5] text-[12px] text-[#374151]"
+                        >
+                          {isBrowserFullscreen ? (
+                            <Minimize className="w-3.5 h-3.5 text-[#666] flex-shrink-0" strokeWidth={1.75} />
+                          ) : (
+                            <Fullscreen className="w-3.5 h-3.5 text-[#666] flex-shrink-0" strokeWidth={1.75} />
+                          )}
+                          {isBrowserFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+                        </button>
+                      </div>
+                    </PopoverContent>
+                  </Popover>
                 </div>
                 
-                {/* Center - Chat Title (hidden on new chat section) */}
-                <div className="flex-1 flex items-center justify-center px-4">
+                {/* Center - Chat Title (hidden on new chat section). Grid keeps title centered regardless of left/right content width. */}
+                <div className="flex items-center justify-center px-4 min-w-0">
                   {!isNewChatSection && (actualPanelWidth >= 900 ? (
                     <div className="flex items-center gap-2 max-w-md">
                       {/* Padlock icon (subtle, light gray) - shown by default, hidden when editing */}
                       {!isEditingTitle && (
                         <Lock 
-                          className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" 
+                          className="w-3.5 h-3.5 text-gray-300 flex-shrink-0" 
                           style={{ pointerEvents: 'none' }}
                         />
                       )}
@@ -12505,7 +12581,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   ) : null)}
                 </div>
                 
-                <div className="flex items-center space-x-2">
+                <div className="flex items-center space-x-2 min-w-0 justify-end">
                   {/* Agents Sidebar Button (hidden on new chat section) */}
                   {!isNewChatSection && (
                   <button
@@ -12551,7 +12627,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   </button>
                   )}
                   
-                  {/* Display options (reasoning trace + answer highlight) – hover popover */}
+                  {/* Response (reasoning trace + answer highlight) – hover popover */}
                   {!isNewChatSection && (
                   <Popover open={displayOptionsOpen} onOpenChange={setDisplayOptionsOpen}>
                     <PopoverTrigger asChild>
@@ -12559,7 +12635,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         type="button"
                         aria-haspopup="true"
                         aria-expanded={displayOptionsOpen}
-                        title="Display options – reasoning trace, answer highlight, and citations"
+                        title="Response – reasoning trace, answer highlight, and citations"
                         className="flex items-center rounded-sm hover:bg-[#f0f0f0] transition-all duration-150 cursor-pointer border-none bg-transparent"
                         style={{
                           padding: actualPanelWidth < 750 ? '5px' : '5px 8px',
@@ -12575,7 +12651,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       >
                         <SlidersHorizontal className="w-3.5 h-3.5 text-[#666] flex-shrink-0" strokeWidth={1.75} />
                         {actualPanelWidth >= 750 && (
-                          <span className="text-[12px] font-normal text-[#666] ml-1">Display options</span>
+                          <span className="text-[12px] font-normal text-[#666] ml-1">Response</span>
                         )}
                       </button>
                     </PopoverTrigger>
@@ -12601,7 +12677,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               flushSync(() => setShowReasoningTrace((prev) => !prev));
                             }}
                             className={`relative w-7 h-4 flex-shrink-0 rounded-full transition-colors ${
-                              showReasoningTrace ? 'bg-[#10a37f]' : 'bg-[#d1d5db]'
+                              showReasoningTrace ? 'bg-[#1f2937]' : 'bg-[#d1d5db]'
                             }`}
                           >
                             <span className={`absolute top-0.5 left-0.5 w-3 h-3 bg-white rounded-full shadow-sm transition-transform ${
@@ -12621,7 +12697,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               setShowHighlight(!showHighlight);
                             }}
                             className={`relative w-7 h-4 flex-shrink-0 rounded-full transition-colors ${
-                              showHighlight ? 'bg-[#10a37f]' : 'bg-[#d1d5db]'
+                              showHighlight ? 'bg-[#1f2937]' : 'bg-[#d1d5db]'
                             }`}
                           >
                             <span className={`absolute top-0.5 left-0.5 w-3 h-3 bg-white rounded-full shadow-sm transition-transform ${
@@ -12641,7 +12717,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               setShowCitations(!showCitations);
                             }}
                             className={`relative w-7 h-4 flex-shrink-0 rounded-full transition-colors ${
-                              showCitations ? 'bg-[#10a37f]' : 'bg-[#d1d5db]'
+                              showCitations ? 'bg-[#1f2937]' : 'bg-[#d1d5db]'
                             }`}
                           >
                             <span className={`absolute top-0.5 left-0.5 w-3 h-3 bg-white rounded-full shadow-sm transition-transform ${
@@ -12654,120 +12730,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   </Popover>
                   )}
                   
-                  <button
-                    type="button"
-                    onClick={() => {
-                      // Get current width using unified calculation
-                      const isDocumentPreviewOpen = isPropertyDetailsOpen || !!expandedCardViewDoc;
-                      const { widthPx: currentWidth } = calculateChatPanelWidth({
-                        draggedWidth,
-                        isExpanded,
-                        isFullscreenMode,
-                        isDocumentPreviewOpen,
-                        isPropertyDetailsOpen,
-                        sidebarWidth,
-                        chatPanelWidth,
-                        isChatPanelOpen,
-                        isManualFullscreen: isManualFullscreenRef.current,
-                      });
-                      
-                      // Define threshold: if width is >= 600px, consider it "large" and make it smaller
-                      // Otherwise, make it larger (fullscreen)
-                      const THRESHOLD = 600; // Threshold between small and large
-                      
-                      let newWidth: number;
-                      let newExpandedState: boolean;
-                      
-                      if (currentWidth >= THRESHOLD) {
-                        // Currently large - make it smaller
-                        newWidth = CHAT_PANEL_WIDTH.COLLAPSED;
-                        newExpandedState = false;
-                        // Reset fullscreen mode when collapsing
-                        if (isFullscreenMode) {
-                          setIsFullscreenMode(false);
-                          isFullscreenFromDashboardRef.current = false;
-                          isManualFullscreenRef.current = false; // Clear manual fullscreen flag
-                        }
-                        setDraggedWidth(newWidth);
-                      } else {
-                        // Currently small - make it fullscreen
-                        newExpandedState = true;
-                        // Set fullscreen mode (user manually requested)
-                        setIsFullscreenMode(true);
-                        isFullscreenFromDashboardRef.current = true;
-                        isManualFullscreenRef.current = true; // Mark as manual fullscreen request
-                        setJustEnteredFullscreen(true);
-                        // Clear dragged width so fullscreen width calculation takes effect
-                        setDraggedWidth(null);
-                        // Calculate fullscreen width for notification
-                        const chatPanelOffset = isChatPanelOpen ? chatPanelWidth : 0;
-                        newWidth = window.innerWidth - sidebarWidth - chatPanelOffset;
-                        // Reset the flag after a short delay
-                        setTimeout(() => {
-                          setJustEnteredFullscreen(false);
-                        }, 100);
-                      }
-                      
-                      setIsExpanded(newExpandedState);
-                      lockedWidthRef.current = null; // Clear locked width
-                      
-                      // Notify parent of width change
-                      if (onChatWidthChange) {
-                        onChatWidthChange(newWidth);
-                      }
-                    }}
-                    className={`flex items-center ${actualPanelWidth >= 600 ? 'gap-1' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150 focus:outline-none outline-none`}
-                    style={{
-                      marginLeft: '4px',
-                      padding: actualPanelWidth >= 600 ? '5px 8px' : '5px',
-                      height: '26px',
-                      minHeight: '26px',
-                      border: 'none',
-                      cursor: 'pointer'
-                    }}
-                    title={(() => {
-                      // Calculate current width using unified calculation
-                      const isDocumentPreviewOpen = isPropertyDetailsOpen || !!expandedCardViewDoc;
-                      const { widthPx: currentWidth } = calculateChatPanelWidth({
-                        draggedWidth,
-                        isExpanded,
-                        isFullscreenMode,
-                        isDocumentPreviewOpen,
-                        isPropertyDetailsOpen,
-                        sidebarWidth,
-                        chatPanelWidth,
-                        isChatPanelOpen,
-                        isManualFullscreen: isManualFullscreenRef.current,
-                      });
-                      return currentWidth >= 600 ? "Make chat smaller" : "Make chat larger";
-                    })()}
-                  >
-                    {(() => {
-                      // Calculate current width using unified calculation
-                      const isDocumentPreviewOpen = isPropertyDetailsOpen || !!expandedCardViewDoc;
-                      const { widthPx: currentWidth } = calculateChatPanelWidth({
-                        draggedWidth,
-                        isExpanded,
-                        isFullscreenMode,
-                        isDocumentPreviewOpen,
-                        isPropertyDetailsOpen,
-                        sidebarWidth,
-                        chatPanelWidth,
-                        isChatPanelOpen,
-                        isManualFullscreen: isManualFullscreenRef.current,
-                      });
-                      const isLarge = currentWidth >= 600;
-                      return (
-                        <>
-                          {isLarge ? (
-                            <Minimize2 className="w-4 h-4 text-[#666]" strokeWidth={1.75} />
-                          ) : (
-                            <MoveDiagonal className="w-4 h-4 text-[#666]" strokeWidth={1.75} />
-                          )}
-                          </>
-                      );
-                    })()}
-                  </button>
                   <button
                     onClick={() => {
                       // CRITICAL: Save chat state before closing (granular restoration)
