@@ -364,12 +364,43 @@ async def agent_node(state: MainWorkflowState, runnable_config=None) -> MainWork
         )
         emitter.emit(task_header)
     
-    # First call: Initialize conversation with system prompt + user query
+    # First call only: build initial prompt with optional search-scope rails (no work on later turns)
     if not messages:
         system_prompt = get_system_prompt('analyze')
-        
-        initial_prompt = f"""USER QUERY: {user_query}
+        property_id = state.get("property_id")
+        raw_doc_ids = state.get("document_ids")
+        # Normalize to a new list of strings (never mutate state); handle None, single value, or list
+        if raw_doc_ids is None:
+            document_ids = []
+        elif isinstance(raw_doc_ids, list):
+            document_ids = [str(d) for d in raw_doc_ids if d]
+        else:
+            document_ids = [str(raw_doc_ids)]
+        has_document_scope = bool(document_ids)
+        has_property_scope = bool(property_id) and not has_document_scope
 
+        # Build scope block only when needed; strip/newline only when block is non-empty
+        if has_document_scope:
+            scope_text = f"""
+🎯 **SEARCH SCOPE – DOCUMENT(S) (MANDATORY)**
+The user has attached specific **document(s)**. You must search **only within these documents**.
+- When you call **retrieve_chunks**, use **only** these document IDs: {document_ids}.
+- Do not use document IDs from other sources. Your answer must be based solely on content from these documents.
+- You may call retrieve_documents first to confirm metadata, but retrieve_chunks MUST use the IDs above.
+"""
+        elif has_property_scope:
+            scope_text = """
+🎯 **SEARCH SCOPE – PROPERTY (MANDATORY)**
+The user has attached a **property** (e.g. a property pin or project). You must search **only within that property**.
+- When you call **retrieve_documents**, search for information relevant to the user's question in the context of this property only (e.g. include property-related context in your query so results are limited to this property’s documents).
+- When you call **retrieve_chunks**, use **only** document IDs that belong to this property (from your retrieve_documents results). Do not search or answer using documents from other properties.
+"""
+        else:
+            scope_text = ""
+        search_scope_block = ("\n" + scope_text.strip() + "\n") if scope_text else ""
+
+        initial_prompt = f"""USER QUERY: {user_query}
+{search_scope_block}
 🔍 **CRITICAL TWO-STEP RETRIEVAL PROCESS**:
 
 **STEP 1: Find Relevant Documents (INTERNAL ONLY - DO NOT SHOW TO USER)**

@@ -49,6 +49,18 @@ interface FilingSidebarProps {
   hideCloseButton?: boolean;
 }
 
+/** Parse getAllDocuments() response into a Document array. Shared by preload and open-sidebar fetch. */
+function parseAllDocumentsResponse(response: any): Document[] {
+  if (!response?.success) return [];
+  const data = response.data;
+  if (Array.isArray(data)) return data;
+  if (data?.data && Array.isArray(data.data)) return data.data;
+  if (data?.success && data?.data && Array.isArray(data.data)) return data.data;
+  if (data?.documents && Array.isArray(data.documents)) return data.documents;
+  if (data?.data?.documents && Array.isArray(data.data.documents)) return data.data.documents;
+  return [];
+}
+
 // Component for displaying pending file with image preview
 const PendingFileItem: React.FC<{
   file: File;
@@ -242,8 +254,26 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
   const documentCacheRef = useRef<Map<string, Document[]>>(new Map());
   const cacheTimestampRef = useRef<Map<string, number>>(new Map());
   const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes cache duration
+  const preloadStartedRef = useRef(false);
 
   const { addPreviewFile, setPreviewFiles, setIsPreviewOpen } = usePreview();
+
+  // Pre-load global documents in the background on first load so FilingSidebar opens with cached data
+  useEffect(() => {
+    if (preloadStartedRef.current) return;
+    preloadStartedRef.current = true;
+    const run = async () => {
+      try {
+        const response = await backendApi.getAllDocuments();
+        const docs = parseAllDocumentsResponse(response);
+        documentCacheRef.current.set('global', docs);
+        cacheTimestampRef.current.set('global', Date.now());
+      } catch (_) {
+        // Ignore; sidebar will fetch when opened
+      }
+    };
+    run();
+  }, []);
 
   // Fetch properties and folders when selector opens
   useEffect(() => {
@@ -375,68 +405,25 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
           // Fetch all documents globally
           try {
             const response = await backendApi.getAllDocuments();
-            console.log('📄 FilingSidebar: getAllDocuments response:', response);
-            console.log('📄 FilingSidebar: response.success:', response.success);
-            console.log('📄 FilingSidebar: response.data:', response.data);
-            console.log('📄 FilingSidebar: response.data type:', typeof response.data);
-            console.log('📄 FilingSidebar: response.data isArray:', Array.isArray(response.data));
-            
+            const docs = parseAllDocumentsResponse(response);
             if (response.success) {
-              // /api/files returns: { success: True, data: documents }
-              // fetchApi wraps it: { success: true, data: { success: True, data: documents } }
-              // So documents are at: response.data.data
-              let docs: any[] = [];
-              
-              // Try multiple possible response structures
-              if (Array.isArray(response.data)) {
-                // Direct array (from /api/documents)
-                docs = response.data;
-              } else if (response.data && Array.isArray(response.data.data)) {
-                // Wrapped: { success: true, data: { success: True, data: documents } }
-                docs = response.data.data;
-              } else if (response.data && response.data.success && Array.isArray(response.data.data)) {
-                // Double-wrapped: response.data.success and response.data.data
-                docs = response.data.data;
-              } else if (response.data && Array.isArray(response.data.documents)) {
-                // Alternative structure: { documents: [...] }
-                docs = response.data.documents;
-              } else if (response.data && response.data.data && Array.isArray(response.data.data.documents)) {
-                // Triple-wrapped: response.data.data.documents
-                docs = response.data.data.documents;
-              }
-              
-              console.log('📄 FilingSidebar: Final parsed documents count:', docs.length);
-              if (docs.length > 0) {
-                console.log('📄 FilingSidebar: First document sample:', docs[0]);
-              } else {
-                console.warn('📄 FilingSidebar: No documents found in response. Response structure:', JSON.stringify(response.data, null, 2));
-              }
-              
-              // Update cache
               documentCacheRef.current.set(cacheKey, docs);
               cacheTimestampRef.current.set(cacheKey, Date.now());
-              
-              // Only update documents and folders if we didn't use cached data
-              // (to avoid double loading when cache was used)
               if (!isCacheValid) {
                 setDocuments(docs);
                 loadFolders();
               }
-              // If cache was used, just update cache silently - don't reload UI
-            } else {
-              // Only set error if we didn't use cached data
-              if (!isCacheValid) {
-                console.warn('📄 FilingSidebar: Request failed:', response.error);
-                setError(response.error || 'Failed to load documents');
-                setDocuments([]);
-                setFolders([]);
-              }
+            } else if (!isCacheValid) {
+              setError(response.error || 'Failed to load documents');
+              setDocuments([]);
+              setFolders([]);
             }
           } catch (err) {
-            console.error('📄 FilingSidebar: Exception fetching all documents:', err);
-            setError('Failed to load documents');
-            setDocuments([]);
-            setFolders([]);
+            if (!isCacheValid) {
+              setError('Failed to load documents');
+              setDocuments([]);
+              setFolders([]);
+            }
           }
         }
       } catch (err) {
@@ -1603,7 +1590,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
       <div
           ref={(el) => { if (el) panelElementRef.current = el; }}
           data-filing-sidebar="true"
-          className="fixed top-0 h-full flex flex-col z-[10000]"
+          className="fixed top-0 h-full flex flex-col z-[100001]"
           onClick={(e) => e.stopPropagation()}
           style={{
             // Match sidebar grey background for seamless look - always solid
@@ -1646,7 +1633,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
             {!hideCloseButton ? (
               <button
                 onClick={closeSidebar}
-                className="w-8 h-8 flex items-center justify-center text-gray-400 hover:text-gray-600 hover:bg-gray-50 transition-colors"
+                className="w-8 h-8 flex items-center justify-center rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-50 transition-colors"
                 aria-label="Close sidebar"
               >
                 <div className="w-4 h-4 flex items-center justify-center">
@@ -1950,7 +1937,8 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                 placeholder="Search documents..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full pl-8 pr-3 py-1.5 bg-gray-50 border border-gray-200 rounded-none text-[13px] text-gray-900 placeholder:text-gray-400 focus:outline-none focus:bg-white focus:border-gray-300 transition-all"
+                className="w-full pl-8 pr-3 py-1.5 bg-gray-50 border border-gray-200 rounded-md text-[13px] text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-0"
+                style={{ WebkitTapHighlightColor: 'transparent', transition: 'none', boxShadow: 'none' }}
               />
             </div>
 
@@ -2180,8 +2168,8 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
           </div>
         )}
 
-        {/* Content Area - Clean Background */}
-        <div className="flex-1 overflow-y-auto w-full px-4">
+        {/* Content Area - Clean Background - relative z-50 so it stacks above the chat panel */}
+        <div className="flex-1 overflow-y-auto w-full px-4 relative z-50" style={{ boxSizing: 'border-box' }}>
           {isLoading ? (
             <div className="flex items-center justify-center h-full">
               <div className="text-gray-500">Loading...</div>
@@ -2316,11 +2304,14 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                 );
               })}
 
-              {/* Files - Grouped by property in property view */}
+              {/* Files - Grouped by property in property view - pr-8 keeps property header narrow */}
               {viewMode === 'property' && groupedDocumentsByProperty && !currentFolderId ? (
-                // Grouped by property sections
-                groupedDocumentsByProperty.map(({ propertyId, propertyAddress, documents: propertyDocs }) => {
+                <div className="pr-8 w-full" style={{ boxSizing: 'border-box' }}>
+                {groupedDocumentsByProperty.map(({ propertyId, propertyAddress, documents: propertyDocs }) => {
                   const isExpanded = expandedProperties.has(propertyId);
+                  const anyExpanded = expandedProperties.size > 0;
+                  // When a property is expanded, hide other (collapsed) property containers; only show expanded one(s)
+                  if (anyExpanded && !isExpanded) return null;
                   
                   // Skip rendering sections that don't have a valid property address
                   // (These are documents not associated with any property card)
@@ -2330,10 +2321,10 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                   
                   return (
                     <div key={propertyId} className="px-0 mb-0.5">
-                      {/* Property Section Header - Premium Container Design */}
+                      {/* Property Section Header - inset (ml-4 mr-8) so file rows below can be full width */}
                       <div 
                         onClick={() => togglePropertyExpansion(propertyId)}
-                        className={`px-4 py-2 cursor-pointer transition-all duration-200 rounded-md border flex items-center gap-2.5 w-full ${
+                        className={`px-4 py-2 ml-4 mr-8 cursor-pointer transition-all duration-200 rounded-md border flex items-center gap-2.5 w-full ${
                           isExpanded 
                             ? 'bg-gray-50 border-gray-200/60' 
                             : 'bg-white border-gray-200/60 hover:border-gray-300/80 hover:bg-gray-50/50'
@@ -2361,9 +2352,9 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                           {propertyDocs.length}
                         </span>
                       </div>
-                      {/* Documents in this property - Indented sub-items */}
+                      {/* Documents in this property - ml-4 mr-8 matches property header width exactly (no layout change to list/header) */}
                       {isExpanded && (
-                        <div className="px-4 py-0.5">
+                        <div className="py-0.5 w-full" style={{ boxSizing: 'border-box' }}>
                           {propertyDocs.map((doc) => {
                             const isLinked = isDocumentLinked(doc);
                             const isSelected = selectedItems.has(doc.id);
@@ -2379,7 +2370,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                                 }}
                                 onMouseEnter={() => setHoveredItemId(doc.id)}
                                 onMouseLeave={() => setHoveredItemId(null)}
-                                className={`flex items-center gap-2.5 py-1.5 cursor-pointer group transition-all duration-200 rounded-md border pl-3 pr-3 mx-4 ${
+                                className={`flex items-center gap-2.5 pl-3 pr-3 py-1.5 ml-4 mr-8 cursor-pointer group transition-all duration-200 rounded-md border ${
                                   isSelectionMode 
                                     ? (isSelected 
                                         ? 'bg-gray-100/50 border-gray-300/60 hover:border-gray-400/80' 
@@ -2526,7 +2517,8 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                       )}
                     </div>
                   );
-                })
+                })}
+                </div>
               ) : (
                 // Flat list for global view or when inside a folder - Premium Design
                 <div className="py-0.5 w-full" style={{ boxSizing: 'border-box' }}>

@@ -8,7 +8,8 @@ import { generateAnimatePresenceKey, generateConditionalKey, generateUniqueKey }
 import { ChevronRight, ChevronDown, ChevronUp, ArrowUp, Paperclip, Mic, Map, X, SquareDashedMousePointer, Scan, Fullscreen, Plus, PanelLeftOpen, PanelRightClose, PictureInPicture2, Trash2, CreditCard, MoveDiagonal, Square, FileText, Image as ImageIcon, File as FileIcon, FileCheck, Minimize, Minimize2, Workflow, Home, FolderOpen, TextCursorInput, Brain, AudioLines, MessageCircleDashed, Copy, Play, Search, Lock, Pencil, Check, Highlighter, SlidersHorizontal, BookOpen } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { FileAttachment, FileAttachmentData } from './FileAttachment';
-import { PropertyAttachment, PropertyAttachmentData } from './PropertyAttachment';
+import { PropertyAttachmentData } from './PropertyAttachment';
+import { AtMentionChip } from './AtMentionChip';
 import { toast } from "@/hooks/use-toast";
 import { usePreview, type CitationHighlight } from '../contexts/PreviewContext';
 import { useChatStateStore, useActiveChatDocumentPreview } from '../contexts/ChatStateStore';
@@ -46,6 +47,9 @@ import { AtMentionPopover } from './AtMentionPopover';
 import type { AtMentionItem } from './AtMentionPopover';
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover';
 import { getFilteredAtMentionItems, preloadAtMentionCache } from '@/services/atMentionCache';
+import { SegmentInput, type SegmentInputHandle } from './SegmentInput';
+import { useSegmentInput, buildInitialSegments } from '@/hooks/useSegmentInput';
+import { isTextSegment, isChipSegment, contentSegmentsToLinkedQuery, segmentsToLinkedQuery, type QueryContentSegment, type ChipSegment } from '@/types/segmentInput';
 
 // ============================================================================
 // CHAT PANEL WIDTH CONSTANTS
@@ -2615,6 +2619,10 @@ interface SideChatPanelProps {
   isMapVisible?: boolean; // Whether map is currently visible (side-by-side with chat)
   onActiveChatChange?: (isActive: boolean) => void; // Callback when active chat state changes (loading query)
   onOpenChatHistory?: () => void; // Callback to open chat history panel
+  /** Exact segment order for query bubble when query comes from SearchBar/MapChatBar (dashboard/map submit). */
+  initialContentSegments?: QueryContentSegment[];
+  /** Ref set by MainContent on search submit so panel can use segments before state propagates. */
+  pendingSearchContentSegmentsRef?: React.MutableRefObject<QueryContentSegment[] | undefined>;
 }
 
 export interface SideChatPanelRef {
@@ -2721,7 +2729,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   isQuickStartBarVisible = false, // Default to false
   isMapVisible = false, // Default to false
   onActiveChatChange,
-  onOpenChatHistory
+  onOpenChatHistory,
+  initialContentSegments,
+  pendingSearchContentSegmentsRef
 }, ref) => {
   // Main navigation state:
   // - collapsed: icon-only sidebar (treat as "closed" for the purposes of showing open controls)
@@ -2933,7 +2943,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   const [atAnchorIndex, setAtAnchorIndex] = React.useState<number>(-1);
   const [atItems, setAtItems] = React.useState<AtMentionItem[]>([]);
   const [atSelectedIndex, setAtSelectedIndex] = React.useState<number>(0);
-  const atCursorOffsetRef = React.useRef<number>(0);
+  const [atMentionDocumentChips, setAtMentionDocumentChips] = React.useState<Array<{ id: string; label: string }>>([]);
+  const [atAnchorRect, setAtAnchorRect] = React.useState<{ left: number; top: number; bottom: number; height: number } | null>(null);
   
   React.useEffect(() => {
     if (!atMentionOpen) {
@@ -4022,6 +4033,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   const {
     selectedDocumentIds,
     isDocumentSelectionMode,
+    toggleDocumentSelection,
     toggleDocumentSelectionMode,
     clearSelectedDocuments,
     setDocumentSelectionMode
@@ -4152,6 +4164,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       original_filename?: string;
       block_id?: string;
     };
+    /** Ordered segments for query display (chips + text in input order) */
+    contentSegments?: QueryContentSegment[];
   }
   
   const [submittedQueries, setSubmittedQueries] = React.useState<SubmittedQuery[]>([]);
@@ -4434,21 +4448,89 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     clearPropertyAttachments,
     addPropertyAttachment
   } = usePropertySelection();
-  
+
+  const initialSegments = React.useMemo(
+    () =>
+      buildInitialSegments(
+        '',
+        propertyAttachments.map((a) => ({ id: a.id, label: a.address, payload: a.property })),
+        atMentionDocumentChips
+      ),
+    []
+  );
+  const segmentInput = useSegmentInput({
+    initialSegments,
+    onRemovePropertyChip: removePropertyAttachment,
+    onRemoveDocumentChip: (id) => {
+      toggleDocumentSelection(id);
+      setAtMentionDocumentChips((prev) => prev.filter((d) => d.id !== id));
+    },
+  });
+
+  React.useEffect(() => {
+    setInputValue(segmentInput.getPlainText());
+  }, [segmentInput.segments]);
+
+  React.useEffect(() => {
+    const plain = segmentInput.getPlainText();
+    const cursorOffset = segmentInput.getCursorOffset();
+    const lastAt = plain.slice(0, cursorOffset).lastIndexOf('@');
+    const queryAfterAt = lastAt >= 0 ? plain.slice(lastAt + 1, cursorOffset) : '';
+    // Close popover when user types a space after "@" (e.g. "what is the value of @ ")
+    if (lastAt >= 0 && !queryAfterAt.includes(' ')) {
+      setAtMentionOpen(true);
+      setAtQuery(queryAfterAt);
+      setAtAnchorIndex(lastAt);
+      setAtSelectedIndex(0);
+    } else {
+      setAtMentionOpen(false);
+      setAtQuery('');
+      setAtAnchorIndex(-1);
+    }
+  }, [segmentInput.segments, segmentInput.cursor]);
+
+  // Position @ popover at the "@" character (recompute when open/cursor/segments change).
+  // Defer rect read to next frame so SegmentInput's segment refs are set and layout is complete.
+  React.useLayoutEffect(() => {
+    if (!atMentionOpen || atAnchorIndex < 0) {
+      setAtAnchorRect(null);
+      return;
+    }
+    let cancelled = false;
+    const readRect = () => {
+      if (cancelled) return;
+      const rect = inputRef.current?.getRectForPlainOffset(atAnchorIndex);
+      if (rect) {
+        setAtAnchorRect({ left: rect.left, top: rect.top, bottom: rect.bottom, height: rect.height });
+      } else {
+        // Retry once on next frame in case segment refs weren't ready
+        requestAnimationFrame(() => {
+          if (cancelled) return;
+          const retryRect = inputRef.current?.getRectForPlainOffset(atAnchorIndex);
+          if (retryRect) {
+            setAtAnchorRect({ left: retryRect.left, top: retryRect.top, bottom: retryRect.bottom, height: retryRect.height });
+          } else {
+            setAtAnchorRect(null);
+          }
+        });
+      }
+    };
+    requestAnimationFrame(readRect);
+    return () => { cancelled = true; };
+  }, [atMentionOpen, atAnchorIndex, segmentInput.segments]);
+
   // Handle property selection
   const handlePropertySelect = React.useCallback((property: PropertyData) => {
-    // Use the property selection context to add the property attachment
     addPropertyAttachment(property);
-    
-    // Close popup and clear search
     setShowPropertySearchPopup(false);
     setPropertySearchResults([]);
     setPropertySearchQuery("");
-    
-    // Remove the @property prefix from input if present
-    const newInput = inputValue.replace(/@property\s+/i, '').trim();
+    const newInput = segmentInput.getPlainText().replace(/@property\s+/i, '').trim();
     setInputValue(newInput);
-  }, [inputValue, addPropertyAttachment]);
+    segmentInput.setSegments(
+      buildInitialSegments(newInput, propertyAttachments.map((a) => ({ id: a.id, label: a.address, payload: a.property })), atMentionDocumentChips)
+    );
+  }, [addPropertyAttachment, segmentInput, propertyAttachments, atMentionDocumentChips]);
   
   // Use chat history context
   const { addChatToHistory, getChatById, updateChatTitle, updateChatStatus, updateChatDescription, updateChatInHistory, chatHistory, saveChatState } = useChatHistory();
@@ -4588,7 +4670,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           };
         }
       }
-      setInputValue("");
+      clearInputAndChips();
       setAttachedFiles([]);
       attachedFilesRef.current = [];
       clearPropertyAttachments();
@@ -4603,10 +4685,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       persistedChatMessagesRef.current = [];
       restoredMessageIdsRef.current = new Set();
       isFirstCitationRef.current = true;
-      if (inputRef.current) {
-        inputRef.current.value = "";
-        inputRef.current.style.height = 'auto';
-      }
       setChatMessages([]);
       setSubmittedQueries([]);
       setCurrentChatId(null);
@@ -4646,7 +4724,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       setSubmittedQueries([]);
       persistedChatMessagesRef.current = [];
       restoredMessageIdsRef.current = new Set();
-      setInputValue("");
+      clearInputAndChips();
       setAttachedFiles([]);
       clearPropertyAttachments();
       setSelectionModeActive(false);
@@ -4664,10 +4742,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       if (expandedCardViewDoc) {
         closeExpandedCardView();
         documentPreviewOwnerRef.current = null;
-      }
-      if (inputRef.current) {
-        inputRef.current.value = "";
-        inputRef.current.style.height = 'auto';
       }
       if (onNewChat) onNewChat();
     }
@@ -4768,35 +4842,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       chatMessagesRef.current = [];
       setSubmittedQueries([]);
       
-      // CRITICAL: Check if input was focused BEFORE clearing state
-      // We need to capture this before any state changes that might cause re-renders
-      const wasFocused = inputRef.current && document.activeElement === inputRef.current;
-      
-      // Clear input value - let React handle the DOM update (controlled component)
-      setInputValue("");
-      
-      // Reset textarea height and restore focus after React updates the DOM
-      // Use requestAnimationFrame to ensure React has finished updating
+      const wasFocused = inputRef.current && document.activeElement === inputRef.current.getRootElement();
+      clearInputAndChips();
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
-          if (inputRef.current) {
-            // Reset textarea height to initial state
-            inputRef.current.style.height = 'auto';
-            inputRef.current.style.height = '24px';
-            
-            // CRITICAL: Restore focus if input was focused
-            // Double requestAnimationFrame ensures React has fully updated the DOM
-            if (wasFocused) {
-              // Use a microtask to ensure focus happens after all React updates
-              Promise.resolve().then(() => {
-                if (inputRef.current) {
-                  inputRef.current.focus();
-                  // Ensure cursor is at the end (should be 0 since we cleared it)
-                  const length = inputRef.current.value.length;
-                  inputRef.current.setSelectionRange(length, length);
-                }
-              });
-            }
+          if (wasFocused && inputRef.current) {
+            Promise.resolve().then(() => {
+              inputRef.current?.focus();
+              restoreSelectionRef.current?.();
+            });
           }
         });
       });
@@ -4858,32 +4912,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       setChatMessages([]);
       setSubmittedQueries([]);
       
-      // CRITICAL: Check if input was focused BEFORE clearing state
-      const wasFocused = inputRef.current && document.activeElement === inputRef.current;
-      
-      // Clear input state - let React handle the DOM update (controlled component)
-      setInputValue("");
-      
-      // Reset textarea height and restore focus after React updates
-      // Use requestAnimationFrame to ensure React has finished updating
+      const wasFocused = inputRef.current && document.activeElement === inputRef.current.getRootElement();
+      clearInputAndChips();
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
-          if (inputRef.current) {
-            // Reset textarea height to initial state
-            inputRef.current.style.height = 'auto';
-            inputRef.current.style.height = '24px';
-            
-            // Restore focus if input was focused
-            if (wasFocused) {
-              // Use a microtask to ensure focus happens after all React updates
-              Promise.resolve().then(() => {
-                if (inputRef.current) {
-                  inputRef.current.focus();
-                  const length = inputRef.current.value.length;
-                  inputRef.current.setSelectionRange(length, length);
-                }
-              });
-            }
+          if (wasFocused && inputRef.current) {
+            Promise.resolve().then(() => {
+              inputRef.current?.focus();
+              restoreSelectionRef.current?.();
+            });
           }
         });
       });
@@ -5881,6 +5918,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           tempFileId: att.tempFileId // Preserve temp file ID
         }));
         
+        // Use ref fallback so we have segments even if state hasn't propagated yet (dashboard search with property chip)
+        const effectiveSegmentsForMessage = (initialContentSegments?.length ? initialContentSegments : (pendingSearchContentSegmentsRef?.current ?? [])) as QueryContentSegment[];
+        
         const newQueryMessage: ChatMessage = {
           id: queryId,
           type: 'query',
@@ -5889,6 +5929,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           propertyAttachments: [...propertyAttachments],
           selectedDocumentIds: selectedDocIds,
           selectedDocumentNames: selectedDocNames,
+          contentSegments: effectiveSegmentsForMessage.length > 0 ? effectiveSegmentsForMessage : undefined, // Exact order from SearchBar/MapChatBar (ref fallback)
           fromCitation: !!citationContext, // Mark if query came from citation
           citationBboxData: citationContext ? {
             document_id: citationContext.document_id,
@@ -5935,9 +5976,24 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         // Call LLM API to query documents (same logic as handleSubmit)
         (async () => {
           try {
-            const propertyId = propertyAttachments.length > 0 
-              ? String(propertyAttachments[0].propertyId) 
-              : undefined;
+            // Use same segments as message (effectiveSegmentsForMessage includes ref fallback)
+            const effectiveSegments = effectiveSegmentsForMessage;
+            // Derive propertyId: from propertyAttachments first, then from effectiveSegments (SearchBar/Map path)
+            let propertyId: string | undefined;
+            if (propertyAttachments.length > 0) {
+              propertyId = String(propertyAttachments[0].propertyId);
+            } else if (effectiveSegments.length > 0) {
+              const firstPropertySeg = effectiveSegments.find((s): s is QueryContentSegment & { type: 'property' } => s.type === 'property');
+              const att = firstPropertySeg?.attachment;
+              if (att) {
+                const raw = att.propertyId ?? (att as any).property?.id ?? att.id;
+                propertyId = raw != null ? String(raw) : undefined;
+              } else {
+                propertyId = undefined;
+              }
+            } else {
+              propertyId = undefined;
+            }
             
             const messageHistory = chatMessages
               .filter(msg => (msg.type === 'query' || msg.type === 'response') && msg.text)
@@ -5946,10 +6002,44 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 content: msg.text || ''
               }));
             
-            const documentIdsArray = selectedDocumentIds.size > 0 
-              ? Array.from(selectedDocumentIds) 
-              : undefined;
+            // Merge document IDs: sidebar selection + document chip ids from segments (chip-only usage)
+            const fromSelection = selectedDocumentIds.size > 0 ? Array.from(selectedDocumentIds) : [];
+            const docChipIdsFromSegments = effectiveSegments
+              .filter((s): s is QueryContentSegment & { type: 'document' } => s.type === 'document')
+              .map((s) => s.id)
+              .filter(Boolean);
+            const mergedDocIds = [...new Set([...fromSelection, ...docChipIdsFromSegments].filter(Boolean))];
+            let documentIdsArray: string[] | undefined = mergedDocIds.length > 0 ? mergedDocIds : undefined;
+            if (!documentIdsArray?.length && propertyAttachments.length > 0) {
+              const firstProperty = propertyAttachments[0].property as any;
+              const docs = firstProperty?.propertyHub?.documents;
+              if (docs && Array.isArray(docs)) {
+                documentIdsArray = docs.map((d: any) => String(d.id ?? d.document_id ?? d)).filter(Boolean);
+              }
+            }
+            // When query came from SearchBar/Map (effectiveSegments), propertyAttachments may be empty; use segment's attachment
+            if (!documentIdsArray?.length && effectiveSegments.length > 0) {
+              const firstPropertySeg = effectiveSegments.find((s): s is QueryContentSegment & { type: 'property' } => s.type === 'property');
+              const firstProperty = firstPropertySeg?.attachment?.property as any;
+              const docs = firstProperty?.propertyHub?.documents;
+              if (docs && Array.isArray(docs)) {
+                documentIdsArray = docs.map((d: any) => String(d.id ?? d.document_id ?? d)).filter(Boolean);
+              }
+            }
             
+            console.log('📤 SideChatPanel (query-prop): scope for backend', {
+              effectiveSegmentsLength: effectiveSegments.length,
+              propertyId: propertyId ?? undefined,
+              documentIdsArray: documentIdsArray ?? undefined,
+              hasPropertySegment: effectiveSegments.some(s => s.type === 'property')
+            });
+            
+            // Link query text and chips into one sentence so the model sees context (e.g. "what is the value of highlands").
+            const queryWithChipContext =
+              effectiveSegments.length > 0
+                ? (contentSegmentsToLinkedQuery(effectiveSegments) || queryText)
+                : queryText;
+
             // Check if attachments have extracted text - show file choice step if so
             let responseMode: 'fast' | 'detailed' | 'full' | undefined;
             let attachmentContext: { texts: string[]; pageTexts: string[][]; filenames: string[]; tempFileIds: string[] } | null = null;
@@ -6240,7 +6330,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             
             // Log what we're sending to the backend
             console.log('📤 SideChatPanel: Sending query to backend with:', {
-              query: queryText,
+              query: queryWithChipContext,
               propertyId,
               messageHistoryLength: messageHistory.length,
               responseMode,
@@ -6291,7 +6381,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             }
             
             await backendApi.queryDocumentsStreamFetch(
-              queryText,
+              queryWithChipContext,
               propertyId,
               messageHistory,
               chatSessionId, // Use chat's sessionId (not component sessionId) for backend isolation
@@ -6780,12 +6870,19 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         // Also dedupe by timestamp proximity (within 500ms) to prevent duplicate emissions
                         const stepKey = `${step.step}:${step.message}`;
                         const now = Date.now();
-                        const existingIndex = existingSteps.findIndex(s => 
-                          `${s.step}:${s.message}` === stepKey && (now - s.timestamp) < 500
-                        );
+                        const incomingDocId = step.action_type === 'reading'
+                          ? (step.details?.doc_metadata?.doc_id ?? (step.details as any)?.doc_id)
+                          : undefined;
+                        const isDuplicate = existingSteps.some(s => {
+                          if (incomingDocId && step.action_type === 'reading') {
+                            const existingDocId = s.details?.doc_metadata?.doc_id ?? (s.details as any)?.doc_id;
+                            if (s.action_type === 'reading' && existingDocId === incomingDocId) return true;
+                          }
+                          return `${s.step}:${s.message}` === stepKey && (now - s.timestamp) < 500;
+                        });
                         
-                        // Skip if this exact step was added very recently (deduplication)
-                        if (existingIndex >= 0) {
+                        // Skip if duplicate (same step+message recently, or reading step for same doc)
+                        if (isDuplicate) {
                           return msg;
                         }
                         
@@ -6798,33 +6895,46 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     return updated;
                   });
                 } else if (queryChatId) {
-                  // Chat is inactive - buffer reasoning step
+                  // Chat is inactive - buffer reasoning step (with same reading+doc_id dedupe)
                   const bufferedState = getBufferedState(queryChatId);
-                  bufferedState.reasoningSteps.push(newStep);
-                  bufferedState.lastReasoningStep = newStep;
-                  bufferedState.lastUpdate = Date.now();
-                  
-                  // Update buffered messages with reasoning steps
-                  const existingMessage = bufferedState.messages.find(msg => msg.id === loadingResponseId) || 
-                    chatMessages.find(msg => msg.id === loadingResponseId);
-                  
-                  if (existingMessage) {
-                    const existingSteps = existingMessage.reasoningSteps || [];
-                    const stepKey = `${step.step}:${step.message}`;
-                    const now = Date.now();
-                    const existingIndex = existingSteps.findIndex(s => 
-                      `${s.step}:${s.message}` === stepKey && (now - s.timestamp) < 500
-                    );
-                    
-                    if (existingIndex === -1) {
-                      const updatedMessage = { ...existingMessage, reasoningSteps: [...existingSteps, newStep] };
-                      const updatedMessages = bufferedState.messages.map(msg => 
-                        msg.id === loadingResponseId ? updatedMessage : msg
-                      );
-                      if (!updatedMessages.find(msg => msg.id === loadingResponseId)) {
-                        updatedMessages.push(updatedMessage);
+                  const existingBuffered = bufferedState.reasoningSteps || [];
+                  const stepKey = `${step.step}:${step.message}`;
+                  const now = Date.now();
+                  const incomingDocId = step.action_type === 'reading'
+                    ? (step.details?.doc_metadata?.doc_id ?? (step.details as any)?.doc_id)
+                    : undefined;
+                  const bufferedDuplicate = existingBuffered.some(s => {
+                    if (incomingDocId && step.action_type === 'reading') {
+                      const existingDocId = s.details?.doc_metadata?.doc_id ?? (s.details as any)?.doc_id;
+                      if (s.action_type === 'reading' && existingDocId === incomingDocId) return true;
+                    }
+                    return `${s.step}:${s.message}` === stepKey && (now - s.timestamp) < 500;
+                  });
+                  if (!bufferedDuplicate) {
+                    bufferedState.reasoningSteps.push(newStep);
+                    bufferedState.lastReasoningStep = newStep;
+                    bufferedState.lastUpdate = Date.now();
+                    const existingMessage = bufferedState.messages.find(msg => msg.id === loadingResponseId) || 
+                      chatMessages.find(msg => msg.id === loadingResponseId);
+                    if (existingMessage) {
+                      const existingSteps = existingMessage.reasoningSteps || [];
+                      const isDup = existingSteps.some(s => {
+                        if (incomingDocId && step.action_type === 'reading') {
+                          const existingDocId = s.details?.doc_metadata?.doc_id ?? (s.details as any)?.doc_id;
+                          if (s.action_type === 'reading' && existingDocId === incomingDocId) return true;
+                        }
+                        return `${s.step}:${s.message}` === stepKey && (now - s.timestamp) < 500;
+                      });
+                      if (!isDup) {
+                        const updatedMessage = { ...existingMessage, reasoningSteps: [...existingSteps, newStep] };
+                        const updatedMessages = bufferedState.messages.map(msg => 
+                          msg.id === loadingResponseId ? updatedMessage : msg
+                        );
+                        if (!updatedMessages.find(msg => msg.id === loadingResponseId)) {
+                          updatedMessages.push(updatedMessage);
+                        }
+                        bufferedState.messages = updatedMessages;
                       }
-                      bufferedState.messages = updatedMessages;
                     }
                   }
                 }
@@ -7376,9 +7486,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         })();
       }
     }
-  }, [query, isVisible, chatMessages, attachedFiles, initialAttachedFiles, propertyAttachments, selectedDocumentIds, hasExtractedAttachments, showFileChoiceAndWait, buildAttachmentContext]);
+  }, [query, initialContentSegments, isVisible, chatMessages, attachedFiles, initialAttachedFiles, propertyAttachments, selectedDocumentIds, hasExtractedAttachments, showFileChoiceAndWait, buildAttachmentContext, pendingSearchContentSegmentsRef]);
   
-  const inputRef = React.useRef<HTMLTextAreaElement>(null);
+  const inputRef = React.useRef<SegmentInputHandle | null>(null);
+  const atMentionAnchorRef = React.useRef<HTMLDivElement>(null);
+  const restoreSelectionRef = React.useRef<(() => void) | null>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const contentAreaRef = React.useRef<HTMLDivElement>(null);
   const panelRef = React.useRef<HTMLDivElement>(null);
@@ -7993,16 +8105,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     }
   }, [openExpandedCardView, toast, isFullscreenMode, onChatWidthChange]);
   
-  // Initialize textarea height on mount
-  React.useEffect(() => {
-    if (inputRef.current) {
-      inputRef.current.style.height = 'auto';
-      const initialHeight = inputRef.current.scrollHeight;
-      initialScrollHeightRef.current = initialHeight;
-      inputRef.current.style.height = `${initialHeight}px`;
-    }
-  }, []);
-
   // Add custom scrollbar styling and animations for WebKit browsers (Chrome, Safari, Edge)
   React.useEffect(() => {
     const style = document.createElement('style');
@@ -8318,7 +8420,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         setChatMessages([]);
         setSubmittedQueries([]);
         setChatTitle('');
-        setInputValue("");
+        clearInputAndChips();
         setAttachedFiles([]);
         attachedFilesRef.current = [];
         clearPropertyAttachments();
@@ -8381,6 +8483,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               text: msg.content || '',
               attachments: msg.attachments || [],
               propertyAttachments: msg.propertyAttachments || [],
+              selectedDocumentIds: msg.selectedDocumentIds,
+              selectedDocumentNames: msg.selectedDocumentNames,
+              contentSegments: msg.contentSegments, // Preserve chip+text order for query bubbles
               citations: msg.citations || {}, // Restore citations for clickable buttons
               reasoningSteps: msg.reasoningSteps || [], // Restore reasoning steps
               isLoading: shouldBeLoading // Preserve running state
@@ -8531,14 +8636,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           if (chat.savedState) {
             console.log('🔄 SideChatPanel: Restoring granular state for chat:', restoreChatId, chat.savedState);
             if (chat.savedState.inputValue !== undefined) {
-              setInputValue(chat.savedState.inputValue);
-              // Also update the textarea if it exists
-              if (inputRef.current) {
-                inputRef.current.value = chat.savedState.inputValue;
-                // Adjust textarea height
-                inputRef.current.style.height = 'auto';
-                inputRef.current.style.height = `${inputRef.current.scrollHeight}px`;
-              }
+              const restored = chat.savedState.inputValue;
+              setInputValue(restored);
+              segmentInput.setSegments(
+                buildInitialSegments(
+                  restored,
+                  propertyAttachments.map((a) => ({ id: a.id, label: a.address, payload: a.property })),
+                  atMentionDocumentChips
+                )
+              );
             }
             if (chat.savedState.attachedFiles && chat.savedState.attachedFiles.length > 0) {
               setAttachedFiles([...chat.savedState.attachedFiles]);
@@ -9479,88 +9585,46 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
 
 
   // Update @ mention popover state from current value and cursor position
-  const updateAtMentionFromInput = React.useCallback((value: string, cursorOffset: number) => {
-    const lastAt = value.slice(0, cursorOffset).lastIndexOf('@');
-    if (lastAt >= 0) {
-      setAtMentionOpen(true);
-      setAtQuery(value.slice(lastAt + 1, cursorOffset));
-      setAtAnchorIndex(lastAt);
-      setAtSelectedIndex(0);
-      atCursorOffsetRef.current = cursorOffset;
-    } else {
+  const handleAtSelect = React.useCallback(
+    (item: AtMentionItem) => {
+      const startPlain = Math.max(0, atAnchorIndex);
+      const endPlain = segmentInput.getCursorOffset();
+      const startPos = segmentInput.getSegmentOffsetFromPlain(startPlain);
+      const endPos = segmentInput.getSegmentOffsetFromPlain(endPlain);
+      if (startPos != null && endPos != null) {
+        segmentInput.removeSegmentRange(startPos.segmentIndex, startPos.offset, endPos.segmentIndex, endPos.offset);
+      } else {
+        segmentInput.removeRange(startPlain, endPlain);
+      }
       setAtMentionOpen(false);
-      setAtQuery('');
-      setAtAnchorIndex(-1);
-    }
-  }, []);
-
-  const handleAtSelect = React.useCallback((item: AtMentionItem) => {
-    const cursorEnd = atCursorOffsetRef.current;
-    const start = atAnchorIndex;
-    const label = item.primaryLabel;
-    setInputValue((prev) => prev.slice(0, start) + label + prev.slice(cursorEnd));
-    setAtMentionOpen(false);
-    setAtItems([]);
-    if (item.type === 'property' && item.payload) {
-      addPropertyAttachment(item.payload as Parameters<typeof addPropertyAttachment>[0]);
-    }
-    // Restore focus to input after React updates
-    requestAnimationFrame(() => inputRef.current?.focus());
-  }, [addPropertyAttachment]);
-
-  // Handle textarea change with auto-resize logic
-  const handleTextareaChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    // CRITICAL: Prevent input from being blocked during new agent creation
-    // If new agent was just requested, allow typing to proceed normally
-    if (newAgentRequestedRef.current) {
-      // Clear the flag early to allow normal input handling
-      // The timeout in the newAgentTrigger effect will still run as a safety net
-      newAgentRequestedRef.current = false;
-    }
-    
-    const value = e.target.value;
-    const cursorPos = e.target.selectionStart;
-    
-    setInputValue(value);
-    updateAtMentionFromInput(value, cursorPos);
-    
-    // Always stay in multi-line layout, just adjust height
-    if (inputRef.current) {
-      // Store current height before measurement to maintain it during transition
-      const currentHeight = inputRef.current.offsetHeight;
-      
-      // Temporarily set height to auto to measure scrollHeight
-      // Use a single synchronous operation to minimize layout shift
-      const previousHeight = inputRef.current.style.height;
-      inputRef.current.style.height = 'auto';
-      const scrollHeight = inputRef.current.scrollHeight;
-      const maxHeight = 120;
-      const newHeight = Math.max(24, Math.min(scrollHeight, maxHeight)); // Ensure minimum 24px
-      
-      // Set new height immediately - this happens in the same frame
-      // Disable transition temporarily to prevent expansion animation
-      inputRef.current.style.transition = 'none';
-      inputRef.current.style.height = `${newHeight}px`;
-      inputRef.current.style.overflowY = scrollHeight > maxHeight ? 'auto' : 'hidden';
-      inputRef.current.style.minHeight = '24px';
-      
-      // If height didn't change, restore previous style to prevent any reflow
-      if (Math.abs(newHeight - currentHeight) < 1) {
-        inputRef.current.style.height = previousHeight || '24px';
+      setAtItems([]);
+      if (item.type === 'property' && item.payload) {
+        addPropertyAttachment(item.payload as unknown as Parameters<typeof addPropertyAttachment>[0]);
+        segmentInput.insertChipAtCursor(
+          {
+            type: 'chip',
+            kind: 'property',
+            id: (item.payload as { id: string }).id,
+            label: (item.payload as { address?: string }).address || item.primaryLabel,
+            payload: item.payload,
+          },
+          { trailingSpace: true }
+        );
+      } else {
+        toggleDocumentSelection(item.id);
+        setAtMentionDocumentChips((prev) => [...prev, { id: item.id, label: item.primaryLabel }]);
+        segmentInput.insertChipAtCursor(
+          { type: 'chip', kind: 'document', id: item.id, label: item.primaryLabel },
+          { trailingSpace: true }
+        );
       }
-      
-      // Re-enable transition after a brief delay (only for visual polish, not for initial expansion)
       requestAnimationFrame(() => {
-        if (inputRef.current) {
-          inputRef.current.style.transition = '';
-        }
+        inputRef.current?.focus();
+        requestAnimationFrame(() => restoreSelectionRef.current?.());
       });
-      
-      if (!isDeletingRef.current && cursorPos !== null) {
-        inputRef.current.setSelectionRange(cursorPos, cursorPos);
-      }
-    }
-  };
+    },
+    [atAnchorIndex, addPropertyAttachment, toggleDocumentSelection, segmentInput]
+  );
 
   const handleFileUpload = React.useCallback((file: File) => {
     console.log('📎 SideChatPanel: handleFileUpload called with file:', file.name);
@@ -9869,9 +9933,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     }
   };
 
+  const clearInputAndChips = React.useCallback(() => {
+    setInputValue('');
+    segmentInput.setSegments([{ type: 'text', value: '' }]);
+    setAtMentionDocumentChips([]);
+  }, [segmentInput]);
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    const submitted = inputValue.trim();
+    const submitted = segmentInput.getPlainText().trim();
     
     // PLAN MODE: Intercept and show plan viewer instead of normal flow
     if (isPlanModeRef.current && submitted) {
@@ -9916,8 +9986,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         setChatMessages(prev => [...prev, queryMessage]);
       }
       
-      // Clear input
-      setInputValue('');
+      clearInputAndChips();
       
       // Call API with planMode=true
       (async () => {
@@ -10070,18 +10139,51 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         ? Array.from(selectedDocumentIds) 
         : undefined;
       
-      // Try to get document names from property attachments if available
+      // Get document names: from property when available, otherwise from atMentionDocumentChips (chip labels)
       let selectedDocNames: string[] | undefined = undefined;
-      if (selectedDocIds && selectedDocIds.length > 0 && propertiesToStore.length > 0) {
-        // Get documents from the first property attachment
-        const property = propertiesToStore[0].property as any;
-        if (property?.propertyHub?.documents) {
+      if (selectedDocIds && selectedDocIds.length > 0) {
+        if (propertiesToStore.length > 0) {
+          const property = propertiesToStore[0].property as any;
+          if (property?.propertyHub?.documents) {
+            const fromProperty = selectedDocIds
+              .map(docId => {
+                const doc = property.propertyHub.documents.find((d: any) => d.id === docId);
+                return doc?.original_filename;
+              })
+              .filter((name): name is string => !!name);
+            if (fromProperty.length === selectedDocIds.length) selectedDocNames = fromProperty;
+          }
+        }
+        if (!selectedDocNames && atMentionDocumentChips.length > 0) {
           selectedDocNames = selectedDocIds
-            .map(docId => {
-              const doc = property.propertyHub.documents.find((d: any) => d.id === docId);
-              return doc?.original_filename;
-            })
-            .filter((name): name is string => !!name);
+            .map(docId => atMentionDocumentChips.find(c => c.id === docId)?.label ?? docId);
+        }
+      }
+      
+      // Build ordered content segments so the bubble shows chips + text in the same order as the input
+      const contentSegments: QueryContentSegment[] = [];
+      for (const seg of segmentInput.segments) {
+        if (isTextSegment(seg)) {
+          if (seg.value) contentSegments.push({ type: 'text', value: seg.value });
+        } else if (isChipSegment(seg)) {
+          if (seg.kind === 'property') {
+            const attachment = propertiesToStore.find(
+              (a) => String(a.propertyId) === String(seg.id) || (a.property as any)?.id == seg.id
+            );
+            if (attachment) {
+              contentSegments.push({ type: 'property', attachment });
+            } else {
+              const p = (seg.payload as any) || {};
+              const addr = p.formatted_address || p.normalized_address || p.address || 'Unknown Address';
+              contentSegments.push({
+                type: 'property',
+                attachment: { id: seg.id, propertyId: seg.id, address: addr, imageUrl: '', property: p }
+              });
+            }
+          } else {
+            const name = atMentionDocumentChips.find((c) => c.id === seg.id)?.label ?? seg.label ?? seg.id;
+            contentSegments.push({ type: 'document', id: seg.id, name });
+          }
         }
       }
       
@@ -10095,6 +10197,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         propertyAttachments: propertiesToStore, // Always include, even if empty array
         selectedDocumentIds: selectedDocIds,
         selectedDocumentNames: selectedDocNames,
+        contentSegments: contentSegments.length > 0 ? contentSegments : undefined,
         fromCitation: !!citationContext, // Mark if query came from citation
         citationBboxData: citationContext ? {
           document_id: citationContext.document_id,
@@ -10371,10 +10474,21 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           // Also set in old ref for backward compatibility
           abortControllerRef.current = handleSubmitAbortController;
           
-          // Convert selected document IDs to array
-          const documentIdsArray = selectedDocumentIds.size > 0 
-            ? Array.from(selectedDocumentIds) 
-            : undefined;
+          // Merge document IDs: sidebar selection + document chip ids from segments (chip-only usage)
+          const fromSelection = selectedDocumentIds.size > 0 ? Array.from(selectedDocumentIds) : [];
+          const docChipIdsFromSegments = segmentInput.segments
+            .filter((seg): seg is ChipSegment => isChipSegment(seg) && seg.kind === 'document')
+            .map((seg) => seg.id)
+            .filter(Boolean);
+          const mergedDocIds = [...new Set([...fromSelection, ...docChipIdsFromSegments].filter(Boolean))];
+          let documentIdsArray: string[] | undefined = mergedDocIds.length > 0 ? mergedDocIds : undefined;
+          if (!documentIdsArray?.length && propertiesToStore.length > 0) {
+            const firstProperty = propertiesToStore[0].property as any;
+            const docs = firstProperty?.propertyHub?.documents;
+            if (docs && Array.isArray(docs)) {
+              documentIdsArray = docs.map((d: any) => String(d.id ?? d.document_id ?? d)).filter(Boolean);
+            }
+          }
           
           // Check if attachments have extracted text - show file choice step if so
           let responseMode: 'fast' | 'detailed' | 'full' | undefined;
@@ -10415,7 +10529,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           
           // Store these values for use in error handler
           const hasAttachmentsForError = attachedFiles.length > 0 || (documentIdsArray && documentIdsArray.length > 0);
-          const submittedQuery = submitted || '';
+          // Link segments so the model sees full sentence with chip context (same rule as query-prop path)
+          const submittedQuery =
+            (segmentInput.segments.length > 0 ? segmentsToLinkedQuery(segmentInput.segments).trim() || submitted : submitted) || '';
           
           // Track documents currently being preloaded to avoid duplicates
           const preloadingDocs = new Set<string>();
@@ -10925,11 +11041,18 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       const existingSteps = msg.reasoningSteps || [];
                       const stepKey = `${step.step}:${step.message}`;
                       const now = Date.now();
-                      const existingIndex = existingSteps.findIndex(s => 
-                        `${s.step}:${s.message}` === stepKey && (now - s.timestamp) < 500
-                      );
+                      const incomingDocId = step.action_type === 'reading'
+                        ? (step.details?.doc_metadata?.doc_id ?? (step.details as any)?.doc_id)
+                        : undefined;
+                      const isDuplicate = existingSteps.some(s => {
+                        if (incomingDocId && step.action_type === 'reading') {
+                          const existingDocId = s.details?.doc_metadata?.doc_id ?? (s.details as any)?.doc_id;
+                          if (s.action_type === 'reading' && existingDocId === incomingDocId) return true;
+                        }
+                        return `${s.step}:${s.message}` === stepKey && (now - s.timestamp) < 500;
+                      });
                       
-                      if (existingIndex >= 0) {
+                      if (isDuplicate) {
                         return msg;
                       }
                       
@@ -10943,31 +11066,44 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               } else if (queryChatId) {
                 // Chat is inactive - buffer reasoning step
                 const bufferedState = getBufferedState(queryChatId);
-                bufferedState.reasoningSteps.push(newStep);
-                bufferedState.lastReasoningStep = newStep;
-                bufferedState.lastUpdate = Date.now();
-                
-                // Update buffered messages with reasoning steps
-                const existingMessage = bufferedState.messages.find(msg => msg.id === loadingResponseId) || 
-                  chatMessages.find(msg => msg.id === loadingResponseId);
-                
-                if (existingMessage) {
-                  const existingSteps = existingMessage.reasoningSteps || [];
-                  const stepKey = `${step.step}:${step.message}`;
-                  const now = Date.now();
-                  const existingIndex = existingSteps.findIndex(s => 
-                    `${s.step}:${s.message}` === stepKey && (now - s.timestamp) < 500
-                  );
-                  
-                  if (existingIndex === -1) {
-                    const updatedMessage = { ...existingMessage, reasoningSteps: [...existingSteps, newStep] };
-                    const updatedMessages = bufferedState.messages.map(msg => 
-                      msg.id === loadingResponseId ? updatedMessage : msg
-                    );
-                    if (!updatedMessages.find(msg => msg.id === loadingResponseId)) {
-                      updatedMessages.push(updatedMessage);
+                const existingBuffered = bufferedState.reasoningSteps || [];
+                const stepKey = `${step.step}:${step.message}`;
+                const now = Date.now();
+                const incomingDocId = step.action_type === 'reading'
+                  ? (step.details?.doc_metadata?.doc_id ?? (step.details as any)?.doc_id)
+                  : undefined;
+                const bufferedDuplicate = existingBuffered.some(s => {
+                  if (incomingDocId && step.action_type === 'reading') {
+                    const existingDocId = s.details?.doc_metadata?.doc_id ?? (s.details as any)?.doc_id;
+                    if (s.action_type === 'reading' && existingDocId === incomingDocId) return true;
+                  }
+                  return `${s.step}:${s.message}` === stepKey && (now - s.timestamp) < 500;
+                });
+                if (!bufferedDuplicate) {
+                  bufferedState.reasoningSteps.push(newStep);
+                  bufferedState.lastReasoningStep = newStep;
+                  bufferedState.lastUpdate = Date.now();
+                  const existingMessage = bufferedState.messages.find(msg => msg.id === loadingResponseId) || 
+                    chatMessages.find(msg => msg.id === loadingResponseId);
+                  if (existingMessage) {
+                    const existingSteps = existingMessage.reasoningSteps || [];
+                    const isDup = existingSteps.some(s => {
+                      if (incomingDocId && step.action_type === 'reading') {
+                        const existingDocId = s.details?.doc_metadata?.doc_id ?? (s.details as any)?.doc_id;
+                        if (s.action_type === 'reading' && existingDocId === incomingDocId) return true;
+                      }
+                      return `${s.step}:${s.message}` === stepKey && (now - s.timestamp) < 500;
+                    });
+                    if (!isDup) {
+                      const updatedMessage = { ...existingMessage, reasoningSteps: [...existingSteps, newStep] };
+                      const updatedMessages = bufferedState.messages.map(msg => 
+                        msg.id === loadingResponseId ? updatedMessage : msg
+                      );
+                      if (!updatedMessages.find(msg => msg.id === loadingResponseId)) {
+                        updatedMessages.push(updatedMessage);
+                      }
+                      bufferedState.messages = updatedMessages;
                     }
-                    bufferedState.messages = updatedMessages;
                   }
                 }
               }
@@ -11373,35 +11509,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         }
       })();
       
-      // Submit the query text (attachments can be handled separately if needed)
       onQuerySubmit(submitted);
-      setInputValue("");
-      setAttachedFiles([]); // Clear attachments after submit
-      
-      // Clear document selection after query is submitted
+      clearInputAndChips();
+      setAttachedFiles([]);
       if (selectedDocumentIds.size > 0) {
         clearSelectedDocuments();
-        setDocumentSelectionMode(false); // Exit selection mode
+        setDocumentSelectionMode(false);
       }
-      
-      // Clear property attachments after they've been stored in the message
-      // Use a small delay to ensure the message is fully rendered first
-      if (propertiesToStore.length > 0) {
-        setTimeout(() => {
-          clearPropertyAttachments();
-          setSelectionModeActive(false);
-        }, 100); // Small delay to ensure message is rendered
-      }
+      clearPropertyAttachments();
+      setSelectionModeActive(false);
       setIsSubmitted(false);
-      // Don't switch setIsMultiLine(false) - stay in multi-line layout
-      
-      // Reset textarea
-      if (inputRef.current) {
-        const initialHeight = initialScrollHeightRef.current ?? 24;
-        inputRef.current.style.height = `${initialHeight}px`;
-        inputRef.current.style.overflowY = '';
-        inputRef.current.style.overflow = '';
-      }
     }
   };
   
@@ -11628,121 +11745,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             display: 'flex', flexDirection: 'column', gap: '6px', alignItems: 'flex-end',
             boxSizing: 'border-box'
           }}>
-            {message.selectedDocumentIds?.length > 0 && (() => {
-              // Get the first selected document from property attachments
-              // First try from message, then from current context
-              let selectedDoc: any = null;
-              let propertySource: any = null;
-              
-              // Try message property attachments first
-              if (message.propertyAttachments && message.propertyAttachments.length > 0) {
-                propertySource = message.propertyAttachments[0].property as any;
-                if (propertySource?.propertyHub?.documents && message.selectedDocumentIds.length > 0) {
-                  selectedDoc = propertySource.propertyHub.documents.find((d: any) => d.id === message.selectedDocumentIds[0]);
-                }
-              }
-              
-              // If not found in message, try current context property attachments
-              if (!selectedDoc && propertyAttachments && propertyAttachments.length > 0) {
-                propertySource = propertyAttachments[0].property as any;
-                if (propertySource?.propertyHub?.documents && message.selectedDocumentIds.length > 0) {
-                  selectedDoc = propertySource.propertyHub.documents.find((d: any) => d.id === message.selectedDocumentIds[0]);
-                }
-              }
-              
-              // If still not found, try to get from preloaded files cache
-              if (!selectedDoc && propertySource?.id) {
-                const preloadedFiles = (window as any).__preloadedPropertyFiles?.[propertySource.id];
-                if (preloadedFiles && Array.isArray(preloadedFiles) && message.selectedDocumentIds.length > 0) {
-                  selectedDoc = preloadedFiles.find((d: any) => d.id === message.selectedDocumentIds[0]);
-                }
-              }
-              
-              if (!selectedDoc) {
-                // Fallback to text display if document not found
-                return (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '5px 10px', backgroundColor: 'transparent', borderRadius: '6px', fontSize: '13px', color: '#6B7280', marginBottom: '3px' }}>
-                    <FileCheck size={14} style={{ flexShrink: 0, color: '#9CA3AF' }} />
-                    <span style={{ fontWeight: 400 }}>
-                      {message.selectedDocumentIds.length === 1 && message.selectedDocumentNames?.length > 0
-                        ? message.selectedDocumentNames[0]
-                        : `${message.selectedDocumentIds.length} document${message.selectedDocumentIds.length === 1 ? '' : 's'} selected`}
-                    </span>
-                  </div>
-                );
-              }
-              
-              // Get document cover URL
-              const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
-              const getDownloadUrl = (doc: any) => {
-                if (doc.url || doc.download_url || doc.file_url || doc.s3_url) {
-                  return doc.url || doc.download_url || doc.file_url || doc.s3_url;
-                } else if (doc.s3_path) {
-                  return `${backendUrl}/api/files/download?s3_path=${encodeURIComponent(doc.s3_path)}`;
-                } else {
-                  return `${backendUrl}/api/files/download?document_id=${doc.id}`;
-                }
-              };
-              
-              const coverUrl = getDownloadUrl(selectedDoc);
-              const cachedCover = (window as any).__preloadedDocumentCovers?.[selectedDoc.id];
-              const fileType = (selectedDoc as any).file_type || '';
-              const fileName = selectedDoc.original_filename.toLowerCase();
-              const isImage = fileType.includes('image') || fileName.match(/\.(jpg|jpeg|png|gif|webp)$/i);
-              const isPDF = fileType.includes('pdf') || fileName.endsWith('.pdf');
-              const isDOC = fileType.includes('word') || fileName.match(/\.(docx?|doc)$/i);
-              const hasDocxPreview = cachedCover?.isDocx && cachedCover?.url;
-              
-              return (
-                <div style={{ 
-                  width: '120px', 
-                  height: '160px', 
-                  borderRadius: '8px', 
-                  overflow: 'hidden',
-                  border: '1px solid rgba(229, 231, 235, 0.6)',
-                  boxShadow: 'none',
-                  marginBottom: '2px',
-                  position: 'relative',
-                  backgroundColor: '#f9fafb'
-                }}>
-                  {isImage ? (
-                    <img 
-                      src={coverUrl} 
-                      className="w-full h-full object-cover"
-                      alt={selectedDoc.original_filename}
-                      loading="lazy"
-                      style={{ pointerEvents: 'none' }}
-                    />
-                  ) : isPDF ? (
-                    <div className="w-full h-full relative bg-gray-50">
-                      <iframe
-                        src={`${coverUrl}#toolbar=0&navpanes=0&scrollbar=0&view=FitH`}
-                        className="w-full h-[150%] -mt-[2%] border-none opacity-90 pointer-events-none scale-100 origin-top relative z-[1] bg-white"
-                        title="preview"
-                        loading="lazy"
-                        scrolling="no"
-                        style={{ contain: 'layout style paint' }}
-                      />
-                      <div className="absolute inset-0 bg-transparent z-10" />
-                    </div>
-                  ) : isDOC && hasDocxPreview ? (
-                    <div className="w-full h-full relative bg-white overflow-hidden" style={{ contain: 'layout style paint' }}>
-                      <iframe
-                        src={`https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(cachedCover.url)}&action=embedview&wdStartOn=1`}
-                        className="w-full h-full border-none"
-                        title="preview"
-                        loading="lazy"
-                        style={{ contain: 'layout style paint' }}
-                      />
-                    </div>
-                  ) : (
-                    <div className="w-full h-full flex items-center justify-center bg-gray-50">
-                      <FileText className="w-8 h-8 text-gray-300" />
-                    </div>
-                  )}
-                </div>
-              );
-            })()}
             {/* BBOX Preview for citation queries */}
             {message.fromCitation && message.citationBboxData && (
               <div style={{ marginBottom: '8px' }}>
@@ -11760,74 +11762,144 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   ))}
                 </div>
               )}
-              {message.propertyAttachments?.length > 0 && (
-                <div style={{ marginBottom: message.text ? '8px' : '0', display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
-                  {message.propertyAttachments.map((prop, i) => (
-                    <QueryPropertyAttachment 
-                      key={prop.id ?? prop.property?.id ?? prop.address ?? `prop-${i}`}
-                      attachment={prop}
-                      onOpenProperty={(att) => onOpenProperty?.(att.address, att.property?.latitude && att.property?.longitude ? { lat: att.property.latitude, lng: att.property.longitude } : undefined, att.property?.id || att.propertyId)}
-                    />
-                  ))}
-                </div>
-              )}
-              {message.text && (
-                <div
-                  style={{
-                    color: '#0D0D0D',
-                    fontSize: '14px',
-                    lineHeight: '20px',
-                    margin: 0,
-                    padding: 0,
-                    textAlign: 'left', 
-                    fontFamily: 'system-ui, -apple-system, sans-serif', 
-                    width: '100%', 
-                    maxWidth: '100%', 
-                    boxSizing: 'border-box', 
-                    display: 'flex', 
-                    alignItems: 'flex-start', 
-                    gap: '8px',
-                    cursor: isTruncated ? 'pointer' : 'default',
-                    wordWrap: 'break-word',
-                    overflowWrap: 'break-word',
-                    minWidth: 0, // Allow flex item to shrink
-                    position: 'relative'
-                  }}
-                  onClick={isTruncated ? handleCitationPreviewClick : undefined}
-                  title={isTruncated ? 'Click to view citation' : undefined}
-                  onMouseEnter={() => setHoveredQueryId(finalKey)}
-                  onMouseLeave={() => setHoveredQueryId(null)}
-                >
-                  {message.fromCitation && (
-                    <TextCursorInput size={16} style={{ flexShrink: 0, color: '#6B7280', marginTop: '3px' }} />
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', alignItems: 'center', width: '100%' }}>
+                {message.contentSegments && message.contentSegments.length > 0
+                  ? message.contentSegments.map((seg, idx) => {
+                      if (seg.type === 'text') {
+                        const { truncatedText: segText, isTruncated: segTruncated } = seg.value
+                          ? truncateQueryText(seg.value, 2, 80, containerWidth)
+                          : { truncatedText: '', isTruncated: false };
+                        if (!segText) return null;
+                        return (
+                          <span
+                            key={`t-${idx}`}
+                            style={{
+                              color: '#0D0D0D',
+                              fontSize: '14px',
+                              lineHeight: '20px',
+                              margin: 0,
+                              padding: 0,
+                              textAlign: 'left',
+                              fontFamily: 'system-ui, -apple-system, sans-serif',
+                              flex: '1 1 auto',
+                              minWidth: 0,
+                              cursor: segTruncated ? 'pointer' : 'default',
+                              wordWrap: 'break-word',
+                              overflowWrap: 'break-word',
+                              textDecoration: segTruncated ? 'underline' : 'none',
+                              textDecorationStyle: segTruncated ? ('dotted' as const) : undefined,
+                              textUnderlineOffset: '3px'
+                            }}
+                            onClick={segTruncated ? handleCitationPreviewClick : undefined}
+                            title={segTruncated ? 'Click to view citation' : undefined}
+                            onMouseEnter={() => setHoveredQueryId(finalKey)}
+                            onMouseLeave={() => setHoveredQueryId(null)}
+                          >
+                            {message.fromCitation && idx === 0 && (
+                              <TextCursorInput size={16} style={{ flexShrink: 0, color: '#6B7280', marginTop: '3px', verticalAlign: 'middle', marginRight: '4px' }} />
+                            )}
+                            <ReactMarkdown components={{
+                              p: ({ children }) => <p style={{ margin: 0, padding: 0, display: 'inline', wordWrap: 'break-word', overflowWrap: 'break-word' }}>{children}</p>,
+                              h1: ({ children }) => <h1 style={{ fontSize: '18px', fontWeight: 600, margin: '14px 0 10px 0', display: 'block' }}>{children}</h1>,
+                              h2: () => null, h3: ({ children }) => <h3 style={{ fontSize: '16px', fontWeight: 600, margin: '10px 0 6px 0' }}>{children}</h3>,
+                              ul: ({ children }) => <ul style={{ margin: '10px 0', paddingLeft: '22px' }}>{children}</ul>,
+                              ol: ({ children }) => <ol style={{ margin: '10px 0', paddingLeft: '22px' }}>{children}</ol>,
+                              li: ({ children }) => <li style={{ marginBottom: '6px' }}>{children}</li>,
+                              strong: ({ children }) => <strong style={{ fontWeight: 600 }}>{children}</strong>,
+                              em: ({ children }) => <em style={{ fontStyle: 'italic' }}>{children}</em>,
+                              code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2px 5px', borderRadius: '4px', fontSize: '14px', fontFamily: 'monospace' }}>{children}</code>,
+                              blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #d1d5db', paddingLeft: '14px', margin: '10px 0', color: '#6b7280' }}>{children}</blockquote>,
+                              hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '18px 0' }} />,
+                            }}>{segText}</ReactMarkdown>
+                          </span>
+                        );
+                      }
+                      if (seg.type === 'property') {
+                        const prop = seg.attachment;
+                        const part = (prop.address || '').split(',')[0] || prop.address || '';
+                        const label = part.length > 30 ? part.slice(0, 27) + '...' : part;
+                        return (
+                          <AtMentionChip
+                            key={`p-${idx}-${prop.id}`}
+                            type="property"
+                            label={label}
+                            title={`Click to view ${prop.address}`}
+                            onClick={onOpenProperty ? () => onOpenProperty(prop.address, prop.property?.latitude != null && prop.property?.longitude != null ? { lat: prop.property.latitude, lng: prop.property.longitude } : undefined, prop.property?.id ?? prop.propertyId) : undefined}
+                          />
+                        );
+                      }
+                      const label = seg.name.length > 30 ? seg.name.slice(0, 27) + '...' : seg.name;
+                      return (
+                        <AtMentionChip key={`d-${idx}-${seg.id}`} type="document" label={label} />
+                      );
+                    })
+                  : (
+                    <>
+                      {message.propertyAttachments?.map((prop, i) => {
+                        const part = (prop.address || '').split(',')[0] || prop.address || '';
+                        const label = part.length > 30 ? part.slice(0, 27) + '...' : part;
+                        return (
+                          <AtMentionChip
+                            key={prop.id ?? prop.property?.id ?? prop.address ?? `prop-${i}`}
+                            type="property"
+                            label={label}
+                            title={`Click to view ${prop.address}`}
+                            onClick={onOpenProperty ? () => onOpenProperty(prop.address, prop.property?.latitude != null && prop.property?.longitude != null ? { lat: prop.property.latitude, lng: prop.property.longitude } : undefined, prop.property?.id ?? prop.propertyId) : undefined}
+                          />
+                        );
+                      })}
+                      {message.selectedDocumentIds?.map((docId, i) => {
+                        const name = message.selectedDocumentNames?.[i] ?? docId;
+                        const label = name.length > 30 ? name.slice(0, 27) + '...' : name;
+                        return (
+                          <AtMentionChip key={docId} type="document" label={label} />
+                        );
+                      })}
+                      {message.text ? (
+                        <span
+                          style={{
+                            color: '#0D0D0D',
+                            fontSize: '14px',
+                            lineHeight: '20px',
+                            margin: 0,
+                            padding: 0,
+                            textAlign: 'left',
+                            fontFamily: 'system-ui, -apple-system, sans-serif',
+                            flex: '1 1 auto',
+                            minWidth: 0,
+                            cursor: isTruncated ? 'pointer' : 'default',
+                            wordWrap: 'break-word',
+                            overflowWrap: 'break-word',
+                            textDecoration: isTruncated ? 'underline' : 'none',
+                            textDecorationStyle: isTruncated ? ('dotted' as const) : undefined,
+                            textUnderlineOffset: '3px'
+                          }}
+                          onClick={isTruncated ? handleCitationPreviewClick : undefined}
+                          title={isTruncated ? 'Click to view citation' : undefined}
+                          onMouseEnter={() => setHoveredQueryId(finalKey)}
+                          onMouseLeave={() => setHoveredQueryId(null)}
+                        >
+                          {message.fromCitation && (
+                            <TextCursorInput size={16} style={{ flexShrink: 0, color: '#6B7280', marginTop: '3px', verticalAlign: 'middle', marginRight: '4px' }} />
+                          )}
+                          <ReactMarkdown components={{
+                            p: ({ children }) => <p style={{ margin: 0, padding: 0, display: 'inline', wordWrap: 'break-word', overflowWrap: 'break-word' }}>{children}</p>,
+                            h1: ({ children }) => <h1 style={{ fontSize: '18px', fontWeight: 600, margin: '14px 0 10px 0', display: 'block' }}>{children}</h1>,
+                            h2: () => null, h3: ({ children }) => <h3 style={{ fontSize: '16px', fontWeight: 600, margin: '10px 0 6px 0' }}>{children}</h3>,
+                            ul: ({ children }) => <ul style={{ margin: '10px 0', paddingLeft: '22px' }}>{children}</ul>,
+                            ol: ({ children }) => <ol style={{ margin: '10px 0', paddingLeft: '22px' }}>{children}</ol>,
+                            li: ({ children }) => <li style={{ marginBottom: '6px' }}>{children}</li>,
+                            strong: ({ children }) => <strong style={{ fontWeight: 600 }}>{children}</strong>,
+                            em: ({ children }) => <em style={{ fontStyle: 'italic' }}>{children}</em>,
+                            code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2px 5px', borderRadius: '4px', fontSize: '14px', fontFamily: 'monospace' }}>{children}</code>,
+                            blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #d1d5db', paddingLeft: '14px', margin: '10px 0', color: '#6b7280' }}>{children}</blockquote>,
+                            hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '18px 0' }} />,
+                          }}>{truncatedText}</ReactMarkdown>
+                        </span>
+                      ) : null}
+                    </>
                   )}
-                  <div style={{ 
-                    textDecoration: isTruncated ? 'underline' : 'none',
-                    textDecorationStyle: isTruncated ? ('dotted' as const) : undefined,
-                    textUnderlineOffset: '3px',
-                    flex: 1,
-                    minWidth: 0, // Allow flex item to shrink and wrap
-                    wordWrap: 'break-word',
-                    overflowWrap: 'break-word',
-                    position: 'relative',
-                    display: 'inline-block'
-                  }}>
-                  <ReactMarkdown components={{
-                    p: ({ children }) => <p style={{ margin: 0, padding: 0, display: 'block', wordWrap: 'break-word', overflowWrap: 'break-word' }}>{children}</p>,
-                    h1: ({ children }) => <h1 style={{ fontSize: '18px', fontWeight: 600, margin: '14px 0 10px 0' }}>{children}</h1>,
-                    h2: () => null, h3: ({ children }) => <h3 style={{ fontSize: '16px', fontWeight: 600, margin: '10px 0 6px 0' }}>{children}</h3>,
-                    ul: ({ children }) => <ul style={{ margin: '10px 0', paddingLeft: '22px' }}>{children}</ul>,
-                    ol: ({ children }) => <ol style={{ margin: '10px 0', paddingLeft: '22px' }}>{children}</ol>,
-                    li: ({ children }) => <li style={{ marginBottom: '6px' }}>{children}</li>,
-                    strong: ({ children }) => <strong style={{ fontWeight: 600 }}>{children}</strong>,
-                    em: ({ children }) => <em style={{ fontStyle: 'italic' }}>{children}</em>,
-                    code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2px 5px', borderRadius: '4px', fontSize: '14px', fontFamily: 'monospace' }}>{children}</code>,
-                    blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #d1d5db', paddingLeft: '14px', margin: '10px 0', color: '#6b7280' }}>{children}</blockquote>,
-                    hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '18px 0' }} />,
-                    }}>{truncatedText}</ReactMarkdown>
-                  </div>
-                </div>
-              )}
+              </div>
             </div>
             {/* Copy icon below bubble - ChatGPT style */}
             {hoveredQueryId === finalKey && message.text && (
@@ -12450,20 +12522,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             Files
                           </button>
                         )}
-                        {!isNewChatSection && (
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setViewOptionsOpen(false);
-                              handleNewChatClick();
-                            }}
-                            className="flex items-center gap-2 w-full rounded-sm px-2 py-2 text-left hover:bg-[#f5f5f5] text-[12px] text-[#374151]"
-                          >
-                            <Plus className="w-3.5 h-3.5 text-[#666] flex-shrink-0" strokeWidth={1.75} />
-                            New chat
-                          </button>
-                        )}
                         {isChatLarge ? (
                           <button
                             type="button"
@@ -12509,6 +12567,20 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           )}
                           {isBrowserFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
                         </button>
+                        {!isNewChatSection && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setViewOptionsOpen(false);
+                              handleNewChatClick();
+                            }}
+                            className="flex items-center gap-2 w-full rounded-sm px-2 py-2 text-left hover:bg-[#f5f5f5] text-[12px] text-[#374151]"
+                          >
+                            <Plus className="w-3.5 h-3.5 text-[#666] flex-shrink-0" strokeWidth={1.75} />
+                            New chat
+                          </button>
+                        )}
                       </div>
                     </PopoverContent>
                   </Popover>
@@ -12989,132 +13061,77 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             ))}
                           </motion.div>
                         )}
-                        
-                        {/* Property Attachments Display */}
-                        {propertyAttachments.length > 0 && (
-                          <motion.div 
-                            key={generateUniqueKey('PropertyAttachmentsContainer', 'empty', propertyAttachments.length)}
-                            initial={false}
-                            animate={{ opacity: 1 }}
-                            exit={{ opacity: 0 }}
-                            transition={{ duration: 0.1, ease: "easeOut" }}
-                            style={{ height: 'auto', marginBottom: '12px' }}
-                            className="flex flex-wrap gap-2 justify-start"
-                            layout={false}
-                          >
-                            {propertyAttachments.map((property, propertyIdx) => {
-                              const primaryId = property.id ?? property.property?.id;
-                              const primaryKey = typeof primaryId === 'number' ? primaryId.toString() : primaryId;
-                              return (
-                                <PropertyAttachment
-                                  key={generateAnimatePresenceKey(
-                                    'PropertyAttachment',
-                                    propertyIdx,
-                                    primaryKey || property.address,
-                                    'property'
-                                  )}
-                                  attachment={property}
-                                  onRemove={removePropertyAttachment}
-                                />
-                              );
-                            })}
-                          </motion.div>
-                        )}
                       </AnimatePresence>
                       
-                      {/* Expanded Textarea */}
-                      <div 
+                      {/* SegmentInput + @ context - chips only inline (no row above, matches SearchBar) */}
+                      <div
+                        ref={atMentionAnchorRef}
                         className="flex items-start w-full"
-                        style={{ 
-                          minHeight: '100px',
-                          height: 'auto',
-                          width: '100%',
-                          marginBottom: '16px',
-                          flexShrink: 0
-                        }}
+                        style={{ minHeight: '100px', height: 'auto', width: '100%', marginBottom: '16px', flexShrink: 0 }}
                       >
-                        <div className="flex-1 relative flex items-start w-full" style={{ 
-                          overflow: 'visible', 
-                          minHeight: '100px',
-                          width: '100%',
-                          minWidth: '0',
-                          paddingRight: '0px'
-                        }}>
-                          <textarea 
+                        <div
+                          className="flex-1 relative flex items-start w-full"
+                          style={{ overflow: 'visible', minHeight: '100px', width: '100%', minWidth: '0' }}
+                          onFocus={() => setIsFocused(true)}
+                          onBlur={() => setIsFocused(false)}
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <SegmentInput
                             ref={inputRef}
-                            value={inputValue}
-                            onChange={(e) => {
-                              // Simple handler for empty state - no auto-resize
-                              if (newAgentRequestedRef.current) {
-                                newAgentRequestedRef.current = false;
-                              }
-                              const v = e.target.value;
-                              const pos = e.target.selectionStart;
-                              setInputValue(v);
-                              updateAtMentionFromInput(v, pos);
-                            }}
-                            onFocus={() => setIsFocused(true)} 
-                            onBlur={() => setIsFocused(false)} 
-                            onClick={(e) => e.stopPropagation()}
-                            onKeyDown={e => { 
-                              if (atMentionOpen && e.key === 'Enter') {
-                                e.preventDefault();
+                            segments={segmentInput.segments}
+                            cursor={segmentInput.cursor}
+                            onCursorChange={(segmentIndex, offset) => segmentInput.setCursor({ segmentIndex, offset })}
+                            onInsertText={(char) => {
+                              if (char === '\n') {
+                                handleSubmit(null as any);
                                 return;
                               }
+                              if (newAgentRequestedRef.current) newAgentRequestedRef.current = false;
+                              segmentInput.insertTextAtCursor(char);
+                            }}
+                            onBackspace={segmentInput.backspace}
+                            onDelete={segmentInput.deleteForward}
+                            onDeleteSegmentRange={segmentInput.removeSegmentRange}
+                            onMoveLeft={segmentInput.moveCursorLeft}
+                            onMoveRight={segmentInput.moveCursorRight}
+                            onRemovePropertyChip={removePropertyAttachment}
+                            onRemoveDocumentChip={(id) => {
+                              toggleDocumentSelection(id);
+                              setAtMentionDocumentChips((prev) => prev.filter((d) => d.id !== id));
+                            }}
+                            removeChipAtSegmentIndex={segmentInput.removeChipAtIndex}
+                            restoreSelectionRef={restoreSelectionRef}
+                            placeholder="Ask anything..."
+                            disabled={isSubmitted}
+                            style={{
+                              width: '100%',
+                              minHeight: '100px',
+                              maxHeight: '120px',
+                              lineHeight: '22px',
+                              paddingTop: '0px',
+                              paddingBottom: '4px',
+                              paddingRight: '12px',
+                              paddingLeft: '6px',
+                              color: segmentInput.getPlainText() ? '#333333' : undefined,
+                              boxSizing: 'border-box',
+                            }}
+                            onKeyDown={(e) => {
+                              if (atMentionOpen && e.key === 'Enter') return;
                               if (e.key === 'Enter' && !e.shiftKey) {
                                 e.preventDefault();
                                 handleSubmit(e);
                               }
                               if (e.key === 'Backspace' || e.key === 'Delete') {
-                                const ta = e.target as HTMLTextAreaElement;
-                                const start = ta.selectionStart;
-                                const end = ta.selectionEnd;
-                                if (start !== end) {
-                                  e.preventDefault();
-                                  const newValue = inputValue.slice(0, start) + inputValue.slice(end);
-                                  setInputValue(newValue);
-                                  updateAtMentionFromInput(newValue, start);
-                                  setTimeout(() => {
-                                    if (inputRef.current) {
-                                      inputRef.current.setSelectionRange(start, start);
-                                      inputRef.current.focus();
-                                    }
-                                  }, 0);
-                                }
+                                isDeletingRef.current = true;
+                                setTimeout(() => { isDeletingRef.current = false; }, 200);
                               }
-                            }} 
-                            placeholder="Ask anything..."
-                            className="w-full bg-transparent focus:outline-none font-normal text-gray-900 resize-none [&::-webkit-scrollbar]:w-0.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-gray-200/50 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:hover:bg-gray-300/70 [&::placeholder]:text-[#BABABA]"
-                            style={{
-                              height: '100px',
-                              minHeight: '100px',
-                              maxHeight: '100px',
-                              fontSize: '14px',
-                              lineHeight: '22px',
-                              paddingTop: '0px',
-                              paddingBottom: '4px',
-                              paddingRight: '12px',
-                              paddingLeft: '12px',
-                              scrollbarWidth: 'thin',
-                              scrollbarColor: 'rgba(229, 231, 235, 0.5) transparent',
-                              overflow: 'hidden',
-                              overflowY: 'auto',
-                              wordWrap: 'break-word',
-                              transition: 'none',
-                              resize: 'none',
-                              width: '100%',
-                              minWidth: '0',
-                              color: inputValue ? '#333333' : undefined,
-                              boxSizing: 'border-box'
                             }}
-                            autoComplete="off"
-                            disabled={isSubmitted}
-                            rows={3}
                           />
                         </div>
                         <AtMentionPopover
                           open={atMentionOpen}
-                          anchorRef={inputRef}
+                          anchorRef={atMentionAnchorRef}
+                          anchorRect={atAnchorRect}
                           query={atQuery}
                           placement="above"
                           items={atItems}
@@ -13274,7 +13291,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                     height: '22px',
                                     minHeight: '22px',
                                     fontSize: '12px',
-                                    marginLeft: '4px',
                                     padding: showVoiceIconOnly ? '4px 8px' : undefined
                                   }}
                                   onMouseEnter={(e) => {
@@ -13308,8 +13324,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                   minWidth: '24px',
                                   minHeight: '24px',
                                   borderRadius: '50%',
-                                  flexShrink: 0,
-                                  marginLeft: '8px'
+                                  flexShrink: 0
                                 }}
                                 disabled={isSubmitted}
                                 whileHover={!isSubmitted ? { scale: 1.05 } : {}}
@@ -13865,136 +13880,76 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           ))}
                         </motion.div>
                       )}
-                      
-                      {/* Property Attachments Display - Must be motion.div for AnimatePresence */}
-                      {propertyAttachments.length > 0 && (
-                        <motion.div 
-                          key={generateUniqueKey('PropertyAttachmentsContainer', 'main', propertyAttachments.length)}
-                          initial={false}
-                          animate={{ opacity: 1 }}
-                          exit={{ opacity: 0 }}
-                          transition={{ 
-                            duration: 0.1,
-                            ease: "easeOut"
-                          }}
-                          style={{ height: 'auto', marginBottom: '12px' }}
-                          className="flex flex-wrap gap-2 justify-start"
-                          layout={false}
-                        >
-                          {propertyAttachments.map((property, propertyIdx) => {
-                            const primaryId = property.id ?? property.property?.id;
-                            const primaryKey = typeof primaryId === 'number' ? primaryId.toString() : primaryId;
-                            return (
-                            <PropertyAttachment
-                              key={generateAnimatePresenceKey(
-                                'PropertyAttachment',
-                                propertyIdx,
-                                primaryKey || property.address,
-                                'property'
-                              )}
-                              attachment={property}
-                              onRemove={removePropertyAttachment}
-                            />
-                          );
-                          })}
-                        </motion.div>
-                      )}
                     </AnimatePresence>
                     
-                    {/* Textarea area - match SearchBar: no wrapper margins, parent gap handles spacing */}
-                    <div 
+                    {/* SegmentInput + @ context - chips only inline (no row above, matches SearchBar) */}
+                    <div
                       className="flex items-start w-full"
-                      style={{ 
-                        minHeight: '24px',
-                        height: 'auto',
-                        width: '100%',
-                        marginTop: '0px',
-                        marginBottom: '0px',
-                        flexShrink: 0
-                      }}
+                      style={{ minHeight: '24px', height: 'auto', width: '100%', marginTop: '0px', marginBottom: '0px', flexShrink: 0 }}
                     >
-                      <div className="flex-1 relative flex items-start w-full" style={{ 
-                        overflow: 'visible', 
-                        minHeight: '28px',
-                        width: '100%',
-                        minWidth: '0',
-                        alignSelf: 'flex-start' // Match SearchBar for consistent alignment
-                      }}>
-                        <textarea 
+                      <div
+                        ref={atMentionAnchorRef}
+                        className="flex-1 relative flex items-start w-full"
+                        style={{ overflow: 'visible', minHeight: '28px', width: '100%', minWidth: '0', alignSelf: 'flex-start' }}
+                        onFocus={() => setIsFocused(true)}
+                        onBlur={() => setIsFocused(false)}
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <SegmentInput
                           ref={inputRef}
-                          value={inputValue}
-                          onChange={handleTextareaChange}
-                          onFocus={() => setIsFocused(true)} 
-                          onBlur={() => setIsFocused(false)} 
-                          onClick={(e) => e.stopPropagation()} // Prevent clicks from closing agent sidebar
-                          onKeyDown={e => { 
-                            if (atMentionOpen && e.key === 'Enter') {
-                              e.preventDefault();
+                          segments={segmentInput.segments}
+                          cursor={segmentInput.cursor}
+                          onCursorChange={(segmentIndex, offset) => segmentInput.setCursor({ segmentIndex, offset })}
+                          onInsertText={(char) => {
+                            if (char === '\n') {
+                              handleSubmit(null as any);
                               return;
                             }
+                            if (newAgentRequestedRef.current) newAgentRequestedRef.current = false;
+                            segmentInput.insertTextAtCursor(char);
+                          }}
+                          onBackspace={segmentInput.backspace}
+                          onDelete={segmentInput.deleteForward}
+                          onDeleteSegmentRange={segmentInput.removeSegmentRange}
+                          onMoveLeft={segmentInput.moveCursorLeft}
+                          onMoveRight={segmentInput.moveCursorRight}
+                          onRemovePropertyChip={removePropertyAttachment}
+                          onRemoveDocumentChip={(id) => {
+                            toggleDocumentSelection(id);
+                            setAtMentionDocumentChips((prev) => prev.filter((d) => d.id !== id));
+                          }}
+                          removeChipAtSegmentIndex={segmentInput.removeChipAtIndex}
+                          restoreSelectionRef={restoreSelectionRef}
+                          placeholder={selectedDocumentIds.size > 0
+                            ? `Searching in ${selectedDocumentIds.size} selected document${selectedDocumentIds.size > 1 ? 's' : ''}...`
+                            : 'Ask anything...'}
+                          disabled={isSubmitted}
+                          style={{
+                            width: '100%',
+                            minHeight: '28px',
+                            maxHeight: '220px',
+                            lineHeight: '20px',
+                            paddingTop: '0px',
+                            paddingBottom: '4px',
+                            paddingRight: '12px',
+                            paddingLeft: '6px',
+                            color: segmentInput.getPlainText() ? '#333333' : undefined,
+                            boxSizing: 'border-box',
+                          }}
+                          onKeyDown={(e) => {
+                            if (atMentionOpen && e.key === 'Enter') return;
                             if (e.key === 'Enter' && !e.shiftKey) {
                               e.preventDefault();
                               handleSubmit(e);
                             }
                             if (e.key === 'Backspace' || e.key === 'Delete') {
-                              const ta = e.target as HTMLTextAreaElement;
-                              const start = ta.selectionStart;
-                              const end = ta.selectionEnd;
-                              if (start !== end) {
-                                e.preventDefault();
-                                const newValue = inputValue.slice(0, start) + inputValue.slice(end);
-                                setInputValue(newValue);
-                                updateAtMentionFromInput(newValue, start);
-                                isDeletingRef.current = true;
-                                setTimeout(() => {
-                                  isDeletingRef.current = false;
-                                  if (inputRef.current) {
-                                    inputRef.current.setSelectionRange(start, start);
-                                    inputRef.current.focus();
-                                  }
-                                }, 0);
-                                return;
-                              }
                               isDeletingRef.current = true;
-                              setTimeout(() => {
-                                isDeletingRef.current = false;
-                              }, 200);
+                              setTimeout(() => { isDeletingRef.current = false; }, 200);
                             }
-                          }} 
-                          placeholder={selectedDocumentIds.size > 0 
-                            ? `Searching in ${selectedDocumentIds.size} selected document${selectedDocumentIds.size > 1 ? 's' : ''}...`
-                            : "Ask anything..."}
-                          className="w-full bg-transparent focus:outline-none font-normal text-gray-900 resize-none [&::-webkit-scrollbar]:w-0.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-gray-200/50 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:hover:bg-gray-300/70 [&::placeholder]:text-[#BABABA]"
-                          style={{
-                            height: '28px',
-                            minHeight: '28px',
-                            maxHeight: '220px',
-                            fontSize: '14px',
-                            lineHeight: '20px',
-                            paddingTop: '0px',
-                            paddingBottom: '4px',
-                            paddingRight: '12px',
-                            paddingLeft: '12px',
-                            scrollbarWidth: 'thin',
-                            scrollbarColor: 'rgba(229, 231, 235, 0.5) transparent',
-                            overflow: 'hidden',
-                            overflowY: 'auto',
-                            wordWrap: 'break-word',
-                            transition: 'none',
-                            resize: 'none',
-                            width: '100%',
-                            minWidth: '0',
-                            color: inputValue ? '#333333' : undefined,
-                            boxSizing: 'border-box',
-                            verticalAlign: 'top', // Match SearchBar
-                            display: 'block' // Match SearchBar
                           }}
-                          autoComplete="off"
-                          disabled={isSubmitted}
-                          rows={1}
                         />
                         
-                        {/* Property Search Results Popup - positioned ABOVE the textarea */}
+                        {/* Property Search Results Popup - positioned ABOVE the input */}
                         {showPropertySearchPopup && propertySearchResults.length > 0 && (
                           <div
                             ref={propertySearchPopupRef}
@@ -14078,7 +14033,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         )}
                         <AtMentionPopover
                           open={atMentionOpen}
-                          anchorRef={inputRef}
+                          anchorRef={atMentionAnchorRef}
+                          anchorRect={atAnchorRect}
                           query={atQuery}
                           placement="above"
                           items={atItems}
@@ -14392,7 +14348,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               height: '22px',
                               minHeight: '22px',
                               fontSize: '12px',
-                              marginLeft: '4px',
                               padding: showVoiceIconOnly ? '4px 8px' : undefined
                             }}
                             onMouseEnter={(e) => {
@@ -14438,10 +14393,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                     border: 'none',
                                     backgroundColor: '#6E6E6E',
                                     flexShrink: 0,
-                                    alignSelf: 'center',
-                                    marginLeft: '12px' // Increased gap from Voice button
+                                    alignSelf: 'center'
                                   }}
-                                  whileTap={{ 
+                                  whileTap={{
                                     scale: 0.95
                                   }}
                                   title="Stop generating"
@@ -14484,8 +14438,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                     minWidth: '22px',
                                     minHeight: '22px',
                                     borderRadius: '50%',
-                                    flexShrink: 0,
-                                    marginLeft: '12px' // Increased gap from Voice button
+                                    flexShrink: 0
                                   }}
                                   disabled={isSubmitted}
                                   whileHover={!isSubmitted ? { 

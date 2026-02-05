@@ -9,6 +9,10 @@ export interface AtMentionChipProps {
   type: AtMentionChipType;
   label: string;
   onRemove?: () => void;
+  /** Tooltip text (e.g. "Click to view ...") */
+  title?: string;
+  /** Optional click handler for preview (e.g. open property) */
+  onClick?: () => void;
   className?: string;
   style?: React.CSSProperties;
 }
@@ -27,11 +31,18 @@ export function AtMentionChip({
   type,
   label,
   onRemove,
+  title,
+  onClick,
   className,
   style,
 }: AtMentionChipProps) {
   const [isHovered, setIsHovered] = React.useState(false);
   const showRemove = isHovered && onRemove;
+
+  const handleChipClick = (e: React.MouseEvent) => {
+    if ((e.target as HTMLElement).closest('button')) return;
+    onClick?.();
+  };
 
   const Icon =
     type === "property" ? (
@@ -51,8 +62,12 @@ export function AtMentionChip({
   return (
     <span
       className={className}
+      role={onClick ? "button" : undefined}
+      title={title}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
+      onClick={onClick ? handleChipClick : undefined}
+      onMouseDown={onClick ? (e) => e.stopPropagation() : undefined}
       style={{
         display: "inline-flex",
         alignItems: "center",
@@ -69,6 +84,7 @@ export function AtMentionChip({
         overflow: "hidden",
         textOverflow: "ellipsis",
         whiteSpace: "nowrap",
+        cursor: onClick ? "pointer" : undefined,
         ...style,
       }}
     >

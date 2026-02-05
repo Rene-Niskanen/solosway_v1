@@ -17,6 +17,8 @@ export interface AtMentionItem {
 export interface AtMentionPopoverProps {
   open: boolean;
   anchorRef: React.RefObject<HTMLElement | null>;
+  /** When set, position popover at this rect (e.g. at the "@" character) instead of anchorRef. */
+  anchorRect?: { left: number; top: number; bottom: number; height: number } | null;
   query: string;
   placement: "above" | "below";
   items: AtMentionItem[];
@@ -27,8 +29,10 @@ export interface AtMentionPopoverProps {
 }
 
 const POPOVER_MAX_HEIGHT = 180;
-const POPOVER_MAX_WIDTH = 280;
+const POPOVER_MAX_WIDTH = 370; /* 322 * 1.15 for another 15% wider */
 const GAP = 5;
+/** Extra offset when placement is "above" so the popover sits slightly higher above the @. */
+const GAP_ABOVE = 12;
 const CONTAINER_RADIUS = 7;
 const ROW_PADDING = "5px 11px";
 const FOCUSED_ROW_BG = "#F0F0F0";
@@ -40,6 +44,7 @@ const ICON_COLOR = "#333333";
 const ICON_SIZE = 13;
 const PROPERTY_ICON_SIZE = 18;
 const ROW_GAP = 7;
+const SEPARATOR_COLOR = "rgba(0, 0, 0, 0.08)";
 const PDF_ICON_SRC = "/PDF.png";
 const PROPERTY_ICON_SRC = "/houseicon.png";
 const WORD_ICON_COLOR = "#2563EB";
@@ -47,6 +52,7 @@ const WORD_ICON_COLOR = "#2563EB";
 export function AtMentionPopover({
   open,
   anchorRef,
+  anchorRect,
   placement,
   items,
   selectedIndex,
@@ -107,7 +113,8 @@ export function AtMentionPopover({
   const fallbackLeft = window.innerWidth / 2 - 200;
   const fallbackWidth = 400;
   const fallbackHeight = 40;
-  const rect = anchorRef.current?.getBoundingClientRect() ?? {
+  const anchorRectOrRef = anchorRect ?? anchorRef.current?.getBoundingClientRect() ?? null;
+  const rect = anchorRectOrRef ?? {
     left: fallbackLeft,
     top: fallbackTop,
     width: fallbackWidth,
@@ -118,10 +125,11 @@ export function AtMentionPopover({
     y: fallbackTop,
     toJSON: () => ({}),
   };
+  const rectWidth = anchorRect ? 265 : (rect as DOMRect).width ?? 265; /* base 230 * 1.15 */
   const style: React.CSSProperties = {
     position: "fixed",
-    left: rect.left,
-    width: Math.min(Math.max(rect.width, 200), POPOVER_MAX_WIDTH),
+    left: anchorRect ? anchorRect.left : rect.left,
+    width: Math.min(Math.max(rectWidth, 265), POPOVER_MAX_WIDTH),
     maxHeight: POPOVER_MAX_HEIGHT,
     background: "#FFFFFF",
     border: "none",
@@ -133,55 +141,70 @@ export function AtMentionPopover({
     msOverflowStyle: "none",
     zIndex: 10000,
   };
+  const top = anchorRect ? anchorRect.top : rect.top;
+  const bottom = anchorRect ? anchorRect.bottom : rect.bottom;
   if (placement === "above") {
-    style.bottom = window.innerHeight - rect.top + GAP;
+    style.bottom = window.innerHeight - top + GAP_ABOVE;
   } else {
-    style.top = rect.bottom + GAP;
+    style.top = bottom + GAP;
   }
 
   const list = (
     <div ref={popoverRef} className="at-mention-popover-scroll" style={style} role="listbox">
-      {        items.map((item, index) => {
-          const isSelected = index === selectedIndex;
-          const isPdf =
-            item.type === "document" &&
-            (item.primaryLabel || "").toLowerCase().endsWith(".pdf");
-          const docIconColor =
-            item.type === "document"
-              ? (() => {
-                  const name = (item.primaryLabel || "").toLowerCase();
-                  if (name.endsWith(".pdf")) return null;
-                  if (/\.(doc|docx)$/.test(name)) return WORD_ICON_COLOR;
-                  return ICON_COLOR;
-                })()
-              : ICON_COLOR;
-          const Icon =
-            item.type === "property" ? (
-              <img
-                src={PROPERTY_ICON_SRC}
-                alt="Property"
-                width={PROPERTY_ICON_SIZE}
-                height={PROPERTY_ICON_SIZE}
-                style={{ flexShrink: 0, objectFit: "contain" }}
+      {items.map((item, index) => {
+        const showSeparator = index > 0 && items[index - 1].type !== item.type;
+        const isSelected = index === selectedIndex;
+        const isPdf =
+          item.type === "document" &&
+          (item.primaryLabel || "").toLowerCase().endsWith(".pdf");
+        const docIconColor =
+          item.type === "document"
+            ? (() => {
+                const name = (item.primaryLabel || "").toLowerCase();
+                if (name.endsWith(".pdf")) return null;
+                if (/\.(doc|docx)$/.test(name)) return WORD_ICON_COLOR;
+                return ICON_COLOR;
+              })()
+            : ICON_COLOR;
+        const Icon =
+          item.type === "property" ? (
+            <img
+              src={PROPERTY_ICON_SRC}
+              alt="Property"
+              width={PROPERTY_ICON_SIZE}
+              height={PROPERTY_ICON_SIZE}
+              style={{ flexShrink: 0, objectFit: "contain" }}
+            />
+          ) : isPdf ? (
+            <img
+              src={PDF_ICON_SRC}
+              alt="PDF"
+              width={ICON_SIZE}
+              height={ICON_SIZE}
+              style={{ flexShrink: 0, objectFit: "contain" }}
+            />
+          ) : (
+            <MousePointerClick
+              size={ICON_SIZE}
+              style={{ color: docIconColor ?? ICON_COLOR, flexShrink: 0 }}
+              strokeWidth={2}
+            />
+          );
+        return (
+          <React.Fragment key={`${item.type}-${item.id}-${index}`}>
+            {showSeparator ? (
+              <div
+                role="separator"
+                aria-hidden="true"
+                style={{
+                  height: 1,
+                  margin: "4px 0 4px",
+                  backgroundColor: SEPARATOR_COLOR,
+                  flexShrink: 0,
+                }}
               />
-            ) : isPdf ? (
-              <img
-                src={PDF_ICON_SRC}
-                alt="PDF"
-                width={ICON_SIZE}
-                height={ICON_SIZE}
-                style={{ flexShrink: 0, objectFit: "contain" }}
-              />
-            ) : (
-              <MousePointerClick
-                size={ICON_SIZE}
-                style={{ color: docIconColor ?? ICON_COLOR, flexShrink: 0 }}
-                strokeWidth={2}
-              />
-            );
-          return (
+            ) : null}
             <div
-              key={`${item.type}-${item.id}-${index}`}
               role="option"
               aria-selected={isSelected}
               onClick={() => onSelect(item)}
@@ -232,9 +255,9 @@ export function AtMentionPopover({
                 </span>
               ) : null}
             </div>
-          );
-        })
-      }
+          </React.Fragment>
+        );
+      })}
     </div>
   );
 

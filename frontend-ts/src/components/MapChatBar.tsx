@@ -3,14 +3,19 @@
 import * as React from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { ArrowUp, Paperclip, LibraryBig, PanelRightOpen, AudioLines, Globe } from "lucide-react";
-import { PropertyAttachment } from './PropertyAttachment';
 import { usePropertySelection } from '../contexts/PropertySelectionContext';
+import { useDocumentSelection } from '../contexts/DocumentSelectionContext';
 import { ModeSelector } from './ModeSelector';
 import { ModelSelector } from './ModelSelector';
 import { WebSearchPill } from './SelectedModePill';
+import { SegmentInput, type SegmentInputHandle } from './SegmentInput';
+import { AtMentionPopover, type AtMentionItem } from './AtMentionPopover';
+import { getFilteredAtMentionItems, preloadAtMentionCache } from '@/services/atMentionCache';
+import { useSegmentInput, buildInitialSegments } from '@/hooks/useSegmentInput';
+import { isTextSegment, isChipSegment, type QueryContentSegment } from '@/types/segmentInput';
 
 interface MapChatBarProps {
-  onQuerySubmit?: (query: string) => void;
+  onQuerySubmit?: (query: string, options?: { contentSegments?: QueryContentSegment[] }) => void;
   onMapToggle?: () => void;
   onPanelToggle?: () => void;
   placeholder?: string;
@@ -28,32 +33,144 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
   hasPreviousSession = false,
   initialValue = ""
 }) => {
-  const [inputValue, setInputValue] = React.useState<string>(initialValue);
   const [isSubmitted, setIsSubmitted] = React.useState<boolean>(false);
   const [isFocused, setIsFocused] = React.useState<boolean>(false);
   const [isWebSearchEnabled, setIsWebSearchEnabled] = React.useState<boolean>(false);
   const [isCompact, setIsCompact] = React.useState<boolean>(false);
-  const inputRef = React.useRef<HTMLTextAreaElement>(null);
-  const initialScrollHeightRef = React.useRef<number | null>(null);
+  const [atMentionDocumentChips, setAtMentionDocumentChips] = React.useState<Array<{ id: string; label: string }>>([]);
+  const [atMentionOpen, setAtMentionOpen] = React.useState(false);
+  const [atQuery, setAtQuery] = React.useState('');
+  const [atAnchorIndex, setAtAnchorIndex] = React.useState(-1);
+  const [atAnchorRect, setAtAnchorRect] = React.useState<{ left: number; top: number; bottom: number; height: number } | null>(null);
+  const [atItems, setAtItems] = React.useState<AtMentionItem[]>([]);
+  const [atSelectedIndex, setAtSelectedIndex] = React.useState(0);
+  const inputRef = React.useRef<SegmentInputHandle | null>(null);
+  const atMentionAnchorRef = React.useRef<HTMLDivElement>(null);
+  const restoreSelectionRef = React.useRef<(() => void) | null>(null);
   const isDeletingRef = React.useRef(false);
   const formRef = React.useRef<HTMLFormElement>(null);
-  
-  // Use property selection context
-  const { 
-    setSelectionModeActive,
-    propertyAttachments, 
-    removePropertyAttachment,
-  } = usePropertySelection();
-  
-  // Initialize textarea height on mount
+
+  const { setSelectionModeActive, propertyAttachments, removePropertyAttachment, addPropertyAttachment } = usePropertySelection();
+  const { toggleDocumentSelection } = useDocumentSelection();
+
+  const initialSegments = React.useMemo(
+    () =>
+      buildInitialSegments(
+        initialValue ?? '',
+        propertyAttachments.map((a) => ({ id: a.id, label: a.address, payload: a.property })),
+        atMentionDocumentChips
+      ),
+    []
+  );
+  const segmentInput = useSegmentInput({
+    initialSegments,
+    onRemovePropertyChip: removePropertyAttachment,
+    onRemoveDocumentChip: (id) => {
+      toggleDocumentSelection(id);
+      setAtMentionDocumentChips((prev) => prev.filter((d) => d.id !== id));
+    },
+  });
+
   React.useEffect(() => {
-    if (inputRef.current) {
-      inputRef.current.style.height = 'auto';
-      const initialHeight = inputRef.current.scrollHeight;
-      initialScrollHeightRef.current = initialHeight;
-      inputRef.current.style.height = `${initialHeight}px`;
+    if (initialValue !== undefined && segmentInput.getPlainText() !== initialValue) {
+      segmentInput.setSegments(
+        buildInitialSegments(
+          initialValue,
+          propertyAttachments.map((a) => ({ id: a.id, label: a.address, payload: a.property })),
+          atMentionDocumentChips
+        )
+      );
     }
-  }, []);
+  }, [initialValue]);
+
+  React.useEffect(() => {
+    const plain = segmentInput.getPlainText();
+    const cursorOffset = segmentInput.getCursorOffset();
+    const lastAt = plain.slice(0, cursorOffset).lastIndexOf('@');
+    const queryAfterAt = lastAt >= 0 ? plain.slice(lastAt + 1, cursorOffset) : '';
+    // Close popover when user types a space after "@"
+    if (lastAt >= 0 && !queryAfterAt.includes(' ')) {
+      setAtMentionOpen(true);
+      setAtQuery(queryAfterAt);
+      setAtAnchorIndex(lastAt);
+    } else {
+      setAtMentionOpen(false);
+      setAtQuery('');
+      setAtAnchorIndex(-1);
+    }
+  }, [segmentInput.segments, segmentInput.cursor]);
+
+  React.useEffect(() => {
+    if (!atMentionOpen) {
+      setAtItems([]);
+      return;
+    }
+    setAtItems(getFilteredAtMentionItems(atQuery));
+    preloadAtMentionCache().then(() => setAtItems(getFilteredAtMentionItems(atQuery)));
+  }, [atMentionOpen, atQuery]);
+
+  // Position @ popover at the "@" character (defer rect read so segment refs are ready)
+  React.useEffect(() => {
+    if (!atMentionOpen || atAnchorIndex < 0) {
+      setAtAnchorRect(null);
+      return;
+    }
+    let cancelled = false;
+    const readRect = () => {
+      if (cancelled) return;
+      const rect = inputRef.current?.getRectForPlainOffset(atAnchorIndex);
+      if (rect) {
+        setAtAnchorRect({ left: rect.left, top: rect.top, bottom: rect.bottom, height: rect.height });
+      } else {
+        requestAnimationFrame(() => {
+          if (cancelled) return;
+          const retryRect = inputRef.current?.getRectForPlainOffset(atAnchorIndex);
+          if (retryRect) {
+            setAtAnchorRect({ left: retryRect.left, top: retryRect.top, bottom: retryRect.bottom, height: retryRect.height });
+          } else {
+            setAtAnchorRect(null);
+          }
+        });
+      }
+    };
+    requestAnimationFrame(readRect);
+    return () => { cancelled = true; };
+  }, [atMentionOpen, atAnchorIndex, segmentInput.segments]);
+
+  const handleAtSelect = React.useCallback(
+    (item: AtMentionItem) => {
+      const startPlain = Math.max(0, atAnchorIndex);
+      const endPlain = segmentInput.getCursorOffset();
+      const startPos = segmentInput.getSegmentOffsetFromPlain(startPlain);
+      const endPos = segmentInput.getSegmentOffsetFromPlain(endPlain);
+      if (startPos != null && endPos != null) {
+        segmentInput.removeSegmentRange(startPos.segmentIndex, startPos.offset, endPos.segmentIndex, endPos.offset);
+      } else {
+        segmentInput.removeRange(startPlain, endPlain);
+      }
+      setAtMentionOpen(false);
+      if (item.type === 'property') {
+        const property = item.payload as { id: string; address: string; [key: string]: unknown };
+        addPropertyAttachment(property as unknown as Parameters<typeof addPropertyAttachment>[0]);
+        segmentInput.insertChipAtCursor(
+          { type: 'chip', kind: 'property', id: property.id, label: property.address || item.primaryLabel, payload: property },
+          { trailingSpace: true }
+        );
+      } else {
+        toggleDocumentSelection(item.id);
+        setAtMentionDocumentChips((prev) => [...prev, { id: item.id, label: item.primaryLabel }]);
+        segmentInput.insertChipAtCursor(
+          { type: 'chip', kind: 'document', id: item.id, label: item.primaryLabel },
+          { trailingSpace: true }
+        );
+      }
+      requestAnimationFrame(() => {
+        inputRef.current?.focus();
+        requestAnimationFrame(() => restoreSelectionRef.current?.());
+      });
+    },
+    [atAnchorIndex, addPropertyAttachment, toggleDocumentSelection, segmentInput]
+  );
 
   // Track form width for responsive model selector
   React.useEffect(() => {
@@ -80,83 +197,43 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
     };
   }, []);
   
-  // Update input value when initialValue prop changes (e.g., when switching from SearchBar)
-  React.useEffect(() => {
-    // Only update if initialValue is provided and different from current value
-    // This handles both initial mount and prop updates
-    if (initialValue !== undefined && initialValue !== inputValue) {
-      console.log('📝 MapChatBar: Setting initial value from prop:', initialValue);
-      setInputValue(initialValue);
-      // Resize textarea after setting value
-      if (inputRef.current) {
-        // Use requestAnimationFrame to ensure DOM is ready
-        requestAnimationFrame(() => {
-          if (inputRef.current) {
-            inputRef.current.style.height = 'auto';
-            const scrollHeight = inputRef.current.scrollHeight;
-            const maxHeight = 140; // Match SideChatPanel
-            const newHeight = Math.min(scrollHeight, maxHeight);
-            inputRef.current.style.height = `${newHeight}px`;
-            inputRef.current.style.overflowY = scrollHeight > maxHeight ? 'auto' : 'hidden';
-            inputRef.current.style.minHeight = '24px'; // Match SideChatPanel
-          }
-        });
-      }
-    }
-  }, [initialValue]); // Only depend on initialValue, not inputValue to avoid loops
-
-  // Handle textarea change with auto-resize logic
-  const handleTextareaChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    const value = e.target.value;
-    const cursorPos = e.target.selectionStart;
-    
-    setInputValue(value);
-    
-    // Always stay in multi-line layout, just adjust height
-    if (inputRef.current) {
-      // Set height to auto first to get accurate scrollHeight
-      inputRef.current.style.height = 'auto';
-      const scrollHeight = inputRef.current.scrollHeight;
-      const maxHeight = 140; // Match SideChatPanel maxHeight
-      const newHeight = Math.min(scrollHeight, maxHeight);
-      
-      // Use requestAnimationFrame to batch the height update and prevent layout shift
-      requestAnimationFrame(() => {
-        if (inputRef.current) {
-          inputRef.current.style.height = `${newHeight}px`;
-          inputRef.current.style.overflowY = scrollHeight > maxHeight ? 'auto' : 'hidden';
-          inputRef.current.style.minHeight = '24px'; // Match SideChatPanel
-        }
-      });
-      
-      if (!isDeletingRef.current && cursorPos !== null) {
-        inputRef.current.setSelectionRange(cursorPos, cursorPos);
-      }
-    }
-  };
-
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    const submitted = inputValue.trim();
-    if ((submitted || propertyAttachments.length > 0) && !isSubmitted && onQuerySubmit) {
+    const submitted = segmentInput.getPlainText().trim();
+    if ((submitted || propertyAttachments.length > 0 || atMentionDocumentChips.length > 0) && !isSubmitted && onQuerySubmit) {
       setIsSubmitted(true);
-      onQuerySubmit(submitted);
-      setInputValue("");
-      // Don't clear property attachments here - let SideChatPanel read them first
-      // SideChatPanel will clear them after initializing with them
-      // Turn off selection mode after submission
+      const contentSegments: QueryContentSegment[] = [];
+      for (const seg of segmentInput.segments) {
+        if (isTextSegment(seg)) {
+          if (seg.value) contentSegments.push({ type: 'text', value: seg.value });
+        } else if (isChipSegment(seg)) {
+          if (seg.kind === 'property') {
+            const attachment = propertyAttachments.find(
+              (a) => String(a.propertyId) === String(seg.id) || (a.property as any)?.id == seg.id
+            );
+            if (attachment) {
+              contentSegments.push({ type: 'property', attachment });
+            } else {
+              const p = (seg.payload as any) || {};
+              const addr = p.formatted_address || p.normalized_address || p.address || 'Unknown Address';
+              contentSegments.push({
+                type: 'property',
+                attachment: { id: seg.id, propertyId: seg.id, address: addr, imageUrl: '', property: p }
+              });
+            }
+          } else {
+            const name = atMentionDocumentChips.find((c) => c.id === seg.id)?.label ?? seg.label ?? seg.id;
+            contentSegments.push({ type: 'document', id: seg.id, name });
+          }
+        }
+      }
+      onQuerySubmit(submitted, contentSegments.length > 0 ? { contentSegments } : undefined);
+      segmentInput.setSegments([{ type: 'text', value: '' }]);
+      setAtMentionDocumentChips([]);
       if (propertyAttachments.length > 0) {
         setSelectionModeActive(false);
       }
       setIsSubmitted(false);
-      
-      // Reset textarea
-      if (inputRef.current) {
-        const initialHeight = initialScrollHeightRef.current ?? 24; // Match SideChatPanel
-        inputRef.current.style.height = `${initialHeight}px`;
-        inputRef.current.style.overflowY = '';
-        inputRef.current.style.overflow = '';
-      }
     }
   };
 
@@ -241,94 +318,90 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
               minWidth: '0'
             }}
           >
-            {/* Property Attachments Display - Above textarea */}
-            {propertyAttachments.length > 0 && (
-              <div 
-                style={{ 
-                  height: 'auto', 
-                  marginBottom: '12px',
-                  display: 'flex',
-                  flexWrap: 'wrap',
-                  gap: '8px',
-                  width: '100%'
-                }}
-              >
-                {propertyAttachments.map((property) => (
-                  <PropertyAttachment
-                    key={property.id}
-                    attachment={property}
-                    onRemove={removePropertyAttachment}
-                  />
-                ))}
-              </div>
-            )}
-
-            {/* Textarea area - always above */}
-            <div 
+            {/* SegmentInput + @ context - chips only inline (no row above, matches SearchBar) */}
+            <div
+              ref={atMentionAnchorRef}
               className="flex items-start w-full"
-              style={{ 
-                minHeight: '24px', // Match SideChatPanel
-                height: 'auto',
-                width: '100%',
-                marginTop: '4px', // Match SideChatPanel
-                marginBottom: '12px', // Fixed margin like SideChatPanel
-                flexShrink: 0
-              }}
-            >
-              <div className="flex-1 relative flex items-start w-full" style={{ 
-                overflow: 'visible', 
+              style={{
                 minHeight: '24px',
                 width: '100%',
-                minWidth: '0',
-                paddingRight: '0px'
-              }}>
-                <textarea 
+                marginTop: '4px',
+                marginBottom: '12px',
+                flexShrink: 0,
+              }}
+            >
+              <div
+                className="flex-1 relative flex items-start w-full"
+                style={{ overflow: 'visible', minHeight: '24px', width: '100%', minWidth: '0' }}
+                onFocus={() => setIsFocused(true)}
+                onBlur={() => setIsFocused(false)}
+              >
+                <SegmentInput
                   ref={inputRef}
-                  value={inputValue}
-                  onChange={handleTextareaChange}
-                  onFocus={() => setIsFocused(true)} 
-                  onBlur={() => setIsFocused(false)} 
-                  onKeyDown={e => { 
+                  segments={segmentInput.segments}
+                  cursor={segmentInput.cursor}
+                  onCursorChange={(segmentIndex, offset) => segmentInput.setCursor({ segmentIndex, offset })}
+                  onInsertText={(char) => {
+                    if (char === '\n') {
+                      handleSubmit(null as any);
+                      return;
+                    }
+                    segmentInput.insertTextAtCursor(char);
+                  }}
+                  onBackspace={segmentInput.backspace}
+                  onDelete={segmentInput.deleteForward}
+                  onDeleteSegmentRange={segmentInput.removeSegmentRange}
+                  onMoveLeft={segmentInput.moveCursorLeft}
+                  onMoveRight={segmentInput.moveCursorRight}
+                  onRemovePropertyChip={removePropertyAttachment}
+                  onRemoveDocumentChip={(id) => {
+                    toggleDocumentSelection(id);
+                    setAtMentionDocumentChips((prev) => prev.filter((d) => d.id !== id));
+                  }}
+                  removeChipAtSegmentIndex={segmentInput.removeChipAtIndex}
+                  restoreSelectionRef={restoreSelectionRef}
+                  placeholder={placeholder}
+                  disabled={isSubmitted}
+                  style={{
+                    width: '100%',
+                    minHeight: '28px',
+                    maxHeight: '120px',
+                    lineHeight: '20px',
+                    paddingTop: '0px',
+                    paddingBottom: '4px',
+                    paddingRight: '12px',
+                    paddingLeft: '6px',
+                    color: segmentInput.getPlainText() ? '#0D0D0D' : undefined,
+                    boxSizing: 'border-box',
+                  }}
+                  onKeyDown={(e) => {
+                    if (atMentionOpen && e.key === 'Enter') return;
                     if (e.key === 'Enter' && !e.shiftKey) {
                       e.preventDefault();
                       handleSubmit(e);
                     }
                     if (e.key === 'Backspace' || e.key === 'Delete') {
                       isDeletingRef.current = true;
-                      setTimeout(() => {
-                        isDeletingRef.current = false;
-                      }, 200);
+                      setTimeout(() => { isDeletingRef.current = false; }, 200);
                     }
-                  }} 
-                  placeholder={placeholder}
-                  className="w-full bg-transparent focus:outline-none font-normal text-gray-900 resize-none [&::-webkit-scrollbar]:w-0.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-gray-200/50 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:hover:bg-gray-300/70 [&::placeholder]:text-[#BABABA]"
-                  style={{
-                    height: '24px', // Match SideChatPanel
-                    minHeight: '24px',
-                    maxHeight: '140px', // Match SideChatPanel
-                    fontSize: '14px',
-                    lineHeight: '20px',
-                    paddingTop: '0px',
-                    paddingBottom: '4px',
-                    paddingRight: '12px',
-                    paddingLeft: '6px',
-                    scrollbarWidth: 'thin',
-                    scrollbarColor: 'rgba(229, 231, 235, 0.5) transparent',
-                    overflow: 'hidden',
-                    overflowY: 'auto',
-                    wordWrap: 'break-word',
-                    transition: 'none', // No transition like SideChatPanel
-                    resize: 'none',
-                    width: '100%',
-                    minWidth: '0',
-                    color: inputValue ? '#0D0D0D' : undefined, // Match SideChatPanel
-                    boxSizing: 'border-box'
                   }}
-                  autoComplete="off"
-                  disabled={isSubmitted}
-                  rows={1}
                 />
               </div>
+              <AtMentionPopover
+                open={atMentionOpen}
+                anchorRef={atMentionAnchorRef}
+                anchorRect={atAnchorRect}
+                query={atQuery}
+                placement="above"
+                items={atItems}
+                selectedIndex={atSelectedIndex}
+                onSelect={handleAtSelect}
+                onSelectedIndexChange={setAtSelectedIndex}
+                onClose={() => {
+                  setAtMentionOpen(false);
+                  setAtItems([]);
+                }}
+              />
             </div>
             
             {/* Bottom row: Mode/Model selectors (Left) and Action buttons (Right) */}
@@ -455,8 +528,7 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
                     willChange: 'background-color',
                     height: '22px',
                     minHeight: '22px',
-                    fontSize: '12px',
-                    marginLeft: '4px'
+                    fontSize: '12px'
                   }}
                   onMouseEnter={(e) => {
                     e.currentTarget.style.backgroundColor = '#E0E0E0';
@@ -472,7 +544,7 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
                 
                 {/* Send button */}
                 <AnimatePresence>
-                  {(inputValue.trim() || propertyAttachments.length > 0) && (
+                  {(segmentInput.getPlainText().trim() || propertyAttachments.length > 0 || atMentionDocumentChips.length > 0) && (
                     <motion.button 
                       key="send-button"
                       type="submit" 

@@ -449,6 +449,47 @@ async def fetch_direct_document_chunks(state: MainWorkflowState) -> MainWorkflow
             logger.info(f"⚡ [DIRECT_DOC] Focused retrieval found 0 chunks, falling back to vector search")
             # Continue to normal retrieval below
     
+    # Query-aware branch: when user_query is non-empty, use retrieve_chunks (vector/hybrid within docs) instead of fetch-all
+    if user_query and business_id:
+        from backend.llm.tools.chunk_retriever_tool import retrieve_chunks
+        logger.info(
+            "[DIRECT_DOC] Query provided; using retrieve_chunks document_ids=%s query=%s",
+            document_ids,
+            user_query[:80] if len(user_query) > 80 else user_query,
+        )
+        chunks_result = retrieve_chunks(
+            query=user_query,
+            document_ids=document_ids,
+            business_id=business_id,
+        )
+        if chunks_result:
+            # Convert retrieve_chunks return to List[RetrievedDocument]
+            retrieved_docs: List[RetrievedDocument] = []
+            for c in chunks_result:
+                retrieved_docs.append({
+                    "vector_id": c.get("chunk_id", ""),
+                    "doc_id": c.get("document_id", ""),
+                    "property_id": None,
+                    "content": c.get("chunk_text") or c.get("chunk_text_clean") or "",
+                    "classification_type": c.get("document_type") or "unknown",
+                    "chunk_index": c.get("chunk_index", 0),
+                    "page_number": c.get("page_number", 0),
+                    "bbox": c.get("bbox"),
+                    "similarity_score": float(c.get("score", 0.0)),
+                    "source": "direct_document",
+                    "address_hash": None,
+                    "business_id": business_id,
+                    "original_filename": c.get("document_filename") or "Unknown",
+                    "property_address": None,
+                    "blocks": c.get("blocks"),
+                })
+            logger.info("[DIRECT_DOC] Retrieved %d chunks (query-based).", len(retrieved_docs))
+            return {
+                "relevant_documents": retrieved_docs,
+                "target_document_ids": document_ids,
+            }
+        logger.warning("[DIRECT_DOC] Query-based retrieval returned 0 chunks; falling back to fetch-all.")
+    
     # Fetch chunks directly from documents (agent will handle query filtering in summarize_results)
     # This is the fast path - we fetch chunks and let the agent use tools to filter if needed
     try:

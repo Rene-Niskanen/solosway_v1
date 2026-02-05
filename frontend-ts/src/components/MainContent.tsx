@@ -40,6 +40,7 @@ import { ProjectsPage } from './ProjectsPage';
 import { PropertyDetailsPanel } from './PropertyDetailsPanel';
 import { useChatHistory } from './ChatHistoryContext';
 import { useBrowserFullscreen } from '../contexts/BrowserFullscreenContext';
+import type { QueryContentSegment } from '@/types/segmentInput';
 
 export const DEFAULT_MAP_LOCATION_KEY = 'defaultMapLocation';
 
@@ -2102,6 +2103,7 @@ export const MainContent = ({
   // Ref to track if we're explicitly hiding the map (prevents effect from overriding)
   const isExplicitlyHidingRef = React.useRef<boolean>(false);
   const [mapSearchQuery, setMapSearchQuery] = React.useState<string>("");
+  const [mapSearchContentSegments, setMapSearchContentSegments] = React.useState<QueryContentSegment[]>([]);
   const [hasPerformedSearch, setHasPerformedSearch] = React.useState<boolean>(false);
   
   // Keep ref in sync with state
@@ -2358,6 +2360,8 @@ export const MainContent = ({
   const [pendingDashboardAttachments, setPendingDashboardAttachments] = React.useState<FileAttachmentData[]>([]);
   const [isQuickStartPopupVisible, setIsQuickStartPopupVisible] = React.useState<boolean>(false);
   const pendingDashboardAttachmentsRef = React.useRef<FileAttachmentData[]>([]);
+  // Store content segments from SearchBar submit so SideChatPanel can use them before state propagates
+  const pendingSearchContentSegmentsRef = React.useRef<QueryContentSegment[] | undefined>(undefined);
   // Store SideChatPanel attachments separately
   const [pendingSideChatAttachments, setPendingSideChatAttachments] = React.useState<FileAttachmentData[]>([]);
   const pendingSideChatAttachmentsRef = React.useRef<FileAttachmentData[]>([]);
@@ -2520,7 +2524,8 @@ export const MainContent = ({
   // Handler for new chat - can be called from both SideChatPanel and ChatPanel
   const handleNewChatInternal = React.useCallback(() => {
     // Clear the query input for new query (UI state only)
-    setMapSearchQuery("");
+          setMapSearchQuery("");
+          setMapSearchContentSegments([]);
     
     // CRITICAL: Always clear restoreChatId to allow new chat creation
     // The running query will continue updating its history entry using its captured chatId
@@ -2643,6 +2648,7 @@ export const MainContent = ({
         // Without this, the query prop would contain the PREVIOUS chat's query text, which would
         // be sent to the RESTORED chat's backend session, causing query leakage between chats
         setMapSearchQuery("");
+        setMapSearchContentSegments([]);
         
         // Show chat panel immediately
         setHasPerformedSearch(true);
@@ -2737,7 +2743,8 @@ export const MainContent = ({
           setHasPerformedSearch(false);
           setShouldExpandChat(false);
           // Clear chat query to reset chat state
-          setMapSearchQuery("");
+        setMapSearchQuery("");
+        setMapSearchContentSegments([]);
         }
       }, 200); // Increased delay to ensure chat opening effect completes
       
@@ -3302,7 +3309,7 @@ export const MainContent = ({
     onNavigate?.(view, options);
   };
 
-  const handleSearch = (query: string) => {
+  const handleSearch = (query: string, options?: { contentSegments?: QueryContentSegment[] }) => {
     // CRITICAL: Capture attachments from dashboard SearchBar BEFORE clearing
     let dashboardAttachments: FileAttachmentData[] = [];
     if (searchBarRef.current?.getAttachments) {
@@ -3362,8 +3369,12 @@ export const MainContent = ({
     pendingDashboardQueryRef.current = "";
     setPendingDashboardQuery("");
     
-    // Always update map search query
+    // Always update map search query and optional segment order for query bubble
+    // Store segments in ref immediately so SideChatPanel can use them before state update propagates
+    const segments = options?.contentSegments ?? [];
+    pendingSearchContentSegmentsRef.current = segments.length > 0 ? segments : undefined;
     setMapSearchQuery(query);
+    setMapSearchContentSegments(segments);
     
     // If map is visible and there are no attachments, only search on the map, don't enter chat
     // BUT if there are attachments, we need to show SideChatPanel to handle file choice
@@ -3608,6 +3619,7 @@ export const MainContent = ({
         // But preserve the actual data in preservedChatStateRef
         setIsMapVisible(false);
         setMapSearchQuery("");
+        setMapSearchContentSegments([]);
         setHasPerformedSearch(false);
         // Reset the flag after a shorter duration for faster transitions
         setTimeout(() => {
@@ -3673,7 +3685,8 @@ export const MainContent = ({
       }
       
       setIsMapVisible(false);
-      setMapSearchQuery("");
+          setMapSearchQuery("");
+          setMapSearchContentSegments([]);
       setHasPerformedSearch(false);
       
       // Close fullscreen property view when navigating to search/home (always, regardless of chat state)
@@ -3743,7 +3756,8 @@ export const MainContent = ({
       setChatMessages([]);
       setCurrentLocation("");
       // Note: setIsMapVisible(false) is now set synchronously in DashboardLayout.handleViewChange
-      setMapSearchQuery("");
+          setMapSearchQuery("");
+          setMapSearchContentSegments([]);
       setHasPerformedSearch(false);
       onChatModeChange?.(false);
       // Close document preview when home is clicked
@@ -5210,7 +5224,8 @@ export const MainContent = ({
                   setPendingMapQuery(""); // Clear pending query when opening panel
                 } else {
                   // No previous session - open with empty query
-                  setMapSearchQuery("");
+        setMapSearchQuery("");
+        setMapSearchContentSegments([]);
                 }
                 // This will show SideChatPanel (isVisible = isMapVisible && hasPerformedSearch)
               }
@@ -5238,6 +5253,8 @@ export const MainContent = ({
         ref={sideChatPanelRef}
         isVisible={(currentView === 'search' || currentView === 'home') && isMapVisible && hasPerformedSearch && !showNewPropertyWorkflow}
         query={mapSearchQuery}
+        initialContentSegments={mapSearchContentSegments.length > 0 ? mapSearchContentSegments : undefined}
+        pendingSearchContentSegmentsRef={pendingSearchContentSegmentsRef}
         citationContext={citationContext}
         isSidebarCollapsed={isSidebarCollapsed}
         sidebarWidth={(() => {
@@ -5326,7 +5343,8 @@ export const MainContent = ({
           isTransitioningFromChatRef.current = true;
           setIsTransitioningFromChat(true);
           // Close panel and show MapChatBar by resetting hasPerformedSearch
-          setMapSearchQuery("");
+        setMapSearchQuery("");
+        setMapSearchContentSegments([]);
           setHasPerformedSearch(false);
           setRestoreChatId(null);
           setIsChatBubbleVisible(false);
@@ -5769,7 +5787,7 @@ export const MainContent = ({
           }
         })()}
         isSmallSidebarMode={!isSidebarCollapsed}
-        hideCloseButton={inChatMode}
+        hideCloseButton={false}
       />
 
       {/* Fullscreen Property View - Chat + Property Details split */}

@@ -1612,7 +1612,7 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
             )
         else:
             # Format document with block IDs (for citation mapping)
-            formatted_content, metadata_table = format_document_with_block_ids(output)
+            formatted_content, metadata_table, _ = format_document_with_block_ids(output)
             logger.debug(
                 f"[SUMMARIZE_RESULTS] Formatted doc {doc_id[:8]} in summarize_results"
             )
@@ -1734,7 +1734,8 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
     
     import time
     phase1_start = time.time()
-    
+    phase2_start = None  # Set in 2-phase path only; used for Phase 2 timing log
+
     # CRITICAL: Do not generate response if there are no documents
     if not doc_outputs or len(doc_outputs) == 0:
         logger.error("[SUMMARIZE_RESULTS] ⚠️ CRITICAL: No document outputs - returning empty response.")
@@ -2191,8 +2192,9 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
         
         logger.info(f"[SUMMARIZE_RESULTS] Collected {len(agent_actions)} agent actions")
     
-    phase2_end = time.time()
-    logger.info(f"[SUMMARIZE_RESULTS] Phase 2 took {phase2_end - phase2_start:.2f}s")
+    if phase2_start is not None:
+        phase2_end = time.time()
+        logger.info(f"[SUMMARIZE_RESULTS] Phase 2 took {phase2_end - phase2_start:.2f}s")
     
     # Clean up any unwanted text and tool call artifacts
     import re

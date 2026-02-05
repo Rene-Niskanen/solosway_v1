@@ -14,14 +14,16 @@ import { useDocumentSelection } from '../contexts/DocumentSelectionContext';
 import { backendApi } from '../services/backendApi';
 import { QuickStartBar } from './QuickStartBar';
 import { ModeSelector } from './ModeSelector';
+import { ModelSelector } from './ModelSelector';
 import { AtMentionPopover, type AtMentionItem } from './AtMentionPopover';
-import { SegmentInput } from './SegmentInput';
+import { SegmentInput, type SegmentInputHandle } from './SegmentInput';
 import { getFilteredAtMentionItems, preloadAtMentionCache } from '@/services/atMentionCache';
 import { useSegmentInput, buildInitialSegments } from '@/hooks/useSegmentInput';
+import { isTextSegment, isChipSegment, type QueryContentSegment } from '@/types/segmentInput';
 
 export interface SearchBarProps {
   className?: string;
-  onSearch?: (query: string) => void;
+  onSearch?: (query: string, options?: { contentSegments?: QueryContentSegment[] }) => void;
   onQueryStart?: (query: string) => void;
   onMapToggle?: () => void;
   onDashboardClick?: () => void;
@@ -221,6 +223,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
   const [atMentionOpen, setAtMentionOpen] = useState(false);
   const [atQuery, setAtQuery] = useState('');
   const [atAnchorIndex, setAtAnchorIndex] = useState(-1);
+  const [atAnchorRect, setAtAnchorRect] = useState<{ left: number; top: number; bottom: number; height: number } | null>(null);
   const [atItems, setAtItems] = useState<AtMentionItem[]>([]);
   const [atSelectedIndex, setAtSelectedIndex] = useState(0);
   const [atPlacement] = useState<'above' | 'below'>('above'); // Always above so dropdown doesn't cover chat bar
@@ -251,9 +254,11 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
     const plain = segmentInput.getPlainText();
     const cursorOffset = segmentInput.getCursorOffset();
     const lastAt = plain.slice(0, cursorOffset).lastIndexOf("@");
-    if (lastAt >= 0) {
+    const queryAfterAt = lastAt >= 0 ? plain.slice(lastAt + 1, cursorOffset) : "";
+    // Close popover when user types a space after "@"
+    if (lastAt >= 0 && !queryAfterAt.includes(" ")) {
       setAtMentionOpen(true);
-      setAtQuery(plain.slice(lastAt + 1, cursorOffset));
+      setAtQuery(queryAfterAt);
       setAtAnchorIndex(lastAt);
     } else {
       setAtMentionOpen(false);
@@ -272,6 +277,34 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
       setAtItems(getFilteredAtMentionItems(atQuery));
     });
   }, [atMentionOpen, atQuery]);
+
+  // Position @ popover at the "@" character (defer rect read so segment refs are ready)
+  useEffect(() => {
+    if (!atMentionOpen || atAnchorIndex < 0) {
+      setAtAnchorRect(null);
+      return;
+    }
+    let cancelled = false;
+    const readRect = () => {
+      if (cancelled) return;
+      const rect = inputRef.current?.getRectForPlainOffset(atAnchorIndex);
+      if (rect) {
+        setAtAnchorRect({ left: rect.left, top: rect.top, bottom: rect.bottom, height: rect.height });
+      } else {
+        requestAnimationFrame(() => {
+          if (cancelled) return;
+          const retryRect = inputRef.current?.getRectForPlainOffset(atAnchorIndex);
+          if (retryRect) {
+            setAtAnchorRect({ left: retryRect.left, top: retryRect.top, bottom: retryRect.bottom, height: retryRect.height });
+          } else {
+            setAtAnchorRect(null);
+          }
+        });
+      }
+    };
+    requestAnimationFrame(readRect);
+    return () => { cancelled = true; };
+  }, [atMentionOpen, atAnchorIndex, segmentInput.segments]);
 
   const handleAtSelect = useCallback((item: AtMentionItem) => {
     const startPlain = Math.max(0, atAnchorIndex);
@@ -346,7 +379,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
     }
   }, [searchValue, segmentInput]);
   
-  const inputRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<SegmentInputHandle | null>(null);
   const restoreSelectionRef = useRef<(() => void) | null>(null);
   const queryStartTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const multiLineTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -435,7 +468,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
         isSquare: false // Keep rounded for chat mode
       };
     } else {
-      // Dashboard view - square corners
+      // Dashboard view - square corners; no Map button on dashboard
       // On very small screens, use a more flexible width to ensure placeholder text fits
       const flexibleMaxWidth = isVerySmallScreen 
         ? 'min(100%, calc(100vw - 32px))' // On very small screens, use almost full width minus minimal padding
@@ -443,7 +476,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
       
       return {
         placeholder: getPlaceholder(),
-        showMapToggle: true,
+        showMapToggle: false,
         showMic: true,
         position: "center", // Always center
         glassmorphism: false,
@@ -631,16 +664,17 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
       // Wait for React to switch to single-line textarea, then reset it
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
-          if (inputRef.current && !inputRef.current.closest('.hidden')) {
+          const el = inputRef.current?.getRootElement();
+          if (el && !el.closest('.hidden')) {
             // Reverse DOM changes: undo what we did when entering multi-line
             const initialHeight = initialScrollHeightRef.current ?? 28.1;
-            inputRef.current.style.height = `${initialHeight}px`;
-            inputRef.current.style.overflowY = '';
-            inputRef.current.style.overflow = '';
+            el.style.height = `${initialHeight}px`;
+            el.style.overflowY = '';
+            el.style.overflow = '';
             
-            // Restore cursor position after reset
-            if (cursorPos !== null && 'setSelectionRange' in (inputRef.current as any)) {
-              (inputRef.current as any).setSelectionRange(cursorPos, cursorPos);
+            // Restore cursor position after reset (SegmentInput is contenteditable; setSelectionRange is no-op on div)
+            if (cursorPos !== null && 'setSelectionRange' in (el as any)) {
+              (el as any).setSelectionRange(cursorPos, cursorPos);
             }
           }
         });
@@ -680,27 +714,28 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
       // Then adjust height and restore cursor after React switches to multi-line textarea
       // Use requestAnimationFrame to ensure smooth transition
       requestAnimationFrame(() => {
-        if (inputRef.current) {
+        const el = inputRef.current?.getRootElement();
+        if (el) {
           // Adjust height - let CSS transition handle the animation
-          inputRef.current.style.height = 'auto';
-          const scrollHeight = inputRef.current.scrollHeight;
+          el.style.height = 'auto';
+          const scrollHeight = el.scrollHeight;
           // Calculate viewport-aware maxHeight to prevent overflow
           // Constrain to viewport height minus safe margins (container padding, icons, spacing)
           const maxHeight = isDashboardView
             ? 160
             : Math.min(350, typeof window !== 'undefined' ? window.innerHeight - 200 : 350);
           const newHeight = Math.min(scrollHeight, maxHeight);
-          inputRef.current.style.height = `${newHeight}px`;
+          el.style.height = `${newHeight}px`;
           // Always allow scrolling when content exceeds maxHeight
-          inputRef.current.style.overflowY = scrollHeight > maxHeight ? 'auto' : 'hidden';
+          el.style.overflowY = scrollHeight > maxHeight ? 'auto' : 'hidden';
           // Ensure the textarea doesn't collapse
-          inputRef.current.style.minHeight = '28px';
+          el.style.minHeight = '28px';
           
           // Restore cursor position to end (where user was typing)
-          if (cursorPos !== null && 'setSelectionRange' in (inputRef.current as any)) {
+          if (cursorPos !== null && 'setSelectionRange' in (el as any)) {
             const targetPos = Math.min(cursorPos, value.length);
-            (inputRef.current as any).setSelectionRange(targetPos, targetPos);
-            inputRef.current.focus();
+            (el as any).setSelectionRange(targetPos, targetPos);
+            inputRef.current?.focus();
           }
         }
       });
@@ -709,7 +744,8 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
         // Exiting multi-line: return to opening state
         // Preserve cursor position and focus state before transition
         const savedCursorPos = cursorPos;
-        const wasFocused = document.activeElement === inputRef.current;
+        const rootEl = inputRef.current.getRootElement();
+        const wasFocused = rootEl ? document.activeElement === rootEl : false;
         
         // Mark that we're in a deletion operation
         isDeletingRef.current = true;
@@ -727,15 +763,16 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
         // Immediately restore focus and cursor synchronously after state update
         // Use the ref directly - no need to query DOM
         if (inputRef.current) {
+          const el = inputRef.current.getRootElement();
           // Return to initial height (like on mount) - let CSS transition handle the animation
           const initialHeight = initialScrollHeightRef.current ?? 28.1;
           // Use requestAnimationFrame to ensure transition applies smoothly
           requestAnimationFrame(() => {
-            if (inputRef.current) {
-              inputRef.current.style.height = `${initialHeight}px`;
+            if (el) {
+              el.style.height = `${initialHeight}px`;
               // Remove overflow styles (back to CSS defaults)
-              inputRef.current.style.overflowY = '';
-              inputRef.current.style.overflow = '';
+              el.style.overflowY = '';
+              el.style.overflow = '';
             }
           });
           
@@ -743,9 +780,9 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
           if (wasFocused) {
             inputRef.current.focus();
           }
-          if (savedCursorPos !== null && 'setSelectionRange' in (inputRef.current as any)) {
+          if (el && savedCursorPos !== null && 'setSelectionRange' in (el as any)) {
             const targetPos = Math.min(savedCursorPos, value.length);
-            (inputRef.current as any).setSelectionRange(targetPos, targetPos);
+            (el as any).setSelectionRange(targetPos, targetPos);
           }
         }
         
@@ -756,9 +793,10 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
       } else if (shouldBeMultiLine && isMultiLine) {
         // Already in multi-line: update height as text grows
         // OPTIMIZED: Only recalculate when content grows to avoid unnecessary reflows
-        if (inputRef.current) {
-          const currentHeight = parseFloat(inputRef.current.style.height) || 28;
-          const scrollHeight = inputRef.current.scrollHeight;
+        const el = inputRef.current?.getRootElement();
+        if (el) {
+          const currentHeight = parseFloat(el.style.height) || 28;
+          const scrollHeight = el.scrollHeight;
           
           // Calculate viewport-aware maxHeight to prevent overflow
           // Constrain to viewport height minus safe margins (container padding, icons, spacing)
@@ -770,19 +808,20 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
           // This avoids the expensive height:auto -> measure -> set pattern
           if (scrollHeight > currentHeight || (isDeletingRef.current && scrollHeight < currentHeight)) {
             const newHeight = Math.min(scrollHeight, maxHeight);
-            inputRef.current.style.height = `${newHeight}px`;
+            el.style.height = `${newHeight}px`;
           }
           
           // Always allow scrolling when content exceeds maxHeight
-          inputRef.current.style.overflowY = scrollHeight > maxHeight ? 'auto' : 'hidden';
+          el.style.overflowY = scrollHeight > maxHeight ? 'auto' : 'hidden';
           // Ensure the textarea doesn't collapse
-          inputRef.current.style.minHeight = '28px';
+          el.style.minHeight = '28px';
         }
       }
       
       // Only restore cursor position if not in deletion mode (to avoid delays)
-      if (!isDeletingRef.current && inputRef.current && cursorPos !== null && 'setSelectionRange' in (inputRef.current as any)) {
-        (inputRef.current as any).setSelectionRange(cursorPos, cursorPos);
+      const elForCursor = inputRef.current?.getRootElement();
+      if (!isDeletingRef.current && elForCursor && cursorPos !== null && 'setSelectionRange' in (elForCursor as any)) {
+        (elForCursor as any).setSelectionRange(cursorPos, cursorPos);
       }
     }
     
@@ -806,9 +845,10 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
 
   // Maintain focus during multi-line transition (SegmentInput div - no setSelectionRange)
   useLayoutEffect(() => {
-    if (inputRef.current && !inputRef.current.closest('.hidden') && (isFocused || isDeletingRef.current)) {
-      if (document.activeElement !== inputRef.current) {
-        inputRef.current.focus();
+    const el = inputRef.current?.getRootElement();
+    if (el && !el.closest('.hidden') && (isFocused || isDeletingRef.current)) {
+      if (document.activeElement !== el) {
+        inputRef.current?.focus();
       }
     }
   }, [isMultiLine, isFocused]);
@@ -1152,21 +1192,39 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    const submitted = searchValue.trim();
-    if ((submitted || attachedFiles.length > 0 || propertyAttachments.length > 0) && !isSubmitted) {
+    const submitted = segmentInput.getPlainText().trim();
+    if ((submitted || attachedFiles.length > 0 || propertyAttachments.length > 0 || atMentionDocumentChips.length > 0) && !isSubmitted) {
       setIsSubmitted(true);
-      
-      // TODO: Include file in search when backend is ready
-      onSearch?.(submitted);
-      
-      // Don't clear property attachments here - let SideChatPanel read them first
-      // SideChatPanel will clear them after initializing with them
-      // Turn off selection mode after submission if property attachments exist
+      // Build contentSegments from current segments BEFORE clearing (exact order for query bubble)
+      const contentSegments: QueryContentSegment[] = [];
+      for (const seg of segmentInput.segments) {
+        if (isTextSegment(seg)) {
+          if (seg.value) contentSegments.push({ type: 'text', value: seg.value });
+        } else if (isChipSegment(seg)) {
+          if (seg.kind === 'property') {
+            const attachment = propertyAttachments.find(
+              (a) => String(a.propertyId) === String(seg.id) || (a.property as any)?.id == seg.id
+            );
+            if (attachment) {
+              contentSegments.push({ type: 'property', attachment });
+            } else {
+              const p = (seg.payload as any) || {};
+              const addr = p.formatted_address || p.normalized_address || p.address || 'Unknown Address';
+              contentSegments.push({
+                type: 'property',
+                attachment: { id: seg.id, propertyId: seg.id, address: addr, imageUrl: '', property: p }
+              });
+            }
+          } else {
+            const name = atMentionDocumentChips.find((c) => c.id === seg.id)?.label ?? seg.label ?? seg.id;
+            contentSegments.push({ type: 'document', id: seg.id, name });
+          }
+        }
+      }
+      onSearch?.(submitted, contentSegments.length > 0 ? { contentSegments } : undefined);
       if (propertyAttachments.length > 0) {
         setSelectionModeActive(false);
       }
-      
-      // Reset the search bar state after submission (but preserve property attachments)
       setTimeout(() => {
         setSearchValue('');
         segmentInput.setSegments([{ type: "text", value: "" }]);
@@ -1473,6 +1531,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
               <AtMentionPopover
                 open={atMentionOpen}
                 anchorRef={atMentionAnchorRef}
+                anchorRect={atAnchorRect}
                 query={atQuery}
                 placement={atPlacement}
                 items={atItems}
@@ -1494,12 +1553,14 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                   flexShrink: 0 // Prevent shrinking
                 }}
               >
-                {/* Left group: Mode selector, Map toggle and Panel toggle */}
+                {/* Left group: Mode selector, Model selector, Map toggle and Panel toggle */}
                 <div className="flex items-center flex-shrink-0 gap-1">
                   {/* Mode Selector Dropdown */}
                   <ModeSelector compact={isMapVisible} />
+                  {/* Model Selector Dropdown */}
+                  <ModelSelector compact={isMapVisible} />
                   
-                  {/* Map Toggle Button - Aligned with text start */}
+                  {/* Map Toggle Button - Aligned with text start (hidden on dashboard) */}
                   {contextConfig.showMapToggle && (
                     <button 
                       type="button" 
@@ -1672,8 +1733,8 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                       </div>
                     )}
                 
-                {/* Link and Attach buttons grouped together with smaller gap */}
-                <div className="flex items-center gap-1.5">
+                {/* Link, Attach, Voice, Send - single row with even spacing */}
+                <div className="flex items-center gap-2">
                   {onQuickStartToggle && (
                     <button
                       type="button"
@@ -1742,7 +1803,6 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                       </button>
                     </>
                   )}
-                </div>
                   
                   {contextConfig.showMic && (
                     <button
@@ -1808,6 +1868,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                 </AnimatePresence>
                 </div>
               </div>
+            </div>
             </div>
             </div>
           </form>

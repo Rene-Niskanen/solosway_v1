@@ -85,9 +85,14 @@ export function useSegmentInput(
     [segments]
   );
 
-  // Keep cursor in bounds when segments change
+  // Keep cursor in bounds when segments change. Only update when clamped position
+  // actually differs to avoid a second render per keystroke (which made pre-text appear to move).
   React.useEffect(() => {
-    setCursorState((prev) => clampCursor(segments, prev));
+    setCursorState((prev) => {
+      const next = clampCursor(segments, prev);
+      if (next.segmentIndex === prev.segmentIndex && next.offset === prev.offset) return prev;
+      return next;
+    });
   }, [segments]);
 
   const insertTextAtCursor = React.useCallback(
@@ -128,7 +133,7 @@ export function useSegmentInput(
       } else if (chip.kind === "document") {
         onInsertDocumentChip?.(chip.id, chip.label);
       }
-      const trailingSpace = options?.trailingSpace ?? false;
+      const addTrailingSpace = options?.trailingSpace ?? false;
       setSegments((prev) => {
         const { segmentIndex, offset } = clampCursor(prev, cursor);
         const before = prev.slice(0, segmentIndex);
@@ -150,7 +155,7 @@ export function useSegmentInput(
         } else {
           mid = [chip];
         }
-        if (trailingSpace) mid.push({ type: "text", value: " " });
+        if (addTrailingSpace) mid.push({ type: "text", value: " " });
         return [...before, ...mid, ...after.slice(1)];
       });
       setCursorState(() => {
@@ -162,8 +167,9 @@ export function useSegmentInput(
           const right = offset < current.value.length ? 1 : 0;
           added = left + 1 + right;
         }
-        if (trailingSpace) added += 1;
-        return { segmentIndex: segmentIndex + added - 1, offset: trailingSpace ? 1 : 0 };
+        if (addTrailingSpace) added += 1;
+        // Place cursor after the chip (or after trailing space); offset 1 on chip = "after chip"
+        return { segmentIndex: segmentIndex + added - 1, offset: 1 };
       });
     },
     [cursor, onInsertPropertyChip, onInsertDocumentChip]
@@ -334,19 +340,21 @@ export function useSegmentInput(
     [segments]
   );
 
-  // Get cursor position as plain text offset
+  // Get cursor position as plain text offset (guards against cursor out of bounds after segment updates)
   const getCursorOffset = React.useCallback(() => {
+    if (segments.length === 0) return 0;
+    const safeSegmentIndex = Math.min(cursor.segmentIndex, segments.length - 1);
     let offset = 0;
-    for (let i = 0; i < cursor.segmentIndex; i++) {
+    for (let i = 0; i < safeSegmentIndex; i++) {
       const seg = segments[i];
-      if (isTextSegment(seg)) {
+      if (seg && isTextSegment(seg)) {
         offset += seg.value.length;
       }
-      // Chips don't contribute to plain text offset
     }
-    const currentSeg = segments[cursor.segmentIndex];
+    const currentSeg = segments[safeSegmentIndex];
     if (currentSeg && isTextSegment(currentSeg)) {
-      offset += cursor.offset;
+      const maxOffset = currentSeg.value.length;
+      offset += Math.min(cursor.offset, maxOffset);
     }
     return offset;
   }, [segments, cursor]);

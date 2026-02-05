@@ -600,6 +600,9 @@ def query_documents_stream():
                     except Exception as e:
                         logger.warning(f"⚠️ [STREAM] Could not find document for property {property_id}: {e}")
                 
+                # When request sent no document_ids but we resolved one from property_id, pass it to the graph
+                effective_document_ids = document_ids if document_ids else ([document_id] if document_id else None)
+                
                 # NEW: Create execution event emitter with queue for streaming
                 from queue import Queue
                 from backend.llm.utils.execution_events import ExecutionEventEmitter
@@ -616,7 +619,7 @@ def query_documents_stream():
                     "business_id": business_id,
                     "session_id": session_id,
                     "property_id": property_id,
-                    "document_ids": document_ids if document_ids else None,  # NEW: Pass document IDs for fast path
+                    "document_ids": effective_document_ids,  # Request IDs or property-resolved document_id
                     "citation_context": citation_context,  # NEW: Pass structured citation metadata (bbox, page, text)
                     "response_mode": response_mode if response_mode else None,  # NEW: Response mode for file attachments (fast/detailed/full) - ensure None not empty string
                     "attachment_context": attachment_context if attachment_context else None,  # NEW: Extracted text from attached files - ensure None not empty dict

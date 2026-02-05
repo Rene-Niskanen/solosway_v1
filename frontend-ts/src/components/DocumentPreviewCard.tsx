@@ -380,21 +380,23 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({
                 style={{
                   margin: '0 6px 6px 6px',
                   borderRadius: '4px',
-                  overflow: 'hidden',
+                  overflow: 'auto',
                   backgroundColor: '#FAFAFA',
                   cursor: onClick ? 'pointer' : 'default',
                   boxShadow: 'inset 0 1px 2px rgba(0, 0, 0, 0.04)',
                   border: '1px solid rgba(0, 0, 0, 0.04)',
-                  height: '140px',
+                  width: '100%',
+                  maxHeight: '120px',
                   display: 'flex',
-                  alignItems: 'center',
+                  alignItems: 'flex-start',
                   justifyContent: 'center'
                 }}
               >
         <div
           style={{
             width: '100%',
-            height: '100%',
+            flexShrink: 0,
+            aspectRatio: '1 / 1.414',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
@@ -416,10 +418,8 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({
               src={thumbnailSrc}
               alt=""
               style={{
-                maxWidth: '100%',
-                maxHeight: '140px',
-                width: 'auto',
-                height: 'auto',
+                width: '100%',
+                height: '100%',
                 display: 'block',
                 objectFit: 'contain'
               }}

@@ -47,10 +47,11 @@ export const PropertySelectionProvider: React.FC<{ children: React.ReactNode }> 
       return; // Max reached
     }
 
+    const address = property.formatted_address || property.normalized_address || property.address || 'Unknown Address';
     const propertyAttachment: PropertyAttachmentData = {
       id: `property-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
       propertyId: property.id,
-      address: property.address || 'Unknown Address',
+      address,
       imageUrl: property.image || property.primary_image_url || '',
       property: property
     };

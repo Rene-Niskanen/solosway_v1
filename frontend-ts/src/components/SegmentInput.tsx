@@ -5,6 +5,16 @@ import type { Segment, TextSegment, ChipSegment } from "@/types/segmentInput";
 import { isTextSegment, isChipSegment } from "@/types/segmentInput";
 import { AtMentionChip } from "./AtMentionChip";
 
+export interface SegmentInputHandle {
+  getRectForPlainOffset: (plainOffset: number) => DOMRect | null;
+  focus: () => void;
+  getBoundingClientRect: () => DOMRect;
+  /** Whether the input's root element contains the given node (for click-outside). */
+  contains: (node: Node) => boolean;
+  /** Root DOM element of the input (for focus checks). */
+  getRootElement: () => HTMLElement | null;
+}
+
 export interface SegmentInputProps {
   segments: Segment[];
   cursor: { segmentIndex: number; offset: number };
@@ -35,7 +45,7 @@ export interface SegmentInputProps {
   restoreSelectionRef?: React.MutableRefObject<(() => void) | null>;
 }
 
-export const SegmentInput = React.forwardRef<HTMLDivElement, SegmentInputProps>(function SegmentInput({
+export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputProps>(function SegmentInput({
   segments,
   cursor,
   onCursorChange,
@@ -57,8 +67,46 @@ export const SegmentInput = React.forwardRef<HTMLDivElement, SegmentInputProps>(
   restoreSelectionRef,
 }, ref) {
   const internalRef = React.useRef<HTMLDivElement>(null);
-  const containerRef = ref || internalRef;
+  const containerRef = internalRef;
   const segmentRefs = React.useRef<(HTMLSpanElement | null)[]>([]);
+
+  const getRectForPlainOffset = React.useCallback((plainOffset: number): DOMRect | null => {
+    const el = internalRef.current;
+    if (!el) return null;
+    let acc = 0;
+    for (let i = 0; i < segments.length; i++) {
+      const s = segments[i];
+      if (isTextSegment(s)) {
+        const len = s.value.length;
+        if (acc + len >= plainOffset) {
+          const segOffset = Math.min(plainOffset - acc, len);
+          const span = segmentRefs.current[i];
+          if (!span?.firstChild) return null;
+          const textNode = span.firstChild;
+          const range = document.createRange();
+          range.setStart(textNode, segOffset);
+          range.collapse(true);
+          return range.getBoundingClientRect();
+        }
+        acc += len;
+      } else {
+        if (acc + 1 > plainOffset) {
+          const span = segmentRefs.current[i];
+          return span?.getBoundingClientRect() ?? null;
+        }
+        acc += 1;
+      }
+    }
+    return null;
+  }, [segments]);
+
+  React.useImperativeHandle(ref, () => ({
+    getRectForPlainOffset,
+    focus: () => internalRef.current?.focus(),
+    getBoundingClientRect: () => internalRef.current?.getBoundingClientRect() ?? new DOMRect(0, 0, 0, 0),
+    contains: (node: Node) => internalRef.current?.contains(node) ?? false,
+    getRootElement: () => internalRef.current,
+  }), [getRectForPlainOffset]);
 
   function segmentOffsetToPlain(segmentIndex: number, segmentOffset: number, segs: Segment[]): number {
     let plain = 0;
@@ -131,11 +179,23 @@ export const SegmentInput = React.forwardRef<HTMLDivElement, SegmentInputProps>(
           sel.removeAllRanges();
           sel.addRange(range);
         }
+      } else {
+        // Empty first segment (e.g. when showing placeholder overlay): place caret at start of span
+        const range = document.createRange();
+        range.setStart(el, 0);
+        range.collapse(true);
+        sel.removeAllRanges();
+        sel.addRange(range);
       }
     } else {
       const range = document.createRange();
-      range.setStartBefore(el);
-      range.collapse(true);
+      if (cursor.offset >= 1) {
+        range.setStartAfter(el);
+        range.collapse(true);
+      } else {
+        range.setStartBefore(el);
+        range.collapse(true);
+      }
       sel.removeAllRanges();
       sel.addRange(range);
     }
@@ -231,9 +291,47 @@ export const SegmentInput = React.forwardRef<HTMLDivElement, SegmentInputProps>(
     ]
   );
 
+  const emptyForPlaceholder =
+    segments.length === 0 ||
+    (segments.length === 1 && isTextSegment(segments[0]) && segments[0].value === "");
+
+  const handleMouseDown = React.useCallback(
+    (e: React.MouseEvent) => {
+      if (disabled) return;
+      if (emptyForPlaceholder && placeholder) {
+        // Prevent browser from placing caret at click position; we'll set it to start in click handler
+        e.preventDefault();
+        internalRef.current?.focus();
+      }
+    },
+    [disabled, emptyForPlaceholder, placeholder]
+  );
+
   const handleClick = React.useCallback(
     (e: React.MouseEvent) => {
       if (disabled) return;
+      if (emptyForPlaceholder && placeholder) {
+        // Always put caret before placeholder; never let it land where user clicked in pre-text
+        const sel = window.getSelection();
+        const container = typeof containerRef === 'function' ? null : containerRef?.current;
+        if (sel && container) {
+          const el = segmentRefs.current[0];
+          if (el) {
+            const textNode = el.firstChild;
+            const range = document.createRange();
+            if (textNode) {
+              range.setStart(textNode, 0);
+            } else {
+              range.setStart(el, 0);
+            }
+            range.collapse(true);
+            sel.removeAllRanges();
+            sel.addRange(range);
+            onCursorChange?.(0, 0);
+            return;
+          }
+        }
+      }
       const sel = window.getSelection();
       if (!sel || sel.rangeCount === 0) return;
       const range = sel.getRangeAt(0);
@@ -260,49 +358,82 @@ export const SegmentInput = React.forwardRef<HTMLDivElement, SegmentInputProps>(
         }
       }
     },
-    [disabled, segments, onCursorChange]
+    [disabled, segments, emptyForPlaceholder, placeholder, onCursorChange]
   );
 
   const isEmpty =
     segments.length === 0 ||
     (segments.length === 1 && isTextSegment(segments[0]) && segments[0].value === "");
-  const showPlaceholder = isEmpty && placeholder;
-
   const [isFocused, setIsFocused] = React.useState(false);
+  const showPlaceholderOverlay = isEmpty && placeholder && !isFocused;
+  const showPlaceholderInSpan = isEmpty && placeholder && isFocused;
   const [spellCheckAfterSpace, setSpellCheckAfterSpace] = React.useState(false);
   const spellCheck = !isFocused || spellCheckAfterSpace;
 
   return (
-    <div
-      ref={ref || internalRef}
-      contentEditable={!disabled}
-      suppressContentEditableWarning
-      role="textbox"
-      aria-multiline
-      tabIndex={0}
-      className={className}
-      style={{
-        outline: "none",
-        minHeight: "22px",
-        fontSize: "14px",
-        lineHeight: "22px",
-        padding: "0",
-        wordWrap: "break-word",
-        whiteSpace: "pre-wrap",
-        ...style,
-      }}
-      spellCheck={spellCheck}
-      onFocus={() => {
-        setIsFocused(true);
-        setSpellCheckAfterSpace(false);
-      }}
-      onBlur={() => setIsFocused(false)}
-      onKeyDown={handleKeyDown}
-      onClick={handleClick}
-    >
-      {segments.map((seg, i) => {
+    <div style={{ position: "relative", ...(style?.width != null ? { width: style.width } : {}) }}>
+      {/* When not focused: placeholder as overlay. Match contentEditable padding, fontSize and lineHeight so placeholder doesn't shift on focus/blur. */}
+      {showPlaceholderOverlay && (
+        <div
+          aria-hidden
+          style={{
+            position: "absolute",
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+            fontSize: "14px",
+            lineHeight: "22px",
+            padding: 0,
+            ...(style?.fontSize != null && { fontSize: style.fontSize }),
+            ...(style?.lineHeight != null && { lineHeight: style.lineHeight }),
+            ...(style?.padding != null && { padding: style.padding }),
+            ...(style?.paddingLeft != null && { paddingLeft: style.paddingLeft }),
+            ...(style?.paddingRight != null && { paddingRight: style.paddingRight }),
+            ...(style?.paddingTop != null && { paddingTop: style.paddingTop }),
+            ...(style?.paddingBottom != null && { paddingBottom: style.paddingBottom }),
+            color: "#BABABA",
+            pointerEvents: "none",
+            whiteSpace: "pre-wrap",
+            wordWrap: "break-word",
+          }}
+        >
+          {placeholder}
+        </div>
+      )}
+      <div
+        ref={internalRef}
+        contentEditable={!disabled}
+        suppressContentEditableWarning
+        role="textbox"
+        aria-multiline
+        tabIndex={0}
+        className={className ? `focus:outline-none focus:ring-0 ${className}` : "focus:outline-none focus:ring-0"}
+        style={{
+          outline: "none",
+          minHeight: "22px",
+          fontSize: "14px",
+          lineHeight: "22px",
+          padding: "0",
+          wordWrap: "break-word",
+          whiteSpace: "pre-wrap",
+          WebkitTapHighlightColor: "transparent",
+          ...style,
+        }}
+        spellCheck={spellCheck}
+        onFocus={() => {
+          setIsFocused(true);
+          setSpellCheckAfterSpace(false);
+        }}
+        onBlur={() => setIsFocused(false)}
+        onMouseDown={handleMouseDown}
+        onKeyDown={handleKeyDown}
+        onClick={handleClick}
+      >
+        {segments.map((seg, i) => {
         if (isTextSegment(seg)) {
           const isOnlyEmpty = segments.length === 1 && seg.value === "";
+          const showPlaceholderHere = isOnlyEmpty && showPlaceholderInSpan;
           return (
             <span
               key={`t-${i}`}
@@ -310,9 +441,15 @@ export const SegmentInput = React.forwardRef<HTMLDivElement, SegmentInputProps>(
                 segmentRefs.current[i] = el;
               }}
               data-segment-index={i}
-              style={isOnlyEmpty && showPlaceholder ? { color: "#BABABA" } : undefined}
+              style={
+                isOnlyEmpty && showPlaceholderOverlay
+                  ? { display: "inline-block", minWidth: "100%", color: "transparent" }
+                  : showPlaceholderHere
+                    ? { display: "inline-block", minWidth: "100%", color: "#BABABA" }
+                    : undefined
+              }
             >
-              {isOnlyEmpty && showPlaceholder ? placeholder : seg.value}
+              {showPlaceholderHere ? placeholder : seg.value}
             </span>
           );
         }
@@ -343,6 +480,7 @@ export const SegmentInput = React.forwardRef<HTMLDivElement, SegmentInputProps>(
         }
         return null;
       })}
+      </div>
     </div>
   );
 });

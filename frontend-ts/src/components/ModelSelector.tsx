@@ -117,13 +117,15 @@ export function ModelSelector({ className, compact = false }: ModelSelectorProps
         align="start"
         side="top"
         sideOffset={6}
-        className="p-0"
+        className="px-0"
         style={{
           backgroundColor: '#FFFFFF',
           border: '1px solid rgba(0, 0, 0, 0.1)',
           borderRadius: '6px',
           boxShadow: '0 4px 16px rgba(0, 0, 0, 0.12)',
           minWidth: '130px',
+          paddingTop: '2px',
+          paddingBottom: '2px',
         }}
       >
         {models.map((modelOption) => {
@@ -139,16 +141,17 @@ export function ModelSelector({ className, compact = false }: ModelSelectorProps
                 didSelectRef.current = true;
                 setModel(modelOption.id);
               }}
-              className="flex items-center gap-1.5 px-2 cursor-pointer"
+              className="flex items-center gap-1.5 px-2 cursor-pointer min-h-0"
               style={{
                 backgroundColor: showSelectionColor ? 'rgba(0, 0, 0, 0.04)' : 'transparent',
                 color: '#1A1A1A',
                 fontSize: '11px',
                 fontWeight: 400,
                 borderRadius: '4px',
-                paddingTop: '4px',
-                paddingBottom: '4px',
-                margin: '1px 3px',
+                paddingTop: '2px',
+                paddingBottom: '2px',
+                margin: '0 2px',
+                minHeight: 'unset',
                 transition: 'none',
               }}
               onMouseEnter={() => {
