@@ -274,30 +274,51 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
   }, [atMentionOpen, atQuery]);
 
   const handleAtSelect = useCallback((item: AtMentionItem) => {
-    const end = segmentInput.getCursorOffset();
-    const start = Math.max(0, atAnchorIndex);
-    segmentInput.removeRange(start, end);
+    const startPlain = Math.max(0, atAnchorIndex);
+    const endPlain = segmentInput.getCursorOffset();
+    const startPos = segmentInput.getSegmentOffsetFromPlain(startPlain);
+    const endPos = segmentInput.getSegmentOffsetFromPlain(endPlain);
+    if (startPos != null && endPos != null) {
+      segmentInput.removeSegmentRange(
+        startPos.segmentIndex,
+        startPos.offset,
+        endPos.segmentIndex,
+        endPos.offset
+      );
+    } else {
+      segmentInput.removeRange(startPlain, endPlain);
+    }
     setAtMentionOpen(false);
     if (item.type === "property") {
       const property = item.payload as { id: string; address: string; [key: string]: unknown };
       addPropertyAttachment(property as any);
-      segmentInput.insertChipAtCursor({
-        type: "chip",
-        kind: "property",
-        id: property.id,
-        label: property.address || item.primaryLabel,
-        payload: property,
-      });
+      segmentInput.insertChipAtCursor(
+        {
+          type: "chip",
+          kind: "property",
+          id: property.id,
+          label: property.address || item.primaryLabel,
+          payload: property,
+        },
+        { trailingSpace: true }
+      );
     } else {
       toggleDocumentSelection(item.id);
       setAtMentionDocumentChips((prev) => [...prev, { id: item.id, label: item.primaryLabel }]);
-      segmentInput.insertChipAtCursor({
-        type: "chip",
-        kind: "document",
-        id: item.id,
-        label: item.primaryLabel,
-      });
+      segmentInput.insertChipAtCursor(
+        {
+          type: "chip",
+          kind: "document",
+          id: item.id,
+          label: item.primaryLabel,
+        },
+        { trailingSpace: true }
+      );
     }
+    requestAnimationFrame(() => {
+      inputRef.current?.focus();
+      requestAnimationFrame(() => restoreSelectionRef.current?.());
+    });
   }, [atAnchorIndex, addPropertyAttachment, toggleDocumentSelection, segmentInput]);
 
   // Update searchValue/segments when initialValue prop changes (e.g., when switching from dashboard to map view)
@@ -326,6 +347,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
   }, [searchValue, segmentInput]);
   
   const inputRef = useRef<HTMLDivElement>(null);
+  const restoreSelectionRef = useRef<(() => void) | null>(null);
   const queryStartTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const multiLineTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const initialScrollHeightRef = useRef<number | null>(null);
@@ -384,9 +406,9 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
       if (isMapVisible) {
         return "Search for properties";
       } else if (isInChatMode) {
-        return "Ask anything...";
+        return "Search anything, type @ to add context";
       } else {
-        return "Search for anything";
+        return "Search anything, type @ to add context";
       }
     };
     
@@ -1342,7 +1364,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                 height: 'auto',
                 // Set a fixed minHeight to prevent container from growing when textarea expands slightly
                 // This prevents the "jump" when typing - container stays stable, only textarea scrolls internally
-                minHeight: isMapVisible ? 'fit-content' : '60px', // Match SideChatPanel in map view, keep 60px for dashboard
+                minHeight: isMapVisible ? 'fit-content' : '48px', // Match chip proportions; fit-content in map view
                 // In map mode this component is bottom-fixed by parent; ensure it never grows off-screen.
                 // In dashboard mode, cap height so it doesn't expand into the Recent Projects section.
                 maxHeight: isMapVisible ? 'calc(100vh - 96px)' : (isDashboardView ? '220px' : undefined),
@@ -1411,10 +1433,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                     }}
                     onBackspace={segmentInput.backspace}
                     onDelete={segmentInput.deleteForward}
-                    onDeleteSelection={(start, end) => {
-                      segmentInput.removeRange(start, end);
-                      segmentInput.setCursorToOffset(start);
-                    }}
+                    onDeleteSegmentRange={segmentInput.removeSegmentRange}
                     onMoveLeft={segmentInput.moveCursorLeft}
                     onMoveRight={segmentInput.moveCursorRight}
                     onRemovePropertyChip={removePropertyAttachment}
@@ -1422,6 +1441,8 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                       toggleDocumentSelection(id);
                       setAtMentionDocumentChips((prev) => prev.filter((d) => d.id !== id));
                     }}
+                    removeChipAtSegmentIndex={segmentInput.removeChipAtIndex}
+                    restoreSelectionRef={restoreSelectionRef}
                     placeholder={contextConfig.placeholder}
                     disabled={isSubmitted}
                     style={{

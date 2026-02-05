@@ -14,16 +14,25 @@ export interface SegmentInputProps {
   onBackspace?: () => void;
   onDelete?: () => void;
   onDeleteSelection?: (startPlainOffset: number, endPlainOffset: number) => void;
+  onDeleteSegmentRange?: (
+    startSegmentIndex: number,
+    startOffset: number,
+    endSegmentIndex: number,
+    endOffset: number
+  ) => void;
   onMoveLeft?: () => void;
   onMoveRight?: () => void;
   onRemovePropertyChip?: (id: string) => void;
   onRemoveDocumentChip?: (id: string) => void;
+  removeChipAtSegmentIndex?: (index: number) => void;
   placeholder?: string;
   disabled?: boolean;
   className?: string;
   style?: React.CSSProperties;
   onKeyDown?: (e: React.KeyboardEvent) => void;
   "data-testid"?: string;
+  /** Ref to receive restoreSelection (call after focus so caret appears in the right place) */
+  restoreSelectionRef?: React.MutableRefObject<(() => void) | null>;
 }
 
 export const SegmentInput = React.forwardRef<HTMLDivElement, SegmentInputProps>(function SegmentInput({
@@ -34,15 +43,18 @@ export const SegmentInput = React.forwardRef<HTMLDivElement, SegmentInputProps>(
   onBackspace,
   onDelete,
   onDeleteSelection,
+  onDeleteSegmentRange,
   onMoveLeft,
   onMoveRight,
   onRemovePropertyChip,
   onRemoveDocumentChip,
+  removeChipAtSegmentIndex,
   placeholder = "",
   disabled = false,
   className,
   style,
   onKeyDown: externalOnKeyDown,
+  restoreSelectionRef,
 }, ref) {
   const internalRef = React.useRef<HTMLDivElement>(null);
   const containerRef = ref || internalRef;
@@ -92,11 +104,10 @@ export const SegmentInput = React.forwardRef<HTMLDivElement, SegmentInputProps>(
     return null;
   }
 
-  // Restore selection after segments/cursor change
-  React.useLayoutEffect(() => {
+  const restoreSelectionToCursor = React.useCallback(() => {
     const sel = window.getSelection();
     const container = typeof containerRef === 'function' ? null : containerRef?.current;
-    if (!sel || !container || !container.contains(sel.anchorNode)) return;
+    if (!sel || !container) return;
     const idx = cursor.segmentIndex;
     const seg = segments[idx];
     if (!seg) return;
@@ -104,13 +115,22 @@ export const SegmentInput = React.forwardRef<HTMLDivElement, SegmentInputProps>(
     if (!el) return;
     if (isTextSegment(seg)) {
       const textNode = el.firstChild;
+      const offset = Math.min(cursor.offset, seg.value.length);
       if (textNode) {
-        const offset = Math.min(cursor.offset, seg.value.length);
         const range = document.createRange();
         range.setStart(textNode, offset);
         range.collapse(true);
         sel.removeAllRanges();
         sel.addRange(range);
+      } else if (idx > 0) {
+        const prevEl = segmentRefs.current[idx - 1];
+        if (prevEl) {
+          const range = document.createRange();
+          range.setStartAfter(prevEl);
+          range.collapse(true);
+          sel.removeAllRanges();
+          sel.addRange(range);
+        }
       }
     } else {
       const range = document.createRange();
@@ -119,7 +139,19 @@ export const SegmentInput = React.forwardRef<HTMLDivElement, SegmentInputProps>(
       sel.removeAllRanges();
       sel.addRange(range);
     }
-  }, [segments, cursor]);
+  }, [cursor, segments]);
+
+  React.useEffect(() => {
+    if (restoreSelectionRef) restoreSelectionRef.current = restoreSelectionToCursor;
+    return () => {
+      if (restoreSelectionRef) restoreSelectionRef.current = null;
+    };
+  }, [restoreSelectionRef, restoreSelectionToCursor]);
+
+  // Restore selection after segments/cursor change (always sync so caret is correct after chip insert, etc.)
+  React.useLayoutEffect(() => {
+    restoreSelectionToCursor();
+  }, [segments, cursor, restoreSelectionToCursor]);
 
   const handleKeyDown = React.useCallback(
     (e: React.KeyboardEvent) => {
@@ -133,12 +165,23 @@ export const SegmentInput = React.forwardRef<HTMLDivElement, SegmentInputProps>(
             if (container?.contains(range.startContainer) && container.contains(range.endContainer)) {
               const startPos = nodeToSegmentOffset(range.startContainer, range.startOffset, segmentRefs.current, segments);
               const endPos = nodeToSegmentOffset(range.endContainer, range.endOffset, segmentRefs.current, segments);
-              if (startPos != null && endPos != null && onDeleteSelection) {
-                const startPlain = segmentOffsetToPlain(startPos.segmentIndex, startPos.segmentOffset, segments);
-                const endPlain = segmentOffsetToPlain(endPos.segmentIndex, endPos.segmentOffset, segments);
+              if (startPos != null && endPos != null) {
                 e.preventDefault();
-                onDeleteSelection(Math.min(startPlain, endPlain), Math.max(startPlain, endPlain));
-                return;
+                if (onDeleteSegmentRange) {
+                  onDeleteSegmentRange(
+                    startPos.segmentIndex,
+                    startPos.segmentOffset,
+                    endPos.segmentIndex,
+                    endPos.segmentOffset
+                  );
+                  return;
+                }
+                if (onDeleteSelection) {
+                  const startPlain = segmentOffsetToPlain(startPos.segmentIndex, startPos.segmentOffset, segments);
+                  const endPlain = segmentOffsetToPlain(endPos.segmentIndex, endPos.segmentOffset, segments);
+                  onDeleteSelection(Math.min(startPlain, endPlain), Math.max(startPlain, endPlain));
+                  return;
+                }
               }
             }
           }
@@ -179,6 +222,7 @@ export const SegmentInput = React.forwardRef<HTMLDivElement, SegmentInputProps>(
       onBackspace,
       onDelete,
       onDeleteSelection,
+      onDeleteSegmentRange,
       onMoveLeft,
       onMoveRight,
       onInsertText,
@@ -266,7 +310,7 @@ export const SegmentInput = React.forwardRef<HTMLDivElement, SegmentInputProps>(
                 segmentRefs.current[i] = el;
               }}
               data-segment-index={i}
-              style={isOnlyEmpty && showPlaceholder ? { color: "#8E8E8E" } : undefined}
+              style={isOnlyEmpty && showPlaceholder ? { color: "#BABABA" } : undefined}
             >
               {isOnlyEmpty && showPlaceholder ? placeholder : seg.value}
             </span>
@@ -287,9 +331,11 @@ export const SegmentInput = React.forwardRef<HTMLDivElement, SegmentInputProps>(
                 type={seg.kind}
                 label={seg.label}
                 onRemove={
-                  seg.kind === "property"
-                    ? () => onRemovePropertyChip?.(seg.id)
-                    : () => onRemoveDocumentChip?.(seg.id)
+                  removeChipAtSegmentIndex
+                    ? () => removeChipAtSegmentIndex(i)
+                    : seg.kind === "property"
+                      ? () => onRemovePropertyChip?.(seg.id)
+                      : () => onRemoveDocumentChip?.(seg.id)
                 }
               />
             </span>

@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { createPortal } from "react-dom";
-import { FileText, MapPin } from "lucide-react";
+import { MousePointerClick } from "lucide-react";
 
 export type AtMentionItemType = "property" | "document";
 
@@ -38,7 +38,11 @@ const SECONDARY_COLOR = "#999999";
 const SECONDARY_FONT_SIZE = "10px";
 const ICON_COLOR = "#333333";
 const ICON_SIZE = 13;
-const ROW_GAP = 5;
+const PROPERTY_ICON_SIZE = 18;
+const ROW_GAP = 7;
+const PDF_ICON_SRC = "/PDF.png";
+const PROPERTY_ICON_SRC = "/houseicon.png";
+const WORD_ICON_COLOR = "#2563EB";
 
 export function AtMentionPopover({
   open,
@@ -96,7 +100,7 @@ export function AtMentionPopover({
     return () => document.removeEventListener("mousedown", handleMouseDown);
   }, [open, anchorRef, onClose]);
 
-  if (!open) return null;
+  if (!open || items.length === 0) return null;
 
   // Fallback rect when ref not yet set (e.g. first paint) so popover still shows
   const fallbackTop = window.innerHeight - 120;
@@ -125,6 +129,8 @@ export function AtMentionPopover({
     boxShadow: "0 2px 12px rgba(0, 0, 0, 0.08)",
     overflow: "hidden",
     overflowY: "auto",
+    scrollbarWidth: "none",
+    msOverflowStyle: "none",
     zIndex: 10000,
   };
   if (placement === "above") {
@@ -134,33 +140,42 @@ export function AtMentionPopover({
   }
 
   const list = (
-    <div ref={popoverRef} style={style} role="listbox">
-      {items.length === 0 ? (
-        <div
-          style={{
-            padding: ROW_PADDING,
-            fontSize: SECONDARY_FONT_SIZE,
-            color: SECONDARY_COLOR,
-            borderTopLeftRadius: CONTAINER_RADIUS,
-            borderTopRightRadius: CONTAINER_RADIUS,
-          }}
-        >
-          Type to search files and property pins
-        </div>
-      ) : (
-        items.map((item, index) => {
+    <div ref={popoverRef} className="at-mention-popover-scroll" style={style} role="listbox">
+      {        items.map((item, index) => {
           const isSelected = index === selectedIndex;
+          const isPdf =
+            item.type === "document" &&
+            (item.primaryLabel || "").toLowerCase().endsWith(".pdf");
+          const docIconColor =
+            item.type === "document"
+              ? (() => {
+                  const name = (item.primaryLabel || "").toLowerCase();
+                  if (name.endsWith(".pdf")) return null;
+                  if (/\.(doc|docx)$/.test(name)) return WORD_ICON_COLOR;
+                  return ICON_COLOR;
+                })()
+              : ICON_COLOR;
           const Icon =
             item.type === "property" ? (
-              <MapPin
-                size={ICON_SIZE}
-                style={{ color: ICON_COLOR, flexShrink: 0 }}
-                strokeWidth={2}
+              <img
+                src={PROPERTY_ICON_SRC}
+                alt="Property"
+                width={PROPERTY_ICON_SIZE}
+                height={PROPERTY_ICON_SIZE}
+                style={{ flexShrink: 0, objectFit: "contain" }}
+              />
+            ) : isPdf ? (
+              <img
+                src={PDF_ICON_SRC}
+                alt="PDF"
+                width={ICON_SIZE}
+                height={ICON_SIZE}
+                style={{ flexShrink: 0, objectFit: "contain" }}
               />
             ) : (
-              <FileText
+              <MousePointerClick
                 size={ICON_SIZE}
-                style={{ color: ICON_COLOR, flexShrink: 0 }}
+                style={{ color: docIconColor ?? ICON_COLOR, flexShrink: 0 }}
                 strokeWidth={2}
               />
             );
@@ -219,7 +234,7 @@ export function AtMentionPopover({
             </div>
           );
         })
-      )}
+      }
     </div>
   );
 

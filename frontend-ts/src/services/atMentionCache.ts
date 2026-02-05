@@ -32,6 +32,8 @@ function normalizePropertyList(data: any): any[] {
 function normalizeDocList(data: any): Array<{ id: string; filename?: string; original_filename?: string; name?: string; [k: string]: any }> {
   if (!data) return [];
   if (Array.isArray(data)) return data;
+  // Backend /api/files returns { success, data: documents }; fetchApi returns { success, data: body } so data may be { success, data: [...] }
+  if (data?.data != null && Array.isArray(data.data)) return data.data;
   if (data?.documents && Array.isArray(data.documents)) return data.documents;
   if (data?.data?.documents && Array.isArray(data.data.documents)) return data.data.documents;
   return [];
@@ -56,7 +58,7 @@ function buildDocItems(docList: Array<{ id: string; filename?: string; original_
     type: 'document' as const,
     id: String(d.id),
     primaryLabel: d.filename || d.original_filename || d.name || 'Document',
-    secondaryLabel: 'Documents',
+    secondaryLabel: '',
     payload: d,
   }));
 }
@@ -75,7 +77,9 @@ export function preloadAtMentionCache(): Promise<void> {
         backendApi.getAllDocuments(),
       ]);
       const propertyList = normalizePropertyList(propertiesRes.success ? propertiesRes.data : null);
-      const docList = normalizeDocList(documentsRes.success ? documentsRes.data : null);
+      // documentsRes.data may be the array or { success, data: array } (double-wrapped by fetchApi)
+      const rawDocs = documentsRes?.data;
+      const docList = normalizeDocList(documentsRes?.success ? rawDocs : null);
       const propertyItems = buildPropertyItems(propertyList);
       const docItems = buildDocItems(docList);
       // Documents first so files show in the list; then properties alongside

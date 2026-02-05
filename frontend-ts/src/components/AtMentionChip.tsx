@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { FileText, MapPin } from "lucide-react";
+import { MapPin, MousePointerClick, X } from "lucide-react";
 
 export type AtMentionChipType = "property" | "document";
 
@@ -13,14 +13,15 @@ export interface AtMentionChipProps {
   style?: React.CSSProperties;
 }
 
-/** Cursor-style light blue pill chip for selected file or property (pixel-perfect). */
-const CHIP_BG = "#F0F8FF";
-const CHIP_TEXT = "#333333";
+/** Selected chip: light blue #D6E7FF, dark text #3B3B3B; compact proportions, width unchanged. */
+const CHIP_BG = "#D6E7FF";
+const CHIP_TEXT = "#3B3B3B";
 const CHIP_ICON_SIZE = 14;
-const CHIP_PADDING = "6px 10px";
-const CHIP_RADIUS = 14;
-const CHIP_GAP = 8;
+const CHIP_PADDING = "2px 7px";
+const CHIP_RADIUS = 4;
+const CHIP_GAP = 5;
 const CHIP_FONT_SIZE = "14px";
+const CHIP_MAX_WIDTH = "260px";
 
 export function AtMentionChip({
   type,
@@ -29,6 +30,9 @@ export function AtMentionChip({
   className,
   style,
 }: AtMentionChipProps) {
+  const [isHovered, setIsHovered] = React.useState(false);
+  const showRemove = isHovered && onRemove;
+
   const Icon =
     type === "property" ? (
       <MapPin
@@ -37,7 +41,7 @@ export function AtMentionChip({
         strokeWidth={2}
       />
     ) : (
-      <FileText
+      <MousePointerClick
         size={CHIP_ICON_SIZE}
         style={{ color: CHIP_TEXT, flexShrink: 0 }}
         strokeWidth={2}
@@ -47,6 +51,8 @@ export function AtMentionChip({
   return (
     <span
       className={className}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
       style={{
         display: "inline-flex",
         alignItems: "center",
@@ -56,17 +62,43 @@ export function AtMentionChip({
         backgroundColor: CHIP_BG,
         border: "none",
         fontSize: CHIP_FONT_SIZE,
-        fontWeight: 500,
+        fontWeight: 400,
         color: CHIP_TEXT,
-        lineHeight: 1.3,
-        maxWidth: "200px",
+        lineHeight: 1.2,
+        maxWidth: CHIP_MAX_WIDTH,
         overflow: "hidden",
         textOverflow: "ellipsis",
         whiteSpace: "nowrap",
         ...style,
       }}
     >
-      {Icon}
+      {showRemove ? (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            onRemove?.();
+          }}
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 0,
+            margin: 0,
+            border: "none",
+            background: "none",
+            cursor: "pointer",
+            color: CHIP_TEXT,
+            flexShrink: 0,
+          }}
+          aria-label="Remove"
+        >
+          <X size={CHIP_ICON_SIZE} strokeWidth={2} />
+        </button>
+      ) : (
+        Icon
+      )}
       <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
         {label}
       </span>
