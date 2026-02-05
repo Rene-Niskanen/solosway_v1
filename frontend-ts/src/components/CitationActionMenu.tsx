@@ -45,14 +45,6 @@ export const CitationActionMenu: React.FC<CitationActionMenuProps> = ({
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [onClose]);
 
-  // Prevent document scrolling when menu is open
-  useEffect(() => {
-    document.body.style.overflow = 'hidden';
-    return () => {
-      document.body.style.overflow = '';
-    };
-  }, []);
-
   // Auto-focus input when chat mode opens
   useEffect(() => {
     if (showChatInput && inputRef.current) {

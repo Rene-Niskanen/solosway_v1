@@ -185,7 +185,7 @@ export const PropertyFilesModal: React.FC<PropertyFilesModalProps> = ({
     // Don't reset hasFetched here - let it be set based on results
     try {
       // Use the backend API endpoint
-      const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5000';
+      const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5001';
       const response = await fetch(`${backendUrl}/api/property-hub/${propertyId}/documents`, {
         credentials: 'include'
       });
@@ -253,7 +253,7 @@ export const PropertyFilesModal: React.FC<PropertyFilesModalProps> = ({
 
   const handleDocumentDragStart = (e: React.DragEvent, document: PropertyDocument) => {
     // Store document info in dataTransfer for the drop handler to fetch
-    const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5000';
+    const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5001';
     
     // Try multiple download URL patterns (same as handleDocumentClick)
     let downloadUrl: string | null = null;
@@ -303,7 +303,7 @@ export const PropertyFilesModal: React.FC<PropertyFilesModalProps> = ({
 
   const handleDocumentClick = async (document: PropertyDocument) => {
     try {
-      const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5000';
+      const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5001';
       
       // Try multiple download URL patterns
       let downloadUrl: string | null = null;
@@ -364,7 +364,7 @@ export const PropertyFilesModal: React.FC<PropertyFilesModalProps> = ({
     } catch (err) {
       console.error('❌ Error opening document:', err);
       // Fallback: try to open in new tab using document URL or S3 path
-      const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5000';
+      const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5001';
       let fallbackUrl: string;
       
       if (document.url || document.download_url || document.file_url || document.s3_url) {

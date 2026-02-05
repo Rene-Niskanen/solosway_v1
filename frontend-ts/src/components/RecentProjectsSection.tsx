@@ -240,10 +240,37 @@ export const RecentProjectsSection: React.FC<RecentProjectsSectionProps> = ({
       loadRecentProperties();
     };
     window.addEventListener('lastPropertyUpdated', handlePropertyUpdate);
+    
+    // Listen for property deletion events
+    const handlePropertyDeleted = (event: CustomEvent) => {
+      const { propertyId } = event.detail || {};
+      if (propertyId) {
+        console.log('🗑️ RecentProjectsSection: Property deleted, removing from list:', propertyId);
+        // Remove from localStorage
+        try {
+          const stored = localStorage.getItem('recentProperties');
+          if (stored) {
+            const recentProps = JSON.parse(stored);
+            const filtered = recentProps.filter((p: any) => {
+              const propId = p.id || p.property_id;
+              return String(propId) !== String(propertyId);
+            });
+            localStorage.setItem('recentProperties', JSON.stringify(filtered));
+            // Trigger refresh
+            window.dispatchEvent(new CustomEvent('lastPropertyUpdated'));
+          }
+        } catch (e) {
+          console.error('Failed to remove deleted property from recent projects:', e);
+        }
+      }
+    };
+    
+    window.addEventListener('propertyDeleted', handlePropertyDeleted as EventListener);
 
     return () => {
       window.removeEventListener('storage', handleStorageChange);
       window.removeEventListener('lastPropertyUpdated', handlePropertyUpdate);
+      window.removeEventListener('propertyDeleted', handlePropertyDeleted as EventListener);
     };
   }, []);
 

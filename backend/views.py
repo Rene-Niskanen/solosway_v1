@@ -25,6 +25,22 @@ from sqlalchemy.exc import OperationalError, ProgrammingError, DatabaseError
 import json
 from uuid import UUID
 # Citations are now stored directly in graph state with bbox coordinates - no processing needed
+# SessionManager for LangGraph checkpointer thread_id management
+from backend.llm.utils.session_manager import session_manager
+from backend.config import Config
+
+def _strip_intent_fragment_from_response(text):
+    """Remove leading 'of [property name]' leakage from response (e.g. 'of Highlands' from intent phrase)."""
+    if not text or not isinstance(text, str):
+        return text or ""
+    stripped = text.lstrip()
+    # Remove first line if it is only "of [Word]" or "of [Word1 Word2]" (case-insensitive)
+    m = re.match(r"^of\s+[A-Za-z]+(?:\s+[A-Za-z]+)?\s*(\n|$)", stripped, re.IGNORECASE)
+    if m:
+        stripped = stripped[m.end() :].lstrip()
+    return stripped
+
+
 def _ensure_business_uuid():
     """Ensure the current user has a business UUID and return it as a string."""
     existing = getattr(current_user, "business_id", None)
@@ -68,17 +84,6 @@ def _normalize_uuid_str(value):
     except (ValueError, TypeError):
         return None
 
-
-# DEPRECATED: This function has been moved to UnifiedDeletionService._cleanup_orphan_properties()
-# Kept here for reference during migration. Can be removed after testing.
-# def _cleanup_orphan_supabase_properties(property_ids: set[str] | set) -> list[str]:
-#     """
-#     Remove Supabase property hub records when no documents remain linked to a property.
-#     Returns list of property IDs that were fully removed from Supabase.
-#     
-#     NOTE: This functionality is now handled by UnifiedDeletionService._cleanup_orphan_properties()
-#     """
-#     pass
 
 views = Blueprint('views', __name__)
 
@@ -304,6 +309,23 @@ def get_performance_metrics():
             500
         )), 500
 
+
+@views.route('/api/projects', methods=['GET', 'OPTIONS'])
+def get_projects():
+    """Minimal projects endpoint so frontend does not hit CORS on missing route. Returns empty list."""
+    if request.method == 'OPTIONS':
+        response = jsonify({})
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'GET, OPTIONS')
+        response.headers.add('Access-Control-Max-Age', '3600')
+        return response, 200
+    if not current_user.is_authenticated:
+        return jsonify({'success': False, 'error': 'Authentication required'}), 401
+    return jsonify({'success': True, 'data': {'projects': []}}), 200
+
+
 # ============================================================================
 # AI & LLM ENDPOINTS
 # ============================================================================
@@ -353,13 +375,21 @@ def chat_completion():
             'error': str(e)
         }), 500
 
-# Add before_request handler to bypass authentication for OPTIONS requests
+# Add before_request handler to respond to OPTIONS (CORS preflight) with 200 so browser gets HTTP OK
 @views.before_request
 def handle_options_request():
-    """Bypass authentication for OPTIONS requests (CORS preflight)"""
+    """Respond to OPTIONS (CORS preflight) with 200 and CORS headers so preflight always passes."""
     if request.method == 'OPTIONS':
-        # Flask-CORS will handle the response, just return early
-        return None
+        resp = jsonify({})
+        resp.status_code = 200
+        origin = request.headers.get('Origin')
+        if origin and origin in Config.CORS_ORIGINS:
+            resp.headers['Access-Control-Allow-Origin'] = origin
+        resp.headers['Access-Control-Allow-Credentials'] = 'true'
+        resp.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+        resp.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
+        resp.headers['Access-Control-Max-Age'] = '3600'
+        return resp
 
 # Add after_request handler for this blueprint to ensure CORS headers on all responses
 @views.after_request
@@ -458,11 +488,26 @@ def query_documents_stream():
         property_id = data.get('propertyId')
         document_ids = data.get('documentIds') or data.get('document_ids', [])  # NEW: Get attached document IDs
         message_history = data.get('messageHistory', [])
-        session_id = data.get('sessionId', f"session_{request.remote_addr}_{int(time.time())}")
+        
+        # NEW: Use SessionManager to generate thread_id for LangGraph checkpointer
+        # This ensures consistent session identification between frontend and backend
+        frontend_session_id = data.get('sessionId')  # Chat ID from frontend (e.g., "chat-1234567890-xyz")
+        business_id = _ensure_business_uuid()
+        
+        # Generate thread_id using SessionManager (resumes conversation if session_id provided)
+        session_id = session_manager.get_thread_id(
+            user_id=current_user.id,
+            business_id=business_id or "no_business",  # Fallback if business not found
+            session_id=frontend_session_id
+        )
+        
         citation_context = data.get('citationContext')  # NEW: Get structured citation metadata (hidden from user)
         response_mode = data.get('responseMode')  # NEW: Response mode for file attachments (fast/detailed/full)
         attachment_context = data.get('attachmentContext')  # NEW: Extracted text from attached files
-        is_agent_mode = data.get('isAgentMode', False)  # AGENT MODE: Enable LLM tool-based actions
+        is_agent_mode = data.get('isAgentMode', True)  # AGENT MODE: Enable LLM tool-based actions (default to True for new architecture)
+        
+        # CRITICAL: Log agent mode setting for debugging
+        logger.info(f"🔑 [STREAM] isAgentMode from request: {data.get('isAgentMode', 'not provided')}, final is_agent_mode: {is_agent_mode}")
         
         # CRITICAL: Normalize undefined/null/empty values to None for Python
         # Frontend sends undefined which becomes null in JSON, but we want None in Python
@@ -555,6 +600,16 @@ def query_documents_stream():
                     except Exception as e:
                         logger.warning(f"⚠️ [STREAM] Could not find document for property {property_id}: {e}")
                 
+                # When request sent no document_ids but we resolved one from property_id, pass it to the graph
+                effective_document_ids = document_ids if document_ids else ([document_id] if document_id else None)
+                
+                # NEW: Create execution event emitter with queue for streaming
+                from queue import Queue
+                from backend.llm.utils.execution_events import ExecutionEventEmitter
+                event_queue = Queue()
+                emitter = ExecutionEventEmitter()
+                emitter.set_stream_queue(event_queue)
+                
                 # Build initial state for LangGraph
                 # Note: conversation_history will be loaded from checkpoint if thread_id exists
                 # Only provide minimal required fields - checkpointing will restore previous state
@@ -564,11 +619,21 @@ def query_documents_stream():
                     "business_id": business_id,
                     "session_id": session_id,
                     "property_id": property_id,
-                    "document_ids": document_ids if document_ids else None,  # NEW: Pass document IDs for fast path
+                    "document_ids": effective_document_ids,  # Request IDs or property-resolved document_id
                     "citation_context": citation_context,  # NEW: Pass structured citation metadata (bbox, page, text)
                     "response_mode": response_mode if response_mode else None,  # NEW: Response mode for file attachments (fast/detailed/full) - ensure None not empty string
                     "attachment_context": attachment_context if attachment_context else None,  # NEW: Extracted text from attached files - ensure None not empty dict
                     "is_agent_mode": is_agent_mode,  # AGENT MODE: Enable LLM tool-based actions for proactive document display
+                    "execution_events": emitter,  # NEW: Execution event emitter for execution trace
+                    # Reset retry counts and refined query for new queries (prevents stale state)
+                    "document_retry_count": 0,
+                    "chunk_retry_count": 0,
+                    "plan_refinement_count": 0,  # NEW: Reset plan refinement count for new queries
+                    "refined_query": None,  # Reset refined_query to use original user_query
+                    "retrieved_documents": [],  # Reset retrieved_documents
+                    "document_outputs": [],  # Reset document_outputs
+                    "last_document_failure_reason": None,
+                    "last_chunk_failure_reason": None,
                     # conversation_history will be loaded from checkpointer or passed via messageHistory workaround
                 }
                 # #region agent log
@@ -668,13 +733,25 @@ def query_documents_stream():
                     words = q.split()
                     potential_names = [w for w in words if len(w) > 2 and w[0].isupper() and w.lower() not in common_words]
                     
-                    # Build the intent message
+                    # Build the intent message: rephrase query as "Finding the [X] of [Y]" (e.g. "Finding the EPC rating of highlands")
                     target_str = ', '.join(targets) if targets else 'information'
-                    if potential_names:
-                        name_str = ' '.join(potential_names[:2])  # Max 2 names
-                        return f"Searching for {target_str} in documents"
-                    else:
-                        return f"Searching for {target_str}"
+                    # Subject from " of X" / " for X" (works for lowercase: "value of highlands")
+                    name_str = None
+                    q_lower = q.lower().strip()
+                    for sep in (' of ', ' for '):
+                        if sep in q_lower:
+                            parts = q_lower.split(sep, 1)
+                            if len(parts) == 2 and parts[1].strip():
+                                name_str = parts[1].strip().split()[0:2]  # 1–2 words
+                                name_str = ' '.join(name_str).title()
+                                break
+                    if not name_str and potential_names:
+                        name_str = ' '.join(potential_names[:2])
+                    if name_str and target_str:
+                        return f"Finding the {target_str} of {name_str}"
+                    if target_str:
+                        return f"Finding the {target_str}"
+                    return "Planning next moves"
                 
                 def detect_action_intent(q: str) -> dict:
                     """
@@ -772,33 +849,16 @@ def query_documents_stream():
                     
                     timing.mark("intent_extracted")
                     
-                    # Always emit "Planning next moves" first
-                    planning_reasoning = {
+                    # Step (1): Planning next moves (normal retrieval reasoning flow)
+                    initial_reasoning = {
                         'type': 'reasoning_step',
-                        'step': 'initial',
+                        'step': 'planning_next_moves',
                         'action_type': 'planning',
                         'message': 'Planning next moves',
-                        'timestamp': time.time(),
-                        'details': {'original_query': query}
+                        'details': {}
                     }
-                    planning_reasoning_json = json.dumps(planning_reasoning)
-                    yield f"data: {planning_reasoning_json}\n\n"
-                    logger.info(f"🟡 [REASONING] Emitted planning reasoning step: {planning_reasoning_json}")
-                    
-                    # If it's a data query (not navigation), switch to "Searching for information"
-                    if not is_navigation_query:
-                        intent_message = extract_query_intent(query)
-                        searching_reasoning = {
-                            'type': 'reasoning_step',
-                            'step': 'searching',
-                        'action_type': 'searching',
-                        'message': intent_message,
-                            'timestamp': time.time() + 0.001,  # Slightly after planning step
-                        'details': {'original_query': query}
-                    }
-                        searching_reasoning_json = json.dumps(searching_reasoning)
-                        yield f"data: {searching_reasoning_json}\n\n"
-                        logger.info(f"🟡 [REASONING] Emitted searching reasoning step: {searching_reasoning_json}")
+                    yield f"data: {json.dumps(initial_reasoning)}\n\n"
+                    logger.debug("🟡 [REASONING] Emitted step (1): Planning next moves")
                 
                 # Detect if user wants agent to perform UI actions (show me, save, navigate)
                 action_intent = detect_action_intent(query)
@@ -848,7 +908,21 @@ def query_documents_stream():
                             timing.mark("graph_built")
                             logger.info("🟡 [STREAM] Using per-request graph and checkpointer")
                         
-                        config_dict = {"configurable": {"thread_id": session_id}}
+                        # Build config with metadata for LangSmith tracing
+                        # Use user_id from initial_state (already captured before async context)
+                        user_id_from_state = initial_state.get("user_id", "anonymous")
+                        config_dict = {
+                            "configurable": {
+                                "thread_id": session_id,
+                                # Add metadata for LangSmith traces (user context)
+                                "metadata": {
+                                    "user_id": user_id_from_state,
+                                    "business_id": str(business_id) if business_id else "unknown",
+                                    "query_preview": query[:100] if query else "",  # First 100 chars for context
+                                    "endpoint": "stream"
+                                }
+                            }
+                        }
                         
                         # Check for existing session state (follow-up detection)
                         is_followup = False
@@ -882,6 +956,8 @@ def query_documents_stream():
                         
                         # Track which nodes have been processed to avoid duplicate reasoning steps
                         processed_nodes = set()
+                        # Emit "Found N documents" + "Reading Document" only once (executor on_chain_end fires after each step)
+                        executor_found_docs_emitted = False
                         
                         # Track reading timestamp - set when documents are first seen (before summarizing)
                         # This ensures reading steps appear before summarizing in the UI
@@ -895,9 +971,10 @@ def query_documents_stream():
                         }
                         
                         # Node name to user-friendly message mapping with action types for Cursor-style UI
-                        # These are minimal - most steps are dynamically generated from on_chain_end events
+                        # Main path (context_manager → planner → executor → responder) and direct path (summarize_results)
+                        # Chip queries: use document-focused steps instead of "Searching for documents" / "Reviewed relevant sections"
+                        is_chip_query = bool(effective_document_ids)
                         node_messages = {
-                            # Only emit for clarify_relevant_docs start (brief step before detailed Found X)
                             'clarify_relevant_docs': {
                                 'action_type': 'analysing',
                                 'message': 'Ranking results',
@@ -907,7 +984,14 @@ def query_documents_stream():
                                 'action_type': 'planning',
                                 'message': 'Preparing response',
                                 'details': {}
-                            }
+                            },
+                            # Main retrieval path: step (1) "Planning next moves" from initial_reasoning; (2) from phase "Searching for {query}"
+                            # planner/executor not in node_messages to avoid duplicates
+                            'responder': {
+                                'action_type': 'analysing',
+                                'message': 'Preparing response',
+                                'details': {}
+                            },
                         }
                         
                         # Stream events from graph execution and track state
@@ -926,9 +1010,58 @@ def query_documents_stream():
                         # Since we create a new graph for the current loop, we can use astream_events directly
                         timing.mark("graph_execution_start")
                         node_timings = {}  # Track timing per node
+                        
+                        # NEW: Helper to consume execution events from queue
+                        def consume_execution_events():
+                            """Consume execution events from queue and yield them (non-blocking)"""
+                            events_yielded = []
+                            while True:
+                                try:
+                                    event = event_queue.get_nowait()  # Non-blocking
+                                    events_yielded.append(event)
+                                except:
+                                    break
+                            return events_yielded
+                        
                         try:
                             event_stream = graph.astream_events(initial_state, config_dict, version="v2")
                             async for event in event_stream:
+                                # NEW: Consume execution events from queue (non-blocking, after each graph event)
+                                execution_events = consume_execution_events()
+                                for exec_event in execution_events:
+                                    payload = exec_event.to_dict()
+                                    # When executor/planner emits phase events with reasoning (e.g. "Searched documents", "Reviewed selected document(s)"),
+                                    # emit a reasoning_step so the UI shows the step when the toggle is on
+                                    if not is_fast_path and payload.get('type') == 'phase' and (payload.get('metadata') or {}).get('reasoning'):
+                                        label = (payload.get('metadata') or {}).get('label') or payload.get('description', '')
+                                        label_stripped = (label or '').strip()
+                                        if label_stripped.startswith('Planning search for') or label_stripped.startswith('Finding the ') or label_stripped.startswith('Finding '):
+                                            # Normal retrieval uses "Planning next moves" (step 1) from initial_reasoning; skip duplicate from phase
+                                            pass
+                                        elif label and ('Searched' in label or 'search' in label.lower()):
+                                            # Use the label from the executor (already "Searching for {step_query}" or "Scanning selected document")
+                                            if is_chip_query:
+                                                search_message = 'Scanning selected document'
+                                            else:
+                                                search_message = label_stripped or 'Searching for documents'
+                                            reasoning_data = {
+                                                'type': 'reasoning_step',
+                                                'step': 'searching_documents',
+                                                'action_type': 'searching',
+                                                'message': search_message,
+                                                'timestamp': time.time(),
+                                                'details': {}
+                                            }
+                                            yield f"data: {json.dumps(reasoning_data)}\n\n"
+                                            logger.info(f"🟡 [REASONING] Emitted searching step (from executor): {search_message}")
+                                        elif label and ('Reviewed' in label or 'review' in label.lower()):
+                                            # Normal retrieval: skip "Reviewed relevant sections" so steps match (1) Planning (2) Searching for query (3) Found x docs (4) Read
+                                            pass
+                                    event_data = {
+                                        'type': 'execution_event',
+                                        'payload': payload
+                                    }
+                                    yield f"data: {json.dumps(event_data)}\n\n"
                                 event_type = event.get('event')
                                 node_name = event.get("name", "")
                                 
@@ -967,9 +1100,10 @@ def query_documents_stream():
                                             logger.info(f"⏱️ [PERF] Node '{node_name}' took {node_duration:.2f}s")
                                     
                                     # Try to extract state from the event
+                                    # LangGraph astream_events: event["data"] is often the node return value directly (e.g. executor returns {execution_results, ...})
                                     event_data = event.get("data", {})
-                                    state_update = event_data.get("data", {})  # Full state update
-                                    output = event_data.get("output", {})  # Node output only
+                                    state_update = event_data.get("data", {})  # Nested state (if present)
+                                    output = event_data.get("output", {})  # Nested output (if present)
                                     
                                     # Update details based on node output
                                     # SKIP reasoning step emissions for citation queries (ultra-fast path)
@@ -1079,6 +1213,87 @@ def query_documents_stream():
                                                 }
                                                 yield f"data: {json.dumps(prepare_action)}\n\n"
                                                 logger.info(f"📂 [EARLY_PREP] Emitted prepare_document for {first_doc.get('doc_id', '')[:8]}...")
+                                    
+                                    elif node_name == "executor" and not is_fast_path:
+                                        # Planner/Executor path: emit "Found N relevant document(s):" + "Reading Document" once (steps 4–5)
+                                        # Executor on_chain_end fires after each step; only emit on first (after retrieve_docs only)
+                                        state_data = state_update or output or event_data
+                                        execution_results = state_data.get("execution_results", []) or []
+                                        docs_result = None
+                                        for r in execution_results:
+                                            if r.get("action") == "retrieve_docs" and r.get("result"):
+                                                docs_result = r["result"]
+                                                break
+                                        # Emit only once: when we have docs and haven't already (first executor end = 1 result)
+                                        if docs_result and len(docs_result) > 0 and not executor_found_docs_emitted and len(execution_results) == 1:
+                                            executor_found_docs_emitted = True
+                                            doc_names = []
+                                            doc_previews = []
+                                            for doc in docs_result[:10]:
+                                                doc_id = doc.get("document_id") or doc.get("doc_id", "")
+                                                filename = doc.get("filename") or doc.get("original_filename", "") or ""
+                                                classification_type = doc.get("document_type") or doc.get("classification_type", "Document") or "Document"
+                                                display_name = (filename[:32] + "...") if len(filename) > 35 else (filename or classification_type.replace("_", " ").title())
+                                                doc_names.append(display_name)
+                                                doc_previews.append({
+                                                    "doc_id": doc_id,
+                                                    "original_filename": filename if filename else None,
+                                                    "classification_type": classification_type,
+                                                    "page_range": doc.get("page_range", ""),
+                                                    "page_numbers": doc.get("page_numbers", []),
+                                                    "s3_path": doc.get("s3_path", ""),
+                                                    "download_url": f"/api/files/download?document_id={doc_id}" if doc_id else ""
+                                                })
+                                            doc_count = len(docs_result)
+                                            doc_word = "document" if doc_count == 1 else "documents"
+                                            message = f'Found {doc_count} relevant {doc_word}:'
+                                            if reading_timestamp is None:
+                                                reading_timestamp = time.time() + 0.1
+                                            reasoning_data = {
+                                                'type': 'reasoning_step',
+                                                'step': 'found_documents',
+                                                'action_type': 'exploring',
+                                                'message': message,
+                                                'count': doc_count,
+                                                'timestamp': time.time(),
+                                                'details': {
+                                                    'documents_found': doc_count,
+                                                    'document_names': doc_names,
+                                                    'doc_previews': doc_previews
+                                                }
+                                            }
+                                            yield f"data: {json.dumps(reasoning_data)}\n\n"
+                                            # Emit one reading step per document (align with process_documents path for preview cards)
+                                            for i, doc_preview in enumerate(doc_previews):
+                                                display_filename = (doc_preview.get('original_filename') or doc_preview.get('classification_type', 'Document') or 'Document')
+                                                if display_filename and len(display_filename) > 35:
+                                                    display_filename = display_filename[:32] + '...'
+                                                if not display_filename:
+                                                    display_filename = (doc_preview.get('classification_type') or 'Document').replace('_', ' ').title()
+                                                doc_metadata = {
+                                                    'doc_id': doc_preview.get('doc_id', ''),
+                                                    'original_filename': doc_preview.get('original_filename') if doc_preview.get('original_filename') else None,
+                                                    'classification_type': doc_preview.get('classification_type', 'Document') or 'Document',
+                                                    'page_range': doc_preview.get('page_range', ''),
+                                                    'page_numbers': doc_preview.get('page_numbers', []),
+                                                    's3_path': doc_preview.get('s3_path', ''),
+                                                    'download_url': doc_preview.get('download_url', '') or (f"/api/files/download?document_id={doc_preview.get('doc_id')}" if doc_preview.get('doc_id') else '')
+                                                }
+                                                reading_step_timestamp = reading_timestamp + (i * 0.01) if reading_timestamp else time.time()
+                                                reading_data = {
+                                                    'type': 'reasoning_step',
+                                                    'step': f'read_doc_exec_{i}',
+                                                    'action_type': 'reading',
+                                                    'message': f'Read {display_filename}',
+                                                    'timestamp': reading_step_timestamp,
+                                                    'details': {
+                                                        'document_index': i,
+                                                        'filename': doc_preview.get('original_filename'),
+                                                        'doc_metadata': doc_metadata
+                                                    }
+                                                }
+                                                yield f"data: {json.dumps(reading_data)}\n\n"
+                                            logger.debug(f"🟡 [REASONING] Emitted executor found_documents + {len(doc_previews)} reading steps ({doc_count} docs)")
                                     
                                     elif node_name == "process_documents" and not is_fast_path:
                                         state_data = state_update if state_update else output
@@ -1210,6 +1425,13 @@ def query_documents_stream():
                                             try:
                                                 # Format citations for frontend (convert List[Citation] to Dict[str, CitationData])
                                                 processed_citations = {}
+                                                # Jan28th-style: build doc_id -> original_filename from document_outputs for citation display
+                                                doc_filename_map = {}
+                                                for doc_output in (doc_outputs_from_state or []):
+                                                    doc_id = doc_output.get('doc_id')
+                                                    filename = doc_output.get('original_filename')
+                                                    if doc_id and filename:
+                                                        doc_filename_map[doc_id] = filename
                                                 
                                                 # Stream citation events immediately
                                                 for citation in citations_from_state:
@@ -1226,13 +1448,16 @@ def query_documents_stream():
                                                         citation_bbox = citation_bbox.copy()  # Don't modify original
                                                         citation_bbox['page'] = citation_page  # Update bbox page to match citation page
                                                     
+                                                    citation_doc_id = citation.get('doc_id')
+                                                    citation_filename = doc_filename_map.get(citation_doc_id, '')
                                                     citation_data = {
-                                                        'doc_id': citation.get('doc_id'),
+                                                        'doc_id': citation_doc_id,
                                                         'page': citation_page,
                                                         'bbox': citation_bbox,  # Bbox now has correct page number
                                                         'method': citation.get('method', 'block-id-lookup'),
                                                         'block_id': citation.get('block_id'),  # Include block_id for debugging
-                                                        'cited_text': citation.get('cited_text', '')  # Include cited_text for debugging
+                                                        'cited_text': citation.get('cited_text', ''),  # Include cited_text for sub-level bbox
+                                                        'original_filename': citation_filename  # Jan28th: filename for frontend display
                                                     }
                                                     
                                                     block_id = citation.get('block_id', 'UNKNOWN')
@@ -1332,7 +1557,8 @@ def query_documents_stream():
                                             yield f"data: {json.dumps({'type': 'status', 'message': 'Streaming response...'})}\n\n"
                                             
                                             # Stream the final response text directly - preserve all formatting
-                                            # Stream character-by-character to maintain exact formatting (markdown, newlines, spaces)
+                                            # Strip leading "of [property]" leakage (intent phrase fragment) before streaming
+                                            final_summary_from_state = _strip_intent_fragment_from_response(final_summary_from_state or "")
                                             streamed_summary = final_summary_from_state
                                             logger.info("🚀 [STREAM] Streaming final response directly (preserving formatting)")
                                             
@@ -1348,10 +1574,23 @@ def query_documents_stream():
                                             logger.info(f"🚀 [STREAM] Summary fully streamed ({len(final_summary_from_state)} chars) - continuing event loop for cleanup")
                                     
                                     # MERGE state updates from each node (don't overwrite!)
+                                    # CRITICAL: This captures final_summary from extract_final_answer and other nodes
                                     if state_update:
                                         if final_result is None:
                                             final_result = {}
                                         final_result.update(state_update)  # Merge instead of overwrite
+                                        
+                                        # Log important captures for debugging
+                                        if node_name == "extract_final_answer" and state_update.get("final_summary"):
+                                            logger.info(f"🟢 [STREAM] Captured final_summary from extract_final_answer ({len(state_update.get('final_summary', ''))} chars)")
+                                        elif node_name == "agent" and state_update.get("messages"):
+                                            logger.info(f"🟢 [STREAM] Captured messages from agent node ({len(state_update.get('messages', []))} messages)")
+                                    # Also try output field as fallback
+                                    elif output and isinstance(output, dict):
+                                        if final_result is None:
+                                            final_result = {}
+                                        final_result.update(output)
+                                        logger.info(f"🟢 [STREAM] Captured state from {node_name} output field")
                         except Exception as exec_error:
                             error_msg = str(exec_error)
                             # Handle connection timeout errors during graph execution
@@ -1518,9 +1757,18 @@ def query_documents_stream():
                                                     }
                                                     yield f"data: {json.dumps(reasoning_data)}\n\n"
                                         
-                                        # Store the state from the last event
+                                        # Store the state from ALL node completions (especially extract_final_answer)
+                                        # CRITICAL: This captures the final_summary from extract_final_answer node
                                         if state_update:
                                             final_result = state_update
+                                            if node_name == "extract_final_answer":
+                                                logger.info(f"🟢 [STREAM] Captured final state from extract_final_answer node")
+                                        # Also try output field as fallback
+                                        elif event_data.get("output"):
+                                            output = event_data.get("output", {})
+                                            if isinstance(output, dict):
+                                                final_result = output
+                                                logger.info(f"🟢 [STREAM] Captured final state from {node_name} output")
                             else:
                                 # Re-raise unexpected errors
                                 raise
@@ -1529,38 +1777,45 @@ def query_documents_stream():
                         # Get the final state from checkpointer (fast - graph already executed)
                         if final_result is None:
                             logger.warning("🟡 [STREAM] No final state from events, reading from checkpointer...")
-                            try:
-                                # Read the latest checkpoint which contains the final state
-                                from langgraph.checkpoint.base import Checkpoint
-                                latest_checkpoint = None
-                                async for checkpoint_tuple in checkpointer.alist(config_dict, limit=1):
-                                    if isinstance(checkpoint_tuple, tuple):
-                                        checkpoint, checkpoint_id = checkpoint_tuple
-                                    else:
-                                        checkpoint = checkpoint_tuple
+                            # Check if checkpointer exists (might be None in stateless mode)
+                            if checkpointer is None:
+                                logger.warning("🟡 [STREAM] No checkpointer available (stateless mode) - using initial_state")
+                                final_result = initial_state
+                            else:
+                                try:
+                                    # Read the latest checkpoint which contains the final state
+                                    from langgraph.checkpoint.base import Checkpoint
+                                    latest_checkpoint = None
+                                    async for checkpoint_tuple in checkpointer.alist(config_dict, limit=1):
+                                        if isinstance(checkpoint_tuple, tuple):
+                                            checkpoint, checkpoint_id = checkpoint_tuple
+                                        else:
+                                            checkpoint = checkpoint_tuple
+                                        
+                                        if hasattr(checkpoint, 'channel_values'):
+                                            latest_checkpoint = checkpoint.channel_values
+                                        elif isinstance(checkpoint, dict):
+                                            latest_checkpoint = checkpoint.get('channel_values', checkpoint)
+                                        break
                                     
-                                    if hasattr(checkpoint, 'channel_values'):
-                                        latest_checkpoint = checkpoint.channel_values
-                                    elif isinstance(checkpoint, dict):
-                                        latest_checkpoint = checkpoint.get('channel_values', checkpoint)
-                                    break
-                                
-                                if latest_checkpoint:
-                                    # Checkpointer returns (state, config) tuple or just state
-                                    if isinstance(latest_checkpoint, tuple) and len(latest_checkpoint) == 2:
-                                        final_result, _ = latest_checkpoint
-                                        logger.info("🟡 [STREAM] Retrieved final state from checkpointer (tuple)")
+                                    if latest_checkpoint:
+                                        # Checkpointer returns (state, config) tuple or just state
+                                        if isinstance(latest_checkpoint, tuple) and len(latest_checkpoint) == 2:
+                                            final_result, _ = latest_checkpoint
+                                            logger.info("🟡 [STREAM] Retrieved final state from checkpointer (tuple)")
+                                        else:
+                                            # Single value returned
+                                            final_result = latest_checkpoint
+                                            logger.info("🟡 [STREAM] Retrieved final state from checkpointer (single value)")
                                     else:
-                                        # Single value returned
-                                        final_result = latest_checkpoint
-                                        logger.info("🟡 [STREAM] Retrieved final state from checkpointer (single value)")
-                                else:
-                                    # Fallback: use ainvoke (will be fast since graph already executed)
-                                    logger.warning("🟡 [STREAM] No checkpoint found, using ainvoke...")
-                                    final_result = await graph.ainvoke(initial_state, config_dict)
-                            except Exception as e:
-                                logger.warning(f"🟡 [STREAM] Could not read checkpointer: {e}, using ainvoke...")
-                                final_result = await graph.ainvoke(initial_state, config_dict)
+                                        # ❌ REMOVED: Don't invoke graph again - causes duplicate messages!
+                                        # Instead use initial_state (graph already executed via astream_events)
+                                        logger.warning("🟡 [STREAM] No checkpoint found, using initial_state (graph already executed)")
+                                        final_result = initial_state
+                                except Exception as e:
+                                    # ❌ REMOVED: Don't invoke graph again - causes duplicate messages!
+                                    logger.warning(f"🟡 [STREAM] Could not read checkpointer: {e}, using initial_state")
+                                    final_result = initial_state
                         else:
                             logger.info("🟡 [STREAM] Using final state captured from events")
                         
@@ -1588,6 +1843,8 @@ def query_documents_stream():
                         # CRITICAL: Use streamed_summary if available (the exact text we streamed) to ensure consistency
                         # Otherwise use final_summary from result
                         full_summary = streamed_summary if streamed_summary else final_result.get('final_summary', '')
+                        # Strip leading "of [property]" leakage (intent phrase fragment) before streaming/complete
+                        full_summary = _strip_intent_fragment_from_response(full_summary or "")
                         
                         # Check if we have a summary (even if doc_outputs is empty, summary means we processed documents)
                         if not full_summary:
@@ -1597,8 +1854,8 @@ def query_documents_stream():
                                 yield f"data: {json.dumps({'type': 'error', 'message': 'No relevant documents found'})}\n\n"
                                 return
                             else:
-                                logger.warning("🟡 [STREAM] No final_summary found in result, generating fallback")
-                                full_summary = "I couldn't generate a summary from the retrieved documents. Please try rephrasing your query."
+                                logger.warning("🟡 [STREAM] No final_summary found in result")
+                                full_summary = ""  # Let agent handle empty responses naturally
                         
                         # Send document count (use doc_outputs if available, otherwise relevant_docs)
                         doc_count = len(doc_outputs) if doc_outputs else len(relevant_docs)
@@ -1631,16 +1888,23 @@ def query_documents_stream():
                                 chunk = full_summary[i:i + chunk_size]
                                 yield f"data: {json.dumps({'type': 'token', 'token': chunk})}\n\n"
                         
-                        # Check if we have processed citations from block IDs (new approach)
+                        # Build citations_map_for_frontend to match the SOURCE of the displayed answer.
+                        # Conflict fix: citation numbers (¹²³) in the text must map to the same pipeline
+                        # that produced that text. Prefer processed_citations only when we streamed from
+                        # summarize_results; otherwise the displayed text is from responder → use chunk_citations.
                         processed_citations = final_result.get('processed_citations', {})
-                        
-                        # Build citations_map_for_frontend and structured_citations from block ID citations
+                        chunk_citations_list = final_result.get('chunk_citations', [])
                         citations_map_for_frontend = {}
                         structured_citations = []
                         
-                        if processed_citations:
+                        use_processed = (
+                            summary_already_streamed
+                            and processed_citations
+                        )
+                        if use_processed:
                             logger.info(
-                                f"🟢 [CITATIONS] Using block ID citations ({len(processed_citations)} citations)"
+                                f"🟢 [CITATIONS] Using block ID citations ({len(processed_citations)} citations) "
+                                f"(answer streamed from summarize_results)"
                             )
                             # Convert processed citations from block IDs to frontend format
                             for citation_num, citation_data in processed_citations.items():
@@ -1693,30 +1957,189 @@ def query_documents_stream():
                                                 
                                 # Build citation map entry for frontend
                                 citations_map_for_frontend[citation_num] = {
-                                                        'doc_id': doc_id,
+                                    'doc_id': doc_id,
                                     'page': page,
                                     'bbox': bbox,
                                     'method': citation_data.get('method', 'block-id-lookup'),
                                     'block_id': block_id,  # Include block_id for debugging
-                                    'cited_text': citation_data.get('cited_text', '')  # Include for smart citation selection
+                                    'cited_text': citation_data.get('cited_text', ''),  # Include for sub-level bbox
+                                    'original_filename': citation_data.get('original_filename', '')  # Jan28th: for display
+                                }
+                        elif chunk_citations_list:
+                            # Answer is from responder; citation numbers in text match chunk_citations
+                            logger.info(f"🟢 [CITATIONS] Using chunk_citations from responder_node ({len(chunk_citations_list)} citations)")
+                            
+                            # OPTIMIZATION: Batch filename lookups - collect unique doc_ids that need filenames
+                            doc_ids_needing_filenames = set()
+                            citation_doc_id_map = {}  # Map citation_num to doc_id for filename lookup
+                            
+                            for cit in chunk_citations_list:
+                                citation_num = str(cit.get('citation_number', 1))
+                                doc_id = cit.get('doc_id', '')
+                                original_filename = cit.get('original_filename')
+                                
+                                # Track citations that need filename lookup
+                                if doc_id and not original_filename:
+                                    doc_ids_needing_filenames.add(doc_id)
+                                    if citation_num not in citation_doc_id_map:
+                                        citation_doc_id_map[citation_num] = doc_id
+                            
+                            # Batch fetch all missing filenames in one query
+                            filename_map = {}
+                            if doc_ids_needing_filenames:
+                                try:
+                                    supabase = get_supabase_client()
+                                    # Fetch all filenames in one query using .in() filter
+                                    doc_result = supabase.table('documents')\
+                                        .select('id, original_filename')\
+                                        .in_('id', list(doc_ids_needing_filenames))\
+                                        .execute()
+                                    
+                                    # Build map of doc_id -> filename
+                                    for doc in (doc_result.data or []):
+                                        doc_id = doc.get('id')
+                                        filename = doc.get('original_filename', 'document.pdf')
+                                        if doc_id:
+                                            filename_map[doc_id] = filename
+                                    
+                                    logger.info(f"🟢 [CITATIONS] Batch fetched {len(filename_map)} filenames for {len(doc_ids_needing_filenames)} unique documents")
+                                except Exception as e:
+                                    logger.warning(f"⚠️ [CITATIONS] Failed to batch fetch filenames: {e}")
+                            
+                            # Process citations with batched filenames
+                            for cit in chunk_citations_list:
+                                citation_num = str(cit.get('citation_number', 1))
+                                doc_id = cit.get('doc_id', '')
+                                page = cit.get('page_number', 0)
+                                bbox = cit.get('bbox', {})
+                                chunk_id = cit.get('chunk_id', '')
+                                block_index = cit.get('block_index')
+                                cited_text = cit.get('cited_text', '')[:60] if cit.get('cited_text') else 'N/A'
+                                
+                                # Get original_filename from citation, batch lookup, or fallback
+                                original_filename = cit.get('original_filename')
+                                if not original_filename and doc_id:
+                                    # Use batched filename lookup result
+                                    original_filename = filename_map.get(doc_id, 'document.pdf')
+                                elif not original_filename:
+                                    original_filename = 'document.pdf'
+                                
+                                # Log citation details for debugging
+                                bbox_str = f"{bbox.get('left', 0):.3f},{bbox.get('top', 0):.3f},{bbox.get('width', 0):.3f}x{bbox.get('height', 0):.3f}" if bbox else "N/A"
+                                logger.info(
+                                    f"🟢 [CITATIONS] Citation {citation_num} (chunk-id): chunk_id={chunk_id[:20] if chunk_id else 'UNKNOWN'}..., "
+                                    f"block_index={block_index}, doc={doc_id[:8] if doc_id else 'UNKNOWN'}, page={page}, bbox={bbox_str}, "
+                                    f"filename={original_filename}, cited_text='{cited_text}...'"
+                                )
+                                
+                                # Validate BBOX coordinates
+                                if bbox:
+                                    bbox_left = bbox.get('left', 0)
+                                    bbox_top = bbox.get('top', 0)
+                                    bbox_width = bbox.get('width', 0)
+                                    bbox_height = bbox.get('height', 0)
+                                    
+                                    # Check for fallback BBOX
+                                    is_fallback = (
+                                        bbox_left == 0.0 and bbox_top == 0.0 and
+                                        bbox_width == 1.0 and bbox_height == 1.0
+                                    )
+                                    if is_fallback:
+                                        logger.warning(
+                                            f"⚠️ [CITATIONS] Citation {citation_num} (chunk_id: {chunk_id[:20] if chunk_id else 'UNKNOWN'}...) "
+                                            f"uses fallback BBOX (0,0,1,1) - coordinates may be inaccurate"
+                                        )
+                                    
+                                    # Check for invalid dimensions
+                                    if bbox_width <= 0 or bbox_height <= 0:
+                                        logger.warning(
+                                            f"⚠️ [CITATIONS] Citation {citation_num} (chunk_id: {chunk_id[:20] if chunk_id else 'UNKNOWN'}...) "
+                                            f"has invalid BBOX dimensions: {bbox_width}x{bbox_height}"
+                                        )
+                                
+                                # Build structured citation for array format
+                                structured_citations.append({
+                                    'id': int(citation_num),
+                                    'document_id': doc_id,
+                                    'page': page,
+                                    'bbox': bbox
+                                })
+                                
+                                # Citation mapping fix: include block_id in response for frontend mapping/highlighting
+                                block_id = cit.get('block_id')
+                                if not block_id and (chunk_id or block_index is not None):
+                                    block_id = f"chunk_{chunk_id or 'unknown'}_block_{block_index if block_index is not None else 0}"
+                                # Build citation map entry for frontend
+                                citations_map_for_frontend[citation_num] = {
+                                    'doc_id': doc_id,
+                                    'original_filename': original_filename,  # NEW: Include filename for frontend
+                                    'page': page,
+                                    'bbox': bbox,
+                                    'method': cit.get('method', 'chunk-id-lookup'),
+                                    'block_id': block_id,  # Include block_id for citation mapping (frontend)
+                                    'chunk_id': chunk_id,  # Include chunk_id for debugging
+                                    'block_index': block_index,  # Include block_index for debugging
+                                    'cited_text': cit.get('cited_text', '')  # Include for smart citation selection
                                 }
                         else:
-                            # FALLBACK: Check for citations list format (used by citation_query handler)
+                            # FALLBACK: Check for citations list format (used by citation_query handler or direct citations)
                             citations_list = final_result.get('citations', [])
                             if citations_list:
-                                logger.info(f"🟢 [CITATIONS] Using citations list ({len(citations_list)} citations) - likely from citation_query")
+                                logger.info(f"🟢 [CITATIONS] Using citations list ({len(citations_list)} citations) - likely from citation_query or direct citations")
+                                
+                                # OPTIMIZATION: Batch filename lookups for direct citations
+                                doc_ids_needing_filenames = set()
+                                citation_doc_id_map = {}
+                                
+                                for cit in citations_list:
+                                    citation_num = str(cit.get('citation_number', 1))
+                                    doc_id = cit.get('doc_id', '')
+                                    original_filename = cit.get('original_filename')
+                                    
+                                    # Track citations that need filename lookup
+                                    if doc_id and not original_filename:
+                                        doc_ids_needing_filenames.add(doc_id)
+                                        if citation_num not in citation_doc_id_map:
+                                            citation_doc_id_map[citation_num] = doc_id
+                                
+                                # Batch filename lookup
+                                filename_cache = {}
+                                if doc_ids_needing_filenames:
+                                    try:
+                                        from backend.services.supabase_client_factory import get_supabase_client
+                                        supabase = get_supabase_client()
+                                        filename_response = supabase.table('documents').select(
+                                            'id, original_filename'
+                                        ).in_('id', list(doc_ids_needing_filenames)).execute()
+                                        
+                                        for doc in filename_response.data or []:
+                                            filename_cache[doc['id']] = doc.get('original_filename', 'unknown')
+                                    except Exception as e:
+                                        logger.warning(f"🟡 [CITATIONS] Failed to batch lookup filenames: {e}")
+                                
+                                # Process citations with filenames
                                 for cit in citations_list:
                                     citation_num = str(cit.get('citation_number', 1))
                                     doc_id = cit.get('doc_id', '')
                                     page = cit.get('page_number', 0)
                                     bbox = cit.get('bbox', {})
                                     
+                                    # Get original_filename from citation, cache, or fallback
+                                    original_filename = cit.get('original_filename')
+                                    if not original_filename and doc_id in filename_cache:
+                                        original_filename = filename_cache[doc_id]
+                                    if not original_filename:
+                                        original_filename = 'unknown'
+                                    
                                     citations_map_for_frontend[citation_num] = {
                                         'doc_id': doc_id,
+                                        'original_filename': original_filename,  # Include filename for frontend
                                         'page': page,
                                         'bbox': bbox,
-                                        'method': 'citation-query',
-                                        'block_id': cit.get('block_id', 'citation_source')
+                                        'method': cit.get('method', 'direct-id-extraction'),
+                                        'block_id': cit.get('block_id', ''),  # Include block_id for citation mapping (frontend)
+                                        'chunk_id': cit.get('chunk_id', ''),
+                                        'cited_text': cit.get('cited_text', '')
                                     }
                                     structured_citations.append({
                                         'id': int(citation_num),
@@ -1724,9 +2147,9 @@ def query_documents_stream():
                                         'page': page,
                                         'bbox': bbox
                                     })
-                                    logger.info(f"🟢 [CITATIONS] Citation {citation_num}: doc={doc_id[:8] if doc_id else 'UNKNOWN'}, page={page}")
+                                    logger.info(f"🟢 [CITATIONS] Citation {citation_num}: doc={doc_id[:8] if doc_id else 'UNKNOWN'}, page={page}, filename={original_filename}")
                             else:
-                                logger.info("🟡 [CITATIONS] No block ID citations found - citations will be empty")
+                                logger.info("🟡 [CITATIONS] No citations found (checked processed_citations, chunk_citations, and citations) - citations will be empty")
                                 
                         logger.info(f"🟡 [CITATIONS] Final citation count: {len(structured_citations)} structured, {len(citations_map_for_frontend)} map entries")
                         
@@ -2012,52 +2435,13 @@ def query_documents_stream():
                                         else:
                                             logger.warning(f"🎯 [AGENT_TOOLS] No property found for: '{property_name}'")
                         
-                        # AUTOMATIC CITATION OPENING: If we have citations but no open_document action, automatically open
-                        # This ensures citations always open without relying on keywords or LLM tool calls
-                        has_open_doc = any(a.get('action') == 'open_document' for a in (agent_actions or []))
-                        if is_agent_mode and citations_map_for_frontend and not has_open_doc:
-                            logger.info(f"🎯 [AUTO_OPEN] Citations present but no open_document action - automatically opening")
-                            
-                            # Use SINGLE SOURCE OF TRUTH for citation selection
-                            selected_citation_key, selected_citation = select_best_citation_for_query(
-                                query, 
-                                citations_map_for_frontend,
-                                None  # No preferred citation from LLM
-                            )
-                            
-                            if selected_citation_key and selected_citation:
-                                citation_page = selected_citation.get('page', 1)
-                                bbox = selected_citation.get('bbox')
-                                
-                                # Ensure bbox page matches citation page
-                                if bbox and isinstance(bbox, dict):
-                                    bbox = bbox.copy()
-                                    bbox['page'] = citation_page
-                                
-                                # Emit reasoning step BEFORE agent action
-                                opening_step = {
-                                    'type': 'reasoning_step',
-                                    'step': 'agent_open_document',
-                                    'action_type': 'opening',
-                                    'message': 'Opening citation view & Highlighting content',
-                                    'details': {'citation_number': selected_citation_key, 'reason': 'Automatically opening citation for information query'}
-                                }
-                                yield f"data: {json.dumps(opening_step)}\n\n"
-                                
-                                open_doc_action = {
-                                    'type': 'agent_action',
-                                    'action': 'open_document',
-                                    'params': {
-                                        'doc_id': selected_citation.get('doc_id'),
-                                        'page': citation_page,
-                                        'filename': selected_citation.get('original_filename', ''),
-                                        'bbox': bbox if bbox and isinstance(bbox, dict) else None
-                                    }
-                                }
-                                yield f"data: {json.dumps(open_doc_action)}\n\n"
-                                logger.info(f"🎯 [AUTO_OPEN] Automatically opened citation={selected_citation_key}, doc_id={selected_citation.get('doc_id')}")
-                            else:
-                                logger.warning(f"🎯 [AUTO_OPEN] No suitable citation found to auto-open")
+                        # AUTOMATIC CITATION OPENING: DISABLED
+                        # Citations should be clickable by the user, not automatically opened
+                        # Users can click on citation numbers [1], [2], etc. in the response to open them
+                        # has_open_doc = any(a.get('action') == 'open_document' for a in (agent_actions or []))
+                        # if is_agent_mode and citations_map_for_frontend and not has_open_doc:
+                        #     logger.info(f"🎯 [AUTO_OPEN] Citations present but no open_document action - automatically opening")
+                        #     ... (auto-open logic disabled - citations are clickable instead)
                         
                         # Send complete message with metadata
                         complete_data = {
@@ -2127,8 +2511,43 @@ def query_documents_stream():
                                 error_message[0] = str(e)
                                 chunk_queue.put(f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n")
                         
-                        new_loop.run_until_complete(consume_async_gen())
-                        logger.info("🟠 [STREAM] Event loop completed")
+                        try:
+                            new_loop.run_until_complete(consume_async_gen())
+                        finally:
+                            # Cleanup: Cancel pending tasks before closing event loop
+                            # This reduces "Task was destroyed but it is pending" warnings
+                            try:
+                                # Get all pending tasks
+                                pending = [t for t in asyncio.all_tasks(new_loop) if not t.done()]
+                                if pending:
+                                    # Cancel all pending tasks (e.g., connection pool workers)
+                                    for task in pending:
+                                        if not task.done():
+                                            task.cancel()
+                                    # Give tasks a brief moment to handle cancellation
+                                    # Use a short timeout to avoid blocking
+                                    try:
+                                        new_loop.run_until_complete(
+                                            asyncio.wait_for(
+                                                asyncio.gather(*pending, return_exceptions=True),
+                                                timeout=0.3
+                                            )
+                                        )
+                                    except (asyncio.TimeoutError, Exception):
+                                        # Tasks didn't complete in time - this is OK, they'll be cleaned up
+                                        pass
+                            except Exception:
+                                # Ignore cleanup errors - event loop is closing anyway
+                                pass
+                            
+                            # Close the event loop
+                            try:
+                                new_loop.close()
+                            except Exception:
+                                # Ignore close errors
+                                pass
+                            
+                            logger.info("🟠 [STREAM] Event loop completed and cleaned up")
                     except Exception as e:
                         logger.error(f"🟠 [STREAM] Error in run_async_gen: {e}", exc_info=True)
                         error_occurred.set()
@@ -2217,6 +2636,477 @@ def query_documents_stream():
         response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
         return response, 500
 
+@views.route('/api/llm/sessions/<session_id>', methods=['DELETE', 'OPTIONS'])
+@login_required
+def delete_session(session_id):
+    """
+    Delete all checkpoint data for a session.
+    
+    This allows users to:
+    - Start fresh conversations (clear polluted history)
+    - Clean up old/abandoned sessions
+    - Free up database space
+    
+    Args:
+        session_id: Session ID from frontend chat history (e.g., "chat-1234567890-xyz")
+    
+    Returns:
+        JSON response with success status and deleted thread_id
+    
+    Example:
+        DELETE /api/llm/sessions/chat-1234567890-xyz
+        
+        Response:
+        {
+            "success": true,
+            "message": "Session deleted successfully",
+            "thread_id": "user_1_biz_abc123_sess_chat-1234567890-xyz",
+            "deleted_checkpoints": 5
+        }
+    """
+    # Handle OPTIONS preflight request
+    if request.method == 'OPTIONS':
+        response = jsonify({'status': 'ok'})
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'DELETE, OPTIONS')
+        return response, 200
+    
+    try:
+        logger.info(f"🗑️ [SESSION_DELETE] ========== DELETE SESSION REQUEST ==========")
+        logger.info(f"🗑️ [SESSION_DELETE] Session ID from frontend: {session_id}")
+        logger.info(f"🗑️ [SESSION_DELETE] User ID: {current_user.id}")
+        
+        # Build thread_id from session components
+        business_id = _ensure_business_uuid()
+        logger.info(f"🗑️ [SESSION_DELETE] Business ID: {business_id}")
+        
+        thread_id = session_manager.build_thread_id_for_session(
+            user_id=current_user.id,
+            business_id=business_id or "no_business",
+            session_id=session_id
+        )
+        
+        logger.info(f"🗑️ [SESSION_DELETE] Built thread_id: {thread_id}")
+        logger.info(f"🗑️ [SESSION_DELETE] Starting deletion process...")
+        
+        # Delete from checkpoints tables using Supabase
+        supabase = get_supabase_client()
+        logger.info(f"🗑️ [SESSION_DELETE] Supabase client obtained")
+        
+        # Count checkpoints before deletion (for response)
+        logger.info(f"🗑️ [SESSION_DELETE] Counting checkpoints...")
+        checkpoints_count = supabase.table('checkpoints')\
+            .select('id', count='exact')\
+            .eq('thread_id', thread_id)\
+            .execute()
+        
+        num_checkpoints = checkpoints_count.count if hasattr(checkpoints_count, 'count') else 0
+        logger.info(f"🗑️ [SESSION_DELETE] Found {num_checkpoints} checkpoints to delete")
+        
+        # Delete checkpoints
+        logger.info(f"🗑️ [SESSION_DELETE] Deleting checkpoints...")
+        checkpoints_result = supabase.table('checkpoints')\
+            .delete()\
+            .eq('thread_id', thread_id)\
+            .execute()
+        logger.info(f"🗑️ [SESSION_DELETE] Checkpoints deleted: {len(checkpoints_result.data) if checkpoints_result.data else 0} rows")
+        
+        # Delete checkpoint writes
+        logger.info(f"🗑️ [SESSION_DELETE] Deleting checkpoint_writes...")
+        writes_result = supabase.table('checkpoint_writes')\
+            .delete()\
+            .eq('thread_id', thread_id)\
+            .execute()
+        logger.info(f"🗑️ [SESSION_DELETE] Checkpoint writes deleted: {len(writes_result.data) if writes_result.data else 0} rows")
+        
+        # Delete from chat_sessions table (if exists)
+        logger.info(f"🗑️ [SESSION_DELETE] Deleting from chat_sessions table...")
+        try:
+            chat_sessions_result = supabase.table('chat_sessions')\
+                .delete()\
+                .eq('id', session_id)\
+                .eq('user_id', current_user.id)\
+                .execute()
+            logger.info(f"🗑️ [SESSION_DELETE] Chat sessions deleted: {len(chat_sessions_result.data) if chat_sessions_result.data else 0} rows")
+        except Exception as chat_session_error:
+            # Non-fatal - checkpoints are more important
+            logger.warning(f"🗑️ [SESSION_DELETE] Could not delete from chat_sessions: {chat_session_error}")
+        
+        logger.info(f"🗑️ [SESSION_DELETE] ✅ ========== DELETE COMPLETE ==========")
+        logger.info(f"🗑️ [SESSION_DELETE] Session: {session_id}")
+        logger.info(f"🗑️ [SESSION_DELETE] Thread ID: {thread_id}")
+        logger.info(f"🗑️ [SESSION_DELETE] Checkpoints removed: {num_checkpoints}")
+        logger.info(f"🗑️ [SESSION_DELETE] ==========================================")
+        
+        response = jsonify({
+            'success': True,
+            'message': f'Session {session_id} deleted successfully',
+            'thread_id': thread_id,
+            'deleted_checkpoints': num_checkpoints
+        })
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response, 200
+        
+    except Exception as e:
+        logger.error(f"[SESSION_DELETE] ❌ Error deleting session {session_id}: {e}", exc_info=True)
+        response = jsonify({
+            'success': False,
+            'error': str(e)
+        })
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response, 500
+
+@views.route('/api/llm/sessions', methods=['POST', 'OPTIONS'])
+@login_required
+def create_session():
+    """
+    Create a new chat session record in chat_sessions table.
+    
+    This creates metadata for tracking conversations, including:
+    - Session name/title
+    - Message count
+    - Creation and last message timestamps
+    - Links to checkpointer thread_id
+    
+    Request body:
+        - session_name: Optional name for the session (default: "New Chat")
+        - session_id: Optional frontend session ID (will be auto-generated if not provided)
+    
+    Returns:
+        JSON response with created session record
+    """
+    # Handle OPTIONS preflight
+    if request.method == 'OPTIONS':
+        response = jsonify({'status': 'ok'})
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
+        return response, 200
+    
+    try:
+        data = request.get_json() or {}
+        session_name = data.get('session_name', 'New Chat')
+        frontend_session_id = data.get('session_id')
+        
+        # Build thread_id
+        business_id = _ensure_business_uuid()
+        thread_id = session_manager.get_thread_id(
+            user_id=current_user.id,
+            business_id=business_id or "no_business",
+            session_id=frontend_session_id
+        )
+        
+        # Extract session_id from thread_id for consistency
+        # thread_id format: "user_{user_id}_business_{business_id}_session_{session_id}"
+        parts = thread_id.split('_session_')
+        actual_session_id = parts[1] if len(parts) > 1 else frontend_session_id
+        
+        logger.info(f"[SESSION_CREATE] Creating session for user {current_user.id}: {actual_session_id}")
+        
+        # Create session record in Supabase
+        supabase = get_supabase_client()
+        
+        session_data = {
+            'id': actual_session_id,
+            'user_id': current_user.id,
+            'business_uuid': business_id or "no_business",
+            'thread_id': thread_id,
+            'session_name': session_name,
+            'message_count': 0,
+            'is_archived': False,
+            'created_at': datetime.utcnow().isoformat(),
+            'last_message_at': datetime.utcnow().isoformat()
+        }
+        
+        result = supabase.table('chat_sessions').insert(session_data).execute()
+        
+        logger.info(f"[SESSION_CREATE] ✅ Created session {actual_session_id} in chat_sessions table")
+        
+        response = jsonify({
+            'success': True,
+            'data': result.data[0] if result.data else session_data,
+            'session_id': actual_session_id,
+            'thread_id': thread_id
+        })
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response, 201
+        
+    except Exception as e:
+        logger.error(f"[SESSION_CREATE] ❌ Error creating session: {e}", exc_info=True)
+        response = jsonify({
+            'success': False,
+            'error': str(e)
+        })
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response, 500
+
+@views.route('/api/llm/sessions', methods=['GET', 'OPTIONS'])
+@login_required
+def list_sessions():
+    """
+    List all chat sessions for the current user.
+    
+    Query parameters:
+        - include_archived: Include archived sessions (default: false)
+        - limit: Max number of sessions to return (default: 50)
+        - offset: Pagination offset (default: 0)
+    
+    Returns:
+        JSON response with array of session records sorted by last_message_at (desc)
+    """
+    # Handle OPTIONS preflight
+    if request.method == 'OPTIONS':
+        response = jsonify({'status': 'ok'})
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'GET, OPTIONS')
+        return response, 200
+    
+    try:
+        # Get query parameters
+        include_archived = request.args.get('include_archived', 'false').lower() == 'true'
+        limit = int(request.args.get('limit', 50))
+        offset = int(request.args.get('offset', 0))
+        
+        logger.info(f"[SESSION_LIST] Fetching sessions for user {current_user.id} (archived: {include_archived})")
+        
+        # Query chat_sessions from Supabase
+        supabase = get_supabase_client()
+        
+        query = supabase.table('chat_sessions')\
+            .select('*')\
+            .eq('user_id', current_user.id)\
+            .order('last_message_at', desc=True)\
+            .limit(limit)\
+            .range(offset, offset + limit - 1)
+        
+        if not include_archived:
+            query = query.eq('is_archived', False)
+        
+        result = query.execute()
+        
+        logger.info(f"[SESSION_LIST] ✅ Found {len(result.data)} sessions for user {current_user.id}")
+        
+        response = jsonify({
+            'success': True,
+            'data': result.data,
+            'count': len(result.data),
+            'limit': limit,
+            'offset': offset
+        })
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response, 200
+        
+    except Exception as e:
+        logger.error(f"[SESSION_LIST] ❌ Error listing sessions: {e}", exc_info=True)
+        response = jsonify({
+            'success': False,
+            'error': str(e)
+        })
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response, 500
+
+@views.route('/api/llm/sessions/<session_id>', methods=['GET', 'OPTIONS'])
+@login_required
+def get_session(session_id):
+    """
+    Get a specific chat session with its metadata and optionally load conversation history.
+    
+    Query parameters:
+        - include_messages: Load conversation from checkpointer (default: false)
+    
+    Returns:
+        JSON response with session metadata and optionally messages
+    """
+    # Handle OPTIONS preflight
+    if request.method == 'OPTIONS':
+        response = jsonify({'status': 'ok'})
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'GET, OPTIONS')
+        return response, 200
+    
+    try:
+        include_messages = request.args.get('include_messages', 'false').lower() == 'true'
+        
+        logger.info(f"[SESSION_GET] Fetching session {session_id} for user {current_user.id}")
+        
+        # Get session from Supabase
+        supabase = get_supabase_client()
+        
+        result = supabase.table('chat_sessions')\
+            .select('*')\
+            .eq('id', session_id)\
+            .eq('user_id', current_user.id)\
+            .execute()
+        
+        if not result.data or len(result.data) == 0:
+            logger.warning(f"[SESSION_GET] Session {session_id} not found for user {current_user.id}")
+            response = jsonify({
+                'success': False,
+                'error': 'Session not found or access denied'
+            })
+            response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+            response.headers.add('Access-Control-Allow-Credentials', 'true')
+            return response, 404
+        
+        session_data = result.data[0]
+        response_data = {
+            'success': True,
+            'data': session_data
+        }
+        
+        # Optionally load messages from checkpointer
+        if include_messages:
+            try:
+                # Load conversation from checkpointer
+                from backend.llm.graphs.main_graph import main_graph, checkpointer
+                
+                if checkpointer:
+                    thread_id = session_data['thread_id']
+                    config = {"configurable": {"thread_id": thread_id}}
+                    
+                    # Get latest checkpoint
+                    checkpoint_tuple = checkpointer.get_tuple(config)
+                    
+                    if checkpoint_tuple and checkpoint_tuple.checkpoint:
+                        channel_values = checkpoint_tuple.checkpoint.get('channel_values', {})
+                        messages = channel_values.get('messages', [])
+                        
+                        # Convert messages to serializable format
+                        serialized_messages = []
+                        for msg in messages:
+                            msg_dict = {
+                                'type': msg.__class__.__name__,
+                                'content': getattr(msg, 'content', None)
+                            }
+                            serialized_messages.append(msg_dict)
+                        
+                        response_data['messages'] = serialized_messages
+                        logger.info(f"[SESSION_GET] Loaded {len(serialized_messages)} messages for session {session_id}")
+                else:
+                    logger.warning("[SESSION_GET] Checkpointer not available, cannot load messages")
+            except Exception as msg_error:
+                logger.warning(f"[SESSION_GET] Could not load messages: {msg_error}")
+                response_data['messages_error'] = str(msg_error)
+        
+        response = jsonify(response_data)
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response, 200
+        
+    except Exception as e:
+        logger.error(f"[SESSION_GET] ❌ Error getting session {session_id}: {e}", exc_info=True)
+        response = jsonify({
+            'success': False,
+            'error': str(e)
+        })
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response, 500
+
+@views.route('/api/llm/sessions/<session_id>', methods=['PUT', 'OPTIONS'])
+@login_required
+def update_session(session_id):
+    """
+    Update a chat session's metadata (name, archive status, etc.).
+    
+    Request body (all optional):
+        - session_name: New name for the session
+        - is_archived: Archive/unarchive the session
+        - message_count: Update message count (usually handled automatically)
+    
+    Returns:
+        JSON response with updated session record
+    """
+    # Handle OPTIONS preflight
+    if request.method == 'OPTIONS':
+        response = jsonify({'status': 'ok'})
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'PUT, OPTIONS')
+        return response, 200
+    
+    try:
+        data = request.get_json() or {}
+        
+        logger.info(f"[SESSION_UPDATE] Updating session {session_id} for user {current_user.id}")
+        
+        # Build update data
+        update_data = {}
+        
+        if 'session_name' in data:
+            update_data['session_name'] = data['session_name']
+        
+        if 'is_archived' in data:
+            update_data['is_archived'] = data['is_archived']
+        
+        if 'message_count' in data:
+            update_data['message_count'] = data['message_count']
+        
+        if not update_data:
+            response = jsonify({
+                'success': False,
+                'error': 'No update fields provided'
+            })
+            response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+            response.headers.add('Access-Control-Allow-Credentials', 'true')
+            return response, 400
+        
+        # Add updated timestamp
+        update_data['last_message_at'] = datetime.utcnow().isoformat()
+        
+        # Update session in Supabase
+        supabase = get_supabase_client()
+        
+        result = supabase.table('chat_sessions')\
+            .update(update_data)\
+            .eq('id', session_id)\
+            .eq('user_id', current_user.id)\
+            .execute()
+        
+        if not result.data or len(result.data) == 0:
+            logger.warning(f"[SESSION_UPDATE] Session {session_id} not found for user {current_user.id}")
+            response = jsonify({
+                'success': False,
+                'error': 'Session not found or access denied'
+            })
+            response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+            response.headers.add('Access-Control-Allow-Credentials', 'true')
+            return response, 404
+        
+        logger.info(f"[SESSION_UPDATE] ✅ Updated session {session_id}")
+        
+        response = jsonify({
+            'success': True,
+            'data': result.data[0]
+        })
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response, 200
+        
+    except Exception as e:
+        logger.error(f"[SESSION_UPDATE] ❌ Error updating session {session_id}: {e}", exc_info=True)
+        response = jsonify({
+            'success': False,
+            'error': str(e)
+        })
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response, 500
+
 @views.route('/api/llm/query', methods=['POST', 'OPTIONS'])
 def query_documents():
     """
@@ -2273,7 +3163,16 @@ def query_documents():
     property_id = data.get('propertyId')  # From property attachment
     document_ids = data.get('documentIds') or data.get('document_ids', [])  # NEW: Get attached document IDs
     message_history = data.get('messageHistory', [])
-    session_id = data.get('sessionId', f"session_{request.remote_addr}_{int(time.time())}")
+    
+    # NEW: Use SessionManager to generate thread_id for LangGraph checkpointer
+    frontend_session_id = data.get('sessionId')
+    business_id = _ensure_business_uuid()
+    session_id = session_manager.get_thread_id(
+        user_id=current_user.id,
+        business_id=business_id or "no_business",
+        session_id=frontend_session_id
+    )
+    
     citation_context = data.get('citationContext')  # Get structured citation metadata (hidden from user)
     response_mode = data.get('responseMode')  # NEW: Response mode for file attachments (fast/detailed/full)
     attachment_context = data.get('attachmentContext')  # NEW: Extracted text from attached files
@@ -2366,9 +3265,18 @@ def query_documents():
                         graph, _ = await build_main_graph(use_checkpointer=False)
                     timing.mark("graph_built")
                 
+                # Build config with metadata for LangSmith tracing
+                user_id = str(current_user.id) if current_user.is_authenticated else "anonymous"
                 config = {
                     "configurable": {
-                        "thread_id": session_id  # For conversation persistence via checkpointing
+                        "thread_id": session_id,  # For conversation persistence via checkpointing
+                        # Add metadata for LangSmith traces (user context)
+                        "metadata": {
+                            "user_id": user_id,
+                            "business_id": str(business_id) if business_id else "unknown",
+                            "query_preview": query[:100] if query else "",  # First 100 chars for context
+                            "endpoint": "query"
+                        }
                     }
                 }
                 result = await graph.ainvoke(initial_state, config)
@@ -2395,12 +3303,7 @@ def query_documents():
         # Format response for frontend
         final_summary = result.get("final_summary", "")
         
-        # If summary is empty or generic, provide a better fallback
-        if not final_summary or final_summary == "I found some information for you.":
-            if result.get("relevant_documents"):
-                final_summary = f"I found {len(result.get('relevant_documents', []))} relevant document(s), but couldn't extract a specific answer. Please try rephrasing your query."
-            else:
-                final_summary = f"I couldn't find any documents matching your query: \"{query}\". Try using more general terms or rephrasing your question."
+        # Let agent handle empty responses naturally - no hard-coded fallbacks
         
         response_data = {
             "query": query,
@@ -2478,6 +3381,32 @@ def vector_search():
             'success': False,
             'error': str(e)
         }), 500
+
+
+@views.route('/api/citation/block-bbox', methods=['POST', 'OPTIONS'])
+@login_required
+def citation_block_bbox():
+    """
+    Resolve block_id (e.g. chunk_<uuid>_block_1) to block-level bbox for citation highlighting.
+    Used by frontend for block1.1 logic: map citation buttons to the correct sub-block bbox.
+    """
+    if request.method == 'OPTIONS':
+        return '', 200
+    try:
+        data = request.get_json() or {}
+        block_id = data.get('block_id') or (request.args.get('block_id') if request.args else None)
+        cited_text = data.get('cited_text') or (request.args.get('cited_text') if request.args else None)
+        if not block_id:
+            return jsonify({'success': False, 'error': 'block_id required'}), 400
+        from backend.llm.tools.citation_mapping import resolve_block_id_to_bbox
+        result = resolve_block_id_to_bbox(block_id, cited_text=cited_text)
+        if not result:
+            return jsonify({'success': False, 'error': 'Block not found', 'block_id': block_id}), 404
+        return jsonify({'success': True, 'data': result}), 200
+    except Exception as e:
+        logger.exception("citation_block_bbox failed")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 
 # ============================================================================
 # PROPERTY SEARCH & ANALYSIS ENDPOINTS
@@ -3034,6 +3963,7 @@ def proxy_upload():
         filename = secure_filename(file.filename)
         
         # Check for exact duplicates before uploading (safety net - frontend should catch this first)
+        # Only block duplicates from the SAME user AND business
         from .services.supabase_document_service import SupabaseDocumentService
         doc_service = SupabaseDocumentService()
         supabase = doc_service.supabase
@@ -3042,18 +3972,19 @@ def proxy_upload():
             .select('id, original_filename, file_size')\
             .eq('original_filename', filename)\
             .eq('business_uuid', business_uuid_str)\
+            .eq('uploaded_by_user_id', current_user.id)\
             .execute()
         
         if existing_docs.data:
-            # Check for exact duplicate (same filename and size)
+            # Check for exact duplicate (same filename and size from same user)
             file_size = file.content_length or 0
             exact_duplicate = next((doc for doc in existing_docs.data if doc.get('file_size') == file_size), None)
             
             if exact_duplicate:
-                logger.warning(f"🛑 [PROXY-UPLOAD] Blocked exact duplicate: {filename} ({file_size} bytes)")
+                logger.warning(f"🛑 [PROXY-UPLOAD] Blocked exact duplicate: {filename} ({file_size} bytes) for user {current_user.id}")
                 return jsonify({
                     'success': False,
-                    'error': f'A document with the same name and size already exists: "{filename}". Please rename the file or delete the existing document first.',
+                    'error': f'You already have a document with the same name and size: "{filename}". Please rename the file or delete your existing document first.',
                     'is_duplicate': True,
                     'existing_document_id': exact_duplicate['id']
                 }), 409  # 409 Conflict
@@ -3254,15 +4185,17 @@ def check_duplicate_document():
             return jsonify({'error': 'User is not associated with a business'}), 400
         
         # Check for duplicates in Supabase
+        # Only check for duplicates from the SAME user AND business
         from .services.supabase_document_service import SupabaseDocumentService
         doc_service = SupabaseDocumentService()
         supabase = doc_service.supabase
         
-        # Query for documents with same filename and business
+        # Query for documents with same filename, business, AND user
         result = supabase.table('documents')\
             .select('id, original_filename, file_size, created_at')\
             .eq('original_filename', filename)\
             .eq('business_uuid', business_uuid_str)\
+            .eq('uploaded_by_user_id', current_user.id)\
             .execute()
         
         if result.data and len(result.data) > 0:
@@ -3270,7 +4203,7 @@ def check_duplicate_document():
             exact_duplicate = next((doc for doc in result.data if doc.get('file_size') == file_size), None)
             
             if exact_duplicate:
-                # Exact duplicate - same filename and size
+                # Exact duplicate - same filename and size from same user
                 return jsonify({
                     'is_duplicate': True,
                     'is_exact_duplicate': True,
@@ -3287,7 +4220,7 @@ def check_duplicate_document():
                     'is_duplicate': True,
                     'is_exact_duplicate': False,
                     'existing_documents': result.data,
-                    'message': f'A document with the name "{filename}" already exists with a different file size.'
+                    'message': f'You already have a document named "{filename}" with a different file size.'
                 }), 200
         
         # No duplicates found
@@ -3574,6 +4507,7 @@ def upload_document():
         filename = secure_filename(file.filename)
         
         # Check for exact duplicates before uploading (safety net - frontend should catch this first)
+        # Only block duplicates from the SAME user AND business
         from .services.supabase_document_service import SupabaseDocumentService
         doc_service = SupabaseDocumentService()
         supabase = doc_service.supabase
@@ -3582,18 +4516,19 @@ def upload_document():
             .select('id, original_filename, file_size')\
             .eq('original_filename', filename)\
             .eq('business_uuid', business_uuid_str)\
+            .eq('uploaded_by_user_id', current_user.id)\
             .execute()
         
         if existing_docs.data:
-            # Check for exact duplicate (same filename and size)
+            # Check for exact duplicate (same filename and size from same user)
             file_size = file.content_length or 0
             exact_duplicate = next((doc for doc in existing_docs.data if doc.get('file_size') == file_size), None)
             
             if exact_duplicate:
-                logger.warning(f"🛑 [UPLOAD] Blocked exact duplicate: {filename} ({file_size} bytes)")
+                logger.warning(f"🛑 [UPLOAD] Blocked exact duplicate: {filename} ({file_size} bytes) for user {current_user.id}")
                 return jsonify({
                     'success': False,
-                    'error': f'A document with the same name and size already exists: "{filename}". Please rename the file or delete the existing document first.',
+                    'error': f'You already have a document with the same name and size: "{filename}". Please rename the file or delete your existing document first.',
                     'is_duplicate': True,
                     'existing_document_id': exact_duplicate['id']
                 }), 409  # 409 Conflict
@@ -3946,6 +4881,59 @@ def delete_folder(folder_id):
             'message': 'Folder deletion attempted (may have been localStorage only)'
         }), 200
 
+def _add_cors_headers(response):
+    """Add CORS headers to a response so browser allows cross-origin requests."""
+    if hasattr(response, 'headers'):
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+    return response
+
+
+@views.route('/api/documents/<uuid:document_id>', methods=['GET', 'OPTIONS'])
+def get_document_by_id(document_id):
+    """
+    Get a single document's metadata by ID.
+    Matches RESTful pattern: /api/documents/<id> (GET)
+    """
+    if request.method == 'OPTIONS':
+        response = jsonify({})
+        _add_cors_headers(response)
+        response.headers.add('Access-Control-Allow-Methods', 'GET, OPTIONS')
+        response.headers.add('Access-Control-Max-Age', '3600')
+        return response, 200
+
+    if not current_user.is_authenticated:
+        r = jsonify({'error': 'Authentication required'})
+        _add_cors_headers(r)
+        return r, 401
+
+    business_uuid_str = _ensure_business_uuid()
+    if not business_uuid_str:
+        r = jsonify({'error': 'User is not associated with a business'})
+        _add_cors_headers(r)
+        return r, 400
+
+    try:
+        document = Document.query.get(document_id)
+        if not document:
+            r = jsonify({'error': 'Document not found'})
+            _add_cors_headers(r)
+            return r, 404
+        if str(document.business_id) != business_uuid_str:
+            r = jsonify({'error': 'Forbidden'})
+            _add_cors_headers(r)
+            return r, 403
+        r = jsonify(document.serialize())
+        _add_cors_headers(r)
+        return r
+    except Exception as e:
+        logger.exception("GET /api/documents/<id> failed: %s", e)
+        r = jsonify({'error': 'Internal server error'})
+        _add_cors_headers(r)
+        return r, 500
+
+
 @views.route('/api/documents/<uuid:document_id>', methods=['DELETE', 'OPTIONS'])
 def delete_document_standard(document_id):
     """
@@ -4067,11 +5055,12 @@ def get_document_status(document_id):
             }
         }
         
-        # 🔍 DEBUG: Log what we're sending to frontend
-        logger.info(f"📤 STATUS API RESPONSE for {document_id}:")
-        logger.info(f"   status: '{document.get('status')}' (type: {type(document.get('status')).__name__})")
-        logger.info(f"   classification: {document.get('classification_type')}")
-        logger.info(f"   Full response: {response_data}")
+        # Minimal logging - only log if status is not completed (reduces log noise)
+        # Completed documents are polled frequently by frontend, so we skip logging them
+        doc_status = document.get('status', 'unknown')
+        if doc_status != 'completed':
+            logger.info(f"📊 Document {document_id} status: {doc_status}")
+        # Completed documents: no logging (frontend will stop polling soon)
         
         return jsonify(response_data), 200
         
@@ -4336,9 +5325,11 @@ def api_dashboard():
         # Get user's properties (still from PostgreSQL for now)
         properties = []
         try:
+            # Convert UUID to string for text column comparison
+            business_id_str = str(business_uuid) if business_uuid else None
             properties = (
                 Property.query
-                .filter_by(business_id=business_uuid)
+                .filter_by(business_id=business_id_str)
                 .order_by(Property.created_at.desc())
                 .limit(10)
                 .all()

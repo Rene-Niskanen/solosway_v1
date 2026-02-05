@@ -95,22 +95,34 @@ export const AuthGuard: React.FC<AuthGuardProps> = ({ children }) => {
     }
   }, [isLoading, isAuthenticated, navigate]);
 
-  // Show loading state - minimal and fast
+  // Shared loading screen with grow/shrink logo animation
+  const loadingScreen = (
+    <div className="flex h-screen items-center justify-center bg-background">
+      <style>{`
+        @keyframes auth-loading-pulse {
+          0%, 100% { transform: scale(1); }
+          50% { transform: scale(1.15); }
+        }
+        .auth-loading-logo {
+          animation: auth-loading-pulse 1.2s ease-in-out infinite;
+        }
+      `}</style>
+      <img
+        src="/velora-dash-logo.png"
+        alt=""
+        className="auth-loading-logo h-14 w-auto object-contain block"
+      />
+    </div>
+  );
+
+  // Show loading state - Velora logo
   if (isLoading) {
-    return (
-      <div className="flex h-screen items-center justify-center bg-background">
-        <div className="inline-block h-6 w-6 animate-spin rounded-full border-2 border-solid border-primary border-r-transparent"></div>
-      </div>
-    );
+    return loadingScreen;
   }
 
   // Show loading while redirecting or checking auth
   if (!isAuthenticated) {
-    return (
-          <div className="flex h-screen items-center justify-center bg-background">
-        <div className="inline-block h-6 w-6 animate-spin rounded-full border-2 border-solid border-primary border-r-transparent"></div>
-          </div>
-    );
+    return loadingScreen;
   }
 
   // User is authenticated, render children

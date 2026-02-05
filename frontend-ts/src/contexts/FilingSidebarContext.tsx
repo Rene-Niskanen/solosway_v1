@@ -9,6 +9,7 @@ interface FilingSidebarContextType {
   searchQuery: string;
   selectedItems: Set<string>;
   width: number; // Current width of FilingSidebar (default 320px, can be resized)
+  isResizing: boolean; // Whether FilingSidebar is currently being resized
   openSidebar: () => void;
   closeSidebar: () => void;
   toggleSidebar: () => void;
@@ -19,6 +20,7 @@ interface FilingSidebarContextType {
   clearSelection: () => void;
   selectAll: (itemIds: string[]) => void;
   setWidth: (width: number) => void;
+  setIsResizing: (isResizing: boolean) => void;
 }
 
 const FilingSidebarContext = createContext<FilingSidebarContextType | undefined>(undefined);
@@ -29,7 +31,8 @@ export const FilingSidebarProvider: React.FC<{ children: React.ReactNode }> = ({
   const [selectedPropertyId, setSelectedPropertyIdState] = useState<string | null>(null);
   const [searchQuery, setSearchQueryState] = useState<string>('');
   const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
-  const [width, setWidthState] = useState<number>(320); // Default width: 320px (w-80)
+  const [width, setWidthState] = useState<number>(360); // Default width: 360px
+  const [isResizing, setIsResizingState] = useState<boolean>(false);
 
   const openSidebar = useCallback(() => {
     setIsOpen(true);
@@ -97,11 +100,15 @@ export const FilingSidebarProvider: React.FC<{ children: React.ReactNode }> = ({
     setWidthState(newWidth);
   }, []);
 
-  // Keyboard shortcut handler (Cmd/Ctrl + F)
+  const setIsResizing = useCallback((resizing: boolean) => {
+    setIsResizingState(resizing);
+  }, []);
+
+  // Keyboard shortcut handler (Cmd/Ctrl + Option + E) for file sidebar (Cmd+Shift+E is main sidebar)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Cmd/Ctrl + F to toggle sidebar
-      if ((e.metaKey || e.ctrlKey) && e.key === 'f') {
+      // Cmd/Ctrl + Option/Alt + E to toggle file sidebar
+      if ((e.metaKey || e.ctrlKey) && e.altKey && e.key === 'e') {
         // Only prevent default if we're not in an input/textarea
         const target = e.target as HTMLElement;
         if (target.tagName !== 'INPUT' && target.tagName !== 'TEXTAREA') {
@@ -130,6 +137,7 @@ export const FilingSidebarProvider: React.FC<{ children: React.ReactNode }> = ({
     searchQuery,
     selectedItems,
     width,
+    isResizing,
     openSidebar,
     closeSidebar,
     toggleSidebar,
@@ -140,6 +148,7 @@ export const FilingSidebarProvider: React.FC<{ children: React.ReactNode }> = ({
     clearSelection,
     selectAll,
     setWidth,
+    setIsResizing,
   };
 
   return (

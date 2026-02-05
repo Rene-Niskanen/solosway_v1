@@ -105,7 +105,7 @@ export const FileChoiceStep: React.FC<FileChoiceStepProps> = ({
           style={{
             display: 'flex',
             alignItems: 'center',
-            gap: '10px',
+            gap: '22px', // Space between icon and text inside this button
             padding: '10px 14px',
             border: selectedChoice === 'fast' ? '2px solid #10B981' : '1px solid #E5E7EB',
             borderRadius: '8px',
@@ -147,7 +147,7 @@ export const FileChoiceStep: React.FC<FileChoiceStepProps> = ({
           style={{
             display: 'flex',
             alignItems: 'center',
-            gap: '10px',
+            gap: '22px', // Space between icon and text inside this button
             padding: '10px 14px',
             border: selectedChoice === 'detailed' ? '2px solid #3B82F6' : '1px solid #E5E7EB',
             borderRadius: '8px',
@@ -189,7 +189,7 @@ export const FileChoiceStep: React.FC<FileChoiceStepProps> = ({
           style={{
             display: 'flex',
             alignItems: 'center',
-            gap: '10px',
+            gap: '22px', // Space between icon and text inside this button
             padding: '10px 14px',
             border: selectedChoice === 'project' ? '2px solid #8B5CF6' : '1px solid #E5E7EB',
             borderRadius: '8px',

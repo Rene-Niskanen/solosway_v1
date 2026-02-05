@@ -2,12 +2,20 @@
 
 import * as React from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { ArrowUp, Paperclip, Mic, LibraryBig, PanelRightOpen, SquareDashedMousePointer, Scan, Fullscreen, AudioLines } from "lucide-react";
-import { PropertyAttachment } from './PropertyAttachment';
+import { ArrowUp, Paperclip, LibraryBig, PanelRightOpen, AudioLines, Globe } from "lucide-react";
 import { usePropertySelection } from '../contexts/PropertySelectionContext';
+import { useDocumentSelection } from '../contexts/DocumentSelectionContext';
+import { ModeSelector } from './ModeSelector';
+import { ModelSelector } from './ModelSelector';
+import { WebSearchPill } from './SelectedModePill';
+import { SegmentInput, type SegmentInputHandle } from './SegmentInput';
+import { AtMentionPopover, type AtMentionItem } from './AtMentionPopover';
+import { getFilteredAtMentionItems, preloadAtMentionCache } from '@/services/atMentionCache';
+import { useSegmentInput, buildInitialSegments } from '@/hooks/useSegmentInput';
+import { isTextSegment, isChipSegment, type QueryContentSegment } from '@/types/segmentInput';
 
 interface MapChatBarProps {
-  onQuerySubmit?: (query: string) => void;
+  onQuerySubmit?: (query: string, options?: { contentSegments?: QueryContentSegment[] }) => void;
   onMapToggle?: () => void;
   onPanelToggle?: () => void;
   placeholder?: string;
@@ -21,129 +29,231 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
   onMapToggle,
   onPanelToggle,
   placeholder = "Ask anything...",
-  width = 'clamp(450px, 90vw, 700px)', // Match SearchBar width for consistency
+  width = 'min(100%, 640px)', // Match SideChatPanel width for consistency
   hasPreviousSession = false,
   initialValue = ""
 }) => {
-  const [inputValue, setInputValue] = React.useState<string>(initialValue);
   const [isSubmitted, setIsSubmitted] = React.useState<boolean>(false);
   const [isFocused, setIsFocused] = React.useState<boolean>(false);
-  const inputRef = React.useRef<HTMLTextAreaElement>(null);
-  const initialScrollHeightRef = React.useRef<number | null>(null);
+  const [isWebSearchEnabled, setIsWebSearchEnabled] = React.useState<boolean>(false);
+  const [isCompact, setIsCompact] = React.useState<boolean>(false);
+  const [atMentionDocumentChips, setAtMentionDocumentChips] = React.useState<Array<{ id: string; label: string }>>([]);
+  const [atMentionOpen, setAtMentionOpen] = React.useState(false);
+  const [atQuery, setAtQuery] = React.useState('');
+  const [atAnchorIndex, setAtAnchorIndex] = React.useState(-1);
+  const [atAnchorRect, setAtAnchorRect] = React.useState<{ left: number; top: number; bottom: number; height: number } | null>(null);
+  const [atItems, setAtItems] = React.useState<AtMentionItem[]>([]);
+  const [atSelectedIndex, setAtSelectedIndex] = React.useState(0);
+  const inputRef = React.useRef<SegmentInputHandle | null>(null);
+  const atMentionAnchorRef = React.useRef<HTMLDivElement>(null);
+  const restoreSelectionRef = React.useRef<(() => void) | null>(null);
   const isDeletingRef = React.useRef(false);
-  
-  // Use property selection context
-  const { 
-    isSelectionModeActive, 
-    toggleSelectionMode, 
-    setSelectionModeActive,
-    propertyAttachments, 
-    removePropertyAttachment,
-    clearPropertyAttachments 
-  } = usePropertySelection();
-  
-  // Initialize textarea height on mount
+  const formRef = React.useRef<HTMLFormElement>(null);
+
+  const { setSelectionModeActive, propertyAttachments, removePropertyAttachment, addPropertyAttachment } = usePropertySelection();
+  const { toggleDocumentSelection } = useDocumentSelection();
+
+  const initialSegments = React.useMemo(
+    () =>
+      buildInitialSegments(
+        initialValue ?? '',
+        propertyAttachments.map((a) => ({ id: a.id, label: a.address, payload: a.property })),
+        atMentionDocumentChips
+      ),
+    []
+  );
+  const segmentInput = useSegmentInput({
+    initialSegments,
+    onRemovePropertyChip: removePropertyAttachment,
+    onRemoveDocumentChip: (id) => {
+      toggleDocumentSelection(id);
+      setAtMentionDocumentChips((prev) => prev.filter((d) => d.id !== id));
+    },
+  });
+
   React.useEffect(() => {
-    if (inputRef.current) {
-      inputRef.current.style.height = 'auto';
-      const initialHeight = inputRef.current.scrollHeight;
-      initialScrollHeightRef.current = initialHeight;
-      inputRef.current.style.height = `${initialHeight}px`;
+    if (initialValue !== undefined && segmentInput.getPlainText() !== initialValue) {
+      segmentInput.setSegments(
+        buildInitialSegments(
+          initialValue,
+          propertyAttachments.map((a) => ({ id: a.id, label: a.address, payload: a.property })),
+          atMentionDocumentChips
+        )
+      );
     }
-  }, []);
-  
-  // Update input value when initialValue prop changes (e.g., when switching from SearchBar)
+  }, [initialValue]);
+
   React.useEffect(() => {
-    // Only update if initialValue is provided and different from current value
-    // This handles both initial mount and prop updates
-    if (initialValue !== undefined && initialValue !== inputValue) {
-      console.log('📝 MapChatBar: Setting initial value from prop:', initialValue);
-      setInputValue(initialValue);
-      // Resize textarea after setting value
-      if (inputRef.current) {
-        // Use requestAnimationFrame to ensure DOM is ready
+    const plain = segmentInput.getPlainText();
+    const cursorOffset = segmentInput.getCursorOffset();
+    const lastAt = plain.slice(0, cursorOffset).lastIndexOf('@');
+    const queryAfterAt = lastAt >= 0 ? plain.slice(lastAt + 1, cursorOffset) : '';
+    // Close popover when user types a space after "@"
+    if (lastAt >= 0 && !queryAfterAt.includes(' ')) {
+      setAtMentionOpen(true);
+      setAtQuery(queryAfterAt);
+      setAtAnchorIndex(lastAt);
+    } else {
+      setAtMentionOpen(false);
+      setAtQuery('');
+      setAtAnchorIndex(-1);
+    }
+  }, [segmentInput.segments, segmentInput.cursor]);
+
+  React.useEffect(() => {
+    if (!atMentionOpen) {
+      setAtItems([]);
+      return;
+    }
+    setAtItems(getFilteredAtMentionItems(atQuery));
+    preloadAtMentionCache().then(() => setAtItems(getFilteredAtMentionItems(atQuery)));
+  }, [atMentionOpen, atQuery]);
+
+  // Position @ popover at the "@" character (defer rect read so segment refs are ready)
+  React.useEffect(() => {
+    if (!atMentionOpen || atAnchorIndex < 0) {
+      setAtAnchorRect(null);
+      return;
+    }
+    let cancelled = false;
+    const readRect = () => {
+      if (cancelled) return;
+      const rect = inputRef.current?.getRectForPlainOffset(atAnchorIndex);
+      if (rect) {
+        setAtAnchorRect({ left: rect.left, top: rect.top, bottom: rect.bottom, height: rect.height });
+      } else {
         requestAnimationFrame(() => {
-          if (inputRef.current) {
-            inputRef.current.style.height = 'auto';
-            const scrollHeight = inputRef.current.scrollHeight;
-            const maxHeight = 150;
-            const newHeight = Math.min(scrollHeight, maxHeight);
-            inputRef.current.style.height = `${newHeight}px`;
-            inputRef.current.style.overflowY = scrollHeight > maxHeight ? 'auto' : 'hidden';
-            inputRef.current.style.minHeight = '28px';
+          if (cancelled) return;
+          const retryRect = inputRef.current?.getRectForPlainOffset(atAnchorIndex);
+          if (retryRect) {
+            setAtAnchorRect({ left: retryRect.left, top: retryRect.top, bottom: retryRect.bottom, height: retryRect.height });
+          } else {
+            setAtAnchorRect(null);
           }
         });
       }
-    }
-  }, [initialValue]); // Only depend on initialValue, not inputValue to avoid loops
+    };
+    requestAnimationFrame(readRect);
+    return () => { cancelled = true; };
+  }, [atMentionOpen, atAnchorIndex, segmentInput.segments]);
 
-  // Handle textarea change with auto-resize logic
-  const handleTextareaChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    const value = e.target.value;
-    const cursorPos = e.target.selectionStart;
-    
-    setInputValue(value);
-    
-    // Always stay in multi-line layout, just adjust height
-    if (inputRef.current) {
-      // Set height to auto first to get accurate scrollHeight
-      inputRef.current.style.height = 'auto';
-      const scrollHeight = inputRef.current.scrollHeight;
-      const maxHeight = 150; // Larger max height for map view
-      const newHeight = Math.min(scrollHeight, maxHeight);
-      
-      // Use requestAnimationFrame to batch the height update and prevent layout shift
-      requestAnimationFrame(() => {
-        if (inputRef.current) {
-          inputRef.current.style.height = `${newHeight}px`;
-          inputRef.current.style.overflowY = scrollHeight > maxHeight ? 'auto' : 'hidden';
-          inputRef.current.style.minHeight = '28px';
-        }
-      });
-      
-      if (!isDeletingRef.current && cursorPos !== null) {
-        inputRef.current.setSelectionRange(cursorPos, cursorPos);
+  const handleAtSelect = React.useCallback(
+    (item: AtMentionItem) => {
+      const startPlain = Math.max(0, atAnchorIndex);
+      const endPlain = segmentInput.getCursorOffset();
+      const startPos = segmentInput.getSegmentOffsetFromPlain(startPlain);
+      const endPos = segmentInput.getSegmentOffsetFromPlain(endPlain);
+      if (startPos != null && endPos != null) {
+        segmentInput.removeSegmentRange(startPos.segmentIndex, startPos.offset, endPos.segmentIndex, endPos.offset);
+      } else {
+        segmentInput.removeRange(startPlain, endPlain);
       }
-    }
-  };
+      setAtMentionOpen(false);
+      if (item.type === 'property') {
+        const property = item.payload as { id: string; address: string; [key: string]: unknown };
+        addPropertyAttachment(property as unknown as Parameters<typeof addPropertyAttachment>[0]);
+        segmentInput.insertChipAtCursor(
+          { type: 'chip', kind: 'property', id: property.id, label: property.address || item.primaryLabel, payload: property },
+          { trailingSpace: true }
+        );
+      } else {
+        toggleDocumentSelection(item.id);
+        setAtMentionDocumentChips((prev) => [...prev, { id: item.id, label: item.primaryLabel }]);
+        segmentInput.insertChipAtCursor(
+          { type: 'chip', kind: 'document', id: item.id, label: item.primaryLabel },
+          { trailingSpace: true }
+        );
+      }
+      requestAnimationFrame(() => {
+        inputRef.current?.focus();
+        requestAnimationFrame(() => restoreSelectionRef.current?.());
+      });
+    },
+    [atAnchorIndex, addPropertyAttachment, toggleDocumentSelection, segmentInput]
+  );
 
+  // Track form width for responsive model selector
+  React.useEffect(() => {
+    if (!formRef.current) return;
+
+    const updateCompact = () => {
+      if (formRef.current) {
+        const formWidth = formRef.current.offsetWidth;
+        // Show compact mode (star icon only) when form width is <= 425px (same threshold as SideChatPanel)
+        // This matches the logic in SideChatPanel where compact mode triggers at minimum width
+        setIsCompact(formWidth <= 425);
+      }
+    };
+
+    // Initial check
+    updateCompact();
+
+    // Use ResizeObserver to track width changes
+    const resizeObserver = new ResizeObserver(updateCompact);
+    resizeObserver.observe(formRef.current);
+
+    return () => {
+      resizeObserver.disconnect();
+    };
+  }, []);
+  
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    const submitted = inputValue.trim();
-    if ((submitted || propertyAttachments.length > 0) && !isSubmitted && onQuerySubmit) {
+    const submitted = segmentInput.getPlainText().trim();
+    if ((submitted || propertyAttachments.length > 0 || atMentionDocumentChips.length > 0) && !isSubmitted && onQuerySubmit) {
       setIsSubmitted(true);
-      onQuerySubmit(submitted);
-      setInputValue("");
-      // Don't clear property attachments here - let SideChatPanel read them first
-      // SideChatPanel will clear them after initializing with them
-      // Turn off selection mode after submission
+      const contentSegments: QueryContentSegment[] = [];
+      for (const seg of segmentInput.segments) {
+        if (isTextSegment(seg)) {
+          if (seg.value) contentSegments.push({ type: 'text', value: seg.value });
+        } else if (isChipSegment(seg)) {
+          if (seg.kind === 'property') {
+            const attachment = propertyAttachments.find(
+              (a) => String(a.propertyId) === String(seg.id) || (a.property as any)?.id == seg.id
+            );
+            if (attachment) {
+              contentSegments.push({ type: 'property', attachment });
+            } else {
+              const p = (seg.payload as any) || {};
+              const addr = p.formatted_address || p.normalized_address || p.address || 'Unknown Address';
+              contentSegments.push({
+                type: 'property',
+                attachment: { id: seg.id, propertyId: seg.id, address: addr, imageUrl: '', property: p }
+              });
+            }
+          } else {
+            const name = atMentionDocumentChips.find((c) => c.id === seg.id)?.label ?? seg.label ?? seg.id;
+            contentSegments.push({ type: 'document', id: seg.id, name });
+          }
+        }
+      }
+      onQuerySubmit(submitted, contentSegments.length > 0 ? { contentSegments } : undefined);
+      segmentInput.setSegments([{ type: 'text', value: '' }]);
+      setAtMentionDocumentChips([]);
       if (propertyAttachments.length > 0) {
         setSelectionModeActive(false);
       }
       setIsSubmitted(false);
-      
-      // Reset textarea
-      if (inputRef.current) {
-        const initialHeight = initialScrollHeightRef.current ?? 28;
-        inputRef.current.style.height = `${initialHeight}px`;
-        inputRef.current.style.overflowY = '';
-        inputRef.current.style.overflow = '';
-      }
     }
   };
 
   return (
-    <div className="w-full flex justify-center items-center" style={{ 
-      position: 'fixed',
-      bottom: '24px',
-      left: '50%',
-      transform: 'translateX(-50%)',
-      zIndex: 50,
-      width: width,
-      maxWidth: width,
-      boxSizing: 'border-box'
-    }}>
-      <form onSubmit={handleSubmit} className="relative" style={{ overflow: 'visible', height: 'auto', width: '100%' }}>
+    <div 
+      className="w-full flex justify-center items-center" 
+      style={{ 
+        position: 'fixed',
+        bottom: '48px',
+        left: '50%',
+        transform: 'translateX(-50%)',
+        zIndex: 50,
+        width: 'min(100%, 640px)', // Match SideChatPanel width
+        maxWidth: '640px',
+        paddingLeft: '32px',
+        paddingRight: '32px',
+        boxSizing: 'border-box'
+      }}
+    >
+      <form ref={formRef} onSubmit={handleSubmit} className="relative" style={{ overflow: 'visible', height: 'auto', width: '100%' }}>
         {/* Toggle Panel Button - Floating to the right of the chat bar */}
         {hasPreviousSession && onPanelToggle && (
           <motion.div
@@ -179,20 +289,23 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
         <div 
           className={`relative flex flex-col ${isSubmitted ? 'opacity-75' : ''}`}
           style={{
-            background: '#ffffff',
-            border: '1px solid #E5E7EB',
-            boxShadow: '0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06)',
-            paddingTop: '16px', // Larger padding for map view
-            paddingBottom: '16px',
-            paddingRight: '16px',
-            paddingLeft: '16px',
+            background: '#FFFFFF',
+            border: '1px solid #B8BCC4', // Match SideChatPanel border
+            boxShadow: 'none', // No shadow like SideChatPanel
+            position: 'relative',
+            paddingTop: '8px', // Match SideChatPanel padding
+            paddingBottom: '8px',
+            paddingRight: '12px',
+            paddingLeft: '12px',
             overflow: 'visible',
             width: '100%',
-            minWidth: '0',
+            minWidth: '300px',
             height: 'auto',
-            minHeight: 'fit-content',
+            minHeight: '48px', // Match SideChatPanel minHeight
             boxSizing: 'border-box',
-            borderRadius: '12px'
+            borderRadius: '8px', // Match SideChatPanel sharper corners
+            transition: 'background-color 0.2s ease-in-out, border-color 0.2s ease-in-out, box-shadow 0.2s ease-in-out',
+            zIndex: 2
           }}
         >
           {/* Input row */}
@@ -200,184 +313,222 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
             className="relative flex flex-col w-full" 
             style={{ 
               height: 'auto', 
-              minHeight: '28px',
+              minHeight: '24px',
               width: '100%',
               minWidth: '0'
             }}
           >
-            {/* Property Attachments Display - Above textarea */}
-            {propertyAttachments.length > 0 && (
-              <div 
-                style={{ 
-                  height: 'auto', 
-                  marginBottom: '12px',
-                  display: 'flex',
-                  flexWrap: 'wrap',
-                  gap: '8px',
-                  width: '100%'
-                }}
-              >
-                {propertyAttachments.map((property) => (
-                  <PropertyAttachment
-                    key={property.id}
-                    attachment={property}
-                    onRemove={removePropertyAttachment}
-                  />
-                ))}
-              </div>
-            )}
-
-            {/* Textarea area - always above */}
-            <div 
+            {/* SegmentInput + @ context - chips only inline (no row above, matches SearchBar) */}
+            <div
+              ref={atMentionAnchorRef}
               className="flex items-start w-full"
-              style={{ 
-                minHeight: '28px',
-                height: 'auto', // Ensure height is auto to prevent layout shifts
+              style={{
+                minHeight: '24px',
                 width: '100%',
-                marginBottom: inputValue.trim().length > 0 ? '16px' : '12px' // More space when there's text to prevent icons from being too close
+                marginTop: '4px',
+                marginBottom: '12px',
+                flexShrink: 0,
               }}
             >
-              <div className="flex-1 relative flex items-start w-full" style={{ 
-                overflow: 'visible', 
-                minHeight: '28px',
-                width: '100%',
-                minWidth: '0',
-                paddingRight: '0px' // Ensure no extra padding on right side
-              }}>
-                <textarea 
+              <div
+                className="flex-1 relative flex items-start w-full"
+                style={{ overflow: 'visible', minHeight: '24px', width: '100%', minWidth: '0' }}
+                onFocus={() => setIsFocused(true)}
+                onBlur={() => setIsFocused(false)}
+              >
+                <SegmentInput
                   ref={inputRef}
-                  value={inputValue}
-                  onChange={handleTextareaChange}
-                  onFocus={() => setIsFocused(true)} 
-                  onBlur={() => setIsFocused(false)} 
-                  onKeyDown={e => { 
+                  segments={segmentInput.segments}
+                  cursor={segmentInput.cursor}
+                  onCursorChange={(segmentIndex, offset) => segmentInput.setCursor({ segmentIndex, offset })}
+                  onInsertText={(char) => {
+                    if (char === '\n') {
+                      handleSubmit(null as any);
+                      return;
+                    }
+                    segmentInput.insertTextAtCursor(char);
+                  }}
+                  onBackspace={segmentInput.backspace}
+                  onDelete={segmentInput.deleteForward}
+                  onDeleteSegmentRange={segmentInput.removeSegmentRange}
+                  onMoveLeft={segmentInput.moveCursorLeft}
+                  onMoveRight={segmentInput.moveCursorRight}
+                  onRemovePropertyChip={removePropertyAttachment}
+                  onRemoveDocumentChip={(id) => {
+                    toggleDocumentSelection(id);
+                    setAtMentionDocumentChips((prev) => prev.filter((d) => d.id !== id));
+                  }}
+                  removeChipAtSegmentIndex={segmentInput.removeChipAtIndex}
+                  restoreSelectionRef={restoreSelectionRef}
+                  placeholder={placeholder}
+                  disabled={isSubmitted}
+                  style={{
+                    width: '100%',
+                    minHeight: '28px',
+                    maxHeight: '120px',
+                    lineHeight: '20px',
+                    paddingTop: '0px',
+                    paddingBottom: '4px',
+                    paddingRight: '12px',
+                    paddingLeft: '6px',
+                    color: segmentInput.getPlainText() ? '#0D0D0D' : undefined,
+                    boxSizing: 'border-box',
+                  }}
+                  onKeyDown={(e) => {
+                    if (atMentionOpen && e.key === 'Enter') return;
                     if (e.key === 'Enter' && !e.shiftKey) {
                       e.preventDefault();
                       handleSubmit(e);
                     }
                     if (e.key === 'Backspace' || e.key === 'Delete') {
                       isDeletingRef.current = true;
-                      setTimeout(() => {
-                        isDeletingRef.current = false;
-                      }, 200);
+                      setTimeout(() => { isDeletingRef.current = false; }, 200);
                     }
-                  }} 
-                  placeholder={placeholder}
-                  className="w-full bg-transparent focus:outline-none text-base font-normal text-gray-900 placeholder:text-gray-500 resize-none [&::-webkit-scrollbar]:w-0.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-gray-200/50 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:hover:bg-gray-300/70"
-                  style={{
-                    height: '28px', // Fixed initial height to prevent layout shift when typing starts
-                    minHeight: '28px',
-                    maxHeight: '150px',
-                    fontSize: '16px',
-                    lineHeight: '22px',
-                    paddingTop: '0px',
-                    paddingBottom: '0px',
-                    paddingRight: '8px', // Match left padding
-                    paddingLeft: '8px',
-                    scrollbarWidth: 'thin',
-                    scrollbarColor: 'rgba(229, 231, 235, 0.5) transparent',
-                    overflow: 'hidden',
-                    overflowY: 'auto',
-                    wordWrap: 'break-word',
-                    transition: 'height 0.15s ease-out, overflow 0.15s ease-out', // Smooth transition for height changes
-                    resize: 'none',
-                    width: '100%',
-                    minWidth: '0',
-                    boxSizing: 'border-box' // Ensure padding is included in height calculation
                   }}
-                  autoComplete="off"
-                  disabled={isSubmitted}
-                  rows={1}
                 />
               </div>
+              <AtMentionPopover
+                open={atMentionOpen}
+                anchorRef={atMentionAnchorRef}
+                anchorRect={atAnchorRect}
+                query={atQuery}
+                placement="above"
+                items={atItems}
+                selectedIndex={atSelectedIndex}
+                onSelect={handleAtSelect}
+                onSelectedIndexChange={setAtSelectedIndex}
+                onClose={() => {
+                  setAtMentionOpen(false);
+                  setAtItems([]);
+                }}
+              />
             </div>
             
-            {/* Bottom row: Icons (Left) and Send Button (Right) */}
+            {/* Bottom row: Mode/Model selectors (Left) and Action buttons (Right) */}
             <div 
               className="relative flex items-center justify-between w-full"
               style={{
                 width: '100%',
-                minWidth: '0'
+                minWidth: '0',
+                minHeight: '32px' // Match SideChatPanel
               }}
             >
-              {/* Left Icons: Dashboard */}
-              <div className="flex items-center space-x-4">
-                <button
-                  type="button"
-                  onClick={onMapToggle}
-                  className="flex items-center justify-center text-gray-400 hover:text-gray-600 transition-colors ml-1"
-                  style={{
-                    padding: '4px',
-                    minHeight: '24px',
-                    height: '24px'
-                  }}
-                  title="Back to search mode"
-                >
-                  <LibraryBig className="w-5 h-5" strokeWidth={1.5} />
-                </button>
+              {/* Left group: Mode selector and Model selector */}
+              <div className="flex items-center gap-1">
+                {/* Mode Selector Dropdown */}
+                <ModeSelector compact={isCompact} />
+                
+                {/* Model Selector Dropdown */}
+                <ModelSelector compact={isCompact} />
               </div>
 
-              {/* Right Icons: Card Selection, Attachment, Mic, Send */}
-              <div className="flex items-center space-x-4">
-                <button
-                  type="button"
-                  onClick={toggleSelectionMode}
-                  className={`flex items-center justify-center transition-colors ${
-                    propertyAttachments.length > 0
-                      ? 'text-green-500 hover:text-green-600 bg-green-50 rounded'
-                      : isSelectionModeActive 
-                        ? 'text-blue-600 hover:text-blue-700 bg-blue-50 rounded' 
-                        : 'text-gray-900 hover:text-gray-700'
-                  }`}
+              {/* Right group: Web search, Dashboard, Attach, Voice, Send */}
+              <motion.div 
+                className="flex items-center gap-1.5 flex-shrink-0" 
+                style={{ marginRight: '4px' }}
+                layout
+                transition={{ 
+                  layout: { duration: 0.12, ease: [0.16, 1, 0.3, 1] },
+                  default: { duration: 0.18, ease: [0.16, 1, 0.3, 1] }
+                }}
+              >
+                {/* Web Search Toggle */}
+                {isWebSearchEnabled ? (
+                  <WebSearchPill 
+                    onDismiss={() => setIsWebSearchEnabled(false)}
+                  />
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setIsWebSearchEnabled(true)}
+                    className="flex items-center justify-center rounded-full text-gray-600 hover:text-gray-700 transition-colors focus:outline-none outline-none"
+                    style={{
+                      backgroundColor: '#FFFFFF',
+                      border: '1px solid rgba(229, 231, 235, 0.6)',
+                      borderRadius: '12px',
+                      transition: 'background-color 0.2s ease',
+                      width: '28px',
+                      height: '24px',
+                      minHeight: '24px'
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.backgroundColor = '#F5F5F5';
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.backgroundColor = '#FFFFFF';
+                    }}
+                    title="Enable web search"
+                  >
+                    <Globe className="w-3.5 h-3.5" strokeWidth={2} />
+                  </button>
+                )}
+                
+                {/* Dashboard Toggle Button */}
+                <button 
+                  type="button" 
+                  onClick={onMapToggle}
+                  className="flex items-center gap-1.5 px-2 py-1 text-gray-900 focus:outline-none outline-none"
                   style={{
-                    padding: '4px',
-                    minHeight: '24px',
-                    height: '24px'
-                  }}
-                  title={
-                    propertyAttachments.length > 0
-                      ? `${propertyAttachments.length} property${propertyAttachments.length > 1 ? 'ies' : ''} selected`
-                      : isSelectionModeActive 
-                        ? "Property selection mode active - Click property cards to add them" 
-                        : "Select property cards"
-                  }
-                >
-                  {propertyAttachments.length > 0 ? (
-                    <Fullscreen className="w-5 h-5" strokeWidth={1.5} />
-                  ) : isSelectionModeActive ? (
-                    <Scan className="w-5 h-5" strokeWidth={1.5} />
-                  ) : (
-                    <SquareDashedMousePointer className="w-5 h-5" strokeWidth={1.5} />
-                  )}
-                </button>
-                <button
-                  type="button"
-                  className="flex items-center gap-1.5 px-2 py-1 rounded-full text-gray-900 transition-colors focus:outline-none outline-none"
-                  style={{
-                    backgroundColor: '#FFFFFF',
-                    border: '1px solid rgba(0, 0, 0, 0.1)',
-                    transition: 'background-color 0.2s ease',
+                    backgroundColor: '#FCFCF9',
+                    border: '1px solid rgba(229, 231, 235, 0.6)',
+                    borderRadius: '12px',
+                    transition: 'background-color 0.15s ease',
                     height: '24px',
-                    minHeight: '24px'
+                    minHeight: '24px',
+                    paddingLeft: '8px',
+                    paddingRight: '8px'
                   }}
                   onMouseEnter={(e) => {
                     e.currentTarget.style.backgroundColor = '#F5F5F5';
                   }}
                   onMouseLeave={(e) => {
-                    e.currentTarget.style.backgroundColor = '#FFFFFF';
+                    e.currentTarget.style.backgroundColor = '#FCFCF9';
                   }}
+                  title="Back to dashboard"
+                  aria-label="Dashboard"
                 >
-                  <Paperclip className="w-3.5 h-3.5" strokeWidth={1.5} />
-                  <span className="text-xs font-medium">Attach</span>
+                  <LibraryBig className="w-3.5 h-3.5" strokeWidth={1.5} />
+                  <span className="text-xs font-medium">Dashboard</span>
                 </button>
+                
+                {/* Attach Button */}
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    className="flex items-center gap-1.5 px-2 py-1 rounded-full text-gray-900 focus:outline-none outline-none"
+                    style={{
+                      backgroundColor: '#FCFCF9',
+                      border: '1px solid rgba(229, 231, 235, 0.6)',
+                      transition: 'background-color 0.15s ease, border-color 0.15s ease',
+                      willChange: 'background-color, border-color',
+                      padding: '4px 8px',
+                      height: '24px',
+                      minHeight: '24px'
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.backgroundColor = '#F5F5F5';
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.backgroundColor = '#FCFCF9';
+                    }}
+                    title="Attach file"
+                  >
+                    <Paperclip className="w-3.5 h-3.5" strokeWidth={1.5} />
+                    <span className="text-xs font-medium">Attach</span>
+                  </button>
+                </div>
+                
+                {/* Voice Button */}
                 <button
                   type="button"
-                  className="flex items-center gap-1.5 px-2 py-1 rounded-full text-gray-900 transition-colors focus:outline-none outline-none"
+                  className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-gray-900 focus:outline-none outline-none"
                   style={{
                     backgroundColor: '#ECECEC',
-                    transition: 'background-color 0.2s ease',
-                    height: '24px',
-                    minHeight: '24px'
+                    transition: 'background-color 0.15s ease',
+                    willChange: 'background-color',
+                    height: '22px',
+                    minHeight: '22px',
+                    fontSize: '12px'
                   }}
                   onMouseEnter={(e) => {
                     e.currentTarget.style.backgroundColor = '#E0E0E0';
@@ -385,6 +536,7 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
                   onMouseLeave={(e) => {
                     e.currentTarget.style.backgroundColor = '#ECECEC';
                   }}
+                  title="Voice input"
                 >
                   <AudioLines className="w-3.5 h-3.5" strokeWidth={1.5} />
                   <span className="text-xs font-medium">Voice</span>
@@ -392,22 +544,23 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
                 
                 {/* Send button */}
                 <AnimatePresence>
-                  {(inputValue.trim() || propertyAttachments.length > 0) && (
+                  {(segmentInput.getPlainText().trim() || propertyAttachments.length > 0 || atMentionDocumentChips.length > 0) && (
                     <motion.button 
                       key="send-button"
                       type="submit" 
                       onClick={handleSubmit} 
                       initial={{ opacity: 0, scale: 0.8 }}
-                      animate={{ opacity: 1, scale: 1, backgroundColor: '#415C85' }}
+                      animate={{ opacity: 1, scale: 1, backgroundColor: '#4A4A4A' }}
                       exit={{ opacity: 0, scale: 0.8 }}
                       transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
                       className={`flex items-center justify-center relative focus:outline-none outline-none ${!isSubmitted ? '' : 'cursor-not-allowed'}`}
                       style={{
-                        width: '32px',
-                        height: '32px',
-                        minWidth: '32px',
-                        minHeight: '32px',
-                        borderRadius: '50%'
+                        width: '24px',
+                        height: '24px',
+                        minWidth: '24px',
+                        minHeight: '24px',
+                        borderRadius: '50%',
+                        flexShrink: 0
                       }}
                       disabled={isSubmitted}
                       whileHover={!isSubmitted ? { 
@@ -429,7 +582,7 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
                     </motion.button>
                   )}
                 </AnimatePresence>
-              </div>
+              </motion.div>
             </div>
           </div>
         </div>

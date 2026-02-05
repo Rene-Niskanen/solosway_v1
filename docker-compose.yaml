@@ -26,15 +26,19 @@ services:
     environment:
       - FLASK_ENV=development
       - REDIS_URL=redis://redis:6379/0
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
       # Database connection strings (loaded from .env via env_file):
       # - SUPABASE_DB_URL: Transaction pooler (port 6543) for SQLAlchemy - high concurrency
       # - SUPABASE_DB_URL_SESSION: Session pooler (port 5432) for LangGraph checkpointer - prepared statements work
       - AWS_REGION=${AWS_DEFAULT_REGION:-us-east-1}
       - DOCKER_ENV=true
       - LOCAL_EMBEDDING_URL=http://embedding-server:5003/embed
+      - OLLAMA_URL=${OLLAMA_URL:-http://ollama:11434}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.2:3b}
     depends_on:
       - redis
       - embedding-server
+      - ollama
       # postgres removed - using Supabase PostgreSQL instead
 
   worker:
@@ -46,15 +50,19 @@ services:
       - .:/app
     environment:
       - REDIS_URL=redis://redis:6379/0
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
       # Database connection strings (loaded from .env via env_file):
       # - SUPABASE_DB_URL: Transaction pooler (port 6543) for SQLAlchemy - high concurrency
       # - SUPABASE_DB_URL_SESSION: Session pooler (port 5432) for LangGraph checkpointer - prepared statements work
       - AWS_REGION=${AWS_DEFAULT_REGION:-us-east-1}
       - DOCKER_ENV=true
       - LOCAL_EMBEDDING_URL=http://embedding-server:5003/embed
+      - OLLAMA_URL=${OLLAMA_URL:-http://ollama:11434}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.2:3b}
     depends_on:
       - redis
       - embedding-server
+      - ollama
       # postgres removed - using Supabase PostgreSQL instead
 
   embedding-server:
@@ -78,12 +86,33 @@ services:
       start_period: 30s
     # No dependencies - can start independently
   
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0:11434
+    healthcheck:
+      # Ollama container doesn't have curl/wget/nc/python3, so we disable health check
+      # The application code will handle health checking via HTTP requests
+      # This prevents false "unhealthy" status while Ollama is actually working
+      disable: true
+    # No dependencies - can start independently
+  
   # Note: Other services (web, worker) can access embedding-server at:
   # http://embedding-server:5003/embed (from inside Docker network)
   # Or set LOCAL_EMBEDDING_URL=http://embedding-server:5003/embed in .env
+  #
+  # Note: Other services (web, worker) can access ollama at:
+  # http://ollama:11434 (from inside Docker network)
+  # Or set OLLAMA_URL=http://ollama:11434 in .env
+  # For production: Set OLLAMA_URL=http://ollama-server.yourdomain.com:11434
   
 volumes:
   postgres_data:
+  ollama_data:
   
 
 

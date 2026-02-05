@@ -3,7 +3,6 @@
 import * as React from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { SearchBar } from './SearchBar';
-import ChatInterface from './ChatInterface';
 import PropertyValuationUpload from './PropertyValuationUpload';
 import Analytics from './Analytics';
 import { CloudBackground } from './CloudBackground';
@@ -17,24 +16,31 @@ import Profile from './Profile';
 import { FileManager } from './FileManager';
 import { useSystem } from '@/contexts/SystemContext';
 import { backendApi } from '@/services/backendApi';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogOverlay } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { MapPin, Palette, Bell, Shield, Globe, Monitor, LibraryBig, Upload, BarChart3, Database, Settings, User, CloudUpload, Image, Map, Layout, Plus, ArrowUp, Folder } from 'lucide-react';
+import { MapPin, Palette, Bell, Shield, Globe, Monitor, LibraryBig, Upload, BarChart3, Database, Settings, User, CloudUpload, Image, Map, Fullscreen, Minimize, Minimize2, Plus, ArrowUp, Folder, Layers, Check, Focus, Contrast, Search, Loader2, ArrowRight, ArrowLeft } from 'lucide-react';
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import { DocumentPreviewModal } from './DocumentPreviewModal';
 import { FileAttachmentData } from './FileAttachment';
 import { usePreview } from '../contexts/PreviewContext';
+import { useChatStateStore, useActiveChatDocumentPreview } from '../contexts/ChatStateStore';
 import { StandaloneExpandedCardView } from './StandaloneExpandedCardView';
 import { AgentTaskOverlay } from './AgentTaskOverlay';
 import { RecentProjectsSection } from './RecentProjectsSection';
 import { NewPropertyPinWorkflow } from './NewPropertyPinWorkflow';
-import { SideChatPanel } from './SideChatPanel';
+import { SideChatPanel, SideChatPanelRef } from './SideChatPanel';
 import { FloatingChatBubble } from './FloatingChatBubble';
 import { QuickStartBar } from './QuickStartBar';
 import { FilingSidebarProvider, useFilingSidebar } from '../contexts/FilingSidebarContext';
+import { useChatPanel } from '../contexts/ChatPanelContext';
 import { FilingSidebar } from './FilingSidebar';
 import { UploadProgressBar } from './UploadProgressBar';
+import { ProjectsPage } from './ProjectsPage';
+import { PropertyDetailsPanel } from './PropertyDetailsPanel';
+import { useChatHistory } from './ChatHistoryContext';
+import { useBrowserFullscreen } from '../contexts/BrowserFullscreenContext';
+import type { QueryContentSegment } from '@/types/segmentInput';
 
 export const DEFAULT_MAP_LOCATION_KEY = 'defaultMapLocation';
 
@@ -87,6 +93,8 @@ const LocationPickerModal: React.FC<{
   const [isPreviewMode, setIsPreviewMode] = React.useState(false);
   // Store sidebar state before entering preview mode
   const sidebarStateBeforePreviewRef = React.useRef<boolean | null>(null);
+  // Store sidebar state before opening the modal
+  const sidebarStateBeforeModalRef = React.useRef<boolean | null>(null);
   const [locationInput, setLocationInput] = React.useState<string>('');
   // Initialize with empty values - will be loaded from localStorage when modal opens
   const [selectedCoordinates, setSelectedCoordinates] = React.useState<[number, number] | null>(null);
@@ -94,6 +102,10 @@ const LocationPickerModal: React.FC<{
   const [selectedZoom, setSelectedZoom] = React.useState<number>(9.5);
   const [isGeocoding, setIsGeocoding] = React.useState(false);
   const [geocodeError, setGeocodeError] = React.useState<string>('');
+  const [suggestions, setSuggestions] = React.useState<Array<{ place_name: string; center: [number, number] }>>([]);
+  const [showSuggestions, setShowSuggestions] = React.useState(false);
+  const [isLoadingSuggestions, setIsLoadingSuggestions] = React.useState(false);
+  const isSelectingSuggestionRef = React.useRef<boolean>(false);
   
   const mapContainer = React.useRef<HTMLDivElement>(null);
   const previewMapContainer = React.useRef<HTMLDivElement>(null);
@@ -115,17 +127,116 @@ const LocationPickerModal: React.FC<{
   const isLoadingFromStorageRef = React.useRef<boolean>(false);
   // Track if coordinates are being updated from map drag to prevent effect loop
   const isUpdatingFromDragRef = React.useRef<boolean>(false);
+  // Track if map is in initial load phase - prevent any zoom/position changes during this
+  const isInitialMapLoadRef = React.useRef<boolean>(true);
 
   // Track if location data is ready to prevent race conditions
   const [isLocationDataReady, setIsLocationDataReady] = React.useState(false);
+
+  // Fetch autocomplete suggestions
+  React.useEffect(() => {
+    if (!locationInput.trim() || locationInput.length < 2) {
+      setSuggestions([]);
+      setShowSuggestions(false);
+      return;
+    }
+
+    // Don't fetch suggestions if we're in the middle of selecting one
+    if (isSelectingSuggestionRef.current) {
+      return;
+    }
+
+    const fetchSuggestions = async () => {
+      setIsLoadingSuggestions(true);
+      try {
+        const geocodingUrl = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(locationInput)}.json?access_token=${mapboxToken}&limit=5&autocomplete=true&country=gb&proximity=-0.1276,51.5074`;
+        const response = await fetch(geocodingUrl);
+        const data = await response.json();
+        if (data.features && data.features.length > 0) {
+          setSuggestions(data.features.map((feature: any) => ({
+            place_name: feature.place_name,
+            center: feature.center
+          })));
+          // Only show suggestions if we're not selecting one
+          if (!isSelectingSuggestionRef.current) {
+            setShowSuggestions(true);
+          }
+        } else {
+          setSuggestions([]);
+          setShowSuggestions(false);
+        }
+      } catch (error) {
+        console.error('Suggestions error:', error);
+        setSuggestions([]);
+      } finally {
+        setIsLoadingSuggestions(false);
+      }
+    };
+
+    // Debounce the search
+    const timeoutId = setTimeout(fetchSuggestions, 300);
+    return () => clearTimeout(timeoutId);
+  }, [locationInput, mapboxToken]);
+
+  // Handle suggestion selection
+  const handleSuggestionSelect = (suggestion: { place_name: string; center: [number, number] }) => {
+    isSelectingSuggestionRef.current = true;
+    setLocationInput(suggestion.place_name);
+    setShowSuggestions(false);
+    
+    const [lng, lat] = suggestion.center;
+    const coords: [number, number] = [lng, lat];
+    
+    setSelectedCoordinates(coords);
+    setSelectedLocationName(suggestion.place_name);
+    
+    // Geocode to get bbox and calculate zoom
+    const geocodeForZoom = async () => {
+      try {
+        const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(suggestion.place_name)}.json?access_token=${mapboxToken}&limit=1`;
+        const response = await fetch(url);
+        const data = await response.json();
+        if (data.features && data.features.length > 0) {
+          const feature = data.features[0];
+          const calculatedZoom = calculateZoomFromBbox(feature.bbox, feature.place_type);
+          setSelectedZoom(calculatedZoom);
+        }
+      } catch (error) {
+        console.error('Error geocoding for zoom:', error);
+      } finally {
+        isSelectingSuggestionRef.current = false;
+      }
+    };
+    
+    geocodeForZoom();
+  };
+
+  // Store and restore sidebar state when modal opens/closes
+  React.useEffect(() => {
+    if (isOpen) {
+      // Store sidebar state when modal opens
+      if (getSidebarState) {
+        sidebarStateBeforeModalRef.current = getSidebarState();
+      }
+      // Close sidebar when modal opens
+      onCloseSidebar?.();
+    } else {
+      // Restore sidebar state when modal closes
+      if (onRestoreSidebarState && sidebarStateBeforeModalRef.current !== null) {
+        onRestoreSidebarState(sidebarStateBeforeModalRef.current);
+        sidebarStateBeforeModalRef.current = null;
+      }
+    }
+  }, [isOpen, getSidebarState, onCloseSidebar, onRestoreSidebarState]);
 
   // Reload saved location when modal opens - simple: whatever was last saved
   React.useEffect(() => {
     if (isOpen) {
       setIsLocationDataReady(false);
       
-      // Set flag to prevent sync effect from running during initial load
+      // Set flags to prevent sync effect and zoom updates during initial load
       isLoadingFromStorageRef.current = true;
+      isInitialMapLoadRef.current = true;
       
       // Simple logic: Get the last saved location from localStorage
       if (typeof window !== 'undefined') {
@@ -163,8 +274,9 @@ const LocationPickerModal: React.FC<{
       console.log('📍 LocationPicker: No saved location found, using default (London)');
     } else {
       setIsLocationDataReady(false);
-      // Reset flag when modal closes
+      // Reset flags when modal closes
       isLoadingFromStorageRef.current = false;
+      isInitialMapLoadRef.current = true; // Reset for next open
     }
   }, [isOpen]);
 
@@ -217,27 +329,31 @@ const LocationPickerModal: React.FC<{
     const initialCenter = selectedCoordinates;
     const initialZoom = selectedZoom;
 
-    // Wait for dialog animation to complete (200ms) plus buffer for rendering
-    // Use a longer delay to account for Radix UI dialog animations
-    const initTimeout = setTimeout(() => {
+    // Wait for dialog to be fully open and use requestAnimationFrame for smoother initialization
+    const initMap = () => {
       if (!isOpen || !mapContainer.current) {
         console.error('❌ LocationPicker: Modal closed or container disappeared before map init', { isOpen, hasContainer: !!mapContainer.current });
         return;
       }
 
-      // Double-check container has dimensions - retry if not ready
-      const checkAndInit = () => {
-        if (!isOpen || !mapContainer.current) return;
+      // Use requestAnimationFrame to ensure DOM is ready and dialog animation is complete
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          if (!isOpen || !mapContainer.current) return;
 
-        if (mapContainer.current.offsetWidth === 0 || mapContainer.current.offsetHeight === 0) {
-          console.warn('📍 LocationPicker: Container has no dimensions, retrying...', {
-            width: mapContainer.current.offsetWidth,
-            height: mapContainer.current.offsetHeight
-          });
-          // Retry after a short delay
-          setTimeout(checkAndInit, 100);
-          return;
-        }
+          // Double-check container has dimensions - retry if not ready
+          const checkAndInit = () => {
+            if (!isOpen || !mapContainer.current) return;
+
+            if (mapContainer.current.offsetWidth === 0 || mapContainer.current.offsetHeight === 0) {
+              console.warn('📍 LocationPicker: Container has no dimensions, retrying...', {
+                width: mapContainer.current.offsetWidth,
+                height: mapContainer.current.offsetHeight
+              });
+              // Use requestAnimationFrame for retry instead of setTimeout
+              requestAnimationFrame(checkAndInit);
+              return;
+            }
 
         // Container is ready, proceed with initialization
         console.log('📍 LocationPicker: Creating map instance...', {
@@ -264,7 +380,11 @@ const LocationPickerModal: React.FC<{
             dragPan: true,
             scrollZoom: true,
             boxZoom: true,
-            doubleClickZoom: true
+            doubleClickZoom: true,
+            // Performance optimizations
+            antialias: false, // Disable antialiasing for better performance
+            preserveDrawingBuffer: false, // Don't preserve drawing buffer unless needed
+            fadeDuration: 0 // Disable fade animations for faster rendering
           });
 
           console.log('✅ LocationPicker: Map instance created', {
@@ -280,16 +400,22 @@ const LocationPickerModal: React.FC<{
 
             console.log('✅ LocationPicker: Map loaded successfully');
             
-            // Map is now loaded and initialized, allow sync effect to run after a short delay
-            // This prevents the sync from running immediately and causing glitches
+            // Map is now loaded and initialized, allow sync effect to run after a delay
+            // Keep the flag true longer to prevent any sync during initial render
+            // The map is already at the correct position from constructor, so no sync needed
             setTimeout(() => {
               isMapJustInitializedRef.current = false;
               isLoadingFromStorageRef.current = false; // Clear loading flag after map is stable
+              isInitialMapLoadRef.current = false; // Allow zoom/position updates after map is fully stable
               console.log('📍 LocationPicker: Map initialization complete, sync effect can now run');
-            }, 1000); // 1 second delay to ensure map is stable
+            }, 2000); // 2 second delay to ensure map is fully stable and no sync happens on initial load
 
-            // Resize map to ensure it renders correctly
-            map.current.resize();
+            // Resize map using requestAnimationFrame for smoother rendering
+            requestAnimationFrame(() => {
+              if (map.current) {
+                map.current.resize();
+              }
+            });
 
             // Don't add marker - using dotted border frame instead
             // marker.current = new mapboxgl.Marker({ color: '#3b82f6' })
@@ -299,18 +425,15 @@ const LocationPickerModal: React.FC<{
             console.log('✅ LocationPicker: Map loaded (no marker - using dotted border frame)');
 
             // Hide Mapbox branding
-            const container = map.current.getContainer();
-            const attrib = container.querySelector('.mapboxgl-ctrl-attrib');
-            const logo = container.querySelector('.mapboxgl-ctrl-logo');
-            if (attrib) (attrib as HTMLElement).style.display = 'none';
-            if (logo) (logo as HTMLElement).style.display = 'none';
-
-            // Force a repaint to ensure map is visible
-            setTimeout(() => {
+            requestAnimationFrame(() => {
               if (map.current) {
-                map.current.resize();
+                const container = map.current.getContainer();
+                const attrib = container.querySelector('.mapboxgl-ctrl-attrib');
+                const logo = container.querySelector('.mapboxgl-ctrl-logo');
+                if (attrib) (attrib as HTMLElement).style.display = 'none';
+                if (logo) (logo as HTMLElement).style.display = 'none';
               }
-            }, 100);
+            });
           };
 
           const handleMapClick = (e: mapboxgl.MapMouseEvent) => {
@@ -377,7 +500,12 @@ const LocationPickerModal: React.FC<{
           const handleStyleLoad = () => {
             if (map.current) {
               console.log('✅ LocationPicker: Map style loaded');
-              map.current.resize();
+              // Use requestAnimationFrame for smoother resize
+              requestAnimationFrame(() => {
+                if (map.current) {
+                  map.current.resize();
+                }
+              });
             }
           };
 
@@ -387,22 +515,19 @@ const LocationPickerModal: React.FC<{
           map.current.on('moveend', handleMapMoveEnd);
           map.current.on('error', handleMapError);
           map.current.on('style.load', handleStyleLoad);
-      
-          // Also try to resize after a short delay as fallback
-          setTimeout(() => {
-            if (map.current && !map.current.loaded()) {
-              console.log('📍 LocationPicker: Map not loaded yet, will resize when ready');
-            } else if (map.current) {
-              map.current.resize();
-            }
-          }, 500);
         } catch (error) {
           console.error('❌ LocationPicker: Failed to create map:', error);
         }
-      };
+          };
 
-      checkAndInit();
-    }, 300); // Increased delay to account for dialog animation (200ms) + buffer
+          checkAndInit();
+        });
+      });
+    };
+
+    // Wait for dialog animation to complete, then initialize
+    // Use a shorter delay since we're using requestAnimationFrame for better timing
+    const initTimeout = setTimeout(initMap, 150);
 
     return () => {
       clearTimeout(initTimeout);
@@ -435,6 +560,12 @@ const LocationPickerModal: React.FC<{
       return;
     }
     
+    // Skip sync during initial map load - map is already at correct position
+    if (isInitialMapLoadRef.current) {
+      console.log('📍 LocationPicker: Skipping sync - initial map load');
+      return;
+    }
+    
     // Skip sync if this coordinate change came from user interaction
     if (isUserInteractionRef.current) {
       console.log('📍 LocationPicker: Skipping sync - coordinate change from user interaction');
@@ -460,13 +591,13 @@ const LocationPickerModal: React.FC<{
     const syncMap = () => {
       if (!map.current || !map.current.loaded()) return;
       
-      // Double-check we're not in a user interaction, just initialized, or loading from storage
-      if (isUserInteractionRef.current || isMapJustInitializedRef.current || isLoadingFromStorageRef.current) {
+      // Double-check we're not in a user interaction, just initialized, loading from storage, or initial load
+      if (isUserInteractionRef.current || isMapJustInitializedRef.current || isLoadingFromStorageRef.current || isInitialMapLoadRef.current) {
         return;
       }
 
       try {
-        // Check if map is already at the target location to avoid unnecessary flyTo
+        // Check if map is already at the target location to avoid unnecessary movement
         const currentCenter = map.current.getCenter();
         const currentZoom = map.current.getZoom();
         const targetLng = selectedCoordinates[0];
@@ -479,14 +610,14 @@ const LocationPickerModal: React.FC<{
         );
         const zoomDiff = Math.abs(currentZoom - targetZoom);
         
-        // Only flyTo if the location or zoom is significantly different
+        // Only move if the location or zoom is significantly different
         if (distance > 0.001 || zoomDiff > 0.5) {
-          map.current.flyTo({
+          // Use jumpTo instead of flyTo to avoid animation - instant positioning
+          map.current.jumpTo({
             center: selectedCoordinates,
-            zoom: targetZoom,
-            duration: 600
+            zoom: targetZoom
           });
-          console.log('✅ LocationPicker: Map synced with coordinates');
+          console.log('✅ LocationPicker: Map synced with coordinates (instant)');
         } else {
           console.log('📍 LocationPicker: Map already at target location, skipping sync');
         }
@@ -690,6 +821,12 @@ const LocationPickerModal: React.FC<{
           const calculatedZoom = calculateZoomFromBbox(feature.bbox, feature.place_type);
           setSelectedLocationName(feature.place_name);
           setLocationInput(feature.place_name);
+          
+          // Don't update zoom during initial map load - map is already at correct position
+          if (isInitialMapLoadRef.current) {
+            console.log('📍 LocationPicker: Skipping zoom update during initial map load');
+            return;
+          }
           
           // Only update zoom if it wasn't explicitly set by user, or if the calculated zoom is significantly different
           // This prevents overwriting user's intended zoom level
@@ -944,8 +1081,10 @@ const LocationPickerModal: React.FC<{
   return (
     <>
       <motion.button
-        onClick={() => setIsOpen(true)}
-        className="w-full group relative bg-white border border-slate-200 rounded-lg hover:border-slate-300 hover:shadow-sm transition-all duration-200 text-left"
+        onClick={() => {
+          setIsOpen(true);
+        }}
+        className="w-full group relative bg-white border border-slate-200 rounded-none hover:border-slate-300 hover:shadow-sm transition-all duration-200 text-left"
         whileHover={{ scale: 1.001 }}
         whileTap={{ scale: 0.999 }}
       >
@@ -957,14 +1096,14 @@ const LocationPickerModal: React.FC<{
           
           {/* Content */}
           <div className="flex-1 min-w-0">
-            <div className="font-medium text-slate-900 mb-1 text-sm">
+            <div className="font-medium text-slate-900 mb-1" style={{ fontSize: '13px' }}>
               Default Map Location
             </div>
             <div className="text-xs text-slate-500 mb-3">
               Choose where the map opens when you first view it
             </div>
             {savedLocation && (
-              <div className="text-sm text-slate-600 font-normal">
+              <div className="text-slate-600 font-normal" style={{ fontSize: '12px' }}>
                 {savedLocation}
               </div>
             )}
@@ -980,86 +1119,244 @@ const LocationPickerModal: React.FC<{
       </motion.button>
 
       <Dialog open={isOpen} onOpenChange={setIsOpen}>
-        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto p-0">
-          <DialogHeader className="px-6 pt-6 pb-5 border-b border-slate-100">
-            <DialogTitle className="text-xl font-semibold text-slate-900 tracking-tight">Set Default Map Location</DialogTitle>
+        <style>{`
+          [data-radix-dialog-overlay] {
+            background-color: rgba(0, 0, 0, 0.2) !important;
+          }
+          [data-radix-dialog-content] {
+            will-change: transform;
+          }
+          .mapboxgl-canvas {
+            will-change: transform;
+            transform: translateZ(0);
+            image-rendering: -webkit-optimize-contrast;
+          }
+        `}</style>
+        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto p-0" style={{ borderRadius: 0 }}>
+          <DialogHeader className="px-4 pt-4 pb-3 border-b" style={{ borderColor: '#E9E9EB' }}>
+            <DialogTitle style={{ fontSize: '14px', fontWeight: 500, color: '#415C85', letterSpacing: '-0.01em' }}>Set Default Map Location</DialogTitle>
           </DialogHeader>
 
-          <div className="px-6 py-5 space-y-5">
+          <div className="px-4 py-4 space-y-4">
             {/* Location Input */}
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-slate-700">Search Location</label>
-              <input
-                type="text"
-                value={locationInput}
-                onChange={(e) => {
-                  setLocationInput(e.target.value);
-                  setGeocodeError('');
-                }}
-                placeholder="Search for a location..."
-                className="w-full px-4 py-3 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-slate-900/10 focus:border-slate-400 text-slate-900 placeholder:text-slate-400 transition-all duration-200 bg-white"
-              />
+            <div className="space-y-1.5 relative">
+              <label style={{ fontSize: '13px', fontWeight: 500, color: '#63748A', letterSpacing: '-0.01em' }}>Search Location</label>
+              <div className="relative">
+                <div
+                  className="flex items-center"
+                  id="location-search-container"
+                  style={{
+                    width: '100%',
+                    padding: '10px 12px',
+                    backgroundColor: '#FCFCFC',
+                    border: '1px solid #E9E9EB',
+                    borderRadius: '2px',
+                    transition: 'border-color 150ms ease',
+                  }}
+                >
+                  <Search className="w-4 h-4 text-gray-400 flex-shrink-0" strokeWidth={2} style={{ marginRight: '12px' }} />
+                  <input
+                    type="text"
+                    value={locationInput}
+                    onChange={(e) => {
+                      setLocationInput(e.target.value);
+                      setGeocodeError('');
+                      if (!isSelectingSuggestionRef.current) {
+                        setShowSuggestions(true);
+                      }
+                    }}
+                    onFocus={(e) => {
+                      const container = e.currentTarget.closest('#location-search-container') as HTMLElement;
+                      if (container) {
+                        container.style.borderColor = '#415C85';
+                        container.style.boxShadow = '0 0 0 2px rgba(65, 92, 133, 0.1)';
+                      }
+                      if (suggestions.length > 0) {
+                        setShowSuggestions(true);
+                      }
+                    }}
+                    onBlur={(e) => {
+                      const container = e.currentTarget.closest('#location-search-container') as HTMLElement;
+                      if (container) {
+                        container.style.borderColor = '#E9E9EB';
+                        container.style.boxShadow = 'none';
+                      }
+                      // Delay hiding suggestions to allow click events
+                      setTimeout(() => {
+                        setShowSuggestions(false);
+                      }, 200);
+                    }}
+                    placeholder="Search for a location..."
+                    style={{
+                      flex: 1,
+                      fontSize: '14px',
+                      fontWeight: 400,
+                      color: '#63748A',
+                      backgroundColor: 'transparent',
+                      border: 'none',
+                      outline: 'none',
+                      letterSpacing: '-0.01em',
+                      lineHeight: '1.4'
+                    }}
+                  />
+                  {isLoadingSuggestions && (
+                    <div className="flex-shrink-0 ml-2">
+                      <Loader2 className="w-4 h-4 animate-spin text-gray-400" />
+                    </div>
+                  )}
+                  {locationInput && !isLoadingSuggestions && (
+                    <button
+                      onClick={() => {
+                        if (locationInput.trim()) {
+                          geocodeLocation(locationInput);
+                        }
+                      }}
+                      disabled={isGeocoding}
+                      className="flex-shrink-0 disabled:opacity-50 ml-2"
+                      style={{
+                        padding: '0',
+                        backgroundColor: 'transparent',
+                        color: '#63748A',
+                        borderRadius: '16px',
+                        width: '36px',
+                        height: '32px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        transition: 'background-color 150ms ease',
+                      }}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.backgroundColor = '#f5f5f5';
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.backgroundColor = 'transparent';
+                      }}
+                    >
+                      {isGeocoding ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowRight className="w-4 h-4" strokeWidth={2} />}
+                    </button>
+                  )}
+                </div>
+
+                {/* Suggestions Dropdown */}
+                {showSuggestions && suggestions.length > 0 && (
+                  <div 
+                    className="absolute z-50"
+                    style={{
+                      top: '100%',
+                      left: 0,
+                      right: 0,
+                      width: '100%',
+                      background: '#FCFCFC',
+                      border: '1px solid #E9E9EB',
+                      borderTop: 'none',
+                      borderRadius: '0 0 2px 2px',
+                      boxShadow: 'none',
+                      maxHeight: '400px',
+                      overflowY: 'auto',
+                      marginTop: '1px',
+                    }}
+                  >
+                    {suggestions.map((suggestion, index) => (
+                      <button
+                        key={index}
+                        onMouseDown={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          handleSuggestionSelect(suggestion);
+                        }}
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          handleSuggestionSelect(suggestion);
+                        }}
+                        className="w-full text-left px-4 py-3 hover:bg-gray-50 transition-colors border-b border-gray-100 last:border-b-0"
+                        style={{
+                          fontSize: '14px',
+                          color: '#63748A',
+                          lineHeight: '1.4',
+                        }}
+                      >
+                        <div className="flex items-start gap-3">
+                          <MapPin className="w-4 h-4 text-gray-400 flex-shrink-0 mt-0.5" strokeWidth={1.5} />
+                          <span>{suggestion.place_name}</span>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
               {isGeocoding && (
-                <p className="text-xs text-slate-500 flex items-center gap-1.5">
-                  <span className="inline-block w-1 h-1 bg-slate-400 rounded-full animate-pulse" />
+                <p style={{ fontSize: '12px', color: '#6C7180', display: 'flex', alignItems: 'center', gap: '6px', marginTop: '8px' }}>
+                  <span style={{ display: 'inline-block', width: '4px', height: '4px', backgroundColor: '#6C7180', borderRadius: '50%', animation: 'pulse 1.5s ease-in-out infinite' }} />
                   Searching...
                 </p>
               )}
               {geocodeError && (
-                <p className="text-xs text-red-600 flex items-center gap-1.5">
-                  <span className="inline-block w-1 h-1 bg-red-500 rounded-full" />
+                <p style={{ fontSize: '12px', color: '#DC2626', display: 'flex', alignItems: 'center', gap: '6px', marginTop: '8px' }}>
+                  <span style={{ display: 'inline-block', width: '4px', height: '4px', backgroundColor: '#DC2626', borderRadius: '50%' }} />
                   {geocodeError}
                 </p>
               )}
             </div>
 
             {/* Map Preview */}
-            <div className="space-y-2.5">
-              <label className="text-sm font-medium text-slate-700">Map Preview</label>
+            <div className="space-y-1.5">
+              <label style={{ fontSize: '13px', fontWeight: 500, color: '#63748A', letterSpacing: '-0.01em' }}>Map Preview</label>
               <div 
-                className="w-full h-96 rounded-xl border border-slate-200 overflow-hidden bg-slate-50 relative shadow-sm"
-                style={{ minHeight: '384px', width: '100%' }}
+                className="w-full h-96 overflow-hidden relative"
+                style={{ 
+                  minHeight: '384px', 
+                  width: '100%',
+                  border: '1px solid #E9E9EB',
+                  borderRadius: '2px',
+                  backgroundColor: '#F9F9F9'
+                }}
               >
                 {/* Map Container */}
                 <div 
                   ref={mapContainer}
                   className="w-full h-full"
-                  style={{ position: 'relative', zIndex: 1, pointerEvents: 'auto' }}
-                />
-                
-                {/* Refined Border Frame Overlay */}
-                <div 
-                  className="absolute pointer-events-none z-10 border-2 border-slate-300/50 border-dashed rounded-lg" 
-                  style={{
-                    top: '24px',
-                    left: '24px',
-                    right: '24px',
-                    bottom: '24px',
+                  style={{ 
+                    position: 'relative', 
+                    zIndex: 1, 
+                    pointerEvents: 'auto',
+                    willChange: 'transform',
+                    transform: 'translateZ(0)', // Force GPU acceleration
+                    backfaceVisibility: 'hidden' // Optimize rendering
                   }}
                 />
               </div>
             </div>
 
-            {/* Selected Location Display - Simplified */}
-            {selectedLocationName && (
-              <div className="bg-slate-50 border border-slate-200 rounded-lg p-4">
-                <div className="text-sm font-medium text-slate-900 leading-relaxed">{selectedLocationName}</div>
-              </div>
-            )}
           </div>
 
-          <DialogFooter className="px-6 py-4 border-t border-slate-100 bg-slate-50/50">
+          <DialogFooter style={{ padding: '12px 16px', borderTop: '1px solid #E9E9EB', backgroundColor: '#F9F9F9' }}>
             <div className="flex items-center justify-between w-full">
-              <Button
-                variant="outline"
+              <button
                 onClick={() => setIsOpen(false)}
-                className="border-slate-200 text-slate-700 hover:bg-white hover:border-slate-300 font-medium"
+                style={{
+                  padding: '8px 12px',
+                  fontSize: '12px',
+                  fontWeight: 500,
+                  color: '#63748A',
+                  backgroundColor: '#F3F4F6',
+                  border: '1px solid #E9E9EB',
+                  borderRadius: '2px',
+                  cursor: 'pointer',
+                  transition: 'background-color 150ms ease',
+                  letterSpacing: '-0.01em'
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.backgroundColor = '#F0F6FF';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.backgroundColor = '#F3F4F6';
+                }}
               >
                 Cancel
-              </Button>
-              <div className="flex items-center gap-3">
-                <Button
-                  variant="outline"
+              </button>
+              <div className="flex items-center gap-2">
+                <button
                   onClick={() => {
                     setIsOpen(false);
                     // Store sidebar state before closing
@@ -1070,17 +1367,57 @@ const LocationPickerModal: React.FC<{
                     onCloseSidebar?.();
                     setIsPreviewMode(true);
                   }}
-                  className="border-slate-200 text-slate-700 hover:bg-white hover:border-slate-300 font-medium"
+                  style={{
+                    padding: '8px 12px',
+                    fontSize: '12px',
+                    fontWeight: 500,
+                    color: '#63748A',
+                    backgroundColor: '#F3F4F6',
+                    border: '1px solid #E9E9EB',
+                    borderRadius: '2px',
+                    cursor: 'pointer',
+                    transition: 'background-color 150ms ease',
+                    letterSpacing: '-0.01em'
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.backgroundColor = '#F0F6FF';
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.backgroundColor = '#F3F4F6';
+                  }}
                 >
                   Adjust Zoom & Preview
-                </Button>
-                <Button
+                </button>
+                <button
                   onClick={handleConfirm}
                   disabled={!selectedCoordinates}
-                  className="bg-slate-900 hover:bg-slate-800 text-white disabled:opacity-50 disabled:cursor-not-allowed font-medium shadow-sm min-w-[140px]"
+                  style={{
+                    padding: '8px 12px',
+                    fontSize: '12px',
+                    fontWeight: 500,
+                    color: '#FFFFFF',
+                    backgroundColor: !selectedCoordinates ? '#F3F4F6' : '#415C85',
+                    border: '1px solid #E9E9EB',
+                    borderRadius: '2px',
+                    cursor: !selectedCoordinates ? 'not-allowed' : 'pointer',
+                    transition: 'background-color 150ms ease',
+                    letterSpacing: '-0.01em',
+                    minWidth: '140px',
+                    opacity: !selectedCoordinates ? 0.5 : 1
+                  }}
+                  onMouseEnter={(e) => {
+                    if (selectedCoordinates) {
+                      e.currentTarget.style.backgroundColor = '#3A4F73';
+                    }
+                  }}
+                  onMouseLeave={(e) => {
+                    if (selectedCoordinates) {
+                      e.currentTarget.style.backgroundColor = '#415C85';
+                    }
+                  }}
                 >
                   Confirm Location
-                </Button>
+                </button>
               </div>
             </div>
           </DialogFooter>
@@ -1096,7 +1433,7 @@ const LocationPickerModal: React.FC<{
             exit={{ opacity: 0 }}
             className="fixed inset-0 z-[9999]"
             style={{
-              backgroundColor: '#f1f5f9', // slate-100 - ensure full coverage
+              backgroundColor: '#F1F1F1', // Match main background color
               top: 0,
               left: 0,
               right: 0,
@@ -1107,22 +1444,19 @@ const LocationPickerModal: React.FC<{
           >
             {/* Preview Mode Label */}
             <div className="absolute top-6 left-1/2 transform -translate-x-1/2 z-[10003] pointer-events-none">
-              <div className="bg-slate-900 text-white px-4 py-2 rounded-full text-xs font-semibold tracking-wide shadow-lg backdrop-blur-sm bg-opacity-90">
+              <div style={{
+                backgroundColor: '#415C85',
+                color: '#FFFFFF',
+                padding: '6px 12px',
+                borderRadius: '2px',
+                fontSize: '11px',
+                fontWeight: 500,
+                letterSpacing: '-0.01em',
+                boxShadow: '0 1px 3px rgba(0,0,0,0.1)'
+              }}>
                 Preview Mode
               </div>
             </div>
-
-            {/* Preview Mode Overlay Frame - with proper padding from screen edges */}
-            <div 
-              className="absolute pointer-events-none z-[10002] border-2 border-slate-400/70 border-dashed rounded-lg" 
-              style={{
-                top: '80px', // Padding below Preview Mode label
-                left: '48px', // Increased padding from left edge (after collapsed sidebar)
-                right: '48px', // Increased padding from right edge
-                bottom: '80px', // Enough space above buttons to see the border
-                boxShadow: '0 0 0 1px rgba(148, 163, 184, 0.2)'
-              }}
-            />
 
             {/* Full Screen Map - positioned to cover top white area */}
             <div 
@@ -1141,16 +1475,15 @@ const LocationPickerModal: React.FC<{
             
 
 
-            {/* Buttons - Inside dotted lines, positioned appropriately */}
+            {/* Buttons - Positioned at bottom right */}
             <div 
-              className="absolute z-[10001] flex gap-3"
+              className="absolute z-[10001] flex gap-2"
               style={{
-                bottom: '96px', // Positioned above the bottom border with spacing
-                right: '64px' // Aligned with right border padding
+                bottom: '24px',
+                right: '24px'
               }}
             >
-              <Button
-                variant="outline"
+              <button
                 onClick={() => {
                   setIsPreviewMode(false);
                   // Restore sidebar state
@@ -1159,11 +1492,28 @@ const LocationPickerModal: React.FC<{
                     sidebarStateBeforePreviewRef.current = null;
                   }
                 }}
-                className="px-4 py-2 h-auto bg-white hover:bg-slate-50 border-slate-200 text-slate-700 shadow-sm backdrop-blur-sm font-medium"
+                style={{
+                  padding: '8px 12px',
+                  fontSize: '12px',
+                  fontWeight: 500,
+                  color: '#63748A',
+                  backgroundColor: '#F3F4F6',
+                  border: '1px solid #E9E9EB',
+                  borderRadius: '2px',
+                  cursor: 'pointer',
+                  transition: 'background-color 150ms ease',
+                  letterSpacing: '-0.01em'
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.backgroundColor = '#F0F6FF';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.backgroundColor = '#F3F4F6';
+                }}
               >
                 Back
-              </Button>
-              <Button
+              </button>
+              <button
                 onClick={() => {
                   handleConfirm();
                   // Restore sidebar state after confirming
@@ -1172,10 +1522,28 @@ const LocationPickerModal: React.FC<{
                     sidebarStateBeforePreviewRef.current = null;
                   }
                 }}
-                className="px-4 py-2 h-auto bg-slate-900 hover:bg-slate-800 text-white shadow-sm font-medium min-w-[140px]"
+                style={{
+                  padding: '8px 12px',
+                  fontSize: '12px',
+                  fontWeight: 500,
+                  color: '#FFFFFF',
+                  backgroundColor: '#415C85',
+                  border: '1px solid #E9E9EB',
+                  borderRadius: '2px',
+                  cursor: 'pointer',
+                  transition: 'background-color 150ms ease',
+                  letterSpacing: '-0.01em',
+                  minWidth: '140px'
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.backgroundColor = '#3A4F73';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.backgroundColor = '#415C85';
+                }}
               >
                 Confirm Location
-              </Button>
+              </button>
             </div>
           </motion.div>
         )}
@@ -1187,6 +1555,7 @@ const LocationPickerModal: React.FC<{
 // Background Settings Component
 const BackgroundSettings: React.FC = () => {
   const BACKGROUNDS = [
+    { id: 'default-background', name: 'Default Background', image: '/Default Background.png' },
     { id: 'background1', name: 'Background 1', image: '/background1.png' },
     { id: 'background2', name: 'Background 2', image: '/background2.png' },
     { id: 'background3', name: 'Background 3', image: '/Background3.png' },
@@ -1196,7 +1565,7 @@ const BackgroundSettings: React.FC = () => {
     { id: 'velora-grass', name: 'Velora Grass', image: '/VeloraGrassBackground.png' },
   ];
 
-  const [selectedBackground, setSelectedBackground] = React.useState<string>('background5');
+  const [selectedBackground, setSelectedBackground] = React.useState<string>('default-background');
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
   // Load saved background on mount - check for custom uploaded background first
@@ -1210,6 +1579,10 @@ const BackgroundSettings: React.FC = () => {
         const saved = localStorage.getItem('dashboardBackground');
         if (saved) {
           setSelectedBackground(saved);
+        } else {
+          // Set default background if nothing is saved
+          setSelectedBackground('default-background');
+          localStorage.setItem('dashboardBackground', 'default-background');
         }
       }
     }
@@ -1254,9 +1627,9 @@ const BackgroundSettings: React.FC = () => {
 
   return (
     <div className="space-y-6">
-      <div className="space-y-2">
-        <h3 className="text-lg font-semibold text-slate-900 tracking-tight">Background</h3>
-        <p className="text-sm text-slate-600 leading-relaxed">
+      <div>
+        <h3 className="text-[15px] font-medium text-gray-900">Background</h3>
+        <p className="text-[13px] text-gray-500 mt-1.5 font-normal">
           Choose your dashboard background.
         </p>
       </div>
@@ -1269,7 +1642,7 @@ const BackgroundSettings: React.FC = () => {
             <motion.button
               key={background.id}
               onClick={() => handleBackgroundSelect(background.id)}
-              className={`relative rounded-lg overflow-hidden border-2 transition-all ${
+              className={`relative rounded-none overflow-hidden border-2 transition-all ${
                 isSelected
                   ? 'border-slate-900 shadow-lg ring-2 ring-slate-900 ring-offset-2'
                   : 'border-slate-200 hover:border-slate-300'
@@ -1293,24 +1666,12 @@ const BackgroundSettings: React.FC = () => {
               />
               {/* Overlay for selected state - subtle white overlay */}
               {isSelected && (
-                <div className="absolute inset-0 bg-white/5 border-2 border-slate-900 rounded-lg" />
+                <div className="absolute inset-0 bg-white/5 border-2 border-slate-900 rounded-none" />
               )}
               {/* Checkmark indicator - white circle with checkmark */}
               {isSelected && (
                 <div className="absolute top-2 right-2 w-6 h-6 bg-white rounded-full flex items-center justify-center shadow-md border border-slate-200">
-                  <svg
-                    className="w-4 h-4 text-slate-900"
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2.5}
-                      d="M5 13l4 4L19 7"
-                    />
-                  </svg>
+                  <Check className="w-4 h-4 text-slate-900" strokeWidth={2.5} />
                 </div>
               )}
             </motion.button>
@@ -1319,7 +1680,7 @@ const BackgroundSettings: React.FC = () => {
         {/* Add Background Button */}
         <motion.button
           onClick={() => fileInputRef.current?.click()}
-          className="relative rounded-lg overflow-hidden border-2 border-slate-200 hover:border-slate-300 transition-all flex items-center justify-center"
+          className="relative rounded-none overflow-hidden border-2 border-slate-200 hover:border-slate-300 transition-all flex items-center justify-center"
           style={{
             aspectRatio: '16/9',
             background: 'white',
@@ -1379,12 +1740,12 @@ const SettingsView: React.FC<{
   };
 
   const settingsCategories = [
-    { id: 'background', label: 'Background', icon: Image },
+    { id: 'background', label: 'Background', icon: Contrast },
     { id: 'map-settings', label: 'Map Settings', icon: Map },
     { id: 'notifications', label: 'Notifications', icon: Bell },
     { id: 'privacy', label: 'Privacy', icon: Shield },
     { id: 'language', label: 'Language & Region', icon: Globe },
-    { id: 'display', label: 'Display', icon: Layout },
+    { id: 'display', label: 'Display', icon: Fullscreen },
   ];
 
   const renderSettingsContent = () => {
@@ -1392,9 +1753,9 @@ const SettingsView: React.FC<{
       case 'map-settings':
         return (
           <div className="space-y-6">
-            <div className="space-y-2">
-              <h3 className="text-lg font-semibold text-slate-900 tracking-tight">Map Settings</h3>
-              <p className="text-sm text-slate-600 leading-relaxed">
+            <div>
+              <h3 className="text-[15px] font-medium text-gray-900">Map Settings</h3>
+              <p className="text-[13px] text-gray-500 mt-1.5 font-normal">
                 Configure your map preferences and default settings.
               </p>
             </div>
@@ -1418,8 +1779,8 @@ const SettingsView: React.FC<{
         return (
           <div className="space-y-6">
             <div>
-              <h3 className="text-xl font-semibold text-slate-800 mb-2">Privacy</h3>
-              <p className="text-sm text-slate-600">
+              <h3 className="text-[15px] font-medium text-gray-900">Privacy</h3>
+              <p className="text-[13px] text-gray-500 mt-1.5 font-normal">
                 Control your privacy and data settings.
               </p>
             </div>
@@ -1432,8 +1793,8 @@ const SettingsView: React.FC<{
         return (
           <div className="space-y-6">
             <div>
-              <h3 className="text-xl font-semibold text-slate-800 mb-2">Language & Region</h3>
-              <p className="text-sm text-slate-600">
+              <h3 className="text-[15px] font-medium text-gray-900">Language & Region</h3>
+              <p className="text-[13px] text-gray-500 mt-1.5 font-normal">
                 Set your language and regional preferences.
               </p>
             </div>
@@ -1446,8 +1807,8 @@ const SettingsView: React.FC<{
         return (
           <div className="space-y-6">
             <div>
-              <h3 className="text-xl font-semibold text-slate-800 mb-2">Display</h3>
-              <p className="text-sm text-slate-600">
+              <h3 className="text-[15px] font-medium text-gray-900">Display</h3>
+              <p className="text-[13px] text-gray-500 mt-1.5 font-normal">
                 Adjust display and layout preferences.
               </p>
             </div>
@@ -1465,36 +1826,40 @@ const SettingsView: React.FC<{
     <div className="w-full h-full flex">
       {/* Settings Sidebar - Sleek Design */}
       <div className="w-64 border-r border-slate-100 bg-white/95 backdrop-blur-sm">
-        <div className="p-6 border-b border-slate-100">
-          <h2 className="text-xl font-semibold text-slate-900 tracking-tight">Settings</h2>
-          <p className="text-sm text-slate-500 mt-1.5 font-normal">Manage your preferences</p>
+        <div className="p-6 border-b border-gray-100">
+          <h2 className="text-[15px] font-medium text-gray-900">Settings</h2>
+          <p className="text-[13px] text-gray-500 mt-1.5 font-normal">Manage your preferences</p>
         </div>
-        <nav className="px-4 py-3 space-y-0.5">
+        <nav className="px-3 py-3 space-y-0.5">
           {settingsCategories.map((category) => {
             const Icon = category.icon;
             const isActive = activeCategory === category.id;
             return (
-              <motion.button
+              <button
                 key={category.id}
                 onClick={() => setActiveCategory(category.id)}
-                className={`relative w-full flex items-center gap-3 px-4 py-2.5 rounded-lg text-sm font-medium transition-all duration-200 ${
-                  isActive
-                    ? 'bg-slate-700 text-white shadow-sm'
-                    : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
+                className={`w-full flex items-center gap-3 px-3 py-1.5 rounded transition-colors duration-75 group relative border ${
+                  isActive 
+                    ? 'bg-white text-gray-900 border-gray-300' 
+                    : 'text-gray-600 hover:bg-white/60 hover:text-gray-900 border-transparent'
                 }`}
-                whileHover={{ scale: 1.01 }}
-                whileTap={{ scale: 0.97 }}
-                transition={{ type: "spring", stiffness: 400, damping: 25 }}
-                initial={false}
+                style={{
+                  boxShadow: isActive ? '0 1px 2px rgba(0, 0, 0, 0.04)' : 'none',
+                  transition: 'background-color 75ms, color 75ms, border-color 75ms',
+                  boxSizing: 'border-box'
+                }}
+                aria-label={category.label}
               >
-                <Icon 
-                  className={`transition-all duration-200 ${
-                    isActive ? 'w-5 h-5' : 'w-4 h-4'
-                  }`}
-                  strokeWidth={isActive ? 2.5 : 2}
-                />
-                <span className="tracking-tight">{category.label}</span>
-              </motion.button>
+                <div className="relative">
+                  <Icon
+                    className="w-[18px] h-[18px] flex-shrink-0"
+                    strokeWidth={1.75}
+                  />
+                </div>
+                <span className="text-[13px] font-normal flex-1 text-left">
+                  {category.label}
+                </span>
+              </button>
             );
           })}
         </nav>
@@ -1516,6 +1881,116 @@ const SettingsView: React.FC<{
     </div>
   );
 };
+
+// Fullscreen Property View Component - manages its own chat width state for proper resize tracking
+interface FullscreenPropertyViewProps {
+  isVisible: boolean;
+  property: any;
+  isSidebarCollapsed?: boolean;
+  isSidebarExpanded?: boolean;
+  onClose: () => void;
+  onMessagesUpdate?: (messages: any[]) => void;
+  onNewChat?: () => void;
+  onSidebarToggle?: () => void;
+  onActiveChatChange?: (isActive: boolean) => void;
+  onOpenChatHistory?: () => void;
+}
+
+const FullscreenPropertyView: React.FC<FullscreenPropertyViewProps> = ({
+  isVisible,
+  property,
+  isSidebarCollapsed,
+  isSidebarExpanded,
+  onClose,
+  onMessagesUpdate,
+  onNewChat,
+  onSidebarToggle,
+  onActiveChatChange,
+  onOpenChatHistory
+}) => {
+  // Track the dynamic chat panel width for proper resize behavior
+  const [dynamicChatWidth, setDynamicChatWidth] = React.useState<number>(0);
+  
+  // Calculate sidebar width for positioning
+  const TOGGLE_RAIL_WIDTH = 12;
+  let fullscreenSidebarWidth = 0;
+  if (isSidebarCollapsed) {
+    fullscreenSidebarWidth = TOGGLE_RAIL_WIDTH;
+  } else if (isSidebarExpanded) {
+    fullscreenSidebarWidth = 320 + TOGGLE_RAIL_WIDTH;
+  } else {
+    fullscreenSidebarWidth = 224 + TOGGLE_RAIL_WIDTH;
+  }
+  
+  // Calculate initial 50% width
+  const initialChatWidth = React.useMemo(() => {
+    const availableWidth = typeof window !== 'undefined' 
+      ? window.innerWidth - fullscreenSidebarWidth 
+      : 800;
+    return availableWidth / 2;
+  }, [fullscreenSidebarWidth]);
+  
+  // Use dynamic width if set, otherwise use initial 50%
+  const effectiveChatWidth = dynamicChatWidth > 0 ? dynamicChatWidth : initialChatWidth;
+  
+  if (!isVisible || !property) return null;
+  
+  return (
+    <>
+      {/* Back button - positioned above everything */}
+      <button
+        onClick={onClose}
+        className="fixed top-4 z-[10000] flex items-center gap-1.5 px-3 py-1.5 bg-white border border-gray-200 rounded-lg shadow-sm hover:bg-gray-50 transition-colors"
+        style={{ left: fullscreenSidebarWidth + 16 }}
+      >
+        <ArrowLeft className="w-4 h-4 text-gray-600" strokeWidth={1.5} />
+        <span className="text-sm text-gray-600">Back to Projects</span>
+      </button>
+
+      {/* Chat Panel - SideChatPanel handles its own positioning */}
+      <SideChatPanel
+        isVisible={true}
+        query=""
+        citationContext={null}
+        isSidebarCollapsed={isSidebarCollapsed}
+        sidebarWidth={fullscreenSidebarWidth}
+        isFilingSidebarClosing={false}
+        isSidebarCollapsing={false}
+        restoreChatId={null}
+        newAgentTrigger={0}
+        isPropertyDetailsOpen={true}
+        shouldExpand={true}
+        isMapVisible={false}
+        onQuerySubmit={(newQuery) => {
+          console.log('Query from fullscreen property view:', newQuery);
+        }}
+        onMinimize={onClose}
+        onMessagesUpdate={onMessagesUpdate}
+        onMapToggle={onClose}
+        onNewChat={onNewChat}
+        onSidebarToggle={onSidebarToggle}
+        onChatWidthChange={(width) => {
+          // Update dynamic width when chat is resized
+          setDynamicChatWidth(width);
+        }}
+        onActiveChatChange={onActiveChatChange}
+        onOpenChatHistory={onOpenChatHistory}
+      />
+
+      {/* Property Details Panel - positioned after chat panel */}
+      <PropertyDetailsPanel
+        property={property}
+        isVisible={true}
+        onClose={onClose}
+        isLargeCardMode={false}
+        isInChatMode={true}
+        chatPanelWidth={effectiveChatWidth}
+        sidebarWidth={fullscreenSidebarWidth}
+      />
+    </>
+  );
+};
+
 export interface MainContentProps {
   className?: string;
   currentView?: string;
@@ -1537,8 +2012,17 @@ export interface MainContentProps {
   onRestoreSidebarState?: (shouldBeCollapsed: boolean) => void;
   getSidebarState?: () => boolean;
   isSidebarCollapsed?: boolean;
+  isSidebarExpanded?: boolean;
   onSidebarToggle?: () => void;
   onMapVisibilityChange?: (isVisible: boolean) => void; // Callback to notify parent of map visibility changes
+  onActiveChatChange?: (isActive: boolean) => void; // Callback when active chat state changes
+  shouldRestoreActiveChat?: boolean; // Signal from sidebar to restore active chat
+  shouldRestoreSelectedChat?: string | null; // Chat ID to restore immediately from agent sidebar
+  onChatVisibilityChange?: (isVisible: boolean) => void; // Callback when chat panel visibility changes
+  onOpenChatHistory?: () => void; // Callback to open chat history panel
+  externalIsMapVisible?: boolean; // External control of map visibility (from parent)
+  onNavigateToDashboard?: () => void; // Callback to navigate to dashboard (direct synchronous navigation)
+  onNewChat?: (handler: () => void) => (() => void) | void; // Callback pattern: MainContent provides its handler, DashboardLayout returns its handler
 }
 export const MainContent = ({
   className,
@@ -1556,18 +2040,97 @@ export const MainContent = ({
   onRestoreSidebarState,
   getSidebarState,
   isSidebarCollapsed = false,
+  isSidebarExpanded = false,
   onSidebarToggle,
-  onMapVisibilityChange
+  onMapVisibilityChange,
+  onActiveChatChange,
+  shouldRestoreActiveChat = false,
+  shouldRestoreSelectedChat = null,
+  onChatVisibilityChange,
+  onOpenChatHistory,
+  externalIsMapVisible,
+  onNavigateToDashboard,
+  onNewChat: onNewChatFromParent
 }: MainContentProps) => {
   const { addActivity } = useSystem();
-  const { isOpen: isFilingSidebarOpen, width: filingSidebarWidth } = useFilingSidebar();
+  const { isOpen: isFilingSidebarOpen, width: filingSidebarWidth, isResizing: isFilingSidebarResizing, closeSidebar } = useFilingSidebar();
+  const { isOpen: isChatHistoryPanelOpen, width: chatHistoryPanelWidth, isResizing: isChatHistoryPanelResizing, closePanel: closeChatPanel } = useChatPanel();
+  const { getChatById } = useChatHistory();
+  // Track previous states to detect closing transitions for instant updates
+  const prevFilingSidebarOpenRef = React.useRef(isFilingSidebarOpen);
+  const prevSidebarCollapsedRef = React.useRef(isSidebarCollapsed);
+  const [isFilingSidebarClosing, setIsFilingSidebarClosing] = React.useState(false);
+  const [isSidebarCollapsing, setIsSidebarCollapsing] = React.useState(false);
+  
+  // Track closing states for instant transition disable (no delays - update immediately)
+  React.useEffect(() => {
+    const wasOpen = prevFilingSidebarOpenRef.current;
+    const isClosing = wasOpen && !isFilingSidebarOpen;
+    setIsFilingSidebarClosing(isClosing);
+    // Clear flag after one frame to allow transition disable during closing
+    if (isClosing) {
+      requestAnimationFrame(() => {
+        setIsFilingSidebarClosing(false);
+      });
+    }
+    prevFilingSidebarOpenRef.current = isFilingSidebarOpen;
+  }, [isFilingSidebarOpen]);
+  
+  React.useEffect(() => {
+    const wasExpanded = !prevSidebarCollapsedRef.current;
+    const isCollapsing = wasExpanded && isSidebarCollapsed;
+    setIsSidebarCollapsing(isCollapsing);
+    // Clear flag after one frame to allow transition disable during collapsing
+    if (isCollapsing) {
+      requestAnimationFrame(() => {
+        setIsSidebarCollapsing(false);
+      });
+    }
+    prevSidebarCollapsedRef.current = isSidebarCollapsed;
+  }, [isSidebarCollapsed]);
   const [chatQuery, setChatQuery] = React.useState<string>("");
   const [chatMessages, setChatMessages] = React.useState<any[]>([]);
   const [resetTrigger, setResetTrigger] = React.useState<number>(0);
   const [currentLocation, setCurrentLocation] = React.useState<string>("");
+  // Internal map visibility for SearchBar Map button
+  const [isMapVisibleFromSearchBar, setIsMapVisibleFromSearchBar] = React.useState<boolean>(false);
+  // Track the previous view before entering map (for "back" button in SearchBar)
+  const [previousViewBeforeMap, setPreviousViewBeforeMap] = React.useState<'dashboard' | 'chat'>('dashboard');
+  // Final computed map visibility (will be computed from all sources)
   const [isMapVisible, setIsMapVisible] = React.useState<boolean>(false);
+  // Ref to track map visibility synchronously for consistent render checks
+  const isMapVisibleRef = React.useRef<boolean>(false);
+  // Ref to track if we're explicitly hiding the map (prevents effect from overriding)
+  const isExplicitlyHidingRef = React.useRef<boolean>(false);
   const [mapSearchQuery, setMapSearchQuery] = React.useState<string>("");
+  const [mapSearchContentSegments, setMapSearchContentSegments] = React.useState<QueryContentSegment[]>([]);
   const [hasPerformedSearch, setHasPerformedSearch] = React.useState<boolean>(false);
+  
+  // Keep ref in sync with state
+  React.useEffect(() => {
+    isMapVisibleRef.current = isMapVisible;
+  }, [isMapVisible]);
+
+  // Compute final map visibility from all sources
+  React.useEffect(() => {
+    // If we're explicitly hiding, don't override until externalIsMapVisible confirms
+    if (isExplicitlyHidingRef.current && externalIsMapVisible === false) {
+      // External state has confirmed the hide - clear the flag
+      isExplicitlyHidingRef.current = false;
+    }
+    
+    // Don't override if we're explicitly hiding and external hasn't confirmed yet
+    if (isExplicitlyHidingRef.current && externalIsMapVisible !== false) {
+      return;
+    }
+    
+    const finalVisibility = (externalIsMapVisible ?? false) || isMapVisibleFromSearchBar;
+    if (finalVisibility !== isMapVisible) {
+      // Update ref immediately for synchronous access
+      isMapVisibleRef.current = finalVisibility;
+      setIsMapVisible(finalVisibility);
+    }
+  }, [externalIsMapVisible, isMapVisibleFromSearchBar, isMapVisible]);
   const [chatPanelWidth, setChatPanelWidth] = React.useState<number>(0); // Track chat panel width for property pin centering
   const [isPropertyDetailsOpen, setIsPropertyDetailsOpen] = React.useState<boolean>(false); // Track PropertyDetailsPanel visibility
   const [isChatBubbleVisible, setIsChatBubbleVisible] = React.useState<boolean>(false); // Track bubble visibility
@@ -1575,6 +2138,67 @@ export const MainContent = ({
   const [shouldExpandChat, setShouldExpandChat] = React.useState<boolean>(false); // Track if chat should be expanded (for Analyse mode)
   const [isQuickStartBarVisible, setIsQuickStartBarVisible] = React.useState<boolean>(false); // Track QuickStartBar visibility as island
   const [isRecentProjectsVisible, setIsRecentProjectsVisible] = React.useState<boolean>(false); // Track Recent Projects visibility
+  // Fullscreen property view state (25/75 chat/property split from ProjectsPage)
+  const [fullscreenPropertyView, setFullscreenPropertyView] = React.useState<boolean>(false);
+  const [selectedPropertyFromProjects, setSelectedPropertyFromProjects] = React.useState<any>(null);
+  const [hasActiveChat, setHasActiveChat] = React.useState<boolean>(false); // Track if there's an active chat query running
+  
+  // Browser Fullscreen API - shared state so all fullscreen buttons show "Exit" when active
+  const { isBrowserFullscreen, toggleBrowserFullscreen } = useBrowserFullscreen();
+
+  // Keyboard shortcut handler (Cmd/Ctrl + F) to toggle fullscreen
+  React.useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Cmd/Ctrl + F to toggle fullscreen (no Shift - F for fullscreen)
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key === 'f') {
+        const target = e.target as HTMLElement;
+        
+        // Check if we're in an editable element (input, textarea, or contenteditable)
+        const isEditable = 
+          target.tagName === 'INPUT' || 
+          target.tagName === 'TEXTAREA' ||
+          target.isContentEditable ||
+          (target.closest && target.closest('[contenteditable="true"]'));
+        
+        // Only prevent default if we're not in an editable element
+        if (!isEditable) {
+          e.preventDefault();
+          e.stopPropagation();
+          
+          // Only toggle fullscreen when on dashboard view
+          if ((currentView === 'search' || currentView === 'home') && !isMapVisible && !inChatMode) {
+            toggleBrowserFullscreen();
+          }
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown, true);
+    return () => window.removeEventListener('keydown', handleKeyDown, true);
+  }, [currentView, isMapVisible, inChatMode, toggleBrowserFullscreen]);
+  
+  // Track if we're transitioning from chat to disable animations
+  const [isTransitioningFromChat, setIsTransitioningFromChat] = React.useState<boolean>(false);
+  // Use a ref to track transition state synchronously (before React re-renders)
+  const isTransitioningFromChatRef = React.useRef<boolean>(false);
+  // Track if we're transitioning TO chat (to prevent dashboard flash)
+  const isTransitioningToChatRef = React.useRef<boolean>(false);
+  // Track when chat was opened to prevent premature closing
+  const chatOpenedTimestampRef = React.useRef<number | null>(null);
+  // Preserve chat state when navigating away so it can be restored when returning
+  const preservedChatStateRef = React.useRef<{
+    messages: any[];
+    query: string;
+    mapSearchQuery: string;
+    hasPerformedSearch: boolean;
+  } | null>(null);
+  // Freeze layout state during transitions to prevent recalculation between renders
+  const frozenLayoutStateRef = React.useRef<{
+    shouldHideProjects: boolean;
+    isVerySmall: boolean;
+    isSidebarCollapsed: boolean;
+    viewportSize: { width: number; height: number };
+  } | null>(null);
   
   // Hide QuickStartBar when switching away from map view
   React.useEffect(() => {
@@ -1627,10 +2251,8 @@ export const MainContent = ({
         setCitationContext(context);
       }
       
-      // Open chat panel if not already open
-      if (!isMapVisible) {
-        setIsMapVisible(true);
-      }
+      // Map visibility is controlled by external state or SearchBar toggle
+      // The computed effect will ensure map is visible if needed
       setHasPerformedSearch(true);
       
       // If property details is open, expand chat
@@ -1659,6 +2281,25 @@ export const MainContent = ({
     }
   }, [hasPerformedSearch]);
   
+  // Track when chat closes to disable animations
+  const prevHasPerformedSearchRef = React.useRef<boolean>(hasPerformedSearch);
+  React.useEffect(() => {
+    const wasInChat = prevHasPerformedSearchRef.current;
+    prevHasPerformedSearchRef.current = hasPerformedSearch;
+    
+    // If we were in chat and now we're not, disable animations
+    if (wasInChat && !hasPerformedSearch) {
+      // Set flag immediately to disable animations (both state and ref for synchronous access)
+      isTransitioningFromChatRef.current = true;
+      setIsTransitioningFromChat(true);
+      // Reset the flag after the longest animation duration (0.6s) plus a small buffer
+      setTimeout(() => {
+        isTransitioningFromChatRef.current = false;
+        setIsTransitioningFromChat(false);
+      }, 700); // 600ms animation + 100ms buffer
+    }
+  }, [hasPerformedSearch]);
+  
   // Reset chat panel width when map view is closed or chat is hidden
   React.useEffect(() => {
     if (!isMapVisible || !hasPerformedSearch) {
@@ -1684,27 +2325,31 @@ export const MainContent = ({
       setMinimizedChatMessages([]);
     }
   }, [isMapVisible, currentView, isChatBubbleVisible]);
-  
+
   // Reset shouldExpandChat flag after chat has been opened and expanded
-  // Increased delay to 500ms to ensure SideChatPanel has time to process shouldExpand=true
+  // CRITICAL: Only reset if chat was opened from dashboard/SideChatPanel, NOT from sidebar Chat button
+  // When opening from sidebar, shouldExpandChat should stay true longer to ensure fullscreen mode is set
   React.useEffect(() => {
+    // CRITICAL: Don't reset if we're currently opening chat from sidebar (shouldRestoreActiveChat is true)
+    // This prevents the reset from interfering with sidebar chat opening
+    if (shouldRestoreActiveChat) {
+      return;
+    }
+    
     if (shouldExpandChat && hasPerformedSearch && isMapVisible) {
-      // Chat is now open, reset the flag after a delay to allow expansion
+      // Chat is now open and map is visible, reset the flag after a delay to allow expansion
       // SideChatPanel will persist fullscreen mode even after shouldExpand becomes false
       const timer = setTimeout(() => {
         setShouldExpandChat(false);
-      }, 500); // Increased from 100ms to 500ms to ensure fullscreen mode is set
+      }, 600); // Increased from 500ms to 600ms to ensure fullscreen mode is fully set
       return () => clearTimeout(timer);
     }
-  }, [shouldExpandChat, hasPerformedSearch, isMapVisible]);
+  }, [shouldExpandChat, hasPerformedSearch, isMapVisible, shouldRestoreActiveChat]);
   
   // Calculate sidebar width for property pin centering
-  const sidebarWidthValue = isSidebarCollapsed ? 8 : (typeof window !== 'undefined' && window.innerWidth >= 1024 ? 56 : 40);
+  // Sidebar widths: w-0 (collapsed) = 0px, w-56 (normal) = 224px, toggle rail w-3 = 12px
+  const sidebarWidthValue = isSidebarCollapsed ? 12 : 236; // 0 + 12 = 12 when collapsed, 224 + 12 = 236 when normal
   
-  // Notify parent of map visibility changes
-  React.useEffect(() => {
-    onMapVisibilityChange?.(isMapVisible);
-  }, [isMapVisible, onMapVisibilityChange]);
   const [pendingMapQuery, setPendingMapQuery] = React.useState<string>(""); // Store query when switching to map view
   const pendingMapQueryRef = React.useRef<string>(""); // Ref to store query synchronously for immediate access
   const [pendingDashboardQuery, setPendingDashboardQuery] = React.useState<string>(""); // Store query when switching from map to dashboard
@@ -1715,13 +2360,17 @@ export const MainContent = ({
   const [pendingDashboardAttachments, setPendingDashboardAttachments] = React.useState<FileAttachmentData[]>([]);
   const [isQuickStartPopupVisible, setIsQuickStartPopupVisible] = React.useState<boolean>(false);
   const pendingDashboardAttachmentsRef = React.useRef<FileAttachmentData[]>([]);
+  // Store content segments from SearchBar submit so SideChatPanel can use them before state propagates
+  const pendingSearchContentSegmentsRef = React.useRef<QueryContentSegment[] | undefined>(undefined);
   // Store SideChatPanel attachments separately
   const [pendingSideChatAttachments, setPendingSideChatAttachments] = React.useState<FileAttachmentData[]>([]);
   const pendingSideChatAttachmentsRef = React.useRef<FileAttachmentData[]>([]);
-  const sideChatPanelRef = React.useRef<{ getAttachments: () => FileAttachmentData[] } | null>(null);
+  const sideChatPanelRef = React.useRef<SideChatPanelRef | null>(null);
   const [restoreChatId, setRestoreChatId] = React.useState<string | null>(null);
+  const [newAgentTrigger, setNewAgentTrigger] = React.useState<number>(0); // Counter that increments when "New Agent" is clicked
   const [userData, setUserData] = React.useState<any>(null);
   const [showNewPropertyWorkflow, setShowNewPropertyWorkflow] = React.useState<boolean>(false);
+  const [initialMapState, setInitialMapState] = React.useState<{ center: [number, number]; zoom: number } | null>(null);
   const mapRef = React.useRef<SquareMapRef>(null);
   
   // Track viewport size for responsive layout (like ChatGPT's minimum size)
@@ -1742,7 +2391,7 @@ export const MainContent = ({
   // Be VERY aggressive - hide projects if there's ANY risk of search bar being cut off
   const SEARCH_BAR_MIN_WIDTH = 350;
   const SEARCH_BAR_MIN_HEIGHT = 300; // Logo + search bar + spacing (increased for more safety)
-  const SIDEBAR_WIDTH = 64; // Approximate sidebar width
+  const SIDEBAR_WIDTH = 236; // Sidebar (w-56 = 224px) + toggle rail (w-3 = 12px)
   const CONTAINER_PADDING = 32; // Container padding on both sides
   const EXTRA_SAFETY_MARGIN = 100; // Extra safety margin to ensure search bar is never cut
   
@@ -1772,10 +2421,18 @@ export const MainContent = ({
   
   // Track if we automatically collapsed the sidebar (so we can restore it later)
   const autoCollapsedRef = React.useRef<boolean>(false);
+  // Track when home transition just completed to prevent immediate layout shifts
+  const homeTransitionJustCompletedRef = React.useRef<boolean>(false);
   
   // Automatically collapse sidebar when projects are hidden (to maximize space for search bar)
   // And automatically restore it when projects become visible again
   React.useEffect(() => {
+    // Skip auto-collapse during transitions to prevent layout shifts
+    // Also skip for a short period after home transition completes to prevent layout shift
+    if (isTransitioningFromChatRef.current || isTransitioningFromChat || homeClicked || homeTransitionJustCompletedRef.current) {
+      return;
+    }
+    
     if (shouldHideProjectsForSearchBar && !isSidebarCollapsed && onCloseSidebar) {
       // Collapse sidebar when we need to hide projects to save space
       onCloseSidebar();
@@ -1788,7 +2445,7 @@ export const MainContent = ({
       // If projects are visible, reset the flag (user might have manually collapsed it)
       autoCollapsedRef.current = false;
     }
-  }, [shouldHideProjectsForSearchBar, isSidebarCollapsed, onCloseSidebar, onRestoreSidebarState]);
+  }, [shouldHideProjectsForSearchBar, isSidebarCollapsed, onCloseSidebar, onRestoreSidebarState, isTransitioningFromChat, homeClicked]);
   
   // Use shared preview context
   const {
@@ -1800,24 +2457,353 @@ export const MainContent = ({
     setIsPreviewOpen,
     addPreviewFile,
     MAX_PREVIEW_TABS,
-    expandedCardViewDoc,
-    closeExpandedCardView,
+    expandedCardViewDoc: legacyExpandedCardViewDoc, // Legacy - will be removed
+    closeExpandedCardView: legacyCloseExpandedCardView, // Legacy - will be removed
     isAgentTaskActive,
     agentTaskMessage,
     stopAgentTask,
-    isMapNavigating
+    isMapNavigating,
+    setIsChatPanelVisible,
+    isChatPanelVisible,
+    clearPendingExpandedCardView
   } = usePreview();
+  
+  // NEW: Use ChatStateStore for per-chat document preview isolation
+  const { 
+    activeChatId, 
+    getActiveDocumentPreview, 
+    closeDocumentForChat,
+    setActiveChatId 
+  } = useChatStateStore();
+  
+  // Get document preview from active chat's state (NEW per-chat isolation)
+  const chatStateDocumentPreview = useActiveChatDocumentPreview();
+  
+  // Use ChatStateStore document preview if available, fall back to legacy PreviewContext during migration
+  // Priority: ChatStateStore > PreviewContext (legacy)
+  const expandedCardViewDoc = chatStateDocumentPreview || legacyExpandedCardViewDoc;
+  
+  // Close document for the active chat AND legacy state (both must be cleared)
+  const closeExpandedCardView = React.useCallback(() => {
+    if (activeChatId && chatStateDocumentPreview) {
+      // Close in ChatStateStore (per-chat isolation)
+      closeDocumentForChat(activeChatId);
+    }
+    // ALWAYS clear legacy state to ensure complete cleanup
+    // (documents are opened in both states, so both must be cleared)
+    legacyCloseExpandedCardView();
+  }, [activeChatId, chatStateDocumentPreview, closeDocumentForChat, legacyCloseExpandedCardView]);
+  
+  // Sync chat panel visibility to PreviewContext for document preview gating
+  // Document preview will only open when chat panel is visible; otherwise it queues silently
+  // PreviewContext handles queuing expandedCardViewDoc when chat becomes hidden
+  // CRITICAL: Use the same logic as SideChatPanel's isVisible prop to ensure consistency
+  React.useEffect(() => {
+    const chatPanelIsVisible = isMapVisible && hasPerformedSearch;
+    console.log('📋 [MAIN_CONTENT] Updating chat panel visibility:', { 
+      isMapVisible, 
+      hasPerformedSearch, 
+      chatPanelIsVisible,
+      hasExpandedDoc: !!expandedCardViewDoc,
+      expandedDocId: expandedCardViewDoc?.docId,
+      activeChatId,
+      usingChatStateStore: !!chatStateDocumentPreview
+    });
+    setIsChatPanelVisible(chatPanelIsVisible);
+    // Also notify parent (DashboardLayout) so Sidebar can show active state
+    onChatVisibilityChange?.(chatPanelIsVisible);
+  }, [isMapVisible, hasPerformedSearch, setIsChatPanelVisible, onChatVisibilityChange, expandedCardViewDoc, activeChatId, chatStateDocumentPreview]);
+  
+  // Callback from SideChatPanel to track active chat state
+  const handleActiveChatChange = React.useCallback((isActive: boolean) => {
+    setHasActiveChat(isActive);
+    // Propagate to parent (DashboardLayout) so Sidebar can show the active chat button
+    onActiveChatChange?.(isActive);
+  }, [onActiveChatChange]);
+  
+  // Handler for new chat - can be called from both SideChatPanel and ChatPanel
+  const handleNewChatInternal = React.useCallback(() => {
+    // Clear the query input for new query (UI state only)
+          setMapSearchQuery("");
+          setMapSearchContentSegments([]);
+    
+    // CRITICAL: Always clear restoreChatId to allow new chat creation
+    // The running query will continue updating its history entry using its captured chatId
+    // restoreChatId is only needed for restoring a chat when navigating back to it
+    // When clicking "New Agent", we want a fresh chat, not a restored one
+    setRestoreChatId(null);
+    
+    // Increment trigger to signal SideChatPanel to clear currentChatId
+    setNewAgentTrigger(prev => prev + 1);
+    
+    // Keep hasPerformedSearch true so chat panel stays visible
+    // This allows user to type and submit a new query while the other is running
+    setHasPerformedSearch(true);
+    
+    console.log('🔄 MainContent: New agent requested - cleared restoreChatId and triggered newAgentTrigger');
+  }, []);
+  
+  // Expose handler to parent via callback pattern
+  // When MainContent mounts/updates, call onNewChatFromParent with our handler
+  // DashboardLayout will store it and call it when handleNewChat is triggered
+  React.useEffect(() => {
+    if (onNewChatFromParent && typeof onNewChatFromParent === 'function') {
+      // Call parent's callback with our handler
+      // Parent will store it in a ref and call it when needed
+      onNewChatFromParent(handleNewChatInternal);
+    }
+  }, [onNewChatFromParent, handleNewChatInternal]);
+  
+  // Effect to handle restore active chat signal from sidebar
+  React.useEffect(() => {
+    if (shouldRestoreActiveChat) {
+      console.log('🔄 MainContent: Restoring active chat from sidebar signal - opening in fullscreen');
+      // Mark that we're transitioning to chat (prevents dashboard flash and chat closing)
+      // Set this IMMEDIATELY before any state updates to prevent render race conditions
+      isTransitioningToChatRef.current = true;
+      
+      // CRITICAL: Ensure map is visible immediately for fullscreen chat
+      // The computed effect should have already updated isMapVisible from externalIsMapVisible,
+      // but we need to ensure it's true before setting shouldExpandChat
+      // Update ref immediately for synchronous access
+      if (externalIsMapVisible && !isMapVisible) {
+        // External wants map visible but computed effect hasn't run yet - update immediately
+        isMapVisibleRef.current = true;
+        setIsMapVisible(true);
+      }
+      
+      // CRITICAL: Set shouldExpandChat IMMEDIATELY (synchronously) to prevent flash
+      // This ensures the chat panel renders at fullscreen width from the start
+      setShouldExpandChat(true);
+      // Track when chat was opened to prevent premature closing
+      chatOpenedTimestampRef.current = Date.now();
+      
+      // RESTORE preserved chat state if it exists
+      if (preservedChatStateRef.current) {
+        console.log('🔄 MainContent: Restoring preserved chat state', {
+          messagesCount: preservedChatStateRef.current.messages.length,
+          query: preservedChatStateRef.current.mapSearchQuery,
+          hasPerformedSearch: preservedChatStateRef.current.hasPerformedSearch
+        });
+        // Restore messages first
+        setChatMessages(preservedChatStateRef.current.messages);
+        setChatQuery(preservedChatStateRef.current.query);
+        // Restore search state - this will make the panel visible
+        setHasPerformedSearch(preservedChatStateRef.current.hasPerformedSearch);
+        // Restore query immediately - SideChatPanel will handle it when visible
+        setMapSearchQuery(preservedChatStateRef.current.mapSearchQuery);
+        // Clear preserved state after restoring
+        preservedChatStateRef.current = null;
+      } else {
+        // Show the chat panel (SideChatPanel becomes visible when hasPerformedSearch is true)
+        setHasPerformedSearch(true);
+      }
+      
+      // Clear the bubble since we're restoring the full chat
+      setIsChatBubbleVisible(false);
+      
+      // Keep transition flag true longer to prevent chat closing effect from interfering
+      // Use requestAnimationFrame to clear after render completes
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          isTransitioningToChatRef.current = false;
+        });
+      });
+    }
+  }, [shouldRestoreActiveChat, externalIsMapVisible, isMapVisible]);
+  
+  // Track last processed chat to prevent duplicate processing
+  const lastProcessedRestoreChatRef = React.useRef<string | null>(null);
+  
+  // Effect to handle selected chat restoration from agent sidebar
+  React.useEffect(() => {
+    if (shouldRestoreSelectedChat && 
+        shouldRestoreSelectedChat !== lastProcessedRestoreChatRef.current) {
+      const chatId = shouldRestoreSelectedChat;
+      console.log('🔄 MainContent: Restoring selected chat from agent sidebar - opening immediately', chatId);
+      
+      // Track that this chat has been processed
+      lastProcessedRestoreChatRef.current = chatId;
+      
+      // Mark that we're transitioning to chat (prevents dashboard flash)
+      isTransitioningToChatRef.current = true;
+      
+      // CRITICAL: Ensure map is visible immediately for fullscreen chat
+      if (!isMapVisible) {
+        isMapVisibleRef.current = true;
+        setIsMapVisible(true);
+      }
+      
+      // CRITICAL: Set shouldExpandChat IMMEDIATELY (synchronously) to prevent flash
+      setShouldExpandChat(true);
+      chatOpenedTimestampRef.current = Date.now();
+      
+      // Get chat from history
+      const chat = getChatById?.(chatId);
+      if (chat) {
+        // Set restoreChatId immediately
+        setRestoreChatId(chatId);
+        
+        // CRITICAL: Clear mapSearchQuery to prevent query prop from re-sending the previous chat's query
+        // Without this, the query prop would contain the PREVIOUS chat's query text, which would
+        // be sent to the RESTORED chat's backend session, causing query leakage between chats
+        setMapSearchQuery("");
+        setMapSearchContentSegments([]);
+        
+        // Show chat panel immediately
+        setHasPerformedSearch(true);
+        
+        // If chat has a running query (status === 'loading'), preserve bot status
+        // The SideChatPanel will restore the chat and handle the running state
+      }
+      
+      // Clear signal after processing to prevent duplicate processing
+      // Use setTimeout with 0 to clear after current execution completes
+      setTimeout(() => {
+        if (shouldRestoreSelectedChat === chatId) {
+          // Only clear if it's still the same chat (prevents clearing if user clicked another chat)
+          // The parent will clear it, but this is a safety net
+        }
+      }, 0);
+      
+      // Clear transition flag after render completes
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          isTransitioningToChatRef.current = false;
+        });
+      });
+    }
+  }, [shouldRestoreSelectedChat, isMapVisible, getChatById]);
+  
+  // Track previous externalIsMapVisible and shouldRestoreActiveChat to detect Map button clicks
+  const prevExternalIsMapVisibleRef = React.useRef<boolean | undefined>(externalIsMapVisible);
+  const prevShouldRestoreActiveChatRef = React.useRef<boolean>(shouldRestoreActiveChat);
+  
+  // Clear chat transition state and chat panel when map is explicitly opened
+  React.useEffect(() => {
+    // CRITICAL: Never close chat when shouldRestoreActiveChat is true (Chat button was just clicked)
+    // OR when we're transitioning to chat (prevents race condition)
+    // OR when chat is currently active (hasPerformedSearch is true) - map visibility change might be from chat opening
+    // OR when a document is open (prevents chat from closing when document opens from agent action)
+    if (shouldRestoreActiveChat || isTransitioningToChatRef.current || expandedCardViewDoc) {
+      // Update refs but don't close chat
+      prevExternalIsMapVisibleRef.current = externalIsMapVisible;
+      prevShouldRestoreActiveChatRef.current = shouldRestoreActiveChat;
+      return;
+    }
+    
+    // CRITICAL: If chat was just opened (within last 700ms), don't close it
+    // This prevents the chat closing effect from running when shouldRestoreActiveChat is cleared after 500ms
+    const chatWasJustOpened = chatOpenedTimestampRef.current && (Date.now() - chatOpenedTimestampRef.current) < 700;
+    if (chatWasJustOpened) {
+      // Update refs but don't close chat - chat opening is still in progress
+      prevExternalIsMapVisibleRef.current = externalIsMapVisible;
+      prevShouldRestoreActiveChatRef.current = shouldRestoreActiveChat;
+      return;
+    }
+    
+    // Clear timestamp if chat opening period has passed
+    if (chatOpenedTimestampRef.current && (Date.now() - chatOpenedTimestampRef.current) >= 700) {
+      chatOpenedTimestampRef.current = null;
+    }
+    
+    // Check if shouldRestoreActiveChat was just cleared (Map button clicked from chat)
+    // This happens when Map button is clicked while in fullscreen chat mode
+    // CRITICAL: Only close chat if:
+    // 1. shouldRestoreActiveChat was true AND is now false (Map button was clicked)
+    // 2. hasPerformedSearch is true (chat is currently open)
+    // 3. We're not transitioning to chat
+    // 4. externalIsMapVisible is true (map should be visible)
+    // This ensures we only close when Map button was explicitly clicked from chat, not when chat was just opened
+    const mapButtonClickedFromChat = 
+      !shouldRestoreActiveChat && 
+      prevShouldRestoreActiveChatRef.current && 
+      hasPerformedSearch && 
+      !isTransitioningToChatRef.current &&
+      externalIsMapVisible;
+    
+    // Only close chat if Map button was explicitly clicked from chat, not if map became visible as part of chat opening
+    if (mapButtonClickedFromChat) {
+      // Use setTimeout to ensure chat opening effect completes first
+      const timeoutId = setTimeout(() => {
+        if (isTransitioningToChatRef.current) {
+          // Chat is still opening, don't close it
+          return;
+        }
+        
+        console.log('🗺️ MainContent: Map button clicked from chat - closing chat panel', {
+          mapButtonClickedFromChat,
+          externalIsMapVisible,
+          hasPerformedSearch,
+          shouldRestoreActiveChat,
+          prevShouldRestoreActiveChat: prevShouldRestoreActiveChatRef.current
+        });
+        
+        if (hasPerformedSearch) {
+          setHasPerformedSearch(false);
+          setShouldExpandChat(false);
+          // Clear chat query to reset chat state
+        setMapSearchQuery("");
+        setMapSearchContentSegments([]);
+        }
+      }, 200); // Increased delay to ensure chat opening effect completes
+      
+      return () => clearTimeout(timeoutId);
+    }
+    
+    // Update refs for next comparison
+    prevExternalIsMapVisibleRef.current = externalIsMapVisible;
+    prevShouldRestoreActiveChatRef.current = shouldRestoreActiveChat;
+  }, [externalIsMapVisible, hasPerformedSearch, shouldRestoreActiveChat, expandedCardViewDoc]);
+  
+  // Clear pending document preview when starting a new chat
+  React.useEffect(() => {
+    // When a new chat starts (no messages or explicit new chat), clear pending previews
+    if (hasPerformedSearch && minimizedChatMessages.length === 0 && !mapSearchQuery) {
+      clearPendingExpandedCardView();
+    }
+  }, [hasPerformedSearch, minimizedChatMessages.length, mapSearchQuery, clearPendingExpandedCardView]);
   
   // Use the prop value for chat mode
   const isInChatMode = inChatMode;
   
-  // Handle chat selection when in map view - open in SideChatPanel instead of ChatInterface
+  // Close fullscreen chat and hide chat panel when navigating away from chat mode (e.g., clicking Map button)
+  // This ensures that when clicking Map button from fullscreen chat, the chat closes and map becomes visible
+  const prevIsInChatModeRef = React.useRef<boolean>(isInChatMode);
   React.useEffect(() => {
-    if (isMapVisible && isInChatMode && currentChatData && currentChatId) {
-      // We're in map view and a chat was selected - open it in SideChatPanel
-      console.log('📋 MainContent: Chat selected in map view, opening in SideChatPanel', {
+    const wasInChatMode = prevIsInChatModeRef.current;
+    const justExitedChatMode = wasInChatMode && !isInChatMode;
+    prevIsInChatModeRef.current = isInChatMode;
+    
+    // If we just exited chat mode (e.g., clicked Map button from fullscreen chat), close chat
+    if (justExitedChatMode) {
+      // Always close fullscreen chat when exiting chat mode
+      if (shouldExpandChat) {
+        setShouldExpandChat(false);
+      }
+      // Also clear hasPerformedSearch to hide the chat panel entirely when navigating to map
+      // This ensures the chat panel doesn't stay visible when clicking Map button
+      if (hasPerformedSearch && externalIsMapVisible) {
+        setHasPerformedSearch(false);
+      }
+      // Close agent sidebar when leaving chat section
+      closeChatPanel();
+    }
+  }, [isInChatMode, shouldExpandChat, hasPerformedSearch, externalIsMapVisible, closeChatPanel]);
+  
+  // Handle chat selection - always open in SideChatPanel (not old ChatInterface)
+  // This ensures the new design is used when selecting chats from history
+  React.useEffect(() => {
+    // Skip if we're restoring via shouldRestoreSelectedChat (handled by separate effect)
+    if (shouldRestoreSelectedChat) {
+      return;
+    }
+    
+    if (isInChatMode && currentChatData && currentChatId) {
+      console.log('📋 MainContent: Chat selected, opening in SideChatPanel', {
         chatId: currentChatId,
-        query: currentChatData.query
+        query: currentChatData.query,
+        isMapVisible
       });
       
       // Set the map search query to the chat's preview/query
@@ -1825,10 +2811,12 @@ export const MainContent = ({
       setHasPerformedSearch(true);
       setRestoreChatId(currentChatId);
       
-      // Prevent ChatInterface from showing by resetting chat mode
-      // We'll handle this by not showing ChatInterface when in map view
+      // Always show map view to use SideChatPanel instead of old ChatInterface
+      if (!isMapVisible) {
+        setIsMapVisible(true);
+      }
     }
-  }, [isMapVisible, isInChatMode, currentChatData, currentChatId]);
+  }, [isInChatMode, currentChatData, currentChatId, shouldRestoreSelectedChat]);
 
   // CRITICAL: Preload property pins IMMEDIATELY on mount (before anything else)
   // This ensures property pins are ready instantly when map loads
@@ -2030,8 +3018,9 @@ export const MainContent = ({
   }, []);
 
   const handleMapToggle = () => {
+    // Toggle only SearchBar map visibility
     // If switching to map view, capture the current SearchBar value BEFORE state change
-    if (!isMapVisible) {
+    if (!isMapVisibleFromSearchBar) {
       // Capture value synchronously before any state updates
       let currentQuery = '';
       
@@ -2161,8 +3150,17 @@ export const MainContent = ({
         }
       }
       
-      // Now toggle map visibility - attachments are already stored in ref
-      setIsMapVisible(true);
+      // Track what view we're coming from (for "back" button in map view)
+      // If chat is active (hasPerformedSearch or isInChatMode), we're coming from chat
+      // Otherwise, we're coming from dashboard
+      if (hasPerformedSearch || isInChatMode) {
+        setPreviousViewBeforeMap('chat');
+      } else {
+        setPreviousViewBeforeMap('dashboard');
+      }
+      
+      // Toggle SearchBar map visibility - the computed effect will update final isMapVisible
+      setIsMapVisibleFromSearchBar(true);
     } else {
       // Switching back to dashboard - capture map view SearchBar value BEFORE state change
       let currentMapQuery = '';
@@ -2258,9 +3256,17 @@ export const MainContent = ({
       // - A search is submitted (handleSearch)
       // - Entering chat mode
       // - Parent reset trigger fires
-      setIsMapVisible(false);
+      // Toggle SearchBar map visibility - the computed effect will update final isMapVisible
+      setIsMapVisibleFromSearchBar(false);
       // Reset hasPerformedSearch when leaving map view
       setHasPerformedSearch(false);
+      // Notify parent to clear external map visibility
+      onMapVisibilityChange?.(false);
+      // CRITICAL: Set flag to prevent effect from overriding the hide
+      // This ensures map hides on first click even if externalIsMapVisible hasn't updated yet
+      isExplicitlyHidingRef.current = true;
+      isMapVisibleRef.current = false;
+      setIsMapVisible(false);
     }
   };
 
@@ -2303,7 +3309,7 @@ export const MainContent = ({
     onNavigate?.(view, options);
   };
 
-  const handleSearch = (query: string) => {
+  const handleSearch = (query: string, options?: { contentSegments?: QueryContentSegment[] }) => {
     // CRITICAL: Capture attachments from dashboard SearchBar BEFORE clearing
     let dashboardAttachments: FileAttachmentData[] = [];
     if (searchBarRef.current?.getAttachments) {
@@ -2363,8 +3369,12 @@ export const MainContent = ({
     pendingDashboardQueryRef.current = "";
     setPendingDashboardQuery("");
     
-    // Always update map search query
+    // Always update map search query and optional segment order for query bubble
+    // Store segments in ref immediately so SideChatPanel can use them before state update propagates
+    const segments = options?.contentSegments ?? [];
+    pendingSearchContentSegmentsRef.current = segments.length > 0 ? segments : undefined;
     setMapSearchQuery(query);
+    setMapSearchContentSegments(segments);
     
     // If map is visible and there are no attachments, only search on the map, don't enter chat
     // BUT if there are attachments, we need to show SideChatPanel to handle file choice
@@ -2406,8 +3416,14 @@ export const MainContent = ({
     
     // Dashboard view: Route query to SideChatPanel
     // Open map view and show SideChatPanel
+    // CRITICAL: Set isMapVisibleFromSearchBar to true to ensure map stays visible
+    // even if externalIsMapVisible becomes false (prevents chat from closing when document opens)
+    setIsMapVisibleFromSearchBar(true);
     setIsMapVisible(true);
     setHasPerformedSearch(true);
+    
+    // Track when chat was opened to prevent premature closing
+    chatOpenedTimestampRef.current = Date.now();
     
     // Query from dashboard - expand to fullscreen view
     setShouldExpandChat(true);
@@ -2504,7 +3520,67 @@ export const MainContent = ({
 
   // Track previous view to detect actual navigation changes
   const prevViewRef = React.useRef<string>(currentView);
-  
+
+  // Handler to create project - captures current map state before opening workflow
+  const handleCreateProject = React.useCallback(() => {
+    // Capture current map state if map is visible and initialized
+    if (isMapVisible && mapRef.current) {
+      const mapState = mapRef.current.getMapState();
+      if (mapState) {
+        setInitialMapState(mapState);
+      }
+    }
+    // Navigate away from projects page instantly (no animation) and show map
+    // This ensures ProjectsPage disappears immediately when workflow opens
+    setIsMapVisible(true);
+    setIsMapVisibleFromSearchBar(true);
+    onNavigate?.('search', { showMap: true });
+    setShowNewPropertyWorkflow(true);
+  }, [isMapVisible, onNavigate]);
+
+  // Handler for property selection from ProjectsPage - opens fullscreen 25/75 split view
+  const handleProjectPropertySelect = React.useCallback((property: any) => {
+    console.log('📋 Opening fullscreen property view for:', property.id, property.address);
+    console.log('📋 HANDLER CALLED - setting fullscreenPropertyView to true');
+    
+    // Set the selected property
+    setSelectedPropertyFromProjects(property);
+    
+    // Enable fullscreen property view mode
+    setFullscreenPropertyView(true);
+    
+    // Set property details as open (for proper chat panel sizing)
+    setIsPropertyDetailsOpen(true);
+    
+    // DON'T set hasPerformedSearch - that's for the map chat panel, not fullscreen view
+  }, []);
+
+  // Handler to close fullscreen property view and return to projects page
+  const handleCloseFullscreenPropertyView = React.useCallback(() => {
+    console.log('📋 Closing fullscreen property view');
+    setFullscreenPropertyView(false);
+    setSelectedPropertyFromProjects(null);
+    setIsPropertyDetailsOpen(false);
+    setHasPerformedSearch(false);
+  }, []);
+
+  // Close project workflow when navigating away from projects view
+  // BUT allow it to stay open when in map view (search view with map visible)
+  React.useEffect(() => {
+    if (currentView !== 'projects' && showNewPropertyWorkflow && !isMapVisible) {
+      setShowNewPropertyWorkflow(false);
+    }
+  }, [currentView, showNewPropertyWorkflow, isMapVisible]);
+
+  // Reset fullscreen property view when navigating to projects page without a selected project
+  // This ensures the chat panel doesn't show when just viewing the projects list
+  React.useEffect(() => {
+    if (currentView === 'projects' && !selectedPropertyFromProjects) {
+      setFullscreenPropertyView(false);
+      setIsPropertyDetailsOpen(false);
+    }
+  }, [currentView, selectedPropertyFromProjects]);
+
   // Reset chat mode and map visibility when currentView changes (sidebar navigation)
   // IMPORTANT: This should ONLY trigger on actual navigation, NOT on sidebar toggle
   React.useEffect(() => {
@@ -2512,11 +3588,61 @@ export const MainContent = ({
     const isActualNavigation = prevView !== currentView;
     prevViewRef.current = currentView;
     
+    // Track if we're transitioning from chat (hasPerformedSearch was true)
+    const wasInChat = hasPerformedSearch;
+    
     // Only reset if we're actually navigating to a different view
     // Don't reset if we're already on search view (e.g., just toggling sidebar)
-    if (currentView !== 'search' && currentView !== 'home') {
-      setChatQuery("");
-      setChatMessages([]);
+    if (currentView !== 'search' && currentView !== 'home' && isActualNavigation) {
+      // If we were in chat and navigating away, disable animations IMMEDIATELY
+      if (wasInChat) {
+        isTransitioningFromChatRef.current = true;
+        setIsTransitioningFromChat(true);
+        
+        // PRESERVE chat state before clearing UI state
+        // This allows queries to continue processing and state to be restored when returning
+        if (chatMessages.length > 0 || mapSearchQuery) {
+          preservedChatStateRef.current = {
+            messages: [...chatMessages],
+            query: chatQuery,
+            mapSearchQuery: mapSearchQuery,
+            hasPerformedSearch: hasPerformedSearch
+          };
+          console.log('💾 MainContent: Preserving chat state when navigating away', {
+            messagesCount: chatMessages.length,
+            query: mapSearchQuery,
+            hasPerformedSearch
+          });
+        }
+        
+        // Reset chat UI state immediately to prevent layout shifts
+        // But preserve the actual data in preservedChatStateRef
+        setIsMapVisible(false);
+        setMapSearchQuery("");
+        setMapSearchContentSegments([]);
+        setHasPerformedSearch(false);
+        // Reset the flag after a shorter duration for faster transitions
+        setTimeout(() => {
+          isTransitioningFromChatRef.current = false;
+          setIsTransitioningFromChat(false);
+        }, 100);
+      }
+      // Don't clear chatQuery and chatMessages if we preserved state
+      // Only clear if we're not preserving state (e.g., starting a completely new chat)
+      // Note: preservedChatStateRef.current is set above if wasInChat is true
+      if (!wasInChat) {
+        setChatQuery("");
+        setChatMessages([]);
+      }
+      
+      // Close fullscreen property view when navigating away (always, regardless of chat state)
+      if (fullscreenPropertyView) {
+        setFullscreenPropertyView(false);
+        setSelectedPropertyFromProjects(null);
+        setIsPropertyDetailsOpen(false);
+      }
+      
+      // If wasInChat is true, we've already preserved the state above, so don't clear
       // Let the parent handle chat mode changes
       onChatModeChange?.(false);
     }
@@ -2524,29 +3650,139 @@ export const MainContent = ({
     // BUT: Only hide map if we're actually navigating FROM a different view
     // Don't hide map if we're already on search view (e.g., just toggling sidebar)
     // This prevents the map from being hidden when just toggling the sidebar
-    if (currentView === 'search' && isActualNavigation && prevView !== 'search') {
-      // Only hide map if we're actually navigating FROM a different view TO search
+    // CRITICAL: NEVER reset map visibility when shouldRestoreActiveChat is true (chat button clicked)
+    // CRITICAL: NEVER reset map visibility when externalIsMapVisible is true (map button clicked from sidebar)
+    if ((currentView === 'search' || currentView === 'home') && isActualNavigation && prevView !== 'search' && prevView !== 'home' && !shouldRestoreActiveChat && !externalIsMapVisible) {
+      // Only hide map if we're actually navigating FROM a different view TO search/home
       // This prevents hiding the map when just toggling sidebar on map view
+      // BUT: Skip this if we're restoring active chat (chat button was clicked)
+      const wasInChat = hasPerformedSearch;
+      
+      // CRITICAL: Set transition flag BEFORE any state changes to prevent animations
+      if (wasInChat) {
+        isTransitioningFromChatRef.current = true;
+        setIsTransitioningFromChat(true);
+        // Reset the flag after a shorter duration for faster transitions
+        setTimeout(() => {
+          isTransitioningFromChatRef.current = false;
+          setIsTransitioningFromChat(false);
+        }, 100);
+      }
+      
+      // PRESERVE chat state before clearing UI state (same as above)
+      if (hasPerformedSearch && (chatMessages.length > 0 || mapSearchQuery)) {
+        preservedChatStateRef.current = {
+          messages: [...chatMessages],
+          query: chatQuery,
+          mapSearchQuery: mapSearchQuery,
+          hasPerformedSearch: hasPerformedSearch
+        };
+        console.log('💾 MainContent: Preserving chat state when navigating to home', {
+          messagesCount: chatMessages.length,
+          query: mapSearchQuery,
+          hasPerformedSearch
+        });
+      }
+      
       setIsMapVisible(false);
-      setMapSearchQuery("");
+          setMapSearchQuery("");
+          setMapSearchContentSegments([]);
       setHasPerformedSearch(false);
+      
+      // Close fullscreen property view when navigating to search/home (always, regardless of chat state)
+      if (fullscreenPropertyView) {
+        setFullscreenPropertyView(false);
+        setSelectedPropertyFromProjects(null);
+        setIsPropertyDetailsOpen(false);
+      }
     }
-  }, [currentView, onChatModeChange]);
+  }, [currentView, onChatModeChange, hasPerformedSearch, shouldRestoreActiveChat, chatMessages, chatQuery, mapSearchQuery, externalIsMapVisible, fullscreenPropertyView]);
 
+  // Track previous hasPerformedSearch to detect transitions
+  const prevHasPerformedSearchForHomeRef = React.useRef<boolean>(hasPerformedSearch);
+  
   // Special handling for home view - reset everything to default state
   React.useEffect(() => {
     if (homeClicked) {
+      // CRITICAL: Don't reset if map is explicitly being opened from external control
+      // This prevents the home reset from interfering when Map button is clicked
+      if (externalIsMapVisible === true) {
+        console.log('🏠 Home clicked but map is explicitly visible - skipping reset');
+        return;
+      }
+      
       console.log('🏠 Home clicked - resetting map and state');
+      // Check if we WERE in chat mode before the state change (hasPerformedSearch might already be false)
+      const wasInChat = prevHasPerformedSearchForHomeRef.current;
+      
+      // CRITICAL: Set map visibility to false immediately and update ref synchronously
+      // This prevents MainContent's stale isMapVisible(true) from propagating back to parent
+      isMapVisibleRef.current = false;
+      setIsMapVisible(false);
+      // CRITICAL: Also reset isMapVisibleFromSearchBar - without this, the computed effect
+      // will see externalIsMapVisible=false but isMapVisibleFromSearchBar=true and set
+      // isMapVisible back to true, causing the map to stay visible instead of showing dashboard
+      setIsMapVisibleFromSearchBar(false);
+      
+      // Freeze layout state BEFORE any state changes to prevent layout recalculation
+      // This ensures layout calculations remain stable during the transition
+      frozenLayoutStateRef.current = {
+        shouldHideProjects: shouldHideProjectsForSearchBar,
+        isVerySmall: isVerySmall,
+        isSidebarCollapsed: isSidebarCollapsed,
+        viewportSize: { width: viewportSize.width, height: viewportSize.height }
+      };
+      
+      // Set transition flag BEFORE any state changes to prevent double render
+      if (wasInChat) {
+        isTransitioningFromChatRef.current = true;
+        setIsTransitioningFromChat(true);
+        setTimeout(() => {
+          isTransitioningFromChatRef.current = false;
+          setIsTransitioningFromChat(false);
+          // Clear frozen layout state after transition completes (with extra buffer for CSS transitions)
+          setTimeout(() => {
+            frozenLayoutStateRef.current = null;
+          }, 100); // Small delay to ensure CSS transitions complete
+        }, 700);
+      } else {
+        // Even if not transitioning from chat, clear frozen state after a short delay
+        setTimeout(() => {
+          frozenLayoutStateRef.current = null;
+        }, 400); // Longer delay to ensure layout is stable
+      }
+      
       setChatQuery("");
       setChatMessages([]);
       setCurrentLocation("");
-      setIsMapVisible(false); // Explicitly hide map when home is clicked
-      setMapSearchQuery("");
+      // Note: setIsMapVisible(false) is now set synchronously in DashboardLayout.handleViewChange
+          setMapSearchQuery("");
+          setMapSearchContentSegments([]);
       setHasPerformedSearch(false);
       onChatModeChange?.(false);
-      onHomeResetComplete?.(); // Notify parent that reset is complete
+      // Close document preview when home is clicked
+      closeExpandedCardView();
+      
+      // Mark that home transition just completed to prevent immediate layout shifts
+      homeTransitionJustCompletedRef.current = true;
+      // Clear the flag after a delay to allow auto-collapse effect to run normally
+      // CRITICAL: Also delay onHomeResetComplete to ensure isMapVisible state update is committed
+      // before homeClicked is reset. Otherwise, propagation effect runs with stale isMapVisible=true
+      // and homeClicked=false, setting parent's isMapVisible back to true.
+      setTimeout(() => {
+        homeTransitionJustCompletedRef.current = false;
+        onHomeResetComplete?.(); // Notify parent that reset is complete AFTER state is committed
+      }, 100); // Short delay to ensure state is committed before homeClicked resets
+      
+      // Update ref for next time
+      prevHasPerformedSearchForHomeRef.current = false;
     }
-  }, [homeClicked, onChatModeChange, onHomeResetComplete]);
+  }, [homeClicked, externalIsMapVisible, onChatModeChange, onHomeResetComplete, closeExpandedCardView, shouldHideProjectsForSearchBar, isVerySmall, isSidebarCollapsed]);
+  
+  // Update ref when hasPerformedSearch changes (outside of homeClicked effect)
+  React.useEffect(() => {
+    prevHasPerformedSearchForHomeRef.current = hasPerformedSearch;
+  }, [hasPerformedSearch]);
 
   // Reset SearchBar when switching to chat mode or creating new chat
   React.useEffect(() => {
@@ -2578,22 +3814,6 @@ export const MainContent = ({
     }
   }, [parentResetTrigger]);
 
-  // Debug: Log ChatInterface ref when it changes
-  React.useEffect(() => {
-    const hasRef = !!chatInterfaceRef.current;
-    console.log('🔍 ChatInterface ref status:', { 
-      hasRef,
-      currentChatId,
-      isInChatMode,
-      refValue: chatInterfaceRef.current
-    });
-    if (hasRef) {
-      console.log('✅ ChatInterface ref is available!');
-    } else {
-      console.log('❌ ChatInterface ref is NOT available');
-    }
-  }, [currentChatId, isInChatMode]);
-
   // Track if we have a previous session to restore
   const [previousSessionQuery, setPreviousSessionQuery] = React.useState<string | null>(null);
 
@@ -2608,74 +3828,71 @@ export const MainContent = ({
     switch (currentView) {
       case 'home':
       case 'search':
-        return <>
-          <AnimatePresence mode="wait">
-            {isInChatMode && !isMapVisible ? <motion.div key="chat" initial={{
-            opacity: 0
-          }} animate={{
-            opacity: 1
-          }} exit={{
-            opacity: 0
-          }} transition={{
-            duration: 0.3,
-            ease: [0.23, 1, 0.32, 1]
-          }} className="w-full h-full flex flex-col relative">
-                {/* Interactive Dot Grid Background for chat mode */}
-                {/* No background needed here as it's handled globally */}
-                
-                
-                 {/* Chat Interface with elevated z-index */}
-                <div className="relative z-10 w-full h-full" data-chat-container="true">
-                  <div
-                    onDragEnter={handleDragEnter}
-                    onDragOver={handleDragOver}
-                    onDragLeave={handleDragLeave}
-                    onDrop={handleDrop}
-                    className="w-full h-full"
-                    data-chat-wrapper="true"
-                  >
-                  <ChatInterface 
-                      ref={chatInterfaceRefCallback}
-                    key={`chat-${currentChatId || 'new'}`}
-                    initialQuery={currentChatData?.query || ""} 
-                    onBack={handleBackToSearch} 
-                    onMessagesUpdate={handleChatMessagesUpdate}
-                    loadedMessages={currentChatData?.messages}
-                    isFromHistory={currentChatData?.isFromHistory}
-                  />
-                  </div>
-                </div>
-              </motion.div> : <motion.div key="search" initial={{
-            opacity: 0
-          }} animate={{
-            opacity: 1
-          }} exit={{
-            opacity: 0
-          }} transition={{
-            duration: 0.3,
-            ease: [0.23, 1, 0.32, 1]
-          }} className="flex flex-col items-center flex-1 relative" style={{ 
+        // CRITICAL: When clicking chat button, shouldRestoreActiveChat is true OR we're in chat mode with map visible
+        // OR we're transitioning to chat (prevents dashboard flash during state updates)
+        // We should NEVER render dashboard in this case - always show fullscreen chat view
+        // The map and SideChatPanel are rendered separately and will show when isMapVisible && hasPerformedSearch
+        // This prevents any possibility of dashboard appearing when chat is clicked
+        // BUT: If externalIsMapVisible is true (Map button clicked), always show map regardless of chat state
+        if ((shouldRestoreActiveChat || isTransitioningToChatRef.current || (isInChatMode && isMapVisible)) && !externalIsMapVisible) {
+          // Don't render dashboard - map/chat interface will be rendered instead
+          return null;
+        }
+        // Use a single rendering path to prevent position shifts when transitioning
+        // Conditionally wrap with motion.div or plain div, but always use same content structure
+        // Use ref value for synchronous access to prevent render flicker
+        const isTransitioning = isTransitioningFromChatRef.current || isTransitioningFromChat || homeClicked;
+        const DashboardContent = () => (
+          <div className="flex flex-col items-center flex-1 relative" style={{ 
             height: '100%', 
             minHeight: '100%',
             backgroundColor: 'transparent', // Ensure transparent to show background
             background: 'transparent', // Ensure transparent to show background
-            justifyContent: 'flex-start' // Start from top, don't center everything
+            justifyContent: 'flex-start', // Start from top, don't center everything
+            transition: isTransitioning ? 'none' : undefined, // Disable all CSS transitions when transitioning
+            WebkitTransition: isTransitioning ? 'none' : undefined,
+            MozTransition: isTransitioning ? 'none' : undefined,
+            msTransition: isTransitioning ? 'none' : undefined,
+            OTransition: isTransitioning ? 'none' : undefined
           }}>
                 {/* Interactive Dot Grid Background */}
                 {/* No background needed here as it's handled globally */}
                 
                 {/* Centered Content Container - Responsive layout based on viewport size */}
                 {/* When map is visible, don't render the container - search bar will be rendered separately */}
-                {!isMapVisible ? (() => {
+                {/* Use ref value during transitions for synchronous check, otherwise use state */}
+                {(() => {
+                  // During transitions, use ref for immediate value; otherwise use state
+                  const mapVisible = isTransitioning ? isMapVisibleRef.current : isMapVisible;
+                  // CRITICAL: Hide dashboard when map is visible OR when externalIsMapVisible is true (Map button clicked)
+                  // Show dashboard when map is NOT visible AND externalIsMapVisible is false
+                  const shouldHideDashboard = mapVisible || externalIsMapVisible;
+                  return !shouldHideDashboard;
+                })() ? (() => {
+                  // Use frozen layout state during transitions to prevent recalculation
+                  const frozenState = frozenLayoutStateRef.current;
+                  const useFrozen = isTransitioning && frozenState !== null;
+                  
+                  // During transitions, use ref for immediate value; otherwise use state
+                  const mapVisible = isTransitioning ? isMapVisibleRef.current : isMapVisible;
+                  
                   // Check if search bar should be at bottom (same logic as below)
                   const VERY_SMALL_WIDTH_THRESHOLD = 600;
                   const VERY_SMALL_HEIGHT_THRESHOLD = 500;
-                  const isVerySmallViewport = viewportSize.width < VERY_SMALL_WIDTH_THRESHOLD || 
-                                             viewportSize.height < VERY_SMALL_HEIGHT_THRESHOLD;
-                  const shouldPositionAtBottom = isVerySmallViewport && !isMapVisible;
+                  
+                  // Use frozen viewport size during transitions to prevent recalculation
+                  const effectiveViewportSize = useFrozen ? frozenState.viewportSize : viewportSize;
+                  
+                  const isVerySmallViewport = effectiveViewportSize.width < VERY_SMALL_WIDTH_THRESHOLD || 
+                                             effectiveViewportSize.height < VERY_SMALL_HEIGHT_THRESHOLD;
+                  const shouldPositionAtBottom = isVerySmallViewport && !mapVisible;
+                  
+                  // Use frozen values during transitions, otherwise use current values
+                  const effectiveIsVerySmall = useFrozen ? frozenState.isVerySmall : isVerySmall;
+                  const effectiveShouldHideProjects = useFrozen ? frozenState.shouldHideProjects : shouldHideProjectsForSearchBar;
                   
                   // When small, center logo perfectly in middle of viewport
-                  const shouldCenterLogo = (isVerySmall || shouldHideProjectsForSearchBar);
+                  const shouldCenterLogo = (effectiveIsVerySmall || effectiveShouldHideProjects);
                   
                   // When only logo and search bar are visible, center logo in the space above search bar
                   // Calculate search bar height: fixed at bottom = 120px, in flow = ~80px
@@ -2683,14 +3900,14 @@ export const MainContent = ({
                   
                   // For normal dashboard view, center everything as a group
                   // Calculate available space: viewport height minus search bar space
-                  const availableHeight = viewportSize.height - searchBarHeight;
+                  const availableHeight = effectiveViewportSize.height - searchBarHeight;
                   
                   // When only logo and search bar are visible (projects hidden), center logo in the middle of available space
-                  const isLogoOnlyView = shouldHideProjectsForSearchBar && !isVerySmall;
+                  const isLogoOnlyView = effectiveShouldHideProjects && !effectiveIsVerySmall;
                   
                   // When very small (logo + search bar only), center logo in the gap between top and search bar
                   // The search bar is fixed at bottom (120px), so logo should be centered in remaining space
-                  const isVerySmallLogoOnly = isVerySmall && shouldHideProjectsForSearchBar;
+                  const isVerySmallLogoOnly = effectiveIsVerySmall && effectiveShouldHideProjects;
                   
                   // Calculate the space available for logo when only logo and search bar are visible
                   // This is the viewport height minus the search bar height (accounting for its position)
@@ -2715,31 +3932,36 @@ export const MainContent = ({
                         flexDirection: 'column',
                         alignItems: 'center',
                         position: 'relative',
-                        transform: (!isVerySmall && !shouldHideProjectsForSearchBar) ? 'translateY(-20px)' : 'none', // Move content up slightly for better visual centering
+                        transform: (!effectiveIsVerySmall && !effectiveShouldHideProjects) ? 'translateY(-20px)' : 'none', // Apply transform consistently - don't toggle based on transition state
                         zIndex: 2,
-                        overflow: 'visible' // Ensure QuickStartBar is not clipped
+                        overflow: 'visible', // Ensure QuickStartBar is not clipped
+                        transition: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked) ? 'none' : 'transform 0.3s ease-out', // Smooth transition for transform, but disable during navigation transitions
+                        WebkitTransition: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked) ? 'none' : undefined,
+                        MozTransition: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked) ? 'none' : undefined,
+                        msTransition: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked) ? 'none' : undefined,
+                        OTransition: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked) ? 'none' : undefined
                       }}
                     >
                 {/* VELORA Branding Section */}
                       <div className="flex flex-col items-center" style={{ 
                         marginTop: '0',
-                        marginBottom: (!isVerySmall && !shouldHideProjectsForSearchBar) ? 'clamp(2.5rem, 6vh, 4rem)' : '0', // Balanced spacing between logo and cards
+                        marginBottom: (!effectiveIsVerySmall && !effectiveShouldHideProjects) ? 'clamp(2.5rem, 6vh, 4rem)' : '0', // Balanced spacing between logo and cards, use frozen values when transitioning
                         position: 'relative',
                         zIndex: 10 // Above background image
                       }}>
                         {/* VELORA Logo - Enlarged to match reference image proportions */}
                         <img 
-                          src="/%28DASH%20VELORA%29%20Logo%20-%20NB.png" 
+                          src="/faint-velora-logo-nb.png" 
                     alt="VELORA" 
                           className="h-auto"
                           style={{ 
-                            width: 'clamp(250px, 22vw, 380px)', // Slightly smaller than before
-                            minWidth: '250px', // Ensure it never gets smaller
-                            maxWidth: '380px', // Can grow on larger screens
+                            width: 'clamp(280px, 26vw, 420px)', // Slightly larger dashboard logo
+                            minWidth: '280px', // Ensure it never gets smaller
+                            maxWidth: '420px', // Can grow on larger screens
                             height: 'auto',
-                            minHeight: '80px', // Slightly reduced minimum height
-                            maxHeight: '150px', // Slightly reduced maximum height
-                            marginBottom: (!isVerySmall && !shouldHideProjectsForSearchBar) ? 'clamp(2rem, 4vh, 3rem)' : '0', // Spacing between logo and search bar
+                            minHeight: '90px', // Slightly larger minimum height
+                            maxHeight: '170px', // Slightly larger maximum height
+                            marginBottom: (!effectiveIsVerySmall && !effectiveShouldHideProjects) ? 'clamp(2rem, 4vh, 3rem)' : '0', // Spacing between logo and search bar, use frozen values when transitioning
                             objectFit: 'contain' // Maintain aspect ratio
                           }}
                     onLoad={() => {
@@ -2760,18 +3982,34 @@ export const MainContent = ({
                         // This ensures the search bar and placeholder text are always visible
                         const VERY_SMALL_WIDTH_THRESHOLD = 600; // When to switch to bottom positioning
                         const VERY_SMALL_HEIGHT_THRESHOLD = 500; // When to switch to bottom positioning
-                        const isVerySmallViewport = viewportSize.width < VERY_SMALL_WIDTH_THRESHOLD || 
-                                                   viewportSize.height < VERY_SMALL_HEIGHT_THRESHOLD;
+                        
+                        // Use frozen viewport size during transitions to prevent recalculation
+                        const frozenState = frozenLayoutStateRef.current;
+                        const useFrozen = isTransitioning && frozenState !== null;
+                        const effectiveViewportSizeForSearch = useFrozen ? frozenState.viewportSize : viewportSize;
+                        const effectiveSidebarCollapsed = useFrozen ? frozenState.isSidebarCollapsed : isSidebarCollapsed;
+                        
+                        const isVerySmallViewport = effectiveViewportSizeForSearch.width < VERY_SMALL_WIDTH_THRESHOLD || 
+                                                   effectiveViewportSizeForSearch.height < VERY_SMALL_HEIGHT_THRESHOLD;
                         
                         // Calculate padding dynamically to ensure equal spacing and prevent cutoff
                         const MIN_PADDING = 16; // 1rem minimum padding
                         const MAX_PADDING = 32; // 2rem maximum padding
                         const SEARCH_BAR_MIN = 350; // Minimum search bar width for placeholder text (reduced since placeholder is shorter: "Search for anything")
                         
-                        // Calculate available width (account for sidebar)
+                        // Calculate actual sidebar width based on state (same as dashboard) - DO THIS FIRST
+                        // Collapsed: 12px (toggle rail only)
+                        // Normal: 236px (224px sidebar + 12px toggle rail)
+                        // Expanded: 332px (320px sidebar + 12px toggle rail)
+                        const TOGGLE_RAIL_WIDTH = 12;
+                        const actualSidebarWidth = isSidebarCollapsed 
+                          ? TOGGLE_RAIL_WIDTH 
+                          : (isSidebarExpanded ? 320 + TOGGLE_RAIL_WIDTH : 224 + TOGGLE_RAIL_WIDTH);
+                        
+                        // Calculate available width (account for sidebar) - SAME AS DASHBOARD
                         const availableWidth = isMapVisible 
-                          ? viewportSize.width 
-                          : viewportSize.width - (isSidebarCollapsed ? 0 : SIDEBAR_WIDTH);
+                          ? effectiveViewportSizeForSearch.width - (isSidebarCollapsed ? 0 : actualSidebarWidth)
+                          : effectiveViewportSizeForSearch.width - (effectiveSidebarCollapsed ? 0 : SIDEBAR_WIDTH);
                         
                         // Calculate padding: ensure search bar fits with at least minimum padding
                         // If viewport is too small, use minimum padding
@@ -2799,38 +4037,99 @@ export const MainContent = ({
                         // When very small, position at bottom like ChatGPT
                         const shouldPositionAtBottom = isVerySmallViewport && !isMapVisible;
                         
+                        // For map view: Calculate center point of available space (same logic as dashboard padding)
+                        // Center = sidebar right edge + (available width / 2)
+                        // = actualSidebarWidth + (availableWidth / 2)
+                        // = actualSidebarWidth + ((viewportWidth - actualSidebarWidth) / 2)
+                        // = actualSidebarWidth + viewportWidth/2 - actualSidebarWidth/2
+                        // = viewportWidth/2 + actualSidebarWidth/2
+                        // = 50vw + actualSidebarWidth/2
+                        const sidebarHalfWidth = actualSidebarWidth / 2;
+                        const mapViewLeft = isMapVisible 
+                          ? (isSidebarCollapsed 
+                              ? '50%' 
+                              : `calc(50vw + ${sidebarHalfWidth}px)`)
+                          : (shouldPositionAtBottom ? '0' : 'auto');
+                        
+                        // Transform: translateX(-50%) centers the search bar at the left position
+                        const mapViewTransform = isMapVisible ? 'translateX(-50%)' : 'none';
+                        
+                        // Debug logging to verify calculation
+                        if (isMapVisible) {
+                          console.log('🔍 Search bar positioning:', {
+                            isSidebarCollapsed,
+                            isSidebarExpanded,
+                            actualSidebarWidth,
+                            sidebarHalfWidth,
+                            availableWidth,
+                            viewportWidth: effectiveViewportSizeForSearch.width,
+                            mapViewLeft,
+                            transform: mapViewTransform,
+                            calculatedCenter: `50vw + ${sidebarHalfWidth}px = ${effectiveViewportSizeForSearch.width / 2 + sidebarHalfWidth}px`
+                          });
+                        }
+                        
+                        // Determine if transition should be enabled
+                        // Enable transition for sidebar state changes, but disable during chat transitions
+                        // Component will automatically re-render when isSidebarCollapsed prop changes
+                        const shouldEnableTransition = !(isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked);
+                        const transitionValue = shouldEnableTransition 
+                          ? (isMapVisible ? 'left 0.3s ease-out' : 'all 0.3s ease-out')
+                          : 'none';
+                        
                         return (
-                          <div className="w-full flex justify-center items-center" style={{ 
-                            marginTop: shouldPositionAtBottom ? 'auto' : (isVerySmall ? 'auto' : '0'),
-                            marginBottom: shouldPositionAtBottom ? '0' : (isVerySmall ? 'auto' : '0'),
-                            paddingLeft: isMapVisible ? '0' : `${finalPadding}px`, // Equal padding on left
-                            paddingRight: isMapVisible ? '0' : `${finalPadding}px`, // Equal padding on right
-                            paddingBottom: shouldPositionAtBottom ? '20px' : '0', // Bottom padding when fixed at bottom
-                            paddingTop: shouldPositionAtBottom ? '16px' : '0', // Top padding when fixed at bottom (ChatGPT-style)
-                            overflow: 'visible', // Ensure content is never clipped
-                            position: isMapVisible ? 'fixed' : (shouldPositionAtBottom ? 'fixed' : 'relative'),
-                            bottom: isMapVisible ? '24px' : (shouldPositionAtBottom ? '0' : 'auto'),
-                            left: isMapVisible ? '50%' : (shouldPositionAtBottom ? '0' : 'auto'),
-                            right: shouldPositionAtBottom ? '0' : 'auto',
-                            transform: isMapVisible ? 'translateX(-50%)' : 'none',
-                            zIndex: isMapVisible ? 50 : (shouldPositionAtBottom ? 100 : 10), // Higher z-index when fixed at bottom
-                            width: isMapVisible ? 'clamp(400px, 85vw, 650px)' : '100%', // Full width in dashboard, constrained in map view
-                            maxWidth: isMapVisible ? 'clamp(400px, 85vw, 650px)' : 'none', // No max width constraint in dashboard (handled by padding)
-                            boxSizing: 'border-box', // Include padding in width calculation
-                            backgroundColor: 'transparent', // Fully transparent - background shows through
-                            background: 'transparent', // Fully transparent - background shows through
-                            backdropFilter: 'none' // No backdrop filter to ensure full transparency
-                          }}>
-                <SearchBar 
+                          <div 
+                            className={isMapVisible ? "" : "w-full flex justify-center items-center"} 
+                            style={{ 
+                              // Explicit display to override any className interference
+                              display: (isMapVisible || showNewPropertyWorkflow) ? 'block' : 'flex',
+                              alignItems: isMapVisible ? 'center' : 'center', // Center content vertically
+                              marginTop: shouldPositionAtBottom ? 'auto' : (isVerySmall ? 'auto' : '0'),
+                              marginBottom: shouldPositionAtBottom ? '0' : (isVerySmall ? 'auto' : '0'),
+                              paddingLeft: isMapVisible ? '0' : `${finalPadding}px`, // Equal padding on left
+                              paddingRight: isMapVisible ? '0' : `${finalPadding}px`, // Equal padding on right
+                              paddingBottom: shouldPositionAtBottom ? '20px' : '0', // Bottom padding when fixed at bottom
+                              paddingTop: shouldPositionAtBottom ? '16px' : '0', // Top padding when fixed at bottom (ChatGPT-style)
+                              overflow: 'visible', // Ensure content is never clipped
+                              position: isMapVisible ? 'fixed' : (shouldPositionAtBottom ? 'fixed' : 'relative'),
+                              bottom: isMapVisible ? '24px' : (shouldPositionAtBottom ? '0' : 'auto'),
+                              left: mapViewLeft,
+                              transform: mapViewTransform,
+                              zIndex: isMapVisible ? 50 : (shouldPositionAtBottom ? 100 : 10), // Higher z-index when fixed at bottom
+                              width: isMapVisible ? 'clamp(400px, 85vw, 650px)' : '100%', // Full width in dashboard, constrained in map view
+                              maxWidth: isMapVisible ? 'clamp(400px, 85vw, 650px)' : 'none', // No max width constraint in dashboard (handled by padding)
+                              boxSizing: 'border-box', // Include padding in width calculation
+                              backgroundColor: 'transparent', // Fully transparent - background shows through
+                              background: 'transparent', // Fully transparent - background shows through
+                              backdropFilter: 'none', // No backdrop filter to ensure full transparency
+                              transition: transitionValue, // Smooth transitions for sidebar state changes, but disable during navigation
+                              WebkitTransition: transitionValue,
+                              MozTransition: transitionValue,
+                              msTransition: transitionValue,
+                              OTransition: transitionValue,
+                              visibility: showNewPropertyWorkflow ? 'hidden' : 'visible' // Hide SearchBar when workflow is visible
+                            }}>
+                {!showNewPropertyWorkflow && <SearchBar 
+                  ref={searchBarRefCallback}
                   onSearch={handleSearch} 
                   onQueryStart={handleQueryStart} 
                   onMapToggle={handleMapToggle}
+                  onDashboardClick={onNavigateToDashboard}
                   resetTrigger={resetTrigger}
                   isMapVisible={isMapVisible}
                   isInChatMode={isInChatMode}
                   currentView={currentView}
                   hasPerformedSearch={hasPerformedSearch}
                   isSidebarCollapsed={isSidebarCollapsed}
+                  onFileDrop={(file) => {
+                    // This will be handled by SearchBar's handleFileUpload
+                    // The prop is just for notification - SearchBar handles the file internally
+                  }}
+                  onAttachmentsChange={!isMapVisible ? (attachments) => {
+                    // Proactively store dashboard attachments when they change
+                    pendingDashboardAttachmentsRef.current = attachments;
+                    setPendingDashboardAttachments(attachments);
+                  } : undefined}
                   onPanelToggle={isMapVisible && !hasPerformedSearch ? () => {
                     if (previousSessionQuery) {
                       setMapSearchQuery(previousSessionQuery);
@@ -2843,12 +4142,8 @@ export const MainContent = ({
                   hasPreviousSession={isMapVisible && !hasPerformedSearch ? !!previousSessionQuery : false}
                   onQuickStartToggle={() => setIsQuickStartBarVisible(!isQuickStartBarVisible)}
                   isQuickStartBarVisible={isQuickStartBarVisible}
-                  initialValue={(() => {
-                    const value = isMapVisible && !hasPerformedSearch 
-                      ? (pendingMapQueryRef.current || pendingMapQuery) 
-                      : (!isMapVisible ? (pendingDashboardQueryRef.current || pendingDashboardQuery) : undefined);
-                    return value;
-                  })()}
+                  // REMOVED initialValue - using simple local state like SideChatPanel
+                  // This prevents the typing reset issue completely
                   initialAttachedFiles={(() => {
                     // When in dashboard view (!isMapVisible), use dashboard attachments
                     // When in map view but not performed search, use map attachments
@@ -2857,19 +4152,19 @@ export const MainContent = ({
                       : (isMapVisible && !hasPerformedSearch ? (pendingMapAttachmentsRef.current.length > 0 ? pendingMapAttachmentsRef.current : (pendingMapAttachments.length > 0 ? pendingMapAttachments : undefined)) : undefined);
                     return attachments;
                   })()}
-                />
+                />}
                           </div>
                         );
                       })()}
                       
-                      {/* Upload and Recent Projects Buttons - positioned below search bar */}
-                      {!isMapVisible && !isInChatMode && (
+                      {/* Upload and Recent Projects Buttons - disabled for now */}
+                      {false && !isMapVisible && !isInChatMode && (
                         <div className="w-full" style={{ 
-                          marginTop: 'clamp(0.5rem, 1vh, 0.75rem)', // Reduced from 1rem-1.5rem to move closer
-                          paddingTop: 'clamp(0.25rem, 0.5vh, 0.5rem)', // Reduced padding
+                          marginTop: 'clamp(0.5rem, 1vh, 0.75rem)',
+                          paddingTop: 'clamp(0.25rem, 0.5vh, 0.5rem)',
                           paddingLeft: 'clamp(16px, 4vw, 32px)',
                           paddingRight: 'clamp(16px, 4vw, 32px)',
-                          position: 'relative', // Keep relative so absolute children position relative to this
+                          position: 'relative',
                           zIndex: 100,
                           width: '100%',
                           maxWidth: 'clamp(400px, 85vw, 650px)',
@@ -2886,10 +4181,10 @@ export const MainContent = ({
                                 backgroundColor: '#FFFFFF',
                                 color: '#374151',
                                 border: '1px solid rgba(229, 231, 235, 0.6)',
-                                fontSize: '12px', // Reduced from 14px
+                                fontSize: '12px',
                                 fontWeight: 500,
                                 cursor: 'pointer',
-                                height: '32px', // Reduced from 40px
+                                height: '32px',
                                 transition: 'all 0.15s ease',
                               }}
                               onMouseEnter={(e) => {
@@ -2901,12 +4196,11 @@ export const MainContent = ({
                                 e.currentTarget.style.borderColor = 'rgba(229, 231, 235, 0.6)';
                               }}
                             >
-                              <Folder className="w-3.5 h-3.5" strokeWidth={1.5} /> {/* Reduced from w-4 h-4 */}
+                              <Folder className="w-3.5 h-3.5" strokeWidth={1.5} />
                               <span>Recent Projects</span>
                             </button>
                           </div>
                           
-                          {/* Recent Projects Section - appears below button when expanded, doesn't affect other elements */}
                           {isRecentProjectsVisible && (
                             <motion.div
                               initial={{ opacity: 0, y: -10 }}
@@ -2917,8 +4211,8 @@ export const MainContent = ({
                               style={{ 
                                 marginTop: 'clamp(1rem, 2vh, 1.5rem)',
                                 marginBottom: 'clamp(2rem, 5vh, 3rem)',
-                                position: 'absolute', // Use absolute positioning to not affect layout
-                                top: '100%', // Position below the button
+                                position: 'absolute',
+                                top: '100%',
                                 left: 0,
                                 right: 0,
                                 zIndex: 99,
@@ -2932,14 +4226,11 @@ export const MainContent = ({
                             >
                               <RecentProjectsSection 
                                 onNewProjectClick={() => {
+                                  closeSidebar();
                                   setShowNewPropertyWorkflow(true);
                                 }}
                                 onOpenProperty={(address, coordinates, propertyId) => {
-                                  console.log('🖱️ Project card clicked:', { address, coordinates, propertyId });
-                                  // CRITICAL: Use property pin location coordinates (user-set) to center map on pin location
-                                  // These are the final coordinates selected when user clicked Create Property Card, NOT document-extracted coordinates
-                                  
-                                  // OPTIMIZATION: Check cache FIRST for instant display (<1s)
+                                  console.log('Project card clicked:', { address, coordinates, propertyId });
                                   let instantDisplay = false;
                                   if (propertyId) {
                                     try {
@@ -2947,21 +4238,14 @@ export const MainContent = ({
                                       const cached = localStorage.getItem(cacheKey);
                                       if (cached) {
                                         const cacheData = JSON.parse(cached);
-                                        const CACHE_MAX_AGE = 30 * 60 * 1000; // 30 minutes
+                                        const CACHE_MAX_AGE = 30 * 60 * 1000;
                                         const cacheAge = Date.now() - cacheData.timestamp;
                                         
                                         if (cacheAge < CACHE_MAX_AGE && cacheData.data) {
-                                          // We have cached data - show card INSTANTLY
-                                          console.log('🚀 INSTANT: Using cached property data - showing card immediately');
+                                          console.log('INSTANT: Using cached property data');
                                           instantDisplay = true;
-                                          
-                                          // Open map and select property immediately
                                           setIsMapVisible(true);
-                                          
-                                          // Store selection for map with property pin location coordinates
                                           (window as any).__pendingPropertySelection = { address, coordinates, propertyId };
-                                          
-                                          // Select property immediately if map is ready, using property pin location coordinates
                                           if (mapRef.current) {
                                             mapRef.current.selectPropertyByAddress(address, coordinates, propertyId);
                                           }
@@ -2972,32 +4256,23 @@ export const MainContent = ({
                                     }
                                   }
                                   
-                                  // If we didn't show instantly from cache, use normal flow
                                   if (!instantDisplay) {
-                                    // Open map mode
                                     setIsMapVisible(true);
-                                    
-                                    // Skip address search when we have a propertyId to avoid geocoding conflicts
                                     if (!propertyId) {
                                       setMapSearchQuery(address);
                                       setHasPerformedSearch(true);
                                     }
-                                    
-                                    // Store selection for when map is ready, with property pin location coordinates
                                     (window as any).__pendingPropertySelection = { address, coordinates, propertyId };
-                                    
-                                    // Try to select immediately (no delay - map should be ready or will retry) - use property pin location coordinates
                                     if (mapRef.current) {
-                                      console.log('✅ Selecting property immediately with pin location coordinates:', coordinates);
+                                      console.log('Selecting property immediately:', coordinates);
                                       mapRef.current.selectPropertyByAddress(address, coordinates, propertyId);
                                     } else {
-                                      // Map not ready - try again very soon
                                       setTimeout(() => {
                                         if (mapRef.current) {
-                                          console.log('✅ Selecting property after map initialization with pin location coordinates:', coordinates);
+                                          console.log('Selecting property after map initialization:', coordinates);
                                           mapRef.current.selectPropertyByAddress(address, coordinates, propertyId);
                                         }
-                                      }, 10); // Minimal delay - check every 10ms
+                                      }, 10);
                                     }
                                   }
                                 }}
@@ -3056,14 +4331,44 @@ export const MainContent = ({
                 {/* MapChatBar and SideChatPanel are now rendered outside content container for proper visibility */}
                 
                 {/* Map is now rendered at top level for background mode */}
-              </motion.div>}
-          </AnimatePresence>
-          
-        </>
+          </div>
+        );
+        
+        // CRITICAL: Call the function directly instead of using <DashboardContent />
+        // Using <DashboardContent /> (component syntax) with a function defined inside render
+        // creates a new component type on every render, causing React to remount and lose state.
+        // Calling DashboardContent() as a function just returns the JSX without this issue.
+        return DashboardContent();
+        
       case 'database':
         // Database/Files section is now handled by FilingSidebar popout
         // Return empty div - the sidebar will be rendered globally
         return <div />;
+      case 'projects':
+        return (
+          <div className="w-full h-full overflow-auto">
+            <ProjectsPage 
+              onCreateProject={handleCreateProject}
+              onPropertySelect={handleProjectPropertySelect}
+              sidebarWidth={(() => {
+                // Calculate sidebar width based on state (matching NewPropertyPinWorkflow logic)
+                const TOGGLE_RAIL_WIDTH = 12; // w-3 = 12px
+                let sidebarWidth = 0;
+                
+                if (isSidebarCollapsed) {
+                  sidebarWidth = 0; // w-0 when collapsed
+                } else if (isSidebarExpanded) {
+                  sidebarWidth = 320; // w-80 = 320px when expanded
+                } else {
+                  // Normal state: w-56 = 224px (sidebar with labels)
+                  sidebarWidth = 224;
+                }
+                
+                return sidebarWidth + TOGGLE_RAIL_WIDTH;
+              })()}
+            />
+          </div>
+        );
       case 'profile':
         return <div className="w-full max-w-none">
             <Profile onNavigate={handleNavigate} />
@@ -3089,11 +4394,12 @@ export const MainContent = ({
             
             
             {/* Unified Search Bar - adapts based on context */}
-            <SearchBar 
+            {!showNewPropertyWorkflow && <SearchBar 
               ref={searchBarRefCallback}
               onSearch={handleSearch} 
               onQueryStart={handleQueryStart} 
               onMapToggle={handleMapToggle}
+              onDashboardClick={onNavigateToDashboard}
               resetTrigger={resetTrigger}
               isMapVisible={isMapVisible}
               isInChatMode={isInChatMode}
@@ -3120,12 +4426,7 @@ export const MainContent = ({
                 }
               } : undefined}
               hasPreviousSession={isMapVisible && !hasPerformedSearch ? !!previousSessionQuery : false}
-              initialValue={(() => {
-                const value = isMapVisible && !hasPerformedSearch 
-                  ? (pendingMapQueryRef.current || pendingMapQuery) 
-                  : (!isMapVisible ? (pendingDashboardQueryRef.current || pendingDashboardQuery) : undefined);
-                return value;
-              })()}
+              // REMOVED initialValue - using simple local state like SideChatPanel
               initialAttachedFiles={(() => {
                 // When in dashboard view (!isMapVisible), use dashboard attachments
                 // When in map view but not performed search, use map attachments
@@ -3134,7 +4435,7 @@ export const MainContent = ({
                   : (isMapVisible && !hasPerformedSearch ? (pendingMapAttachmentsRef.current.length > 0 ? pendingMapAttachmentsRef.current : (pendingMapAttachments.length > 0 ? pendingMapAttachments : undefined)) : undefined);
                 return attachments;
               })()}
-            />
+            />}
           </div>;
     }
   };
@@ -3143,51 +4444,147 @@ export const MainContent = ({
   const [dragCounter, setDragCounter] = React.useState(0);
   const searchBarRef = React.useRef<{ handleFileDrop: (file: File) => void; getValue: () => string; getAttachments: () => FileAttachmentData[] } | null>(null);
   const mapSearchBarRef = React.useRef<{ handleFileDrop: (file: File) => void; getValue: () => string; getAttachments: () => FileAttachmentData[] } | null>(null);
-  const chatInterfaceRef = React.useRef<{ handleFileDrop: (file: File) => void } | null>(null);
   const pendingFileDropRef = React.useRef<File | null>(null);
   const [refsReady, setRefsReady] = React.useState(false);
-  
-  // File drop handler - can be passed directly to components
-  const handleFileDropToComponent = React.useCallback((file: File) => {
-    console.log('📎 MainContent: handleFileDropToComponent called with file:', file.name);
-    // This will be passed to SearchBar and ChatInterface as onFileDrop prop
-    // They can use it directly instead of relying on refs
-  }, []);
   
   // Memoize ref callbacks to ensure they're stable across renders
   const searchBarRefCallback = React.useCallback((instance: { handleFileDrop: (file: File) => void; getValue: () => string; getAttachments: () => FileAttachmentData[] } | null) => {
     searchBarRef.current = instance;
     // Update state to trigger pending file processing
-    setRefsReady(prev => {
-      const newReady = !!instance || !!chatInterfaceRef.current;
-      return newReady;
-    });
-  }, []);
-  
-  const chatInterfaceRefCallback = React.useCallback((instance: { handleFileDrop: (file: File) => void } | null) => {
-    console.log('🔗 ChatInterface ref callback called with:', instance);
-    chatInterfaceRef.current = instance;
-    // Update state to trigger pending file processing
-    setRefsReady(prev => {
-      const newReady = !!instance || !!searchBarRef.current;
-      console.log('🔗 ChatInterface ref ready state:', { instance: !!instance, searchRef: !!searchBarRef.current, newReady });
-      return newReady;
-    });
+    setRefsReady(!!instance);
   }, []);
   
   const mapSearchBarRefCallback = React.useCallback((instance: { handleFileDrop: (file: File) => void; getValue: () => string; getAttachments: () => FileAttachmentData[] } | null) => {
     mapSearchBarRef.current = instance;
   }, []);
 
+  // Global dragend and drop handlers to ensure dragging state is reset
+  // This catches cases where drag ends outside the window, drop doesn't fire, or drop happens in FilingSidebar
+  React.useEffect(() => {
+    const handleGlobalDragEnd = () => {
+      // Always reset dragging state when drag ends, regardless of current state
+      setIsDragging(false);
+      setDragCounter(0);
+    };
+
+    // Global drop handler - catches drops even if they're handled by FilingSidebar
+    // This ensures the overlay disappears when a drop is registered anywhere
+    const handleGlobalDrop = () => {
+      // Always reset dragging state when drop occurs, regardless of where
+      setIsDragging(false);
+      setDragCounter(0);
+    };
+
+    // Also handle mouseup as a fallback (dragend might not fire in some cases)
+    const handleMouseUp = () => {
+      // Only reset if we're currently dragging
+      if (isDragging) {
+        setIsDragging(false);
+        setDragCounter(0);
+      }
+    };
+
+    // Use capture phase to catch events early, before stopPropagation can prevent them
+    document.addEventListener('dragend', handleGlobalDragEnd, true);
+    window.addEventListener('dragend', handleGlobalDragEnd, true);
+    document.addEventListener('drop', handleGlobalDrop, true);
+    window.addEventListener('drop', handleGlobalDrop, true);
+    document.addEventListener('mouseup', handleMouseUp, true);
+    window.addEventListener('mouseup', handleMouseUp, true);
+    
+    return () => {
+      document.removeEventListener('dragend', handleGlobalDragEnd, true);
+      window.removeEventListener('dragend', handleGlobalDragEnd, true);
+      document.removeEventListener('drop', handleGlobalDrop, true);
+      window.removeEventListener('drop', handleGlobalDrop, true);
+      document.removeEventListener('mouseup', handleMouseUp, true);
+      window.removeEventListener('mouseup', handleMouseUp, true);
+    };
+  }, [isDragging]);
+  
+  // Additional safety: timeout fallback to reset dragging state if it gets stuck
+  React.useEffect(() => {
+    if (isDragging) {
+      const timeout = setTimeout(() => {
+        // If still dragging after 10 seconds, force reset (safety mechanism)
+        setIsDragging(false);
+        setDragCounter(0);
+      }, 10000);
+      
+      return () => clearTimeout(timeout);
+    }
+  }, [isDragging]);
+  
+  // Reset dragging state when window loses focus or becomes hidden
+  // This catches cases where drag ends when user switches tabs or windows
+  React.useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.hidden && isDragging) {
+        setIsDragging(false);
+        setDragCounter(0);
+      }
+    };
+    
+    const handleBlur = () => {
+      if (isDragging) {
+        setIsDragging(false);
+        setDragCounter(0);
+      }
+    };
+    
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('blur', handleBlur);
+    
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('blur', handleBlur);
+    };
+  }, [isDragging]);
+
   // Drag and drop handlers
   const handleDragEnter = React.useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
+    // Check if dragging over FilingSidebar - let it handle its own drag events
+    const filingSidebar = (e.target as HTMLElement).closest('[data-filing-sidebar]');
+    if (filingSidebar) {
+      return; // Don't interfere with FilingSidebar's drag handling
+    }
     
-    // Only process file drags
-    if (!e.dataTransfer.types.includes('Files')) {
+    // Check if dragging over SideChatPanel - let it handle its own drag events
+    const sideChatPanel = (e.target as HTMLElement).closest('[data-side-chat-panel]');
+    if (sideChatPanel) {
+      return; // Don't interfere with SideChatPanel's drag handling
+    }
+    
+    // Check if dragging over SearchBar - let it handle its own drag events
+    // But we still want to track drag state for visual feedback
+    const searchBar = (e.target as HTMLElement).closest('[data-search-bar]');
+    if (searchBar) {
+      // Still process to show visual feedback, but SearchBar will handle the actual drop
+      const hasFiles = e.dataTransfer.types.includes('Files');
+      const hasJsonData = e.dataTransfer.types.includes('application/json');
+      if (hasFiles || hasJsonData) {
+        e.preventDefault();
+        setDragCounter(prev => {
+          const newCount = prev + 1;
+          if (newCount === 1) {
+            setIsDragging(true);
+          }
+          return newCount;
+        });
+      }
+      return; // Let SearchBar handle its own events
+    }
+    
+    // Only process file drags (Files type) or FilingSidebar documents (application/json type)
+    const hasFiles = e.dataTransfer.types.includes('Files');
+    const hasJsonData = e.dataTransfer.types.includes('application/json');
+    
+    if (!hasFiles && !hasJsonData) {
       return;
     }
+    
+    e.preventDefault();
+    e.stopPropagation();
     
     setDragCounter(prev => {
       const newCount = prev + 1;
@@ -3200,6 +4597,18 @@ export const MainContent = ({
   }, []);
 
   const handleDragLeave = React.useCallback((e: React.DragEvent) => {
+    // Check if leaving from SideChatPanel - let it handle its own drag leave logic
+    const sideChatPanel = (e.target as HTMLElement).closest('[data-side-chat-panel]');
+    if (sideChatPanel) {
+      return; // Don't interfere with SideChatPanel's drag handling
+    }
+    
+    // Check if leaving from FilingSidebar - let it handle its own drag leave logic
+    const filingSidebar = (e.target as HTMLElement).closest('[data-filing-sidebar]');
+    if (filingSidebar) {
+      return; // Don't interfere with FilingSidebar's drag handling
+    }
+    
     e.preventDefault();
     e.stopPropagation();
     
@@ -3209,24 +4618,77 @@ export const MainContent = ({
     const x = e.clientX;
     const y = e.clientY;
     
+    // Check if drag has left the viewport entirely (outside browser window)
+    const isOutsideViewport = x < 0 || x > window.innerWidth || y < 0 || y > window.innerHeight;
+    
     // Only decrement if we're actually leaving the container bounds
-    if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) {
-    setDragCounter(prev => {
+    if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom || isOutsideViewport) {
+      setDragCounter(prev => {
         const newCount = Math.max(0, prev - 1);
-      if (newCount === 0) {
-        setIsDragging(false);
-      }
-      return newCount;
-    });
+        if (newCount === 0 || isOutsideViewport) {
+          // If outside viewport, immediately reset
+          setIsDragging(false);
+          setDragCounter(0);
+        } else if (newCount === 0) {
+          setIsDragging(false);
+        }
+        return newCount;
+      });
     }
   }, []);
 
   const handleDragOver = React.useCallback((e: React.DragEvent) => {
+    // Check if dragging over FilingSidebar - allow events to propagate
+    const filingSidebar = (e.target as HTMLElement).closest('[data-filing-sidebar]');
+    if (filingSidebar) {
+      // Don't stop propagation - let FilingSidebar handle it
+      return;
+    }
+    
+    // Check if dragging over SideChatPanel - allow events to propagate
+    const sideChatPanel = (e.target as HTMLElement).closest('[data-side-chat-panel]');
+    if (sideChatPanel) {
+      // CRITICAL: Call preventDefault() to prevent browser default behavior
+      // even when delegating to SideChatPanel, otherwise browser may interfere
+      // This matches the pattern used for SearchBar
+      const hasFiles = e.dataTransfer.types.includes('Files');
+      const hasJsonData = e.dataTransfer.types.includes('application/json');
+      if (hasFiles || hasJsonData) {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'copy';
+        setIsDragging(true);
+      }
+      // Don't call stopPropagation() here - let SideChatPanel's handler process it
+      return; // Let SideChatPanel handle the actual drop
+    }
+    
+    // Check if dragging over SearchBar - let it handle its own events
+    const searchBar = (e.target as HTMLElement).closest('[data-search-bar]');
+    if (searchBar) {
+      // This is the SearchBar - let it handle the event
+      // But we still want to show visual feedback on MainContent
+      const hasFiles = e.dataTransfer.types.includes('Files');
+      const hasJsonData = e.dataTransfer.types.includes('application/json');
+      if (hasFiles || hasJsonData) {
+        // CRITICAL: Call preventDefault() to prevent browser default behavior
+        // even when delegating to SearchBar, otherwise browser may interfere
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'copy';
+        setIsDragging(true);
+      }
+      // Don't call stopPropagation() here - let SearchBar's handler process it
+      return; // Let SearchBar handle the actual drop
+    }
+    
     e.preventDefault();
     e.stopPropagation();
     
     // Ensure dragging state is maintained while dragging over
-    if (e.dataTransfer.types.includes('Files')) {
+    // Check for both Files type (regular file drags) and application/json (FilingSidebar documents)
+    const hasFiles = e.dataTransfer.types.includes('Files');
+    const hasJsonData = e.dataTransfer.types.includes('application/json');
+    
+    if (hasFiles || hasJsonData) {
       e.dataTransfer.dropEffect = 'copy';
       // Keep dragging state active while over the area
       setIsDragging(true);
@@ -3234,16 +4696,31 @@ export const MainContent = ({
   }, []);
 
   const handleDrop = React.useCallback(async (e: React.DragEvent) => {
+    // Always reset dragging state when drop occurs, regardless of where it's dropped
+    setIsDragging(false);
+    setDragCounter(0);
+    
+    // Check if drop is on FilingSidebar - let it handle the drop
+    const filingSidebar = (e.target as HTMLElement).closest('[data-filing-sidebar]');
+    if (filingSidebar) {
+      return; // Let FilingSidebar handle the drop
+    }
+    
     // Check if drop is on property card - if so, let property card handle it
     const propertyPanel = (e.target as HTMLElement).closest('[data-property-panel]');
     if (propertyPanel) {
       return; // Let property card handle the drop
     }
     
+    // Check if drop is on SearchBar - let it handle the drop
+    const searchBar = (e.target as HTMLElement).closest('[data-search-bar]');
+    if (searchBar) {
+      // This is the SearchBar - let it handle the drop
+      return;
+    }
+    
     e.preventDefault();
     e.stopPropagation();
-    setIsDragging(false);
-    setDragCounter(0);
 
     // Check if this is a property document drag
     const propertyDocumentData = e.dataTransfer.getData('application/json');
@@ -3264,19 +4741,8 @@ export const MainContent = ({
             
             console.log('✅ Property document fetched:', file.name, file.size, 'bytes');
             
-            // Pass to chat or search bar - check mode first, then refs
-            if (isInChatMode && chatInterfaceRef.current) {
-              console.log('📤 Passing property document to ChatInterface');
-              try {
-                chatInterfaceRef.current.handleFileDrop(file);
-                console.log('✅ Property document successfully passed to ChatInterface');
-              } catch (err) {
-                console.error('❌ Error passing file to ChatInterface:', err);
-                // Fallback: store for later
-                pendingFileDropRef.current = file;
-                setHasPendingFile(true);
-              }
-            } else if (!isInChatMode && searchBarRef.current) {
+            // Pass to search bar
+            if (searchBarRef.current) {
               console.log('📤 Passing property document to SearchBar');
               try {
                 searchBarRef.current.handleFileDrop(file);
@@ -3288,11 +4754,7 @@ export const MainContent = ({
                 setHasPendingFile(true);
               }
             } else {
-              console.log('📦 Storing property document for later (refs not ready)', {
-                isInChatMode,
-                hasChatRef: !!chatInterfaceRef.current,
-                hasSearchRef: !!searchBarRef.current
-              });
+              console.log('📦 Storing property document for later (ref not ready)');
               pendingFileDropRef.current = file;
               setHasPendingFile(true); // Trigger the polling mechanism
             }
@@ -3310,62 +4772,66 @@ export const MainContent = ({
     if (files.length > 0) {
       // Only handle the first file for now
       const file = files[0];
-      console.log('📁 File dropped:', file.name);
-      console.log('📊 Drop context:', {
-        isInChatMode,
+      console.log('📁 [MainContent] File dropped on empty space:', file.name, {
+        size: file.size,
+        type: file.type,
         currentView,
-        hasChatRef: !!chatInterfaceRef.current,
         hasSearchRef: !!searchBarRef.current,
-        chatRefValue: chatInterfaceRef.current,
-        searchRefValue: searchBarRef.current
+        searchRefMethods: searchBarRef.current ? Object.keys(searchBarRef.current) : []
       });
       
-      // Try to pass file directly via refs first
-      if (chatInterfaceRef.current) {
-        console.log('📤 Passing file to ChatInterface (via ref)');
-        chatInterfaceRef.current.handleFileDrop(file);
-      } else if (searchBarRef.current) {
-        console.log('📤 Passing file to SearchBar (via ref)');
-        searchBarRef.current.handleFileDrop(file);
-      } else {
-        // Fallback: Try to trigger file upload via the file input element
-        // This works by finding the hidden file input and programmatically triggering it
-        console.warn('⚠️ No valid ref found, trying direct file input approach');
-        console.warn('⚠️ Details:', {
-          isInChatMode,
-          currentView,
-          hasChatRef: !!chatInterfaceRef.current,
-          hasSearchRef: !!searchBarRef.current
-        });
+      try {
+        // Pass file to SearchBar via ref (preferred method)
+        if (searchBarRef.current && searchBarRef.current.handleFileDrop) {
+          console.log('📤 [MainContent] Passing file to SearchBar via ref');
+          try {
+            searchBarRef.current.handleFileDrop(file);
+            console.log('✅ [MainContent] File successfully passed to SearchBar via ref');
+            return; // Success - exit early
+          } catch (refError) {
+            console.error('❌ [MainContent] Error calling searchBarRef.handleFileDrop:', refError);
+            // Fall through to fallback mechanisms
+          }
+        } else {
+          console.warn('⚠️ [MainContent] SearchBar ref not available or missing handleFileDrop method', {
+            refExists: !!searchBarRef.current,
+            hasHandleFileDrop: searchBarRef.current?.handleFileDrop ? true : false
+          });
+        }
         
-        // Find the file input in the currently visible component (SearchBar or ChatInterface)
+        // Fallback 1: Try to trigger file upload via the file input element
+        console.log('🔄 [MainContent] Attempting fallback: direct file input approach');
         const fileInputs = document.querySelectorAll('input[type="file"]');
         let targetInput: HTMLInputElement | null = null;
         
-        // Prefer the input in the active component
-        if (isInChatMode) {
-          // Look for input in ChatInterface
-          const chatContainer = document.querySelector('[class*="ChatInterface"]') || 
-                                document.querySelector('[class*="chat"]');
-          if (chatContainer) {
-            targetInput = chatContainer.querySelector('input[type="file"]') as HTMLInputElement;
-          }
-        } else {
-          // Look for input in SearchBar
-          const searchContainer = document.querySelector('[class*="SearchBar"]') ||
-                                  document.querySelector('form');
-          if (searchContainer) {
-            targetInput = searchContainer.querySelector('input[type="file"]') as HTMLInputElement;
+        // Look for input in SearchBar using data attribute
+        const searchBarForm = document.querySelector('[data-search-bar]');
+        if (searchBarForm) {
+          targetInput = searchBarForm.querySelector('input[type="file"]') as HTMLInputElement;
+          console.log('🔍 [MainContent] Found SearchBar form, checking for file input:', !!targetInput);
+        }
+        
+        // Fallback: Look for any form with file input
+        if (!targetInput) {
+          const forms = document.querySelectorAll('form');
+          for (const form of forms) {
+            const input = form.querySelector('input[type="file"]') as HTMLInputElement;
+            if (input) {
+              targetInput = input;
+              console.log('🔍 [MainContent] Found file input in form');
+              break;
+            }
           }
         }
         
-        // Fallback to first available file input
+        // Last resort: use first available file input
         if (!targetInput && fileInputs.length > 0) {
           targetInput = fileInputs[0] as HTMLInputElement;
+          console.log('🔍 [MainContent] Using first available file input as last resort');
         }
         
         if (targetInput) {
-          console.log('📤 Found file input, triggering upload via DataTransfer');
+          console.log('📤 [MainContent] Found file input, triggering upload via DataTransfer');
           try {
             // Create a new FileList with the dropped file using DataTransfer
             const dataTransfer = new DataTransfer();
@@ -3375,179 +4841,139 @@ export const MainContent = ({
             // Trigger change event to notify the component
             const changeEvent = new Event('change', { bubbles: true });
             targetInput.dispatchEvent(changeEvent);
-            console.log('✅ File input change event dispatched');
-          } catch (error) {
-            console.error('❌ Error triggering file input:', error);
-            // Store as pending if direct approach fails
-            pendingFileDropRef.current = file;
-            setHasPendingFile(true);
+            console.log('✅ [MainContent] File input change event dispatched');
+            return; // Success - exit early
+          } catch (inputError) {
+            console.error('❌ [MainContent] Error triggering file input:', inputError);
+            // Fall through to pending file mechanism
           }
         } else {
-          console.warn('⚠️ No file input found, storing as pending');
-          pendingFileDropRef.current = file;
-          setHasPendingFile(true);
+          console.warn('⚠️ [MainContent] No file input found in DOM');
         }
+        
+        // Fallback 2: Store as pending for later processing
+        console.log('📦 [MainContent] Storing file as pending for later processing');
+        pendingFileDropRef.current = file;
+        setHasPendingFile(true);
+        console.log('✅ [MainContent] File stored as pending, polling mechanism will process it');
+        
+      } catch (error) {
+        console.error('❌ [MainContent] Unexpected error in handleDrop:', error);
+        // Still try to store as pending as last resort
+        pendingFileDropRef.current = file;
+        setHasPendingFile(true);
       }
+    } else {
+      console.warn('⚠️ [MainContent] No files found in dataTransfer.files');
     }
-  }, [currentView, isInChatMode]);
+  }, [currentView]);
 
   // Poll for refs to become available (fallback mechanism)
   const [hasPendingFile, setHasPendingFile] = React.useState(false);
   
   // Process pending file drop when refs become available
   React.useEffect(() => {
-    if (pendingFileDropRef.current && (chatInterfaceRef.current || searchBarRef.current)) {
+    if (pendingFileDropRef.current && searchBarRef.current) {
       const pendingFile = pendingFileDropRef.current;
-      console.log('🔄 Processing pending file drop:', pendingFile.name, { 
+      console.log('🔄 [MainContent] Processing pending file drop:', pendingFile.name, { 
         refsReady, 
-        hasChatRef: !!chatInterfaceRef.current, 
         hasSearchRef: !!searchBarRef.current,
-        isInChatMode,
+        hasHandleFileDrop: !!searchBarRef.current?.handleFileDrop,
         currentView
       });
       
-      // Check mode first, then appropriate ref
-      if (isInChatMode && chatInterfaceRef.current) {
-        console.log('📤 Processing pending file in ChatInterface');
-        try {
-          chatInterfaceRef.current.handleFileDrop(pendingFile);
-          pendingFileDropRef.current = null;
-          setHasPendingFile(false);
-          console.log('✅ Pending file successfully processed in ChatInterface');
-        } catch (err) {
-          console.error('❌ Error processing pending file in ChatInterface:', err);
-        }
-      } else if (!isInChatMode && searchBarRef.current) {
-        console.log('📤 Processing pending file in SearchBar');
+      // Defensive check: ensure handleFileDrop method exists
+      if (searchBarRef.current.handleFileDrop) {
+        console.log('📤 [MainContent] Processing pending file in SearchBar');
         try {
           searchBarRef.current.handleFileDrop(pendingFile);
           pendingFileDropRef.current = null;
           setHasPendingFile(false);
-          console.log('✅ Pending file successfully processed in SearchBar');
+          console.log('✅ [MainContent] Pending file successfully processed in SearchBar');
         } catch (err) {
-          console.error('❌ Error processing pending file in SearchBar:', err);
+          console.error('❌ [MainContent] Error processing pending file in SearchBar:', err);
+          // Keep file as pending for retry
         }
-      } else if (chatInterfaceRef.current) {
-        // Fallback: if chat ref is available, use it
-        console.log('📤 Processing pending file in ChatInterface (fallback)');
-        try {
-          chatInterfaceRef.current.handleFileDrop(pendingFile);
-          pendingFileDropRef.current = null;
-          setHasPendingFile(false);
-          console.log('✅ Pending file successfully processed in ChatInterface (fallback)');
-        } catch (err) {
-          console.error('❌ Error processing pending file in ChatInterface (fallback):', err);
-        }
-      } else if (searchBarRef.current) {
-        // Fallback: if search ref is available, use it
-        console.log('📤 Processing pending file in SearchBar (fallback)');
-        try {
-          searchBarRef.current.handleFileDrop(pendingFile);
-          pendingFileDropRef.current = null;
-          setHasPendingFile(false);
-          console.log('✅ Pending file successfully processed in SearchBar (fallback)');
-        } catch (err) {
-          console.error('❌ Error processing pending file in SearchBar (fallback):', err);
-        }
+      } else {
+        console.warn('⚠️ [MainContent] SearchBar ref exists but handleFileDrop method is missing');
+        // Keep file as pending - polling mechanism will retry
       }
     }
-  }, [refsReady, isInChatMode, currentView, hasPendingFile]);
+  }, [refsReady, currentView, hasPendingFile]);
   
   React.useEffect(() => {
     if (hasPendingFile && pendingFileDropRef.current) {
-      console.log('🔄 Starting polling for pending file:', pendingFileDropRef.current.name);
+      const pendingFileName = pendingFileDropRef.current.name;
+      console.log('🔄 [MainContent] Starting polling for pending file:', pendingFileName);
+      
+      let pollCount = 0;
+      const maxPolls = 50; // 50 polls * 100ms = 5 seconds max
       
       const interval = setInterval(() => {
+        pollCount++;
         const pendingFile = pendingFileDropRef.current;
+        
         if (!pendingFile) {
-          console.log('✅ Pending file cleared, stopping polling');
+          console.log('✅ [MainContent] Pending file cleared, stopping polling');
           setHasPendingFile(false);
           clearInterval(interval);
           return;
         }
         
-        console.log('🔄 Polling for refs:', { 
-          hasChatRef: !!chatInterfaceRef.current, 
-          hasSearchRef: !!searchBarRef.current,
-          isInChatMode,
-          currentView
-        });
+        // Defensive check: verify ref exists and has the method
+        if (searchBarRef.current && searchBarRef.current.handleFileDrop) {
+          console.log(`📤 [MainContent] Processing pending file in SearchBar (poll attempt ${pollCount})`);
+          try {
+            searchBarRef.current.handleFileDrop(pendingFile);
+            pendingFileDropRef.current = null;
+            setHasPendingFile(false);
+            clearInterval(interval);
+            console.log('✅ [MainContent] Pending file successfully processed in SearchBar (polling)');
+          } catch (err) {
+            console.error(`❌ [MainContent] Error processing pending file in SearchBar (poll ${pollCount}):`, err);
+            // Continue polling - might be a transient error
+          }
+        } else {
+          // Only log every 10 polls to reduce console spam
+          if (pollCount % 10 === 0) {
+            console.log(`🔄 [MainContent] Polling for refs (attempt ${pollCount}):`, { 
+              hasSearchRef: !!searchBarRef.current,
+              hasHandleFileDrop: searchBarRef.current?.handleFileDrop ? true : false,
+              currentView
+            });
+          }
+        }
         
-        // Check mode first, then appropriate ref
-        if (isInChatMode && chatInterfaceRef.current) {
-          console.log('📤 Processing pending file in ChatInterface (via polling)');
-          try {
-            chatInterfaceRef.current.handleFileDrop(pendingFile);
+        // Stop polling after max attempts
+        if (pollCount >= maxPolls) {
+          console.warn(`⚠️ [MainContent] Pending file drop timed out after ${maxPolls} attempts (5 seconds):`, pendingFileName);
+          clearInterval(interval);
+          if (pendingFileDropRef.current) {
             pendingFileDropRef.current = null;
             setHasPendingFile(false);
-            clearInterval(interval);
-            console.log('✅ Pending file successfully processed in ChatInterface');
-          } catch (err) {
-            console.error('❌ Error processing pending file in ChatInterface:', err);
-          }
-        } else if (!isInChatMode && searchBarRef.current) {
-          console.log('📤 Processing pending file in SearchBar (via polling)');
-          try {
-            searchBarRef.current.handleFileDrop(pendingFile);
-            pendingFileDropRef.current = null;
-            setHasPendingFile(false);
-            clearInterval(interval);
-            console.log('✅ Pending file successfully processed in SearchBar');
-          } catch (err) {
-            console.error('❌ Error processing pending file in SearchBar:', err);
-          }
-        } else if (chatInterfaceRef.current) {
-          // Fallback: if chat ref is available, use it
-          console.log('📤 Processing pending file in ChatInterface (fallback)');
-          try {
-            chatInterfaceRef.current.handleFileDrop(pendingFile);
-            pendingFileDropRef.current = null;
-            setHasPendingFile(false);
-            clearInterval(interval);
-            console.log('✅ Pending file successfully processed in ChatInterface (fallback)');
-          } catch (err) {
-            console.error('❌ Error processing pending file in ChatInterface (fallback):', err);
-          }
-        } else if (searchBarRef.current) {
-          // Fallback: if search ref is available, use it
-          console.log('📤 Processing pending file in SearchBar (fallback)');
-          try {
-            searchBarRef.current.handleFileDrop(pendingFile);
-            pendingFileDropRef.current = null;
-            setHasPendingFile(false);
-            clearInterval(interval);
-            console.log('✅ Pending file successfully processed in SearchBar (fallback)');
-          } catch (err) {
-            console.error('❌ Error processing pending file in SearchBar (fallback):', err);
           }
         }
       }, 100); // Check every 100ms
       
-      // Clear interval after 5 seconds to avoid infinite polling
-      const timeout = setTimeout(() => {
-        clearInterval(interval);
-        if (pendingFileDropRef.current) {
-          console.warn('⚠️ Pending file drop timed out after 5 seconds:', pendingFileDropRef.current.name);
-          pendingFileDropRef.current = null;
-          setHasPendingFile(false);
-        }
-      }, 5000);
-      
       return () => {
         clearInterval(interval);
-        clearTimeout(timeout);
       };
     }
-  }, [hasPendingFile, isInChatMode, currentView]);
+  }, [hasPendingFile, currentView]);
 
   // Calculate left margin based on sidebar state
-  // Sidebar is w-10 lg:w-14 (40px/56px) when expanded, w-2 (8px) when collapsed
-  const leftMargin = isSidebarCollapsed ? 'ml-2' : 'ml-10 lg:ml-14';
+  // Sidebar is w-56 (224px) when normal, w-0 when collapsed
+  const leftMargin = isSidebarCollapsed ? 'ml-0' : 'ml-56';
   
   return (
     <div 
     className={`flex-1 relative ${(currentView === 'search' || currentView === 'home') ? '' : 'bg-white'} ${leftMargin} ${className || ''}`} 
-    style={{ backgroundColor: (currentView === 'search' || currentView === 'home') ? 'transparent' : '#ffffff', position: 'relative', zIndex: 1 }}
+    style={{ 
+      backgroundColor: (currentView === 'search' || currentView === 'home') ? 'transparent' : '#ffffff', 
+      position: 'relative', 
+      zIndex: 1,
+      transition: 'none' // Instant transition to prevent gaps when sidebar opens/closes
+    }}
     onDragEnter={handleDragEnter}
     onDragOver={handleDragOver}
     onDragLeave={handleDragLeave}
@@ -3557,7 +4983,7 @@ export const MainContent = ({
       <UploadProgressBar />
       
       {/* Background Map - Always rendered but only visible/interactive when map view is active */}
-      {(currentView === 'search' || currentView === 'home') && (
+        {((currentView === 'search' || currentView === 'home') && (isMapVisible || externalIsMapVisible)) && (
         <div 
           className="fixed" 
           style={{ 
@@ -3567,19 +4993,20 @@ export const MainContent = ({
             bottom: 0,
             width: '100vw',
             height: '100vh',
-            zIndex: isMapVisible ? 2 : -1, // Above content container when visible, below when hidden
-            opacity: isMapVisible ? 1 : 0, // Hide visually when not in map view
+            zIndex: (isMapVisible || externalIsMapVisible) ? 2 : -1, // Above content container when visible, below when hidden
+            opacity: (isMapVisible || externalIsMapVisible) ? 1 : 0, // Hide visually when not in map view
             pointerEvents: 'none', // Disable pointer events on wrapper - let SquareMap handle it
             overflow: 'hidden', // Clip any overflow
-            transition: 'opacity 0.2s ease-out', // Smooth fade in/out
+            transition: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked) ? 'none' : 'opacity 0.2s ease-out', // Disable transition when transitioning from chat
+            willChange: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked) ? 'auto' : 'opacity', // Prevent layout shifts
             backgroundColor: '#f5f5f5', // Match map background to prevent white gap
             background: '#f5f5f5' // Ensure background is set
           }}
         >
           <SquareMap
             ref={mapRef}
-            isVisible={isMapVisible}
-            isInteractive={isMapVisible}
+            isVisible={isMapVisible || externalIsMapVisible}
+            isInteractive={isMapVisible || externalIsMapVisible}
             searchQuery={mapSearchQuery}
             hasPerformedSearch={hasPerformedSearch}
             isInChatMode={isInChatMode}
@@ -3588,19 +5015,23 @@ export const MainContent = ({
             }}
             onPropertyDetailsVisibilityChange={(isOpen) => {
               setIsPropertyDetailsOpen(isOpen);
-              // Reset shouldExpandChat when property details panel closes to prevent chat from expanding more
-              if (!isOpen) {
+              if (isOpen && hasPerformedSearch) {
+                // Chat is already open and property details is opening - expand chat for 50/50 split
+                setShouldExpandChat(true);
+              } else if (!isOpen) {
+                // Reset shouldExpandChat when property details panel closes to prevent chat from expanding more
                 setShouldExpandChat(false);
               }
             }}
+            onCreateProject={handleCreateProject}
             containerStyle={{
               position: 'fixed',
               top: 0,
               left: 0, // Always at left edge - map stays full width
               width: '100vw', // Always full width - never resizes, no animations
               height: '100vh',
-              zIndex: isMapVisible ? 2 : -1, // Above content container when visible, below when hidden
-              pointerEvents: isMapVisible ? 'auto' : 'none', // Enable clicks when map is visible
+              zIndex: (isMapVisible || externalIsMapVisible) ? 2 : -1, // Above content container when visible, below when hidden
+              pointerEvents: (isMapVisible || externalIsMapVisible) ? 'auto' : 'none', // Enable clicks when map is visible
               backgroundColor: '#f5f5f5', // Match map background
               background: '#f5f5f5' // Ensure background is set
             }}
@@ -3623,7 +5054,8 @@ export const MainContent = ({
             zIndex: 900, // Above map but below agent task overlay
             border: '4px solid rgba(217, 119, 8, 0.6)',
             boxShadow: 'inset 0 0 150px 60px rgba(217, 119, 8, 0.15), inset 0 0 80px 30px rgba(217, 119, 8, 0.2)',
-            animation: 'mapGlowPulse 2s ease-in-out infinite'
+            animation: 'mapGlowPulse 2s ease-in-out infinite',
+            transition: 'left 0.2s ease-out' // Smooth transition when sidebar opens/closes
           }}
         />
       )}
@@ -3644,73 +5076,107 @@ export const MainContent = ({
       {/* MapChatBar removed - using unified SearchBar instead */}
       
       {/* Search Bar for Map View - Rendered at top level to ensure visibility */}
-      {isMapVisible && !hasPerformedSearch && (currentView === 'search' || currentView === 'home') && (
-        <div 
-          ref={(el) => {
-            if (el) {
-              // Use requestAnimationFrame to check after layout
-              requestAnimationFrame(() => {
-                const rect = el.getBoundingClientRect();
-                const computedStyle = window.getComputedStyle(el);
-                
-                // Check parent containers
-                let parent = el.parentElement;
-                const parentInfo: any[] = [];
-                let depth = 0;
-                while (parent && depth < 5) {
-                  const parentStyle = window.getComputedStyle(parent);
-                  parentInfo.push({
-                    tagName: parent.tagName,
-                    className: parent.className,
-                    display: parentStyle.display,
-                    visibility: parentStyle.visibility,
-                    opacity: parentStyle.opacity,
-                    position: parentStyle.position,
-                    zIndex: parentStyle.zIndex,
-                    overflow: parentStyle.overflow,
-                    overflowX: parentStyle.overflowX,
-                    overflowY: parentStyle.overflowY,
-                    height: parentStyle.height,
-                    width: parentStyle.width
-                  });
-                  parent = parent.parentElement;
-                  depth++;
-                }
-                
-                // For fixed elements, offsetParent is null by design, so check visibility differently
-                const isActuallyVisible = computedStyle.display !== 'none' && 
-                                        computedStyle.visibility !== 'hidden' && 
-                                        computedStyle.opacity !== '0' &&
-                                        rect.width > 0 && 
-                                        rect.height > 0;
-                
-              });
-            }
-          }}
-          className="w-full" 
-          style={{ 
-            position: 'fixed',
-            bottom: '24px',
-            left: '50%',
-            transform: 'translateX(-50%)',
-            zIndex: 10000, // VERY HIGH z-index to ensure it's on top
-            width: 'clamp(400px, 85vw, 650px)',
-            maxWidth: 'clamp(400px, 85vw, 650px)',
-            maxHeight: 'calc(100vh - 48px)', // Constrain to viewport: 24px bottom + 24px top padding
-            boxSizing: 'border-box',
-            pointerEvents: 'auto', // Ensure it's clickable
-            // Remove flex from container - let SearchBar determine its own size
-            display: 'block',
-            // Add minHeight to prevent collapse before content renders
-            minHeight: '60px',
-            // Don't clip the SearchBar shadow
-            overflow: 'visible'
-          }}>
+      {isMapVisible && !hasPerformedSearch && (currentView === 'search' || currentView === 'home') && !showNewPropertyWorkflow && (() => {
+        // Calculate actual sidebar width based on state (same as dashboard and first SearchBar)
+        // Collapsed: 12px (toggle rail only)
+        // Normal: 236px (224px sidebar + 12px toggle rail)
+        // Expanded: 332px (320px sidebar + 12px toggle rail)
+        const TOGGLE_RAIL_WIDTH = 12;
+        const actualSidebarWidth = isSidebarCollapsed 
+          ? TOGGLE_RAIL_WIDTH 
+          : (isSidebarExpanded ? 320 + TOGGLE_RAIL_WIDTH : 224 + TOGGLE_RAIL_WIDTH);
+        
+        // Calculate center point of available space (same logic as dashboard and first SearchBar)
+        // Center = sidebar right edge + (available width / 2)
+        // = actualSidebarWidth + ((viewportWidth - actualSidebarWidth) / 2)
+        // = viewportWidth/2 + actualSidebarWidth/2
+        // = 50vw + actualSidebarWidth/2
+        const sidebarHalfWidth = actualSidebarWidth / 2;
+        const mapViewLeft = isSidebarCollapsed 
+          ? '50%' 
+          : `calc(50vw + ${sidebarHalfWidth}px)`;
+        
+        // Transform: translateX(-50%) centers the search bar at the left position
+        const mapViewTransform = 'translateX(-50%)';
+        
+        // Determine if transition should be enabled (same logic as first SearchBar)
+        const shouldEnableTransition = !(isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked);
+        const transitionValue = shouldEnableTransition ? 'left 0.3s ease-out' : 'none';
+        
+        return (
+          <div
+            ref={(el) => {
+              if (el) {
+                // Use requestAnimationFrame to check after layout
+                requestAnimationFrame(() => {
+                  const rect = el.getBoundingClientRect();
+                  const computedStyle = window.getComputedStyle(el);
+                  
+                  // Check parent containers
+                  let parent = el.parentElement;
+                  const parentInfo: any[] = [];
+                  let depth = 0;
+                  while (parent && depth < 5) {
+                    const parentStyle = window.getComputedStyle(parent);
+                    parentInfo.push({
+                      tagName: parent.tagName,
+                      className: parent.className,
+                      display: parentStyle.display,
+                      visibility: parentStyle.visibility,
+                      opacity: parentStyle.opacity,
+                      position: parentStyle.position,
+                      zIndex: parentStyle.zIndex,
+                      overflow: parentStyle.overflow,
+                      overflowX: parentStyle.overflowX,
+                      overflowY: parentStyle.overflowY,
+                      height: parentStyle.height,
+                      width: parentStyle.width
+                    });
+                    parent = parent.parentElement;
+                    depth++;
+                  }
+                  
+                  // For fixed elements, offsetParent is null by design, so check visibility differently
+                  const isActuallyVisible = computedStyle.display !== 'none' && 
+                                          computedStyle.visibility !== 'hidden' && 
+                                          computedStyle.opacity !== '0' &&
+                                          rect.width > 0 && 
+                                          rect.height > 0;
+                  
+                });
+              }
+            }}
+            className="" 
+            style={{ 
+              position: 'fixed',
+              bottom: '24px',
+              left: mapViewLeft,
+              transform: mapViewTransform,
+              zIndex: 10000, // VERY HIGH z-index to ensure it's on top
+              width: 'clamp(400px, 85vw, 650px)',
+              maxWidth: 'clamp(400px, 85vw, 650px)',
+              maxHeight: 'calc(100vh - 48px)', // Constrain to viewport: 24px bottom + 24px top padding
+              boxSizing: 'border-box',
+              pointerEvents: 'auto', // Ensure it's clickable
+              // Remove flex from container - let SearchBar determine its own size
+              display: 'block',
+              // Add minHeight to prevent collapse before content renders
+              minHeight: '60px',
+              // Don't clip the SearchBar shadow
+              overflow: 'visible',
+              // Add transition for smooth movement when sidebar opens/closes
+              transition: transitionValue,
+              WebkitTransition: transitionValue,
+              MozTransition: transitionValue,
+              msTransition: transitionValue,
+              OTransition: transitionValue
+            }}>
           <SearchBar 
             ref={mapSearchBarRefCallback}
             onSearch={handleSearch} 
             onQueryStart={handleQueryStart} 
             onMapToggle={handleMapToggle}
+            onDashboardClick={onNavigateToDashboard}
             resetTrigger={resetTrigger}
             isMapVisible={isMapVisible}
             isInChatMode={isInChatMode}
@@ -3758,7 +5224,8 @@ export const MainContent = ({
                   setPendingMapQuery(""); // Clear pending query when opening panel
                 } else {
                   // No previous session - open with empty query
-                  setMapSearchQuery("");
+        setMapSearchQuery("");
+        setMapSearchContentSegments([]);
                 }
                 // This will show SideChatPanel (isVisible = isMapVisible && hasPerformedSearch)
               }
@@ -3769,10 +5236,7 @@ export const MainContent = ({
             isQuickStartBarVisible={isQuickStartBarVisible}
             hasPreviousSession={!!previousSessionQuery}
             isPropertyDetailsOpen={isPropertyDetailsOpen}
-            initialValue={(() => {
-              const value = pendingMapQueryRef.current || pendingMapQuery;
-              return value;
-            })()}
+            // REMOVED initialValue - using simple local state like SideChatPanel
             initialAttachedFiles={(() => {
               const attachments = pendingMapAttachmentsRef.current.length > 0 
                 ? pendingMapAttachmentsRef.current 
@@ -3780,147 +5244,163 @@ export const MainContent = ({
               return attachments;
             })()}
           />
-        </div>
-      )}
+          </div>
+        );
+      })()}
 
-      {/* SideChatPanel - Render outside content container to ensure visibility */}
-      {(currentView === 'search' || currentView === 'home') && (
-        <SideChatPanel
-          ref={sideChatPanelRef}
-          isVisible={isMapVisible && hasPerformedSearch}
-          query={mapSearchQuery}
-          citationContext={citationContext}
-          isSidebarCollapsed={isSidebarCollapsed}
-          sidebarWidth={(() => {
-            // Base sidebar width
-            const baseSidebarWidth = isSidebarCollapsed ? 8 : (typeof window !== 'undefined' && window.innerWidth >= 1024 ? 56 : 40);
-            // Add FilingSidebar width when it's open (uses context width which tracks dragged width)
-            // FilingSidebar positioning (from FilingSidebar.tsx):
-            // - When collapsed (isSmallSidebarMode): starts at 12px (just toggle rail)
-            // - When NOT collapsed: starts at baseSidebarWidth + 12px (sidebar + toggle rail)
-            // So SideChatPanel should start after the FilingSidebar ends:
-            // - When collapsed and FilingSidebar open: 12px + filingSidebarWidth
-            // - When NOT collapsed and FilingSidebar open: baseSidebarWidth + 12px + filingSidebarWidth
-            // - When FilingSidebar closed: baseSidebarWidth
-            const toggleRailWidth = 12;
-            if (isFilingSidebarOpen) {
-              if (isSidebarCollapsed) {
-                // Collapsed: FilingSidebar starts at 12px, ends at 12px + filingSidebarWidth
-                return 12 + filingSidebarWidth;
-              } else {
-                // Not collapsed: FilingSidebar starts at baseSidebarWidth + 12px, ends at baseSidebarWidth + 12px + filingSidebarWidth
-                return baseSidebarWidth + toggleRailWidth + filingSidebarWidth;
-              }
-            } else {
-              // FilingSidebar closed: just use base sidebar width
-              return baseSidebarWidth;
-            }
-          })()}
-          restoreChatId={restoreChatId}
-          initialAttachedFiles={(() => {
-            const attachments = pendingSideChatAttachmentsRef.current.length > 0 
-              ? pendingSideChatAttachmentsRef.current 
-              : (pendingSideChatAttachments.length > 0 ? pendingSideChatAttachments : undefined);
-            if (attachments && attachments.length > 0) {
-              console.log('📎 MainContent: Passing attachments to SideChatPanel:', attachments.length, attachments.map(a => a.name));
-            }
-            return attachments;
-          })()}
-          isPropertyDetailsOpen={isPropertyDetailsOpen}
-          shouldExpand={shouldExpandChat}
-          isMapVisible={isMapVisible}
-          onQuickStartToggle={() => {
-            setIsQuickStartBarVisible(!isQuickStartBarVisible);
-          }}
-          isQuickStartBarVisible={isQuickStartBarVisible}
-          onQuerySubmit={(newQuery) => {
-            // Handle new query from panel
-            setMapSearchQuery(newQuery);
-            // Keep hasPerformedSearch true
-            // Query from within SideChatPanel - don't expand (keep current state or collapse)
-            setShouldExpandChat(false);
-          }}
-          onMinimize={(chatMessages) => {
-            // Show bubble and hide full panel
-            setMinimizedChatMessages(chatMessages);
-            // Only show bubble in map flow (never on dashboard/other views)
-            if (isMapVisible && (currentView === 'search' || currentView === 'home')) {
+      {/* SideChatPanel - Always rendered to allow background processing */}
+      <SideChatPanel
+        ref={sideChatPanelRef}
+        isVisible={(currentView === 'search' || currentView === 'home') && isMapVisible && hasPerformedSearch && !showNewPropertyWorkflow}
+        query={mapSearchQuery}
+        initialContentSegments={mapSearchContentSegments.length > 0 ? mapSearchContentSegments : undefined}
+        pendingSearchContentSegmentsRef={pendingSearchContentSegmentsRef}
+        citationContext={citationContext}
+        isSidebarCollapsed={isSidebarCollapsed}
+        sidebarWidth={(() => {
+          // Sidebar widths match Tailwind classes:
+          // - w-0 when collapsed = 0px
+          // - w-56 when normal = 224px (14rem)
+          // Toggle rail is w-3 = 12px
+          const SIDEBAR_NORMAL_WIDTH = 224; // w-56 = 14rem = 224px
+          const TOGGLE_RAIL_WIDTH = 12; // w-3 = 12px
+          
+          // Update immediately when closing - no delays to prevent map showing through
+          // Only include FilingSidebar width when it's actually open (not when closing)
+          if (isFilingSidebarOpen) {
+            // FilingSidebar starts at:
+            // - 224px when sidebar not collapsed (covering toggle rail)
+            // - 12px when sidebar collapsed (after toggle rail)
+            const filingSidebarStart = isSidebarCollapsed ? TOGGLE_RAIL_WIDTH : SIDEBAR_NORMAL_WIDTH;
+            return filingSidebarStart + filingSidebarWidth;
+          } else {
+            // FilingSidebar closed: use sidebar + toggle rail width
+            // Update immediately - no transition delay
+            const baseSidebarWidth = isSidebarCollapsed ? 0 : SIDEBAR_NORMAL_WIDTH;
+            return baseSidebarWidth + TOGGLE_RAIL_WIDTH;
+          }
+        })()}
+        isFilingSidebarClosing={isFilingSidebarClosing}
+        isSidebarCollapsing={isSidebarCollapsing}
+        restoreChatId={restoreChatId}
+        newAgentTrigger={newAgentTrigger}
+        initialAttachedFiles={
+          pendingSideChatAttachmentsRef.current.length > 0 
+            ? pendingSideChatAttachmentsRef.current 
+            : (pendingSideChatAttachments.length > 0 ? pendingSideChatAttachments : undefined)
+        }
+        isPropertyDetailsOpen={isPropertyDetailsOpen}
+        shouldExpand={shouldExpandChat}
+        isMapVisible={isMapVisible}
+        onQuickStartToggle={() => {
+          setIsQuickStartBarVisible(!isQuickStartBarVisible);
+        }}
+        isQuickStartBarVisible={isQuickStartBarVisible}
+        onQuerySubmit={(newQuery) => {
+          // Handle new query from panel
+          setMapSearchQuery(newQuery);
+          // Keep hasPerformedSearch true
+          // Query from within SideChatPanel - don't expand (keep current state or collapse)
+          setShouldExpandChat(false);
+        }}
+        onMinimize={(chatMessages) => {
+          // Disable animations when closing chat
+          isTransitioningFromChatRef.current = true;
+          setIsTransitioningFromChat(true);
+          // Show bubble and hide full panel
+          setMinimizedChatMessages(chatMessages);
+          // Only show bubble in map flow (never on dashboard/other views)
+          if (isMapVisible && (currentView === 'search' || currentView === 'home')) {
             setIsChatBubbleVisible(true);
-            } else {
-              setIsChatBubbleVisible(false);
-            }
-            setHasPerformedSearch(false);
-            // This will hide SideChatPanel (isVisible = isMapVisible && hasPerformedSearch)
-            // and show MapChatBar (isVisible = isMapVisible && !hasPerformedSearch)
-          }}
-          onMessagesUpdate={(chatMessages) => {
-            // Update bubble messages in real-time when chat is minimized
-            if (isChatBubbleVisible) {
-              setMinimizedChatMessages(chatMessages);
-            }
-          }}
-          onMapToggle={() => {
-            // Close panel and show MapChatBar by resetting hasPerformedSearch
-            setMapSearchQuery("");
-            setHasPerformedSearch(false);
-            setRestoreChatId(null);
+          } else {
             setIsChatBubbleVisible(false);
-            setMinimizedChatMessages([]);
-            // This will hide SideChatPanel (isVisible = isMapVisible && hasPerformedSearch)
-            // and show MapChatBar (isVisible = isMapVisible && !hasPerformedSearch)
-          }}
-          onNewChat={() => {
-            // Clear the query to ensure a fresh start, but keep panel visible
-            // We'll use an empty string to signal a new chat, but the panel visibility
-            // is controlled by hasPerformedSearch, so we keep that true
-            setMapSearchQuery("");
-            setRestoreChatId(null);
-            // Note: We keep hasPerformedSearch true so the panel stays visible
-            // The SideChatPanel will handle showing an empty state
-          }}
-          onSidebarToggle={onSidebarToggle}
-          onChatWidthChange={(width) => {
-            // Update chat panel width for map resizing
-            setChatPanelWidth(width);
-          }}
-          onOpenProperty={(address, coordinates, propertyId, navigationOnly = false) => {
-            console.log('🏠 Property attachment clicked in SideChatPanel:', { address, coordinates, propertyId, navigationOnly });
-            
-            // Ensure map is visible
-            if (!isMapVisible) {
-              setIsMapVisible(true);
-            }
-            
-            // Convert propertyId to string if needed
-            const propertyIdStr = propertyId ? String(propertyId) : undefined;
-            
-            // Select property on map
-            // Pass navigationOnly to control whether to show full panel or just title card
-            if (mapRef.current && coordinates) {
-              mapRef.current.selectPropertyByAddress(address || '', coordinates, propertyIdStr, navigationOnly);
-            } else if (mapRef.current) {
-              // Try to select even without coordinates
-              mapRef.current.selectPropertyByAddress(address || '', undefined, propertyIdStr, navigationOnly);
-            } else {
-              // Map not ready - store for later
-              (window as any).__pendingPropertySelection = { address, propertyId: propertyIdStr, navigationOnly };
-              // Try again soon
-              setTimeout(() => {
-                if (mapRef.current) {
-                  if (coordinates) {
-                    mapRef.current.selectPropertyByAddress(address || '', coordinates, propertyIdStr, navigationOnly);
-                  } else {
-                    mapRef.current.selectPropertyByAddress(address || '', undefined, propertyIdStr, navigationOnly);
-                  }
+          }
+          setHasPerformedSearch(false);
+          // Reset the flag after the longest animation duration
+          setTimeout(() => {
+            setIsTransitioningFromChat(false);
+          }, 700);
+          // This will hide SideChatPanel (isVisible = isMapVisible && hasPerformedSearch)
+          // and show MapChatBar (isVisible = isMapVisible && !hasPerformedSearch)
+        }}
+        onMessagesUpdate={(chatMessages) => {
+          // Update main chat messages to preserve state even when navigating away
+          // This ensures queries can continue processing and update messages in the background
+          setChatMessages(chatMessages);
+          
+          // Also update preserved state if we have it, so it stays current
+          if (preservedChatStateRef.current) {
+            preservedChatStateRef.current.messages = [...chatMessages];
+          }
+          
+          // Update bubble messages in real-time when chat is minimized
+          if (isChatBubbleVisible) {
+            setMinimizedChatMessages(chatMessages);
+          }
+        }}
+        onMapToggle={() => {
+          // Disable animations when closing chat
+          isTransitioningFromChatRef.current = true;
+          setIsTransitioningFromChat(true);
+          // Close panel and show MapChatBar by resetting hasPerformedSearch
+        setMapSearchQuery("");
+        setMapSearchContentSegments([]);
+          setHasPerformedSearch(false);
+          setRestoreChatId(null);
+          setIsChatBubbleVisible(false);
+          setMinimizedChatMessages([]);
+          // Reset the flag after the longest animation duration
+          setTimeout(() => {
+            setIsTransitioningFromChat(false);
+          }, 700);
+          // This will hide SideChatPanel (isVisible = isMapVisible && hasPerformedSearch)
+          // and show MapChatBar (isVisible = isMapVisible && !hasPerformedSearch)
+        }}
+        onNewChat={handleNewChatInternal}
+        onSidebarToggle={onSidebarToggle}
+        onChatWidthChange={(width) => {
+          // Update chat panel width for map resizing
+          setChatPanelWidth(width);
+        }}
+        onActiveChatChange={handleActiveChatChange}
+        onOpenChatHistory={onOpenChatHistory}
+        onOpenProperty={(address, coordinates, propertyId, navigationOnly = false) => {
+          console.log('🏠 Property attachment clicked in SideChatPanel:', { address, coordinates, propertyId, navigationOnly });
+          
+          // Ensure map is visible
+          if (!isMapVisible) {
+            setIsMapVisible(true);
+          }
+          
+          // Convert propertyId to string if needed
+          const propertyIdStr = propertyId ? String(propertyId) : undefined;
+          
+          // Select property on map
+          // Pass navigationOnly to control whether to show full panel or just title card
+          if (mapRef.current && coordinates) {
+            mapRef.current.selectPropertyByAddress(address || '', coordinates, propertyIdStr, navigationOnly);
+          } else if (mapRef.current) {
+            // Try to select even without coordinates
+            mapRef.current.selectPropertyByAddress(address || '', undefined, propertyIdStr, navigationOnly);
+          } else {
+            // Map not ready - store for later
+            (window as any).__pendingPropertySelection = { address, propertyId: propertyIdStr, navigationOnly };
+            // Try again soon
+            setTimeout(() => {
+              if (mapRef.current) {
+                if (coordinates) {
+                  mapRef.current.selectPropertyByAddress(address || '', coordinates, propertyIdStr, navigationOnly);
+                } else {
+                  mapRef.current.selectPropertyByAddress(address || '', undefined, propertyIdStr, navigationOnly);
                 }
-              }, 100);
-            }
-          }}
-        />
-      )}
+              }
+            }, 100);
+          }
+        }}
+      />
 
-      {/* Floating Chat Bubble */}
-      {isMapVisible && (currentView === 'search' || currentView === 'home') && isChatBubbleVisible && (
+      {/* Floating Chat Bubble - COMMENTED OUT FOR NOW */}
+      {/* {isMapVisible && (currentView === 'search' || currentView === 'home') && isChatBubbleVisible && (
         <FloatingChatBubble
           chatMessages={minimizedChatMessages}
           onOpenChat={() => {
@@ -3930,13 +5410,20 @@ export const MainContent = ({
             // Chat messages are already stored, panel will restore them
           }}
           onClose={() => {
+            // Disable animations when closing chat bubble
+            isTransitioningFromChatRef.current = true;
+            setIsTransitioningFromChat(true);
             // Close bubble entirely
             setIsChatBubbleVisible(false);
             setMinimizedChatMessages([]);
             setHasPerformedSearch(false);
+            // Reset the flag after the longest animation duration
+            setTimeout(() => {
+              setIsTransitioningFromChat(false);
+            }, 700);
           }}
         />
-      )}
+      )} */}
 
       {/* QuickStartBar beside Search Bar - only show when chat panel is NOT open */}
       {isQuickStartBarVisible && !hasPerformedSearch && !isMapVisible && (
@@ -3982,9 +5469,62 @@ export const MainContent = ({
       } ${isInChatMode ? 'p-0' : currentView === 'upload' ? 'p-8' : currentView === 'analytics' ? 'p-4' : currentView === 'profile' ? 'p-0' : currentView === 'notifications' ? 'p-0 m-0' : 'p-8 lg:p-16'}`} style={{ 
         backgroundColor: (currentView === 'search' || currentView === 'home') ? 'transparent' : '#ffffff', 
         background: (currentView === 'search' || currentView === 'home') ? 'transparent' : undefined,
-        pointerEvents: isMapVisible ? 'none' : 'auto', // Block pointer events when map is visible so clicks pass through to map
-        zIndex: isMapVisible ? 0 : 1 // Below map when map is visible, above background when not
+        pointerEvents: (isMapVisible || externalIsMapVisible) ? 'none' : 'auto', // Block pointer events when map is visible so clicks pass through to map
+        zIndex: (isMapVisible || externalIsMapVisible) ? 0 : 1, // Below map when map is visible, above background when not
+        transition: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked) ? 'none' : undefined, // Disable all transitions when transitioning from chat
+        willChange: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked) ? 'auto' : undefined // Prevent layout shifts during transitions
       }}>
+        {/* Browser Fullscreen Button - Top Right Corner of Dashboard */}
+        {(currentView === 'search' || currentView === 'home') && !isMapVisible && !isInChatMode && (
+          <div
+            style={{
+              position: 'absolute',
+              top: '16px',
+              right: '16px',
+              zIndex: 100,
+              pointerEvents: 'auto'
+            }}
+          >
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                toggleBrowserFullscreen();
+              }}
+              className="group flex items-center rounded-md py-1.5 pl-2 pr-2 hover:bg-[#f5f5f5] hover:pr-3 active:bg-[#ebebeb] duration-150"
+              title={isBrowserFullscreen ? "Exit fullscreen (⌘⇧F)" : "Fullscreen (⌘⇧F)"}
+              type="button"
+              style={{
+                border: isBrowserFullscreen ? 'none' : '1px solid rgba(0, 0, 0, 0.1)',
+                cursor: 'pointer',
+                backgroundColor: isBrowserFullscreen ? 'rgba(0, 0, 0, 0.04)' : 'rgba(255, 255, 255, 0.9)',
+                boxShadow: isBrowserFullscreen ? 'none' : '0 1px 3px rgba(0, 0, 0, 0.06)',
+                transition: 'background-color 150ms ease, box-shadow 150ms ease, border-color 150ms ease'
+              }}
+            >
+              {isBrowserFullscreen ? (
+                <Minimize className="w-4 h-4 text-[#6B7280] flex-shrink-0" strokeWidth={2} />
+              ) : (
+                <Fullscreen className="w-4 h-4 text-[#6B7280] flex-shrink-0" strokeWidth={2} />
+              )}
+              <span className="inline-flex items-center gap-2 min-w-0 w-0 overflow-hidden opacity-0 whitespace-nowrap transition-none group-hover:w-auto group-hover:min-w-0 group-hover:opacity-100 group-hover:ml-1.5">
+                <span className="text-[13px] font-medium text-[#374151] leading-none">
+                  {isBrowserFullscreen ? "Exit fullscreen" : "Fullscreen"}
+                </span>
+                <span
+                  className="text-[10px] text-[#9CA3AF] font-medium px-1.5 py-0.5 rounded bg-[#F3F4F6] leading-none shrink-0"
+                  style={{
+                    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+                    letterSpacing: '0.01em'
+                  }}
+                >
+                  ⌘⇧F
+                </span>
+              </span>
+            </button>
+          </div>
+        )}
+        
         <div className={`relative w-full ${
           isInChatMode 
             ? 'h-full w-full' 
@@ -3994,24 +5534,25 @@ export const MainContent = ({
             : currentView === 'notifications' ? 'h-full w-full'
             : 'max-w-5xl mx-auto'
         } flex-1 flex flex-col`}>
-          <motion.div initial={{
-          opacity: 1,
-          y: 20
-        }} animate={{
-          opacity: 1,
-          y: 0
-        }} transition={{
-          duration: 0.6,
-          ease: [0.23, 1, 0.32, 1],
-          delay: 0.1
-        }} className={`relative flex-1 flex flex-col overflow-visible`}>{renderViewContent()}
-          </motion.div>
+          {/* Always render without animation - the y: 20 animation causes "drop" effect */}
+          <div className={`relative flex-1 flex flex-col overflow-visible`} style={{
+            transition: 'none', // Disable all CSS transitions
+            WebkitTransition: 'none',
+            MozTransition: 'none',
+            msTransition: 'none',
+            OTransition: 'none'
+          }}>{renderViewContent()}
+          </div>
         </div>
       </div>
       
       {/* MapChatBar removed - using unified SearchBar instead */}
       
-      {/* Standalone ExpandedCardView - for citations */}
+      {/* Standalone ExpandedCardView - for document preview */}
+      {/* Renders when a document is open, regardless of chat panel visibility */}
+      {/* For user-triggered opens (dashboard clicks), renders immediately */}
+      {/* For agent-triggered opens (silently set), will show when document is set */}
+      {/* StandaloneExpandedCardView handles positioning for both cases (chat open vs closed) */}
       {expandedCardViewDoc && (
         <StandaloneExpandedCardView
           docId={expandedCardViewDoc.docId}
@@ -4019,11 +5560,36 @@ export const MainContent = ({
           highlight={expandedCardViewDoc.highlight}
           onClose={closeExpandedCardView}
           chatPanelWidth={chatPanelWidth}
-          sidebarWidth={isSidebarCollapsed ? 8 : (typeof window !== 'undefined' && window.innerWidth >= 1024 ? 56 : 40)}
+          sidebarWidth={(() => {
+            // Use EXACT same calculation as SideChatPanel's sidebarWidth prop
+            // This ensures document preview aligns perfectly with chat panel's right edge
+            const SIDEBAR_NORMAL_WIDTH = 224; // w-56 = 14rem = 224px
+            const TOGGLE_RAIL_WIDTH = 12; // w-3 = 12px
+            
+            // Add FilingSidebar width when it's open OR when it's closing (during transition)
+            if (isFilingSidebarOpen || isFilingSidebarClosing) {
+              // FilingSidebar starts at:
+              // - 224px when sidebar not collapsed (covering toggle rail)
+              // - 12px when sidebar collapsed (after toggle rail)
+              const filingSidebarStart = isSidebarCollapsed ? TOGGLE_RAIL_WIDTH : SIDEBAR_NORMAL_WIDTH;
+              return filingSidebarStart + filingSidebarWidth;
+            } else {
+              // FilingSidebar closed: use sidebar + toggle rail width
+              const baseSidebarWidth = isSidebarCollapsed ? 0 : SIDEBAR_NORMAL_WIDTH;
+              return baseSidebarWidth + TOGGLE_RAIL_WIDTH;
+            }
+          })()}
+          // Pass resize handlers from SideChatPanel for left-edge resize
+          // Only enabled when chat panel is visible (side-by-side mode)
+          // Use callback to access ref at call time, not render time
+          onResizeStart={chatPanelWidth > 0 ? (e: React.MouseEvent) => {
+            sideChatPanelRef.current?.handleResizeStart(e);
+          } : undefined}
+          isResizing={sideChatPanelRef.current?.isResizing ?? false}
         />
       )}
       
-      {/* Shared Document Preview Modal - used by SearchBar, ChatInterface, and PropertyFilesModal */}
+      {/* Shared Document Preview Modal - used by SearchBar, SideChatPanel, and PropertyFilesModal */}
       <DocumentPreviewModal
         files={previewFiles}
         activeTabIndex={activePreviewTabIndex}
@@ -4082,73 +5648,53 @@ export const MainContent = ({
         isMapVisible={isMapVisible}
         isSidebarCollapsed={isSidebarCollapsed}
         chatPanelWidth={chatPanelWidth}
-        sidebarWidth={isSidebarCollapsed ? 8 : (typeof window !== 'undefined' && window.innerWidth >= 1024 ? 56 : 40)}
+        sidebarWidth={(() => {
+          // Use same pixel calculation as SideChatPanel for consistency
+          const SIDEBAR_COLLAPSED_WIDTH = 0;
+          const SIDEBAR_NORMAL_WIDTH = 224;
+          const TOGGLE_RAIL_WIDTH = 12;
+          const baseSidebarWidth = isSidebarCollapsed ? SIDEBAR_COLLAPSED_WIDTH : SIDEBAR_NORMAL_WIDTH;
+          // Include filing sidebar width when open
+          if (isFilingSidebarOpen || isFilingSidebarClosing) {
+            const filingSidebarStart = isSidebarCollapsed ? TOGGLE_RAIL_WIDTH : SIDEBAR_NORMAL_WIDTH;
+            return filingSidebarStart + filingSidebarWidth;
+          }
+          return baseSidebarWidth + TOGGLE_RAIL_WIDTH;
+        })()}
+        filingSidebarWidth={filingSidebarWidth} // Pass separately for instant recalculation tracking
       />
-      
-      {/* Drag and Drop Overlay - Full Screen */}
-      <AnimatePresence>
-        {isDragging && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[9999] flex items-center justify-center bg-white"
-            style={{ 
-              pointerEvents: 'none',
-              top: 0,
-              left: 0,
-              right: 0,
-              bottom: 0,
-              width: '100vw',
-              height: '100vh'
-            }}
-          >
-            {/* Large container for upload icon */}
-            <motion.div
-              initial={{ scale: 0.96, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.96, opacity: 0 }}
-              transition={{ duration: 0.25, ease: [0.4, 0, 0.2, 1] }}
-              className="relative"
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center'
-              }}
-            >
-              {/* Upload Icon - CloudUpload from Lucide */}
-              <div className="flex flex-col items-center justify-center">
-                <motion.div
-                  initial={{ y: -6, opacity: 0, scale: 0.9 }}
-                  animate={{ y: 0, opacity: 1, scale: 1 }}
-                  exit={{ y: -6, opacity: 0, scale: 0.9 }}
-                  transition={{ delay: 0.1, duration: 0.4, ease: [0.4, 0, 0.2, 1] }}
-                  className="relative"
-                >
-                  <CloudUpload
-                    size={72}
-                    strokeWidth={2}
-                    className="text-gray-500 drop-shadow-sm"
-                  />
-                </motion.div>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
       
       {/* New Property Pin Workflow */}
       <NewPropertyPinWorkflow
         isVisible={showNewPropertyWorkflow}
+        sidebarWidth={(() => {
+          // Calculate sidebar width based on state (matching DashboardLayout logic)
+          const TOGGLE_RAIL_WIDTH = 12; // w-3 = 12px
+          let sidebarWidth = 0;
+          
+          if (isSidebarCollapsed) {
+            sidebarWidth = 0; // w-0 when collapsed
+          } else if (isSidebarExpanded) {
+            sidebarWidth = 320; // w-80 = 320px when expanded
+          } else {
+            // Normal state: w-56 = 224px (sidebar with labels)
+            sidebarWidth = 224;
+          }
+          
+          return sidebarWidth + TOGGLE_RAIL_WIDTH;
+        })()}
+        initialCenter={initialMapState?.center}
+        initialZoom={initialMapState?.zoom}
         onClose={() => {
           setShowNewPropertyWorkflow(false);
+          setInitialMapState(null); // Clear map state when workflow closes
         }}
         onPropertyCreated={(propertyId, propertyData) => {
           // Navigate to map view with new property selected
           setShowNewPropertyWorkflow(false);
           setIsMapVisible(true);
           
-          // Set pending selection for map
+          // Set pending selection for map with full property data (including propertyHub with documents)
           const property = (propertyData as any).property || propertyData;
           (window as any).__pendingPropertySelection = {
             address: property.formatted_address || property.address,
@@ -4156,7 +5702,8 @@ export const MainContent = ({
               lat: property.latitude, 
               lng: property.longitude 
             },
-            propertyId: propertyId
+            propertyId: propertyId,
+            propertyData: propertyData // Include full property data with propertyHub
           };
           
           // Select property immediately if map is ready
@@ -4170,29 +5717,91 @@ export const MainContent = ({
         }}
       />
       
+      {/* Back Button - Show when workflow IS visible */}
+      {/* Rendered in MainContent to ensure it stays visible even if map is hidden */}
+      {showNewPropertyWorkflow && (
+        <div
+          className="fixed"
+          style={{
+            right: '80px', // Same position as Create Project button (48px map toggle + 8px gap + 24px spacing)
+            top: '20px',
+            zIndex: 1000, // Much higher z-index to ensure it's above the workflow (which is z-50)
+            pointerEvents: 'auto', // Ensure clicks are captured
+          }}
+        >
+          <button
+            type="button"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setShowNewPropertyWorkflow(false);
+              setInitialMapState(null);
+            }}
+            className="flex items-center gap-1.5 rounded-none transition-all duration-200 group focus:outline-none outline-none"
+            style={{
+              padding: '4px 8px',
+              height: '24px',
+              minHeight: '24px',
+              backgroundColor: '#FFFFFF',
+              border: '1px solid rgba(82, 101, 128, 0.35)',
+              borderRadius: '8px',
+              boxShadow: 'inset 0 1px 0 rgba(255, 255, 255, 0.55), 0 1px 2px rgba(0, 0, 0, 0.08)',
+              opacity: 1,
+              backdropFilter: 'none',
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.backgroundColor = '#F9FAFB';
+              e.currentTarget.style.boxShadow = 'inset 0 1px 0 rgba(255, 255, 255, 0.55), 0 2px 4px rgba(0, 0, 0, 0.12)';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.backgroundColor = '#FFFFFF';
+              e.currentTarget.style.boxShadow = 'inset 0 1px 0 rgba(255, 255, 255, 0.55), 0 1px 2px rgba(0, 0, 0, 0.08)';
+            }}
+            title="Back"
+          >
+            <ArrowLeft className="w-3.5 h-3.5 text-slate-600 group-hover:text-slate-700" strokeWidth={1.5} />
+            <span className="text-slate-600 text-xs">
+              Back
+            </span>
+          </button>
+        </div>
+      )}
+      
       {/* FilingSidebar - Global popout sidebar for document management */}
       <FilingSidebar 
         sidebarWidth={(() => {
-          // Calculate sidebar width based on state (matching ChatPanel logic exactly)
-          // Note: MainContent doesn't have isSidebarExpanded, so we only handle collapsed vs normal
-          const TOGGLE_RAIL_WIDTH = 12; // w-3 = 12px
-          let calculatedWidth = 0;
+          // Sidebar widths match Tailwind classes:
+          // - w-0 when collapsed = 0px
+          // - w-56 when normal = 224px (14rem)
+          // Toggle rail is w-3 = 12px
+          const SIDEBAR_COLLAPSED_WIDTH = 0;
+          const SIDEBAR_NORMAL_WIDTH = 224;
+          const TOGGLE_RAIL_WIDTH = 12;
           
           if (isSidebarCollapsed) {
-            calculatedWidth = 8; // w-2 = 8px
-            // Add toggle rail width when collapsed
-            return calculatedWidth + TOGGLE_RAIL_WIDTH;
+            // When collapsed: FilingSidebar starts after toggle rail only
+            return SIDEBAR_COLLAPSED_WIDTH + TOGGLE_RAIL_WIDTH; // 0 + 12 = 12px
           } else {
-            // Normal state (small sidebar): position directly against sidebar (no toggle rail gap)
-            if (typeof window !== 'undefined' && window.innerWidth >= 1024) {
-              calculatedWidth = 56; // lg:w-14
-            } else {
-              calculatedWidth = 40; // w-10
-            }
-            return calculatedWidth;
+            // When normal: FilingSidebar starts after sidebar (no extra toggle rail gap since it's visually part of sidebar)
+            return SIDEBAR_NORMAL_WIDTH;
           }
         })()}
         isSmallSidebarMode={!isSidebarCollapsed}
+        hideCloseButton={false}
+      />
+
+      {/* Fullscreen Property View - Chat + Property Details split */}
+      <FullscreenPropertyView
+        isVisible={fullscreenPropertyView && !!selectedPropertyFromProjects}
+        property={selectedPropertyFromProjects}
+        isSidebarCollapsed={isSidebarCollapsed}
+        isSidebarExpanded={isSidebarExpanded}
+        onClose={handleCloseFullscreenPropertyView}
+        onMessagesUpdate={setChatMessages}
+        onNewChat={handleNewChatInternal}
+        onSidebarToggle={onSidebarToggle}
+        onActiveChatChange={handleActiveChatChange}
+        onOpenChatHistory={onOpenChatHistory}
       />
     </div>
   );

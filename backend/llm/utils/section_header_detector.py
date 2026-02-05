@@ -114,6 +114,65 @@ def detect_section_header(chunk_text: str) -> Optional[Dict[str, any]]:
     # No header detected
     return None
 
+def extract_heading_levels(chunk_text: str, section_header: Optional[str] = None) -> Dict[str, any]:
+    """
+    Extracting heading level heirachy from chunk text.
+
+    Args:
+        chunk_text: The chunk text to analyze
+        section_header: Optional detected section header
+
+    Returns:
+        Dict with heading level info:
+        {
+            "section_level": int, # 1 = main section, 2 = subsection, 3 = sub_section, etc.
+            "parent_section": Optional[str],
+           "heading_hierachy": List[str] # Full hierachy path
+        }
+    """
+    if not chunk_text:
+        return {
+            "section_level": 1,
+            "parent_section": None,
+            "heading_hierachy": []
+        }
+
+    # If section_header provided, extract level from it 
+    if section_header:
+        # Pattern: numbered sections (e.g., "10 valuation" = level 1, "10.1 market value" = level 2)
+        numbered_match = re.match(r'^(\d+)(?:\.(\d+))?(?:\.(\d+))?', section_header)
+        if numbered_match:
+            if numbered_match.group(3):
+                level = 3
+            elif numbered_match.group(2):
+                level = 2
+            else:
+                level = 1
+            
+            return {
+                "section_level": level, 
+                "parent_section": numbered_match.group(1) if level > 1 else None,
+                "heading_hierachy": [section_header]
+            }
+
+    #check markdown-style headers in chunk text
+    lines = chunk_text.split('\n')[:5] # check the first 5 lines
+    for line in lines:
+        markdown_match = re.match(r'^(#{1,3})\s+(.+)', line)
+        if markdown_match:
+            level = len(markdown_match.group(1))
+            header_text = markdown_match.group(2).strip()
+            return {
+                "section_level": level,
+                "parent_section": None,
+                "heading_hierachy": [header_text]
+            }
+
+    return {
+        "section_level": 1,
+        "parent_section": None,
+        "heading_hierachy": []
+    }
 
 def _normalize_header(header: str) -> str:
     """

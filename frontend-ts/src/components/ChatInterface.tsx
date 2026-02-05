@@ -1085,7 +1085,7 @@ const ChatInterface = forwardRef<{ handleFileDrop: (file: File) => void }, ChatI
         {/* Fullscreen Chat Container - Plain White Background */}
         <div className="w-screen h-screen relative overflow-hidden">
         {/* White Background */}
-        <div className="absolute inset-0 bg-white">
+        <div className="absolute inset-0" style={{ backgroundColor: '#FCFCF9' }}>
         </div>
         
         {/* Content Layer */}

@@ -1,13 +1,14 @@
 import * as React from 'react';
 import { createContext, useContext, useState, useEffect, useCallback } from 'react';
 
-export type AgentMode = 'reader' | 'agent';
+export type AgentMode = 'reader' | 'agent' | 'plan';
 
 interface ModeContextValue {
   mode: AgentMode;
   setMode: (mode: AgentMode) => void;
   isAgentMode: boolean;
   isReaderMode: boolean;
+  isPlanMode: boolean;
 }
 
 const ModeContext = createContext<ModeContextValue | undefined>(undefined);
@@ -19,7 +20,7 @@ export function ModeProvider({ children }: { children: React.ReactNode }) {
   const [mode, setModeState] = useState<AgentMode>(() => {
     if (typeof window !== 'undefined') {
       const stored = localStorage.getItem(MODE_STORAGE_KEY);
-      if (stored === 'reader' || stored === 'agent') {
+      if (stored === 'reader' || stored === 'agent' || stored === 'plan') {
         return stored;
       }
     }
@@ -40,6 +41,7 @@ export function ModeProvider({ children }: { children: React.ReactNode }) {
     setMode,
     isAgentMode: mode === 'agent',
     isReaderMode: mode === 'reader',
+    isPlanMode: mode === 'plan',
   };
 
   return (

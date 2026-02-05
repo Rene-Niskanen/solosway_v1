@@ -2,12 +2,14 @@
 
 import * as React from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { X, FileCheck } from "lucide-react";
+import { X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { FileAttachmentData } from './FileAttachment';
 import { PropertyAttachmentData } from './PropertyAttachment';
+import { AtMentionChip } from './AtMentionChip';
 import { usePreview } from '../contexts/PreviewContext';
 import { ReasoningSteps, ReasoningStep } from './ReasoningSteps';
+import type { QueryContentSegment } from '@/types/segmentInput';
 
 interface CitationDataType {
   doc_id: string;
@@ -34,6 +36,7 @@ interface ChatMessage {
   propertyAttachments?: PropertyAttachmentData[];
   selectedDocumentIds?: string[];
   selectedDocumentNames?: string[];
+  contentSegments?: QueryContentSegment[];
   isLoading?: boolean;
   reasoningSteps?: ReasoningStep[];
   citations?: Record<string, CitationDataType>;
@@ -91,7 +94,6 @@ const CitationLink: React.FC<{
         e.currentTarget.style.backgroundColor = '#F3F4F6';
         e.currentTarget.style.color = '#6B7280';
       }}
-      title={`Source: ${displayName}`}
     >
       {citationNumber}
     </button>
@@ -278,6 +280,10 @@ export const FloatingChatBubble: React.FC<FloatingChatBubbleProps> = ({
   const messagesContainerRef = React.useRef<HTMLDivElement>(null);
   const { openExpandedCardView } = usePreview();
   
+  // State for gold glow animation
+  const [showGoldGlow, setShowGoldGlow] = React.useState(false);
+  const hasAnimatedRef = React.useRef(false);
+  
   // Check if bubble should be visible: only when query sent, user left, and response is loading
   const shouldShowBubble = React.useMemo(() => {
     // Check if there's at least one query message
@@ -287,6 +293,22 @@ export const FloatingChatBubble: React.FC<FloatingChatBubbleProps> = ({
     // Only show if query exists and response is loading
     return hasQuery && hasLoadingResponse;
   }, [chatMessages]);
+  
+  // Trigger gold glow animation when bubble becomes visible
+  React.useEffect(() => {
+    if (shouldShowBubble && !hasAnimatedRef.current) {
+      hasAnimatedRef.current = true;
+      setShowGoldGlow(true);
+      // Remove glow after animation completes (800ms)
+      const timer = setTimeout(() => {
+        setShowGoldGlow(false);
+      }, 800);
+      return () => clearTimeout(timer);
+    } else if (!shouldShowBubble) {
+      // Reset animation flag when bubble hides so it can animate again next time
+      hasAnimatedRef.current = false;
+    }
+  }, [shouldShowBubble]);
   
   // Helper function to render text with clickable citation links (scaled down version)
   const renderTextWithCitations = React.useCallback((
@@ -560,28 +582,6 @@ export const FloatingChatBubble: React.FC<FloatingChatBubbleProps> = ({
                     boxSizing: 'border-box'
                   }}
                 >
-                  {/* Display selected documents indicator above bubble */}
-                  {message.selectedDocumentIds && message.selectedDocumentIds.length > 0 && (
-                    <div style={{ 
-                      display: 'flex', 
-                      alignItems: 'center', 
-                      gap: '6px',
-                      padding: '4px 8px',
-                      backgroundColor: 'transparent',
-                      borderRadius: '6px',
-                      fontSize: '11px',
-                      color: '#6B7280',
-                      marginBottom: '2px'
-                    }}>
-                      <FileCheck size={12} style={{ flexShrink: 0, color: '#9CA3AF' }} />
-                      <span style={{ fontWeight: 400 }}>
-                        {message.selectedDocumentIds.length === 1 && message.selectedDocumentNames && message.selectedDocumentNames.length > 0
-                          ? message.selectedDocumentNames[0]
-                          : `${message.selectedDocumentIds.length} ${message.selectedDocumentIds.length === 1 ? 'document' : 'documents'} selected`}
-                      </span>
-                    </div>
-                  )}
-                  
                   {/* Query bubble - aligned with response text */}
                   <div
                     style={{
@@ -610,59 +610,147 @@ export const FloatingChatBubble: React.FC<FloatingChatBubbleProps> = ({
                       </div>
                     )}
                     
-                    {/* Display property attachments if any */}
-                    {message.propertyAttachments && message.propertyAttachments.length > 0 && (
-                      <div style={{ marginBottom: message.text ? '8px' : '0', display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
-                        {message.propertyAttachments.map((property) => (
-                          <QueryPropertyAttachment key={property.id} attachment={property} />
-                        ))}
-                      </div>
-                    )}
-                    
-                    {/* Display query text - same as SideChatPanel */}
-                    {message.text && (
-                      <div style={{
-                        color: '#0D0D0D',
-                        fontSize: '11px',
-                        lineHeight: '13px', // Tighter line height to reduce vertical space
-                        margin: 0,
-                        padding: 0,
-                        textAlign: 'left',
-                        fontFamily: 'system-ui, -apple-system, sans-serif',
-                        width: '100%',
-                        boxSizing: 'border-box',
-                        display: 'block' // Changed from inline to block for better spacing control
-                      }}>
-                        <ReactMarkdown
-                          components={{
-                            p: ({ children }) => <p style={{ margin: 0, padding: 0, display: 'block' }}>{children}</p>,
-                            h1: ({ children }) => <h1 style={{ fontSize: '12px', fontWeight: 600, margin: '8px 0 6px 0' }}>{children}</h1>,
-                            h2: () => null,
-                            h3: ({ children }) => <h3 style={{ fontSize: '11px', fontWeight: 600, margin: '6px 0 3px 0' }}>{children}</h3>,
-                            ul: ({ children }) => <ul style={{ margin: '6px 0', paddingLeft: '16px' }}>{children}</ul>,
-                            ol: ({ children }) => <ol style={{ margin: '6px 0', paddingLeft: '16px' }}>{children}</ol>,
-                            li: ({ children }) => <li style={{ marginBottom: '3px' }}>{children}</li>,
-                            strong: ({ children }) => <strong style={{ fontWeight: 600 }}>{children}</strong>,
-                            em: ({ children }) => <em style={{ fontStyle: 'italic' }}>{children}</em>,
-                            code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '1px 3px', borderRadius: '2px', fontSize: '10px', fontFamily: 'monospace' }}>{children}</code>,
-                            blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #d1d5db', paddingLeft: '12px', margin: '8px 0', color: '#6b7280' }}>{children}</blockquote>,
-                            hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '16px 0' }} />,
-                            table: ({ children }) => (
-                              <div style={{ overflowX: 'auto', margin: '12px 0' }}>
-                                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>{children}</table>
-                              </div>
-                            ),
-                            thead: ({ children }) => <thead style={{ backgroundColor: '#f9fafb' }}>{children}</thead>,
-                            tbody: ({ children }) => <tbody>{children}</tbody>,
-                            tr: ({ children }) => <tr style={{ borderBottom: '1px solid #e5e7eb' }}>{children}</tr>,
-                            th: ({ children }) => <th style={{ padding: '8px 12px', textAlign: 'left', fontWeight: 600, color: '#111827', borderBottom: '2px solid #d1d5db' }}>{children}</th>,
-                            td: ({ children }) => <td style={{ padding: '8px 12px', textAlign: 'left', color: '#374151' }}>{children}</td>,
-                          }}
-                        >
-                          {message.text}
-                        </ReactMarkdown>
-                      </div>
-                    )}
+                    {/* Chips + query text in input order (contentSegments) or fallback to chips then text */}
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', alignItems: 'center', width: '100%' }}>
+                      {message.contentSegments && message.contentSegments.length > 0
+                        ? message.contentSegments.map((seg, idx) => {
+                            if (seg.type === 'text') {
+                              if (!seg.value) return null;
+                              return (
+                                <span
+                                  key={`t-${idx}`}
+                                  style={{
+                                    color: '#0D0D0D',
+                                    fontSize: '11px',
+                                    lineHeight: '13px',
+                                    margin: 0,
+                                    padding: 0,
+                                    textAlign: 'left',
+                                    fontFamily: 'system-ui, -apple-system, sans-serif',
+                                    flex: '1 1 auto',
+                                    minWidth: 0,
+                                    wordWrap: 'break-word',
+                                    overflowWrap: 'break-word'
+                                  }}
+                                >
+                                  <ReactMarkdown
+                                    components={{
+                                      p: ({ children }) => <p style={{ margin: 0, padding: 0, display: 'block' }}>{children}</p>,
+                                      h1: ({ children }) => <h1 style={{ fontSize: '12px', fontWeight: 600, margin: '8px 0 6px 0' }}>{children}</h1>,
+                                      h2: () => null,
+                                      h3: ({ children }) => <h3 style={{ fontSize: '11px', fontWeight: 600, margin: '6px 0 3px 0' }}>{children}</h3>,
+                                      ul: ({ children }) => <ul style={{ margin: '6px 0', paddingLeft: '16px' }}>{children}</ul>,
+                                      ol: ({ children }) => <ol style={{ margin: '6px 0', paddingLeft: '16px' }}>{children}</ol>,
+                                      li: ({ children }) => <li style={{ marginBottom: '3px' }}>{children}</li>,
+                                      strong: ({ children }) => <strong style={{ fontWeight: 600 }}>{children}</strong>,
+                                      em: ({ children }) => <em style={{ fontStyle: 'italic' }}>{children}</em>,
+                                      code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '1px 3px', borderRadius: '2px', fontSize: '10px', fontFamily: 'monospace' }}>{children}</code>,
+                                      blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #d1d5db', paddingLeft: '12px', margin: '8px 0', color: '#6b7280' }}>{children}</blockquote>,
+                                      hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '16px 0' }} />,
+                                      table: ({ children }) => (
+                                        <div style={{ overflowX: 'auto', margin: '12px 0' }}>
+                                          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>{children}</table>
+                                        </div>
+                                      ),
+                                      thead: ({ children }) => <thead style={{ backgroundColor: '#f9fafb' }}>{children}</thead>,
+                                      tbody: ({ children }) => <tbody>{children}</tbody>,
+                                      tr: ({ children }) => <tr style={{ borderBottom: '1px solid #e5e7eb' }}>{children}</tr>,
+                                      th: ({ children }) => <th style={{ padding: '8px 12px', textAlign: 'left', fontWeight: 600, color: '#111827', borderBottom: '2px solid #d1d5db' }}>{children}</th>,
+                                      td: ({ children }) => <td style={{ padding: '8px 12px', textAlign: 'left', color: '#374151' }}>{children}</td>,
+                                    }}
+                                  >
+                                    {seg.value}
+                                  </ReactMarkdown>
+                                </span>
+                              );
+                            }
+                            if (seg.type === 'property') {
+                              const prop = seg.attachment;
+                              const part = (prop.address || '').split(',')[0] || prop.address || '';
+                              const label = part.length > 30 ? part.slice(0, 27) + '...' : part;
+                              return (
+                                <AtMentionChip
+                                  key={`p-${idx}-${prop.id}`}
+                                  type="property"
+                                  label={label}
+                                  title={`Click to view ${prop.address}`}
+                                />
+                              );
+                            }
+                            const label = seg.name.length > 30 ? seg.name.slice(0, 27) + '...' : seg.name;
+                            return (
+                              <AtMentionChip key={`d-${idx}-${seg.id}`} type="document" label={label} />
+                            );
+                          })
+                        : (
+                          <>
+                            {message.propertyAttachments?.map((prop, i) => {
+                              const part = (prop.address || '').split(',')[0] || prop.address || '';
+                              const label = part.length > 30 ? part.slice(0, 27) + '...' : part;
+                              return (
+                                <AtMentionChip
+                                  key={prop.id ?? prop.property?.id ?? prop.address ?? `prop-${i}`}
+                                  type="property"
+                                  label={label}
+                                  title={`Click to view ${prop.address}`}
+                                />
+                              );
+                            })}
+                            {message.selectedDocumentIds?.map((docId, i) => {
+                              const name = message.selectedDocumentNames?.[i] ?? docId;
+                              const label = name.length > 30 ? name.slice(0, 27) + '...' : name;
+                              return (
+                                <AtMentionChip key={docId} type="document" label={label} />
+                              );
+                            })}
+                            {message.text ? (
+                              <span style={{
+                                color: '#0D0D0D',
+                                fontSize: '11px',
+                                lineHeight: '13px',
+                                margin: 0,
+                                padding: 0,
+                                textAlign: 'left',
+                                fontFamily: 'system-ui, -apple-system, sans-serif',
+                                width: '100%',
+                                boxSizing: 'border-box',
+                                display: 'block',
+                                flex: '1 1 auto',
+                                minWidth: 0
+                              }}>
+                                <ReactMarkdown
+                                  components={{
+                                    p: ({ children }) => <p style={{ margin: 0, padding: 0, display: 'block' }}>{children}</p>,
+                                    h1: ({ children }) => <h1 style={{ fontSize: '12px', fontWeight: 600, margin: '8px 0 6px 0' }}>{children}</h1>,
+                                    h2: () => null,
+                                    h3: ({ children }) => <h3 style={{ fontSize: '11px', fontWeight: 600, margin: '6px 0 3px 0' }}>{children}</h3>,
+                                    ul: ({ children }) => <ul style={{ margin: '6px 0', paddingLeft: '16px' }}>{children}</ul>,
+                                    ol: ({ children }) => <ol style={{ margin: '6px 0', paddingLeft: '16px' }}>{children}</ol>,
+                                    li: ({ children }) => <li style={{ marginBottom: '3px' }}>{children}</li>,
+                                    strong: ({ children }) => <strong style={{ fontWeight: 600 }}>{children}</strong>,
+                                    em: ({ children }) => <em style={{ fontStyle: 'italic' }}>{children}</em>,
+                                    code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '1px 3px', borderRadius: '2px', fontSize: '10px', fontFamily: 'monospace' }}>{children}</code>,
+                                    blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #d1d5db', paddingLeft: '12px', margin: '8px 0', color: '#6b7280' }}>{children}</blockquote>,
+                                    hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '16px 0' }} />,
+                                    table: ({ children }) => (
+                                      <div style={{ overflowX: 'auto', margin: '12px 0' }}>
+                                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>{children}</table>
+                                      </div>
+                                    ),
+                                    thead: ({ children }) => <thead style={{ backgroundColor: '#f9fafb' }}>{children}</thead>,
+                                    tbody: ({ children }) => <tbody>{children}</tbody>,
+                                    tr: ({ children }) => <tr style={{ borderBottom: '1px solid #e5e7eb' }}>{children}</tr>,
+                                    th: ({ children }) => <th style={{ padding: '8px 12px', textAlign: 'left', fontWeight: 600, color: '#111827', borderBottom: '2px solid #d1d5db' }}>{children}</th>,
+                                    td: ({ children }) => <td style={{ padding: '8px 12px', textAlign: 'left', color: '#374151' }}>{children}</td>,
+                                  }}
+                                >
+                                  {message.text}
+                                </ReactMarkdown>
+                              </span>
+                            ) : null}
+                          </>
+                        )}
+                    </div>
                   </div>
                 </div>
               ) : (

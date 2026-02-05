@@ -2,12 +2,13 @@
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Search, Plus, Folder, FolderOpen, CloudCheck, FileText, File as FileIcon, ChevronRight, MoreVertical, CheckSquare, Square, Upload, SquareMousePointer } from 'lucide-react';
+import { X, Search, Plus, Folder, FolderOpen, FileText, File as FileIcon, ChevronRight, MoreVertical, CheckSquare, Square, Upload, MousePointer2, Trash2, ChevronDown, MapPin, RefreshCw, ListCheck } from 'lucide-react';
 import { useFilingSidebar } from '../contexts/FilingSidebarContext';
 import { backendApi } from '../services/backendApi';
 import { usePreview } from '../contexts/PreviewContext';
 import { useBackendApi } from './BackendApi';
 import { uploadEvents } from './UploadProgressBar';
+import { usePropertyAccess } from '../hooks/usePropertyAccess';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -30,6 +31,7 @@ interface Document {
   property_address?: string;
   folder_id?: string;
   s3_path?: string;
+  status?: string; // 'uploaded', 'processing', 'completed', 'failed'
 }
 
 interface Folder {
@@ -43,11 +45,121 @@ interface Folder {
 interface FilingSidebarProps {
   sidebarWidth?: number;
   isSmallSidebarMode?: boolean;
+  /** When true, hide the header close button (e.g. when in chat – close is in View dropdown). */
+  hideCloseButton?: boolean;
 }
+
+/** Parse getAllDocuments() response into a Document array. Shared by preload and open-sidebar fetch. */
+function parseAllDocumentsResponse(response: any): Document[] {
+  if (!response?.success) return [];
+  const data = response.data;
+  if (Array.isArray(data)) return data;
+  if (data?.data && Array.isArray(data.data)) return data.data;
+  if (data?.success && data?.data && Array.isArray(data.data)) return data.data;
+  if (data?.documents && Array.isArray(data.documents)) return data.documents;
+  if (data?.data?.documents && Array.isArray(data.data.documents)) return data.data.documents;
+  return [];
+}
+
+// Component for displaying pending file with image preview
+const PendingFileItem: React.FC<{
+  file: File;
+  index: number;
+  onRemove: (index: number) => void;
+  getFileIcon: (doc: Document) => React.ReactNode;
+}> = ({ file, index, onRemove, getFileIcon }) => {
+  const isImage = file.type.startsWith('image/');
+  const [imageUrl, setImageUrl] = React.useState<string | null>(null);
+  
+  // Create blob URL for images
+  React.useEffect(() => {
+    if (isImage && file) {
+      const url = URL.createObjectURL(file);
+      setImageUrl(url);
+      return () => {
+        URL.revokeObjectURL(url);
+      };
+    }
+  }, [isImage, file]);
+  
+  // Create a mock document object for getFileIcon
+  const mockDoc: Document = {
+    id: `pending-${index}`,
+    original_filename: file.name,
+    file_type: file.type
+  };
+  
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0, transition: { duration: 0 } }}
+      transition={{ 
+        duration: 0.4,
+        delay: index * 0.04,
+        ease: [0.25, 0.46, 0.45, 0.94]
+      }}
+      className="flex items-center gap-2.5 px-3 py-2 bg-white border border-gray-200/60 hover:border-gray-300/80 rounded-lg transition-all duration-200 group"
+    >
+      {/* Image preview or file icon */}
+      <div className="flex-shrink-0 flex items-center justify-center">
+        {isImage && imageUrl ? (
+          <div
+            style={{
+              width: '40px',
+              height: '40px',
+              borderRadius: '4px',
+              overflow: 'hidden',
+              backgroundColor: '#F3F4F6',
+              border: '1px solid #E5E7EB',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              flexShrink: 0
+            }}
+          >
+            <img
+              src={imageUrl}
+              alt={file.name}
+              style={{
+                width: '100%',
+                height: '100%',
+                objectFit: 'cover',
+                display: 'block'
+              }}
+            />
+          </div>
+        ) : (
+          <div className="w-3.5 h-3.5 flex items-center justify-center">
+            {getFileIcon(mockDoc)}
+          </div>
+        )}
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="text-xs font-normal text-gray-900 truncate" style={{ fontFamily: 'system-ui, -apple-system, sans-serif', letterSpacing: '-0.01em' }}>
+          {file.name}
+        </div>
+      </div>
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          onRemove(index);
+        }}
+        className="p-0.5 hover:bg-gray-100 rounded flex-shrink-0 opacity-0 group-hover:opacity-100 transition-all duration-150"
+        title="Remove file"
+      >
+        <div className="w-3 h-3 flex items-center justify-center">
+          <X className="w-3 h-3 text-gray-400" strokeWidth={1.5} />
+        </div>
+      </button>
+    </motion.div>
+  );
+};
 
 export const FilingSidebar: React.FC<FilingSidebarProps> = ({ 
   sidebarWidth,
-  isSmallSidebarMode = false 
+  isSmallSidebarMode = false,
+  hideCloseButton = false
 }) => {
   const {
     isOpen,
@@ -63,6 +175,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
     clearSelection,
     selectAll,
     setWidth: setContextWidth,
+    setIsResizing: setContextIsResizing,
   } = useFilingSidebar();
   const { getAllPropertyHubs } = useBackendApi();
 
@@ -83,6 +196,16 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
   const [isResizing, setIsResizing] = useState(false);
   const [draggedWidth, setDraggedWidth] = useState<number | null>(null);
   const [isSelectionMode, setIsSelectionMode] = useState(false);
+  const [isDragOver, setIsDragOver] = useState(false);
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+  const [selectedPropertyForUpload, setSelectedPropertyForUpload] = useState<{ id: string; address: string; type: 'property' | 'folder' } | null>(null);
+  const [propertySearchQuery, setPropertySearchQuery] = useState<string>('');
+  
+  // Property access control - only check when uploading to a property
+  const propertyIdForAccess = selectedPropertyForUpload?.type === 'property' ? selectedPropertyForUpload.id : null;
+  const { canUpload: canUploadToProperty } = usePropertyAccess(propertyIdForAccess);
+  const [availableProperties, setAvailableProperties] = useState<any[]>([]);
+  const [showPropertySelector, setShowPropertySelector] = useState<boolean>(false);
   const [duplicateDialog, setDuplicateDialog] = useState<{
     isOpen: boolean;
     filename: string;
@@ -99,37 +222,87 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
     isExactDuplicate: false
   });
 
-  // Delete confirmation dialog state
+  // Delete confirmation pop-up state
   const [deleteConfirmDialog, setDeleteConfirmDialog] = useState<{
     isOpen: boolean;
     itemId: string | null;
     isFolder: boolean;
     itemName: string;
+    position: { x: number; y: number } | null;
   }>({
     isOpen: false,
     itemId: null,
     isFolder: false,
     itemName: '',
+    position: null,
   });
+  
+  // Track documents being reprocessed and successfully reprocessed
+  const [reprocessingDocs, setReprocessingDocs] = useState<Set<string>>(new Set());
+  const [reprocessedDocs, setReprocessedDocs] = useState<Set<string>>(new Set()); // Successfully reprocessed this session
   const newMenuRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
+  const deleteConfirmRef = useRef<HTMLDivElement>(null);
   const panelElementRef = useRef<HTMLElement | null>(null);
   const resizeStateRef = useRef<{ startPos: { x: number }; startWidth: number } | null>(null);
   const rafIdRef = useRef<number | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const propertySelectorRef = useRef<HTMLDivElement>(null);
   
   // Document cache: key is "viewMode_propertyId" or "viewMode_global"
   const documentCacheRef = useRef<Map<string, Document[]>>(new Map());
   const cacheTimestampRef = useRef<Map<string, number>>(new Map());
   const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes cache duration
+  const preloadStartedRef = useRef(false);
 
   const { addPreviewFile, setPreviewFiles, setIsPreviewOpen } = usePreview();
+
+  // Pre-load global documents in the background on first load so FilingSidebar opens with cached data
+  useEffect(() => {
+    if (preloadStartedRef.current) return;
+    preloadStartedRef.current = true;
+    const run = async () => {
+      try {
+        const response = await backendApi.getAllDocuments();
+        const docs = parseAllDocumentsResponse(response);
+        documentCacheRef.current.set('global', docs);
+        cacheTimestampRef.current.set('global', Date.now());
+      } catch (_) {
+        // Ignore; sidebar will fetch when opened
+      }
+    };
+    run();
+  }, []);
+
+  // Fetch properties and folders when selector opens
+  useEffect(() => {
+    if (showPropertySelector && availableProperties.length === 0) {
+      const loadProperties = async () => {
+        try {
+          const response = await backendApi.getAllPropertyHubs();
+          if (response.success && response.data) {
+            const properties = Array.isArray(response.data) 
+              ? response.data 
+              : (response.data as any).properties || [];
+            setAvailableProperties(properties);
+          }
+        } catch (error) {
+          console.error('Failed to load properties:', error);
+        }
+      };
+      loadProperties();
+    }
+  }, [showPropertySelector]);
 
   // Fetch documents when sidebar opens or view changes
   useEffect(() => {
     if (!isOpen) return;
 
     const fetchData = async () => {
+      // Initialize folders as empty - will be loaded after documents
+      setFolders([]);
+      
       // Generate cache key based on view mode and property ID
       const cacheKey = viewMode === 'property' && selectedPropertyId
         ? `property_${selectedPropertyId}`
@@ -141,15 +314,30 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
       const now = Date.now();
       const isCacheValid = cachedDocs && cacheTimestamp && (now - cacheTimestamp) < CACHE_DURATION;
       
+      // Helper function to load folders
+      const loadFolders = () => {
+        if (viewMode === 'property' && !currentFolderId) {
+          setFolders([]);
+        } else {
+          const storageKey = viewMode === 'property' && selectedPropertyId
+            ? `folders_${selectedPropertyId}_${currentFolderId || 'root'}`
+            : `folders_global_${currentFolderId || 'root'}`;
+          const savedFolders = JSON.parse(localStorage.getItem(storageKey) || '[]');
+          setFolders(savedFolders);
+        }
+      };
+
       // Use cached data immediately if available
       if (isCacheValid && cachedDocs) {
         console.log('📦 FilingSidebar: Using cached documents:', cachedDocs.length, 'documents');
         setDocuments(cachedDocs);
+        loadFolders(); // Load folders with cached data
+        
         setIsLoading(false);
         setError(null);
         
         // Still fetch fresh data in background to update cache
-        // (but don't show loading state)
+        // (but don't show loading state or reload folders to avoid double loading)
       } else {
         // No valid cache, show loading and fetch
         setIsLoading(true);
@@ -197,63 +385,46 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
             documentCacheRef.current.set(cacheKey, docs);
             cacheTimestampRef.current.set(cacheKey, Date.now());
             
-            setDocuments(docs);
+            // Only update documents and folders if we didn't use cached data
+            // (to avoid double loading when cache was used)
+            if (!isCacheValid) {
+              setDocuments(docs);
+              loadFolders();
+            }
+            // If cache was used, just update cache silently - don't reload UI
           } else {
-            console.warn('📄 FilingSidebar: Property documents request failed:', response.error || 'Unknown error');
-            setError(response.error || 'Failed to load property documents');
-            setDocuments([]);
+            // Only set error if we didn't use cached data
+            if (!isCacheValid) {
+              console.warn('📄 FilingSidebar: Property documents request failed:', response.error || 'Unknown error');
+              setError(response.error || 'Failed to load property documents');
+              setDocuments([]);
+              setFolders([]);
+            }
           }
         } else {
           // Fetch all documents globally
           try {
             const response = await backendApi.getAllDocuments();
-            console.log('📄 FilingSidebar: getAllDocuments response:', response);
-            console.log('📄 FilingSidebar: response.success:', response.success);
-            console.log('📄 FilingSidebar: response.data:', response.data);
-            console.log('📄 FilingSidebar: response.data type:', typeof response.data);
-            console.log('📄 FilingSidebar: response.data isArray:', Array.isArray(response.data));
-            
+            const docs = parseAllDocumentsResponse(response);
             if (response.success) {
-              // Backend returns array directly: jsonify([doc.serialize() for doc in documents])
-              let docs: any[] = [];
-              if (Array.isArray(response.data)) {
-                docs = response.data;
-              } else if (response.data && Array.isArray(response.data.documents)) {
-                docs = response.data.documents;
-              } else if (response.data && response.data.data && Array.isArray(response.data.data)) {
-                docs = response.data.data;
-              }
-              
-              console.log('📄 FilingSidebar: Final parsed documents count:', docs.length);
-              console.log('📄 FilingSidebar: First document sample:', docs[0]);
-              
-              // Update cache
               documentCacheRef.current.set(cacheKey, docs);
               cacheTimestampRef.current.set(cacheKey, Date.now());
-              
-              setDocuments(docs);
-            } else {
-              console.warn('📄 FilingSidebar: Request failed:', response.error);
+              if (!isCacheValid) {
+                setDocuments(docs);
+                loadFolders();
+              }
+            } else if (!isCacheValid) {
               setError(response.error || 'Failed to load documents');
               setDocuments([]);
+              setFolders([]);
             }
           } catch (err) {
-            console.error('📄 FilingSidebar: Exception fetching all documents:', err);
-            setError('Failed to load documents');
-            setDocuments([]);
+            if (!isCacheValid) {
+              setError('Failed to load documents');
+              setDocuments([]);
+              setFolders([]);
+            }
           }
-        }
-        // Load folders from localStorage
-        // In property view, only load folders if we're inside a folder (not at root)
-        // Folders should not appear in property view at root level
-        if (viewMode === 'property' && !currentFolderId) {
-          setFolders([]);
-        } else {
-          const storageKey = viewMode === 'property' && selectedPropertyId
-            ? `folders_${selectedPropertyId}_${currentFolderId || 'root'}`
-            : `folders_global_${currentFolderId || 'root'}`;
-          const savedFolders = JSON.parse(localStorage.getItem(storageKey) || '[]');
-          setFolders(savedFolders);
         }
       } catch (err) {
         console.error('Error fetching documents:', err);
@@ -321,6 +492,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
     const currentWidth = draggedWidth !== null ? draggedWidth : contextWidth; // Use context width as default
     
     setIsResizing(true);
+    setContextIsResizing(true); // Notify context that resizing has started
     
     // Store in ref for fast access during drag
     resizeStateRef.current = {
@@ -336,7 +508,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
     }
 
     const state = resizeStateRef.current;
-    const minWidth = 320; // Increased to accommodate all buttons (Global/Properties toggle + Selection + New buttons)
+    const minWidth = 360; // Increased to accommodate all buttons (Global/Properties toggle + Selection + New buttons)
     // Max width based on file card max-width (max-w-md = 448px) + margins (mx-4 = 32px) + padding
     const fileCardMaxWidth = 448; // max-w-md in pixels
     const cardMargins = 32; // mx-4 = 16px on each side
@@ -379,6 +551,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
       }
 
       setIsResizing(false);
+      setContextIsResizing(false); // Notify context that resizing has ended
       resizeStateRef.current = null;
       
       document.body.style.cursor = '';
@@ -420,6 +593,22 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
     }
   }, [showNewMenu]);
 
+  // Close property selector when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (propertySelectorRef.current && !propertySelectorRef.current.contains(event.target as Node)) {
+        setShowPropertySelector(false);
+      }
+    };
+
+    if (showPropertySelector) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => {
+        document.removeEventListener('mousedown', handleClickOutside);
+      };
+    }
+  }, [showPropertySelector]);
+
   // Filter documents based on search query and current folder
   const filteredItems = useMemo(() => {
     let filteredDocs = documents;
@@ -452,7 +641,17 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
       );
     }
 
-    return { documents: filteredDocs, folders: filteredFolders };
+    // Sort documents alphabetically by filename
+    const sortedDocs = [...filteredDocs].sort((a, b) => 
+      (a.original_filename || '').localeCompare(b.original_filename || '')
+    );
+    
+    // Sort folders alphabetically by name
+    const sortedFolders = [...filteredFolders].sort((a, b) => 
+      (a.name || '').localeCompare(b.name || '')
+    );
+
+    return { documents: sortedDocs, folders: sortedFolders };
   }, [documents, folders, currentFolderId, searchQuery, viewMode]);
 
   // Group documents by property hub (property card) when in property view
@@ -684,12 +883,16 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
         setOpenContextMenuId(null);
         setContextMenuPosition(null);
       }
+      // Also close delete confirmation pop-up when clicking outside
+      if (deleteConfirmRef.current && !deleteConfirmRef.current.contains(e.target as Node)) {
+        setDeleteConfirmDialog({ isOpen: false, itemId: null, isFolder: false, itemName: '', position: null });
+      }
     };
-    if (openContextMenuId) {
+    if (openContextMenuId || deleteConfirmDialog.isOpen) {
       document.addEventListener('mousedown', handleClickOutside);
       return () => document.removeEventListener('mousedown', handleClickOutside);
     }
-  }, [openContextMenuId]);
+  }, [openContextMenuId, deleteConfirmDialog.isOpen]);
 
   // Handle rename
   const handleRename = (itemId: string, currentName: string, isFolder: boolean) => {
@@ -832,17 +1035,33 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
   };
 
   // Handle delete confirmation
-  const handleDeleteClick = (itemId: string, isFolder: boolean) => {
+  const handleDeleteClick = (itemId: string, isFolder: boolean, event?: React.MouseEvent) => {
     const item = isFolder 
       ? folders.find(f => f.id === itemId)
       : documents.find(d => d.id === itemId);
     const itemName = isFolder ? (item as Folder)?.name : (item as Document)?.original_filename;
+    
+    // Calculate position near the context menu or delete button
+    let position = { x: 0, y: 0 };
+    if (contextMenuPosition) {
+      // Use context menu position if available (preferred)
+      position = contextMenuPosition;
+    } else if (event && panelElementRef.current) {
+      // Calculate from button click position
+      const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+      const sidebarRect = panelElementRef.current.getBoundingClientRect();
+      position = {
+        x: rect.right - sidebarRect.left - 200, // Position to the left of the button
+        y: rect.top - sidebarRect.top + 20
+      };
+    }
     
     setDeleteConfirmDialog({
       isOpen: true,
       itemId,
       isFolder,
       itemName: itemName || 'item',
+      position,
     });
     setOpenContextMenuId(null);
     setContextMenuPosition(null);
@@ -853,7 +1072,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
     const { itemId, isFolder } = deleteConfirmDialog;
     if (!itemId) return;
     
-    setDeleteConfirmDialog({ isOpen: false, itemId: null, isFolder: false, itemName: '' });
+    setDeleteConfirmDialog({ isOpen: false, itemId: null, isFolder: false, itemName: '', position: null });
     
     if (isFolder) {
       // Delete folder and all its children from state
@@ -874,7 +1093,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
         });
       };
       
-      // Remove from state
+      // OPTIMISTIC UPDATE: Remove from state immediately for instant UI feedback
       setFolders(prev => deleteFolderRecursive(itemId, prev));
       
       // Remove from localStorage - need to update all relevant keys
@@ -920,34 +1139,184 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
         setCurrentFolderId(null);
       }
       
-      // Also try to delete from Supabase if it exists there
-      try {
-        await backendApi.deleteFolder(itemId);
-      } catch (error) {
+      // Also try to delete from Supabase if it exists there (async, non-blocking)
+      backendApi.deleteFolder(itemId).catch((error) => {
         // Ignore errors - folders might only be in localStorage
         console.log('Folder deletion from Supabase (if exists):', error);
-      }
+      });
     } else {
-      // Delete document - call API
+      // Delete document - OPTIMISTIC UPDATE: Remove from UI immediately
+      const documentToDelete = documents.find(d => d.id === itemId);
+      
+      // Optimistically remove from state immediately
+      setDocuments(prev => prev.filter(d => d.id !== itemId));
+      
+      // Invalidate cache for current view
+      const cacheKey = viewMode === 'property' && selectedPropertyId
+        ? `property_${selectedPropertyId}`
+        : 'global';
+      documentCacheRef.current.delete(cacheKey);
+      cacheTimestampRef.current.delete(cacheKey);
+      
+      // Check access and delete via API (async, non-blocking)
+      if (documentToDelete?.property_id) {
+        // Document belongs to a property - check access via API
+        try {
+          const accessResponse = await backendApi.getPropertyAccess(documentToDelete.property_id);
+          if (accessResponse.success && accessResponse.data) {
+            const accessList = Array.isArray(accessResponse.data) 
+              ? accessResponse.data 
+              : accessResponse.data.access_list || [];
+            
+            // Get current user email
+            const authResult = await backendApi.checkAuth();
+            const userEmail = authResult.success && authResult.data?.user?.email 
+              ? authResult.data.user.email.toLowerCase() 
+              : null;
+            
+            if (userEmail) {
+              const userAccess = accessList.find(
+                (access: any) => 
+                  access.user_email.toLowerCase() === userEmail &&
+                  access.status === 'accepted'
+              );
+              
+              // If user has access but is only a viewer, deny delete and restore
+              if (userAccess && userAccess.access_level === 'viewer') {
+                // Restore document to state
+                if (documentToDelete) {
+                  setDocuments(prev => [...prev, documentToDelete]);
+                }
+                alert('You do not have permission to delete files. Only editors and owners can delete files from this property.');
+                return;
+              }
+              // If user is not in access list, they might be the owner (same business) - allow
+            }
+          }
+        } catch (error) {
+          console.error('Error checking property access:', error);
+          // On error, allow deletion (fallback to prevent blocking legitimate users)
+        }
+      }
+      
       try {
         const response = await backendApi.deleteDocument(itemId);
-        if (response.success) {
-          setDocuments(prev => prev.filter(d => d.id !== itemId));
-          
-          // Invalidate cache for current view
-          const cacheKey = viewMode === 'property' && selectedPropertyId
-            ? `property_${selectedPropertyId}`
-            : 'global';
-          documentCacheRef.current.delete(cacheKey);
-          cacheTimestampRef.current.delete(cacheKey);
-        } else {
+        if (!response.success) {
+          // Restore document if deletion failed
+          if (documentToDelete) {
+            setDocuments(prev => [...prev, documentToDelete]);
+          }
           alert(`Failed to delete document: ${response.error || 'Unknown error'}`);
         }
       } catch (error) {
         console.error('Error deleting document:', error);
+        // Restore document if deletion failed
+        if (documentToDelete) {
+          setDocuments(prev => [...prev, documentToDelete]);
+        }
         alert('Failed to delete document. Please try again.');
       }
     }
+  };
+
+  // Handle document reprocessing (for documents stuck in 'uploaded' status)
+  const handleReprocessDocument = async (doc: Document, e: React.MouseEvent) => {
+    e.stopPropagation();
+    
+    if (reprocessingDocs.has(doc.id)) return; // Already reprocessing
+    
+    try {
+      setReprocessingDocs(prev => new Set(prev).add(doc.id));
+      
+      console.log(`🔄 Reprocessing document: ${doc.original_filename} (${doc.id})`);
+      
+      const response = await backendApi.reprocessDocument(doc.id, 'full');
+      
+      if (response.success) {
+        console.log(`✅ Reprocess complete:`, response.data);
+        // Update document status in local state
+        setDocuments(prev => prev.map(d => 
+          d.id === doc.id ? { ...d, status: 'completed' } : d
+        ));
+        // Track as successfully reprocessed (shows tick icon)
+        setReprocessedDocs(prev => new Set(prev).add(doc.id));
+        // Invalidate cache
+        documentCacheRef.current.clear();
+        cacheTimestampRef.current.clear();
+      } else {
+        console.error(`❌ Reprocess failed:`, response.error);
+        alert(`Failed to reprocess document: ${response.error || 'Unknown error'}`);
+      }
+    } catch (error) {
+      console.error('Error reprocessing document:', error);
+      alert('Failed to reprocess document. Please try again.');
+    } finally {
+      setReprocessingDocs(prev => {
+        const next = new Set(prev);
+        next.delete(doc.id);
+        return next;
+      });
+    }
+  };
+
+  // Drag and drop handlers
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragOver(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    // Only clear drag state if we're actually leaving the drop zone
+    const relatedTarget = e.relatedTarget as HTMLElement;
+    if (!e.currentTarget.contains(relatedTarget)) {
+      setIsDragOver(false);
+    }
+  };
+
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragOver(false);
+
+    const droppedFiles = Array.from(e.dataTransfer.files);
+    // Add files to pending state instead of uploading immediately
+    setPendingFiles(prev => [...prev, ...droppedFiles]);
+  };
+
+  const handleFileInputChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const selectedFiles = Array.from(e.target.files || []);
+    // Add files to pending state instead of uploading immediately
+    setPendingFiles(prev => [...prev, ...selectedFiles]);
+    // Reset input to allow re-selecting same file
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
+
+  const handleUploadAreaClick = () => {
+    fileInputRef.current?.click();
+  };
+
+  // Handle uploading all pending files
+  const handleUploadPendingFiles = async () => {
+    if (pendingFiles.length === 0) return;
+    
+    // Process each pending file
+    for (const file of pendingFiles) {
+      await handleFileUpload(file);
+    }
+    
+    // Clear pending files and property selection after processing
+    setPendingFiles([]);
+    setSelectedPropertyForUpload(null);
+  };
+
+  // Remove a file from pending list
+  const handleRemovePendingFile = (index: number) => {
+    setPendingFiles(prev => prev.filter((_, i) => i !== index));
   };
 
   // Handle file upload with duplicate checking
@@ -988,14 +1357,55 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
       setIsLoading(true);
       setError(null);
       
+      // Check access level if uploading to a property
+      if (selectedPropertyForUpload?.type === 'property' && !canUploadToProperty()) {
+        setError('You do not have permission to upload files. Only editors and owners can upload files to this property.');
+        setIsLoading(false);
+        return;
+      }
+      
       // Dispatch upload start event for global progress bar
       uploadEvents.start(file.name);
       
-      const result = await backendApi.uploadDocument(file, (progress) => {
-        console.log(`Upload progress: ${progress}%`);
-        // Dispatch progress event for global progress bar
-        uploadEvents.progress(progress, file.name);
-      });
+      let result;
+      if (selectedPropertyForUpload) {
+        if (selectedPropertyForUpload.type === 'property') {
+          // Use property upload endpoint when property is selected
+          result = await backendApi.uploadPropertyDocumentViaProxy(
+            file,
+            { property_id: selectedPropertyForUpload.id },
+            (progress) => {
+              console.log(`Upload progress: ${progress}%`);
+              // Dispatch progress event for global progress bar
+              uploadEvents.progress(progress, file.name);
+            }
+          );
+        } else if (selectedPropertyForUpload.type === 'folder') {
+          // Use general upload endpoint when folder is selected
+          result = await backendApi.uploadDocument(file, (progress) => {
+            console.log(`Upload progress: ${progress}%`);
+            // Dispatch progress event for global progress bar
+            uploadEvents.progress(progress, file.name);
+          });
+          
+          // After upload, move document to folder
+          if (result.success && result.data?.document_id) {
+            try {
+              await backendApi.moveDocument(result.data.document_id, selectedPropertyForUpload.id);
+            } catch (error) {
+              console.error('Failed to move document to folder:', error);
+              // Don't fail the upload if move fails
+            }
+          }
+        }
+      } else {
+        // Use general upload endpoint
+        result = await backendApi.uploadDocument(file, (progress) => {
+          console.log(`Upload progress: ${progress}%`);
+          // Dispatch progress event for global progress bar
+          uploadEvents.progress(progress, file.name);
+        });
+      }
       
       if (result.success) {
         // Dispatch upload complete event
@@ -1067,7 +1477,10 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
       }
     });
     
-    // Delete folders
+    // Store documents to delete for potential restoration
+    const documentsToDelete = documents.filter(d => documentIds.has(d.id));
+    
+    // OPTIMISTIC UPDATE: Delete folders from state immediately
     folderIds.forEach(folderId => {
       const deleteFolderRecursive = (folderId: string, folderList: Folder[]): Folder[] => {
         return folderList.filter(f => {
@@ -1121,136 +1534,451 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
         setCurrentFolderId(null);
       }
       
+      // Delete from API (async, non-blocking)
       backendApi.deleteFolder(folderId).catch(() => {});
     });
     
-    // Delete documents
+    // OPTIMISTIC UPDATE: Delete documents from state immediately
+    setDocuments(prev => prev.filter(d => !documentIds.has(d.id)));
+    
+    // Invalidate cache for current view
+    const cacheKey = viewMode === 'property' && selectedPropertyId
+      ? `property_${selectedPropertyId}`
+      : 'global';
+    documentCacheRef.current.delete(cacheKey);
+    cacheTimestampRef.current.delete(cacheKey);
+    
+    // Delete documents via API (async, non-blocking)
     documentIds.forEach(async (docId) => {
       try {
         const response = await backendApi.deleteDocument(docId);
-        if (response.success) {
-          setDocuments(prev => prev.filter(d => d.id !== docId));
-          
-          // Invalidate cache for current view
-          const cacheKey = viewMode === 'property' && selectedPropertyId
-            ? `property_${selectedPropertyId}`
-            : 'global';
-          documentCacheRef.current.delete(cacheKey);
-          cacheTimestampRef.current.delete(cacheKey);
+        if (!response.success) {
+          // Restore document if deletion failed
+          const docToRestore = documentsToDelete.find(d => d.id === docId);
+          if (docToRestore) {
+            setDocuments(prev => [...prev, docToRestore]);
+          }
         }
       } catch (error) {
         console.error('Error deleting document:', error);
+        // Restore document if deletion failed
+        const docToRestore = documentsToDelete.find(d => d.id === docId);
+        if (docToRestore) {
+          setDocuments(prev => [...prev, docToRestore]);
+        }
       }
     });
     
     clearSelection();
   };
 
-  if (!isOpen) return null;
-
+  // Always render to prevent gaps - just position off-screen when closed
   return (
-    <AnimatePresence>
-      <motion.div
-        initial={{
-          x: -20,
-          opacity: 0,
-          scale: 0.95
-        }}
-        animate={{
-          x: 0,
-          opacity: 1,
-          scale: 1
-        }}
-        exit={{
-          x: -10,
-          opacity: 0,
-          scale: 0.98
-        }}
-        transition={{
-          duration: 0.15,
-          ease: [0.4, 0, 0.2, 1]
-        }}
-        ref={(el) => { if (el) panelElementRef.current = el; }}
-        className="fixed top-0 h-full bg-white/95 backdrop-blur-xl border-r border-slate-200/60 flex flex-col z-[10000]"
-        style={{
-          // Position FilingSidebar after the toggle rail (which is 12px wide)
-          // Toggle rail is always 12px wide and positioned at the right edge of the sidebar
-          // When collapsed: sidebar is 8px, toggle rail extends to 12px, so FilingSidebar starts at 12px
-          // When NOT collapsed: sidebar is 40px/56px, toggle rail extends to 52px/68px, so FilingSidebar starts there
-          left: sidebarWidth !== undefined 
-            ? (isSmallSidebarMode 
-              ? `${sidebarWidth + 12}px` // Not collapsed: sidebarWidth is sidebar only, add 12px for toggle rail
-              : '12px') // Collapsed: toggle rail ends at 12px (sidebar is 8px, rail is 12px wide)
-            : (typeof window !== 'undefined' && window.innerWidth >= 1024 
-              ? '68px' // 56px sidebar + 12px toggle rail
-              : '52px'), // 40px sidebar + 12px toggle rail
-          width: draggedWidth !== null ? `${Math.max(draggedWidth, 320)}px` : `${Math.max(contextWidth, 320)}px`, // Use context width as default, ensure minimum 320px
-          transition: isResizing ? 'none' : 'left 0.2s ease-out, width 0.2s ease-out',
-          // Remove left border when in small sidebar mode to eliminate grey line
-          ...(isSmallSidebarMode ? { 
-            borderLeft: 'none'
-          } : {})
-        }}
-      >
-        {/* Header - Compact and Sleek */}
-        <div className="flex items-center justify-between px-6 py-2.5 border-b border-slate-200/40" style={{ backgroundColor: '#F9F9F9' }}>
-          <div className="flex items-center gap-2">
-            <CloudCheck className="w-4 h-4 text-slate-400" strokeWidth={1.75} />
-            <h2 className="text-sm font-semibold text-slate-500 tracking-tight">Documents</h2>
+    <>
+      {/* Backdrop overlay for click-off functionality */}
+      {isOpen && (
+        <div
+          onClick={closeSidebar}
+          className="fixed inset-0 z-[9999]"
+          style={{
+            backgroundColor: 'transparent',
+            pointerEvents: 'auto',
+          }}
+          aria-hidden="true"
+        />
+      )}
+      <div
+          ref={(el) => { if (el) panelElementRef.current = el; }}
+          data-filing-sidebar="true"
+          className="fixed top-0 h-full flex flex-col z-[100001]"
+          onClick={(e) => e.stopPropagation()}
+          style={{
+            // Match sidebar grey background for seamless look - always solid
+            background: '#F1F1F1',
+            // Position FilingSidebar at sidebar edge (covers toggle rail for seamless look)
+            // When closed, move off-screen to the left to prevent gaps
+            // Sidebar widths: w-0 (collapsed) = 0px, w-56 (normal) = 224px
+            // When collapsed: FilingSidebar starts at 12px (after toggle rail)
+            // When normal (isSmallSidebarMode): FilingSidebar starts at sidebarWidth (covers toggle rail)
+            left: isOpen 
+              ? (sidebarWidth !== undefined 
+                ? (isSmallSidebarMode 
+                  ? `${sidebarWidth}px` // Not collapsed: start exactly at sidebar edge (224px), covering toggle rail
+                  : '12px') // Collapsed: after toggle rail (12px)
+                : '224px') // Fallback: sidebar edge (224px)
+              : '-1000px', // Move off-screen when closed to prevent gaps
+            width: isOpen 
+              ? (draggedWidth !== null ? `${Math.max(draggedWidth, 360)}px` : `${Math.max(contextWidth, 360)}px`) // Use context width as default, ensure minimum 360px
+              : '360px', // Keep width when closed to prevent layout shift
+            // Instant transitions to prevent map showing through gaps
+            transition: isResizing ? 'none' : 'left 0s ease-out, width 0s ease-out',
+            willChange: isResizing ? 'left, width' : 'auto', // Optimize for performance
+            // Force GPU acceleration for smoother rendering
+            transform: 'translateZ(0)',
+            backfaceVisibility: 'hidden',
+            // Ensure background extends fully to prevent any gaps
+            boxShadow: 'none',
+            borderRight: 'none',
+            // Extend slightly beyond to ensure full coverage
+            minWidth: '360px',
+            right: 'auto',
+            // Hide pointer events when closed
+            pointerEvents: isOpen ? 'auto' : 'none'
+          }}
+        >
+        {/* Header - Unified Design */}
+        <div className="px-4 pt-4 pb-1 border-b border-gray-100 w-full" style={{ boxSizing: 'border-box' }}>
+          {/* Close Button - hidden in chat (close is in View dropdown); spacer keeps layout from shifting */}
+          <div className="flex justify-end mb-3 min-h-[2rem]">
+            {!hideCloseButton ? (
+              <button
+                onClick={closeSidebar}
+                className="w-8 h-8 flex items-center justify-center rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-50 transition-colors"
+                aria-label="Close sidebar"
+              >
+                <div className="w-4 h-4 flex items-center justify-center">
+                  <X className="w-4 h-4" strokeWidth={1.5} />
+                </div>
+              </button>
+            ) : null}
           </div>
-          <motion.button
-            onClick={closeSidebar}
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-            className="p-1.5 text-slate-500 hover:text-slate-700 hover:bg-slate-100 rounded-md transition-all duration-200"
-            aria-label="Close sidebar"
-          >
-            <X className="w-4 h-4" strokeWidth={1.5} />
-          </motion.button>
-        </div>
 
-        {/* Search and Actions - Compact Design */}
-        <div className="px-6 pt-5 pb-4 border-b border-slate-200/40 space-y-5" style={{ backgroundColor: '#F9F9F9' }}>
-          {/* Search Bar */}
-          <div className="relative">
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
+          {/* Drag and Drop Upload Area */}
+          <div className="px-4">
+            <div
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
+              onClick={handleUploadAreaClick}
+              className={`relative cursor-pointer transition-all duration-200 ${
+                isDragOver ? 'opacity-90' : ''
+              } ${pendingFiles.length > 0 ? 'mb-0' : 'mb-4'}`}
+            >
+            <div
+              className={`w-full flex flex-col items-center justify-center transition-all duration-200 relative ${
+                isDragOver
+                  ? 'opacity-90'
+                  : ''
+              } ${pendingFiles.length > 0 ? 'border-b border-gray-200' : ''}`}
+              style={{ 
+                backgroundColor: isDragOver ? '#F0F0F2' : '#F7F7F9',
+                padding: '8px 16px',
+                border: '2px dotted #D1D5DB',
+                borderRadius: pendingFiles.length > 0 ? '8px 8px 0 0' : '8px'
+              }}
+            >
+              {/* Document Icon */}
+              <div className="flex items-center justify-center" style={{ width: '100%', overflow: 'visible' }}>
+                <img 
+                  src="/DocumentUpload2.png" 
+                  alt="Upload files" 
+                  className="object-contain"
+                  style={{ 
+                    width: '695px',
+                    height: 'auto',
+                    maxWidth: '285px',
+                    borderRadius: '8px'
+                  }}
+                />
+              </div>
+
+              {/* Text Overlay on Image */}
+              <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none" style={{ padding: '8px 16px', transform: 'translateY(85px)' }}>
+                <div className="flex flex-col items-center justify-center pointer-events-auto">
+                  {/* Instructional Text */}
+                  <p className="text-sm text-gray-600 text-center mb-1">
+                    Drop files here or{' '}
+                    <button
+                      type="button"
+                      className="text-gray-600 hover:text-gray-700 underline underline-offset-2 transition-colors"
+                      style={{ textDecorationThickness: '0.5px', textUnderlineOffset: '2px' }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleUploadAreaClick();
+                      }}
+                    >
+                      browse
+                    </button>
+                  </p>
+
+                  {/* Supported Formats */}
+                  <p className="text-xs text-gray-400 mt-2">PDF, Word, Excel, CSV</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Hidden File Input */}
             <input
-              ref={searchInputRef}
-              type="text"
-              placeholder="Search documents..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-8 pr-3 py-1.5 border border-slate-200/60 rounded-md text-xs bg-white/50 hover:bg-white focus:bg-white focus:outline-none focus:ring-1 focus:ring-slate-400 focus:border-slate-400 transition-all duration-150"
+              ref={fileInputRef}
+              type="file"
+              multiple
+              accept=".xlsx,.xls,.csv,.pdf,.doc,.docx"
+              onChange={handleFileInputChange}
+              className="hidden"
             />
+            </div>
           </div>
 
-          {/* Actions Row */}
-          <div className="flex items-center justify-between gap-2 py-1">
-            {/* View Mode Toggle - Sleeker Design */}
-            <div className="flex items-center gap-1 bg-slate-100/60 rounded-md p-1">
+          {/* Pending Files Section */}
+          {pendingFiles.length > 0 && (
+            <div className="px-4 mb-4">
+              <div>
+                <div className="bg-gray-50 border border-gray-200 border-t-0 rounded-b-lg p-2 space-y-1">
+                  <AnimatePresence mode="popLayout">
+                    {pendingFiles.map((file, index) => {
+                      // Create a stable key based on file properties
+                      const fileKey = `${file.name}-${file.size}-${file.lastModified}`;
+                      return (
+                        <PendingFileItem
+                          key={fileKey}
+                          file={file}
+                          index={index}
+                          onRemove={handleRemovePendingFile}
+                          getFileIcon={getFileIcon}
+                        />
+                      );
+                    })}
+                  </AnimatePresence>
+                </div>
+              </div>
+              <div className="mt-3">
+                <div className="flex items-center gap-2 relative" ref={propertySelectorRef}>
+                  {/* Property Selector */}
+                  <div className="relative flex-1 min-w-0">
+                    <button
+                      onClick={() => setShowPropertySelector(!showPropertySelector)}
+                      className="w-full px-3 py-2 bg-white hover:bg-gray-50 border border-gray-300 text-gray-900 text-xs font-medium rounded transition-colors flex items-center justify-between gap-2"
+                    >
+                      <div className="flex items-center gap-2 min-w-0 flex-1">
+                        <MapPin className="w-3.5 h-3.5 text-gray-500 flex-shrink-0" />
+                        <span className="truncate">
+                          {selectedPropertyForUpload 
+                            ? selectedPropertyForUpload.address 
+                            : 'Link to property or folder'}
+                        </span>
+                      </div>
+                      <ChevronDown className={`w-3.5 h-3.5 text-gray-500 flex-shrink-0 transition-transform ${showPropertySelector ? 'rotate-180' : ''}`} />
+                    </button>
+                  </div>
+                  
+                  {/* Property Dropdown - Full Width */}
+                  <AnimatePresence>
+                    {showPropertySelector && (
+                      <motion.div
+                        initial={{ opacity: 0, y: -8 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: -8 }}
+                        transition={{ duration: 0.15 }}
+                        className="absolute z-50 left-0 right-0 top-full mt-1 bg-white border border-gray-200 rounded-sm shadow-lg max-h-64 overflow-hidden"
+                      >
+                          {/* Search Input */}
+                          <div className="p-2 border-b border-gray-200">
+                            <div className="relative">
+                              <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
+                              <input
+                                type="text"
+                                placeholder="Search properties..."
+                                value={propertySearchQuery}
+                                onChange={(e) => setPropertySearchQuery(e.target.value)}
+                                className="w-full pl-8 pr-2 py-1.5 text-xs border border-gray-200 rounded-none focus:outline-none focus:ring-1 focus:ring-gray-300"
+                                onClick={(e) => e.stopPropagation()}
+                              />
+                            </div>
+                          </div>
+                          
+                          {/* Property and Folder List */}
+                          <div className="max-h-48 overflow-y-auto">
+                            {/* Properties */}
+                            {(() => {
+                              const filteredProperties = availableProperties.filter(p => {
+                                const address = p?.address || p?.formatted_address || p?.property?.formatted_address || p?.property_details?.property_address || '';
+                                return address.toLowerCase().includes(propertySearchQuery.toLowerCase());
+                              });
+                              const filteredFolders = folders.filter(f => 
+                                f.name.toLowerCase().includes(propertySearchQuery.toLowerCase())
+                              );
+                              
+                              return (
+                                <>
+                                  {filteredProperties.map((property) => {
+                                // Extract property ID and address - handle nested structure
+                                const propertyId = property?.property?.id || property?.id;
+                                const address = property?.address || property?.formatted_address || property?.property?.formatted_address || property?.property_details?.property_address || 'Unknown address';
+                                
+                                // Count documents for this property
+                                const docCount = documents.filter(doc => {
+                                  const propId = documentToPropertyHubMap.get(doc.id) || doc.property_id;
+                                  return propId === propertyId;
+                                }).length;
+                                
+                                return (
+                                  <button
+                                    key={`property-${propertyId}`}
+                                    onClick={() => {
+                                      setSelectedPropertyForUpload({
+                                        id: propertyId,
+                                        address: address,
+                                        type: 'property'
+                                      });
+                                      setShowPropertySelector(false);
+                                      setPropertySearchQuery('');
+                                    }}
+                                    className={`w-full px-2.5 py-2.5 text-left text-xs hover:bg-gray-50 transition-colors border-b border-gray-100 ${
+                                      selectedPropertyForUpload?.id === propertyId && selectedPropertyForUpload?.type === 'property' ? 'bg-blue-50' : ''
+                                    }`}
+                                  >
+                                    <div className="flex items-center gap-2.5">
+                                      <img 
+                                        src="/houseicon.png" 
+                                        alt="Property" 
+                                        className="w-3.5 h-3.5 object-contain flex-shrink-0"
+                                      />
+                                      <div className="flex-1 min-w-0">
+                                        <div className="text-xs font-normal text-gray-900 truncate" style={{ fontFamily: 'system-ui, -apple-system, sans-serif', letterSpacing: '-0.01em' }}>
+                                          {address}
+                                        </div>
+                                      </div>
+                                      <span className="text-xs text-gray-500 flex-shrink-0 font-medium">
+                                        {docCount}
+                                      </span>
+                                    </div>
+                                  </button>
+                                );
+                              })}
+                            
+                              {/* Folders */}
+                              {filteredFolders.map((folder) => (
+                                <button
+                                  key={`folder-${folder.id}`}
+                                  onClick={() => {
+                                    setSelectedPropertyForUpload({
+                                      id: folder.id,
+                                      address: folder.name,
+                                      type: 'folder'
+                                    });
+                                    setShowPropertySelector(false);
+                                    setPropertySearchQuery('');
+                                  }}
+                                  className={`w-full px-3 py-2 text-left text-xs hover:bg-gray-50 transition-colors border-b border-gray-100 ${
+                                    selectedPropertyForUpload?.id === folder.id && selectedPropertyForUpload?.type === 'folder' ? 'bg-blue-50' : ''
+                                  }`}
+                                >
+                                  <div className="flex items-center gap-2.5">
+                                    <Folder className="w-3.5 h-3.5 text-gray-500 flex-shrink-0" />
+                                    <span className="text-xs font-normal text-gray-900 truncate" style={{ fontFamily: 'system-ui, -apple-system, sans-serif', letterSpacing: '-0.01em' }}>
+                                      {folder.name}
+                                    </span>
+                                  </div>
+                                </button>
+                              ))}
+                                </>
+                              );
+                            })()}
+                            
+                          </div>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  
+                  {/* Upload Button */}
+                  <button
+                    onClick={handleUploadPendingFiles}
+                    disabled={isLoading}
+                    className={`px-4 py-2 text-xs font-medium rounded-none transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1.5 flex-shrink-0 relative ${
+                      pendingFiles.length > 0
+                        ? 'border border-green-300 text-green-800'
+                        : 'bg-white hover:bg-gray-50/50 border border-gray-300 text-gray-900'
+                    }`}
+                  >
+                    {pendingFiles.length > 0 && (
+                      <span 
+                        className="absolute inset-0 bg-gray-50"
+                        style={{ 
+                          animation: 'openai-pulse 3s ease-in-out infinite',
+                          zIndex: 0
+                        }}
+                      />
+                    )}
+                    <style>{`
+                      @keyframes openai-pulse {
+                        0%, 100% {
+                          background-color: rgb(240, 253, 244);
+                          opacity: 1;
+                        }
+                        50% {
+                          background-color: rgb(220, 252, 231);
+                          opacity: 0.8;
+                        }
+                      }
+                    `}</style>
+                    <span className="relative z-10 flex items-center gap-1.5">
+                      <Upload className="w-3.5 h-3.5" />
+                      Upload
+                    </span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Divider between upload area and file listing */}
+          <div className="my-8 px-4">
+            <div className="h-px bg-gray-200"></div>
+          </div>
+
+          {/* Search Bar and Actions Row Container */}
+          <div className="w-full px-4" style={{ boxSizing: 'border-box' }}>
+            {/* Search Bar */}
+            <div className="relative mb-3">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
+              <input
+                ref={searchInputRef}
+                type="text"
+                placeholder="Search documents..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full pl-8 pr-3 py-1.5 bg-gray-50 border border-gray-200 rounded-md text-[13px] text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-0"
+                style={{ WebkitTapHighlightColor: 'transparent', transition: 'none', boxShadow: 'none' }}
+              />
+            </div>
+
+            {/* Actions Row - Unified Style */}
+            <div className="flex items-center gap-2 w-full" style={{ width: '100%', boxSizing: 'border-box' }}>
+            {/* View Mode Toggle */}
+            <div className="flex items-center gap-0 bg-gray-100 rounded-md p-0.5">
               <button
                 onClick={() => setViewMode('global')}
-                className={`px-2 py-1 text-xs font-medium rounded transition-all duration-150 ${
+                className={`text-[10px] font-medium rounded-sm transition-all duration-150 ${
                   viewMode === 'global'
-                    ? 'bg-white text-slate-900 shadow-sm'
-                    : 'text-slate-600 hover:text-slate-900'
+                    ? 'bg-white text-gray-900 shadow-sm'
+                    : 'text-gray-600 hover:text-gray-900'
                 }`}
+                style={{
+                  padding: '3px 6px',
+                  height: '22px',
+                  minHeight: '22px'
+                }}
               >
-                Global
+                All Files
               </button>
               <button
                 onClick={() => setViewMode('property')}
-                className={`px-2 py-1 text-xs font-medium rounded transition-all duration-150 ${
+                className={`text-[10px] font-medium rounded-sm transition-all duration-150 ${
                   viewMode === 'property'
-                    ? 'bg-white text-slate-900 shadow-sm'
-                    : 'text-slate-600 hover:text-slate-900'
+                    ? 'bg-white text-gray-900 shadow-sm'
+                    : 'text-gray-600 hover:text-gray-900'
                 }`}
+                style={{
+                  padding: '3px 6px',
+                  height: '22px',
+                  minHeight: '22px'
+                }}
               >
-                Properties
+                By Property
               </button>
             </div>
 
-            <div className="flex items-center gap-1.5">
+            <div className="flex items-center gap-1 ml-auto">
               {/* Selection Mode Toggle Button */}
               <button
                 onClick={() => {
@@ -1259,42 +1987,67 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                     clearSelection();
                   }
                 }}
-                className={`flex items-center justify-center px-2.5 py-1.5 rounded-md border transition-all ${
+                className={`flex items-center justify-center gap-1 px-2 py-1 rounded-sm transition-all duration-200 ${
                   isSelectionMode 
-                    ? 'bg-blue-50 border-blue-200 text-blue-600' 
-                    : 'bg-white/70 border-slate-200/60 text-slate-500 hover:bg-slate-50/80 hover:text-slate-700 hover:border-slate-300/80'
+                    ? 'text-slate-600' 
+                    : 'text-slate-600 hover:text-slate-700'
                 }`}
-                title="Select documents to delete"
+                style={{
+                  padding: '3px 6px',
+                  height: '22px',
+                  minHeight: '22px',
+                  backgroundColor: isSelectionMode ? '#F9FAFB' : '#FFFFFF',
+                  border: isSelectionMode ? '1px solid rgba(203, 213, 225, 0.6)' : '1px solid rgba(203, 213, 225, 0.3)',
+                  opacity: 1,
+                  backdropFilter: 'none'
+                }}
+                onMouseEnter={(e) => {
+                  if (isSelectionMode) {
+                    e.currentTarget.style.backgroundColor = '#F3F4F6';
+                  }
+                }}
+                onMouseLeave={(e) => {
+                  if (isSelectionMode) {
+                    e.currentTarget.style.backgroundColor = '#F9FAFB';
+                  }
+                }}
+                title="Select documents"
               >
-                <SquareMousePointer className="w-3.5 h-3.5" strokeWidth={1.5} />
+                <MousePointer2 className="w-3 h-3 text-slate-600" strokeWidth={1.5} />
+                <span className="text-slate-600 text-[10px]">Select</span>
               </button>
 
               <div className="relative" ref={newMenuRef}>
-                <motion.button
+                <button
                   onClick={(e) => {
                     e.stopPropagation();
                     setShowNewMenu(!showNewMenu);
                   }}
-                  whileHover={{ scale: 1.01 }}
-                  whileTap={{ scale: 0.99 }}
-                  className="flex items-center space-x-1 px-2 py-1 border border-slate-200/60 hover:border-slate-300/80 bg-white/70 hover:bg-slate-50/80 rounded-md transition-all duration-200 group"
-                  title="New document"
+                  className="flex items-center justify-center gap-1 px-2 py-1 border border-slate-200/60 hover:border-slate-300/80 rounded-sm transition-all duration-200"
+                  style={{
+                    padding: '3px 6px',
+                    height: '22px',
+                    minHeight: '22px',
+                    backgroundColor: '#FFFFFF',
+                    opacity: 1,
+                    backdropFilter: 'none'
+                  }}
+                  title="Add"
                 >
-                  <Plus className="w-3 h-3 text-slate-600 group-hover:text-slate-700" strokeWidth={1.5} />
-                  <span className="text-slate-700 group-hover:text-slate-800 font-medium text-xs">
-                    New
-                  </span>
-                </motion.button>
+                  <Plus className="w-3 h-3 text-slate-600" strokeWidth={1.5} />
+                  <span className="text-slate-600 text-[10px]">Add</span>
+                </button>
 
-              {/* New Menu Popup */}
+              {/* New Menu Popup - Clean style */}
               <AnimatePresence>
                 {showNewMenu && (
                   <motion.div
-                    initial={{ opacity: 0, scale: 0.95, y: -5 }}
+                    initial={{ opacity: 0, scale: 0.95, y: -4 }}
                     animate={{ opacity: 1, scale: 1, y: 0 }}
-                    exit={{ opacity: 0, scale: 0.95, y: -5 }}
-                    transition={{ duration: 0.15 }}
-                    className="absolute right-0 top-full mt-1 w-56 bg-white rounded-md shadow-lg border border-slate-200/60 py-1 z-50"
+                    exit={{ opacity: 0, scale: 0.95, y: -4 }}
+                    transition={{ duration: 0.12 }}
+                    className="absolute right-0 top-full mt-1.5 w-48 bg-white rounded-lg py-1 z-50"
+                    style={{ boxShadow: '0 4px 12px rgba(0, 0, 0, 0.08)' }}
                     onClick={(e) => e.stopPropagation()}
                   >
                     {/* Folder Option */}
@@ -1303,43 +2056,34 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                         setShowNewMenu(false);
                         await handleCreateFolder();
                       }}
-                      className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 transition-colors text-left"
+                      className="w-full flex items-center gap-3 px-3 py-2 hover:bg-gray-50 transition-colors text-left"
                     >
-                      <div className="flex-shrink-0 relative">
-                        <img 
-                          src="/file.png" 
-                          alt="Folder" 
-                          className="w-5 h-5 object-contain"
-                        />
-                        <Plus className="w-3 h-3 text-slate-700 absolute -top-0.5 -right-0.5" strokeWidth={2} />
-                      </div>
-                      <span className="text-sm font-medium text-slate-700">Folder</span>
+                      <Folder className="w-4 h-4 text-gray-500" strokeWidth={1.75} />
+                      <span className="text-[13px] font-medium text-gray-700">New folder</span>
                     </button>
+
+                    <div className="h-px bg-gray-100 my-1" />
 
                     {/* Upload Option */}
                     <button
                       onClick={() => {
                         setShowNewMenu(false);
-                        // Trigger file input
                         const input = document.createElement('input');
                         input.type = 'file';
-                        input.multiple = false;
+                        input.multiple = true;
                         input.accept = '*/*';
                         input.onchange = async (e) => {
-                          const file = (e.target as HTMLInputElement).files?.[0];
-                          if (!file) return;
-                          
-                          await handleFileUpload(file);
+                          const selectedFiles = Array.from((e.target as HTMLInputElement).files || []);
+                          if (selectedFiles.length === 0) return;
+                          // Add files to pending state instead of uploading immediately
+                          setPendingFiles(prev => [...prev, ...selectedFiles]);
                         };
                         input.click();
                       }}
-                      className="w-full flex items-center justify-between gap-3 px-4 py-2.5 hover:bg-gray-50 transition-colors text-left"
+                      className="w-full flex items-center gap-3 px-3 py-2 hover:bg-gray-50 transition-colors text-left"
                     >
-                      <div className="flex items-center gap-3">
-                        <Upload className="w-5 h-5 text-slate-700 flex-shrink-0" strokeWidth={1.5} />
-                        <span className="text-sm font-medium text-slate-700">Upload from computer</span>
-                      </div>
-                      <ChevronRight className="w-4 h-4 text-slate-400 flex-shrink-0" />
+                      <Upload className="w-4 h-4 text-gray-500" strokeWidth={1.75} />
+                      <span className="text-[13px] font-medium text-gray-700">Upload file</span>
                     </button>
                   </motion.div>
                 )}
@@ -1347,35 +2091,85 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
               </div>
             </div>
           </div>
+          </div>
         </div>
+
+        {/* Bulk Actions Bar - Show when items are selected and in selection mode */}
+        {isSelectionMode && selectedItems.size > 0 && (
+          <div className="px-4 py-1 border-b border-gray-100 w-full" style={{ backgroundColor: '#F1F1F1', boxSizing: 'border-box' }}>
+            <div className="flex items-center gap-3 w-full" style={{ width: '100%', boxSizing: 'border-box' }}>
+              <span className="text-xs font-medium text-gray-600 ml-3">
+                {selectedItems.size} {selectedItems.size === 1 ? 'item' : 'items'} selected
+              </span>
+              <div className="flex items-center gap-1.5 ml-auto">
+                <motion.button
+                  onClick={handleBulkDelete}
+                  whileHover={{ scale: 1.01 }}
+                  whileTap={{ scale: 0.99 }}
+                  className="flex items-center justify-center gap-1.5 px-2 py-1 rounded-none font-medium text-slate-600 hover:text-slate-700 border border-slate-200/60 hover:border-slate-300/80 transition-all duration-200 flex-shrink-0"
+                  style={{
+                    padding: '4px 8px',
+                    height: '24px',
+                    minHeight: '24px',
+                    minWidth: '70px',
+                    width: '70px',
+                    backgroundColor: '#FFFFFF',
+                    opacity: 1,
+                    backdropFilter: 'none'
+                  }}
+                  title="Delete selected"
+                >
+                  <Trash2 className="w-3.5 h-3.5 text-red-600" strokeWidth={1.5} />
+                  <span className="text-slate-600 text-[11px]">Delete</span>
+                </motion.button>
+                <motion.button
+                  onClick={clearSelection}
+                  whileHover={{ scale: 1.01 }}
+                  whileTap={{ scale: 0.99 }}
+                  className="flex items-center justify-center px-2 py-1 rounded-none font-medium text-slate-600 hover:text-slate-700 border border-slate-200/60 hover:border-slate-300/80 transition-all duration-200 flex-shrink-0"
+                  style={{
+                    padding: '4px 8px',
+                    height: '24px',
+                    minHeight: '24px',
+                    minWidth: '70px',
+                    width: '70px',
+                    backgroundColor: '#FFFFFF',
+                    opacity: 1,
+                    backdropFilter: 'none'
+                  }}
+                  title="Cancel selection"
+                >
+                  <span className="text-slate-600 text-[11px]">Cancel</span>
+                </motion.button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Breadcrumb Navigation */}
         {breadcrumbs.length > 0 && (
-          <div className="px-6 py-2 border-b border-gray-200 flex items-center gap-2 text-sm">
-            <motion.button
+          <div className="px-4 py-2 flex items-center gap-2">
+            <button
               onClick={handleBack}
-              whileHover={{ scale: 1.01 }}
-              whileTap={{ scale: 0.99 }}
-              className="flex items-center space-x-1.5 px-2.5 py-1.5 border border-slate-200/60 hover:border-slate-300/80 bg-white/70 hover:bg-slate-50/80 rounded-md transition-all duration-200 group"
-              title="Go back"
+              className="flex items-center gap-1 px-2 py-1 text-gray-500 hover:text-gray-700 hover:bg-white/60 rounded-md transition-colors"
             >
-              <span className="text-slate-700 group-hover:text-slate-800 font-medium text-xs">
-                ← Back
-              </span>
-            </motion.button>
+              <ChevronRight className="w-3.5 h-3.5 rotate-180" strokeWidth={1.75} />
+              <span className="text-[12px] font-medium">Back</span>
+            </button>
+            <span className="text-gray-300">/</span>
             {breadcrumbs.map((crumb, idx) => (
               <React.Fragment key={crumb.id}>
-                <span className="text-gray-400">/</span>
-                <span className={idx === breadcrumbs.length - 1 ? 'text-gray-900 font-medium' : 'text-gray-600'}>
+                <span className={`text-[12px] ${idx === breadcrumbs.length - 1 ? 'text-gray-700 font-medium' : 'text-gray-500'}`}>
                   {crumb.name}
                 </span>
+                {idx < breadcrumbs.length - 1 && <span className="text-gray-300">/</span>}
               </React.Fragment>
             ))}
           </div>
         )}
 
-        {/* Content Area */}
-        <div className="flex-1 overflow-y-auto" style={{ backgroundColor: '#F9F9F9' }}>
+        {/* Content Area - Clean Background - relative z-50 so it stacks above the chat panel */}
+        <div className="flex-1 overflow-y-auto w-full px-4 relative z-50" style={{ boxSizing: 'border-box' }}>
           {isLoading ? (
             <div className="flex items-center justify-center h-full">
               <div className="text-gray-500">Loading...</div>
@@ -1385,14 +2179,14 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
               <div className="text-red-500">{error}</div>
             </div>
           ) : filteredItems.folders.length === 0 && filteredItems.documents.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-full text-gray-500 px-6">
-              <Folder className="w-16 h-16 text-gray-300 mb-4" />
-              <p className="text-sm font-medium mb-1">No documents found</p>
-              <p className="text-xs text-center">Upload documents or adjust your search.</p>
+            <div className="flex flex-col items-center justify-center h-full text-gray-500">
+              <FolderOpen className="w-10 h-10 text-gray-300 mb-3" strokeWidth={1.5} />
+              <p className="text-[13px] font-medium text-gray-500 mb-1">No documents</p>
+              <p className="text-[12px] text-gray-400 text-center">Upload files or adjust your search</p>
             </div>
           ) : (
-            <div className="py-2">
-              {/* Folders */}
+            <div className="w-full py-0.5" style={{ boxSizing: 'border-box' }}>
+              {/* Folders - Premium Container Design */}
               {filteredItems.folders.map((folder) => {
                 const isSelected = selectedItems.has(folder.id);
                 return (
@@ -1400,10 +2194,12 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                   key={folder.id}
                   onMouseEnter={() => setHoveredItemId(folder.id)}
                   onMouseLeave={() => setHoveredItemId(null)}
-                  className={`flex items-center gap-3 px-6 py-2.5 cursor-pointer group transition-colors ${
+                  className={`flex items-center gap-2.5 pl-8 pr-3 py-1.5 w-full cursor-pointer group transition-all duration-200 rounded-md border ${
                     isSelectionMode 
-                      ? (isSelected ? 'bg-blue-50 hover:bg-blue-100' : 'hover:bg-gray-50')
-                      : 'hover:bg-gray-50'
+                      ? (isSelected 
+                          ? 'bg-gray-100/50 border-gray-300/60 hover:border-gray-400/80' 
+                          : 'bg-white border-gray-200/60 hover:border-gray-300/80 hover:bg-gray-50/50')
+                      : 'bg-white border-gray-200/60 hover:border-gray-300/80 hover:bg-gray-50/50'
                   }`}
                   onClick={(e) => {
                     if (editingItemId) return;
@@ -1416,19 +2212,54 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                   }}
                 >
                   {isSelectionMode && (
-                    <div className="flex-shrink-0">
-                      {isSelected ? (
-                        <CheckSquare className="w-4 h-4 text-blue-600" />
-                      ) : (
-                        <Square className="w-4 h-4 text-gray-400" />
-                      )}
+                    <div className="flex-shrink-0 w-3.5">
+                      <motion.div
+                        className="relative"
+                        initial={false}
+                        animate={{
+                          scale: isSelected ? 1 : 1,
+                        }}
+                        transition={{ duration: 0.15, ease: [0.4, 0, 0.2, 1] }}
+                      >
+                        <div
+                          className="flex items-center justify-center"
+                          style={{
+                            width: '14px',
+                            height: '14px',
+                            borderRadius: '3px',
+                            border: isSelected 
+                              ? '1.5px solid #000000' 
+                              : '1.5px solid #D1D5DB',
+                            backgroundColor: isSelected ? '#000000' : 'transparent',
+                            transition: 'all 0.15s ease',
+                          }}
+                        >
+                          {isSelected && (
+                            <motion.svg
+                              initial={{ scale: 0, opacity: 0 }}
+                              animate={{ scale: 1, opacity: 1 }}
+                              exit={{ scale: 0, opacity: 0 }}
+                              transition={{ duration: 0.15, ease: [0.4, 0, 0.2, 1] }}
+                              width="8"
+                              height="8"
+                              viewBox="0 0 10 10"
+                              fill="none"
+                              xmlns="http://www.w3.org/2000/svg"
+                            >
+                              <path
+                                d="M2 5L4 7L8 3"
+                                stroke="white"
+                                strokeWidth="1.5"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                              />
+                            </motion.svg>
+                          )}
+                        </div>
+                      </motion.div>
                     </div>
                   )}
-                  <img 
-                    src="/file.png" 
-                    alt="Folder" 
-                    className="w-5 h-5 object-contain flex-shrink-0"
-                  />
+                  <Folder className="w-3.5 h-3.5 text-gray-500 flex-shrink-0" strokeWidth={1.75} />
                   <div className="flex-1 min-w-0">
                     {editingItemId === folder.id ? (
                       <input
@@ -1443,31 +2274,28 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                           }
                         }}
                         onBlur={() => handleSaveRename(folder.id, true)}
-                        className="w-full px-2 py-1 text-sm border border-blue-500 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
+                        className="w-full px-2 py-1 text-xs border border-blue-500 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500/20 bg-white"
                         autoFocus
                         onClick={(e) => e.stopPropagation()}
                       />
                     ) : (
-                      <>
-                        <div className="text-xs font-medium text-gray-900 truncate">{folder.name}</div>
-                        <div className="text-xs text-gray-500">
-                          {folder.document_count || 0} {folder.document_count === 1 ? 'document' : 'documents'}
-                        </div>
-                      </>
+                      <div className="text-xs font-normal text-gray-900 truncate" style={{ fontFamily: 'system-ui, -apple-system, sans-serif', letterSpacing: '-0.01em' }}>
+                        {folder.name}
+                      </div>
                     )}
                   </div>
                   {!editingItemId && (
                     <>
-                      <ChevronRight className="w-4 h-4 text-gray-400 flex-shrink-0" />
+                      <ChevronRight className="w-3 h-3 text-gray-400 flex-shrink-0" strokeWidth={1.75} />
                       {hoveredItemId === folder.id && (
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
                             handleContextMenuClick(e, folder.id);
                           }}
-                          className="p-1 hover:bg-gray-200 rounded flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
+                          className="p-0.5 hover:bg-gray-100 rounded flex-shrink-0 opacity-0 group-hover:opacity-100 transition-all duration-150"
                         >
-                          <MoreVertical className="w-4 h-4 text-gray-600" />
+                          <MoreVertical className="w-3 h-3 text-gray-400" strokeWidth={1.5} />
                         </button>
                       )}
                     </>
@@ -1476,11 +2304,14 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                 );
               })}
 
-              {/* Files - Grouped by property in property view */}
+              {/* Files - Grouped by property in property view - pr-8 keeps property header narrow */}
               {viewMode === 'property' && groupedDocumentsByProperty && !currentFolderId ? (
-                // Grouped by property sections
-                groupedDocumentsByProperty.map(({ propertyId, propertyAddress, documents: propertyDocs }) => {
+                <div className="pr-8 w-full" style={{ boxSizing: 'border-box' }}>
+                {groupedDocumentsByProperty.map(({ propertyId, propertyAddress, documents: propertyDocs }) => {
                   const isExpanded = expandedProperties.has(propertyId);
+                  const anyExpanded = expandedProperties.size > 0;
+                  // When a property is expanded, hide other (collapsed) property containers; only show expanded one(s)
+                  if (anyExpanded && !isExpanded) return null;
                   
                   // Skip rendering sections that don't have a valid property address
                   // (These are documents not associated with any property card)
@@ -1489,42 +2320,41 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                   }
                   
                   return (
-                    <div key={propertyId} className="mb-1">
-                      {/* Property Section Header - Clickable */}
+                    <div key={propertyId} className="px-0 mb-0.5">
+                      {/* Property Section Header - inset (ml-4 mr-8) so file rows below can be full width */}
                       <div 
                         onClick={() => togglePropertyExpansion(propertyId)}
-                        className="px-6 py-2.5 bg-slate-50/50 border-b border-slate-200/40 cursor-pointer hover:bg-slate-100/50 transition-colors flex items-center justify-between"
+                        className={`px-4 py-2 ml-4 mr-8 cursor-pointer transition-all duration-200 rounded-md border flex items-center gap-2.5 w-full ${
+                          isExpanded 
+                            ? 'bg-gray-50 border-gray-200/60' 
+                            : 'bg-white border-gray-200/60 hover:border-gray-300/80 hover:bg-gray-50/50'
+                        }`}
                       >
-                        <div className="flex items-center gap-3 flex-1 min-w-0">
-                          <img 
-                            src="/houseicon.png" 
-                            alt="Property" 
-                            className="w-8 h-8 object-contain flex-shrink-0"
-                          />
-                          <div className="flex-1 min-w-0">
-                            {/* Only show if we have a real address (not a UUID fallback or "Unknown Property") */}
-                            {propertyAddress && 
-                             !propertyAddress.startsWith('Property ') && 
-                             propertyAddress !== 'Unknown Property' && (
-                              <h3 className="font-semibold line-clamp-2" style={{ 
-                                color: '#6E778D', 
-                                fontSize: '12px'
-                              }}>
-                                {propertyAddress}
-                              </h3>
-                            )}
-                            <p className="text-xs text-slate-500 mt-0.5">
-                              {propertyDocs.length} {propertyDocs.length === 1 ? 'document' : 'documents'}
-                            </p>
-                          </div>
-                        </div>
                         <ChevronRight 
-                          className={`w-4 h-4 text-slate-400 flex-shrink-0 transition-transform ${isExpanded ? 'rotate-90' : ''}`} 
+                          className={`w-3 h-3 text-gray-400 flex-shrink-0 transition-transform duration-200 ${isExpanded ? 'rotate-90' : ''}`}
+                          strokeWidth={1.75}
                         />
+                        <img 
+                          src="/houseicon.png" 
+                          alt="Property" 
+                          className="w-5 h-5 object-contain flex-shrink-0"
+                        />
+                        <div className="flex-1 min-w-0">
+                          {propertyAddress && 
+                           !propertyAddress.startsWith('Property ') && 
+                           propertyAddress !== 'Unknown Property' && (
+                            <div className="text-xs font-normal text-gray-900 truncate" style={{ fontFamily: 'system-ui, -apple-system, sans-serif', letterSpacing: '-0.01em' }}>
+                              {propertyAddress}
+                            </div>
+                          )}
+                        </div>
+                        <span className="text-xs text-gray-500 flex-shrink-0 font-medium">
+                          {propertyDocs.length}
+                        </span>
                       </div>
-                      {/* Documents in this property - Only show when expanded */}
+                      {/* Documents in this property - ml-4 mr-8 matches property header width exactly (no layout change to list/header) */}
                       {isExpanded && (
-                        <div className="pt-4">
+                        <div className="py-0.5 w-full" style={{ boxSizing: 'border-box' }}>
                           {propertyDocs.map((doc) => {
                             const isLinked = isDocumentLinked(doc);
                             const isSelected = selectedItems.has(doc.id);
@@ -1540,10 +2370,12 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                                 }}
                                 onMouseEnter={() => setHoveredItemId(doc.id)}
                                 onMouseLeave={() => setHoveredItemId(null)}
-                                className={`rounded-md shadow-sm mb-2 mx-4 px-3 py-2 flex items-center gap-3 transition-all cursor-pointer group relative max-w-md ${
+                                className={`flex items-center gap-2.5 pl-3 pr-3 py-1.5 ml-4 mr-8 cursor-pointer group transition-all duration-200 rounded-md border ${
                                   isSelectionMode 
-                                    ? (isSelected ? 'bg-blue-50 hover:bg-blue-100 hover:shadow' : 'bg-white hover:shadow')
-                                    : 'bg-white hover:shadow'
+                                    ? (isSelected 
+                                        ? 'bg-gray-100/50 border-gray-300/60 hover:border-gray-400/80' 
+                                        : 'bg-white border-gray-200/60 hover:border-gray-300/80 hover:bg-gray-50/50')
+                                    : 'bg-white border-gray-200/60 hover:border-gray-300/80 hover:bg-gray-50/50'
                                 }`}
                                 onClick={(e) => {
                                   if (editingItemId) return;
@@ -1556,15 +2388,54 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                                 }}
                               >
                                 {isSelectionMode && (
-                                  <div className="flex-shrink-0">
-                                    {isSelected ? (
-                                      <CheckSquare className="w-3.5 h-3.5 text-blue-600" />
-                                    ) : (
-                                      <Square className="w-3.5 h-3.5 text-gray-400" />
-                                    )}
+                                  <div className="flex-shrink-0 w-3.5">
+                                    <motion.div
+                                      className="relative"
+                                      initial={false}
+                                      animate={{
+                                        scale: isSelected ? 1 : 1,
+                                      }}
+                                      transition={{ duration: 0.15, ease: [0.4, 0, 0.2, 1] }}
+                                    >
+                                      <div
+                                        className="flex items-center justify-center"
+                                        style={{
+                                          width: '14px',
+                                          height: '14px',
+                                          borderRadius: '3px',
+                                          border: isSelected 
+                                            ? '1.5px solid #000000' 
+                                            : '1.5px solid #D1D5DB',
+                                          backgroundColor: isSelected ? '#000000' : 'transparent',
+                                          transition: 'all 0.15s ease',
+                                        }}
+                                      >
+                                        {isSelected && (
+                                          <motion.svg
+                                            initial={{ scale: 0, opacity: 0 }}
+                                            animate={{ scale: 1, opacity: 1 }}
+                                            exit={{ scale: 0, opacity: 0 }}
+                                            transition={{ duration: 0.15, ease: [0.4, 0, 0.2, 1] }}
+                                            width="8"
+                                            height="8"
+                                            viewBox="0 0 10 10"
+                                            fill="none"
+                                            xmlns="http://www.w3.org/2000/svg"
+                                          >
+                                            <path
+                                              d="M2 5L4 7L8 3"
+                                              stroke="white"
+                                              strokeWidth="1.5"
+                                              strokeLinecap="round"
+                                              strokeLinejoin="round"
+                                            />
+                                          </motion.svg>
+                                        )}
+                                      </div>
+                                    </motion.div>
                                   </div>
                                 )}
-                                <div className="flex-shrink-0">{getFileIcon(doc)}</div>
+                                <div className="flex-shrink-0 w-3.5 h-3.5 flex items-center justify-center">{getFileIcon(doc)}</div>
                                 <div className="flex-1 min-w-0">
                                   {editingItemId === doc.id ? (
                                     <input
@@ -1579,35 +2450,65 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                                         }
                                       }}
                                       onBlur={() => handleSaveRename(doc.id, false)}
-                                      className="w-full px-2 py-1 text-xs border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-gray-400"
+                                      className="w-full px-2 py-1 text-xs border border-blue-500 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500/20 bg-white"
                                       autoFocus
                                       onClick={(e) => e.stopPropagation()}
                                     />
                                   ) : (
-                                    <>
-                                      <div className="text-xs font-medium text-gray-900 break-words">{doc.original_filename}</div>
-                                      <div className="flex items-center gap-2 mt-0.5">
-                                        <span className="text-xs text-gray-500">
-                                          {formatDate(doc.created_at || doc.updated_at)}
-                                        </span>
-                                        <span className="text-xs text-gray-400">•</span>
-                                        <span className={`text-xs ${isLinked ? 'text-gray-600' : 'text-gray-400'}`}>
-                                          {isLinked ? 'Linked' : 'Unlinked'}
-                                        </span>
-                                      </div>
-                                    </>
+                                    <div className="text-xs font-normal text-gray-900 truncate" style={{ fontFamily: 'system-ui, -apple-system, sans-serif', letterSpacing: '-0.01em' }}>
+                                      {doc.original_filename}
+                                    </div>
                                   )}
                                 </div>
-                                {!editingItemId && hoveredItemId === doc.id && (
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleContextMenuClick(e, doc.id);
-                                    }}
-                                    className="p-1 hover:bg-gray-100 rounded flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
-                                  >
-                                    <MoreVertical className="w-3.5 h-3.5 text-gray-500" />
-                                  </button>
+                                {!editingItemId && (
+                                  <div className="flex items-center gap-0.5 flex-shrink-0">
+                                    {/* Reprocess button / status indicator */}
+                                    {reprocessingDocs.has(doc.id) ? (
+                                      // Currently reprocessing - show spinning icon
+                                      <div 
+                                        title="Processing document..."
+                                        className="p-0.5 flex-shrink-0"
+                                      >
+                                        <RefreshCw 
+                                          className="w-3 h-3 text-blue-500 animate-spin" 
+                                          strokeWidth={1.5} 
+                                        />
+                                      </div>
+                                    ) : reprocessedDocs.has(doc.id) || doc.status === 'completed' ? (
+                                      // Successfully reprocessed - show tick icon
+                                      <div 
+                                        title="Document fully processed"
+                                        className="p-0.5 flex-shrink-0"
+                                      >
+                                        <ListCheck 
+                                          className="w-3 h-3" 
+                                          strokeWidth={1.5}
+                                          color="#22c55e"
+                                        />
+                                      </div>
+                                    ) : doc.status === 'uploaded' ? (
+                                      // Needs reprocessing - show clickable button
+                                      <button
+                                        onClick={(e) => handleReprocessDocument(doc, e)}
+                                        title="Reprocess document (generate embeddings)"
+                                        className="p-0.5 hover:bg-blue-50 rounded flex-shrink-0 opacity-0 group-hover:opacity-100 transition-all duration-150"
+                                      >
+                                        <RefreshCw 
+                                          className="w-3 h-3 text-blue-500" 
+                                          strokeWidth={1.5} 
+                                        />
+                                      </button>
+                                    ) : null}
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleContextMenuClick(e, doc.id);
+                                      }}
+                                      className="p-0.5 hover:bg-gray-100 rounded flex-shrink-0 opacity-0 group-hover:opacity-100 transition-all duration-150"
+                                    >
+                                      <MoreVertical className="w-3 h-3 text-gray-400" strokeWidth={1.5} />
+                                    </button>
+                                  </div>
                                 )}
                               </div>
                             );
@@ -1616,10 +2517,11 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                       )}
                     </div>
                   );
-                })
+                })}
+                </div>
               ) : (
-                // Flat list for global view or when inside a folder
-                <div className="pt-4">
+                // Flat list for global view or when inside a folder - Premium Design
+                <div className="py-0.5 w-full" style={{ boxSizing: 'border-box' }}>
                   {filteredItems.documents.map((doc) => {
                   const isLinked = isDocumentLinked(doc);
                   const isSelected = selectedItems.has(doc.id);
@@ -1635,10 +2537,12 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                       }}
                       onMouseEnter={() => setHoveredItemId(doc.id)}
                       onMouseLeave={() => setHoveredItemId(null)}
-                      className={`rounded-md shadow-sm mb-2 mx-4 px-3 py-2 flex items-center gap-3 transition-all cursor-pointer group relative max-w-md ${
+                      className={`flex items-center gap-2.5 pl-3 pr-3 py-1.5 mx-4 cursor-pointer group transition-all duration-200 rounded-md border ${
                         isSelectionMode 
-                          ? (isSelected ? 'bg-blue-50 hover:bg-blue-100 hover:shadow' : 'bg-white hover:shadow')
-                          : 'bg-white hover:shadow'
+                          ? (isSelected 
+                              ? 'bg-gray-100/50 border-gray-300/60 hover:border-gray-400/80' 
+                              : 'bg-white border-gray-200/60 hover:border-gray-300/80 hover:bg-gray-50/50')
+                          : 'bg-white border-gray-200/60 hover:border-gray-300/80 hover:bg-gray-50/50'
                       }`}
                       onClick={(e) => {
                         if (editingItemId) return;
@@ -1651,15 +2555,54 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                       }}
                     >
                       {isSelectionMode && (
-                        <div className="flex-shrink-0">
-                          {isSelected ? (
-                            <CheckSquare className="w-3.5 h-3.5 text-blue-600" />
-                          ) : (
-                            <Square className="w-3.5 h-3.5 text-gray-400" />
-                          )}
+                        <div className="flex-shrink-0 w-3.5">
+                          <motion.div
+                            className="relative"
+                            initial={false}
+                            animate={{
+                              scale: isSelected ? 1 : 1,
+                            }}
+                            transition={{ duration: 0.15, ease: [0.4, 0, 0.2, 1] }}
+                          >
+                            <div
+                              className="flex items-center justify-center"
+                              style={{
+                                width: '14px',
+                                height: '14px',
+                                borderRadius: '3px',
+                                border: isSelected 
+                                  ? '1.5px solid #000000' 
+                                  : '1.5px solid #D1D5DB',
+                                backgroundColor: isSelected ? '#000000' : 'transparent',
+                                transition: 'all 0.15s ease',
+                              }}
+                            >
+                              {isSelected && (
+                                <motion.svg
+                                  initial={{ scale: 0, opacity: 0 }}
+                                  animate={{ scale: 1, opacity: 1 }}
+                                  exit={{ scale: 0, opacity: 0 }}
+                                  transition={{ duration: 0.15, ease: [0.4, 0, 0.2, 1] }}
+                                  width="8"
+                                  height="8"
+                                  viewBox="0 0 10 10"
+                                  fill="none"
+                                  xmlns="http://www.w3.org/2000/svg"
+                                >
+                                  <path
+                                    d="M2 5L4 7L8 3"
+                                    stroke="white"
+                                    strokeWidth="1.5"
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                  />
+                                </motion.svg>
+                              )}
+                            </div>
+                          </motion.div>
                         </div>
                       )}
-                      <div className="flex-shrink-0">{getFileIcon(doc)}</div>
+                      <div className="flex-shrink-0 w-3.5 h-3.5 flex items-center justify-center">{getFileIcon(doc)}</div>
                       <div className="flex-1 min-w-0">
                         {editingItemId === doc.id ? (
                           <input
@@ -1674,35 +2617,65 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                               }
                             }}
                             onBlur={() => handleSaveRename(doc.id, false)}
-                            className="w-full px-2 py-1 text-xs border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-gray-400"
+                            className="w-full px-2 py-1 text-xs border border-blue-500 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500/20 bg-white"
                             autoFocus
                             onClick={(e) => e.stopPropagation()}
                           />
                         ) : (
-                          <>
-                            <div className="text-xs font-medium text-gray-900 truncate">{doc.original_filename}</div>
-                            <div className="flex items-center gap-2 mt-0.5">
-                              <span className="text-xs text-gray-500">
-                                {formatDate(doc.created_at || doc.updated_at)}
-                              </span>
-                              <span className="text-xs text-gray-400">•</span>
-                              <span className={`text-xs ${isLinked ? 'text-gray-600' : 'text-gray-400'}`}>
-                                {isLinked ? 'Linked' : 'Unlinked'}
-                              </span>
-                            </div>
-                          </>
+                          <div className="text-xs font-normal text-gray-900 truncate" style={{ fontFamily: 'system-ui, -apple-system, sans-serif', letterSpacing: '-0.01em' }}>
+                            {doc.original_filename}
+                          </div>
                         )}
                       </div>
-                      {!editingItemId && hoveredItemId === doc.id && (
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleContextMenuClick(e, doc.id);
-                          }}
-                          className="p-1 hover:bg-gray-100 rounded flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
-                        >
-                          <MoreVertical className="w-3.5 h-3.5 text-gray-500" />
-                        </button>
+                      {!editingItemId && (
+                        <div className="flex items-center gap-0.5 flex-shrink-0">
+                          {/* Reprocess button / status indicator */}
+                          {reprocessingDocs.has(doc.id) ? (
+                            // Currently reprocessing - show spinning icon
+                            <div 
+                              title="Processing document..."
+                              className="p-0.5 flex-shrink-0"
+                            >
+                              <RefreshCw 
+                                className="w-3 h-3 text-blue-500 animate-spin" 
+                                strokeWidth={1.5} 
+                              />
+                            </div>
+                          ) : reprocessedDocs.has(doc.id) || doc.status === 'completed' ? (
+                            // Successfully reprocessed - show tick icon
+                            <div 
+                              title="Document fully processed"
+                              className="p-0.5 flex-shrink-0"
+                            >
+                              <ListCheck 
+                                className="w-3 h-3" 
+                                strokeWidth={1.5}
+                                color="#22c55e" 
+                              />
+                            </div>
+                          ) : doc.status === 'uploaded' ? (
+                            // Needs reprocessing - show clickable button
+                            <button
+                              onClick={(e) => handleReprocessDocument(doc, e)}
+                              title="Reprocess document (generate embeddings)"
+                              className="p-0.5 hover:bg-blue-50 rounded flex-shrink-0 opacity-0 group-hover:opacity-100 transition-all duration-150"
+                            >
+                              <RefreshCw 
+                                className="w-3 h-3 text-blue-500" 
+                                strokeWidth={1.5} 
+                              />
+                            </button>
+                          ) : null}
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleContextMenuClick(e, doc.id);
+                            }}
+                            className="p-0.5 hover:bg-gray-100 rounded flex-shrink-0 opacity-0 group-hover:opacity-100 transition-all duration-150"
+                          >
+                            <MoreVertical className="w-3 h-3 text-gray-400" strokeWidth={1.5} />
+                          </button>
+                        </div>
                       )}
                     </div>
                   );
@@ -1713,37 +2686,6 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
           )}
         </div>
 
-        {/* Bulk Actions Bar - Show when items are selected and in selection mode */}
-        {isSelectionMode && selectedItems.size > 0 && (
-          <div className="px-4 py-2 border-t border-gray-100 bg-white/80 backdrop-blur-sm">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-medium text-gray-600">
-                {selectedItems.size} {selectedItems.size === 1 ? 'item' : 'items'} selected
-              </span>
-              <div className="flex items-center gap-1.5">
-                <motion.button
-                  onClick={handleBulkDelete}
-                  whileHover={{ scale: 1.02 }}
-                  whileTap={{ scale: 0.98 }}
-                  className="px-2.5 py-1 text-xs font-medium text-red-600 hover:text-red-700 hover:bg-red-50/50 rounded transition-colors duration-150"
-                  title="Delete selected"
-                >
-                  Delete
-                </motion.button>
-                <motion.button
-                  onClick={clearSelection}
-                  whileHover={{ scale: 1.02 }}
-                  whileTap={{ scale: 0.98 }}
-                  className="px-2.5 py-1 text-xs font-medium text-gray-600 hover:text-gray-700 hover:bg-gray-50/50 rounded transition-colors duration-150"
-                  title="Cancel selection"
-                >
-                  Cancel
-                </motion.button>
-              </div>
-            </div>
-          </div>
-        )}
-
         {/* Duplicate Confirmation Dialog */}
         <AnimatePresence>
           {duplicateDialog.isOpen && (
@@ -1751,7 +2693,8 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              className="fixed inset-0 bg-black/20 backdrop-blur-sm z-[20000] flex items-center justify-center p-4"
+              className="fixed inset-0 bg-black/5 z-[20000] flex items-center justify-center p-4"
+              style={{ backdropFilter: 'none' }}
               onClick={() => setDuplicateDialog({ isOpen: false, filename: '', fileSize: 0, existingDocuments: [], file: null, isExactDuplicate: false })}
             >
               <motion.div
@@ -1826,19 +2769,21 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
           )}
         </AnimatePresence>
 
-        {/* Context Menu */}
+        {/* Context Menu - Clean style */}
         <AnimatePresence>
           {openContextMenuId && contextMenuPosition && (
             <motion.div
               ref={contextMenuRef}
-              initial={{ opacity: 0, scale: 0.95, y: -10 }}
+              initial={{ opacity: 0, scale: 0.95, y: -4 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.95, y: -10 }}
-              transition={{ duration: 0.15 }}
-              className="fixed bg-white rounded-md shadow-lg border border-gray-200/60 py-0.5 z-[10000] min-w-[120px]"
+              exit={{ opacity: 0, scale: 0.95, y: -4 }}
+              transition={{ duration: 0.12 }}
+              className="fixed rounded-lg py-1 z-[10000] min-w-[140px]"
               style={{
                 left: `${contextMenuPosition.x}px`,
                 top: `${contextMenuPosition.y}px`,
+                backgroundColor: '#2D2D2D',
+                boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)'
               }}
             >
               {(() => {
@@ -1856,31 +2801,30 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                           handleRename(openContextMenuId!, itemName || '', isFolder);
                         }
                       }}
-                      className="w-full px-3 py-1.5 text-left text-xs text-gray-700 hover:bg-gray-50 transition-colors"
+                      className="w-full px-3 py-1.5 text-left text-[13px] text-white/90 hover:bg-white/10 transition-colors"
                     >
                       Rename
                     </button>
                     {!isFolder && (
                       <button
                         onClick={() => {
-                          // TODO: Implement move to folder
                           console.log('Move to folder:', openContextMenuId);
                           setOpenContextMenuId(null);
                           setContextMenuPosition(null);
                         }}
-                        className="w-full px-3 py-1.5 text-left text-xs text-gray-700 hover:bg-gray-50 transition-colors"
+                        className="w-full px-3 py-1.5 text-left text-[13px] text-white/90 hover:bg-white/10 transition-colors"
                       >
                         Move to folder
                       </button>
                     )}
-                    <div className="h-px bg-gray-200/60 my-0.5" />
+                    <div className="h-px bg-white/10 my-1" />
                     <button
-                      onClick={() => {
+                      onClick={(e) => {
                         if (item) {
-                          handleDeleteClick(openContextMenuId!, isFolder);
+                          handleDeleteClick(openContextMenuId!, isFolder, e);
                         }
                       }}
-                      className="w-full px-3 py-1.5 text-left text-xs text-red-600 hover:bg-red-50 transition-colors"
+                      className="w-full px-3 py-1.5 text-left text-[13px] text-white/90 hover:bg-white/10 transition-colors"
                     >
                       Delete
                     </button>
@@ -1891,77 +2835,93 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
           )}
         </AnimatePresence>
         
-        {/* Drag handle for resizing from right edge - same as SideChatPanel */}
+        {/* Drag handle for resizing from right edge - seamless design */}
         <div
           onMouseDown={handleResizeStart}
+          className="group"
           style={{
             position: 'absolute',
-            right: '-2px', // Extend slightly beyond the edge for easier grabbing
+            right: '-6px',
             top: 0,
             bottom: 0,
-            width: '12px', // Wider handle for better visibility and easier grabbing
+            width: '12px',
             cursor: 'ew-resize',
-            zIndex: 50, // High z-index to ensure it's on top
-            backgroundColor: 'transparent', // No background color
+            zIndex: 50,
+            backgroundColor: 'transparent',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            pointerEvents: 'auto', // Ensure it captures mouse events
+            pointerEvents: 'auto',
           }}
         >
-          {/* Very subtle visual indicator - no blue line */}
+          {/* Subtle hover indicator */}
           <div
+            className="opacity-0 group-hover:opacity-100 transition-opacity"
             style={{
-              width: '1px',
+              width: '2px',
               height: '100%',
-              backgroundColor: 'rgba(156, 163, 175, 0.15)', // Very subtle gray line
+              backgroundColor: 'rgba(156, 163, 175, 0.2)',
+              borderRadius: '1px',
             }}
           />
         </div>
         
-        {/* Blur overlay when delete dialog is open */}
-        {deleteConfirmDialog.isOpen && (
-          <div 
-            className="absolute inset-0 bg-white/60 backdrop-blur-[2px] z-[10001]"
-            style={{ pointerEvents: 'auto' }}
-          />
-        )}
-        
-        {/* Delete Confirmation Dialog - Scoped to FilingSidebar */}
-        {deleteConfirmDialog.isOpen && (
-          <div className="absolute inset-0 z-[10002] flex items-center justify-center pointer-events-none px-4">
-            <div 
-              className="pointer-events-auto bg-white rounded border border-gray-200/80 shadow-sm p-5 w-full"
+        {/* Delete Confirmation Pop-up - Simple pop-up style */}
+        <AnimatePresence>
+          {deleteConfirmDialog.isOpen && deleteConfirmDialog.position && (
+            <motion.div
+              ref={deleteConfirmRef}
+              initial={{ opacity: 0, scale: 0.95, y: -4 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: -4 }}
+              transition={{ duration: 0.12 }}
+              className="absolute bg-white rounded-lg py-1 z-50"
               style={{ 
-                maxWidth: 'min(calc(100% - 2rem), 320px)',
-                minWidth: '200px'
+                left: `${deleteConfirmDialog.position.x + 30}px`,
+                top: `${deleteConfirmDialog.position.y}px`,
+                width: '200px',
+                boxShadow: '0 4px 12px rgba(0, 0, 0, 0.08)'
               }}
+              onClick={(e) => e.stopPropagation()}
             >
-              <p className="text-xs text-gray-700 mb-4 leading-relaxed break-all" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                Delete "{deleteConfirmDialog.itemName}"?
-                {deleteConfirmDialog.isFolder && <span className="block mt-1.5 text-gray-500 text-[11px] break-all" style={{ wordBreak: 'break-word' }}>All items inside will be deleted.</span>}
-              </p>
-              <div className="flex justify-end gap-2">
-                <button
-                  onClick={() => {
-                    setDeleteConfirmDialog({ isOpen: false, itemId: null, isFolder: false, itemName: '' });
-                  }}
-                  className="px-3 py-1.5 text-xs text-gray-600 hover:text-gray-900 hover:bg-gray-50 rounded transition-colors"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleDelete}
-                  className="px-3 py-1.5 text-xs font-medium text-red-600 hover:text-red-700 hover:bg-red-50 rounded transition-colors"
-                >
-                  Delete
-                </button>
+              {/* Warning message */}
+              <div className="px-3 py-2 border-b border-gray-100">
+                <p className="text-[13px] font-medium text-gray-900 mb-1">
+                  Delete {deleteConfirmDialog.isFolder ? 'folder' : 'file'}?
+                </p>
+                <p className="text-[12px] text-gray-500 truncate">
+                  "{deleteConfirmDialog.itemName}"
+                </p>
+                {deleteConfirmDialog.isFolder && (
+                  <p className="text-[11px] text-gray-400 mt-1">
+                    All contents will be deleted.
+                  </p>
+                )}
               </div>
-            </div>
-          </div>
-        )}
-      </motion.div>
-    </AnimatePresence>
+              
+              {/* Actions */}
+              <button
+                onClick={() => {
+                  setDeleteConfirmDialog({ isOpen: false, itemId: null, isFolder: false, itemName: '', position: null });
+                }}
+                className="w-full flex items-center gap-3 px-3 py-2 hover:bg-gray-50 transition-colors text-left"
+              >
+                <span className="text-[13px] font-medium text-gray-700">Cancel</span>
+              </button>
+              
+              <div className="h-px bg-gray-100 my-1" />
+              
+              <button
+                onClick={handleDelete}
+                className="w-full flex items-center gap-3 px-3 py-2 hover:bg-red-50 transition-colors text-left"
+              >
+                <span className="text-[13px] font-medium text-red-600">Delete</span>
+              </button>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+    </>
   );
 };
 

@@ -13,7 +13,9 @@ import { useDocumentSelection } from '../contexts/DocumentSelectionContext';
 import { PropertyData } from './PropertyResultsDisplay';
 import { ReprocessProgressMonitor } from './ReprocessProgressMonitor';
 import { useFilingSidebar } from '../contexts/FilingSidebarContext';
+import { useChatPanel } from '../contexts/ChatPanelContext';
 import { CitationActionMenu } from './CitationActionMenu';
+import { usePropertyAccess } from '../hooks/usePropertyAccess';
 import veloraLogo from '/Velora Logo.jpg';
 
 // PDF.js for canvas-based PDF rendering with precise highlight positioning
@@ -34,6 +36,7 @@ interface PropertyDetailsPanelProps {
   pinPosition?: { x: number; y: number } | null;
   isInChatMode?: boolean; // Add chat mode prop
   chatPanelWidth?: number; // Width of the chat panel (0 when closed)
+  sidebarWidth?: number; // Width of the sidebar for centering calculations
 }
 
 interface Document {
@@ -591,30 +594,54 @@ const ExpandedCardView: React.FC<{
     };
   }, [pdfDocument, selectedDoc?.id, totalPages]); // Removed baseScale and cache functions from dependencies to prevent infinite loops
   
-  // Auto-scroll to highlight when citation is clicked
+
+  // Auto-scroll to highlight when citation is clicked - center BBOX both vertically and horizontally
   useEffect(() => {
     if (highlightCitation && highlightCitation.fileId === selectedDoc?.id && highlightCitation.bbox && renderedPages.size > 0 && pdfWrapperRef.current) {
       const targetPage = highlightCitation.bbox.page;
       const pageData = renderedPages.get(targetPage);
       
       if (pageData) {
-        // Calculate scroll position: sum of all previous pages' heights + highlight position
-        let scrollTop = 0;
+        // Calculate the vertical position of the BBOX center on the page
+        const bboxTop = highlightCitation.bbox.top * pageData.dimensions.height;
+        const bboxHeight = highlightCitation.bbox.height * pageData.dimensions.height;
+        const bboxCenterY = bboxTop + (bboxHeight / 2);
+        
+        // Calculate the horizontal position of the BBOX center on the page
+        const bboxLeft = highlightCitation.bbox.left * pageData.dimensions.width;
+        const bboxWidth = highlightCitation.bbox.width * pageData.dimensions.width;
+        const bboxCenterX = bboxLeft + (bboxWidth / 2);
+        
+        // Calculate scroll position: sum of all previous pages' heights
+        let pageOffset = 0;
         for (let i = 1; i < targetPage; i++) {
           const prevPage = renderedPages.get(i);
           if (prevPage) {
-            scrollTop += prevPage.dimensions.height + 16; // 16px gap between pages
+            pageOffset += prevPage.dimensions.height + 16; // 16px gap between pages
           }
         }
         
-        // Add the highlight's top position on the target page
-        scrollTop += highlightCitation.bbox.top * pageData.dimensions.height;
+        // Calculate the absolute position of the BBOX center in the document
+        const bboxCenterAbsoluteY = pageOffset + bboxCenterY;
         
-        // Scroll to position
+        // Scroll to center BBOX
         requestAnimationFrame(() => {
           if (pdfWrapperRef.current) {
+            const viewportHeight = pdfWrapperRef.current.clientHeight;
+            const viewportWidth = pdfWrapperRef.current.clientWidth;
+            
+            // Calculate scroll position to center the BBOX vertically
+            const scrollTop = bboxCenterAbsoluteY - (viewportHeight / 2);
+            
+            // Calculate scroll position to center the BBOX horizontally
+            const scrollLeft = bboxCenterX - (viewportWidth / 2);
+            
+            const maxScrollTop = Math.max(0, pdfWrapperRef.current.scrollHeight - viewportHeight);
+            const maxScrollLeft = Math.max(0, pdfWrapperRef.current.scrollWidth - viewportWidth);
+            
             pdfWrapperRef.current.scrollTo({
-              top: scrollTop - 100, // Offset by 100px to show context above
+              top: Math.max(0, Math.min(scrollTop, maxScrollTop)),
+              left: Math.max(0, Math.min(scrollLeft, maxScrollLeft)),
               behavior: 'smooth'
             });
           }
@@ -714,7 +741,7 @@ const ExpandedCardView: React.FC<{
         >
           {loading && (
             <div className="absolute inset-0 flex items-center justify-center bg-white z-10">
-              <div className="w-6 h-6 border-2 border-blue-500/30 border-t-blue-500 rounded-full animate-spin" />
+              <div className="w-5 h-5 border-2 border-neutral-200 border-t-neutral-800 rounded-full animate-spin" />
           </div>
           )}
           
@@ -898,7 +925,7 @@ const ExpandedCardView: React.FC<{
                     </div>
                   ) : (
                     <div className="flex items-center justify-center h-full">
-                      <div className="w-6 h-6 border-2 border-blue-500/30 border-t-blue-500 rounded-full animate-spin" />
+                      <div className="w-5 h-5 border-2 border-neutral-200 border-t-neutral-800 rounded-full animate-spin" />
                     </div>
                   )}
                 </div>
@@ -1011,20 +1038,34 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
   isLargeCardMode = false,
   pinPosition = null,
   isInChatMode = false, // Default to false
-  chatPanelWidth = 0 // Default to 0 (chat panel closed)
+  chatPanelWidth = 0, // Default to 0 (chat panel closed)
+  sidebarWidth = 0 // Default to 0 (will be passed from parent for centering)
 }) => {
   // Determine if chat panel is actually open based on width
   const isChatPanelOpen = chatPanelWidth > 0 || isInChatMode;
   
   // FilingSidebar integration
   const { openSidebar: openFilingSidebar, setSelectedProperty, setViewMode, width: filingSidebarWidth, isOpen: isFilingSidebarOpen } = useFilingSidebar();
+  // ChatPanel integration
+  const { isOpen: isChatPanelOpenContext, width: chatPanelWidthContext } = useChatPanel();
+  
+  // Property access control
+  const { accessLevel, canUpload, canDelete, isLoading: isLoadingAccess } = usePropertyAccess(property?.id);
   
   // Calculate the left position for property details panel
-  // When filing sidebar is closed: use chatPanelWidth directly (matches old commit logic)
-  // When filing sidebar is open: add filing sidebar width to account for the shift
+  // Property details should start where the chat panel ends
   const propertyDetailsLeft = React.useMemo(() => {
     if (!isChatPanelOpen) return 'auto';
     
+    // When in fullscreen property view (from Projects page) with isInChatMode
+    // Use chatPanelWidth + sidebarWidth for proper resize tracking
+    if (sidebarWidth && isInChatMode && chatPanelWidth > 0) {
+      // Chat panel starts at sidebarWidth and has width chatPanelWidth
+      // So property details starts at sidebarWidth + chatPanelWidth
+      return sidebarWidth + chatPanelWidth;
+    }
+    
+    // Fallback for other cases (map view, etc.) - use numeric calculation
     // Base calculation: chatPanelWidth (this works when filing sidebar is closed)
     let left = chatPanelWidth;
     
@@ -1036,7 +1077,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
     }
     
     return Math.max(left, 320); // Minimum 320px like old commit
-  }, [isChatPanelOpen, isFilingSidebarOpen, filingSidebarWidth, chatPanelWidth]);
+  }, [isChatPanelOpen, isFilingSidebarOpen, filingSidebarWidth, chatPanelWidth, sidebarWidth, isInChatMode]);
   
   // Track when chat panel is resizing to disable layout animations
   const [isChatPanelResizing, setIsChatPanelResizing] = React.useState<boolean>(false);
@@ -1690,6 +1731,25 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
   useEffect(() => {
     if (property && property.id) {
       console.log('📄 PropertyDetailsPanel: Property changed, loading files for Documents view:', property.id);
+      
+      // INSTANT RENDERING: Check for documents in propertyHub first (from onPropertyCreated callback)
+      if (property.propertyHub?.documents && property.propertyHub.documents.length > 0) {
+        console.log('⚡ INSTANT: Using documents from propertyHub:', property.propertyHub.documents.length, 'documents');
+        setDocuments(property.propertyHub.documents);
+        setHasFilesFetched(true);
+        setIsLoadingDocuments(false);
+        setShowEmptyState(false);
+        preloadDocumentCovers(property.propertyHub.documents);
+        // Cache for future use
+        if (!(window as any).__preloadedPropertyFiles) {
+          (window as any).__preloadedPropertyFiles = {};
+        }
+        (window as any).__preloadedPropertyFiles[property.id] = property.propertyHub.documents;
+        // Still fetch fresh data in background to get updated status
+        loadPropertyDocuments();
+        return; // Exit early - documents already displayed
+      }
+      
       // Reset states when property changes
       setIsLoadingDocuments(true);
       setShowEmptyState(false);
@@ -1906,6 +1966,12 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
   }, [documents, addPreviewFile]);
 
   const handleDeleteDocument = async (documentId: string) => {
+    // Check access level
+    if (!canDelete()) {
+      alert('You do not have permission to delete files. Only editors and owners can delete files from this property.');
+      return;
+    }
+
     try {
       const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
       const response = await fetch(`${backendUrl}/api/documents/${documentId}`, {
@@ -2373,6 +2439,12 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
       return;
     }
 
+    // Check access level
+    if (!canUpload()) {
+      setUploadError('You do not have permission to upload files. Only editors and owners can upload files to this property.');
+      return;
+    }
+
     // Open files modal when upload starts so user can see the file appear
     setIsFilesModalOpen(true);
     isFilesModalOpenRef.current = true;
@@ -2545,6 +2617,8 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
           className="fixed inset-0 z-[9999] flex items-center justify-center font-sans pointer-events-none transition-all duration-300 ease-out" 
           style={{ 
             pointerEvents: 'none',
+            // Offset for sidebar so content centers in available space (same as MapChatBar)
+            paddingLeft: isChatPanelOpen ? 0 : sidebarWidth,
           }}
         >
           {/* Backdrop Removed - Allow clicking behind */}
@@ -2564,7 +2638,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
               ease: [0.12, 0, 0.39, 0], // Very smooth easing curve for buttery smooth handover
               layout: isChatPanelResizing ? { duration: 0 } : { duration: 0.3 } // Disable layout transitions during resize
             }}
-            className={`bg-white flex overflow-hidden pointer-events-auto ${
+            className={`bg-[#FCFCF9] flex overflow-hidden pointer-events-auto ${
               // In split-view (chat + property details), remove heavy shadows so there's no "divider shadow"
               isChatPanelOpen ? '' : 'shadow-2xl ring-1 ring-black/5'
             }`}
@@ -2576,8 +2650,11 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
               // Split view: remove outer gaps so the panel sits flush against the chat panel and viewport edges
               // The chatPanelWidth prop is just the width, so we need to calculate where the chat panel ends
               // Chat panel left = base sidebar + filing sidebar (if open), so property details left = chat panel left + chat panel width
-              left: isChatPanelOpen ? `${propertyDetailsLeft}px` : 'auto',
-              right: isChatPanelOpen ? '0px' : 'auto',
+              // propertyDetailsLeft can be: 'auto', a CSS calc string, or a number - handle each case
+              left: isChatPanelOpen 
+                ? (typeof propertyDetailsLeft === 'string' ? propertyDetailsLeft : `${propertyDetailsLeft}px`)
+                : 'auto',
+              right: isChatPanelOpen ? (isChatPanelOpenContext ? `${chatPanelWidthContext}px` : '0px') : 'auto',
               top: isChatPanelOpen ? '0px' : 'auto',
               bottom: isChatPanelOpen ? '0px' : 'auto',
               width: isChatPanelOpen ? 'auto' : '800px',
@@ -2588,7 +2665,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
               minWidth: isChatPanelOpen ? '600px' : 'auto',
               transition: 'none', // No transition for width/position changes - instant like chat
               
-              // Normal Mode: Centered with margins
+              // Normal Mode: Centered with margins (parent container handles sidebar offset via paddingLeft)
               marginBottom: isChatPanelOpen ? '0' : '15vh',
               
               // Reset constraints
@@ -2606,7 +2683,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
             onClick={(e) => e.stopPropagation()}
           >
             {/* Section Picker - File Tab Style (Fixed) - Draggable */}
-            <div className="px-6 pt-4 pb-3 bg-white relative" style={{ zIndex: 1, borderBottom: 'none' }}>
+            <div className="px-10 pt-4 pb-3 bg-[#FCFCF9] relative" style={{ zIndex: 1, borderBottom: 'none' }}>
               <div className="flex items-end justify-between gap-1">
                 <div className="flex items-end gap-1" style={{ maxWidth: 'fit-content' }}>
                 {displayOrder.map((section, index) => {
@@ -2693,6 +2770,12 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                       onDrop={(e) => {
                         e.preventDefault();
                         e.stopPropagation();
+                        
+                        // Check access level before allowing drop
+                        if (!canUpload()) {
+                          alert('You do not have permission to upload files. Only editors and owners can upload files to this property.');
+                          return;
+                        }
                         
                         // Cancel any pending RAF
                         if (rafIdRef.current !== null) {
@@ -2797,7 +2880,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
               </div>
 
             {/* Header Area - Clean & Minimal */}
-            <div className="px-6 bg-white" style={{ borderTop: 'none' }}>
+            <div className="px-6 bg-[#FCFCF9]" style={{ borderTop: 'none' }}>
               <div className="flex items-center gap-3">
                 {activeSection === 'documents' && (
                   <div className="flex items-center gap-2 text-xs text-gray-400">
@@ -2913,7 +2996,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                   
             {/* Content Area - Both sections rendered, inactive one hidden to preserve state */}
             {/* Documents Section - hidden when not active to prevent PDF iframe reload */}
-              <div className={`flex-1 bg-white relative ${activeSection !== 'documents' ? 'hidden' : ''} ${selectedCardIndex !== null ? 'overflow-hidden' : 'overflow-y-auto p-6'}`}>
+              <div className={`flex-1 bg-[#FCFCF9] relative ${activeSection !== 'documents' ? 'hidden' : ''} ${selectedCardIndex !== null ? 'overflow-hidden' : 'overflow-y-auto px-10 py-6'}`}>
               {/* Delete Zone */}
                     <AnimatePresence>
                       {isDraggingToDelete && draggedDocumentId && (
@@ -2934,39 +3017,6 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
 
                     {/* Document Grid - Always rendered but hidden when preview is open */}
                     <div className={selectedCardIndex !== null ? 'hidden' : ''}>
-                    {filteredDocuments.length === 0 && showEmptyState && hasFilesFetched ? (
-                        <div className="h-full flex flex-col items-center justify-center text-gray-500">
-                          <div className="w-20 h-20 bg-gray-50 rounded-full flex items-center justify-center mb-4 border border-gray-100">
-                            <Search size={32} className="text-gray-300" />
-                  </div>
-                          <p className="text-lg font-medium text-gray-900 mb-1">No documents found</p>
-                          <p className="text-sm text-gray-500 mb-6">Try adjusting your search or upload a new file.</p>
-                          <button 
-                            className="px-6 py-3 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium rounded-full transition-all shadow-lg shadow-blue-900/20 hover:shadow-blue-600/30 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-                            onClick={() => {
-                              if (!property?.id) {
-                                alert('Please select a property first');
-                                return;
-                              }
-                              fileInputRef.current?.click();
-                            }}
-                            disabled={uploading || !property?.id}
-                            title={!property?.id ? "Please select a property first" : "Upload document"}
-                          >
-                            {uploading ? (
-                              <>
-                                <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
-                                <span>Uploading...</span>
-                              </>
-                            ) : (
-                              <>
-                                <Upload size={16} strokeWidth={2.5} />
-                                <span>Upload Document</span>
-                              </>
-                            )}
-                          </button>
-                      </div>
-                    ) : (
                       <div 
                           className="grid gap-6 pb-20" 
                         style={{ 
@@ -2975,14 +3025,28 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                           }}
                         >
                         {/* Add New Document Card */}
-                        <div
-                          className="group relative bg-white border border-gray-200 hover:border-gray-300 hover:shadow-lg cursor-pointer flex flex-col overflow-hidden"
+                        {canUpload() && (
+                        <motion.div
+                          className="group relative bg-white border border-gray-200 cursor-pointer flex flex-col overflow-hidden"
                           style={{
                             width: '160px',
                             height: '213px', // 3:4 aspect ratio (160 * 4/3)
                             aspectRatio: '3/4',
                           }}
-                          onClick={() => fileInputRef.current?.click()}
+                          whileHover={{ 
+                            y: -4, 
+                            boxShadow: '0 12px 24px -8px rgba(0, 0, 0, 0.15), 0 4px 8px -4px rgba(0, 0, 0, 0.1)',
+                            borderColor: 'rgb(209, 213, 219)'
+                          }}
+                          whileTap={{ scale: 0.98, y: -2 }}
+                          transition={{ type: 'spring', stiffness: 400, damping: 25 }}
+                          onClick={() => {
+                            if (!canUpload()) {
+                              alert('You do not have permission to upload files. Only editors and owners can upload files to this property.');
+                              return;
+                            }
+                            fileInputRef.current?.click();
+                          }}
                 >
                           {/* Upper Section - Light grey with plus icon (2/3 of card height) */}
                           <div className="flex items-center justify-center flex-[2] border-b border-gray-100 bg-gray-50">
@@ -2996,7 +3060,8 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                           <div className="flex items-center justify-center flex-1 bg-white px-2">
                             <span className="text-xs font-semibold text-gray-600 text-center">Add Document</span>
                           </div>
-                        </div>
+                        </motion.div>
+                        )}
 
                         {filteredDocuments.map((doc, index) => {
                           const fileType = (doc as any).file_type || '';
@@ -3020,12 +3085,12 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                       : 'rgba(59, 130, 246, 0.5)';
                           
                           return (
-                            <div
+                            <motion.div
                               key={doc.id}
                         className={`group relative bg-white border cursor-pointer flex flex-col overflow-hidden ${
                           isSelected 
                             ? `border-2 ${borderColor} ${shadowColor}` 
-                            : 'border-gray-200 hover:border-gray-300 hover:shadow-lg'
+                            : 'border-gray-200'
                         }`}
                         style={{
                           width: '160px',
@@ -3037,6 +3102,13 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                             zIndex: 10
                           } : {})
                         }}
+                        whileHover={!isSelected ? { 
+                          y: -4, 
+                          boxShadow: '0 12px 24px -8px rgba(0, 0, 0, 0.15), 0 4px 8px -4px rgba(0, 0, 0, 0.1)',
+                          borderColor: 'rgb(209, 213, 219)'
+                        } : {}}
+                        whileTap={{ scale: 0.98, y: -2 }}
+                        transition={{ type: 'spring', stiffness: 400, damping: 25 }}
                               onClick={(e) => {
                                 e.preventDefault();
                                 e.stopPropagation();
@@ -3298,17 +3370,16 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                     </span>
                   </div>
                 </div>
-              </div>
+              </motion.div>
                           );
                         })}
             </div>
-                      )}
           </div>
                                 
                     </div>
                             
             {/* Property Details Section - hidden when not active */}
-                <div className={`flex-1 overflow-hidden bg-white ${activeSection !== 'propertyDetails' ? 'hidden' : ''}`}>
+                <div className={`flex-1 overflow-hidden bg-[#FCFCF9] ${activeSection !== 'propertyDetails' ? 'hidden' : ''}`}>
                   {(() => {
                     // Use local property details if available (for optimistic updates), otherwise use prop
                     const propertyDetails = localPropertyDetails || property?.propertyHub?.property_details || {};
@@ -3440,7 +3511,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                             msOverflowStyle: 'none'
                           }}
                         >
-                          <div className="px-6">
+                          <div className="px-10">
                             {/* Address Header */}
                             <div className="mb-10">
                               <h2 className="text-sm font-semibold text-gray-900 mb-0 leading-tight truncate" title={address}>{address}</h2>

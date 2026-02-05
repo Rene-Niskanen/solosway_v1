@@ -29,6 +29,7 @@ interface ApiResponse<T = any> {
   data?: T;
   error?: string;
   message?: string;
+  statusCode?: number;
 }
 
 // Property image interface
@@ -85,6 +86,41 @@ interface PropertyData {
   updated_at?: string;
 }
 
+// Project interfaces
+export interface ProjectData {
+  id: string;
+  user_id: number;
+  client_name: string;
+  client_logo_url?: string;
+  title: string;
+  description?: string;
+  status: 'active' | 'negotiating' | 'archived';
+  tags: string[];
+  tool?: string;
+  budget_min?: number;
+  budget_max?: number;
+  due_date?: string;
+  thumbnail_url?: string;
+  message_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateProjectData {
+  client_name: string;
+  client_logo_url?: string;
+  title: string;
+  description?: string;
+  status?: 'active' | 'negotiating' | 'archived';
+  tags?: string[];
+  tool?: string;
+  budget_min?: number;
+  budget_max?: number;
+  due_date?: string;
+  thumbnail_url?: string;
+  message_count?: number;
+}
+
 class BackendApiService {
   private baseUrl: string;
 
@@ -108,14 +144,37 @@ class BackendApiService {
         ? { ...options.headers } 
         : { 'Content-Type': 'application/json', ...options.headers };
       
+
+        // Add timeout for file/document requests (30 seconds - longer than auth check)
+      // Only add timeout if no abort signal is already provided
+      const hasExistingSignal = options.signal;
+      const controller = hasExistingSignal ? undefined : new AbortController();
+      const timeoutId = controller ? setTimeout(() => controller.abort(), 30000) : null;
+      
       const response = await fetch(url, {
         ...options,
         credentials: 'include', // ← CRITICAL: Include session cookies
         headers,
+        signal: controller?.signal || options.signal,
       });
+
+      if (timeoutId) clearTimeout(timeoutId);
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
+        
+        // Handle 401 Unauthorized - clear auth state
+        if (response.status === 401) {
+          console.warn(`🔒 401 Unauthorized on ${endpoint} - clearing auth state`);
+          localStorage.removeItem('isAuthenticated');
+          // Return error with status code so caller can handle it
+          return {
+            success: false,
+            error: errorData.error || 'Authentication required',
+            statusCode: 401
+          };
+        }
+        
         throw new Error(errorData.error || `HTTP ${response.status}: ${response.statusText}`);
       }
 
@@ -126,11 +185,32 @@ class BackendApiService {
         data,
       };
     } catch (error) {
+      // Handle timeout
+      if (error instanceof Error && error.name === 'AbortError') {
+        console.error(`⏱️ Request to ${endpoint} timed out after 30 seconds`);
+        return {
+          success: false,
+          error: 'Request timeout - backend server not responding'
+        };
+      }
       
       console.error(`API Error [${endpoint}]:`, error);
+      
+      // Check if error message indicates 401
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+      if (errorMessage.includes('401') || errorMessage.includes('Authentication required') || errorMessage.includes('Unauthorized')) {
+        console.warn(`🔒 401 detected on ${endpoint} - clearing auth state`);
+        localStorage.removeItem('isAuthenticated');
+        return {
+          success: false,
+          error: errorMessage,
+          statusCode: 401
+        };
+      }
+      
       return {
         success: false,
-        error: error instanceof Error ? error.message : 'Unknown error occurred',
+        error: errorMessage,
       };
     }
   }
@@ -142,6 +222,26 @@ class BackendApiService {
     return this.fetchApi('/api/llm/analyze-query', {
       method: 'POST',
       body: JSON.stringify({ query, messageHistory }),
+    });
+  }
+
+  /**
+   * Resolve block_id (e.g. chunk_<uuid>_block_1) to bbox for citation highlighting.
+   * When citedText is provided, returns sub-level (line) bbox so the correct phrase is highlighted.
+   */
+  async resolveCitationBlockBbox(
+    blockId: string,
+    citedText?: string | null
+  ): Promise<ApiResponse<{
+    doc_id: string;
+    chunk_id: string;
+    block_index: number;
+    page: number;
+    bbox: { left: number; top: number; width: number; height: number; page?: number };
+  }>> {
+    return this.fetchApi('/api/citation/block-bbox', {
+      method: 'POST',
+      body: JSON.stringify({ block_id: blockId, cited_text: citedText || undefined }),
     });
   }
 
@@ -187,7 +287,7 @@ class BackendApiService {
     onError: (error: string) => void,
     onStatus?: (message: string) => void
   ): EventSource {
-    const baseUrl = this.baseUrl || 'http://localhost:5002';
+    const baseUrl = this.baseUrl || BACKEND_URL;
     const url = `${baseUrl}/api/llm/query/stream`;
     
     // Create a POST request with SSE
@@ -219,6 +319,7 @@ class BackendApiService {
     onReasoningStep?: (step: { step: string; message: string; details: any; action_type?: string; count?: number }) => void,
     onReasoningContext?: (context: { message: string; moment: string }) => void,
     onCitation?: (citation: { citation_number: string; data: any }) => void,
+    onExecutionEvent?: (event: { type: string; description: string; metadata?: any; timestamp: number; event_id: string; parent_event_id?: string }) => void,  // NEW: Execution trace events
     citationContext?: { // Structured citation metadata (hidden from user, for LLM)
       document_id: string;
       page_number: number;
@@ -236,12 +337,24 @@ class BackendApiService {
     // AGENT-NATIVE: Callback for agent actions (open document, highlight, navigate, save)
     onAgentAction?: (action: { action: string; params: any }) => void,
     // AGENT MODE: Whether the user is in Agent mode (enables LLM tool-based actions)
-    isAgentMode?: boolean
+    isAgentMode?: boolean,
+    // MODEL SELECTION: User-selected LLM model
+    model?: 'gpt-4o-mini' | 'gpt-4o' | 'claude-sonnet' | 'claude-opus',
+    // EXTENDED THINKING: Callback for streaming thinking chunks (Claude models)
+    onThinkingChunk?: (chunk: string) => void,
+    onThinkingComplete?: (fullThinking: string) => void,
+    // PLAN MODE: Callbacks for plan generation
+    onPlanChunk?: (chunk: string) => void,
+    onPlanComplete?: (planId: string, fullPlan: string, isUpdate?: boolean) => void,
+    // PLAN MODE: Whether to generate a plan before execution
+    planMode?: boolean,
+    // PLAN UPDATE: Existing plan content for updates (when user provides follow-up)
+    existingPlan?: string
   ): Promise<void> {
-    const baseUrl = this.baseUrl || 'http://localhost:5002';
+    const baseUrl = this.baseUrl || BACKEND_URL;
     const url = `${baseUrl}/api/llm/query/stream`;
     
-    const requestBody = {
+    const requestBody: Record<string, any> = {
       query,
       propertyId,
       messageHistory,
@@ -250,7 +363,10 @@ class BackendApiService {
       citationContext: citationContext || undefined, // Pass citation context to backend
       responseMode: responseMode || undefined, // NEW: Pass response mode for attachment queries
       attachmentContext: attachmentContext || undefined, // NEW: Pass extracted text from attachments
-      isAgentMode: isAgentMode ?? false // AGENT MODE: Pass to backend for tool binding
+      isAgentMode: isAgentMode ?? false, // AGENT MODE: Pass to backend for tool binding
+      model: model || 'gpt-4o-mini', // MODEL SELECTION: User-selected LLM model
+      planMode: planMode ?? false, // PLAN MODE: Generate plan before execution
+      existingPlan: existingPlan || undefined // PLAN UPDATE: Existing plan for follow-up updates
     };
     
     if (import.meta.env.DEV) {
@@ -269,6 +385,12 @@ class BackendApiService {
       });
 
       if (!response.ok) {
+        const errorText = await response.text().catch(() => response.statusText);
+        console.error('❌ backendApi: HTTP error:', {
+          status: response.status,
+          statusText: response.statusText,
+          errorText: errorText.substring(0, 500)
+        });
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
 
@@ -276,8 +398,11 @@ class BackendApiService {
       const decoder = new TextDecoder();
 
       if (!reader) {
+        console.error('❌ backendApi: Response body is not readable');
         throw new Error('Response body is not readable');
       }
+      
+      console.log('✅ backendApi: Stream reader created, starting to read...');
 
       let buffer = '';
       let accumulatedText = '';
@@ -298,9 +423,18 @@ class BackendApiService {
         
         const { done, value } = await reader.read();
         
-        if (done) break;
+        if (done) {
+          console.log('✅ backendApi: Stream finished (done=true)');
+          break;
+        }
 
-        buffer += decoder.decode(value, { stream: true });
+        const chunk = decoder.decode(value, { stream: true });
+        buffer += chunk;
+        
+        // Log first chunk for debugging
+        if (buffer.length < 200) {
+          console.log('📦 backendApi: Received chunk:', chunk.substring(0, 100));
+        }
         const lines = buffer.split('\n');
         buffer = lines.pop() || ''; // Keep incomplete line in buffer
 
@@ -344,6 +478,16 @@ class BackendApiService {
                 case 'token':
                   accumulatedText += data.token;
                   onToken(data.token);
+                  // Log first few tokens for debugging
+                  if (accumulatedText.length < 100) {
+                    console.log('📝 backendApi: Received token:', data.token.substring(0, 50));
+                  }
+                  break;
+                case 'execution_event':
+                  // NEW: Handle execution trace events
+                  if (onExecutionEvent && data.payload) {
+                    onExecutionEvent(data.payload);
+                  }
                   break;
                 case 'documents_found':
                   onStatus?.(`Found ${data.count} relevant document(s)`);
@@ -371,7 +515,40 @@ class BackendApiService {
                     });
                   }
                   break;
+                case 'thinking_chunk':
+                  // EXTENDED THINKING: Stream Claude's thinking process in real-time
+                  if (onThinkingChunk) {
+                    onThinkingChunk(data.content || '');
+                  }
+                  break;
+                case 'thinking_complete':
+                  // EXTENDED THINKING: Signal that thinking is complete
+                  if (onThinkingComplete) {
+                    onThinkingComplete(data.content || '');
+                  }
+                  break;
+                case 'plan_chunk':
+                  // PLAN MODE: Stream plan content chunk
+                  if (onPlanChunk) {
+                    onPlanChunk(data.content || '');
+                  }
+                  break;
+                case 'plan_complete':
+                  // PLAN MODE: Plan generation complete, ready for build
+                  if (onPlanComplete) {
+                    onPlanComplete(data.plan_id, data.full_plan || '', data.is_update || false);
+                  }
+                  break;
                 case 'complete':
+                  console.log('✅ backendApi: Received complete event:', {
+                    hasData: !!data.data,
+                    dataKeys: data.data ? Object.keys(data.data) : [],
+                    hasSummary: !!data.data?.summary,
+                    summaryLength: data.data?.summary?.length || 0,
+                    summaryPreview: data.data?.summary?.substring(0, 100) || 'N/A',
+                    citationsCount: data.data?.citations ? Object.keys(data.data.citations).length : 0,
+                    fullData: data.data // Include full data for debugging
+                  });
                   onComplete(data.data);
                   return;
                 case 'error':
@@ -379,7 +556,10 @@ class BackendApiService {
                   return;
               }
             } catch (e) {
-              console.warn('Failed to parse SSE data:', line, e);
+              console.warn('⚠️ backendApi: Failed to parse SSE data:', {
+                line: line.substring(0, 200),
+                error: e instanceof Error ? e.message : String(e)
+              });
             }
           }
         }
@@ -387,9 +567,121 @@ class BackendApiService {
     } catch (error) {
       // Don't call onError if it was aborted (user cancelled)
       if (error instanceof Error && error.message === 'Request aborted') {
+        console.log('ℹ️ backendApi: Request aborted by user');
         return; // Silently return on abort
       }
-      onError(error instanceof Error ? error.message : 'Unknown error');
+      
+      // Handle incomplete chunked encoding gracefully (network interruption)
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      const isNetworkError = errorMessage.includes('ERR_INCOMPLETE_CHUNKED_ENCODING') || 
+                            errorMessage.includes('Failed to fetch') ||
+                            errorMessage.includes('network error');
+      
+      if (isNetworkError) {
+        console.warn('⚠️ backendApi: Network error during streaming (connection interrupted):', errorMessage);
+        onError('Connection interrupted. Please try again.');
+      } else {
+        console.error('❌ backendApi: Error in queryDocumentsStreamFetch:', {
+          error: errorMessage,
+          stack: error instanceof Error ? error.stack : undefined
+        });
+        onError(errorMessage);
+      }
+    }
+  }
+
+  /**
+   * Build Plan - Execute a previously generated research plan
+   * Called when user clicks "Build" in the Plan Viewer
+   */
+  async buildPlan(
+    planId: string,
+    sessionId: string,
+    query: string,
+    onToken?: (token: string) => void,
+    onComplete?: (data: any) => void,
+    onError?: (error: string) => void,
+    onReasoningStep?: (step: { step: string; message: string; details: any; action_type?: string }) => void
+  ): Promise<void> {
+    const baseUrl = this.baseUrl || BACKEND_URL;
+    const url = `${baseUrl}/api/llm/build-plan`;
+    
+    const requestBody = {
+      planId,
+      sessionId,
+      query,
+      buildConfirmed: true
+    };
+    
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        credentials: 'include',
+        body: JSON.stringify(requestBody)
+      });
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      
+      if (!response.body) {
+        throw new Error('No response body');
+      }
+      
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let accumulatedText = '';
+      
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        
+        const chunk = decoder.decode(value, { stream: true });
+        buffer += chunk;
+        
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const jsonStr = line.slice(6).trim();
+              const data = JSON.parse(jsonStr);
+              
+              switch (data.type) {
+                case 'token':
+                  accumulatedText += data.token;
+                  onToken?.(data.token);
+                  break;
+                case 'reasoning_step':
+                  onReasoningStep?.({
+                    step: data.step,
+                    action_type: data.action_type || 'analysing',
+                    message: data.message,
+                    details: data.details || {}
+                  });
+                  break;
+                case 'complete':
+                  onComplete?.(data.data || { summary: accumulatedText });
+                  break;
+                case 'error':
+                  onError?.(data.message || 'Unknown error');
+                  break;
+              }
+            } catch (e) {
+              console.warn('Failed to parse SSE data:', e);
+            }
+          }
+        }
+      }
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error('❌ backendApi: Error in buildPlan:', errorMessage);
+      onError?.(errorMessage);
     }
   }
 
@@ -498,6 +790,21 @@ class BackendApiService {
     });
   }
 
+  async getProcessingQueue(): Promise<ApiResponse<any>> {
+    // Get documents currently in processing queue with their detailed history
+    return this.fetchApi<any>('/api/documents/processing-queue', {
+      method: 'GET',
+    });
+  }
+
+  async getDocuments(): Promise<ApiResponse<any>> {
+    // Fetch all documents for the business using /api/files endpoint (which wraps SupabaseDocumentService)
+    // This endpoint returns { success: true, data: [...] }
+    return this.fetchApi<any>('/api/files', {
+      method: 'GET',
+    });
+  }
+
   async getDocumentsByFolder(folderId: string): Promise<ApiResponse<any>> {
     // Fetch documents in a specific folder
     return this.fetchApi<any>(`/api/documents/folder/${folderId}`, {
@@ -579,7 +886,7 @@ class BackendApiService {
       (window as any).__preloadedDocumentCovers = {};
     }
     
-    const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
+    const backendUrl = BACKEND_URL;
     
     // Preload images and PDFs (fast)
     const preloadImageOrPdf = async (doc: any) => {
@@ -733,6 +1040,12 @@ class BackendApiService {
 
   async deletePropertyImage(propertyId: string, imageId: string): Promise<ApiResponse<any>> {
     return this.fetchApi(`/api/properties/${propertyId}/images/${imageId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async deleteProperty(propertyId: string): Promise<ApiResponse<any>> {
+    return this.fetchApi(`/api/properties/${propertyId}`, {
       method: 'DELETE',
     });
   }
@@ -1154,27 +1467,42 @@ class BackendApiService {
    * Upload file via backend proxy (fallback for CORS issues)
    * Supports progress tracking via onProgress callback
    * Used for PROPERTY CARD uploads (fast pipeline with property_id)
+   * 
+   * @param file - The file to upload
+   * @param metadata - Optional metadata including:
+   *   - property_id: Link to a property
+   *   - skip_processing: Don't queue processing task
+   *   - project_upload: Mark as project upload
+   *   - silent: Don't show global progress notification
+   * @param onProgress - Progress callback (0-100)
    */
   async uploadPropertyDocumentViaProxy(
     file: File, 
     metadata?: any,
     onProgress?: (percent: number) => void
   ) {
+    const isSilent = metadata?.silent === true;
+    
     return new Promise<{ success: boolean; data?: any; error?: string }>((resolve) => {
     try {
-      console.log(`🚀 Starting proxy upload for: ${file.name}`);
+      console.log(`🚀 Starting proxy upload for: ${file.name}${isSilent ? ' (silent)' : ''}`);
       
-      // Dispatch upload start event for progress bar
-      window.dispatchEvent(new CustomEvent('upload-start', { 
-        detail: { fileName: file.name } 
-      }));
+      // Dispatch upload start event for progress bar (unless silent)
+      if (!isSilent) {
+        window.dispatchEvent(new CustomEvent('upload-start', { 
+          detail: { fileName: file.name } 
+        }));
+      }
       
       const formData = new FormData();
       formData.append('file', file);
       
       if (metadata) {
         Object.keys(metadata).forEach(key => {
-          formData.append(key, metadata[key]);
+          // Don't pass 'silent' to the backend - it's frontend-only
+          if (key !== 'silent') {
+            formData.append(key, metadata[key]);
+          }
         });
       }
 
@@ -1197,10 +1525,12 @@ class BackendApiService {
               lastReportedProgress = percent;
               // Call progress callback immediately for real-time updates
               if (onProgress) onProgress(percent);
-              // Dispatch progress event for progress bar
-              window.dispatchEvent(new CustomEvent('upload-progress', { 
-                detail: { fileName: file.name, progress: percent } 
-              }));
+              // Dispatch progress event for progress bar (unless silent)
+              if (!isSilent) {
+                window.dispatchEvent(new CustomEvent('upload-progress', { 
+                  detail: { fileName: file.name, progress: percent } 
+                }));
+              }
             } else {
               console.log(`📊 Upload progress skipped (duplicate): ${percent}% (last: ${lastReportedProgress}%)`);
             }
@@ -1214,10 +1544,12 @@ class BackendApiService {
                 console.log(`📊 Estimated progress: ${estimatedPercent}% (${e.loaded} bytes, capped at 90%)`);
                 lastReportedProgress = estimatedPercent;
                 if (onProgress) onProgress(estimatedPercent);
-                // Dispatch progress event for progress bar
-                window.dispatchEvent(new CustomEvent('upload-progress', { 
-                  detail: { fileName: file.name, progress: estimatedPercent } 
-                }));
+                // Dispatch progress event for progress bar (unless silent)
+                if (!isSilent) {
+                  window.dispatchEvent(new CustomEvent('upload-progress', { 
+                    detail: { fileName: file.name, progress: estimatedPercent } 
+                  }));
+                }
               }
             }
           }
@@ -1238,13 +1570,15 @@ class BackendApiService {
       if (response.success) {
         console.log(`✅ Proxy upload successful: ${file.name}`);
                 console.log(`📋 Document ID: ${response.document_id}`);
-                // Dispatch upload complete event for progress bar
-                window.dispatchEvent(new CustomEvent('upload-complete', { 
-                  detail: { 
-                    fileName: file.name, 
-                    documentId: response.document_id || response.data?.document_id 
-                  } 
-                }));
+                // Dispatch upload complete event for progress bar (unless silent)
+                if (!isSilent) {
+                  window.dispatchEvent(new CustomEvent('upload-complete', { 
+                    detail: { 
+                      fileName: file.name, 
+                      documentId: response.document_id || response.data?.document_id 
+                    } 
+                  }));
+                }
                 // Backend returns {success: true, document_id: ...} directly, not wrapped in data
                 resolve({
           success: true,
@@ -1256,10 +1590,12 @@ class BackendApiService {
       } else {
         const errorMsg = response.error || 'Upload failed';
         console.error(`❌ Upload failed: ${errorMsg}`);
-        // Dispatch upload error event for progress bar
-        window.dispatchEvent(new CustomEvent('upload-error', { 
-          detail: { fileName: file.name, error: errorMsg } 
-        }));
+        // Dispatch upload error event for progress bar (unless silent)
+        if (!isSilent) {
+          window.dispatchEvent(new CustomEvent('upload-error', { 
+            detail: { fileName: file.name, error: errorMsg } 
+          }));
+        }
         resolve({
           success: false,
           error: errorMsg
@@ -1267,10 +1603,12 @@ class BackendApiService {
       }
             } catch (parseError) {
               console.error(`❌ Failed to parse response: ${parseError}`);
-              // Dispatch upload error event for progress bar
-              window.dispatchEvent(new CustomEvent('upload-error', { 
-                detail: { fileName: file.name, error: 'Failed to parse server response' } 
-              }));
+              // Dispatch upload error event for progress bar (unless silent)
+              if (!isSilent) {
+                window.dispatchEvent(new CustomEvent('upload-error', { 
+                  detail: { fileName: file.name, error: 'Failed to parse server response' } 
+                }));
+              }
               resolve({
                 success: false,
                 error: 'Failed to parse server response'
@@ -1292,10 +1630,12 @@ class BackendApiService {
               // If response isn't JSON, use status text
               errorMessage = xhr.statusText || errorMessage;
             }
-            // Dispatch upload error event for progress bar
-            window.dispatchEvent(new CustomEvent('upload-error', { 
-              detail: { fileName: file.name, error: errorMessage } 
-            }));
+            // Dispatch upload error event for progress bar (unless silent)
+            if (!isSilent) {
+              window.dispatchEvent(new CustomEvent('upload-error', { 
+                detail: { fileName: file.name, error: errorMessage } 
+              }));
+            }
             resolve({
               success: false,
               error: errorMessage
@@ -1306,10 +1646,12 @@ class BackendApiService {
         // Handle errors
         xhr.onerror = () => {
           console.error(`❌ Proxy upload failed for ${file.name}: Network error`);
-          // Dispatch upload error event for progress bar
-          window.dispatchEvent(new CustomEvent('upload-error', { 
-            detail: { fileName: file.name, error: 'Network error during upload' } 
-          }));
+          // Dispatch upload error event for progress bar (unless silent)
+          if (!isSilent) {
+            window.dispatchEvent(new CustomEvent('upload-error', { 
+              detail: { fileName: file.name, error: 'Network error during upload' } 
+            }));
+          }
           resolve({
             success: false,
             error: 'Network error during upload'
@@ -1319,10 +1661,12 @@ class BackendApiService {
         // Handle abort
         xhr.onabort = () => {
           console.log(`⚠️ Upload aborted for ${file.name}`);
-          // Dispatch upload error event for progress bar
-          window.dispatchEvent(new CustomEvent('upload-error', { 
-            detail: { fileName: file.name, error: 'Upload was aborted' } 
-          }));
+          // Dispatch upload error event for progress bar (unless silent)
+          if (!isSilent) {
+            window.dispatchEvent(new CustomEvent('upload-error', { 
+              detail: { fileName: file.name, error: 'Upload was aborted' } 
+            }));
+          }
           resolve({
             success: false,
             error: 'Upload was aborted'
@@ -1467,11 +1811,19 @@ class BackendApiService {
     email: string;
     password: string;
     firstName: string;
+    lastName?: string;
     companyName: string;
   }) {
     return this.fetchApi('/api/signup', {
       method: 'POST',
       body: JSON.stringify(userData),
+    });
+  }
+
+  async signInWithGoogle(credential: string) {
+    return this.fetchApi('/api/auth/google', {
+      method: 'POST',
+      body: JSON.stringify({ credential }),
     });
   }
 
@@ -1581,14 +1933,15 @@ class BackendApiService {
    */
   async createProperty(
     address: string,
-    coordinates: { lat: number; lng: number }
+    coordinates: { lat: number; lng: number },
+    formattedAddress?: string
   ): Promise<ApiResponse> {
     return this.fetchApi('/api/properties/create', {
       method: 'POST',
       body: JSON.stringify({
         address,
-        formatted_address: address,
-        normalized_address: address.toLowerCase(),
+        formatted_address: formattedAddress || address,
+        normalized_address: (formattedAddress || address).toLowerCase(),
         latitude: coordinates.lat,
         longitude: coordinates.lng
       })
@@ -1601,6 +1954,34 @@ class BackendApiService {
   async extractAddressFromDocument(documentId: string): Promise<ApiResponse<string>> {
     return this.fetchApi<string>(`/api/documents/${documentId}/extract-address`, {
       method: 'POST'
+    });
+  }
+
+  /**
+   * Add team member access to a property
+   */
+  async addPropertyAccess(propertyId: string, email: string, accessLevel: string = 'viewer'): Promise<ApiResponse> {
+    return this.fetchApi(`/api/properties/${propertyId}/access`, {
+      method: 'POST',
+      body: JSON.stringify({ email, access_level: accessLevel })
+    });
+  }
+
+  /**
+   * Get list of all users with access to a property
+   */
+  async getPropertyAccess(propertyId: string): Promise<ApiResponse> {
+    return this.fetchApi(`/api/properties/${propertyId}/access`, {
+      method: 'GET'
+    });
+  }
+
+  /**
+   * Remove team member access from a property
+   */
+  async removePropertyAccess(propertyId: string, accessId: string): Promise<ApiResponse> {
+    return this.fetchApi(`/api/properties/${propertyId}/access/${accessId}`, {
+      method: 'DELETE'
     });
   }
 
@@ -1683,6 +2064,68 @@ class BackendApiService {
     return this.fetchApi(`/api/documents/${documentId}/reprocess`, {
       method: 'POST',
       body: JSON.stringify({ mode })
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Projects API
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Get all projects for the current user
+   * @param status - Optional filter by status: 'active', 'negotiating', 'archived'
+   */
+  async getProjects(status?: 'active' | 'negotiating' | 'archived'): Promise<ApiResponse<{
+    projects: ProjectData[];
+    total: number;
+  }>> {
+    const params = status ? `?status=${status}` : '';
+    return this.fetchApi(`/api/projects${params}`);
+  }
+
+  /**
+   * Get a single project by ID
+   */
+  async getProject(projectId: string): Promise<ApiResponse<ProjectData>> {
+    return this.fetchApi(`/api/projects/${projectId}`);
+  }
+
+  /**
+   * Create a new project
+   */
+  async createProject(data: CreateProjectData): Promise<ApiResponse<ProjectData>> {
+    return this.fetchApi('/api/projects', {
+      method: 'POST',
+      body: JSON.stringify(data)
+    });
+  }
+
+  /**
+   * Update an existing project
+   */
+  async updateProject(projectId: string, data: Partial<CreateProjectData>): Promise<ApiResponse<ProjectData>> {
+    return this.fetchApi(`/api/projects/${projectId}`, {
+      method: 'PUT',
+      body: JSON.stringify(data)
+    });
+  }
+
+  /**
+   * Delete a project
+   */
+  async deleteProject(projectId: string): Promise<ApiResponse<{ message: string }>> {
+    return this.fetchApi(`/api/projects/${projectId}`, {
+      method: 'DELETE'
+    });
+  }
+
+  /**
+   * Add team member access to a project
+   */
+  async addProjectAccess(projectId: string, email: string, accessLevel: string = 'viewer'): Promise<ApiResponse> {
+    return this.fetchApi(`/api/projects/${projectId}/access`, {
+      method: 'POST',
+      body: JSON.stringify({ email, access_level: accessLevel })
     });
   }
 }

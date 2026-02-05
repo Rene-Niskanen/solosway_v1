@@ -437,3 +437,12 @@ button:focus-visible:not(:focus-within) {
     box-shadow: inset 0 0 180px 80px rgba(217, 119, 8, 0.2), inset 0 0 100px 40px rgba(217, 119, 8, 0.3);
   }
 }
+
+/* @ mention popover: hide scrollbar but keep scroll */
+.at-mention-popover-scroll {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.at-mention-popover-scroll::-webkit-scrollbar {
+  display: none;
+}

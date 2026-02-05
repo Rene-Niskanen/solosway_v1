@@ -3,7 +3,7 @@
 import * as React from "react";
 import { createPortal, flushSync } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import { X, Download, RotateCw, ZoomIn, ZoomOut, ChevronLeft, ChevronRight, FileText, Image as ImageIcon, Globe, Plus, RefreshCw, ChevronDown, Loader2 } from "lucide-react";
+import { X, Download, RotateCw, ZoomIn, ZoomOut, ChevronLeft, ChevronRight, FileText, Image as ImageIcon, Globe, Plus, RefreshCw, ChevronDown, Loader2, Share2, Printer, MoreVertical, Square } from "lucide-react";
 import { FileAttachmentData } from './FileAttachment';
 import { usePreview, CitationHighlight } from '../contexts/PreviewContext';
 import { backendApi } from '../services/backendApi';
@@ -30,7 +30,8 @@ interface DocumentPreviewModalProps {
   isMapVisible?: boolean;
   isSidebarCollapsed?: boolean;
   chatPanelWidth?: number; // Width of the SideChatPanel in pixels
-  sidebarWidth?: number; // Width of the sidebar in pixels
+  sidebarWidth?: number; // Width of the sidebar in pixels (includes base sidebar + filing sidebar)
+  filingSidebarWidth?: number; // Width of the FilingSidebar in pixels (for instant recalculation)
 }
 
 export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
@@ -45,7 +46,8 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
   isMapVisible = false,
   isSidebarCollapsed = false,
   chatPanelWidth = 0,
-  sidebarWidth = 56
+  sidebarWidth = 56,
+  filingSidebarWidth = 0
 }) => {
   const file = files[activeTabIndex] || null;
   const [blobUrl, setBlobUrl] = React.useState<string | null>(null);
@@ -54,6 +56,22 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
   const [currentPage, setCurrentPage] = React.useState(1);
   const [totalPages, setTotalPages] = React.useState(1);
   const prevFileIdRef = React.useRef<string | null>(null); // Track previous file ID for optimization
+  
+  // Local state for instant close - hides modal immediately before parent state updates
+  const [isLocallyHidden, setIsLocallyHidden] = React.useState(false);
+  
+  // Reset locally hidden state when modal opens
+  React.useEffect(() => {
+    if (isOpen) {
+      setIsLocallyHidden(false);
+    }
+  }, [isOpen]);
+  
+  // Instant close handler - hides immediately, then notifies parent
+  const handleInstantClose = React.useCallback(() => {
+    setIsLocallyHidden(true); // Hide immediately (local re-render returns null)
+    onClose(); // Notify parent synchronously - React batches state updates
+  }, [onClose]);
   
   // Get highlight citation and PDF cache functions from context
   const { 
@@ -212,6 +230,9 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
   const [renderedPages, setRenderedPages] = React.useState<Map<number, { canvas: HTMLCanvasElement; dimensions: { width: number; height: number }; yOffset: number }>>(new Map());
   const [pageOffsets, setPageOffsets] = React.useState<Map<number, number>>(new Map()); // page number -> y offset
   const [baseScale, setBaseScale] = React.useState<number>(1.0); // Base scale for rendering (calculated once)
+  // Track the last width used for scale calculation to detect when recalculation is needed
+  const lastScaleWidthRef = React.useRef<number>(0);
+  const [dimensionsStable, setDimensionsStable] = React.useState<boolean>(false); // Track when dimensions are stable for bbox positioning
   const pdfPagesContainerRef = React.useRef<HTMLDivElement>(null);
   
   // Reprocess document state
@@ -256,14 +277,20 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
     
     console.log('📐 Calculating initial dimensions - isMapVisible:', isMapVisible, 'isPDF:', isPDFFile, 'isDOCX:', isDOCXFile);
     
-    // All documents should open at the default map view dimensions (640px × 75vh)
-    if (isDOCXFile || isPDFFile) {
-      return { height: '75vh', width: '640px' };
-    } else if (isImageFile) {
-      // For images, use default that will be recalculated, but prevent visible shrinking
-      return { height: '85vh', width: '90vw' };
+    // For non-map view: centered modal (67.5vw × 82.5vh)
+    // For map view: use smaller dimensions
+    if (isMapVisible) {
+      // Map view: use smaller dimensions
+      if (isDOCXFile || isPDFFile) {
+        return { height: '75vh', width: '640px' };
+      } else if (isImageFile) {
+        return { height: '85vh', width: '90vw' };
+      } else {
+        return { height: '75vh', width: '640px' };
+      }
     } else {
-      return { height: '75vh', width: '640px' }; // Default to map view dimensions
+      // Non-map view: centered modal (65-70% width, 80-85% height)
+      return { height: '82.5vh', width: '67.5vw' };
     }
   }, [file?.type, file?.name, isMapVisible]);
   
@@ -371,6 +398,8 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
       setRotation(0);
       // Reset base scale when file changes so it recalculates for new document
       setBaseScale(1.0);
+      lastScaleWidthRef.current = 0; // Reset width tracking to force recalculation
+      setDimensionsStable(false); // Reset until PDF re-renders at correct scale
       // OPTIMIZATION: Don't reset page if switching to same document (faster switching)
       // Only reset if it's a different document
       const isDifferentFile = prevFileIdRef.current !== file.id;
@@ -420,6 +449,8 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
       setZoomLevel(100); // Reset zoom
       setRotation(0); // Reset rotation
       setBaseScale(1.0); // Reset base scale
+      lastScaleWidthRef.current = 0; // Reset width tracking to force recalculation
+      setDimensionsStable(false); // Reset dimensions stable flag - will be set true after PDF renders
       // OPTIMIZATION: Don't reset page if switching to same document (faster switching)
       // Only reset if it's a different document
       if (file) {
@@ -473,9 +504,11 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
   }, [showAllChunkBboxes, fileHighlight]);
 
   // Auto-scroll to highlighted page when highlight is set (for continuous scrolling PDFs)
+  // Only runs after dimensions are stable to ensure consistent positioning
   React.useEffect(() => {
-    // Only scroll if modal is open, pages are rendered, and not currently rendering
-    if (!isOpen || pdfPageRendering) return;
+    // Only scroll if modal is open, pages are rendered, not currently rendering, AND dimensions are stable
+    // dimensionsStable ensures we wait for PDF to render at correct scale before scrolling
+    if (!isOpen || pdfPageRendering || !dimensionsStable) return;
     
     if (fileHighlight && isPDF && fileHighlight.bbox.page && pdfWrapperRef.current && pageOffsets.size > 0 && renderedPages.size > 0) {
       const targetPage = fileHighlight.bbox.page;
@@ -483,58 +516,91 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
       const pageData = renderedPages.get(targetPage);
       
       if (pageOffset !== undefined && pageData && expandedBbox) {
-        // Calculate scroll position: page offset + BBOX top position on page
-        const scrollTop = pageOffset + (expandedBbox.top * pageData.dimensions.height);
+        // Calculate the vertical position of the BBOX center on the page
+        const bboxTop = expandedBbox.top * pageData.dimensions.height;
+        const bboxHeight = expandedBbox.height * pageData.dimensions.height;
+        const bboxCenterY = bboxTop + (bboxHeight / 2);
         
-        console.log('📄 Auto-scrolling to page', targetPage, 'at position', scrollTop, 'px', {
+        // Calculate the horizontal position of the BBOX center on the page
+        const bboxLeft = expandedBbox.left * pageData.dimensions.width;
+        const bboxWidth = expandedBbox.width * pageData.dimensions.width;
+        const bboxCenterX = bboxLeft + (bboxWidth / 2);
+        
+        // Calculate the absolute position of the BBOX center in the document
+        const bboxCenterAbsoluteY = pageOffset + bboxCenterY;
+        
+        console.log('📄 Auto-scrolling to page', targetPage, 'centering BBOX (dimensions stable)', {
           pageOffset,
           bboxTop: expandedBbox.top,
+          bboxLeft: expandedBbox.left,
           pageHeight: pageData.dimensions.height,
-          calculatedScrollTop: scrollTop,
+          pageWidth: pageData.dimensions.width,
+          bboxCenterY,
+          bboxCenterX,
+          bboxCenterAbsoluteY,
           isOpen,
           pagesRendered: renderedPages.size,
-          totalPages
+          totalPages,
+          dimensionsStable
         });
         
-        // Wait for DOM to update and use multiple requestAnimationFrame calls for smooth scrolling
-        // Also add a small timeout to ensure everything is ready
-        const scrollTimeout = setTimeout(() => {
-          requestAnimationFrame(() => {
-            requestAnimationFrame(() => {
-              if (pdfWrapperRef.current && isOpen) {
-                const scrollContainer = pdfWrapperRef.current;
-                const finalScrollTop = Math.max(0, scrollTop - 100); // Offset by 100px to show some context above
-                
-                // Ensure container has proper dimensions before scrolling
-                if (scrollContainer.scrollHeight > 0) {
-                  // Use smooth scroll
-                  scrollContainer.scrollTo({
-                    top: finalScrollTop,
+        // Scroll immediately using requestAnimationFrame for next paint (no artificial delays)
+        requestAnimationFrame(() => {
+          if (pdfWrapperRef.current && isOpen) {
+            const scrollContainer = pdfWrapperRef.current;
+            
+            // Get viewport dimensions
+            const viewportHeight = scrollContainer.clientHeight;
+            const viewportWidth = scrollContainer.clientWidth;
+            
+            // Calculate scroll position to center the BBOX vertically
+            const scrollTop = bboxCenterAbsoluteY - (viewportHeight / 2);
+            
+            // Calculate scroll position to center the BBOX horizontally
+            const scrollLeft = bboxCenterX - (viewportWidth / 2);
+            
+            // Ensure container has proper dimensions before scrolling
+            if (scrollContainer.scrollHeight > 0) {
+              const maxScrollTop = Math.max(0, scrollContainer.scrollHeight - viewportHeight);
+              const maxScrollLeft = Math.max(0, scrollContainer.scrollWidth - viewportWidth);
+              
+              // Use smooth scroll to center BBOX
+              scrollContainer.scrollTo({
+                top: Math.max(0, Math.min(scrollTop, maxScrollTop)),
+                left: Math.max(0, Math.min(scrollLeft, maxScrollLeft)),
+                behavior: 'smooth'
+              });
+              
+              console.log('✅ Scrolled to center BBOX:', {
+                scrollTop: Math.max(0, Math.min(scrollTop, maxScrollTop)),
+                scrollLeft: Math.max(0, Math.min(scrollLeft, maxScrollLeft)),
+                containerHeight: scrollContainer.scrollHeight,
+                containerWidth: scrollContainer.scrollWidth
+              });
+            } else {
+              // Container not ready - try again on next frame
+              requestAnimationFrame(() => {
+                if (pdfWrapperRef.current && pdfWrapperRef.current.scrollHeight > 0) {
+                  const retryViewportHeight = pdfWrapperRef.current.clientHeight;
+                  const retryViewportWidth = pdfWrapperRef.current.clientWidth;
+                  const retryScrollTop = bboxCenterAbsoluteY - (retryViewportHeight / 2);
+                  const retryScrollLeft = bboxCenterX - (retryViewportWidth / 2);
+                  const retryMaxScrollTop = Math.max(0, pdfWrapperRef.current.scrollHeight - retryViewportHeight);
+                  const retryMaxScrollLeft = Math.max(0, pdfWrapperRef.current.scrollWidth - retryViewportWidth);
+                  
+                  pdfWrapperRef.current.scrollTo({
+                    top: Math.max(0, Math.min(retryScrollTop, retryMaxScrollTop)),
+                    left: Math.max(0, Math.min(retryScrollLeft, retryMaxScrollLeft)),
                     behavior: 'smooth'
                   });
-                  
-                  console.log('✅ Scrolled to position:', finalScrollTop, 'container height:', scrollContainer.scrollHeight, 'scrollTop:', scrollContainer.scrollTop);
-                } else {
-                  console.warn('⚠️ Scroll container not ready, retrying...');
-                  // Retry after a short delay if container not ready
-                  setTimeout(() => {
-                    if (pdfWrapperRef.current && pdfWrapperRef.current.scrollHeight > 0) {
-                      pdfWrapperRef.current.scrollTo({
-                        top: finalScrollTop,
-                        behavior: 'smooth'
-                      });
-                    }
-                  }, 100);
                 }
-              }
-            });
-          });
-        }, 100); // Small delay to ensure DOM is fully updated
-        
-        return () => clearTimeout(scrollTimeout);
+              });
+            }
+          }
+        });
       }
     }
-  }, [fileHighlight, isPDF, isOpen, pageOffsets, renderedPages, expandedBbox, pdfPageRendering, totalPages]);
+  }, [fileHighlight, isPDF, isOpen, pageOffsets, renderedPages, expandedBbox, pdfPageRendering, totalPages, dimensionsStable]);
 
   // Load PDF with PDF.js for canvas-based rendering (enables precise highlight positioning)
   // OPTIMIZATION: Use cached PDF document if available to avoid reloading when switching
@@ -612,17 +678,38 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
     const renderAllPages = async () => {
       try {
         // Always render at base scale - zoom will be applied via CSS transform for smooth experience
-        // Calculate base scale to fit container width (only calculate once or when container size changes)
+        // Calculate base scale to fit container width (recalculate when width changes significantly)
         let scale = baseScale;
         
-        // If base scale hasn't been calculated yet, calculate it now
-        if (baseScale === 1.0) {
+        // Get current container width for comparison
+        let currentContainerWidth = 0;
+        if (previewAreaRef.current && previewAreaRef.current.clientWidth > 100) {
+          currentContainerWidth = previewAreaRef.current.clientWidth;
+        } else if (pdfWrapperRef.current && pdfWrapperRef.current.clientWidth > 100) {
+          currentContainerWidth = pdfWrapperRef.current.clientWidth;
+        } else if (typeof calculatedModalWidth === 'number' && calculatedModalWidth > 100) {
+          currentContainerWidth = calculatedModalWidth;
+        }
+        
+        // Recalculate scale if:
+        // - baseScale is still default (1.0) - first render
+        // - lastScaleWidthRef is 0 - hasn't been calculated yet
+        // - container width changed by more than 50px - significant resize
+        const widthChangedSignificantly = lastScaleWidthRef.current > 0 && 
+          Math.abs(currentContainerWidth - lastScaleWidthRef.current) > 50;
+        const needsScaleRecalculation = baseScale === 1.0 || lastScaleWidthRef.current === 0 || widthChangedSignificantly;
+        
+        if (needsScaleRecalculation) {
+          console.log('📐 Recalculating scale:', { 
+            reason: baseScale === 1.0 ? 'baseScale is 1.0' : 
+                    lastScaleWidthRef.current === 0 ? 'lastScaleWidth is 0' : 
+                    'width changed significantly',
+            lastWidth: lastScaleWidthRef.current,
+            currentWidth: currentContainerWidth,
+            baseScale
+          });
           try {
-            // Wait multiple frames to ensure container dimensions are fully available
-            await new Promise(resolve => requestAnimationFrame(resolve));
-            await new Promise(resolve => requestAnimationFrame(resolve));
-            await new Promise(resolve => setTimeout(resolve, 50)); // Small delay for layout
-            
+            // INSTANT calculation - no delays, use available dimensions or fallback to typical scale
             if (cancelled) return;
             
             const firstPage = await pdfDocument.getPage(1);
@@ -631,26 +718,36 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
             const naturalViewport = firstPage.getViewport({ scale: 1.0, rotation });
             const pageWidth = naturalViewport.width;
             
-            // Get container width - prefer modal width setting, then actual container width
+            // Get container width - prefer actual container dimensions, then convert viewport units
             let containerWidth = 0;
             
-            // First, try to use the modal width setting (more reliable)
-            if (typeof calculatedModalWidth === 'number' && calculatedModalWidth > 0) {
-              containerWidth = calculatedModalWidth;
-              console.log('📐 Using modal width setting:', containerWidth);
-            } else if (typeof calculatedModalWidth === 'string' && calculatedModalWidth.endsWith('px')) {
-              containerWidth = parseInt(calculatedModalWidth);
-              console.log('📐 Parsed modal width from string:', containerWidth);
+            // First, try to get actual container dimensions (most accurate)
+            if (previewAreaRef.current && previewAreaRef.current.clientWidth > 100) {
+              containerWidth = previewAreaRef.current.clientWidth;
+              console.log('📐 Using preview area width:', containerWidth);
+            } else if (pdfWrapperRef.current && pdfWrapperRef.current.clientWidth > 100) {
+              containerWidth = pdfWrapperRef.current.clientWidth;
+              console.log('📐 Using wrapper width:', containerWidth);
+            } else if (modalRef.current && modalRef.current.clientWidth > 100) {
+              containerWidth = modalRef.current.clientWidth;
+              console.log('📐 Using modal ref width:', containerWidth);
             }
             
-            // If modal width not available, try actual container width
+            // If container not ready, try to use the modal width setting
             if (containerWidth <= 0) {
-              if (previewAreaRef.current && previewAreaRef.current.clientWidth > 100) {
-                containerWidth = previewAreaRef.current.clientWidth;
-                console.log('📐 Using preview area width:', containerWidth);
-              } else if (pdfWrapperRef.current && pdfWrapperRef.current.clientWidth > 100) {
-                containerWidth = pdfWrapperRef.current.clientWidth;
-                console.log('📐 Using wrapper width:', containerWidth);
+              if (typeof calculatedModalWidth === 'number' && calculatedModalWidth > 100) {
+                containerWidth = calculatedModalWidth;
+                console.log('📐 Using modal width setting (number):', containerWidth);
+              } else if (typeof calculatedModalWidth === 'string') {
+                // Handle viewport units (vw) and pixel units (px)
+                if (calculatedModalWidth.endsWith('vw')) {
+                  const vwValue = parseFloat(calculatedModalWidth);
+                  containerWidth = Math.round((vwValue / 100) * window.innerWidth);
+                  console.log('📐 Converted vw to pixels:', calculatedModalWidth, '->', containerWidth);
+                } else if (calculatedModalWidth.endsWith('px')) {
+                  containerWidth = parseInt(calculatedModalWidth);
+                  console.log('📐 Parsed modal width from px string:', containerWidth);
+                }
               }
             }
             
@@ -672,26 +769,26 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
                 zoomLevel
               });
               
-              // Use the fit scale if it's reasonable (between 0.8 and 2.5 for better fit)
-              if (fitScale >= 0.8 && fitScale <= 2.5) {
+              // Use the fit scale if it's reasonable (between 0.5 and 2.5 for better fit)
+              // Lowered minimum from 0.8 to 0.5 to support smaller container widths
+              if (fitScale >= 0.5 && fitScale <= 2.5) {
                 scale = fitScale;
+                // Update ref BEFORE setting state to prevent race condition
+                lastScaleWidthRef.current = containerWidth;
                 setBaseScale(fitScale); // Store base scale
                 console.log('✅ Calculated and stored base scale:', fitScale.toFixed(3));
               } else {
-                // If fit scale is too small, use a minimum of 1.2 for better readability
-                // If too large, cap at 2.0
-                if (fitScale < 0.8) {
-                  // If calculated scale is too small, the container might be very wide
-                  // Use a reasonable scale based on typical PDF page width (595px for A4)
-                  // For a typical container of 800-1000px, we want around 1.3-1.5 scale
-                  const typicalPageWidth = 595; // A4 width in points
-                  const typicalContainerWidth = 900; // Typical modal width
-                  scale = (typicalContainerWidth / typicalPageWidth) * 0.95;
-                  scale = Math.max(1.2, Math.min(1.8, scale)); // Clamp to reasonable range
+                // If fit scale is too small (container very narrow), use the fitScale anyway
+                // so pages actually fit the container - clamped to minimum 0.3 for readability
+                if (fitScale < 0.5) {
+                  // For narrow containers, scale down to fit rather than using fixed scale
+                  scale = Math.max(0.3, fitScale);
+                  lastScaleWidthRef.current = containerWidth;
                   setBaseScale(scale);
-                  console.log('⚠️ Fit scale too small, using typical scale:', scale.toFixed(3));
+                  console.log('⚠️ Container narrow, using smaller scale:', scale.toFixed(3));
                 } else {
                   scale = Math.min(2.0, fitScale);
+                  lastScaleWidthRef.current = containerWidth;
                   setBaseScale(scale);
                   console.log('⚠️ Fit scale too large, clamped to:', scale.toFixed(3));
                 }
@@ -702,12 +799,14 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
               const typicalContainerWidth = 900; // Typical modal width
               scale = (typicalContainerWidth / typicalPageWidth) * 0.95;
               scale = Math.max(1.2, Math.min(1.8, scale)); // Clamp to reasonable range
+              lastScaleWidthRef.current = 0; // Mark as not properly calculated
               setBaseScale(scale);
               console.log('⚠️ Container width not available:', containerWidth, 'using typical scale:', scale.toFixed(3));
           }
           } catch (error) {
             console.warn('⚠️ Failed to calculate fit scale, using default:', error);
             scale = 1.0;
+            lastScaleWidthRef.current = 0; // Reset to indicate calculation failed
             setBaseScale(1.0);
           }
         } else {
@@ -796,8 +895,11 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
             }
           }
           
-            setPdfPageRendering(false);
-          console.log('✅ All PDF pages rendered for continuous scrolling');
+          setPdfPageRendering(false);
+          // Mark dimensions as stable - PDF is now rendered at correct scale
+          // This allows bbox auto-scroll to proceed with accurate coordinates
+          setDimensionsStable(true);
+          console.log('✅ All PDF pages rendered for continuous scrolling - dimensions stable');
         }
       } catch (error) {
         console.error('❌ Failed to render PDF pages:', error);
@@ -821,7 +923,10 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
       }
       });
     };
-  }, [pdfDocument, totalPages, rotation, isOpen, file?.id, calculatedModalWidth, baseScale, getCachedRenderedPage, setCachedRenderedPage]);
+  // Note: baseScale removed from dependencies to prevent race condition
+  // The effect re-runs on calculatedModalWidth changes, which resets baseScale to 1.0 via ResizeObserver
+  // This triggers recalculation inside the effect without causing immediate re-runs
+  }, [pdfDocument, totalPages, rotation, isOpen, file?.id, calculatedModalWidth, getCachedRenderedPage, setCachedRenderedPage, isResizing]);
 
   // Upload DOCX for Office Online Viewer
   React.useEffect(() => {
@@ -845,11 +950,19 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
   React.useEffect(() => {
     if (isDOCX && docxPublicUrl && !docxIframeSrc) {
       // Use embed.aspx with ui=2 for better width fitting
-      // Calculate zoom based on container width - typical Word doc is ~8.5" wide (816px at 96dpi)
-      // For a 800px container, we want ~50% zoom to fit width
-      // For a 1000px container, we want ~60% zoom
-      // Use wider container for DOCX files for better document rendering
-      const containerWidth = isMapVisible ? 900 : 1100;
+      // Calculate zoom based on actual container width - typical Word doc is ~8.5" wide (816px at 96dpi)
+      // Use actual modal width if available, otherwise use defaults
+      let containerWidth: number;
+      if (typeof calculatedModalWidth === 'number' && calculatedModalWidth > 100) {
+        containerWidth = calculatedModalWidth;
+      } else if (typeof calculatedModalWidth === 'string' && calculatedModalWidth.endsWith('px')) {
+        containerWidth = parseInt(calculatedModalWidth);
+      } else if (previewAreaRef.current && previewAreaRef.current.clientWidth > 100) {
+        containerWidth = previewAreaRef.current.clientWidth;
+      } else {
+        containerWidth = isMapVisible ? 900 : 1100;
+      }
+      
       const docWidth = 816; // Standard Word document width in pixels
       const calculatedZoom = Math.round((containerWidth / docWidth) * 100);
       const finalZoom = Math.max(30, Math.min(100, calculatedZoom)); // Clamp between 30% and 100%
@@ -873,7 +986,7 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
       setDocxIframeSrc(null);
       docxCurrentZoomRef.current = 50;
     }
-  }, [isDOCX, docxPublicUrl, isMapVisible]);
+  }, [isDOCX, docxPublicUrl, isMapVisible, calculatedModalWidth]);
 
   // Update DOCX iframe src when zoom level changes (only for user-initiated changes)
   React.useEffect(() => {
@@ -1013,31 +1126,15 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
         return; // Event is outside modal, let browser handle it
       }
       
-      // Only handle zoom when Ctrl/Cmd is pressed
+      // Pinch zoom is disabled - prevent zoom gestures (Ctrl/Cmd + wheel or trackpad pinch)
       const isZoomGesture = e.ctrlKey || e.metaKey;
       
       if (isZoomGesture) {
+        // Block pinch-to-zoom entirely - prevent default without applying zoom
         e.preventDefault();
         e.stopPropagation();
         e.stopImmediatePropagation();
-        
-        // Determine zoom direction based on wheel delta - use very small increments for fine control
-        const zoomDelta = e.deltaY > 0 ? -1 : 1; // Reduced to 1% for much less sensitive zooming
-        const newZoom = Math.max(10, Math.min(200, zoomLevel + zoomDelta));
-        
-        setZoomLevel(newZoom);
-        
-        // Apply zoom immediately for PDFs
-        if (isPDF && iframeRef.current && blobUrl) {
-          const pdfUrl = newZoom > 100 
-            ? `${blobUrl}#page=${currentPage}&zoom=${newZoom}`
-            : `${blobUrl}#page=${currentPage}&zoom=${newZoom}&view=Fit`;
-          if (iframeRef.current instanceof HTMLObjectElement) {
-            iframeRef.current.data = pdfUrl;
-          } else if (iframeRef.current instanceof HTMLIFrameElement) {
-            iframeRef.current.src = pdfUrl;
-          }
-        }
+        return; // Don't apply zoom, just block the gesture
       } else if (isPDF && pdfWrapperRef.current) {
         // Always use native smooth scrolling for continuous scrolling mode
         // Only prevent pure horizontal scrolls to avoid browser navigation
@@ -1082,7 +1179,7 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
 
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        onClose();
+        handleInstantClose();
       } else if (e.key === 'ArrowLeft' && file?.type === 'application/pdf') {
         setCurrentPage(prev => Math.max(1, prev - 1));
       } else if (e.key === 'ArrowRight' && file?.type === 'application/pdf') {
@@ -1098,7 +1195,7 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, onClose, file, totalPages]);
+  }, [isOpen, handleInstantClose, file, totalPages]);
 
   const handleDownload = () => {
     console.log('📥 handleDownload called:', {
@@ -1191,95 +1288,66 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
     }
   };
 
-  const handleZoomIn = () => {
-    setZoomLevel(prev => {
-      const newZoom = Math.min(200, prev + 1); // Reduced to 1% for much less sensitive zooming
-      console.log('🔍 Zoom In:', {
-        prev,
-        newZoom,
-        fileType: file?.type,
-        fileName: file?.name,
-        isPDF,
-        isImage,
-        isDOCX
-      });
-      
-      // For PDFs, update object data with new zoom
-      // Remove view parameter when zoomed to allow free panning in all directions
-      if (isPDF && iframeRef.current && blobUrl) {
-        const pdfUrl = newZoom > 100 
-          ? `${blobUrl}#page=${currentPage}&zoom=${newZoom}` // No view constraint when zoomed - allows free panning
-          : `${blobUrl}#page=${currentPage}&zoom=${newZoom}&view=Fit`; // Use Fit when at 100% or less
-        if (iframeRef.current instanceof HTMLObjectElement) {
-          iframeRef.current.data = pdfUrl;
-        } else if (iframeRef.current instanceof HTMLIFrameElement) {
-          iframeRef.current.src = pdfUrl;
-        }
-        console.log('✅ PDF zoom updated to:', newZoom + '%');
-      }
-      
-      // For images, the zoom is applied via CSS transform (scale) - no action needed here
-      // The zoomLevel state change will trigger a re-render with the new transform
-      if (isImage) {
-        console.log('✅ Image zoom updated to:', newZoom + '% (applied via CSS transform)');
-      }
-      
-      // For DOCX files, the useEffect will handle iframe src updates
-      if (isDOCX) {
-        console.log('✅ DOCX zoom updated to:', newZoom + '% (useEffect will handle iframe update)');
-      }
-      
-      return newZoom;
+  // Quick zoom handler - jumps directly to preset zoom level
+  const handleQuickZoom = (targetZoom: number) => {
+    const newZoom = Math.max(25, Math.min(200, targetZoom));
+    console.log('🔍 Quick Zoom:', {
+      targetZoom: newZoom,
+      fileType: file?.type,
+      fileName: file?.name,
+      isPDF,
+      isImage,
+      isDOCX
     });
+    
+    setZoomLevel(newZoom);
+    
+    // For PDFs, update object data with new zoom
+    // Remove view parameter when zoomed to allow free panning in all directions
+    if (isPDF && iframeRef.current && blobUrl) {
+      const pdfUrl = newZoom > 100 
+        ? `${blobUrl}#page=${currentPage}&zoom=${newZoom}` // No view constraint when zoomed - allows free panning
+        : `${blobUrl}#page=${currentPage}&zoom=${newZoom}&view=Fit`; // Use Fit when at 100% or less
+      if (iframeRef.current instanceof HTMLObjectElement) {
+        iframeRef.current.data = pdfUrl;
+      } else if (iframeRef.current instanceof HTMLIFrameElement) {
+        iframeRef.current.src = pdfUrl;
+      }
+      console.log('✅ PDF zoom updated to:', newZoom + '%');
+    }
+    
+    // For images, the zoom is applied via CSS transform (scale) - no action needed here
+    // The zoomLevel state change will trigger a re-render with the new transform
+    if (isImage) {
+      console.log('✅ Image zoom updated to:', newZoom + '% (applied via CSS transform)');
+    }
+    
+    // For DOCX files, the useEffect will handle iframe src updates
+    if (isDOCX) {
+      console.log('✅ DOCX zoom updated to:', newZoom + '% (useEffect will handle iframe update)');
+    }
+  };
+
+  const handleZoomIn = () => {
+    handleQuickZoom(zoomLevel + 10); // Increment by 10% for keyboard shortcuts
   };
 
   const handleZoomOut = () => {
-    setZoomLevel(prev => {
-      const newZoom = Math.max(10, prev - 1); // Reduced to 1% for much less sensitive zooming
-      console.log('🔍 Zoom Out:', {
-        prev,
-        newZoom,
-        fileType: file?.type,
-        fileName: file?.name,
-        isPDF,
-        isImage,
-        isDOCX
-      });
-      
-      // For PDFs, update object data with new zoom
-      // Remove view parameter when zoomed to allow free panning in all directions
-      if (isPDF && iframeRef.current && blobUrl) {
-        const pdfUrl = newZoom > 100 
-          ? `${blobUrl}#page=${currentPage}&zoom=${newZoom}` // No view constraint when zoomed - allows free panning
-          : `${blobUrl}#page=${currentPage}&zoom=${newZoom}&view=Fit`; // Use Fit when at 100% or less
-        if (iframeRef.current instanceof HTMLObjectElement) {
-          iframeRef.current.data = pdfUrl;
-        } else if (iframeRef.current instanceof HTMLIFrameElement) {
-          iframeRef.current.src = pdfUrl;
-        }
-        console.log('✅ PDF zoom updated to:', newZoom + '%');
-      }
-      
-      // For images, the zoom is applied via CSS transform (scale) - no action needed here
-      // The zoomLevel state change will trigger a re-render with the new transform
-      if (isImage) {
-        console.log('✅ Image zoom updated to:', newZoom + '% (applied via CSS transform)');
-      }
-      
-      // For DOCX files, the useEffect will handle iframe src updates
-      if (isDOCX) {
-        console.log('✅ DOCX zoom updated to:', newZoom + '% (useEffect will handle iframe update)');
-      }
-      
-      return newZoom;
-    });
+    handleQuickZoom(zoomLevel - 10); // Decrement by 10% for keyboard shortcuts
   };
 
   const handlePreviousPage = () => {
     setCurrentPage(prev => {
       const newPage = Math.max(1, prev - 1);
-      // Update object data when page changes - always use Fit view for proper sizing
-      if (isPDF && iframeRef.current && blobUrl) {
+      
+      // For continuous scrolling PDFs, scroll to the page offset
+      if (isPDF && pdfWrapperRef.current && pageOffsets.has(newPage)) {
+        const pageOffset = pageOffsets.get(newPage);
+        if (pageOffset !== undefined) {
+          pdfWrapperRef.current.scrollTop = pageOffset;
+        }
+      } else if (isPDF && iframeRef.current && blobUrl) {
+        // Fallback for non-continuous scrolling (iframe mode)
         if (iframeRef.current instanceof HTMLObjectElement) {
           iframeRef.current.data = `${blobUrl}#page=${newPage}&zoom=page-fit&view=Fit`;
         } else if (iframeRef.current instanceof HTMLIFrameElement) {
@@ -1293,8 +1361,15 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
   const handleNextPage = () => {
     setCurrentPage(prev => {
       const newPage = Math.min(totalPages, prev + 1);
-      // Update object data when page changes - always use Fit view for proper sizing
-      if (isPDF && iframeRef.current && blobUrl) {
+      
+      // For continuous scrolling PDFs, scroll to the page offset
+      if (isPDF && pdfWrapperRef.current && pageOffsets.has(newPage)) {
+        const pageOffset = pageOffsets.get(newPage);
+        if (pageOffset !== undefined) {
+          pdfWrapperRef.current.scrollTop = pageOffset;
+        }
+      } else if (isPDF && iframeRef.current && blobUrl) {
+        // Fallback for non-continuous scrolling (iframe mode)
         if (iframeRef.current instanceof HTMLObjectElement) {
           iframeRef.current.data = `${blobUrl}#page=${newPage}&zoom=page-fit&view=Fit`;
         } else if (iframeRef.current instanceof HTMLIFrameElement) {
@@ -1303,6 +1378,52 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
       }
       return newPage;
     });
+  };
+
+  // New handler functions for redesigned UI
+  const handleShare = () => {
+    console.log('📤 Share clicked');
+    // TODO: Implement share functionality
+  };
+
+  const handlePrint = () => {
+    console.log('🖨️ Print clicked');
+    if (window && blobUrl) {
+      window.print();
+    }
+  };
+
+  const handleMoreOptions = () => {
+    console.log('⋯ More options clicked');
+    // TODO: Implement more options dropdown menu
+  };
+
+  const handlePageInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = parseInt(e.target.value, 10);
+    if (!isNaN(value) && value >= 1 && value <= totalPages) {
+      setCurrentPage(value);
+      // Scroll to page for continuous scrolling PDFs
+      if (isPDF && pdfWrapperRef.current && pageOffsets.has(value)) {
+        const pageOffset = pageOffsets.get(value);
+        if (pageOffset !== undefined) {
+          pdfWrapperRef.current.scrollTop = pageOffset;
+        }
+      }
+    }
+  };
+
+  const handleFitToPage = () => {
+    console.log('📐 Fit to page clicked');
+    setZoomLevel(100);
+    // For PDFs, reset to fit view
+    if (isPDF && iframeRef.current && blobUrl) {
+      const pdfUrl = `${blobUrl}#page=${currentPage}&zoom=page-fit&view=Fit`;
+      if (iframeRef.current instanceof HTMLObjectElement) {
+        iframeRef.current.data = pdfUrl;
+      } else if (iframeRef.current instanceof HTMLIFrameElement) {
+        iframeRef.current.src = pdfUrl;
+      }
+    }
   };
 
   // Measure actual header height when modal opens
@@ -1342,6 +1463,83 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
     };
   }, [isImage, isMapVisible, blobUrl]);
 
+  // Watch ALL sidebar width changes (base sidebar, filing sidebar, chat panel) and force instant recalculation
+  // This ensures document adjusts INSTANTLY when ANY sidebar opens/closes/resizes
+  React.useEffect(() => {
+    if (!isOpen) return;
+    
+    // SYNCHRONOUS update - no requestAnimationFrame delay for instant response
+    // Directly measure and update immediately when any sidebar width changes
+    if (previewAreaRef.current) {
+      const container = previewAreaRef.current;
+      const currentWidth = container.clientWidth;
+      const currentHeight = container.clientHeight;
+      
+      // Use flushSync for INSTANT synchronous updates (bypasses React batching)
+      flushSync(() => {
+        setCalculatedModalWidth(currentWidth);
+        setCalculatedModalHeight(currentHeight);
+        
+        // Force baseScale recalculation for PDFs IMMEDIATELY
+        if (isPDF) {
+          setBaseScale(1.0);
+          lastScaleWidthRef.current = 0; // Reset width tracking to force recalculation
+          setDimensionsStable(false); // Reset until PDF re-renders
+        }
+      });
+    }
+  }, [sidebarWidth, chatPanelWidth, filingSidebarWidth, isOpen, isPDF]);
+
+  // ResizeObserver to detect modal size changes and trigger instant document recalculation
+  React.useEffect(() => {
+    if (!isOpen || !previewAreaRef.current) return;
+
+    const container = previewAreaRef.current;
+    let lastWidth = container.clientWidth;
+    let lastHeight = container.clientHeight;
+    
+    const resizeObserver = new ResizeObserver((entries) => {
+      // ResizeObserver callbacks fire synchronously during layout
+      // IMPORTANT: We must NOT call flushSync directly inside ResizeObserver - it can cause
+      // React errors ("Cannot update while rendering") and crashes/infinite loops.
+      // Instead, we defer the update with queueMicrotask which runs after the current task
+      // but before the next paint - still effectively instant for the user.
+      for (const entry of entries) {
+        const { width, height } = entry.contentRect;
+        if (width > 100 && height > 100) {
+          // Update on ANY change for instant response (no threshold - detect all changes)
+          const widthChanged = Math.abs(width - lastWidth) > 0.01; // Even more sensitive
+          const heightChanged = Math.abs(height - lastHeight) > 0.01;
+          
+          if (widthChanged || heightChanged) {
+            lastWidth = width;
+            lastHeight = height;
+            
+            // Defer the state update to avoid React errors from ResizeObserver callback
+            // queueMicrotask runs after current task but before next paint - still instant
+            queueMicrotask(() => {
+              setCalculatedModalWidth(width);
+              setCalculatedModalHeight(height);
+              
+              // Force baseScale recalculation for PDFs
+              if (isPDF) {
+                setBaseScale(1.0);
+                lastScaleWidthRef.current = 0; // Reset width tracking to force recalculation
+                setDimensionsStable(false); // Reset until PDF re-renders at new size
+              }
+            });
+          }
+        }
+      }
+    });
+
+    resizeObserver.observe(container);
+
+    return () => {
+      resizeObserver.disconnect();
+    };
+  }, [isOpen, isPDF, isDOCX, isImage]);
+
   // Track if we've already calculated dimensions to prevent infinite loops
   const dimensionsCalculatedRef = React.useRef(false);
   const lastNaturalDimsRef = React.useRef<{ width: number | null; height: number | null }>({ width: null, height: null });
@@ -1378,12 +1576,18 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
       
       // Calculate width first based on viewport constraints
       // For map view, use smaller max width (accounting for sidebar)
-      // For dashboard view, use larger max width
-      const maxWidth = isMapVisible 
-        ? Math.min(window.innerWidth * 0.4, 600) // Max 40% viewport or 600px for map view
-        : Math.min(window.innerWidth * 0.9, 1400); // Max 90% viewport or 1400px for dashboard
-      // Allow smaller minimum width - tabs will scroll if needed
-      const minWidth = isMapVisible ? 250 : 300; // Minimum width for usability
+      // For non-map view, use centered modal dimensions
+      if (!isMapVisible) {
+        // Centered modal mode - set to 67.5vw and 82.5vh
+        setCalculatedModalWidth('67.5vw');
+        setCalculatedModalHeight('82.5vh');
+        dimensionsCalculatedRef.current = true;
+        return;
+      }
+      
+      // Map view: calculate based on image dimensions
+      const maxWidth = Math.min(window.innerWidth * 0.4, 600); // Max 40% viewport or 600px for map view
+      const minWidth = 250; // Minimum width for usability
       
       // Start with natural width, but constrain it
       let calculatedWidth = imageNaturalWidth;
@@ -1426,6 +1630,15 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
     dimensionsCalculatedRef.current = false;
     lastNaturalDimsRef.current = { width: null, height: null };
   }, [file?.id]);
+
+  // Ensure centered modal dimensions for non-map view when modal opens or file changes
+  React.useEffect(() => {
+    if (!isMapVisible && isOpen) {
+      // Force centered modal dimensions for non-map view (65-70% width, 80-85% height)
+      setCalculatedModalWidth('67.5vw');
+      setCalculatedModalHeight('82.5vh');
+    }
+  }, [isMapVisible, isOpen, file?.id]);
 
   const modalHeight = calculatedModalHeight;
   // Allow smaller minimum width - tabs will scroll if needed
@@ -1519,63 +1732,68 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
         cancelAnimationFrame(rafIdRef.current);
       }
 
-      // Use requestAnimationFrame for smooth updates
-      rafIdRef.current = requestAnimationFrame(() => {
-        if (!modalRef.current || !resizeStateRef.current) return;
+      if (!modalRef.current || !resizeStateRef.current) return;
 
-        const deltaX = e.clientX - state.startPos.x;
-        const deltaY = e.clientY - state.startPos.y;
+      const deltaX = e.clientX - state.startPos.x;
+      const deltaY = e.clientY - state.startPos.y;
 
-        let newWidth = state.startSize.width;
-        let newHeight = state.startSize.height;
-        let newLeft: number | undefined;
-        let newTop: number | undefined;
+      let newWidth = state.startSize.width;
+      let newHeight = state.startSize.height;
+      let newLeft: number | undefined;
+      let newTop: number | undefined;
 
-        // Handle width changes
-        if (direction.includes('e')) {
-          newWidth = Math.min(Math.max(state.startSize.width + deltaX, minWidth), maxWidth);
+      // Handle width changes
+      if (direction.includes('e')) {
+        newWidth = Math.min(Math.max(state.startSize.width + deltaX, minWidth), maxWidth);
+      }
+      if (direction.includes('w')) {
+        newWidth = Math.min(Math.max(state.startSize.width - deltaX, minWidth), maxWidth);
+        newLeft = state.startPosition.left + (state.startSize.width - newWidth);
+      }
+      
+      // Handle height changes
+      if (direction.includes('s')) {
+        const proposedHeight = state.startSize.height + deltaY;
+        const proposedBottom = state.startPosition.top + proposedHeight;
+        if (isMapVisible && proposedBottom > maxAllowedBottom) {
+          newHeight = maxAllowedBottom - state.startPosition.top;
+        } else {
+          newHeight = Math.min(Math.max(proposedHeight, minHeight), window.innerHeight * 0.95);
         }
-        if (direction.includes('w')) {
-          newWidth = Math.min(Math.max(state.startSize.width - deltaX, minWidth), maxWidth);
-          newLeft = state.startPosition.left + (state.startSize.width - newWidth);
+      }
+      if (direction.includes('n')) {
+        const proposedHeight = state.startSize.height - deltaY;
+        const proposedBottom = state.startPosition.top + proposedHeight;
+        if (isMapVisible && proposedBottom > maxAllowedBottom) {
+          newHeight = maxAllowedBottom - state.startPosition.top;
+        } else {
+          newHeight = Math.min(Math.max(proposedHeight, minHeight), window.innerHeight * 0.95);
         }
+        newTop = state.startPosition.top + (state.startSize.height - newHeight);
+      }
+
+      // Direct DOM manipulation for immediate visual feedback (instant)
+      const modal = modalRef.current;
+      if (modal) {
+        modal.style.width = `${newWidth}px`;
+        modal.style.height = `${newHeight}px`;
         
-        // Handle height changes
-        if (direction.includes('s')) {
-          const proposedHeight = state.startSize.height + deltaY;
-          const proposedBottom = state.startPosition.top + proposedHeight;
-          if (isMapVisible && proposedBottom > maxAllowedBottom) {
-            newHeight = maxAllowedBottom - state.startPosition.top;
-          } else {
-            newHeight = Math.min(Math.max(proposedHeight, minHeight), window.innerHeight * 0.95);
-          }
+        if (isMapVisible && (newLeft !== undefined || newTop !== undefined)) {
+          if (newLeft !== undefined) modal.style.left = `${newLeft}px`;
+          if (newTop !== undefined) modal.style.top = `${newTop}px`;
         }
-        if (direction.includes('n')) {
-          const proposedHeight = state.startSize.height - deltaY;
-          const proposedBottom = state.startPosition.top + proposedHeight;
-          if (isMapVisible && proposedBottom > maxAllowedBottom) {
-            newHeight = maxAllowedBottom - state.startPosition.top;
-          } else {
-            newHeight = Math.min(Math.max(proposedHeight, minHeight), window.innerHeight * 0.95);
-          }
-          newTop = state.startPosition.top + (state.startSize.height - newHeight);
-        }
+      }
 
-        // Direct DOM manipulation for immediate visual feedback
-        const modal = modalRef.current;
-        if (modal) {
-          modal.style.width = `${newWidth}px`;
-          modal.style.height = `${newHeight}px`;
-          
-          if (isMapVisible && (newLeft !== undefined || newTop !== undefined)) {
-            if (newLeft !== undefined) modal.style.left = `${newLeft}px`;
-            if (newTop !== undefined) modal.style.top = `${newTop}px`;
-          }
-        }
-
-        // Update state (will be applied on mouseup for final values)
+      // Use flushSync for INSTANT synchronous state updates (bypasses React batching)
+      flushSync(() => {
         setCalculatedModalWidth(newWidth);
         setCalculatedModalHeight(newHeight);
+        
+        // Force immediate PDF recalculation
+        if (isPDF) {
+          setBaseScale(1.0);
+          lastScaleWidthRef.current = 0; // Reset width tracking to force recalculation
+        }
         
         if (isMapVisible && (newLeft !== undefined || newTop !== undefined)) {
           setModalPosition({
@@ -1591,6 +1809,23 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
       if (rafIdRef.current !== null) {
         cancelAnimationFrame(rafIdRef.current);
         rafIdRef.current = null;
+      }
+
+      // Flush final resize IMMEDIATELY with flushSync (instant snap - like section opening)
+      if (modalRef.current && resizeStateRef.current) {
+        const rect = modalRef.current.getBoundingClientRect();
+        // Use flushSync for instant synchronous updates (bypasses React batching)
+        flushSync(() => {
+          setCalculatedModalWidth(rect.width);
+          setCalculatedModalHeight(rect.height);
+          
+          // Force immediate document recalculation - instant like section opening
+          if (isPDF) {
+            setBaseScale(1.0); // Reset to force recalculation
+            lastScaleWidthRef.current = 0; // Reset width tracking to force recalculation
+            setDimensionsStable(false); // Reset until PDF re-renders at final size
+          }
+        });
       }
 
       setIsResizing(false);
@@ -1659,19 +1894,29 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
 
   // Use portal to render outside of parent container to avoid transform issues
   const modalContent = (
-    <AnimatePresence>
-      {isOpen && files.length > 0 && file && (
+    <AnimatePresence mode="sync">
+      {isOpen && !isLocallyHidden && files.length > 0 && file && (
         <>
-          {/* Backdrop - Only show in non-map view */}
-          {!isMapVisible && (
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              onClick={onClose}
-              className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm"
-            />
-          )}
+          {/* Backdrop - Dark Translucent Overlay - Always show for centered modal */}
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0 }}
+            onClick={handleInstantClose}
+            className="fixed inset-0 bg-black/75"
+            style={{
+              position: 'fixed',
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              width: '100vw',
+              height: '100vh',
+              backgroundColor: 'rgba(0, 0, 0, 0.75)',
+              zIndex: 40
+            }}
+          />
           
           {/* Modal Content - Centered Dialog or Top-Left for Map View */}
           <motion.div
@@ -1680,21 +1925,14 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
             initial={{ 
               opacity: 1, 
               scale: 1, 
-              x: 0,
-              y: 0,
             }}
             animate={{ 
               opacity: 1, 
               scale: 1, 
-              x: 0,
-              y: 0,
-              // Don't animate dimensions - they're controlled by style prop for instant display
             }}
             exit={{ 
               opacity: 0, 
               scale: 1, 
-              x: 0,
-              y: 0,
             }}
             transition={{ 
               duration: 0, // Instant - no animation for all properties
@@ -1702,73 +1940,35 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
             style={{
               position: 'fixed',
               ...(isResizing ? { willChange: 'width, height, left, top' } : {}),
-              ...(isMapVisible 
-                ? { 
-                    // Position to the right of the chat panel when chat is open
-                    // Chat panel is positioned at sidebarWidth, with width chatPanelWidth
-                    // Add 16px spacing between chat panel and document preview
-                    left: modalPosition?.left !== undefined 
-                      ? `${modalPosition.left}px`
-                      : (chatPanelWidth > 0 
-                          ? `${sidebarWidth + chatPanelWidth + 16}px` // Position to the right of chat panel
-                          : (isSidebarCollapsed 
-                              ? '24px' 
-                              : 'calc(max(40px, 56px) + 24px)')), // Fallback: after sidebar
-                    top: modalPosition?.top !== undefined 
-                      ? `${modalPosition.top}px`
-                      : '16px', 
-                    width: typeof modalWidth === 'number' ? `${modalWidth}px` : (typeof modalWidth === 'string' ? modalWidth : (isImage ? '450px' : (isDOCX ? '600px' : '450px'))),
-                    minWidth: isDOCX ? '550px' : '250px', // Allow resizing for DOCX in map view
-                    height: typeof modalHeight === 'number' ? `${modalHeight}px` : (typeof modalHeight === 'string' ? modalHeight : 'auto'),
-                    maxWidth: 'none', // Remove right-side limit in map view
-                    zIndex: 100,
-                    transform: 'none', // Override transform for map view
-                    // Prevent any visual transitions on dimensions
-                    transition: 'none',
-                    // Resize cursor
-                    ...(isResizing ? { cursor: resizeDirection === 'se' ? 'nwse-resize' : resizeDirection === 'sw' ? 'nesw-resize' : resizeDirection === 'ne' ? 'nesw-resize' : resizeDirection === 'nw' ? 'nwse-resize' : resizeDirection === 'e' || resizeDirection === 'w' ? 'ew-resize' : resizeDirection === 'n' || resizeDirection === 's' ? 'ns-resize' : 'default' } : {})
-                  } 
-                : { 
-                    left: '50%', 
-                    top: '50%', 
-                    width: typeof modalWidth === 'number' ? `${modalWidth}px` : (typeof modalWidth === 'string' ? modalWidth : '640px'), // Default to 640px (map view width)
-                    height: typeof modalHeight === 'number' ? `${modalHeight}px` : (typeof modalHeight === 'string' ? modalHeight : '75vh'), // Default to 75vh (map view height)
-                    maxWidth: isDOCX ? 'none' : (typeof modalWidth === 'number' ? `${modalWidth}px` : typeof modalWidth === 'string' ? modalWidth : '640px'), // Use 640px as maxWidth for all documents
-                    minWidth: isDOCX ? '640px' : '300px', // Minimum width matches default
-                    maxHeight: '75vh', // Constrain max height to 75vh
-                    boxSizing: 'border-box', // Ensure padding/borders don't expand width
-                    overflow: 'hidden', // Prevent content from expanding modal
-                    zIndex: 50,
-                    border: 'none',
-                    // Prevent any visual transitions on dimensions
-                    transition: 'none',
-                    // Transform handled by CSS class .modal-centered to override Framer Motion
-                    // Resize cursor
-                    ...(isResizing ? { cursor: resizeDirection === 'se' ? 'nwse-resize' : resizeDirection === 'sw' ? 'nesw-resize' : resizeDirection === 'ne' ? 'nesw-resize' : resizeDirection === 'nw' ? 'nwse-resize' : resizeDirection === 'e' || resizeDirection === 'w' ? 'ew-resize' : resizeDirection === 'n' || resizeDirection === 's' ? 'ns-resize' : 'default' } : {})
-                  }
-              )
+              // Always use centered positioning with overlay (not map view positioning)
+              left: '50%', 
+              top: '50%', 
+              width: typeof modalWidth === 'number' ? `${modalWidth}px` : (typeof modalWidth === 'string' ? modalWidth : '67.5vw'), // 65-70% of viewport width (using 67.5% as middle)
+              height: typeof modalHeight === 'number' ? `${modalHeight}px` : (typeof modalHeight === 'string' ? modalHeight : '82.5vh'), // 80-85% of viewport height (using 82.5% as middle)
+              // Ensure modal adjusts instantly when ANY sidebar opens (viewport shrinks)
+              // sidebarWidth already includes filing sidebar, so we use it directly
+              maxWidth: `min(70vw, calc(100vw - ${sidebarWidth + chatPanelWidth}px - 32px))`, // Account for all sidebars + chat panel + padding, but cap at 70vw
+              minWidth: isDOCX ? '640px' : '300px', // Minimum width
+              maxHeight: '85vh', // Max 85% height
+              boxSizing: 'border-box', // Ensure padding/borders don't expand width
+              overflow: 'hidden', // Prevent content from expanding modal
+              zIndex: 50,
+              border: 'none',
+              borderRadius: '16px', // Rounded corners like Prism
+              transform: 'translate(-50%, -50%)', // Center the modal - apply directly in style
+              // Prevent any visual transitions on dimensions - instant like section opening
+              transition: 'none',
+              transitionProperty: 'none',
+              transitionDuration: '0s',
+              transitionTimingFunction: 'none',
+              // Resize cursor
+              ...(isResizing ? { cursor: resizeDirection === 'se' ? 'nwse-resize' : resizeDirection === 'sw' ? 'nesw-resize' : resizeDirection === 'ne' ? 'nesw-resize' : resizeDirection === 'nw' ? 'nwse-resize' : resizeDirection === 'e' || resizeDirection === 'w' ? 'ew-resize' : resizeDirection === 'n' || resizeDirection === 's' ? 'ns-resize' : 'default' } : {})
             }}
-            className={`flex flex-col bg-white rounded-lg shadow-2xl overflow-hidden relative ${!isMapVisible ? 'modal-centered' : ''} ${isResizing ? 'select-none' : ''}`}
+            className={`flex flex-col bg-white rounded-2xl shadow-2xl overflow-hidden relative ${!isMapVisible ? 'modal-centered' : ''} ${isResizing ? 'select-none' : ''}`}
             onClick={(e) => e.stopPropagation()}
             ref={modalRef}
           >
-            {/* Close Button - Always in top right corner */}
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                onClose();
-              }}
-              className="absolute top-4 right-4 z-50 p-1.5 hover:bg-gray-100 rounded transition-colors"
-              style={{
-                position: 'absolute',
-                top: '16px',
-                right: '16px',
-                zIndex: 50,
-              }}
-              title="Close"
-            >
-              <X className="w-4 h-4 text-gray-600" />
-            </button>
+            {/* Close button is now in the header - removed from here */}
             {/* Tabs Bar */}
             {files.length > 0 && (
               <div 
@@ -2040,112 +2240,55 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
               </div>
             )}
             
-            {/* Top Bar - File Name and Controls (Browser-like) */}
-            <div ref={headerRef} className="flex items-center justify-between px-4 py-2.5 bg-white">
+            {/* Dark Header Bar - Document Name in Top Left, Action Icons on Right */}
+            <div ref={headerRef} className="flex items-center justify-between px-4 py-3 bg-gray-900 shrink-0" style={{ height: '56px' }}>
+              {/* Left Section - Document Name in Top Left Corner */}
               <div className="flex items-center gap-3 flex-1 min-w-0">
-                <h2 className="text-sm font-medium text-gray-900 truncate">
+                <button
+                  onClick={handleInstantClose}
+                  className="p-1.5 hover:bg-gray-800 rounded transition-colors flex-shrink-0"
+                  title="Close"
+                >
+                  <X className="w-4 h-4 text-white" />
+                </button>
+                {isPDF && (
+                  <FileText className="w-4 h-4 text-red-500 flex-shrink-0" />
+                )}
+                <h2 className="text-sm font-medium text-white truncate">
                   {file.name}
                 </h2>
               </div>
               
-              <div className="flex items-center gap-1.5">
-                {/* Page Navigation removed - always using continuous scrolling */}
-                
-                {/* Zoom Controls */}
-                <div className="flex items-center gap-0.5 px-1.5 py-1 bg-gray-50 rounded hover:bg-gray-100 transition-colors">
-                  <button
-                    onClick={handleZoomOut}
-                    className="p-1 hover:bg-gray-200 rounded transition-colors"
-                    title="Zoom out"
-                  >
-                    <ZoomOut className="w-4 h-4 text-gray-600" />
-                  </button>
-                  <span className="text-xs text-gray-600 font-normal px-1.5 min-w-[2.5rem] text-center">
-                    {zoomLevel}%
-                  </span>
-                  <button
-                    onClick={handleZoomIn}
-                    className="p-1 hover:bg-gray-200 rounded transition-colors"
-                    title="Zoom in"
-                  >
-                    <ZoomIn className="w-4 h-4 text-gray-600" />
-                  </button>
-                </div>
-                
-                {/* Rotate (for images) */}
-                {isImage && (
-                  <button
-                    onClick={handleRotate}
-                    className="p-1.5 hover:bg-gray-100 rounded transition-colors"
-                    title="Rotate"
-                  >
-                    <RotateCw className="w-4 h-4 text-gray-600" />
-                  </button>
-                )}
-                
-                {/* Download */}
+              {/* Right Section - Action Icons */}
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleShare}
+                  className="p-1.5 hover:bg-gray-800 rounded transition-colors"
+                  title="Share"
+                >
+                  <Share2 className="w-4 h-4 text-white" />
+                </button>
+                <button
+                  onClick={handlePrint}
+                  className="p-1.5 hover:bg-gray-800 rounded transition-colors"
+                  title="Print"
+                >
+                  <Printer className="w-4 h-4 text-white" />
+                </button>
                 <button
                   onClick={handleDownload}
-                  className="p-1.5 hover:bg-gray-100 rounded transition-colors"
+                  className="p-1.5 hover:bg-gray-800 rounded transition-colors"
                   title="Download"
                 >
-                  <Download className="w-4 h-4 text-gray-600" />
+                  <Download className="w-4 h-4 text-white" />
                 </button>
-                
-                {/* Reprocess for BBOX - Only show if file has an ID (from backend) */}
-                {file?.id && (
-                  <div className="relative">
-                    <button
-                      onClick={() => setReprocessDropdownOpen(!reprocessDropdownOpen)}
-                      className={`p-1.5 hover:bg-gray-100 rounded transition-colors flex items-center gap-0.5 ${isReprocessing ? 'opacity-50 cursor-not-allowed' : ''}`}
-                      title="Reprocess document for citation highlighting"
-                      disabled={isReprocessing}
-                    >
-                      {isReprocessing ? (
-                        <Loader2 className="w-4 h-4 text-gray-600 animate-spin" />
-                      ) : (
-                        <RefreshCw className="w-4 h-4 text-gray-600" />
-                      )}
-                      <ChevronDown className="w-3 h-3 text-gray-400" />
-                    </button>
-                    
-                    {/* Dropdown Menu */}
-                    {reprocessDropdownOpen && !isReprocessing && (
-                      <div 
-                        className="absolute right-0 top-full mt-1 w-56 bg-white rounded-lg shadow-lg border border-gray-200 py-1 z-50"
-                        onMouseLeave={() => setReprocessDropdownOpen(false)}
-                      >
-                        <button
-                          onClick={() => handleReprocess('full')}
-                          className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 flex flex-col gap-0.5"
-                        >
-                          <span className="font-medium text-gray-800">Full Reprocess</span>
-                          <span className="text-xs text-gray-500">Re-embed & extract BBOX (slower)</span>
-                        </button>
-                        <button
-                          onClick={() => handleReprocess('bbox_only')}
-                          className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 flex flex-col gap-0.5"
-                        >
-                          <span className="font-medium text-gray-800">Update BBOX Only</span>
-                          <span className="text-xs text-gray-500">Keep embeddings, add BBOX (faster)</span>
-                        </button>
-                      </div>
-                    )}
-                    
-                    {/* Result Toast */}
-                    {reprocessResult && (
-                      <div 
-                        className={`absolute right-0 top-full mt-1 px-3 py-2 rounded-lg shadow-lg text-sm whitespace-nowrap z-50 ${
-                          reprocessResult.success 
-                            ? 'bg-green-50 text-green-800 border border-green-200' 
-                            : 'bg-red-50 text-red-800 border border-red-200'
-                        }`}
-                      >
-                        {reprocessResult.message}
-                      </div>
-                    )}
-                  </div>
-                )}
+                <button
+                  onClick={handleMoreOptions}
+                  className="p-1.5 hover:bg-gray-800 rounded transition-colors"
+                  title="More options"
+                >
+                  <MoreVertical className="w-4 h-4 text-white" />
+                </button>
               </div>
             </div>
             
@@ -2153,19 +2296,25 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
             <div 
               ref={previewAreaRef}
               className={isImage ? "overflow-hidden bg-white flex items-center justify-center" : isDOCX ? "flex-1 overflow-hidden bg-white flex items-center justify-center docx-scrollbar" : "flex-1 overflow-auto bg-white"}
-              style={isImage ? { 
-                height: 'auto',
-                lineHeight: 0, // Remove any line-height spacing
-                fontSize: 0, // Remove any font-size spacing
-              } : isDOCX ? {
-                position: 'relative',
-                minHeight: 0, // Allow flex shrinking
-                // Translucent scrollbar styling
-                scrollbarWidth: 'thin',
-                scrollbarColor: 'rgba(0, 0, 0, 0.2) transparent',
-              } : {
-                padding: '0', // Infinity pool style - no outer padding, inner wrapper handles spacing
-                boxSizing: 'border-box',
+              style={{
+                ...(isImage ? { 
+                  height: 'auto',
+                  lineHeight: 0, // Remove any line-height spacing
+                  fontSize: 0, // Remove any font-size spacing
+                } : isDOCX ? {
+                  position: 'relative',
+                  minHeight: 0, // Allow flex shrinking
+                  // Translucent scrollbar styling
+                  scrollbarWidth: 'thin',
+                  scrollbarColor: 'rgba(0, 0, 0, 0.2) transparent',
+                } : {
+                  padding: '0', // Infinity pool style - no outer padding, inner wrapper handles spacing
+                  boxSizing: 'border-box',
+                }),
+                // Instant transitions - no animation like section opening
+                transition: 'none',
+                transitionProperty: 'none',
+                transitionDuration: '0s',
               }}
             >
               {blobUrl && (
@@ -2176,7 +2325,7 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
                       className="w-full h-full"
                       style={{
                         pointerEvents: 'auto',
-                        padding: '8px', // Minimal padding for infinity pool effect - keeps title fix while reducing overall padding
+                        padding: '24px', // Padding around document preview for better spacing
                         margin: '0',
                         display: 'block',
                         position: 'relative',
@@ -2199,6 +2348,10 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
                           position: 'relative',
                           transform: `scale(${zoomLevel / 100})`, // Use CSS transform scale - doesn't affect scroll position
                           transformOrigin: 'top center',
+                          transition: 'none', // Instant transform changes - no animation
+                          transitionProperty: 'none',
+                          transitionDuration: '0s',
+                          willChange: isResizing ? 'transform' : 'auto', // Optimize during resize
                         }}
                       >
                         {/* PDF.js Canvas-based rendering for continuous scrolling - always render all pages */}
@@ -2452,9 +2605,9 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
                       className="w-full h-auto object-contain"
                       style={{
                         transform: `rotate(${rotation}deg) scale(${zoomLevel / 100})`,
-                        transition: 'transform 0.2s ease',
+                        transition: rotation !== 0 ? 'transform 0.2s ease' : 'none', // Only animate rotation, not zoom (instant zoom for buttons)
                         display: 'block',
-                        padding: '2px 4px', // 2px top/bottom, 4px left/right
+                        padding: '24px', // Padding around image preview for better spacing
                         margin: '0 auto', // Center horizontally
                         verticalAlign: 'top', // Align to top to remove bottom spacing
                       }}
@@ -2480,7 +2633,7 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
                   ) : isDOCX ? (
                     isUploadingDocx ? (
                       <div className="flex flex-col items-center justify-center p-8 text-gray-500 h-full">
-                        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900 mb-4"></div>
+                        <div className="w-5 h-5 border-2 border-neutral-200 border-t-neutral-800 rounded-full animate-spin mb-4"></div>
                         <p className="text-sm">Uploading file for preview...</p>
                       </div>
                     ) : docxPublicUrl && docxIframeSrc ? (
@@ -2528,6 +2681,73 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
                   )}
                 </>
               )}
+            </div>
+            
+            {/* Dark Footer Bar - Page Navigation (Center) and Zoom Controls (Right) */}
+            <div className="flex items-center justify-between px-4 py-3 bg-gray-900 shrink-0" style={{ height: '56px' }}>
+              {/* Center Section - Page Navigation */}
+              <div className="flex items-center gap-2 absolute left-1/2 transform -translate-x-1/2">
+                <button
+                  onClick={handlePreviousPage}
+                  disabled={currentPage <= 1}
+                  className="p-1.5 hover:bg-gray-800 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="Previous page"
+                >
+                  <ChevronLeft className="w-4 h-4 text-white" />
+                </button>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-sm text-white">Page</span>
+                  <input
+                    type="number"
+                    min="1"
+                    max={totalPages}
+                    value={currentPage}
+                    onChange={handlePageInputChange}
+                    className="w-12 px-2 py-1 text-sm text-white bg-gray-800 border border-gray-700 rounded text-center focus:outline-none focus:border-gray-600"
+                    style={{ color: 'white' }}
+                  />
+                  <span className="text-sm text-white">/</span>
+                  <span className="text-sm text-white">{totalPages}</span>
+                </div>
+                <button
+                  onClick={handleNextPage}
+                  disabled={currentPage >= totalPages}
+                  className="p-1.5 hover:bg-gray-800 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="Next page"
+                >
+                  <ChevronRight className="w-4 h-4 text-white" />
+                </button>
+              </div>
+              
+              {/* Right Side - Quick Zoom Dropdown */}
+              <div className="relative ml-auto">
+                <select
+                  value={(() => {
+                    const presets = [50, 75, 100, 125, 150, 200];
+                    const closest = presets.find(p => zoomLevel === p);
+                    return closest !== undefined ? closest.toString() : 'fit';
+                  })()}
+                  onChange={(e) => {
+                    const value = e.target.value;
+                    if (value === 'fit') {
+                      handleFitToPage();
+                    } else {
+                      handleQuickZoom(parseInt(value, 10));
+                    }
+                  }}
+                  className="appearance-none pl-2.5 pr-7 py-1.5 text-xs font-medium bg-gray-800/50 text-gray-300 hover:bg-gray-800 hover:text-white rounded transition-colors cursor-pointer focus:outline-none focus:ring-1 focus:ring-gray-600 border-none"
+                  style={{ minWidth: '70px' }}
+                >
+                  <option value="50">50%</option>
+                  <option value="75">75%</option>
+                  <option value="100">100%</option>
+                  <option value="125">125%</option>
+                  <option value="150">150%</option>
+                  <option value="200">200%</option>
+                  <option value="fit">Fit</option>
+                </select>
+                <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3 h-3 text-gray-400 pointer-events-none" />
+              </div>
             </div>
             
             {/* Resize Handles - Available for all document types */}

@@ -3,11 +3,15 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Maximize2, Minimize2, TextCursorInput, ZoomIn, ZoomOut } from 'lucide-react';
+import { X, Maximize, Maximize2, Minimize2, ZoomIn, ZoomOut, ChevronDown, Download } from 'lucide-react';
 import { usePreview } from '../contexts/PreviewContext';
 import { backendApi } from '../services/backendApi';
 import { useFilingSidebar } from '../contexts/FilingSidebarContext';
+import { useChatPanel } from '../contexts/ChatPanelContext';
 import { CitationActionMenu } from './CitationActionMenu';
+import { useActiveChatState } from '../contexts/ChatStateStore';
+import type { CitationData } from '../contexts/ChatStateStore';
+import { CHAT_PANEL_WIDTH } from './SideChatPanel';
 import veloraLogo from '/Velora Logo.jpg';
 
 // PDF.js for canvas-based PDF rendering
@@ -32,6 +36,8 @@ interface StandaloneExpandedCardViewProps {
   onClose: () => void;
   chatPanelWidth?: number; // Width of the chat panel (0 when closed)
   sidebarWidth?: number; // Width of the sidebar
+  onResizeStart?: (e: React.MouseEvent) => void; // Callback when left edge drag starts
+  isResizing?: boolean; // Whether resize is in progress (for cursor styling)
 }
 
 export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProps> = ({
@@ -40,14 +46,47 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
   highlight,
   onClose,
   chatPanelWidth = 0,
-  sidebarWidth = 56
+  sidebarWidth = 56,
+  onResizeStart,
+  isResizing = false
 }) => {
+  // Local state for instant close - hides component immediately before parent state updates
+  const [isLocallyHidden, setIsLocallyHidden] = useState(false);
+  
+  // Track when resize ends to prevent accidental close on drag release
+  const lastResizeEndTimeRef = useRef<number>(0);
+  
+  // Update last resize end time when isResizing changes from true to false
+  const wasResizingRef = useRef(false);
+  useEffect(() => {
+    if (wasResizingRef.current && !isResizing) {
+      // Resize just ended - record the time
+      lastResizeEndTimeRef.current = Date.now();
+    }
+    wasResizingRef.current = isResizing;
+  }, [isResizing]);
+  
+  // Reset isLocallyHidden when docId changes (new document opened)
+  useEffect(() => {
+    setIsLocallyHidden(false);
+  }, [docId]);
+  
+  // Instant close handler - hides immediately, then notifies parent
+  const handleInstantClose = useCallback(() => {
+    setIsLocallyHidden(true); // Hide immediately (local re-render returns null)
+    onClose(); // Notify parent synchronously - React batches state updates
+  }, [onClose]);
+  
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [blobType, setBlobType] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [displayFilename, setDisplayFilename] = useState<string>(filename || 'document.pdf');
+  // Start with filename prop, but always fetch the real name from backend
+  // If the filename is a generic fallback like "document.pdf", don't use it - wait for the real name
+  const [displayFilename, setDisplayFilename] = useState<string>(
+    filename && filename !== 'document.pdf' ? filename : 'Document'
+  );
   
   // PDF.js state
   const [pdfDocument, setPdfDocument] = useState<PDFDocumentProxy | null>(null);
@@ -61,6 +100,9 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
   const renderTimeoutRef = useRef<NodeJS.Timeout | null>(null); // Timeout to debounce re-renders during zoom
   const pdfPagesContainerRef = useRef<HTMLDivElement>(null);
   const pdfWrapperRef = useRef<HTMLDivElement>(null);
+  // Refs for smooth pinch-to-zoom (direct DOM manipulation, no React state during gesture)
+  const currentZoomRef = useRef<number>(1.0); // Current zoom level during gesture
+  const isGestureActiveRef = useRef<boolean>(false); // Track if gesture is in progress
   const hasRenderedRef = useRef<boolean>(false);
   const currentDocIdRefForPdf = useRef<string | null>(null);
   const prevScaleRef = useRef<number>(1.0); // Track previous scale for scroll position preservation
@@ -80,29 +122,158 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
     return `${docId}:${b.page}:${b.left.toFixed(4)}:${b.top.toFixed(4)}:${b.width.toFixed(4)}:${b.height.toFixed(4)}`;
   }, [highlight, docId]);
   
-  const { previewFiles, getCachedPdfDocument, setCachedPdfDocument, getCachedRenderedPage, setCachedRenderedPage, isAgentOpening, setIsAgentOpening } = usePreview();
-  const { isOpen: isFilingSidebarOpen, width: filingSidebarWidth } = useFilingSidebar();
-
-  // Try to get filename from cached file data if not provided
-  useEffect(() => {
-    if (!filename || filename === 'document.pdf') {
-      // Check if we have the file in previewFiles cache
-      const cachedFile = previewFiles.find(f => f.id === docId);
-      if (cachedFile?.name) {
-        setDisplayFilename(cachedFile.name);
-        return;
+  const { previewFiles, getCachedPdfDocument, setCachedPdfDocument, getCachedRenderedPage, setCachedRenderedPage, isAgentOpening, setIsAgentOpening, openExpandedCardView } = usePreview();
+  const { isOpen: isFilingSidebarOpen, width: filingSidebarWidth, isResizing: isFilingSidebarResizing } = useFilingSidebar();
+  const { isOpen: isChatHistoryPanelOpen, width: chatHistoryPanelWidth } = useChatPanel();
+  
+  // Get active chat state to access citations
+  const activeChatState = useActiveChatState();
+  
+  // Collect and sort citations for the current document
+  const { sortedCitations, currentCitationIndex, hasMultipleCitations } = useMemo(() => {
+    if (!activeChatState || !highlight) {
+      return { sortedCitations: [], currentCitationIndex: -1, hasMultipleCitations: false };
+    }
+    
+    // Collect citations from streaming state
+    const streamingCitations = Object.values(activeChatState.streaming.citations || {});
+    
+    // Collect citations from messages
+    const messageCitations: CitationData[] = [];
+    activeChatState.messages.forEach(msg => {
+      if (msg.citations) {
+        messageCitations.push(...Object.values(msg.citations));
+      }
+    });
+    
+    // Combine all citations
+    const allCitations = [...streamingCitations, ...messageCitations];
+    
+    // Filter citations for the current document
+    const documentCitations = allCitations.filter(citation => 
+      citation.doc_id === docId || citation.doc_id === highlight.fileId
+    );
+    
+    // Remove duplicates based on bbox coordinates
+    const uniqueCitations = documentCitations.filter((citation, index, self) => 
+      index === self.findIndex(c => 
+        c.doc_id === citation.doc_id &&
+        c.bbox?.page === citation.bbox?.page &&
+        Math.abs((c.bbox?.left || 0) - (citation.bbox?.left || 0)) < 0.001 &&
+        Math.abs((c.bbox?.top || 0) - (citation.bbox?.top || 0)) < 0.001
+      )
+    );
+    
+    // Sort citations by page number, then by position (top to bottom, left to right)
+    const sorted = uniqueCitations.sort((a, b) => {
+      const pageA = a.page || a.bbox?.page || a.page_number || 0;
+      const pageB = b.page || b.bbox?.page || b.page_number || 0;
+      
+      if (pageA !== pageB) {
+        return pageA - pageB;
       }
       
-      // Check if we have it in preloaded blobs cache
-      const cachedBlob = (window as any).__preloadedDocumentBlobs?.[docId];
-      if (cachedBlob?.filename) {
-        setDisplayFilename(cachedBlob.filename);
-        return;
+      // Same page - sort by top position, then left position
+      const topA = a.bbox?.top || 0;
+      const topB = b.bbox?.top || 0;
+      if (Math.abs(topA - topB) > 0.001) {
+        return topA - topB;
       }
-    } else {
-      setDisplayFilename(filename);
+      
+      const leftA = a.bbox?.left || 0;
+      const leftB = b.bbox?.left || 0;
+      return leftA - leftB;
+    });
+    
+    // Find current citation index
+    let currentIndex = -1;
+    if (highlight && highlight.bbox) {
+      currentIndex = sorted.findIndex(citation => {
+        const citationPage = citation.page || citation.bbox?.page || citation.page_number || 0;
+        const citationTop = citation.bbox?.top || 0;
+        const citationLeft = citation.bbox?.left || 0;
+        
+        return (
+          citationPage === highlight.bbox.page &&
+          Math.abs(citationTop - highlight.bbox.top) < 0.001 &&
+          Math.abs(citationLeft - highlight.bbox.left) < 0.001
+        );
+      });
     }
-  }, [docId, filename, previewFiles]);
+    
+    // If current citation not found, try to match by page only (in case bbox coordinates differ slightly)
+    if (currentIndex === -1 && highlight && highlight.bbox) {
+      currentIndex = sorted.findIndex(citation => {
+        const citationPage = citation.page || citation.bbox?.page || citation.page_number || 0;
+        return citationPage === highlight.bbox.page;
+      });
+    }
+    
+    return {
+      sortedCitations: sorted,
+      currentCitationIndex: currentIndex >= 0 ? currentIndex : 0,
+      hasMultipleCitations: sorted.length > 1
+    };
+  }, [activeChatState, docId, highlight]);
+  
+  // Navigate to next citation
+  const handleReviewNextCitation = useCallback(() => {
+    if (!hasMultipleCitations || sortedCitations.length === 0) return;
+    
+    // Calculate next citation index (wrap around if at end)
+    const nextIndex = (currentCitationIndex + 1) % sortedCitations.length;
+    const nextCitation = sortedCitations[nextIndex];
+    
+    if (!nextCitation || !nextCitation.bbox) return;
+    
+    // Convert CitationData to CitationHighlight format
+    const pageNumber = nextCitation.page || nextCitation.bbox?.page || nextCitation.page_number || 1;
+    const highlightData = {
+      fileId: nextCitation.doc_id || docId,
+      bbox: {
+        left: nextCitation.bbox.left,
+        top: nextCitation.bbox.top,
+        width: nextCitation.bbox.width,
+        height: nextCitation.bbox.height,
+        page: pageNumber
+      },
+      doc_id: nextCitation.doc_id,
+      block_id: nextCitation.block_id,
+      block_content: nextCitation.matched_chunk_metadata?.content || '',
+      original_filename: nextCitation.original_filename || filename
+    };
+    
+    // Navigate to next citation
+    openExpandedCardView(
+      nextCitation.doc_id || docId,
+      nextCitation.original_filename || filename,
+      highlightData,
+      false // Not agent-triggered
+    );
+  }, [hasMultipleCitations, sortedCitations, currentCitationIndex, docId, filename, openExpandedCardView]);
+
+  // Fetch document metadata to get the real filename
+  useEffect(() => {
+    const fetchDocumentMetadata = async () => {
+      try {
+        const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
+        const response = await fetch(`${backendUrl}/api/documents/${docId}`, {
+          credentials: 'include'
+        });
+        
+        if (response.ok) {
+          const data = await response.json();
+          if (data.original_filename) {
+            setDisplayFilename(data.original_filename);
+          }
+        }
+      } catch (error) {
+        console.error('Failed to fetch document metadata:', error);
+      }
+    };
+    
+    fetchDocumentMetadata();
+  }, [docId]);
 
   // AGENT GLOW: Turn off glow effect when document finishes loading
   useEffect(() => {
@@ -129,7 +300,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
           setPreviewUrl(cachedBlob.url);
           setBlobType(cachedBlob.type);
           // Update filename from cache if available
-          if (cachedBlob.filename && (!displayFilename || displayFilename === 'document.pdf')) {
+          if (cachedBlob.filename && cachedBlob.filename !== 'document.pdf') {
             setDisplayFilename(cachedBlob.filename);
           }
           setLoading(false);
@@ -143,7 +314,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
           const type = cachedFileEntry.type || cachedFileEntry.file.type || 'application/pdf';
           
           // Update filename from cached file if available
-          if (cachedFileEntry.name && (!displayFilename || displayFilename === 'document.pdf')) {
+          if (cachedFileEntry.name && cachedFileEntry.name !== 'document.pdf') {
             setDisplayFilename(cachedFileEntry.name);
           }
           
@@ -182,9 +353,21 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
         const contentDisposition = response.headers.get('Content-Disposition');
         let extractedFilename = displayFilename;
         if (contentDisposition) {
-          const filenameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+          // Try to match filename=value (with optional quotes)
+          // Also handle filename*=UTF-8''encoded format
+          let filenameMatch = contentDisposition.match(/filename\*?=['"]?([^'";\n]+)['"]?/i);
+          if (!filenameMatch) {
+            // Try alternative format: filename="value"
+            filenameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+          }
           if (filenameMatch && filenameMatch[1]) {
             extractedFilename = filenameMatch[1].replace(/['"]/g, '');
+            // Decode URL-encoded filename (handles UTF-8 encoded filenames)
+            try {
+              extractedFilename = decodeURIComponent(extractedFilename);
+            } catch (e) {
+              // If decoding fails, use as-is
+            }
           }
         }
         
@@ -199,9 +382,25 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
           timestamp: Date.now()
         };
         
-        // Update display filename if we extracted a better one
-        if (extractedFilename && extractedFilename !== 'document.pdf' && (!displayFilename || displayFilename === 'document.pdf')) {
+        // Update display filename if we extracted one from Content-Disposition
+        if (extractedFilename && extractedFilename !== 'document.pdf') {
           setDisplayFilename(extractedFilename);
+        }
+        // If still no filename, fetch from metadata API
+        if (!extractedFilename || extractedFilename === 'document.pdf') {
+          try {
+            const metadataResponse = await fetch(`${backendUrl}/api/documents/${docId}`, {
+              credentials: 'include'
+            });
+            if (metadataResponse.ok) {
+              const data = await metadataResponse.json();
+              if (data.original_filename) {
+                setDisplayFilename(data.original_filename);
+              }
+            }
+          } catch (e) {
+            console.error('Failed to fetch document metadata for filename:', e);
+          }
         }
         
         setPreviewUrl(url);
@@ -280,20 +479,19 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
         return null;
       }
       
-      const availableWidth = containerWidth - 32; // Account for padding
+      const availableWidth = containerWidth - 128; // Account for padding (64px on each side)
       
-      // In fullscreen mode, use fixed 140% (1.4x) zoom as starting level
+      // In fullscreen mode, use fixed 100% (1.0x) zoom as starting level
       if (isFullscreen) {
-        return 1.4; // 140% starting zoom for fullscreen mode
+        return 1.0; // 100% starting zoom for fullscreen mode
       } else {
-        // Normal mode: use existing logic
+        // Normal mode: scale to fit available width (no cap - allow zooming beyond 100%)
         const fitScale = (availableWidth / pageWidth) * 0.98;
-        if (fitScale >= 0.3 && fitScale <= 2.5) {
+        // Only enforce a minimum scale to prevent documents from being too small
+        if (fitScale >= 0.3) {
           return fitScale;
-        } else if (fitScale < 0.3) {
-          return Math.max(0.25, fitScale);
         } else {
-          return 2.5;
+          return Math.max(0.25, fitScale);
         }
       }
     } catch (error) {
@@ -322,40 +520,41 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
     }, 1000);
   }, []);
 
+  // Quick zoom handler - jumps directly to preset zoom level (scale factor)
+  const handleQuickZoom = useCallback((targetPercentage: number) => {
+    handleZoomStart();
+    const targetScale = targetPercentage / 100; // Convert percentage to scale (e.g., 150% = 1.5)
+    const newZoom = Math.max(0.25, Math.min(3.0, targetScale));
+    setManualZoom(newZoom);
+    // Trigger re-render with new scale - PDF.js will use it in getViewport({ scale: newZoom })
+    setBaseScale(1.0); // Reset trigger to force recalculation
+    hasRenderedRef.current = false;
+    // Re-enable BBOX instantly for button clicks (not trackpad zoom)
+    if (zoomTimeoutRef.current) {
+      clearTimeout(zoomTimeoutRef.current);
+      zoomTimeoutRef.current = null;
+    }
+    setIsZooming(false);
+  }, [handleZoomStart]);
+
   // Zoom handlers - use PDF.js native zoom by directly updating scale in getViewport
   const handleZoomIn = useCallback(() => {
-    handleZoomStart();
     const currentScale = manualZoom !== null ? manualZoom : (baseScale || 1.0);
-    const increment = currentScale * 0.15; // 15% increase
-    const newZoom = Math.min(3.0, currentScale + increment);
-    setManualZoom(newZoom);
-    // Trigger re-render with new scale - PDF.js will use it in getViewport({ scale: newZoom })
-    setBaseScale(1.0); // Reset trigger to force recalculation
-    hasRenderedRef.current = false;
-    // Re-enable BBOX instantly for button clicks (not trackpad zoom)
-    if (zoomTimeoutRef.current) {
-      clearTimeout(zoomTimeoutRef.current);
-      zoomTimeoutRef.current = null;
-    }
-    setIsZooming(false);
-  }, [manualZoom, baseScale, handleZoomStart]);
+    const currentPercentage = Math.round(currentScale * 100);
+    // Find next preset level above current
+    const presets = [50, 75, 100, 125, 150, 200];
+    const nextPreset = presets.find(p => p > currentPercentage) || 200;
+    handleQuickZoom(nextPreset);
+  }, [manualZoom, baseScale, handleQuickZoom]);
 
   const handleZoomOut = useCallback(() => {
-    handleZoomStart();
     const currentScale = manualZoom !== null ? manualZoom : (baseScale || 1.0);
-    const decrement = currentScale * 0.15; // 15% decrease
-    const newZoom = Math.max(0.25, currentScale - decrement);
-    setManualZoom(newZoom);
-    // Trigger re-render with new scale - PDF.js will use it in getViewport({ scale: newZoom })
-    setBaseScale(1.0); // Reset trigger to force recalculation
-    hasRenderedRef.current = false;
-    // Re-enable BBOX instantly for button clicks (not trackpad zoom)
-    if (zoomTimeoutRef.current) {
-      clearTimeout(zoomTimeoutRef.current);
-      zoomTimeoutRef.current = null;
-    }
-    setIsZooming(false);
-  }, [manualZoom, baseScale, handleZoomStart]);
+    const currentPercentage = Math.round(currentScale * 100);
+    // Find next preset level below current
+    const presets = [50, 75, 100, 125, 150, 200];
+    const prevPreset = [...presets].reverse().find(p => p < currentPercentage) || 50;
+    handleQuickZoom(prevPreset);
+  }, [manualZoom, baseScale, handleQuickZoom]);
 
   const handleZoomReset = useCallback(() => {
     handleZoomStart();
@@ -370,14 +569,28 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
     setIsZooming(false);
   }, [handleZoomStart]);
 
-  // Trackpad/mouse wheel zoom support with improved sensitivity and smoother handling
+  // Trackpad pinch-to-zoom and mouse wheel zoom support
+  // Uses direct DOM manipulation for smooth 60fps performance (no React state during gesture)
   useEffect(() => {
-    if (!isFullscreen || !pdfWrapperRef.current) return;
+    if (!pdfWrapperRef.current) return;
 
     let rafId: number | null = null;
     let accumulatedDelta = 0;
-    let lastUpdateTime = 0;
-    let renderTimeoutId: NodeJS.Timeout | null = null;
+    let gestureRenderTimeout: NodeJS.Timeout | null = null;
+    let gestureEndTimeout: NodeJS.Timeout | null = null;
+
+    // Initialize zoom ref from current state
+    currentZoomRef.current = manualZoom !== null ? manualZoom : (baseScale || 1.0);
+
+    // Apply CSS transform directly to DOM (no React state = no re-renders = smooth 60fps)
+    const applyTransformDirectly = (scale: number) => {
+      const container = pdfPagesContainerRef.current;
+      if (container) {
+        const transformScale = scale / (baseScale || 1.0);
+        container.style.transform = `scale(${transformScale})`;
+        container.style.transformOrigin = 'top center';
+      }
+    };
 
     const applyZoomUpdate = () => {
       if (accumulatedDelta === 0) {
@@ -385,79 +598,68 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
         return;
       }
 
-      // Mark that zoom is active
-      setIsZooming(true);
-      // Clear any existing timeouts
-      if (zoomTimeoutRef.current) {
-        clearTimeout(zoomTimeoutRef.current);
-      }
-      if (renderTimeoutId) {
-        clearTimeout(renderTimeoutId);
+      // Mark gesture as active (using ref, not state)
+      if (!isGestureActiveRef.current) {
+        isGestureActiveRef.current = true;
+        setIsZooming(true); // Single state update at gesture start
       }
 
-      const currentScale = manualZoom !== null ? manualZoom : (baseScale || 1.0);
+      // Clear any existing timeouts
+      if (gestureRenderTimeout) clearTimeout(gestureRenderTimeout);
+      if (gestureEndTimeout) clearTimeout(gestureEndTimeout);
+
+      // Calculate new zoom level
+      const zoomChangePercent = accumulatedDelta * 0.0015; // Slightly increased sensitivity
+      const zoomChange = currentZoomRef.current * zoomChangePercent;
+      const newZoom = Math.max(0.25, Math.min(3.0, currentZoomRef.current + zoomChange));
+      currentZoomRef.current = newZoom;
       
-      // Use percentage-based zoom for natural feel
-      const zoomChangePercent = accumulatedDelta * 0.001; // Convert to percentage
-      const zoomChange = currentScale * zoomChangePercent;
-      const newZoom = Math.max(0.25, Math.min(3.0, currentScale + zoomChange));
+      // Apply CSS transform directly to DOM (instant, no React re-render)
+      applyTransformDirectly(newZoom);
       
-      // Update manualZoom - PDF.js will use this in getViewport({ scale: newZoom })
-      setManualZoom(newZoom);
-      setVisualScale(newZoom); // For immediate visual feedback
-      
-      // Clear accumulated delta
       accumulatedDelta = 0;
       rafId = null;
 
-      // Debounce the expensive re-render during continuous zooming for smoother performance
-      // But make it faster for more responsive feel
-      if (renderTimeoutRef.current) {
-        clearTimeout(renderTimeoutRef.current);
-      }
-      renderTimeoutRef.current = setTimeout(() => {
-        // Trigger re-render with new scale - PDF.js native zoom via getViewport({ scale })
+      // Debounce the expensive PDF re-render until gesture stops
+      gestureRenderTimeout = setTimeout(() => {
+        // Update React state and trigger high-quality re-render
+        setManualZoom(currentZoomRef.current);
+        setVisualScale(currentZoomRef.current);
         setBaseScale(1.0);
         hasRenderedRef.current = false;
-        renderTimeoutRef.current = null;
-      }, 100); // Reduced from 200ms to 100ms for more responsive zoom
+        
+        // Reset transform after re-render (pages now rendered at correct scale)
+        setTimeout(() => {
+          const container = pdfPagesContainerRef.current;
+          if (container) {
+            container.style.transform = 'none';
+          }
+        }, 50);
+      }, 250);
 
-      // Schedule re-enabling BBOX after 1 second of no zoom activity
-      zoomTimeoutRef.current = setTimeout(() => {
+      // Mark gesture as ended after inactivity
+      gestureEndTimeout = setTimeout(() => {
+        isGestureActiveRef.current = false;
         setIsZooming(false);
-        zoomTimeoutRef.current = null;
-      }, 1000);
+      }, 400);
     };
 
     const handleWheel = (e: WheelEvent) => {
-      // Only handle zoom with Cmd/Ctrl key (standard gesture)
-      // Don't auto-detect pinch gestures as it conflicts with two-finger scrolling
+      // Handle zoom with Cmd/Ctrl key OR trackpad pinch gesture
       const isModifierZoom = e.metaKey || e.ctrlKey;
       
       if (isModifierZoom) {
         e.preventDefault();
+        e.stopPropagation();
         
-        // Accumulate delta for smoother zooming
-        // Invert: scroll down (positive deltaY) = zoom out (negative change)
+        // Accumulate delta (invert: positive deltaY = zoom out)
         accumulatedDelta -= e.deltaY;
         
-        // Throttle updates to ~60fps for smooth performance
-        const now = Date.now();
-        if (now - lastUpdateTime >= 16) {
-          if (rafId === null) {
-            rafId = requestAnimationFrame(applyZoomUpdate);
-          }
-          lastUpdateTime = now;
-        } else {
-          // Schedule update if not already scheduled
-          if (rafId === null) {
-            rafId = requestAnimationFrame(() => {
-              applyZoomUpdate();
-            });
-          }
+        // Schedule update via RAF for smooth 60fps
+        if (rafId === null) {
+          rafId = requestAnimationFrame(applyZoomUpdate);
         }
       }
-      // If no modifier key, allow normal scrolling (don't prevent default)
     };
 
     const container = pdfWrapperRef.current;
@@ -465,17 +667,107 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
 
     return () => {
       container.removeEventListener('wheel', handleWheel);
-      if (rafId !== null) {
-        cancelAnimationFrame(rafId);
-      }
-      if (zoomTimeoutRef.current) {
-        clearTimeout(zoomTimeoutRef.current);
-      }
-      if (renderTimeoutId) {
-        clearTimeout(renderTimeoutId);
+      if (rafId !== null) cancelAnimationFrame(rafId);
+      if (gestureRenderTimeout) clearTimeout(gestureRenderTimeout);
+      if (gestureEndTimeout) clearTimeout(gestureEndTimeout);
+    };
+  }, [manualZoom, baseScale]);
+
+  // Touch screen pinch-to-zoom support (direct DOM manipulation for smooth performance)
+  useEffect(() => {
+    if (!pdfWrapperRef.current) return;
+
+    let initialDistance = 0;
+    let initialScale = 1.0;
+    let isPinching = false;
+    let gestureRenderTimeout: NodeJS.Timeout | null = null;
+
+    // Initialize zoom ref
+    currentZoomRef.current = manualZoom !== null ? manualZoom : (baseScale || 1.0);
+
+    const getDistance = (touch1: Touch, touch2: Touch): number => {
+      const dx = touch1.clientX - touch2.clientX;
+      const dy = touch1.clientY - touch2.clientY;
+      return Math.sqrt(dx * dx + dy * dy);
+    };
+
+    // Apply CSS transform directly to DOM
+    const applyTransformDirectly = (scale: number) => {
+      const container = pdfPagesContainerRef.current;
+      if (container) {
+        const transformScale = scale / (baseScale || 1.0);
+        container.style.transform = `scale(${transformScale})`;
+        container.style.transformOrigin = 'top center';
       }
     };
-  }, [isFullscreen, manualZoom, baseScale]);
+
+    const handleTouchStart = (e: TouchEvent) => {
+      if (e.touches.length === 2) {
+        isPinching = true;
+        isGestureActiveRef.current = true;
+        initialDistance = getDistance(e.touches[0], e.touches[1]);
+        initialScale = currentZoomRef.current;
+        setIsZooming(true); // Single state update at gesture start
+        e.preventDefault();
+      }
+    };
+
+    const handleTouchMove = (e: TouchEvent) => {
+      if (!isPinching || e.touches.length !== 2) return;
+      
+      e.preventDefault();
+      
+      const currentDistance = getDistance(e.touches[0], e.touches[1]);
+      const scaleFactor = currentDistance / initialDistance;
+      const newZoom = Math.max(0.25, Math.min(3.0, initialScale * scaleFactor));
+      currentZoomRef.current = newZoom;
+      
+      // Apply CSS transform directly (no React state = smooth 60fps)
+      applyTransformDirectly(newZoom);
+    };
+
+    const handleTouchEnd = (e: TouchEvent) => {
+      if (isPinching && e.touches.length < 2) {
+        isPinching = false;
+        
+        // Clear any pending timeout
+        if (gestureRenderTimeout) clearTimeout(gestureRenderTimeout);
+        
+        // Debounce the high-quality re-render
+        gestureRenderTimeout = setTimeout(() => {
+          // Update React state with final zoom level
+          setManualZoom(currentZoomRef.current);
+          setVisualScale(currentZoomRef.current);
+          setBaseScale(1.0);
+          hasRenderedRef.current = false;
+          
+          // Reset transform after re-render
+          setTimeout(() => {
+            const container = pdfPagesContainerRef.current;
+            if (container) {
+              container.style.transform = 'none';
+            }
+            isGestureActiveRef.current = false;
+            setIsZooming(false);
+          }, 100);
+        }, 150);
+      }
+    };
+
+    const container = pdfWrapperRef.current;
+    container.addEventListener('touchstart', handleTouchStart, { passive: false });
+    container.addEventListener('touchmove', handleTouchMove, { passive: false });
+    container.addEventListener('touchend', handleTouchEnd);
+    container.addEventListener('touchcancel', handleTouchEnd);
+
+    return () => {
+      container.removeEventListener('touchstart', handleTouchStart);
+      container.removeEventListener('touchmove', handleTouchMove);
+      container.removeEventListener('touchend', handleTouchEnd);
+      container.removeEventListener('touchcancel', handleTouchEnd);
+      if (gestureRenderTimeout) clearTimeout(gestureRenderTimeout);
+    };
+  }, [manualZoom, baseScale]);
 
   // Reset manual zoom only when exiting fullscreen (not when entering)
   // Don't reset when entering fullscreen - preserve user's zoom preference
@@ -661,12 +953,12 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
     // 2. baseScale is 1.0 (reset trigger)
     // 3. manualZoom changed (user zoomed)
     const currentScale = manualZoom !== null ? manualZoom : 
-        (isFullscreen ? 1.4 : // 140% starting zoom for fullscreen mode
+        (isFullscreen ? 1.0 : // 100% starting zoom for fullscreen mode
           (firstPageCacheRef.current && pdfWrapperRef.current ? 
             (() => {
               const pageWidth = firstPageCacheRef.current!.viewport.width;
               const containerWidth = pdfWrapperRef.current!.clientWidth;
-              const availableWidth = containerWidth - 32;
+              const availableWidth = containerWidth - 128; // Account for padding (64px on each side)
               const zoomFactor = 0.98;
               return (availableWidth / pageWidth) * zoomFactor;
             })() : 1.0));
@@ -732,20 +1024,19 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
             
             if (currentContainerWidth > 50) {
               // Calculate auto-zoom (manualZoom already checked above)
-              // In fullscreen mode, use fixed 140% (1.4x) zoom as starting level
+              // In fullscreen mode, use fixed 100% (1.0x) zoom as starting level
               if (isFullscreen) {
-                scale = 1.4; // 140% starting zoom for fullscreen mode
+                scale = 1.0; // 100% starting zoom for fullscreen mode
               } else {
-                const availableWidth = currentContainerWidth - 32;
+                const availableWidth = currentContainerWidth - 128; // Account for padding (64px on each side)
                 const zoomFactor = 0.98;
                 const fitScale = (availableWidth / pageWidth) * zoomFactor;
                 
-                if (fitScale >= 0.3 && fitScale <= 2.5) {
+                // Only enforce a minimum scale to prevent documents from being too small
+                if (fitScale >= 0.3) {
                   scale = fitScale;
-                } else if (fitScale < 0.3) {
-                  scale = Math.max(0.25, fitScale);
                 } else {
-                  scale = 2.5;
+                  scale = Math.max(0.25, fitScale);
                 }
               }
             } else {
@@ -764,16 +1055,17 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
           scale = baseScale;
         }
         
-        // Render all pages - update state only once after all pages are ready (prevents glitchy updates)
+        // OPTIMIZATION: Render citation/highlight page FIRST for instant display
+        // Then render remaining pages in background
         const newRenderedPages = new Map<number, { canvas: HTMLCanvasElement; dimensions: { width: number; height: number } }>();
+        const highlightPage = highlight?.bbox?.page || 1;
         
-        for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
-          if (cancelled) break;
-          
+        // Helper function to render a single page
+        const renderPage = async (pageNum: number): Promise<{ canvas: HTMLCanvasElement; dimensions: { width: number; height: number } } | null> => {
           try {
             const cachedImageData = getCachedRenderedPage?.(docId, pageNum);
             const page = await pdfDocument.getPage(pageNum);
-            if (cancelled) break;
+            if (cancelled) return null;
             
             const viewport = page.getViewport({ scale });
             const canvas = document.createElement('canvas');
@@ -781,7 +1073,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
             canvas.height = viewport.height;
             const context = canvas.getContext('2d');
             
-            if (!context) continue;
+            if (!context) return null;
             
             if (cachedImageData && scale === 1.0) {
               context.putImageData(cachedImageData, 0, 0);
@@ -797,18 +1089,45 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
               }
             }
             
-            newRenderedPages.set(pageNum, {
+            return {
               canvas,
               dimensions: { width: viewport.width, height: viewport.height }
-            });
+            };
           } catch (error) {
             console.error(`Failed to render page ${pageNum}:`, error);
+            return null;
+          }
+        };
+        
+        // STEP 1: Render highlight page FIRST and display immediately
+        // Scroll positioning is handled by useLayoutEffect (runs before paint)
+        if (highlightPage >= 1 && highlightPage <= totalPages) {
+          const highlightPageData = await renderPage(highlightPage);
+          if (cancelled) return;
+          
+          if (highlightPageData) {
+            newRenderedPages.set(highlightPage, highlightPageData);
+            // Show highlight page immediately - useLayoutEffect will position scroll before paint
+            setRenderedPages(new Map(newRenderedPages));
           }
         }
         
-        // Update state only once after all pages are rendered (prevents glitchy progressive updates)
+        // STEP 2: Render remaining pages in background
+        for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
+          if (cancelled) break;
+          if (pageNum === highlightPage) continue; // Already rendered
+          
+          const pageData = await renderPage(pageNum);
+          if (cancelled) break;
+          
+          if (pageData) {
+            newRenderedPages.set(pageNum, pageData);
+          }
+        }
+        
+        // STEP 3: Final update with all pages
         if (!cancelled) {
-          setRenderedPages(newRenderedPages);
+          setRenderedPages(new Map(newRenderedPages));
           hasRenderedRef.current = true;
           currentDocIdRefForPdf.current = docId;
           prevContainerWidthRef.current = pdfWrapperRef.current?.clientWidth || containerWidth || 0;
@@ -858,22 +1177,37 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
   }, [pdfDocument, docId, totalPages, baseScale, containerWidth, getCachedRenderedPage, setCachedRenderedPage, getHighlightKey, manualZoom, isFullscreen]);
 
 
-  // Auto-scroll to highlight - center BBOX vertically in viewport
-  const didAutoScrollToHighlightRef = useRef<string | null>(null);
+  // Reset scroll tracking when document changes
   useEffect(() => {
+    didAutoScrollToHighlightRef.current = null;
+  }, [docId]);
+
+  // Auto-scroll to highlight when pages before it are added - position BBOX at ~35% from top
+  // Uses useLayoutEffect to run BEFORE browser paint, preventing visible twitch when pages are added
+  const didAutoScrollToHighlightRef = useRef<string | null>(null);
+  React.useLayoutEffect(() => {
     if (highlight && highlight.fileId === docId && highlight.bbox && renderedPages.size > 0 && pdfWrapperRef.current) {
       const pageNum = highlight.bbox.page;
       const pageData = renderedPages.get(pageNum);
       
       if (pageData) {
-        const key = getHighlightKey() || `${docId}:${pageNum}`;
+        // Include page count in key so we re-scroll when pages before highlight are added
+        // This ensures proper positioning after progressive page loading
+        const pagesBeforeHighlight = Array.from(renderedPages.keys()).filter(n => n < pageNum).length;
+        const baseKey = getHighlightKey() || `${docId}:${pageNum}`;
+        const key = `${baseKey}:${pagesBeforeHighlight}`;
         if (didAutoScrollToHighlightRef.current === key) return; // prevent repeated jittery scrolls
         const expandedBbox = highlight.bbox;
         
         // Calculate the vertical position of the BBOX center on the page
         const bboxTop = expandedBbox.top * pageData.dimensions.height;
         const bboxHeight = expandedBbox.height * pageData.dimensions.height;
-        const bboxCenter = bboxTop + (bboxHeight / 2);
+        const bboxCenterY = bboxTop + (bboxHeight / 2);
+        
+        // Calculate the horizontal position of the BBOX center on the page
+        const bboxLeft = expandedBbox.left * pageData.dimensions.width;
+        const bboxWidth = expandedBbox.width * pageData.dimensions.width;
+        const bboxCenterX = bboxLeft + (bboxWidth / 2);
         
         // Calculate the offset from the top of the document to the target page
         const pageOffset = Array.from(renderedPages.entries())
@@ -881,24 +1215,27 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
           .reduce((sum, [, data]) => sum + data.dimensions.height + 16, 0); // +16 for margin-bottom
         
         // Calculate the absolute position of the BBOX center in the document
-        const bboxCenterAbsolute = pageOffset + bboxCenter;
+        const bboxCenterAbsoluteY = pageOffset + bboxCenterY;
         
-        // Get viewport height
+        // Get viewport dimensions
         const viewportHeight = pdfWrapperRef.current.clientHeight;
+        const viewportWidth = pdfWrapperRef.current.clientWidth;
         
-        // Calculate scroll position to center the BBOX vertically
-        // Scroll position = BBOX center - (viewport height / 2)
-        const scrollTop = bboxCenterAbsolute - (viewportHeight / 2);
+        // Position BBOX at 35% from top (65% up the page) instead of center
+        // This keeps more context visible below the citation
+        const scrollTop = bboxCenterAbsoluteY - (viewportHeight * 0.35);
         
-        // Make the FIRST citation jump deterministic and non-jittery:
-        // - no timeout
-        // - no smooth animation (animation combined with re-render/scale can feel like "fighting")
-        requestAnimationFrame(() => {
-          if (pdfWrapperRef.current) {
-            const maxScroll = Math.max(0, pdfWrapperRef.current.scrollHeight - pdfWrapperRef.current.clientHeight);
-            pdfWrapperRef.current.scrollTop = Math.max(0, Math.min(scrollTop, maxScroll));
-          }
-        });
+        // Center horizontally
+        const scrollLeft = bboxCenterX - (viewportWidth / 2);
+        
+        // SYNCHRONOUS scroll adjustment - no RAF needed since useLayoutEffect runs before paint
+        // This prevents the visible "twitch" when pages are added before the highlight
+        const maxScrollTop = Math.max(0, pdfWrapperRef.current.scrollHeight - pdfWrapperRef.current.clientHeight);
+        const maxScrollLeft = Math.max(0, pdfWrapperRef.current.scrollWidth - pdfWrapperRef.current.clientWidth);
+        
+        pdfWrapperRef.current.scrollTop = Math.max(0, Math.min(scrollTop, maxScrollTop));
+        pdfWrapperRef.current.scrollLeft = Math.max(0, Math.min(scrollLeft, maxScrollLeft));
+        
         didAutoScrollToHighlightRef.current = key;
       }
     }
@@ -910,48 +1247,82 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
 
   const isChatPanelOpen = chatPanelWidth > 0;
   
-  // Calculate the actual left position for the document preview
-  // This must match the logic in MainContent.tsx for SideChatPanel's sidebarWidth calculation
-  // When chat panel is open: chatPanelWidth is the width, chat panel's left = calculated sidebarWidth (includes filing sidebar)
-  // So document preview left = chatPanelLeft + chatPanelWidth + gap
-  // When chat panel is closed: position after sidebar (which may include filing sidebar) + gap
-  // Memoized to prevent recalculation on every render
-  const calculateLeftPosition = useCallback(() => {
-    const toggleRailWidth = 12;
-    
-    // Calculate the actual sidebar width (base + filing sidebar if open)
-    // This matches the logic in MainContent.tsx (lines 3575-3599)
-    let actualSidebarWidth = sidebarWidth; // Base sidebar width
-    
-    if (isFilingSidebarOpen) {
-      if (sidebarWidth <= 8) {
-        // Collapsed sidebar: FilingSidebar starts at 12px, ends at 12px + filingSidebarWidth
-        actualSidebarWidth = 12 + filingSidebarWidth;
-      } else {
-        // Not collapsed: FilingSidebar starts at sidebarWidth + 12px, ends at sidebarWidth + 12px + filingSidebarWidth
-        actualSidebarWidth = sidebarWidth + toggleRailWidth + filingSidebarWidth;
-      }
-    }
-    
-    if (isChatPanelOpen) {
-      // Document preview starts immediately after chat panel ends (no gap)
-      // Chat panel's left = actualSidebarWidth, its right = actualSidebarWidth + chatPanelWidth
-      return actualSidebarWidth + chatPanelWidth;
-    } else {
-      // Chat panel closed - position immediately after sidebar (which may include filing sidebar)
-      return actualSidebarWidth;
-    }
-  }, [sidebarWidth, isFilingSidebarOpen, filingSidebarWidth, isChatPanelOpen, chatPanelWidth]);
+  // Track previous chatPanelWidth to detect when resizing is happening
+  const prevChatPanelWidthRef = useRef<number>(chatPanelWidth);
+  const [isChatPanelResizing, setIsChatPanelResizing] = useState<boolean>(false);
   
-  // Memoize the left position to prevent jitter
-  const leftPosition = useMemo(() => calculateLeftPosition(), [calculateLeftPosition]);
+  // Detect when chat panel is being resized (width is changing)
+  useEffect(() => {
+    if (prevChatPanelWidthRef.current !== chatPanelWidth && isChatPanelOpen) {
+      setIsChatPanelResizing(true);
+      // Reset after resize completes (typically fast, but allow some buffer)
+      const timeout = setTimeout(() => {
+        setIsChatPanelResizing(false);
+      }, 150);
+      prevChatPanelWidthRef.current = chatPanelWidth;
+      return () => clearTimeout(timeout);
+    } else {
+      prevChatPanelWidthRef.current = chatPanelWidth;
+    }
+  }, [chatPanelWidth, isChatPanelOpen]);
+  
+  // Calculate the width and right position for the document preview
+  // Always anchor the right edge to the screen's right edge (accounting for agent sidebar)
+  // When chat panel resizes, the document preview width adjusts automatically
+  const agentSidebarWidth = isChatHistoryPanelOpen ? chatHistoryPanelWidth : 0;
+  const availableWidth = typeof window !== 'undefined' ? window.innerWidth - sidebarWidth - agentSidebarWidth : 0;
+  
+  const { panelWidth, leftPosition } = (() => {
+    // Minimum width for document preview
+    const minDocPreviewWidth = CHAT_PANEL_WIDTH.DOC_PREVIEW_MIN;
+    // Round chatPanelWidth for consistent positioning
+    const roundedChatPanelWidth = Math.round(chatPanelWidth);
+    const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1920;
+    
+    // CORRECT LAYOUT: Sidebar (far left) | Chat Panel (left) | Document Preview (RIGHT)
+    // Document preview is positioned AFTER sidebar AND chat panel
+    // Natural left position = sidebarWidth + chatPanelWidth + gap
+    const naturalDocLeft = sidebarWidth + roundedChatPanelWidth + 12;
+    
+    // Cap left position to ensure document preview stays on screen with minimum width
+    // maxLeft + minDocWidth + rightGap = viewport - agentSidebar
+    const maxDocLeft = viewportWidth - agentSidebarWidth - 12 - minDocPreviewWidth;
+    const docLeft = Math.min(naturalDocLeft, maxDocLeft);
+    
+    // Calculate available width for document preview based on capped left position
+    const availableWidth = viewportWidth - docLeft - agentSidebarWidth - 12;
+    
+    // Enforce minimum width for document preview
+    const finalWidth = Math.max(availableWidth, minDocPreviewWidth);
+    
+    return {
+      panelWidth: Math.round(finalWidth),
+      leftPosition: docLeft
+    };
+  })();
+  
+  // Calculate if there's enough space for the Velora logo without overlapping buttons
+  // Left buttons: Close (~60px) + Fullscreen (~100px) + gap (8px) + padding (24px) = ~192px
+  // Right buttons (fullscreen): Zoom controls (~180px) + padding (16px) = ~196px
+  // Right buttons (normal): Spacer (96px) + padding (16px) = ~112px
+  // Logo width: ~80px (logo image at h-6)
+  // Minimum space needed: max(left + right + logo, 550px) to ensure no overlap
+  const leftButtonsWidth = 192; // Approximate width of left buttons + padding
+  const rightButtonsWidth = isFullscreen ? 196 : 112; // Zoom controls in fullscreen, spacer otherwise
+  const referenceAgentTextWidth = 80; // Approximate width of Velora logo
+  const minSpacing = 16; // Minimum spacing on each side to prevent touching
+  const minRequiredWidth = leftButtonsWidth + rightButtonsWidth + referenceAgentTextWidth + (minSpacing * 2);
+  const shouldHideReferenceAgent = panelWidth < minRequiredWidth;
 
   const content = (
     <motion.div
+      data-document-preview="true"
+      data-sidebar-width={sidebarWidth}
+      data-agent-sidebar-width={agentSidebarWidth}
       initial={{ opacity: 0, scale: 0.98 }}
       animate={{ opacity: 1, scale: 1 }}
       exit={{ opacity: 0 }}
-      transition={{ duration: isFullscreen ? 0 : 0.1 }} // Instant close when in fullscreen mode, faster for split view
+      transition={{ duration: 0 }} // Instant close for responsive feel
       className={isFullscreen ? "fixed inset-0 bg-white flex flex-col z-[10000]" : "bg-white flex flex-col z-[9999]"}
       style={{
         ...(isFullscreen ? {
@@ -964,31 +1335,68 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
           height: '100vh'
         } : {
           position: 'fixed',
-          // Position alongside chat panel with no gaps
-          // Calculates correct position accounting for filing sidebar
-          left: `${leftPosition}px`,
-          right: '0px', // No gap from right edge - this automatically calculates width
-          top: '0px', // No gap from top
-          bottom: '0px', // No gap from bottom - this automatically calculates height
-          borderRadius: '0px', // No border radius when edge-to-edge
-          // Remove the heavy shadow in split-view (it reads like a shadow on the chat edge).
-          // Use a subtle divider instead.
-          boxShadow: 'none',
-          borderLeft: '1px solid rgba(226, 232, 240, 0.9)',
+          // Use explicit left + width positioning (not right) to guarantee minimum width
+          // When resizing, DON'T apply React's values - let DOM manipulation control position
+          // This prevents "pop out" caused by React overwriting with stale values
+          ...(isResizing ? {} : {
+            left: `${leftPosition}px`,
+            width: `${panelWidth}px`,
+          }),
+          // Top and bottom margins for rounded corner effect
+          top: '12px',
+          bottom: '12px',
+          // Enforce minimum width as CSS fallback
+          minWidth: `${CHAT_PANEL_WIDTH.DOC_PREVIEW_MIN}px`,
+          maxWidth: `calc(100vw - ${sidebarWidth + agentSidebarWidth + 24}px)`, // Never exceed available space
+          overflow: 'hidden', // Contain content within rounded corners
+          margin: 0, // Explicitly remove any margins
+          padding: 0, // Explicitly remove any padding
+          borderRadius: '16px', // All corners rounded like Prism
+          boxShadow: '0 8px 32px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.08)',
+          border: '1px solid rgba(226, 232, 240, 0.6)',
           display: 'flex',
           flexDirection: 'column',
           pointerEvents: 'auto',
-          // No transition for left positioning - updates instantly when chatPanelWidth or filing sidebar changes
+          // No transition for instant positioning - prevents gaps
           transition: 'none',
-          boxSizing: 'border-box' // Ensure padding/borders are included in width/height
+          transitionProperty: 'none',
+          boxSizing: 'border-box',
+          // Ensure no gaps by using exact positioning
+          transform: 'translateZ(0)', // Force hardware acceleration
+          willChange: isFilingSidebarResizing ? 'width, left' : 'auto', // Optimize during resize
+          // Show resize cursor on entire container when actively resizing
+          ...(isResizing && { cursor: 'ew-resize' })
         })
       }}
       onClick={(e) => {
+        // Don't close if we're resizing or just finished resizing (prevents accidental close on drag release)
+        if (isResizing) return;
+        // Don't close if resize ended within the last 200ms (click event from drag release)
+        if (Date.now() - lastResizeEndTimeRef.current < 200) return;
         if (e.target === e.currentTarget) {
-          onClose();
+          handleInstantClose();
         }
       }}
     >
+      {/* Left edge resize handle - drag to resize chat panel */}
+      {/* Only show when onResizeStart is provided (side-by-side mode with chat) */}
+      {onResizeStart && !isFullscreen && (
+        <div
+          onMouseDown={onResizeStart}
+          style={{
+            position: 'absolute',
+            left: -6, // Extend slightly outside for easier grabbing
+            top: 0,
+            bottom: 0,
+            width: '12px', // Wide grab area
+            cursor: 'ew-resize',
+            zIndex: 10001, // Above all content
+            backgroundColor: 'transparent',
+            pointerEvents: 'auto',
+          }}
+        />
+      )}
+      
       {/* Agent Glow Border Effect - Pulsing gradient when agent opens document */}
       {isAgentOpening && (
         <div 
@@ -998,7 +1406,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
             inset: 0,
             pointerEvents: 'none',
             zIndex: 10000,
-            borderRadius: isFullscreen ? 0 : 0,
+            borderRadius: isFullscreen ? 0 : '16px', // Match container - all corners rounded
             overflow: 'hidden',
           }}
         >
@@ -1094,96 +1502,193 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
       )}
 
       {/* Header */}
-      <div className="pr-4 pl-6 border-b border-gray-100 flex items-center justify-between bg-white shrink-0 relative" style={{ minHeight: '56px', paddingTop: '16px', paddingBottom: '16px' }}>
-        <div className="flex items-center gap-2" style={{ marginTop: '2px' }}>
-          <motion.button
-            onClick={onClose}
-            whileHover={{ scale: 1.01 }}
-            whileTap={{ scale: 0.99 }}
-            className="flex items-center space-x-1.5 px-2 py-1 border border-slate-200/60 hover:border-slate-300/80 bg-white/70 hover:bg-slate-50/80 rounded-md transition-all duration-200 group"
-            title="Close"
+      <div className="pr-4 pl-6 shrink-0" style={{ 
+        backgroundColor: 'white',
+        border: '4px solid white',
+        paddingTop: '15px',
+        paddingBottom: '19px',
+        borderTopLeftRadius: isFullscreen ? 0 : '16px',
+        borderTopRightRadius: isFullscreen ? 0 : '16px',
+        margin: '8px',
+        borderRadius: '8px'
+      }}>
+        <div className="flex items-center justify-between">
+          {/* Left spacer to balance the layout */}
+          <div className="flex items-center" style={{ minWidth: '80px' }}>
+          </div>
+          
+          {/* Center: Close button + PDF icon + Document name */}
+          <div 
+            className="flex items-center gap-2 min-w-0"
+            style={{
+              zIndex: 1,
+              borderBottom: '2px solid rgba(0, 0, 0, 0.8)',
+              paddingBottom: '4px',
+              width: 'fit-content',
+              margin: '0 auto'
+            }}
           >
-            <X className="w-3.5 h-3.5 text-slate-800 group-hover:text-slate-900" strokeWidth={1.5} />
-            <span className="text-slate-600 text-xs">
-              Close
+            <button
+              onClick={onClose}
+              className="flex items-center justify-center rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] flex-shrink-0"
+              style={{
+                padding: '4px',
+                height: '22px',
+                width: '22px',
+                border: 'none',
+                cursor: 'pointer',
+                backgroundColor: 'transparent',
+                transition: 'none',
+                marginRight: '12px'
+              }}
+              title="Close document"
+            >
+              <X className="w-3.5 h-3.5 text-[#666]" strokeWidth={2} />
+            </button>
+            <img src="/PDF.png" alt="PDF" className="w-4 h-4 object-contain flex-shrink-0" />
+            <span className="text-slate-700 text-sm font-medium truncate min-w-0">
+              {displayFilename}
             </span>
-          </motion.button>
-          <motion.button
-            onClick={() => setIsFullscreen(!isFullscreen)}
-            whileHover={{ scale: 1.01 }}
-            whileTap={{ scale: 0.99 }}
-            className="flex items-center space-x-1.5 px-2 py-1 border border-slate-200/60 hover:border-slate-300/80 bg-white/70 hover:bg-slate-50/80 rounded-md transition-all duration-200 group"
-            title={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
-          >
-            {isFullscreen ? (
-              <>
-                <Minimize2 className="w-3.5 h-3.5 text-slate-800 group-hover:text-slate-900" strokeWidth={1.5} />
-                <span className="text-slate-600 text-xs">
-                  Exit fullscreen
-                </span>
-              </>
-            ) : (
-              <>
-                <Maximize2 className="w-3.5 h-3.5 text-slate-800 group-hover:text-slate-900" strokeWidth={1.5} />
-                <span className="text-slate-600 text-xs">
-                  Fullscreen
-                </span>
-              </>
+          </div>
+          
+          {/* Right: Fullscreen button and zoom controls */}
+          <div className="flex items-center gap-2 justify-end" style={{ minWidth: '80px' }}>
+            {/* Quick Zoom dropdown - only show in fullscreen mode */}
+            {isFullscreen && (
+              <div className="relative">
+                <select
+                  value={(() => {
+                    const currentScale = manualZoom !== null ? manualZoom : (baseScale || 1.0);
+                    const currentPercentage = Math.round(currentScale * 100);
+                    // Find closest preset or return 'fit' if none match
+                    const presets = [50, 75, 100, 125, 150, 200];
+                    const closest = presets.find(p => Math.abs(currentPercentage - p) < 5);
+                    return closest !== undefined ? closest.toString() : 'fit';
+                  })()}
+                  onChange={(e) => {
+                    const value = e.target.value;
+                    if (value === 'fit') {
+                      handleZoomReset();
+                    } else {
+                      handleQuickZoom(parseInt(value, 10));
+                    }
+                  }}
+                  className="appearance-none pl-2.5 pr-7 py-1.5 text-xs font-medium border border-slate-200/60 hover:border-slate-300/80 bg-white/90 hover:bg-slate-50/90 text-slate-700 rounded-md transition-all duration-200 shadow-sm cursor-pointer focus:outline-none focus:ring-1 focus:ring-slate-300"
+                  style={{ minWidth: '70px' }}
+                >
+                  <option value="50">50%</option>
+                  <option value="75">75%</option>
+                  <option value="100">100%</option>
+                  <option value="125">125%</option>
+                  <option value="150">150%</option>
+                  <option value="200">200%</option>
+                  <option value="fit">Fit</option>
+                </select>
+                <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3 h-3 text-slate-500 pointer-events-none" />
+              </div>
             )}
-          </motion.button>
-        </div>
-        <div className="flex items-center gap-2 absolute left-1/2 transform -translate-x-1/2">
-          <TextCursorInput className="w-4 h-4 text-gray-600 flex-shrink-0" />
-          <span className="text-sm font-medium text-gray-900">
-            Reference Agent
-          </span>
-        </div>
-        {/* Zoom controls - only show in fullscreen mode */}
-        {isFullscreen && (
-          <div className="flex items-center gap-2 absolute top-4 right-4 z-50">
+            {/* Download button */}
             <motion.button
-              onClick={handleZoomOut}
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.95 }}
-              className="flex items-center justify-center p-2 border border-slate-200/60 hover:border-slate-300/80 bg-white/90 hover:bg-slate-50/90 rounded-md transition-all duration-200 shadow-sm"
-              title="Zoom out"
+              onClick={() => {
+                if (previewUrl) {
+                  const link = document.createElement('a');
+                  link.href = previewUrl;
+                  link.download = displayFilename || 'document.pdf';
+                  document.body.appendChild(link);
+                  link.click();
+                  document.body.removeChild(link);
+                }
+              }}
+              whileHover={{ backgroundColor: '#f0f0f0' }}
+              whileTap={{ backgroundColor: '#e8e8e8' }}
+              className="flex items-center justify-center rounded-sm transition-all duration-150"
+              style={{
+                padding: '5px',
+                height: '26px',
+                width: '26px',
+                minHeight: '26px',
+                minWidth: '26px',
+                border: 'none',
+                cursor: 'pointer'
+              }}
+              title="Download file"
             >
-              <ZoomOut className="w-4 h-4 text-slate-700" strokeWidth={1.5} />
+              <Download className="w-4 h-4 text-[#666]" strokeWidth={1.75} />
             </motion.button>
+            {/* Fullscreen button */}
             <motion.button
-              onClick={handleZoomReset}
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.95 }}
-              className="flex items-center justify-center px-3 py-2 border border-slate-200/60 hover:border-slate-300/80 bg-white/90 hover:bg-slate-50/90 rounded-md transition-all duration-200 shadow-sm"
-              title="Reset zoom"
+              onClick={() => setIsFullscreen(!isFullscreen)}
+              whileHover={{ backgroundColor: '#f0f0f0' }}
+              whileTap={{ backgroundColor: '#e8e8e8' }}
+              className="flex items-center justify-center rounded-sm transition-all duration-150"
+              style={{
+                padding: '5px',
+                height: '26px',
+                width: '26px',
+                minHeight: '26px',
+                minWidth: '26px',
+                border: 'none',
+                cursor: 'pointer'
+              }}
+              title={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
             >
-              <span className="text-xs text-slate-700 font-medium">
-                {manualZoom !== null ? `${Math.round((manualZoom || 1.0) * 100)}%` : 'Fit'}
-              </span>
-            </motion.button>
-            <motion.button
-              onClick={handleZoomIn}
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.95 }}
-              className="flex items-center justify-center p-2 border border-slate-200/60 hover:border-slate-300/80 bg-white/90 hover:bg-slate-50/90 rounded-md transition-all duration-200 shadow-sm"
-              title="Zoom in"
-            >
-              <ZoomIn className="w-4 h-4 text-slate-700" strokeWidth={1.5} />
+              {isFullscreen ? (
+                <Minimize2 className="w-4 h-4 text-[#666]" strokeWidth={1.75} />
+              ) : (
+                <Maximize className="w-4 h-4 text-[#666]" strokeWidth={1.75} />
+              )}
             </motion.button>
           </div>
+        </div>
+        
+        {/* Review Next Citation button */}
+        {hasMultipleCitations && (
+          <div className="flex justify-center w-full mt-3">
+            <button
+              onClick={handleReviewNextCitation}
+              style={{
+                backgroundColor: '#f5f5f5',
+                color: '#333',
+                border: 'none',
+                borderRadius: '8px',
+                padding: '8px 16px',
+                fontSize: '14px',
+                fontFamily: 'system-ui, -apple-system, sans-serif',
+                fontWeight: 400,
+                cursor: 'pointer',
+                boxShadow: '0 1px 2px rgba(0, 0, 0, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.5)',
+                transition: 'background-color 0.2s ease',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.backgroundColor = '#e8e8e8';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.backgroundColor = '#f5f5f5';
+              }}
+              onMouseDown={(e) => {
+                e.currentTarget.style.backgroundColor = '#dcdcdc';
+              }}
+              onMouseUp={(e) => {
+                e.currentTarget.style.backgroundColor = '#e8e8e8';
+              }}
+              title={`Review next citation (${currentCitationIndex + 1} of ${sortedCitations.length})`}
+            >
+              Review Next Citation
+            </button>
+          </div>
         )}
-        <div className="w-24"></div> {/* Spacer to balance the layout */}
       </div>
 
       {/* Content */}
       <div 
-        className="flex-1 overflow-auto bg-gray-50" 
+        className="bg-gray-50" 
         ref={pdfWrapperRef}
         style={{
-          width: '100%',
-          height: '100%',
-          minHeight: 0, // Allow flex item to shrink below content size
-          flex: '1 1 auto' // Ensure it takes available space
+          flex: 1,
+          minHeight: 0, // Critical: allows flex item to shrink and enable scrolling
+          overflow: 'auto',
+          borderBottomLeftRadius: isFullscreen ? 0 : '16px',
+          borderBottomRightRadius: isFullscreen ? 0 : '16px'
         }}
       >
         {error && (
@@ -1202,14 +1707,14 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
                   display: 'flex',
                   flexDirection: 'column',
                   alignItems: 'center',
-                  padding: '16px',
-                  // PDF.js handles zoom natively via getViewport({ scale })
-                  // No CSS transforms needed - the pages are rendered at the correct scale
-                  transform: 'none',
-                  transformOrigin: 'top center'
+                  padding: '64px',
+                  // Transform is applied directly via DOM manipulation during pinch gestures
+                  // This avoids React re-renders for smooth 60fps performance
+                  transformOrigin: 'top center',
+                  willChange: isZooming ? 'transform' : 'auto'
                 }}
               >
-                {Array.from(renderedPages.entries()).map(([pageNum, { canvas, dimensions }]) => (
+                {Array.from(renderedPages.entries()).sort(([a], [b]) => a - b).map(([pageNum, { canvas, dimensions }]) => (
                   <div
                     key={pageNum}
                     style={{
@@ -1356,7 +1861,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
             {/* Show loading only if no pages rendered yet and still loading */}
             {isPDF && renderedPages.size === 0 && loading && (
               <div className="flex items-center justify-center h-full">
-                <div className="text-gray-500">Loading...</div>
+                <div className="text-gray-500" style={{ paddingTop: '80px' }}>Loading...</div>
               </div>
             )}
             
@@ -1416,11 +1921,41 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
     </motion.div>
   );
 
+  // Hide immediately when local state is set (before parent state updates)
+  if (isLocallyHidden) {
+    return null;
+  }
+  
   if (isFullscreen) {
     return createPortal(content, document.body);
   }
 
+  // Background layer that fills the entire document preview area (without rounded corners)
+  // This prevents seeing through to the map behind the rounded corners
+  const backgroundLayer = (
+    <div
+      style={{
+        position: 'fixed',
+        // Match document preview positioning (extend slightly for rounded corners)
+        left: `${leftPosition - 12}px`,
+        width: `${panelWidth + 24}px`, // Extend to cover rounded corner area
+        top: 0,
+        bottom: 0,
+        backgroundColor: '#FCFCF9', // Match the chat panel background
+        zIndex: 9998, // Below the document preview (9999)
+        pointerEvents: 'none',
+        transition: 'none',
+      }}
+    />
+  );
+
   // Render without backdrop - positioned alongside chat panel
-  return createPortal(content, document.body);
+  return createPortal(
+    <>
+      {backgroundLayer}
+      {content}
+    </>,
+    document.body
+  );
 };
 

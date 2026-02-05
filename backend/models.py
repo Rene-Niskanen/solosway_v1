@@ -1,6 +1,7 @@
 from . import db
 from flask_login import UserMixin
 from sqlalchemy.sql import func
+from sqlalchemy import TypeDecorator
 import enum
 import uuid
 from sqlalchemy.dialects.postgresql import UUID, JSONB
@@ -29,6 +30,37 @@ class DocumentStatus(enum.Enum):
     VECTORIZED = 'vectorized'
     COMPLETED = 'completed'
     FAILED = 'failed'
+
+# Enum for project status
+class ProjectStatus(enum.Enum):
+    ACTIVE = 'ACTIVE'
+    NEGOTIATING = 'NEGOTIATING'
+    ARCHIVED = 'ARCHIVED'
+
+
+class ProjectStatusType(TypeDecorator):
+    """TypeDecorator to ensure enum values are used instead of names when binding to Supabase/PostgreSQL"""
+    impl = db.Enum
+    cache_ok = True
+    
+    def __init__(self):
+        super().__init__(ProjectStatus, name='project_status', create_type=False, native_enum=True)
+    
+    def process_bind_param(self, value, dialect):
+        """Convert enum to its value (string) when binding to database"""
+        if value is None:
+            return None
+        if isinstance(value, ProjectStatus):
+            return value.value  # Use enum value ('ACTIVE'), which now matches the enum name
+        return value
+    
+    def process_result_value(self, value, dialect):
+        """Convert string from database back to enum"""
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return ProjectStatus(value)  # Convert string back to enum
+        return value
 
 
 class User(db.Model, UserMixin):
@@ -67,7 +99,7 @@ class Document(db.Model):
     classification_confidence = db.Column(db.Float)
     classification_reasoning = db.Column(db.Text, nullable=True)  # Classification reasoning (may not exist in all DB schemas)
     classification_timestamp = db.Column(db.DateTime(timezone=True))
-    parsed_text = db.Column(db.Text)  # Store full LlamaParse output
+    parsed_text = db.Column(db.Text)  # Store full Reducto parse output
     extracted_json = db.Column(db.Text)  # Store extracted data as JSON
     metadata_json = db.Column(db.Text)  # Store additional metadata (e.g., filename address)
     
@@ -91,7 +123,7 @@ class Document(db.Model):
             'file_type': self.file_type,
             'file_size': self.file_size,
             'business_id': str(self.business_id),
-            'created_at': self.created_at.isoformat(),
+            'created_at': self.created_at.isoformat() if self.created_at is not None else None,
             'status': self.status.name,
             'uploaded_by_user_id': self.uploaded_by_user_id
         }
@@ -272,6 +304,72 @@ class DocumentRelationship(db.Model):
         }
 
 
+class PropertyAccess(db.Model):
+    """Team member access to properties"""
+    __tablename__ = 'property_access'
+    
+    id = db.Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    property_id = db.Column(UUID(as_uuid=True), db.ForeignKey('properties.id'), nullable=False)
+    user_email = db.Column(db.String(255), nullable=False)  # Email of invited user
+    invited_by_user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    access_level = db.Column(db.String(50), default='viewer')  # 'viewer', 'editor', 'owner'
+    status = db.Column(db.String(50), default='pending')  # 'pending', 'accepted', 'declined'
+    invitation_token = db.Column(db.String(100), unique=True)
+    created_at = db.Column(db.DateTime(timezone=True), default=func.now())
+    accepted_at = db.Column(db.DateTime(timezone=True))
+    
+    # Relationships
+    property = db.relationship('Property', backref='access_grants')
+    invited_by = db.relationship('User', foreign_keys=[invited_by_user_id])
+    
+    def serialize(self):
+        """Convert property access to dictionary"""
+        return {
+            'id': str(self.id),
+            'property_id': str(self.property_id),
+            'user_email': self.user_email,
+            'invited_by_user_id': self.invited_by_user_id,
+            'access_level': self.access_level,
+            'status': self.status,
+            'invitation_token': self.invitation_token,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'accepted_at': self.accepted_at.isoformat() if self.accepted_at else None
+        }
+
+
+class ProjectAccess(db.Model):
+    """Team member access to projects"""
+    __tablename__ = 'project_access'
+    
+    id = db.Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id = db.Column(UUID(as_uuid=True), db.ForeignKey('projects.id'), nullable=False)
+    user_email = db.Column(db.String(255), nullable=False)  # Email of invited user
+    invited_by_user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    access_level = db.Column(db.String(50), default='viewer')  # 'viewer', 'editor'
+    status = db.Column(db.String(50), default='pending')  # 'pending', 'accepted', 'declined'
+    invitation_token = db.Column(db.String(100), unique=True)
+    created_at = db.Column(db.DateTime(timezone=True), default=func.now())
+    accepted_at = db.Column(db.DateTime(timezone=True))
+    
+    # Relationships
+    project = db.relationship('Project', backref='access_grants')
+    invited_by = db.relationship('User', foreign_keys=[invited_by_user_id])
+    
+    def serialize(self):
+        """Convert project access to dictionary"""
+        return {
+            'id': str(self.id),
+            'project_id': str(self.project_id),
+            'user_email': self.user_email,
+            'invited_by_user_id': self.invited_by_user_id,
+            'access_level': self.access_level,
+            'status': self.status,
+            'invitation_token': self.invitation_token,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'accepted_at': self.accepted_at.isoformat() if self.accepted_at else None
+        }
+
+
 class PropertyCardCache(db.Model):
     """Cached property card summary data for instant rendering"""
     __tablename__ = 'property_card_cache'
@@ -294,6 +392,69 @@ class PropertyCardCache(db.Model):
             'card_data': self.card_data,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,
             'cache_version': self.cache_version
+        }
+
+
+class Project(db.Model):
+    """Projects for freelance/design work management"""
+    __tablename__ = 'projects'
+    
+    id = db.Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    
+    # Client information
+    client_name = db.Column(db.String(255), nullable=False)
+    client_logo_url = db.Column(db.String(1024))
+    
+    # Project details
+    title = db.Column(db.String(500), nullable=False)
+    description = db.Column(db.Text)
+    status = db.Column(ProjectStatusType(), default=ProjectStatus.ACTIVE, nullable=False)
+    tags = db.Column(JSONB, default=list)  # Array of tag strings like ["Web Design", "Branding"]
+    tool = db.Column(db.String(100))  # e.g., "Figma", "Sketch", "Adobe XD"
+    
+    # Budget (stored in cents for precision)
+    budget_min = db.Column(db.Integer)  # Minimum budget in cents
+    budget_max = db.Column(db.Integer)  # Maximum budget in cents
+    
+    # Timeline
+    due_date = db.Column(db.DateTime(timezone=True))
+    
+    # Media
+    thumbnail_url = db.Column(db.String(1024))
+    
+    # Engagement
+    message_count = db.Column(db.Integer, default=0)
+    
+    # Timestamps
+    created_at = db.Column(db.DateTime(timezone=True), server_default=func.now())
+    updated_at = db.Column(db.DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    
+    # Relationships
+    owner = db.relationship('User', backref='projects')
+    
+    def __repr__(self):
+        return f'<Project {self.title}>'
+    
+    def serialize(self):
+        """Convert project to dictionary"""
+        return {
+            'id': str(self.id),
+            'user_id': self.user_id,
+            'client_name': self.client_name,
+            'client_logo_url': self.client_logo_url,
+            'title': self.title,
+            'description': self.description,
+            'status': self.status.value if self.status else None,
+            'tags': self.tags or [],
+            'tool': self.tool,
+            'budget_min': self.budget_min,
+            'budget_max': self.budget_max,
+            'due_date': self.due_date.isoformat() if self.due_date else None,
+            'thumbnail_url': self.thumbnail_url,
+            'message_count': self.message_count or 0,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None
         }
 
 

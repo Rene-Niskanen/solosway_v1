@@ -10,6 +10,7 @@ from langchain_core.messages import HumanMessage
 from backend.llm.config import config
 from backend.llm.types import MainWorkflowState
 from backend.llm.utils.system_prompts import get_system_prompt
+from backend.llm.utils.model_factory import get_llm
 from backend.llm.prompts import get_response_formatting_prompt
 
 logger = logging.getLogger(__name__)
@@ -51,13 +52,9 @@ async def format_response(state: MainWorkflowState) -> MainWorkflowState:
         # Get formatting prompt
         formatting_prompt = get_response_formatting_prompt(final_summary, user_query)
         
-        # Create LLM instance (use correct config)
-        llm = ChatOpenAI(
-            api_key=config.openai_api_key,
-            model=config.openai_model,  # CORRECT
-            temperature=0,  # CORRECT
-            streaming=False
-        )
+        # Create LLM instance (use user-selected model from state)
+        model_preference = state.get('model_preference')
+        llm = get_llm(model_preference, temperature=0)
         
         # Format the response (use correct system prompt with task parameter)
         system_prompt = get_system_prompt('format')  # CORRECT - use 'format' task

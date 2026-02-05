@@ -256,6 +256,7 @@ class SupabasePropertyHubService:
             # This is the authoritative property location and should be preserved
             property_data = {
                 'id': property_id,
+                'business_id': business_id,  # Required NOT NULL column
                 'business_uuid': business_id,
                 'address_hash': address_data['address_hash'],
                 'normalized_address': address_data['normalized_address'],
@@ -338,8 +339,22 @@ class SupabasePropertyHubService:
                 update_data = {}
                 for key, value in extracted_data.items():
                     if value is not None and value != '':
+                        # Special handling for property_images: merge/append new images to existing ones
+                        if key == 'property_images' and isinstance(value, list):
+                            existing_images = existing_details.get('property_images', []) or []
+                            # Merge images: add new images that don't already exist (by URL)
+                            existing_urls = {img.get('url') for img in existing_images if isinstance(img, dict) and img.get('url')}
+                            new_images = [img for img in value if isinstance(img, dict) and img.get('url') not in existing_urls]
+                            if new_images:
+                                merged_images = existing_images + new_images
+                                update_data['property_images'] = merged_images
+                                update_data['image_count'] = len(merged_images)
+                                # Update primary_image_url if it was None
+                                if not existing_details.get('primary_image_url') and merged_images:
+                                    update_data['primary_image_url'] = merged_images[0].get('url')
+                                logger.info(f"   📸 Merged {len(new_images)} new images with {len(existing_images)} existing images")
                         # Only update if existing value is null or if new value is more recent
-                        if existing_details.get(key) is None or existing_details.get(key) == '':
+                        elif existing_details.get(key) is None or existing_details.get(key) == '':
                             update_data[key] = value
                 
                 # Always update metadata fields
@@ -618,13 +633,14 @@ class SupabasePropertyHubService:
     
     def get_all_property_hubs(self, business_id: str) -> List[Dict[str, Any]]:
         """
-        Get all property hubs for a business
+        Get all property hubs for a business (active properties only - with property_details).
+        Historical properties (without property_details) are excluded from map.
         
         Args:
             business_id: Business identifier for multi-tenancy
             
         Returns:
-            List of property hub summaries
+            List of property hub summaries (only properties with property_details)
         """
         try:
             normalized_uuid = self._normalize_business_uuid(business_id)
@@ -634,21 +650,23 @@ class SupabasePropertyHubService:
 
             logger.info(f"🏠 Getting all property hubs for business: {normalized_uuid}")
             
-            # Get all properties for business
+            # Get properties that have property_details (active properties only)
+            # This filters out historical properties that are just linked for document access
             properties_result = (
                 self.supabase
                 .table('properties')
-                .select('*')
+                .select('*, property_details(*)')  # Join with property_details
                 .eq('business_uuid', normalized_uuid)
+                .not_.is_('property_details', 'null')  # ✅ Only properties with details
                 .order('created_at', desc=True)
                 .execute()
             )
             
             if not properties_result.data:
-                logger.info(f"   ⚠️ No properties found for business: {business_id}")
+                logger.info(f"   ⚠️ No active properties found for business: {business_id} (properties without property_details are excluded from map)")
                 return []
             
-            logger.info(f"   📊 Found {len(properties_result.data)} properties")
+            logger.info(f"   📊 Found {len(properties_result.data)} active properties (with property_details)")
             
             property_hubs = []
             for prop in properties_result.data:
@@ -941,11 +959,13 @@ class SupabasePropertyHubService:
                 sort_order = 'desc'
             
             # Get properties with pagination and sorting
+            # Filter by property_details existence (active properties only - excludes historical)
             query = (
                 self.supabase
                 .table('properties')
-                .select('*')
+                .select('*, property_details(*)')  # Join with property_details
                 .eq('business_uuid', normalized_uuid)
+                .not_.is_('property_details', 'null')  # ✅ Only properties with details
             )
             
             # Apply sorting

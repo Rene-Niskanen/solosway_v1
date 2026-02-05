@@ -165,3 +165,7 @@ NEXT_STEPS.md
 
 /scripts.env.bak
 .env.bak
+
+/logs/*
+
+create_user.py 

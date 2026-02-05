@@ -8,17 +8,31 @@ export interface ChatHistoryEntry {
   preview: string;
   messages: any[];
   archived?: boolean;
+  status?: 'loading' | 'completed'; // Track query status
+  sessionId?: string; // Backend session ID (thread_id) for isolation
+  description?: string; // Secondary detail line (file changes/context)
+  // Granular state for restoration
+  savedState?: {
+    inputValue?: string; // Current input value
+    attachedFiles?: any[]; // File attachments
+    propertyAttachments?: any[]; // Property attachments
+    submittedQueries?: any[]; // Submitted queries list (can be SubmittedQuery[] or string[])
+  };
 }
 interface ChatHistoryContextType {
   chatHistory: ChatHistoryEntry[];
   addChatToHistory: (chat: Omit<ChatHistoryEntry, 'id'>) => string;
   updateChatInHistory: (chatId: string, messages: any[]) => void;
   removeChatFromHistory: (chatId: string) => void;
+  clearAllChats: () => void;
   updateChatTitle: (chatId: string, newTitle: string) => void;
   archiveChat: (chatId: string) => void;
   unarchiveChat: (chatId: string) => void;
   getChatById: (chatId: string) => ChatHistoryEntry | undefined;
   formatTimestamp: (date: Date) => string;
+  updateChatStatus: (chatId: string, status: 'loading' | 'completed') => void;
+  updateChatDescription: (chatId: string, description: string) => void;
+  saveChatState: (chatId: string, state: { inputValue?: string; attachedFiles?: any[]; propertyAttachments?: any[]; submittedQueries?: any[] }) => void;
 }
 const ChatHistoryContext = React.createContext<ChatHistoryContextType | undefined>(undefined);
 
@@ -47,7 +61,21 @@ const getStoredChatHistory = (): ChatHistoryEntry[] => {
       return acc;
     }, []);
     
-    return uniqueChats;
+    // CRITICAL: Reset any 'loading' statuses to 'completed' when loading from storage
+    // Chats cannot actually be running after a page refresh/restart
+    // This prevents stale 'loading' states from persisting in the UI
+    const sanitizedChats = uniqueChats.map(chat => {
+      if (chat.status === 'loading') {
+        console.log('🔄 ChatHistoryContext: Resetting stale loading status to completed:', chat.id);
+        return {
+          ...chat,
+          status: 'completed' as const
+        };
+      }
+      return chat;
+    });
+    
+    return sanitizedChats;
   } catch (error) {
     console.error('Error loading chat history from localStorage:', error);
     return [];
@@ -161,7 +189,7 @@ const generateChatTitle = (messages: any[], query?: string): string => {
   return 'New conversation';
 };
 
-// Helper function to format timestamp
+// Helper function to format timestamp (matching reference format: "Now", "1m", "6m", etc.)
 const formatTimestamp = (date: Date): string => {
   const now = new Date();
   const diffInMs = now.getTime() - date.getTime();
@@ -169,13 +197,13 @@ const formatTimestamp = (date: Date): string => {
   const diffInHours = Math.floor(diffInMinutes / 60);
   const diffInDays = Math.floor(diffInHours / 24);
   if (diffInMinutes < 1) {
-    return "Just now";
+    return "Now";
   } else if (diffInMinutes < 60) {
-    return `${diffInMinutes} minute${diffInMinutes === 1 ? '' : 's'} ago`;
+    return `${diffInMinutes}m`;
   } else if (diffInHours < 24) {
-    return `${diffInHours} hour${diffInHours === 1 ? '' : 's'} ago`;
+    return `${diffInHours}h`;
   } else if (diffInDays < 7) {
-    return `${diffInDays} day${diffInDays === 1 ? '' : 's'} ago`;
+    return `${diffInDays}d`;
   } else {
     return date.toLocaleDateString();
   }
@@ -187,16 +215,43 @@ export function ChatHistoryProvider({
 }) {
   const [chatHistory, setChatHistory] = React.useState<ChatHistoryEntry[]>(() => getStoredChatHistory());
 
+  // CRITICAL: On mount, reset any stale 'loading' statuses and save to localStorage
+  // This ensures chats loaded from storage with 'loading' status are reset to 'completed'
+  // since they can't actually be running after a page refresh
+  React.useEffect(() => {
+    const hasStaleLoadingStatus = chatHistory.some(chat => chat.status === 'loading');
+    if (hasStaleLoadingStatus) {
+      console.log('🔄 ChatHistoryProvider: Resetting stale loading statuses on mount');
+      const sanitizedChats = chatHistory.map(chat => {
+        if (chat.status === 'loading') {
+          return {
+            ...chat,
+            status: 'completed' as const
+          };
+        }
+        return chat;
+      });
+      setChatHistory(sanitizedChats);
+      // Save immediately to localStorage
+      saveChatHistory(sanitizedChats);
+    }
+  }, []); // Only run on mount
+
   // Save to localStorage whenever chatHistory changes
   React.useEffect(() => {
     saveChatHistory(chatHistory);
   }, [chatHistory]);
 
   const addChatToHistory = React.useCallback((chat: Omit<ChatHistoryEntry, 'id'>) => {
+    const chatId = `chat-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    // Generate unique sessionId if not provided: session_${chatId}_${Date.now()}
+    const sessionId = chat.sessionId || `session_${chatId}_${Date.now()}`;
     const newChat: ChatHistoryEntry = {
       ...chat,
-      id: `chat-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-      title: chat.title || generateChatTitle(chat.messages, chat.preview)
+      id: chatId,
+      title: chat.title || generateChatTitle(chat.messages, chat.preview),
+      sessionId: sessionId,
+      status: chat.status || 'loading', // Default to 'loading' when first query is sent
     };
     setChatHistory(prev => [newChat, ...prev]);
     return newChat.id; // Return the ID for tracking
@@ -209,7 +264,10 @@ export function ChatHistoryProvider({
             ...chat,
             messages,
             title: chat.title || generateChatTitle(messages, chat.preview),
-            timestamp: new Date().toISOString()
+            timestamp: new Date().toISOString(),
+            // Preserve sessionId and description when updating
+            sessionId: chat.sessionId,
+            description: chat.description
           }
         : chat
     ));
@@ -217,6 +275,10 @@ export function ChatHistoryProvider({
 
   const removeChatFromHistory = React.useCallback((chatId: string) => {
     setChatHistory(prev => prev.filter(chat => chat.id !== chatId));
+  }, []);
+
+  const clearAllChats = React.useCallback(() => {
+    setChatHistory([]);
   }, []);
 
   const updateChatTitle = React.useCallback((chatId: string, newTitle: string) => {
@@ -247,17 +309,51 @@ export function ChatHistoryProvider({
     return chatHistory.find(chat => chat.id === chatId);
   }, [chatHistory]);
 
+  const updateChatStatus = React.useCallback((chatId: string, status: 'loading' | 'completed') => {
+    setChatHistory(prev => prev.map(chat => 
+      chat.id === chatId 
+        ? { ...chat, status }
+        : chat
+    ));
+  }, []);
+
+  const updateChatDescription = React.useCallback((chatId: string, description: string) => {
+    setChatHistory(prev => prev.map(chat => 
+      chat.id === chatId 
+        ? { ...chat, description: description.trim() || chat.description }
+        : chat
+    ));
+  }, []);
+
+  const saveChatState = React.useCallback((chatId: string, state: { inputValue?: string; attachedFiles?: any[]; propertyAttachments?: any[]; submittedQueries?: any[] }) => {
+    setChatHistory(prev => prev.map(chat => 
+      chat.id === chatId 
+        ? { 
+            ...chat, 
+            savedState: {
+              ...chat.savedState,
+              ...state
+            }
+          }
+        : chat
+    ));
+  }, []);
+
   const value = React.useMemo(() => ({
     chatHistory,
     addChatToHistory,
     updateChatInHistory,
     removeChatFromHistory,
+    clearAllChats,
     updateChatTitle,
     archiveChat,
     unarchiveChat,
     getChatById,
-    formatTimestamp
-  }), [chatHistory, addChatToHistory, updateChatInHistory, removeChatFromHistory, updateChatTitle, archiveChat, unarchiveChat, getChatById]);
+    formatTimestamp,
+    updateChatStatus,
+    updateChatDescription,
+    saveChatState
+  }), [chatHistory, addChatToHistory, updateChatInHistory, removeChatFromHistory, clearAllChats, updateChatTitle, archiveChat, unarchiveChat, getChatById, updateChatStatus, updateChatDescription, saveChatState]);
 
   return <ChatHistoryContext.Provider value={value}>
       {children}

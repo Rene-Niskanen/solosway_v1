@@ -4,6 +4,7 @@ import * as React from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { SendToBack, Upload, GitPullRequestArrow, X, Home, FileText, Check, Plus } from "lucide-react";
 import { backendApi } from "@/services/backendApi";
+import type { SegmentInputHandle } from "./SegmentInput";
 
 interface PropertyData {
   id: string | number;
@@ -26,7 +27,7 @@ interface QuickStartBarProps {
   onPopupVisibilityChange?: (isVisible: boolean) => void;
   className?: string;
   isInChatPanel?: boolean; // Whether this is being used in the chat panel (for space-saving adjustments)
-  chatInputRef?: React.RefObject<HTMLTextAreaElement | HTMLInputElement>; // Reference to chat input to detect focus
+  chatInputRef?: React.RefObject<SegmentInputHandle | null>; // Reference to chat input handle (use getRootElement() for DOM) to detect focus
 }
 
 // Property Image Thumbnail Component
@@ -132,10 +133,10 @@ export const QuickStartBar: React.FC<QuickStartBarProps> = ({
 
   // Close popup when chat input is focused or when user starts typing in chat
   React.useEffect(() => {
-    if (!chatInputRef?.current || !isInChatPanel) return;
+    const handle = chatInputRef?.current;
+    const chatInput = handle?.getRootElement() ?? null;
+    if (!chatInput || !isInChatPanel) return;
 
-    const chatInput = chatInputRef.current;
-    
     const handleChatFocus = () => {
       // Close popup immediately when chat input is focused
       if (showResultsPopup) {

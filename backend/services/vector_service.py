@@ -13,6 +13,13 @@ import anthropic
 import asyncio
 
 from .supabase_client_factory import get_supabase_client
+from .text_cleaning_service import TextCleaningService
+from .chunk_quality_service import ChunkQualityService
+from .chunk_validation_service import ChunkValidationService
+from .section_header_extractor import (
+    extract_section_header_from_blocks,
+    extract_keywords
+)
 
 logger = logging.getLogger(__name__)
 
@@ -333,7 +340,9 @@ class SupabaseVectorService:
             if name_parts:
                 enriched_parts.append(" | ".join(name_parts))
         
-        # Add the actual chunk text
+        # Add the actual chunk text (already cleaned separately before this function is called)
+        # NOTE: This function is now only for display/context enrichment, NOT for embedding
+        # Cleaning happens separately in store_document_vectors() before embedding
         enriched_parts.append(chunk_text)
         
         # Add document type context (helps distinguish appraisals from inspections, etc.)
@@ -390,6 +399,31 @@ class SupabaseVectorService:
         text = re.sub(r'\$\s*(\d{1,3}(?:,\d{3})*)', r'USD \1', text)
         
         return text
+    
+    def clean_chunk_text(
+        self, 
+        chunk_text: str, 
+        boilerplate_lines: Optional[List[Dict[str, Any]]] = None
+    ) -> str:
+        """
+        Clean chunk text before embedding using TextCleaningService.
+        
+        This ensures only clean, semantic text is embedded, improving retrieval accuracy.
+        
+        Args:
+            chunk_text: Raw chunk text to clean
+            boilerplate_lines: Optional list of boilerplate lines to remove
+            
+        Returns:
+            Clean text ready for embedding
+        """
+        if not hasattr(self, '_text_cleaning_service'):
+            self._text_cleaning_service = TextCleaningService()
+        
+        return self._text_cleaning_service.clean_chunk_text(
+            chunk_text, 
+            boilerplate_lines=boilerplate_lines
+        )
     
     def generate_chunk_context(self, chunk: str, document_metadata: Dict[str, Any]) -> str:
         """
@@ -809,20 +843,57 @@ class SupabaseVectorService:
             # Delete existing vectors first to prevent duplicates
             self.delete_document_vectors(document_id)
             
-            # Check if chunks need to be split BEFORE embedding (embedding model limit: 8192 tokens)
-            # Estimate: ~4 characters per token, so 8192 tokens ≈ 32,768 chars
-            MAX_CHUNK_SIZE = 30000  # ~7500 tokens, safe margin for 8192 token limit
+            # Check if chunks need to be split BEFORE embedding
+            # FIX: Reducto creates section-based chunks averaging 14k chars, which are too large for LLM processing
+            # Target: 500-1000 tokens per chunk (2000-4000 chars) for optimal retrieval and LLM processing
+            # Two-tier approach:
+            # - WARNING threshold: 2000 chars (log warning but don't split)
+            # - SPLIT threshold: 2500 chars (split into smaller chunks)
+            MAX_CHUNK_SIZE = 2500  # ~625 tokens, optimal for LLM processing
+            WARNING_CHUNK_SIZE = 2000  # ~500 tokens, warn but don't split
             
             # Process chunks: split large ones, preserve metadata
             processed_chunks = []
             processed_metadata = []
             
+            # Track statistics for logging
+            total_original_chunks = len(chunks)
+            chunks_split = 0
+            chunks_warned = 0
+            total_subchunks_created = 0
+            
             for i, (chunk, chunk_meta) in enumerate(zip(chunks, chunk_metadata_list or [None] * len(chunks))):
-                if len(chunk) > MAX_CHUNK_SIZE:
+                chunk_size = len(chunk)
+                
+                # Two-tier validation: warn for large chunks, split for very large chunks
+                if chunk_size > WARNING_CHUNK_SIZE and chunk_size <= MAX_CHUNK_SIZE:
+                    chunks_warned += 1
+                    logger.warning(
+                        f"⚠️  Chunk {i} is large ({chunk_size:,} chars, ~{chunk_size//4:,} tokens) - "
+                        f"consider splitting. Current threshold: {MAX_CHUNK_SIZE:,} chars"
+                    )
+                    # Don't split, but log for monitoring
+                    processed_chunks.append(chunk)
+                    processed_metadata.append(chunk_meta or {})
+                
+                elif chunk_size > MAX_CHUNK_SIZE:
                     # Split large chunk into smaller chunks BEFORE embedding
-                    logger.info(f"⚠️ Large chunk detected ({len(chunk)} chars), splitting before embedding...")
+                    chunks_split += 1
+                    logger.info(
+                        f"🔪 Splitting chunk {i} ({chunk_size:,} chars, ~{chunk_size//4:,} tokens) "
+                        f"into smaller sub-chunks (target: 1500 chars, ~375 tokens each)..."
+                    )
+                    
                     # Use dynamic overlap (None = auto-calculate based on content density)
-                    sub_chunks = self.chunk_text(chunk, chunk_size=1200, overlap=None)
+                    # This preserves continuous context between chunks
+                    # 1500 chars ≈ 375 tokens - optimal balance between context and processing
+                    sub_chunks = self.chunk_text(chunk, chunk_size=1500, overlap=None)
+                    total_subchunks_created += len(sub_chunks)
+                    
+                    logger.debug(
+                        f"   Created {len(sub_chunks)} sub-chunks from chunk {i} "
+                        f"(avg {sum(len(sc) for sc in sub_chunks) // len(sub_chunks):,} chars each)"
+                    )
                     
                     # Get original blocks from metadata
                     original_blocks = chunk_meta.get('blocks', []) if chunk_meta else []
@@ -852,14 +923,32 @@ class SupabaseVectorService:
                         )
                         processed_metadata.append(sub_chunk_meta)
                     
-                    logger.info(f"   Split chunk {i} into {len(sub_chunks)} sub-chunks with block-level bbox")
+                    logger.info(
+                        f"   ✅ Split chunk {i} into {len(sub_chunks)} sub-chunks with preserved bbox metadata "
+                        f"(overlap maintained for continuous context)"
+                    )
                 else:
+                    # Chunk is within acceptable size limits
                     processed_chunks.append(chunk)
                     processed_metadata.append(chunk_meta or {})
             
+            # Log final statistics
+            if chunks_split > 0 or chunks_warned > 0:
+                logger.info(
+                    f"📊 Chunk processing summary:\n"
+                    f"   • Original chunks: {total_original_chunks}\n"
+                    f"   • Chunks split: {chunks_split} → {total_subchunks_created} sub-chunks\n"
+                    f"   • Chunks warned (large but not split): {chunks_warned}\n"
+                    f"   • Final chunks for embedding: {len(processed_chunks)}\n"
+                    f"   • Bbox metadata preserved: ✅ (all sub-chunks mapped to original blocks)"
+                )
+            
             # Use processed chunks for embedding
             if len(processed_chunks) != len(chunks):
-                logger.info(f"🔄 Processing {len(processed_chunks)} chunks for embedding (was {len(chunks)} original chunks)")
+                logger.info(
+                    f"🔄 Processing {len(processed_chunks)} chunks for embedding "
+                    f"(was {len(chunks)} original chunks, {chunks_split} were split)"
+                )
                 chunks = processed_chunks
                 chunk_metadata_list = processed_metadata
             
@@ -967,12 +1056,69 @@ class SupabaseVectorService:
                     'estate_agent': None
                 }
             
-            # Add party names to metadata for enrichment
+            # Add party names to metadata for enrichment (for display/context only)
             metadata['party_names'] = party_names
             
-            # STEP 2: ENRICHMENT - Add metadata context to contextualized chunks
-            # This improves semantic search by giving more structured context
-            enriched_chunks = []
+            # STEP 2: CLEAN RAW CHUNKS FIRST (before any enrichment)
+            # CRITICAL: Clean the raw chunk text to remove HTML, Markdown, OCR artifacts, boilerplate
+            # This ensures embeddings contain ONLY semantic content, not formatting noise
+            boilerplate_lines = metadata.get('boilerplate_lines')
+            
+            cleaned_chunks = []
+            for chunk in contextualized_chunks:
+                # Clean the raw chunk text (removes HTML, markdown, OCR, boilerplate)
+                cleaned = self.clean_chunk_text(
+                    chunk,  # Raw chunk text from Reducto
+                    boilerplate_lines=boilerplate_lines
+                )
+                cleaned_chunks.append(cleaned)
+            
+            logger.debug(f"Cleaned {len(cleaned_chunks)} raw chunks (removed HTML, Markdown, OCR artifacts)")
+            
+            # STEP 2.3: VALIDATE CLEANED CHUNKS
+            # Validate cleaned chunks before embedding (guardrails)
+            validation_service = ChunkValidationService(strict_mode=False)  # Set to True to reject invalid chunks
+            validation_results = validation_service.validate_batch(cleaned_chunks)
+            
+            # Log validation summary
+            valid_count = sum(1 for is_valid, _ in validation_results.values() if is_valid)
+            invalid_count = len(validation_results) - valid_count
+            
+            if invalid_count > 0:
+                logger.warning(f"⚠️ [VALIDATION] {invalid_count} chunks failed validation (will still be embedded)")
+            else:
+                logger.info(f"✅ [VALIDATION] All {len(cleaned_chunks)} chunks passed validation")
+            
+            # STEP 2.5: COMPUTE QUALITY SCORES
+            # Compute quality scores for cleaned chunks
+            quality_service = ChunkQualityService()
+            quality_scores = []
+            
+            # Prepare metadata for quality scoring (extract boilerplate ratios if available)
+            for i, cleaned_chunk in enumerate(cleaned_chunks):
+                chunk_meta = chunk_metadata_list[i] if chunk_metadata_list and i < len(chunk_metadata_list) else {}
+                
+                # Calculate boilerplate ratio if we have boilerplate info
+                quality_metadata = {}
+                if metadata.get('boilerplate_lines'):
+                    # Count boilerplate lines in this chunk
+                    chunk_lines = cleaned_chunk.split('\n')
+                    boilerplate_lines = metadata.get('boilerplate_lines', [])
+                    boilerplate_texts = {bp.get('line', '').strip() for bp in boilerplate_lines if bp.get('line')}
+                    
+                    boilerplate_count = sum(1 for line in chunk_lines if line.strip() in boilerplate_texts)
+                    total_lines = len([l for l in chunk_lines if l.strip()])
+                    quality_metadata['boilerplate_ratio'] = boilerplate_count / total_lines if total_lines > 0 else 0
+                
+                score = quality_service.compute_quality_score(cleaned_chunk, quality_metadata)
+                quality_scores.append(score)
+            
+            avg_score = sum(quality_scores) / len(quality_scores) if quality_scores else 0.0
+            logger.info(f"📊 Computed quality scores: {len(quality_scores)} scores (avg: {avg_score:.2f})")
+            
+            # STEP 2.6: ENRICHMENT (for display/retrieval context only, NOT for embedding)
+            # Generate enriched text for display purposes, but DO NOT embed it
+            enriched_chunks_for_display = []
             for i, chunk in enumerate(contextualized_chunks):
                 # Get chunk-specific metadata if available
                 chunk_meta = chunk_metadata_list[i] if chunk_metadata_list and i < len(chunk_metadata_list) else {}
@@ -980,11 +1126,11 @@ class SupabaseVectorService:
                 # Merge document metadata with chunk metadata
                 full_metadata = {**metadata, **chunk_meta}
                 
-                # Enrich chunk with metadata for better embeddings
+                # Enrich chunk with metadata for display/context (NOT for embedding)
                 enriched_text = self.enrich_chunk_for_embedding(chunk, full_metadata)
-                enriched_chunks.append(enriched_text)
+                enriched_chunks_for_display.append(enriched_text)
             
-            logger.debug(f"Enriched {len(contextualized_chunks)} chunks with metadata context for embedding")
+            logger.debug(f"Generated enriched text for {len(enriched_chunks_for_display)} chunks (display only)")
             
             # STEP 3: Generate embeddings (or skip for lazy embedding)
             if lazy_embedding:
@@ -993,14 +1139,20 @@ class SupabaseVectorService:
                 logger.info(f"🚀 Lazy embedding mode: Storing {len(chunks)} chunks without embeddings (status='pending')")
             else:
                 # Eager embedding: Generate embeddings immediately
-                # NOTE: We embed enriched text but store ORIGINAL chunks + context in database
-                embeddings = self.create_embeddings(enriched_chunks)
+                # CRITICAL: Embed ONLY cleaned text (no enrichment, no metadata prepending)
+                embeddings = self.create_embeddings(cleaned_chunks)
                 
                 if len(embeddings) != len(chunks):
                     raise ValueError(f"Embedding count mismatch: {len(embeddings)} vs {len(chunks)}")
             
             # Prepare records for insertion
             records = []
+            
+            # Phase 1 & 2: Track current section header for propagation
+            current_section_header = None
+            current_section_title = None
+            current_section_level = None
+            
             for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
                 chunk_meta = chunk_metadata_list[i] if chunk_metadata_list and i < len(chunk_metadata_list) else {}
                 
@@ -1032,25 +1184,90 @@ class SupabaseVectorService:
                 
                 chunk_blocks = chunk_meta.get('blocks', [])
                 
-                # Extract section header metadata if present
-                section_header = chunk_meta.get('section_header') if chunk_meta else None
-                normalized_header = chunk_meta.get('normalized_header') if chunk_meta else None
-                section_keywords = chunk_meta.get('section_keywords', []) if chunk_meta else []
-                has_section_header = chunk_meta.get('has_section_header', False) if chunk_meta else False
+                # PHASE 1: Extract section header from blocks array (primary source)
+                section_header_info = None
+                if chunk_blocks and isinstance(chunk_blocks, list):
+                    section_header_info = extract_section_header_from_blocks(chunk_blocks)
                 
-                # Store section header info in metadata JSONB (create metadata dict if needed)
+                # PHASE 2: Propagate section header if no new one found
+                if section_header_info:
+                    # New section header found - update current section
+                    current_section_header = section_header_info['section_header']
+                    current_section_title = section_header_info['section_title']
+                    current_section_level = section_header_info['section_level']
+                    logger.debug(f"📑 [SECTION_HEADER] Chunk {i}: Found new section header '{current_section_header}' (level {current_section_level})")
+                elif current_section_header:
+                    # No new header, but we have a current section - propagate it
+                    section_header_info = {
+                        "section_header": current_section_header,
+                        "section_title": current_section_title,
+                        "section_level": current_section_level,
+                        "page_number": None,  # Not from this chunk
+                        "bbox": None
+                    }
+                    logger.debug(f"📑 [SECTION_HEADER] Chunk {i}: Propagating section '{current_section_header}'")
+                
+                # Fallback: Check chunk_meta for section header (legacy support)
+                if not section_header_info:
+                    section_header = chunk_meta.get('section_header') if chunk_meta else None
+                    section_title = chunk_meta.get('section_title') if chunk_meta else None
+                    section_level = chunk_meta.get('section_level') if chunk_meta else None
+                    normalized_header = chunk_meta.get('normalized_header') if chunk_meta else None
+                    has_section_header = chunk_meta.get('has_section_header', False) if chunk_meta else False
+                    
+                    if has_section_header and section_header:
+                        section_header_info = {
+                            "section_header": section_header,
+                            "section_title": section_title or normalized_header,
+                            "section_level": section_level or 2,  # Default to level 2
+                            "page_number": chunk_page,
+                            "bbox": chunk_bbox
+                        }
+                        # Update current section for propagation
+                        current_section_header = section_header
+                        current_section_title = section_title or normalized_header
+                        current_section_level = section_level or 2
+                
+                # Store section header info in metadata JSONB
                 chunk_metadata_jsonb = {}
-                if has_section_header and section_header:
+                if section_header_info:
+                    # Extract keywords from section header
+                    section_keywords = extract_keywords(section_header_info['section_header'])
+                    
                     chunk_metadata_jsonb = {
-                        'section_header': section_header,
-                        'normalized_header': normalized_header,
+                        'section_header': section_header_info['section_header'],
+                        'section_title': section_header_info['section_title'],  # Normalized title (used as section_id)
+                        'section_level': section_header_info['section_level'],  # Hierarchy level (1, 2, 3)
+                        'normalized_header': section_header_info['section_title'],  # Same as section_title
                         'section_keywords': section_keywords,
-                        'has_section_header': True
+                        'has_section_header': (section_header_info.get('page_number') is not None)  # True if header is in this chunk
                     }
-                elif chunk_meta:
+                else:
+                    # No section header (document start, before first header)
                     chunk_metadata_jsonb = {
-                        'has_section_header': False
+                        'has_section_header': False,
+                        'section_title': None,
+                        'section_level': None
                     }
+                
+                # Extract image blocks from chunk_blocks for citation purposes
+                if chunk_blocks and isinstance(chunk_blocks, list):
+                    image_blocks = [
+                        {
+                            'image_url': block.get('image_url'),
+                            'bbox': block.get('bbox'),
+                            'page': block.get('bbox', {}).get('page') if block.get('bbox') else None,
+                            'type': block.get('type')
+                        }
+                        for block in chunk_blocks
+                        if isinstance(block, dict) and block.get('type') in ['Figure', 'Table'] and block.get('image_url')
+                    ]
+                    if image_blocks:
+                        # Add images array to metadata (merge with existing metadata)
+                        if not chunk_metadata_jsonb:
+                            chunk_metadata_jsonb = {}
+                        chunk_metadata_jsonb['images'] = image_blocks
+                        logger.debug(f"📸 Added {len(image_blocks)} image references to chunk {i} metadata")
                 
                 # Get the context for this chunk (if contextualization was used)
                 chunk_context = chunk_contexts[i] if i < len(chunk_contexts) else ""
@@ -1103,16 +1320,31 @@ class SupabaseVectorService:
                 if chunk_blocks and isinstance(chunk_blocks, list):
                     for block_idx, block in enumerate(chunk_blocks):
                         if isinstance(block, dict):
-                            # Phase 6: Validate block structure - must have content for citation matching
+                            # Phase 6: Validate block structure - must have content OR be an image block with image_url
                             block_content = block.get('content')
                             block_bbox = block.get('bbox')
+                            block_type = block.get('type', '')
+                            block_image_url = block.get('image_url')
                             
-                            # Validation: Block must have content (required for citation matching)
-                            if not block_content or not isinstance(block_content, str) or not block_content.strip():
+                            # Check if this is an image block (Figure/Table) with image_url
+                            is_image_block = block_type in ['Figure', 'Table'] and block_image_url
+                            has_content = block_content and isinstance(block_content, str) and block_content.strip()
+                            
+                            # Validation: Block must have content OR be an image block with image_url and bbox
+                            if not has_content and not is_image_block:
                                 blocks_invalid += 1
                                 logger.warning(
-                                    f"⚠️ [BLOCK_VALIDATION] Block {block_idx} in chunk {i} missing or empty content. "
+                                    f"⚠️ [BLOCK_VALIDATION] Block {block_idx} in chunk {i} missing content and not an image block. "
                                     f"Block will be skipped (required for citation matching)."
+                                )
+                                continue
+                            
+                            # For image blocks, require bbox for citation
+                            if is_image_block and not block_bbox:
+                                blocks_invalid += 1
+                                logger.warning(
+                                    f"⚠️ [BLOCK_VALIDATION] Image block {block_idx} in chunk {i} missing bbox. "
+                                    f"Block will be skipped (bbox required for image citation)."
                                 )
                                 continue
                             
@@ -1164,24 +1396,29 @@ class SupabaseVectorService:
                             # Build clean block metadata
                             clean_block = {
                                 'type': block.get('type'),
-                                'content': block_content.strip(),  # Ensure content is trimmed
+                                'content': block_content.strip() if block_content and isinstance(block_content, str) else None,  # Allow None for image blocks
                                 'bbox': block_bbox_clean,
                                 'confidence': block.get('confidence'),
                                 'logprobs_confidence': block.get('logprobs_confidence'),
                                 'image_url': block.get('image_url')
                             }
-                            # Remove None values (except bbox which can be None)
-                            clean_block = {k: v for k, v in clean_block.items() if v is not None or k == 'bbox'}
+                            # Remove None values (except bbox and content which can be None for image blocks)
+                            clean_block = {k: v for k, v in clean_block.items() if v is not None or k in ['bbox', 'content']}
                             
-                            # Phase 6: Final validation - ensure content is present (critical for citation matching)
-                            if clean_block.get('content'):
+                            # Phase 6: Final validation - ensure content is present OR it's an image block with image_url and bbox
+                            has_final_content = clean_block.get('content')
+                            is_final_image_block = clean_block.get('type') in ['Figure', 'Table'] and clean_block.get('image_url') and clean_block.get('bbox')
+                            
+                            if has_final_content or is_final_image_block:
                                 blocks_for_storage.append(clean_block)
                                 blocks_validated += 1
+                                if is_final_image_block:
+                                    logger.debug(f"✅ [BLOCK_VALIDATION] Stored image block {block_idx} in chunk {i} (type: {clean_block.get('type')}, has bbox: {bool(clean_block.get('bbox'))})")
                             else:
                                 blocks_invalid += 1
                                 logger.error(
                                     f"❌ [BLOCK_VALIDATION] Block {block_idx} in chunk {i} failed final validation: "
-                                    f"content missing after cleaning. Block will not be stored."
+                                    f"no content and not a valid image block. Block will not be stored."
                                 )
                 
                 # Log block validation statistics
@@ -1191,13 +1428,23 @@ class SupabaseVectorService:
                         f"{blocks_invalid} blocks invalid (skipped)"
                     )
                 
+                # PHASE 3: Include section header in chunk_text for LLM visibility
+                chunk_text_for_storage = chunk  # Original chunk text
+                if section_header_info and section_header_info.get('section_header'):
+                    # Prepend section header to chunk text
+                    section_prefix = f"[Section: {section_header_info['section_header']}]\n\n"
+                    chunk_text_for_storage = section_prefix + chunk_text_for_storage
+                    logger.debug(f"📑 [SECTION_HEADER] Chunk {i}: Added section prefix to chunk_text")
+                
                 record = {
                     'id': str(uuid.uuid4()),
                     'document_id': document_id,
                     'property_id': metadata.get('property_id'),
-                    'chunk_text': chunk,  # Original chunk (for display)
+                    'chunk_text': chunk_text_for_storage,  # Includes section header prefix if available
+                    'chunk_text_clean': cleaned_chunks[i] if not lazy_embedding else None,  # Clean text (for embedding) - NO section prefix
                     'chunk_context': chunk_context,  # Generated context (for reference)
-                    'embedding': embedding,  # Embedding of contextualized+enriched chunk (or None for lazy)
+                    'chunk_quality_score': quality_scores[i] if i < len(quality_scores) else None,  # Quality score (0.0-1.0)
+                    'embedding': embedding,  # Embedding of cleaned chunk (or None for lazy)
                     'chunk_index': i,
                     'classification_type': metadata.get('classification_type'),
                     'address_hash': metadata.get('address_hash'),

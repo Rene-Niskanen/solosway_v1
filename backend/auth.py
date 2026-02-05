@@ -7,6 +7,8 @@ from .services.supabase_auth_service import SupabaseAuthService
 import logging
 import os
 from uuid import UUID, uuid4
+import requests
+import json
 
 auth = Blueprint('auth', __name__)
 logger = logging.getLogger(__name__)
@@ -27,38 +29,89 @@ def test_db():
 
 @auth.route('/login', methods=['GET', 'POST'])
 def login():
+    """Legacy login route - redirects to frontend or returns JSON for API clients"""
+    # For GET requests (browser navigation, favicon requests, etc.)
+    if request.method == 'GET':
+        # Check if this is an API client (wants JSON) or browser (wants redirect)
+        if request.headers.get('Accept', '').startswith('application/json'):
+            return jsonify({
+                'success': False,
+                'message': 'Please use /api/login endpoint for authentication',
+                'endpoint': '/api/login'
+            }), 400
+        # For browsers, redirect to frontend login page
+        frontend_url = os.environ.get('FRONTEND_URL', 'http://localhost:3000')
+        return redirect(f"{frontend_url}/login", code=302)
+    
+    # For POST requests (legacy form-based login)
     if request.method == 'POST':
-        email = request.form.get('email')
-        password = request.form.get('password')
-        
-        # Use Supabase for authentication
-        auth_service = SupabaseAuthService()
-        user_data = auth_service.get_user_by_email(email)
-        
-        if user_data and auth_service.verify_password(user_data, password):
-            business_uuid = user_data.get('business_uuid')
-            if not business_uuid:
-                legacy_business = user_data.get('business_id') or user_data.get('company_name')
-                business_uuid = auth_service.ensure_business_uuid(legacy_business)
-                auth_service.update_user(user_data['id'], {'business_uuid': business_uuid})
+        try:
+            email = request.form.get('email')
+            password = request.form.get('password')
+            
+            if not email or not password:
+                return jsonify({
+                    'success': False,
+                    'message': 'Email and password required. Please use /api/login endpoint.'
+                }), 400
+            
+            # Use Supabase for authentication
+            auth_service = SupabaseAuthService()
+            try:
+                user_data = auth_service.get_user_by_email(email)
+            except Exception as db_error:
+                error_msg = str(db_error)
+                if 'timeout' in error_msg.lower() or 'timed out' in error_msg.lower():
+                    logger.error(f"Database timeout during login for {email}: {db_error}")
+                    return jsonify({
+                        'success': False, 
+                        'message': 'Database connection timeout. Please try again in a moment.'
+                    }), 503
+                else:
+                    logger.error(f"Database error during login for {email}: {db_error}")
+                    return jsonify({
+                        'success': False, 
+                        'message': 'Database error. Please try again.'
+                    }), 503
+            
+            if user_data and auth_service.verify_password(user_data, password):
+                business_uuid = user_data.get('business_uuid')
+                if not business_uuid:
+                    legacy_business = user_data.get('business_id') or user_data.get('company_name')
+                    business_uuid = auth_service.ensure_business_uuid(legacy_business)
+                    auth_service.update_user(user_data['id'], {'business_uuid': business_uuid})
 
-            user = User()
-            user.id = user_data['id']
-            user.email = user_data['email']
-            user.first_name = user_data['first_name']
-            user.company_name = user_data['company_name']
-            user.company_website = user_data['company_website']
-            user.role = UserRole.ADMIN if user_data['role'] == 'admin' else UserRole.USER
-            user.status = UserStatus.ACTIVE if user_data['status'] == 'active' else UserStatus.INVITED
-            user.business_id = UUID(business_uuid) if business_uuid else None
-            
-            flash('Logged in successfully!', category='success')
-            login_user(user, remember=True)
-            return redirect(url_for('views.home'))
-        else:
-            flash('Invalid email or password.', category='error')
-            
-    return render_template("login.html", user=current_user)
+                user = User()
+                user.id = user_data['id']
+                user.email = user_data['email']
+                user.first_name = user_data['first_name']
+                user.company_name = user_data['company_name']
+                user.company_website = user_data['company_website']
+                user.role = UserRole.ADMIN if user_data['role'] == 'admin' else UserRole.USER
+                user.status = UserStatus.ACTIVE if user_data['status'] == 'active' else UserStatus.INVITED
+                user.business_id = UUID(business_uuid) if business_uuid else None
+                
+                login_user(user, remember=True)
+                # Redirect to frontend dashboard
+                frontend_url = os.environ.get('FRONTEND_URL', 'http://localhost:3000')
+                return redirect(f"{frontend_url}/dashboard", code=302)
+            else:
+                return jsonify({
+                    'success': False,
+                    'message': 'Invalid email or password.'
+                }), 401
+        except Exception as e:
+            logger.error(f"Login error: {str(e)}")
+            return jsonify({
+                'success': False,
+                'message': 'Server error. Please try again.'
+            }), 500
+    
+    # Fallback (shouldn't reach here)
+    return jsonify({
+        'success': False,
+        'message': 'Invalid request method'
+    }), 405
 
 # API endpoint for React login
 @auth.route('/api/login', methods=['POST'])
@@ -83,8 +136,49 @@ def api_login():
             return jsonify({'success': False, 'message': 'Email and password required.'}), 400
         
         # Use Supabase for authentication
+        # #region agent log
+        import json, time
+        try:
+            with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B,C,D,E","location":"auth.py:138","message":"api_login before auth_service init","data":{"email":email},"timestamp":int(time.time()*1000)}) + '\n')
+        except: pass
+        # #endregion
         auth_service = SupabaseAuthService()
-        user_data = auth_service.get_user_by_email(email)
+        # #region agent log
+        try:
+            with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B,C,D,E","location":"auth.py:141","message":"api_login before get_user_by_email","data":{},"timestamp":int(time.time()*1000)}) + '\n')
+        except: pass
+        # #endregion
+        try:
+            user_data = auth_service.get_user_by_email(email)
+            # #region agent log
+            try:
+                with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B,C,D,E","location":"auth.py:144","message":"api_login after get_user_by_email success","data":{"has_user_data":user_data is not None},"timestamp":int(time.time()*1000)}) + '\n')
+            except: pass
+            # #endregion
+        except Exception as db_error:
+            # #region agent log
+            try:
+                with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B,C,D,E","location":"auth.py:149","message":"api_login get_user_by_email exception","data":{"error_type":type(db_error).__name__,"error_msg":str(db_error)[:200]},"timestamp":int(time.time()*1000)}) + '\n')
+            except: pass
+            # #endregion
+            error_msg = str(db_error)
+            if 'timeout' in error_msg.lower() or 'timed out' in error_msg.lower():
+                logger.error(f"Database timeout during login for {email}: {db_error}")
+                return jsonify({
+                    'success': False, 
+                    'message': 'Database connection timeout. Please try again in a moment.'
+                }), 503
+            else:
+                logger.error(f"Database error during login for {email}: {db_error}")
+                return jsonify({
+                    'success': False, 
+                    'message': 'Database error. Please try again.'
+                }), 503
+        
         logger.info(f"User found: {user_data is not None}")
         
         if user_data and auth_service.verify_password(user_data, password):
@@ -184,6 +278,131 @@ def api_signup():
             'success': False,
             'error': 'Failed to create account. Please try again.'
         }), 500
+
+@auth.route('/api/auth/google', methods=['POST'])
+def api_google_auth():
+    """Handle Google OAuth authentication"""
+    try:
+        data = request.get_json()
+        if not data or not data.get('credential'):
+            return jsonify({'success': False, 'error': 'No credential provided'}), 400
+        
+        credential = data.get('credential')
+        
+        # Verify the token with Google
+        google_client_id = os.environ.get('GOOGLE_CLIENT_ID')
+        if not google_client_id:
+            logger.error("GOOGLE_CLIENT_ID not configured")
+            return jsonify({'success': False, 'error': 'Google authentication not configured'}), 500
+        
+        # Verify token with Google
+        try:
+            verify_url = 'https://oauth2.googleapis.com/tokeninfo'
+            response = requests.get(verify_url, params={'id_token': credential}, timeout=10)
+            response.raise_for_status()
+            token_info = response.json()
+            
+            # Verify the token is for our client
+            if token_info.get('aud') != google_client_id:
+                logger.warning(f"Token audience mismatch: {token_info.get('aud')} != {google_client_id}")
+                return jsonify({'success': False, 'error': 'Invalid token'}), 401
+            
+            # Extract user information
+            email = token_info.get('email')
+            first_name = token_info.get('given_name', '')
+            last_name = token_info.get('family_name', '')
+            name = token_info.get('name', '')
+            picture = token_info.get('picture')
+            
+            if not email:
+                return jsonify({'success': False, 'error': 'No email in Google account'}), 400
+            
+            # Use Supabase for user management
+            auth_service = SupabaseAuthService()
+            user_data = auth_service.get_user_by_email(email)
+            
+            if user_data:
+                # User exists - log them in
+                business_uuid = user_data.get('business_uuid')
+                if not business_uuid:
+                    legacy_business = user_data.get('business_id') or user_data.get('company_name')
+                    business_uuid = auth_service.ensure_business_uuid(legacy_business or 'Default Company')
+                    auth_service.update_user(user_data['id'], {'business_uuid': business_uuid})
+                
+                # Update profile picture if available
+                if picture and not user_data.get('profile_picture_url'):
+                    auth_service.update_user(user_data['id'], {'profile_picture_url': picture})
+                
+                user = User()
+                user.id = user_data['id']
+                user.email = user_data['email']
+                user.first_name = user_data.get('first_name') or first_name
+                user.company_name = user_data.get('company_name') or 'Default Company'
+                user.company_website = user_data.get('company_website')
+                user.role = UserRole.ADMIN if user_data.get('role') == 'admin' else UserRole.USER
+                user.status = UserStatus.ACTIVE if user_data.get('status') == 'active' else UserStatus.INVITED
+                user.business_id = UUID(business_uuid) if business_uuid else None
+                
+                login_user(user, remember=True)
+                logger.info(f"Google login successful for existing user: {email}")
+                
+                return jsonify({
+                    'success': True,
+                    'message': 'Logged in successfully'
+                }), 200
+            else:
+                # New user - create account
+                # Extract company name from email domain or use default
+                email_domain = email.split('@')[1] if '@' in email else 'default'
+                company_name = email_domain.split('.')[0].title() if '.' in email_domain else 'Default Company'
+                
+                business_uuid = auth_service.ensure_business_uuid(company_name)
+                
+                user_data = {
+                    'email': email,
+                    'first_name': first_name or name.split()[0] if name else 'User',
+                    'last_name': last_name or ' '.join(name.split()[1:]) if name and len(name.split()) > 1 else '',
+                    'company_name': company_name,
+                    'business_uuid': business_uuid,
+                    'business_id': business_uuid,
+                    'role': 'user',
+                    'status': 'active',
+                    'profile_picture_url': picture,
+                    'created_at': 'now()',
+                    'updated_at': 'now()'
+                }
+                
+                new_user_data = auth_service.create_user(user_data)
+                if not new_user_data:
+                    return jsonify({'success': False, 'error': 'Failed to create user'}), 500
+                
+                user = User()
+                user.id = new_user_data['id']
+                user.email = new_user_data['email']
+                user.first_name = new_user_data.get('first_name', first_name)
+                user.company_name = new_user_data.get('company_name', company_name)
+                user.role = UserRole.USER
+                user.status = UserStatus.ACTIVE
+                user.business_id = UUID(business_uuid) if business_uuid else None
+                
+                login_user(user, remember=True)
+                logger.info(f"Google signup successful for new user: {email}")
+                
+                return jsonify({
+                    'success': True,
+                    'message': 'Account created and logged in successfully'
+                }), 201
+                
+        except requests.RequestException as e:
+            logger.error(f"Error verifying Google token: {e}")
+            return jsonify({'success': False, 'error': 'Failed to verify Google token'}), 401
+        except Exception as verify_error:
+            logger.error(f"Error processing Google token: {verify_error}")
+            return jsonify({'success': False, 'error': 'Invalid token'}), 401
+            
+    except Exception as e:
+        logger.error(f"Google auth error: {str(e)}")
+        return jsonify({'success': False, 'error': 'Server error'}), 500
 
 @auth.route('/logout', methods=['GET', 'POST'])
 @login_required
