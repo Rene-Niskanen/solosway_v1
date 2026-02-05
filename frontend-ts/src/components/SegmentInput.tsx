@@ -429,6 +429,14 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
         onMouseDown={handleMouseDown}
         onKeyDown={handleKeyDown}
         onClick={handleClick}
+        onPaste={(e) => {
+          e.preventDefault();
+          const text = e.clipboardData.getData("text/plain");
+          if (text && onInsertText) {
+            const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+            onInsertText(normalized);
+          }
+        }}
       >
         {segments.map((seg, i) => {
         if (isTextSegment(seg)) {

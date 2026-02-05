@@ -5104,7 +5104,7 @@ export const MainContent = ({
         const transitionValue = shouldEnableTransition ? 'left 0.3s ease-out' : 'none';
         
         return (
-          <div 
+          <div
             ref={(el) => {
               if (el) {
                 // Use requestAnimationFrame to check after layout

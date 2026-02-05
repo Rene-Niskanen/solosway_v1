@@ -626,12 +626,15 @@ const StreamingResponseText: React.FC<{
   };
 
   // Parse <<<MAIN>>>...<<<END_MAIN>>> (LLM wraps the direct answer); replace with placeholders so we highlight each segment
+  // Allow optional space before >> so malformed tags (e.g. <<<END_MAIN> >>) are still stripped
   const { mainSegments, textWithTagsStripped } = React.useMemo(() => {
     const segments: string[] = [];
-    const text = processedText.replace(/<<<MAIN>>>(.*?)<<<END_MAIN>>>/gs, (_match, content: string) => {
+    let text = processedText.replace(/<<<MAIN>>>(.*?)<<<END_MAIN\s*>>>/gs, (_match, content: string) => {
       segments.push(content.trim());
       return `%%MAIN_${segments.length - 1}%%`;
     });
+    // Strip any remaining raw MAIN/END_MAIN tags that didn't match (malformed)
+    text = text.replace(/<<<MAIN>>>/g, '').replace(/<<<END_MAIN\s*>>>/g, '');
     return { mainSegments: segments, textWithTagsStripped: text };
   }, [processedText]);
 
@@ -11754,7 +11757,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 />
               </div>
             )}
-            <div style={{ backgroundColor: '#FFFFFF', borderRadius: '8px', padding: '4px 10px', border: '1px solid #e5e7eb', boxShadow: '0 1px 2px rgba(0, 0, 0, 0.05)', width: '100%', wordWrap: 'break-word', overflowWrap: 'break-word', display: 'block', maxWidth: '100%', boxSizing: 'border-box' }}>
+            <div style={{ backgroundColor: '#FFFFFF', borderRadius: '8px', padding: '4px 10px', border: '1px solid #e5e7eb', boxShadow: '0 1px 2px rgba(0, 0, 0, 0.05)', width: 'fit-content', maxWidth: '100%', wordWrap: 'break-word', overflowWrap: 'break-word', display: 'block', boxSizing: 'border-box' }}>
               {message.attachments?.length > 0 && (
                 <div style={{ marginBottom: (message.text || message.propertyAttachments?.length > 0) ? '8px' : '0', display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
                   {message.attachments.map((attachment, i) => (
@@ -11762,7 +11765,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   ))}
                 </div>
               )}
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', alignItems: 'center', width: '100%' }}>
+              <div style={{ display: 'block', lineHeight: '22px', fontSize: '14px', width: 'fit-content', maxWidth: '100%' }}>
                 {message.contentSegments && message.contentSegments.length > 0
                   ? message.contentSegments.map((seg, idx) => {
                       if (seg.type === 'text') {
@@ -11776,13 +11779,13 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             style={{
                               color: '#0D0D0D',
                               fontSize: '14px',
-                              lineHeight: '20px',
+                              lineHeight: '22px',
                               margin: 0,
                               padding: 0,
+                              marginRight: '6px',
                               textAlign: 'left',
                               fontFamily: 'system-ui, -apple-system, sans-serif',
-                              flex: '1 1 auto',
-                              minWidth: 0,
+                              display: 'inline',
                               cursor: segTruncated ? 'pointer' : 'default',
                               wordWrap: 'break-word',
                               overflowWrap: 'break-word',
@@ -11819,18 +11822,21 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         const part = (prop.address || '').split(',')[0] || prop.address || '';
                         const label = part.length > 30 ? part.slice(0, 27) + '...' : part;
                         return (
-                          <AtMentionChip
-                            key={`p-${idx}-${prop.id}`}
-                            type="property"
-                            label={label}
-                            title={`Click to view ${prop.address}`}
-                            onClick={onOpenProperty ? () => onOpenProperty(prop.address, prop.property?.latitude != null && prop.property?.longitude != null ? { lat: prop.property.latitude, lng: prop.property.longitude } : undefined, prop.property?.id ?? prop.propertyId) : undefined}
-                          />
+                          <span key={`p-${idx}-${prop.id}`} style={{ display: 'inline-flex', verticalAlign: 'middle', marginRight: '6px' }}>
+                            <AtMentionChip
+                              type="property"
+                              label={label}
+                              title={`Click to view ${prop.address}`}
+                              onClick={onOpenProperty ? () => onOpenProperty(prop.address, prop.property?.latitude != null && prop.property?.longitude != null ? { lat: prop.property.latitude, lng: prop.property.longitude } : undefined, prop.property?.id ?? prop.propertyId) : undefined}
+                            />
+                          </span>
                         );
                       }
                       const label = seg.name.length > 30 ? seg.name.slice(0, 27) + '...' : seg.name;
                       return (
-                        <AtMentionChip key={`d-${idx}-${seg.id}`} type="document" label={label} />
+                        <span key={`d-${idx}-${seg.id}`} style={{ display: 'inline-flex', verticalAlign: 'middle', marginRight: '6px' }}>
+                          <AtMentionChip type="document" label={label} />
+                        </span>
                       );
                     })
                   : (
@@ -11839,20 +11845,23 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         const part = (prop.address || '').split(',')[0] || prop.address || '';
                         const label = part.length > 30 ? part.slice(0, 27) + '...' : part;
                         return (
-                          <AtMentionChip
-                            key={prop.id ?? prop.property?.id ?? prop.address ?? `prop-${i}`}
-                            type="property"
-                            label={label}
-                            title={`Click to view ${prop.address}`}
-                            onClick={onOpenProperty ? () => onOpenProperty(prop.address, prop.property?.latitude != null && prop.property?.longitude != null ? { lat: prop.property.latitude, lng: prop.property.longitude } : undefined, prop.property?.id ?? prop.propertyId) : undefined}
-                          />
+                          <span key={prop.id ?? prop.property?.id ?? prop.address ?? `prop-${i}`} style={{ display: 'inline-flex', verticalAlign: 'middle', marginRight: '6px' }}>
+                            <AtMentionChip
+                              type="property"
+                              label={label}
+                              title={`Click to view ${prop.address}`}
+                              onClick={onOpenProperty ? () => onOpenProperty(prop.address, prop.property?.latitude != null && prop.property?.longitude != null ? { lat: prop.property.latitude, lng: prop.property.longitude } : undefined, prop.property?.id ?? prop.propertyId) : undefined}
+                            />
+                          </span>
                         );
                       })}
                       {message.selectedDocumentIds?.map((docId, i) => {
                         const name = message.selectedDocumentNames?.[i] ?? docId;
                         const label = name.length > 30 ? name.slice(0, 27) + '...' : name;
                         return (
-                          <AtMentionChip key={docId} type="document" label={label} />
+                          <span key={docId} style={{ display: 'inline-flex', verticalAlign: 'middle', marginRight: '6px' }}>
+                            <AtMentionChip type="document" label={label} />
+                          </span>
                         );
                       })}
                       {message.text ? (
@@ -11860,13 +11869,13 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           style={{
                             color: '#0D0D0D',
                             fontSize: '14px',
-                            lineHeight: '20px',
+                            lineHeight: '22px',
                             margin: 0,
                             padding: 0,
+                            marginRight: '6px',
                             textAlign: 'left',
                             fontFamily: 'system-ui, -apple-system, sans-serif',
-                            flex: '1 1 auto',
-                            minWidth: 0,
+                            display: 'inline',
                             cursor: isTruncated ? 'pointer' : 'default',
                             wordWrap: 'break-word',
                             overflowWrap: 'break-word',
@@ -13920,9 +13929,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           }}
                           removeChipAtSegmentIndex={segmentInput.removeChipAtIndex}
                           restoreSelectionRef={restoreSelectionRef}
-                          placeholder={selectedDocumentIds.size > 0
-                            ? `Searching in ${selectedDocumentIds.size} selected document${selectedDocumentIds.size > 1 ? 's' : ''}...`
-                            : 'Ask anything...'}
+                          placeholder="Ask anything..."
                           disabled={isSubmitted}
                           style={{
                             width: '100%',

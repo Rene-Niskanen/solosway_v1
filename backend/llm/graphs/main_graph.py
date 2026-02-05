@@ -505,13 +505,12 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
             logger.info("[GRAPH] Fast path: attachment_fast")
             return "handle_attachment_fast"
         
-        # Direct document access (document_ids provided)
+        # Chip (document_ids) and everything else: main path (context_manager → planner → executor → responder)
+        # Chip queries no longer use fetch_direct_chunks; they use the same pipeline as normal search
         if document_ids:
-            logger.info(f"[GRAPH] Fast path: direct_document (doc_ids={document_ids})")
-            return "fetch_direct_chunks"
-        
-        # Everything else goes to context_manager → agent
-        logger.info("[GRAPH] Routing to context_manager (check tokens before agent)")
+            logger.info(f"[GRAPH] Chip query (doc_ids present): routing to context_manager (main path)")
+        else:
+            logger.info("[GRAPH] Routing to context_manager (check tokens before agent)")
         return "context_manager"
     
     builder.add_conditional_edges(

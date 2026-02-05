@@ -849,17 +849,16 @@ def query_documents_stream():
                     
                     timing.mark("intent_extracted")
                     
-                    # Step (1): User intent reframed as reasoning step (replaces "Planning next moves")
-                    intent_message = extract_query_intent(query)
+                    # Step (1): Planning next moves (normal retrieval reasoning flow)
                     initial_reasoning = {
                         'type': 'reasoning_step',
                         'step': 'planning_next_moves',
                         'action_type': 'planning',
-                        'message': intent_message,
+                        'message': 'Planning next moves',
                         'details': {}
                     }
                     yield f"data: {json.dumps(initial_reasoning)}\n\n"
-                    logger.debug(f"🟡 [REASONING] Emitted step (1): {intent_message}")
+                    logger.debug("🟡 [REASONING] Emitted step (1): Planning next moves")
                 
                 # Detect if user wants agent to perform UI actions (show me, save, navigate)
                 action_intent = detect_action_intent(query)
@@ -972,9 +971,10 @@ def query_documents_stream():
                         }
                         
                         # Node name to user-friendly message mapping with action types for Cursor-style UI
-                        # These are minimal - most steps are dynamically generated from on_chain_end events
+                        # Main path (context_manager → planner → executor → responder) and direct path (summarize_results)
+                        # Chip queries: use document-focused steps instead of "Searching for documents" / "Reviewed relevant sections"
+                        is_chip_query = bool(effective_document_ids)
                         node_messages = {
-                            # Only emit for clarify_relevant_docs start (brief step before detailed Found X)
                             'clarify_relevant_docs': {
                                 'action_type': 'analysing',
                                 'message': 'Ranking results',
@@ -984,7 +984,14 @@ def query_documents_stream():
                                 'action_type': 'planning',
                                 'message': 'Preparing response',
                                 'details': {}
-                            }
+                            },
+                            # Main retrieval path: step (1) "Planning next moves" from initial_reasoning; (2) from phase "Searching for {query}"
+                            # planner/executor not in node_messages to avoid duplicates
+                            'responder': {
+                                'action_type': 'analysing',
+                                'message': 'Preparing response',
+                                'details': {}
+                            },
                         }
                         
                         # Stream events from graph execution and track state
@@ -1023,17 +1030,20 @@ def query_documents_stream():
                                 execution_events = consume_execution_events()
                                 for exec_event in execution_events:
                                     payload = exec_event.to_dict()
-                                    # When executor emits "Searched documents" / "Searched for: X" (before retrieve_docs),
-                                    # also emit a reasoning_step so the UI shows "Searching for documents" before "Found N documents"
-                                    # Do NOT convert "Planning search for: ..." or "Finding the ..." (planner's label) to a searching step
+                                    # When executor/planner emits phase events with reasoning (e.g. "Searched documents", "Reviewed selected document(s)"),
+                                    # emit a reasoning_step so the UI shows the step when the toggle is on
                                     if not is_fast_path and payload.get('type') == 'phase' and (payload.get('metadata') or {}).get('reasoning'):
                                         label = (payload.get('metadata') or {}).get('label') or payload.get('description', '')
                                         label_stripped = (label or '').strip()
                                         if label_stripped.startswith('Planning search for') or label_stripped.startswith('Finding the ') or label_stripped.startswith('Finding '):
-                                            # Planner's step: skip (initial step already shows rephrased intent from extract_query_intent)
+                                            # Normal retrieval uses "Planning next moves" (step 1) from initial_reasoning; skip duplicate from phase
                                             pass
                                         elif label and ('Searched' in label or 'search' in label.lower()):
-                                            search_message = 'Searching for documents' if label == 'Searched documents' else (f'Searching for documents: {label.replace("Searched for: ", "").strip()}' if label.startswith('Searched for:') else label)
+                                            # Use the label from the executor (already "Searching for {step_query}" or "Scanning selected document")
+                                            if is_chip_query:
+                                                search_message = 'Scanning selected document'
+                                            else:
+                                                search_message = label_stripped or 'Searching for documents'
                                             reasoning_data = {
                                                 'type': 'reasoning_step',
                                                 'step': 'searching_documents',
@@ -1044,6 +1054,9 @@ def query_documents_stream():
                                             }
                                             yield f"data: {json.dumps(reasoning_data)}\n\n"
                                             logger.info(f"🟡 [REASONING] Emitted searching step (from executor): {search_message}")
+                                        elif label and ('Reviewed' in label or 'review' in label.lower()):
+                                            # Normal retrieval: skip "Reviewed relevant sections" so steps match (1) Planning (2) Searching for query (3) Found x docs (4) Read
+                                            pass
                                     event_data = {
                                         'type': 'execution_event',
                                         'payload': payload

@@ -233,7 +233,7 @@ export const ChatPanel = ({
           if (openMenuId) setOpenMenuId(null);
         }}
         style={{
-          background: '#F4F4F4',
+          background: '#F8F8F8',
           right: isOpen ? '0px' : '-1000px', // Move off-screen when closed
           width: isOpen ? `${width}px` : '320px',
           transition: 'right 0s ease-out, width 0s ease-out',

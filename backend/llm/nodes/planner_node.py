@@ -69,7 +69,7 @@ STEPS: You may output 0, 1, or 2 steps.
 
 FIELDS:
 - objective: high-level goal (string)
-- steps: array of 0, 1, or 2 steps. Each step: id, action ("retrieve_docs" or "retrieve_chunks"), query, document_ids (for retrieve_chunks, use ["<from_step_search_docs>"] when from step 1), reasoning_label
+- steps: array of 0, 1, or 2 steps. Each step: id, action ("retrieve_docs" or "retrieve_chunks"), query, document_ids (for retrieve_chunks, use ["<from_step_search_docs>"] when from step 1), reasoning_label. For "query": use a short phrase that reads naturally after "Searching for " (e.g. "what is the value of highlands" -> "the value of highlands"; drop interrogative words like "what", "how", "can you").
 - use_prior_context: true only when user asks to restructure/format something already in the conversation
 - format_instruction: exact format the user asked for (e.g. "one concise paragraph: amenities then planning history; copy-paste friendly") or null
 
@@ -230,6 +230,45 @@ async def planner_node(state: MainWorkflowState, runnable_config=None) -> MainWo
     plan_refinement_count = state.get("plan_refinement_count", 0)
     if emitter is None:
         logger.warning("[PLANNER] ⚠️  Emitter is None - reasoning events will not be emitted")
+
+    # Chip query: document_ids in state → fixed 1-step plan (retrieve_chunks only), no LLM
+    raw_doc_ids = state.get("document_ids")
+    if raw_doc_ids and isinstance(raw_doc_ids, list) and len(raw_doc_ids) > 0:
+        document_ids = [str(d) for d in raw_doc_ids if d]
+        if document_ids:
+            logger.info("[PLANNER] Chip query: 1-step plan (retrieve_chunks with %d doc(s))", len(document_ids))
+            execution_plan = {
+                "objective": f"Answer: {user_query[:80]}{'...' if len(user_query) > 80 else ''}" if user_query else "Answer using selected document(s)",
+                "steps": [
+                    {
+                        "id": "search_chunks",
+                        "action": "retrieve_chunks",
+                        "query": user_query,
+                        "document_ids": document_ids,
+                        "reasoning_label": "Pulling relevant passages",
+                        "reasoning_detail": None,
+                    }
+                ],
+                "use_prior_context": False,
+                "format_instruction": None,
+            }
+            if emitter:
+                planning_label = _rephrase_query_to_finding(user_query)
+                emitter.emit_reasoning(label=planning_label, detail=None)
+            plan_message = AIMessage(
+                content=f"Generated execution plan: {execution_plan['objective']} (1 step)"
+            )
+            planner_output = {
+                "execution_plan": execution_plan,
+                "current_step_index": 0,
+                "execution_results": [],
+                "messages": [plan_message],
+                "plan_refinement_count": plan_refinement_count,
+                "prior_turn_content": None,
+                "format_instruction": None,
+            }
+            validate_planner_output(planner_output)
+            return planner_output
 
     is_refinement = plan_refinement_count > 0 or state.get("execution_plan") is not None
     if is_refinement:

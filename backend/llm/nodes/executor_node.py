@@ -205,18 +205,15 @@ async def executor_node(state: MainWorkflowState, runnable_config=None) -> MainW
         reasoning_detail = resolved_step.get("reasoning_detail")
         
         if action == "retrieve_docs":
-            # Use the reasoning_label from the plan, or generate a fallback
-            if not reasoning_label:
-                # Fallback: generate from query (but sanitize it)
-                query = resolved_step.get("query", "")
-                # Extract meaningful keywords, not meta-queries
-                if "execution plan" in query.lower() or "structured" in query.lower() or "user's query" in query.lower():
-                    # This is a meta-query - don't show it, use generic label
-                    reasoning_label = "Searched documents"
-                else:
-                    # Use query but make it user-friendly
-                    reasoning_label = f"Searched for: {query[:40]}{'...' if len(query) > 40 else ''}"
-            
+            # Emit "Searching for {query}" using the step's query (planner already refined it; no hardcoded cleanup)
+            step_query = (resolved_step.get("query") or "").strip()
+            if step_query and "execution plan" not in step_query.lower() and "user's query" not in step_query.lower():
+                reasoning_label = f"Searching for {step_query[:80]}{'...' if len(step_query) > 80 else ''}"
+            elif reasoning_label:
+                # Use plan's reasoning_label if step query is empty or meta
+                pass
+            else:
+                reasoning_label = "Searching for documents"
             emitter.emit_reasoning(
                 label=reasoning_label,
                 detail=reasoning_detail

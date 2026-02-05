@@ -832,8 +832,9 @@ const StepRenderer: React.FC<{
       fixedMessage = fixedMessage.replace(/\b1 documents\b/gi, '1 document');
       // Convert British spelling to US spelling and make more conversational
       fixedMessage = fixedMessage.replace(/\bAnalysing\b/gi, 'Analyzing');
-      // If message is just "Analyzing" or doesn't mention documents, make it more complete
-      if (!fixedMessage.toLowerCase().includes('document')) {
+      // Keep complete phrases like "Preparing response" / "Formulating answer"; only default to "Analyzing documents" when vague or empty
+      const isCompletePhrase = /^(Preparing response|Formulating answer|Preparing answer)/i.test(fixedMessage.trim());
+      if (!isCompletePhrase && !fixedMessage.toLowerCase().includes('document')) {
         fixedMessage = 'Analyzing documents';
       }
       

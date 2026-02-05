@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { MapPin, MousePointerClick, X } from "lucide-react";
+import { MousePointerClick, X } from "lucide-react";
 
 export type AtMentionChipType = "property" | "document";
 
@@ -17,15 +17,17 @@ export interface AtMentionChipProps {
   style?: React.CSSProperties;
 }
 
-/** Selected chip: light blue #D6E7FF, dark text #3B3B3B; compact proportions, width unchanged. */
+/** Selected chip: light blue #D6E7FF, dark text #3B3B3B; compact proportions reduced by 15%. */
 const CHIP_BG = "#D6E7FF";
 const CHIP_TEXT = "#3B3B3B";
-const CHIP_ICON_SIZE = 14;
-const CHIP_PADDING = "2px 7px";
-const CHIP_RADIUS = 4;
-const CHIP_GAP = 5;
-const CHIP_FONT_SIZE = "14px";
-const CHIP_MAX_WIDTH = "260px";
+const CHIP_ICON_SIZE = 12;       /* 14 * 0.85 */
+const CHIP_PADDING = "1.5px 4px"; /* vertical room for descenders; 4px horizontal to reduce gap next to text */
+const CHIP_RADIUS = 3;           /* 4 * 0.85 */
+const CHIP_GAP = 4;              /* 5 * 0.85 */
+const CHIP_FONT_SIZE = "12px";    /* 14px * 0.85 */
+const CHIP_MAX_WIDTH = "221px";  /* 260px * 0.85 */
+/** Vertical offset (px) for chip vs line text: negative = up, positive = down */
+const CHIP_OFFSET_Y = -3;
 
 export function AtMentionChip({
   type,
@@ -44,20 +46,13 @@ export function AtMentionChip({
     onClick?.();
   };
 
-  const Icon =
-    type === "property" ? (
-      <MapPin
-        size={CHIP_ICON_SIZE}
-        style={{ color: CHIP_TEXT, flexShrink: 0 }}
-        strokeWidth={2}
-      />
-    ) : (
-      <MousePointerClick
-        size={CHIP_ICON_SIZE}
-        style={{ color: CHIP_TEXT, flexShrink: 0 }}
-        strokeWidth={2}
-      />
-    );
+  const Icon = (
+    <MousePointerClick
+      size={CHIP_ICON_SIZE}
+      style={{ color: CHIP_TEXT, flexShrink: 0 }}
+      strokeWidth={2}
+    />
+  );
 
   return (
     <span
@@ -71,6 +66,8 @@ export function AtMentionChip({
       style={{
         display: "inline-flex",
         alignItems: "center",
+        verticalAlign: "middle",
+        marginTop: CHIP_OFFSET_Y ? `${CHIP_OFFSET_Y}px` : undefined,
         gap: CHIP_GAP,
         padding: CHIP_PADDING,
         borderRadius: CHIP_RADIUS,
@@ -79,7 +76,7 @@ export function AtMentionChip({
         fontSize: CHIP_FONT_SIZE,
         fontWeight: 400,
         color: CHIP_TEXT,
-        lineHeight: 1.2,
+        lineHeight: 1,
         maxWidth: CHIP_MAX_WIDTH,
         overflow: "hidden",
         textOverflow: "ellipsis",
@@ -115,7 +112,7 @@ export function AtMentionChip({
       ) : (
         Icon
       )}
-      <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
+      <span style={{ overflow: "hidden", textOverflow: "ellipsis", lineHeight: 1.35, minHeight: "1.35em" }}>
         {label}
       </span>
     </span>

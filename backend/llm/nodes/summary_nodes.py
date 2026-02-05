@@ -15,7 +15,7 @@ import json
 from backend.llm.config import config
 from backend.llm.types import MainWorkflowState
 from backend.llm.utils.system_prompts import get_system_prompt
-from backend.llm.prompts import get_summary_human_content, get_citation_extraction_prompt, get_final_answer_prompt, get_final_answer_prompt_segments
+from backend.llm.prompts import get_summary_human_content, get_citation_extraction_prompt, get_final_answer_prompt, get_final_answer_prompt_segments, ensure_main_tags_when_missing
 from backend.llm.utils.block_id_formatter import format_document_with_block_ids
 from backend.llm.tools.citation_mapping import (
     create_citation_tool,
@@ -2273,6 +2273,16 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
     # Only renumber when using Phase 1+2 (segments flow already has citations in order)
     if not segments_used and citations_from_state and summary:
         summary, citations_from_state = _renumber_citations_by_appearance(summary, citations_from_state, metadata_lookup_tables)
+    
+    # Post-process summary for display (align chip/direct-document path with normal path)
+    # 1. Strip internal block IDs that the LLM may have echoed from document context
+    summary = re.sub(r'\s*[\[\(]?BLOCK_CITE_ID_\d+[\]\)]?\s*', ' ', summary)
+    summary = re.sub(r'\s{2,}', ' ', summary).strip()
+    # 2. Normalize malformed MAIN tags so frontend regex matches (e.g. <<<END_MAIN> >> -> <<<END_MAIN>>>)
+    summary = re.sub(r'<<<END_MAIN>\s*>>', '<<<END_MAIN>>>', summary)
+    summary = re.sub(r'<<<END_MAIN>\s+>>', '<<<END_MAIN>>>', summary)
+    # 3. Ensure MAIN tags when LLM omitted them (same as responder path)
+    summary = ensure_main_tags_when_missing(summary, user_query)
     
     summary_complete_time = time.time()
     total_duration = summary_complete_time - phase1_start

@@ -432,10 +432,6 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
   const getContextConfig = () => {
     // Determine placeholder based on document selection
     const getPlaceholder = () => {
-      if (selectedDocumentIds.size > 0) {
-        return `Searching in ${selectedDocumentIds.size} selected document${selectedDocumentIds.size > 1 ? 's' : ''}...`;
-      }
-      
       if (isMapVisible) {
         return "Search for properties";
       } else if (isInChatMode) {
