@@ -32,6 +32,8 @@ jobs:
           echo "password=$PASSWORD" >> $GITHUB_OUTPUT
 
       - name: Create minimal .env file for CI
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           cat > .env << EOF
           # Minimal environment variables for CI testing
@@ -49,6 +51,10 @@ jobs:
           
           # Redis (required by Celery)
           REDIS_URL=redis://redis:6379/0
+          
+          # LLMConfig requires a non-empty OPENAI_API_KEY (Pydantic validation)
+          # Set OPENAI_API_KEY in repository secrets for CI to pass
+          OPENAI_API_KEY=${OPENAI_API_KEY}
           EOF
           echo "Created minimal .env file for CI"
 
