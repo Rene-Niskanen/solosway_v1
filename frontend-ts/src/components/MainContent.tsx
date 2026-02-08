@@ -35,6 +35,7 @@ import { QuickStartBar } from './QuickStartBar';
 import { FilingSidebarProvider, useFilingSidebar } from '../contexts/FilingSidebarContext';
 import { useChatPanel } from '../contexts/ChatPanelContext';
 import { FilingSidebar } from './FilingSidebar';
+import { FileViewModal, type FileViewDocument } from './FileViewModal';
 import { UploadProgressBar } from './UploadProgressBar';
 import { ProjectsPage } from './ProjectsPage';
 import { PropertyDetailsPanel } from './PropertyDetailsPanel';
@@ -2369,6 +2370,7 @@ export const MainContent = ({
   const [restoreChatId, setRestoreChatId] = React.useState<string | null>(null);
   const [newAgentTrigger, setNewAgentTrigger] = React.useState<number>(0); // Counter that increments when "New Agent" is clicked
   const [userData, setUserData] = React.useState<any>(null);
+  const [profilePicCacheBust, setProfilePicCacheBust] = React.useState<number | null>(null);
   const [showNewPropertyWorkflow, setShowNewPropertyWorkflow] = React.useState<boolean>(false);
   const [initialMapState, setInitialMapState] = React.useState<{ center: [number, number]; zoom: number } | null>(null);
   const mapRef = React.useRef<SquareMapRef>(null);
@@ -2459,6 +2461,7 @@ export const MainContent = ({
     MAX_PREVIEW_TABS,
     expandedCardViewDoc: legacyExpandedCardViewDoc, // Legacy - will be removed
     closeExpandedCardView: legacyCloseExpandedCardView, // Legacy - will be removed
+    openExpandedCardView,
     isAgentTaskActive,
     agentTaskMessage,
     stopAgentTask,
@@ -2467,6 +2470,18 @@ export const MainContent = ({
     isChatPanelVisible,
     clearPendingExpandedCardView
   } = usePreview();
+
+  // File View pop-up (from FilingSidebar file row click) — only when not on Settings
+  const [fileViewDocument, setFileViewDocument] = React.useState<FileViewDocument | null>(null);
+  /** Fullscreen document overlay (from "View Document" on file pop-up) — renders on top of everything */
+  const [fullscreenDocumentView, setFullscreenDocumentView] = React.useState<{ docId: string; filename: string } | null>(null);
+  const filingSidebarContainerRef = React.useRef<HTMLDivElement>(null);
+  React.useEffect(() => {
+    if (currentView === 'settings') setFileViewDocument(null);
+  }, [currentView]);
+  React.useEffect(() => {
+    if (!isFilingSidebarOpen) setFileViewDocument(null);
+  }, [isFilingSidebarOpen]);
   
   // NEW: Use ChatStateStore for per-chat document preview isolation
   const { 
@@ -2500,15 +2515,6 @@ export const MainContent = ({
   // CRITICAL: Use the same logic as SideChatPanel's isVisible prop to ensure consistency
   React.useEffect(() => {
     const chatPanelIsVisible = isMapVisible && hasPerformedSearch;
-    console.log('📋 [MAIN_CONTENT] Updating chat panel visibility:', { 
-      isMapVisible, 
-      hasPerformedSearch, 
-      chatPanelIsVisible,
-      hasExpandedDoc: !!expandedCardViewDoc,
-      expandedDocId: expandedCardViewDoc?.docId,
-      activeChatId,
-      usingChatStateStore: !!chatStateDocumentPreview
-    });
     setIsChatPanelVisible(chatPanelIsVisible);
     // Also notify parent (DashboardLayout) so Sidebar can show active state
     onChatVisibilityChange?.(chatPanelIsVisible);
@@ -2542,6 +2548,28 @@ export const MainContent = ({
     
     console.log('🔄 MainContent: New agent requested - cleared restoreChatId and triggered newAgentTrigger');
   }, []);
+
+  // File View modal: open fullscreen document preview over everything (close pop-up first)
+  const handleFileViewDocument = React.useCallback((docId: string, filename: string) => {
+    setFileViewDocument(null); // Close file pop-up
+    setFullscreenDocumentView({ docId, filename });
+  }, []);
+
+  // File View modal: close sidebar + open fullscreen chat with document in preview
+  const handleFileViewAnalyseWithAI = React.useCallback((docId: string, filename: string) => {
+    setFileViewDocument(null); // Close file view modal
+    closeSidebar(); // Close filing sidebar
+    setShouldExpandChat(true); // Open chat in fullscreen mode
+    setIsMapVisibleFromSearchBar(true);
+    setHasPerformedSearch(true);
+    handleNewChatInternal(); // Triggers new chat; SideChatPanel's newAgentTrigger effect will run and call legacyCloseExpandedCardView()
+    // Re-open document after the new-agent effect runs so it stays visible for this new chat session
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        openExpandedCardView(docId, filename);
+      });
+    });
+  }, [openExpandedCardView, handleNewChatInternal, closeSidebar]);
   
   // Expose handler to parent via callback pattern
   // When MainContent mounts/updates, call onNewChatFromParent with our handler
@@ -3015,6 +3043,21 @@ export const MainContent = ({
       }
     };
     fetchUserData();
+  }, []);
+
+  // Sync profile picture when updated from Profile page (and bust cache so new image shows)
+  React.useEffect(() => {
+    const handler = (e: CustomEvent<{ profileImageUrl?: string; avatarUrl?: string; removed?: boolean; cacheBust: number }>) => {
+      const { detail } = e;
+      setProfilePicCacheBust(detail.cacheBust);
+      if (detail.removed) {
+        setUserData((prev) => prev ? { ...prev, profile_image: undefined, avatar_url: undefined, profile_picture_url: undefined } : null);
+      } else if (detail.profileImageUrl) {
+        setUserData((prev) => prev ? { ...prev, profile_image: detail.profileImageUrl, avatar_url: detail.avatarUrl ?? detail.profileImageUrl, profile_picture_url: detail.profileImageUrl } : null);
+      }
+    };
+    window.addEventListener('profilePictureUpdated', handler as EventListener);
+    return () => window.removeEventListener('profilePictureUpdated', handler as EventListener);
   }, []);
 
   const handleMapToggle = () => {
@@ -5558,6 +5601,7 @@ export const MainContent = ({
           docId={expandedCardViewDoc.docId}
           filename={expandedCardViewDoc.filename}
           highlight={expandedCardViewDoc.highlight}
+          scrollRequestId={(expandedCardViewDoc as { scrollRequestId?: number }).scrollRequestId}
           onClose={closeExpandedCardView}
           chatPanelWidth={chatPanelWidth}
           sidebarWidth={(() => {
@@ -5589,6 +5633,37 @@ export const MainContent = ({
         />
       )}
       
+      {/* File View pop-up (from FilingSidebar file row) — overlay on chat/map/dashboard, never on Settings */}
+      {fileViewDocument && currentView !== 'settings' && (
+        <FileViewModal
+          document={fileViewDocument}
+          isOpen={!!fileViewDocument}
+          onClose={() => setFileViewDocument(null)}
+          onViewDocument={handleFileViewDocument}
+          onAnalyseWithAI={handleFileViewAnalyseWithAI}
+          clickOutsideExcludeRef={filingSidebarContainerRef}
+          uploaderName={userData?.first_name || userData?.email || 'User'}
+          uploaderAvatarUrl={(() => {
+            const base = userData?.profile_picture_url ?? userData?.profile_image ?? userData?.avatar_url ?? null;
+            return base && profilePicCacheBust ? `${base}?t=${profilePicCacheBust}` : base;
+          })()}
+          uploaderTitle={userData?.title ?? null}
+        />
+      )}
+
+      {/* Fullscreen document overlay (from file pop-up "View Document") — on top of everything */}
+      {fullscreenDocumentView && (
+        <StandaloneExpandedCardView
+          key="fullscreen-document-overlay"
+          docId={fullscreenDocumentView.docId}
+          filename={fullscreenDocumentView.filename}
+          onClose={() => setFullscreenDocumentView(null)}
+          initialFullscreen={true}
+          chatPanelWidth={0}
+          sidebarWidth={0}
+        />
+      )}
+
       {/* Shared Document Preview Modal - used by SearchBar, SideChatPanel, and PropertyFilesModal */}
       <DocumentPreviewModal
         files={previewFiles}
@@ -5767,8 +5842,9 @@ export const MainContent = ({
         </div>
       )}
       
-      {/* FilingSidebar - Global popout sidebar for document management */}
-      <FilingSidebar 
+      {/* FilingSidebar - Global popout sidebar for document management (wrapped so FileViewModal doesn't close when clicking another doc) */}
+      <div ref={filingSidebarContainerRef}>
+        <FilingSidebar
         sidebarWidth={(() => {
           // Sidebar widths match Tailwind classes:
           // - w-0 when collapsed = 0px
@@ -5788,7 +5864,10 @@ export const MainContent = ({
         })()}
         isSmallSidebarMode={!isSidebarCollapsed}
         hideCloseButton={false}
+        onOpenFileView={(doc) => setFileViewDocument(doc)}
+        openFileViewDocumentId={fileViewDocument?.id ?? null}
       />
+      </div>
 
       {/* Fullscreen Property View - Chat + Property Details split */}
       <FullscreenPropertyView

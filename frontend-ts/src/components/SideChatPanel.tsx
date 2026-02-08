@@ -5,7 +5,7 @@ import { useMemo } from "react";
 import { createPortal, flushSync } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { generateAnimatePresenceKey, generateConditionalKey, generateUniqueKey } from '../utils/keyGenerator';
-import { ChevronRight, ChevronDown, ChevronUp, ArrowUp, Paperclip, Mic, Map, X, SquareDashedMousePointer, Scan, Fullscreen, Plus, PanelLeftOpen, PanelRightClose, PictureInPicture2, Trash2, CreditCard, MoveDiagonal, Square, FileText, Image as ImageIcon, File as FileIcon, FileCheck, Minimize, Minimize2, Workflow, Home, FolderOpen, TextCursorInput, Brain, AudioLines, MessageCircleDashed, Copy, Play, Search, Lock, Pencil, Check, Highlighter, SlidersHorizontal, BookOpen } from "lucide-react";
+import { ChevronRight, ChevronDown, ChevronUp, ArrowUp, Paperclip, Mic, Map, X, SquareDashedMousePointer, Scan, Fullscreen, Plus, PanelLeftOpen, PanelRightClose, PictureInPicture2, Trash2, CreditCard, MoveDiagonal, Square, FileText, Image as ImageIcon, File as FileIcon, FileCheck, Minimize, Minimize2, Workflow, Home, FolderOpen, Brain, AudioLines, MessageCircleDashed, Copy, Search, Lock, Pencil, Check, Highlighter, SlidersHorizontal, BookOpen } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { FileAttachment, FileAttachmentData } from './FileAttachment';
 import { PropertyAttachmentData } from './PropertyAttachment';
@@ -22,6 +22,7 @@ import type { PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist';
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import veloraLogo from '/Velora Logo.jpg';
 import citationIcon from '/citation.png';
+import agentIcon from '/agent.png';
 
 // Configure PDF.js worker globally (same as other components)
 pdfjs.GlobalWorkerOptions.workerSrc = pdfjsWorker;
@@ -50,6 +51,12 @@ import { getFilteredAtMentionItems, preloadAtMentionCache } from '@/services/atM
 import { SegmentInput, type SegmentInputHandle } from './SegmentInput';
 import { useSegmentInput, buildInitialSegments } from '@/hooks/useSegmentInput';
 import { isTextSegment, isChipSegment, contentSegmentsToLinkedQuery, segmentsToLinkedQuery, type QueryContentSegment, type ChipSegment } from '@/types/segmentInput';
+import { CitationClickPanel } from './CitationClickPanel';
+
+/** Strip HTML/SVG tags from query string so submitted text never includes e.g. <svg /> from icons. */
+function stripHtmlFromQuery(s: string): string {
+  return s.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+}
 
 // ============================================================================
 // CHAT PANEL WIDTH CONSTANTS
@@ -144,11 +151,15 @@ export function calculateChatPanelWidth(params: WidthCalculationParams): WidthCa
   }
 
   // PRIORITY 3: Document preview or property details is open - 50% split
+  // Use viewport minus sidebar only (do NOT subtract chatPanelWidth) to avoid feedback loop:
+  // otherwise we'd set width = (viewport - sidebar - chatWidth)/2, report it, then recalc with
+  // the new chatWidth and get a different value, causing glitchy re-renders when at or below 50/50.
   if (isExpanded && shouldUse50Percent) {
-    const halfWidth = availableWidth / 2;
+    const availableForSplit = (typeof window !== 'undefined' ? window.innerWidth : 1920) - sidebarWidth;
+    const halfWidth = availableForSplit / 2;
     return {
       widthPx: halfWidth,
-      widthCss: `calc((100vw - ${sidebarWidth}px - ${chatPanelOffset}px) / 2)`,
+      widthCss: `calc((100vw - ${sidebarWidth}px) / 2)`,
     };
   }
 
@@ -518,12 +529,14 @@ export function parseMainAnswerTags(text: string): { before: string; main: strin
 
 export const MainAnswerHighlight: React.FC<{
   children: React.ReactNode;
-  /** When true (streaming), no highlight yet. When false, the swoop animation runs. Omit/undefined = run swoop (e.g. static message). */
+  /** When true (streaming), no highlight yet. When false, highlight shows (swoop or instant). */
   isStreaming?: boolean;
-}> = ({ children, isStreaming = false }) => {
-  const runSwoop = !isStreaming;
+  /** When true, run the swoop animation. When false, show blue at full size instantly (e.g. when restoring after orange chip removed). */
+  runSwoop?: boolean;
+}> = ({ children, isStreaming = false, runSwoop = true }) => {
+  const runSwoopAnim = !isStreaming && runSwoop;
   return (
-    <span className={`main-answer-highlight${runSwoop ? ' main-answer-highlight-swoop' : ''}`}>
+    <span className={`main-answer-highlight${runSwoopAnim ? ' main-answer-highlight-swoop' : ''}${!isStreaming && !runSwoop ? ' main-answer-highlight-instant' : ''}`}>
       <style>{`
         .main-answer-highlight {
           display: inline;
@@ -536,6 +549,9 @@ export const MainAnswerHighlight: React.FC<{
           background: linear-gradient(90deg, rgba(220, 228, 238, 0.85) 0%, rgba(220, 228, 238, 0.85) 100%);
           background-repeat: no-repeat;
           background-size: 0% 100%;
+        }
+        .main-answer-highlight.main-answer-highlight-instant {
+          background-size: 100% 100%;
         }
         .main-answer-highlight.main-answer-highlight-swoop {
           animation: main-answer-highlight-swoop 1.1s cubic-bezier(0.22, 1, 0.36, 1) 0.6s forwards;
@@ -555,20 +571,56 @@ export const MainAnswerHighlight: React.FC<{
   );
 };
 
+// Orange swoop highlight for cited text when user has added a citation-snippet chip (follow-up question)
+const OrangeCitationSwoopHighlight: React.FC<{ children: React.ReactNode }> = ({ children }) => (
+  <span className="orange-citation-swoop">
+    <style>{`
+      .orange-citation-swoop {
+        display: inline;
+        margin: 0;
+        padding: 0;
+        border-radius: 4px;
+        box-decoration-break: clone;
+        -webkit-box-decoration-break: clone;
+        background: linear-gradient(90deg, #F5EBD9 0%, #F5EBD9 100%);
+        background-repeat: no-repeat;
+        background-size: 0% 100%;
+        animation: orange-citation-swoop 0.55s cubic-bezier(0.22, 1, 0.36, 1) 0.2s forwards;
+      }
+      @keyframes orange-citation-swoop {
+        to {
+          background-size: 100% 100%;
+        }
+      }
+      .orange-citation-swoop p {
+        margin: 0;
+        display: inline;
+      }
+    `}</style>
+    {children}
+  </span>
+);
+
 const StreamingResponseText: React.FC<{
   text: string;
   isStreaming: boolean;
   citations?: Record<string, any>;
-  handleCitationClick: (citationData: any) => void;
+  handleCitationClick: (citationData: any, anchorRect?: DOMRect, citationNumber?: string) => void;
   renderTextWithCitations: (text: string, citations: any, handleClick: any, seen: Set<string>) => React.ReactNode;
   onTextUpdate?: () => void;
   messageId?: string; // Unique ID for this message to track animation state
   skipHighlight?: boolean; // When true (e.g. error messages), do not apply main-answer highlight
   showCitations?: boolean; // When false, strip citation markers from text
-}> = ({ text, isStreaming, citations, handleCitationClick, renderTextWithCitations, onTextUpdate, messageId, skipHighlight, showCitations = true }) => {
+  orangeCitationNumbers?: Set<string>; // Citation numbers (e.g. "0","1") to highlight in orange (cited text when chip is in input)
+  selectedCitationNumber?: string; // When citation click panel is open, the citation number that was clicked
+  selectedCitationMessageId?: string; // When citation click panel is open, the message id that owns that citation
+}> = ({ text, isStreaming, citations, handleCitationClick, renderTextWithCitations, onTextUpdate, messageId, skipHighlight, showCitations = true, orangeCitationNumbers, selectedCitationNumber, selectedCitationMessageId }) => {
   const [shouldAnimate, setShouldAnimate] = React.useState(false);
   const hasAnimatedRef = React.useRef(false);
-  
+  const hasSwoopedBlueRef = React.useRef(false);
+  const runBlueSwoop = !skipHighlight && !isStreaming && !hasSwoopedBlueRef.current;
+  if (!skipHighlight) hasSwoopedBlueRef.current = true;
+
   if (!text) {
     return null;
   }
@@ -626,15 +678,16 @@ const StreamingResponseText: React.FC<{
   };
 
   // Parse <<<MAIN>>>...<<<END_MAIN>>> (LLM wraps the direct answer); replace with placeholders so we highlight each segment
-  // Allow optional space before >> so malformed tags (e.g. <<<END_MAIN> >>) are still stripped
+  // Match 1–3 closing > so malformed tags (<<<END_MAIN>, <<<END_MAIN>>, <<<END_MAIN>>>) are stripped
+  const mainTagEndRe = /<<<END_MAIN\s*>+/;
   const { mainSegments, textWithTagsStripped } = React.useMemo(() => {
     const segments: string[] = [];
-    let text = processedText.replace(/<<<MAIN>>>(.*?)<<<END_MAIN\s*>>>/gs, (_match, content: string) => {
+    let text = processedText.replace(/<<<MAIN>>>(.*?)<<<END_MAIN\s*>+/gs, (_match: string, content: string) => {
       segments.push(content.trim());
       return `%%MAIN_${segments.length - 1}%%`;
     });
     // Strip any remaining raw MAIN/END_MAIN tags that didn't match (malformed)
-    text = text.replace(/<<<MAIN>>>/g, '').replace(/<<<END_MAIN\s*>>>/g, '');
+    text = text.replace(/<<<MAIN>>>/g, '').replace(mainTagEndRe, '');
     return { mainSegments: segments, textWithTagsStripped: text };
   }, [processedText]);
 
@@ -705,6 +758,9 @@ const StreamingResponseText: React.FC<{
   }, [textWithTagsStripped, citations, showCitations]);
   
   // Helper to render citation placeholders (no deduplication - show all citations)
+  const isCitationSelected = (num: string) =>
+    selectedCitationNumber != null && selectedCitationMessageId != null && selectedCitationMessageId === messageId && selectedCitationNumber === num;
+
   const renderCitationPlaceholder = (placeholder: string, key: string): React.ReactNode => {
     const superscriptMatch = placeholder.match(/^%%CITATION_SUPERSCRIPT_(\d+)%%$/);
     const bracketMatch = placeholder.match(/^%%CITATION_BRACKET_(\d+)%%$/);
@@ -718,7 +774,7 @@ const StreamingResponseText: React.FC<{
         const citData = citations?.[num];
         if (citData) {
           // Citation data now available - render as link
-          return <CitationLink key={key} citationNumber={num} citationData={citData} onClick={handleCitationClick} />;
+          return <CitationLink key={key} citationNumber={num} citationData={citData} onClick={handleCitationClick} isSelected={isCitationSelected(num)} />;
         }
         // Still pending - show as plain number during streaming
         return isStreaming ? <span key={key} style={{ opacity: 0.5 }}>[{num}]</span> : <span key={key}>[{num}]</span>;
@@ -729,13 +785,13 @@ const StreamingResponseText: React.FC<{
       const num = superscriptMatch[1];
       const citData = citations?.[num];
       if (citData) {
-        return <CitationLink key={key} citationNumber={num} citationData={citData} onClick={handleCitationClick} />;
+        return <CitationLink key={key} citationNumber={num} citationData={citData} onClick={handleCitationClick} isSelected={isCitationSelected(num)} />;
       }
     } else if (bracketMatch) {
       const num = bracketMatch[1];
       const citData = citations?.[num];
       if (citData) {
-        return <CitationLink key={key} citationNumber={num} citationData={citData} onClick={handleCitationClick} />;
+        return <CitationLink key={key} citationNumber={num} citationData={citData} onClick={handleCitationClick} isSelected={isCitationSelected(num)} />;
       }
     }
     // No citation data found - return placeholder as text (shouldn't happen)
@@ -747,51 +803,121 @@ const StreamingResponseText: React.FC<{
     return [<React.Fragment key="text-segment">{text}</React.Fragment>];
   };
 
+  const citationPlaceholderRe = /(%%CITATION_(?:SUPERSCRIPT|BRACKET|PENDING)_\d+%%)/g;
+  const citationNumFromPlaceholder = (placeholder: string): string | null => {
+    const m = placeholder.match(/^%%CITATION_(?:SUPERSCRIPT|BRACKET|PENDING)_(\d+)%%$/);
+    return m ? m[1]! : null;
+  };
+
+  // Turn a single string segment into React nodes (MAIN placeholder split + render)
+  const renderStringSegment = (part: string, keyPrefix: string): React.ReactNode[] => {
+    const mainPlaceholderRe = /%%MAIN_(\d+)%%/g;
+    const mainParts = part.split(mainPlaceholderRe);
+    const nodesToAdd: React.ReactNode[] = [];
+    for (let i = 0; i < mainParts.length; i++) {
+      const segment = mainParts[i];
+      if (i % 2 === 1) {
+        const n = parseInt(segment, 10);
+        if (n >= 0 && n < mainSegments.length) {
+          nodesToAdd.push(
+            skipHighlight ? (
+              <React.Fragment key={`${keyPrefix}-main-${n}`}>{mainSegments[n]}</React.Fragment>
+            ) : (
+              <MainAnswerHighlight key={`${keyPrefix}-main-${n}`} isStreaming={isStreaming} runSwoop={runBlueSwoop}>
+                {mainSegments[n]}
+              </MainAnswerHighlight>
+            )
+          );
+        }
+      } else if (segment) {
+        nodesToAdd.push(...renderTextSegment(segment).map((node, wrapIdx) =>
+          React.isValidElement(node)
+            ? React.cloneElement(node, { key: `${keyPrefix}-text-${i}-${wrapIdx}` })
+            : <React.Fragment key={`${keyPrefix}-text-${i}-${wrapIdx}`}>{node}</React.Fragment>
+        ));
+      }
+    }
+    return nodesToAdd.length > 0 ? nodesToAdd : [<React.Fragment key={keyPrefix}>{part}</React.Fragment>];
+  };
+
+  // Flatten children into a list of segments (strings split by citation placeholder, elements as-is)
+  // so we can treat the full run before each citation as "cited text" for orange highlight
+  const flattenSegments = (nodes: React.ReactNode): (string | React.ReactElement)[] => {
+    const out: (string | React.ReactElement)[] = [];
+    React.Children.forEach(nodes, (child) => {
+      if (typeof child === 'string') {
+        child.split(citationPlaceholderRe).forEach((part) => out.push(part));
+      } else if (React.isValidElement(child)) {
+        out.push(child);
+      }
+    });
+    return out;
+  };
+
+  // Process flattened segments: wrap the run before each citation in orange when that citation is in orangeCitationNumbers
+  const processFlattenedWithCitations = (segments: (string | React.ReactElement)[], keyPrefix: string): React.ReactNode[] => {
+    const result: React.ReactNode[] = [];
+    let pending: (string | React.ReactElement)[] = [];
+    let segIndex = 0;
+    const flushPending = (wrapOrange: boolean, citKey: string) => {
+      if (pending.length === 0) return;
+      const content: React.ReactNode[] = [];
+      pending.forEach((seg, i) => {
+        if (typeof seg === 'string') {
+          if (seg.startsWith('%%CITATION_')) return;
+          content.push(...renderStringSegment(seg, `${keyPrefix}-p${segIndex}-${i}`));
+        } else {
+          const childChildren = (seg.props as any)?.children;
+          const processed = childChildren !== undefined
+            ? processChildrenWithCitations(childChildren)
+            : (seg.props as any)?.children;
+          content.push(React.cloneElement(seg, { key: `${keyPrefix}-el${segIndex}-${i}`, children: processed } as any));
+        }
+      });
+      if (wrapOrange) {
+        result.push(<OrangeCitationSwoopHighlight key={`${keyPrefix}-orange-${segIndex}-${citKey}`}>{content}</OrangeCitationSwoopHighlight>);
+      } else {
+        result.push(...content);
+      }
+      pending = [];
+      segIndex += 1;
+    };
+    segments.forEach((seg, i) => {
+      if (typeof seg === 'string' && seg.startsWith('%%CITATION_')) {
+        const num = citationNumFromPlaceholder(seg);
+        flushPending(num != null && (orangeCitationNumbers?.has(num) ?? false), seg);
+        const citationNode = renderCitationPlaceholder(seg, `${keyPrefix}-cit-${i}-${seg}`);
+        if (citationNode != null) result.push(<React.Fragment key={`${keyPrefix}-cit-${i}`}>{citationNode}</React.Fragment>);
+      } else {
+        pending.push(seg);
+      }
+    });
+    flushPending(false, 'end');
+    return result;
+  };
+
   // Helper to process children and replace citation placeholders + MAIN answer placeholders
   const processChildrenWithCitations = (nodes: React.ReactNode): React.ReactNode => {
     return React.Children.map(nodes, child => {
       if (typeof child === 'string') {
-        // Split by citation placeholders (including pending ones) and render
-        const parts = child.split(/(%%CITATION_(?:SUPERSCRIPT|BRACKET|PENDING)_\d+%%)/g);
+        const parts = child.split(citationPlaceholderRe);
         const result: React.ReactNode[] = [];
         parts.forEach((part, idx) => {
           if (part.startsWith('%%CITATION_')) {
-            // Render all citations (including pending) via renderCitationPlaceholder
             const citationNode = renderCitationPlaceholder(part, `cit-${idx}-${part}`);
             if (citationNode !== null) {
               result.push(<React.Fragment key={`cit-${idx}-${part}`}>{citationNode}</React.Fragment>);
             }
           } else if (part) {
-            // Split by LLM MAIN placeholders (%%MAIN_0%%, %%MAIN_1%%, etc.) so we highlight what the model marked as the answer
-            const mainPlaceholderRe = /%%MAIN_(\d+)%%/g;
-            const mainParts = part.split(mainPlaceholderRe);
-            const nodesToAdd: React.ReactNode[] = [];
-            for (let i = 0; i < mainParts.length; i++) {
-              const segment = mainParts[i];
-              if (i % 2 === 1) {
-                // Odd index = placeholder index (e.g. "0", "1") – LLM decided this is the answer to highlight
-                const n = parseInt(segment, 10);
-                if (n >= 0 && n < mainSegments.length) {
-                  nodesToAdd.push(
-                    skipHighlight ? (
-                      <React.Fragment key={`main-${idx}-${n}`}>{mainSegments[n]}</React.Fragment>
-                    ) : (
-                      <MainAnswerHighlight key={`main-${idx}-${n}`} isStreaming={isStreaming}>
-                        {mainSegments[n]}
-                      </MainAnswerHighlight>
-                    )
-                  );
-                }
-              } else if (segment) {
-                // Even index = text between placeholders; render as-is (no hardcoded patterns – LLM decides what to highlight via MAIN tags)
-                nodesToAdd.push(...renderTextSegment(segment).map((node, wrapIdx) =>
-                  React.isValidElement(node)
-                    ? React.cloneElement(node, { key: `text-${idx}-${i}-${wrapIdx}` })
-                    : <React.Fragment key={`text-${idx}-${i}-${wrapIdx}`}>{node}</React.Fragment>
-                ));
-              }
+            const nextPart = parts[idx + 1];
+            const nextCitNum = nextPart && citationNumFromPlaceholder(nextPart);
+            const wrapOrange = nextCitNum != null && (orangeCitationNumbers?.has(nextCitNum) ?? false);
+            const content = renderStringSegment(part, `text-${idx}`);
+            if (wrapOrange) {
+              result.push(<OrangeCitationSwoopHighlight key={`orange-${idx}`}>{content}</OrangeCitationSwoopHighlight>);
+            } else {
+              result.push(...content);
             }
-            result.push(...nodesToAdd.length > 0 ? nodesToAdd : [<React.Fragment key={`text-${idx}`}>{part}</React.Fragment>]);
           }
         });
         return result.length > 0 ? result : null;
@@ -806,6 +932,12 @@ const StreamingResponseText: React.FC<{
     });
   };
 
+  // Same as processChildrenWithCitations but flattens first so orange covers full cited run (e.g. "text **bold** " before citation)
+  const processChildrenWithCitationsFlattened = (nodes: React.ReactNode, keyPrefix: string): React.ReactNode => {
+    const segments = flattenSegments(nodes);
+    return processFlattenedWithCitations(segments, keyPrefix);
+  };
+
   // Markdown components for full-block rendering (no main-answer highlight)
   const markdownComponents = {
     p: ({ children }: { children?: React.ReactNode }) => {
@@ -816,7 +948,7 @@ const StreamingResponseText: React.FC<{
         wordWrap: 'break-word',
         overflowWrap: 'break-word',
         wordBreak: 'break-word'
-      }}>{processChildrenWithCitations(children)}</p>;
+      }}>{processChildrenWithCitationsFlattened(children ?? null, 'p')}</p>;
     },
     h1: ({ children }: { children?: React.ReactNode }) => {
       return <h1 style={{ 
@@ -827,7 +959,7 @@ const StreamingResponseText: React.FC<{
         wordWrap: 'break-word',
         overflowWrap: 'break-word',
         wordBreak: 'break-word'
-      }}>{processChildrenWithCitations(children)}</h1>;
+      }}>{processChildrenWithCitationsFlattened(children ?? null, 'h1')}</h1>;
     },
     h2: () => null, 
     h3: () => null,
@@ -853,7 +985,7 @@ const StreamingResponseText: React.FC<{
         wordWrap: 'break-word',
         overflowWrap: 'break-word',
         wordBreak: 'break-word'
-      }}>{processChildrenWithCitations(children)}</li>;
+      }}>{processChildrenWithCitationsFlattened(children ?? null, 'li')}</li>;
     },
     strong: ({ children }: { children?: React.ReactNode }) => {
       const boldContent = (
@@ -865,7 +997,7 @@ const StreamingResponseText: React.FC<{
         }}>{processChildrenWithCitations(children)}</strong>
       );
       if (skipHighlight) return boldContent;
-      return <MainAnswerHighlight isStreaming={isStreaming}>{boldContent}</MainAnswerHighlight>;
+      return <MainAnswerHighlight isStreaming={isStreaming} runSwoop={runBlueSwoop}>{boldContent}</MainAnswerHighlight>;
     },
     em: ({ children }: { children?: React.ReactNode }) => {
       return <em style={{ 
@@ -943,7 +1075,10 @@ function streamingResponseTextAreEqual(
     prev.messageId === next.messageId &&
     prev.skipHighlight === next.skipHighlight &&
     prev.showCitations === next.showCitations &&
-    prev.citations === next.citations
+    prev.citations === next.citations &&
+    prev.orangeCitationNumbers === next.orangeCitationNumbers &&
+    prev.selectedCitationNumber === next.selectedCitationNumber &&
+    prev.selectedCitationMessageId === next.selectedCitationMessageId
   );
 }
 const StreamingResponseTextMemo = React.memo(StreamingResponseText, streamingResponseTextAreEqual);
@@ -1042,6 +1177,8 @@ interface CitationDataType {
   matched_chunk_metadata?: CitationChunkData;
   chunk_metadata?: CitationChunkData;
   match_reason?: string;
+  block_content?: string;
+  cited_text?: string;
 }
 
 interface CitationData {
@@ -1057,6 +1194,9 @@ interface CitationData {
     height: number;
     page?: number;
   };
+  block_content?: string;
+  cited_text?: string;
+  classification_type?: string;
   matched_chunk_metadata?: CitationChunkData;
   source_chunks_metadata?: CitationChunkData[];
   candidate_chunks_metadata?: CitationChunkData[];
@@ -1066,8 +1206,9 @@ interface CitationData {
 const CitationLink: React.FC<{
   citationNumber: string;
   citationData: CitationDataType;
-  onClick: (data: CitationDataType) => void;
-}> = ({ citationNumber, citationData, onClick }) => {
+  onClick: (data: CitationDataType, anchorRect?: DOMRect, citationNumber?: string) => void;
+  isSelected?: boolean;
+}> = ({ citationNumber, citationData, onClick, isSelected }) => {
   const [showPreview, setShowPreview] = React.useState(false);
   const [hoverPosition, setHoverPosition] = React.useState({ x: 0, y: 0 });
   const [containerBounds, setContainerBounds] = React.useState<{ left: number; right: number } | undefined>(undefined);
@@ -1254,7 +1395,8 @@ const CitationLink: React.FC<{
           // Hide preview on click
           setShowPreview(false);
           if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
-          onClick(citationData);
+          const rect = e.currentTarget.getBoundingClientRect();
+          onClick(citationData, rect, citationNumber);
         }}
         style={{
           display: 'inline-flex',
@@ -1268,10 +1410,10 @@ const CitationLink: React.FC<{
           fontSize: '11px',
           fontWeight: 600,
           fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-          color: '#5D5D5D',
-          backgroundColor: '#FFFFFF',
+          color: isSelected ? '#1E40AF' : '#5D5D5D',
+          backgroundColor: isSelected ? '#DBEAFE' : '#FFFFFF',
           borderRadius: '6px',
-          border: '1px solid #E5E7EB',
+          border: isSelected ? '1px solid #3B82F6' : '1px solid #E5E7EB',
           cursor: 'pointer',
           verticalAlign: 'middle',
           position: 'relative',
@@ -1280,15 +1422,22 @@ const CitationLink: React.FC<{
           transition: 'all 0.15s ease-in-out'
         }}
         onMouseEnter={(e) => {
-          e.currentTarget.style.backgroundColor = '#F3F4F6';
-          e.currentTarget.style.color = '#374151';
-          e.currentTarget.style.transform = 'scale(1.05)';
+          if (!isSelected) {
+            e.currentTarget.style.backgroundColor = '#F3F4F6';
+            e.currentTarget.style.color = '#374151';
+            e.currentTarget.style.transform = 'scale(1.05)';
+          }
           handleMouseEnter(e);
         }}
         onMouseLeave={(e) => {
-          e.currentTarget.style.backgroundColor = '#FFFFFF';
-          e.currentTarget.style.color = '#5D5D5D';
-          e.currentTarget.style.transform = 'scale(1)';
+          if (!isSelected) {
+            e.currentTarget.style.backgroundColor = '#FFFFFF';
+            e.currentTarget.style.color = '#5D5D5D';
+            e.currentTarget.style.transform = 'scale(1)';
+          } else {
+            e.currentTarget.style.backgroundColor = '#DBEAFE';
+            e.currentTarget.style.color = '#1E40AF';
+          }
           handleMouseLeave(e);
         }}
         aria-label={`Citation ${citationNumber} - ${displayName}`}
@@ -1998,80 +2147,81 @@ interface CitationBboxPreviewProps {
   onClick: () => void;
 }
 
+// Segment height as fraction of page (1/4 = 0.25)
+const CITATION_PREVIEW_SEGMENT_FRACTION = 0.25;
+// Higher scale for sharper segment render (2x)
+const CITATION_PREVIEW_RENDER_SCALE = 2;
+// Display width of the segment preview (matches reference: compact strip)
+const CITATION_PREVIEW_DISPLAY_WIDTH = 420;
+
 const CitationBboxPreview: React.FC<CitationBboxPreviewProps> = ({ citationBboxData, onClick }) => {
-  const [pageImage, setPageImage] = React.useState<string | null>(null);
+  const [segmentImage, setSegmentImage] = React.useState<string | null>(null);
+  const [segmentDimensions, setSegmentDimensions] = React.useState<{ width: number; height: number }>({ width: CITATION_PREVIEW_DISPLAY_WIDTH, height: 99 });
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
-  const thumbnailWidth = 200; // Fixed width for thumbnail
-  const [thumbnailHeight, setThumbnailHeight] = React.useState<number>(thumbnailWidth * 1.414);
+  const [bboxInSegment, setBboxInSegment] = React.useState<{ left: number; top: number; width: number; height: number } | null>(null);
 
-  // Check cache first, then load if not cached
+  // Load page, render only a 1/4 segment centered on citation, at higher quality (no full-page cache for this path)
   React.useEffect(() => {
-    const cacheKey = `${citationBboxData.document_id}-${citationBboxData.page_number}`;
-    const cached = bboxPreviewCache.get(cacheKey);
-    
-    if (cached) {
-      // Use cached image immediately
-      setPageImage(cached.pageImage);
-      setThumbnailHeight(cached.thumbnailHeight);
-      setLoading(false);
-      return;
-    }
-    
-    // Not in cache - load it now
+    const bbox = citationBboxData.bbox;
+
     const loadDocument = async () => {
       try {
         setLoading(true);
         const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
         const downloadUrl = `${backendUrl}/api/files/download?document_id=${citationBboxData.document_id}`;
-        
         const response = await fetch(downloadUrl, { credentials: 'include' });
         if (!response.ok) throw new Error(`Failed to download: ${response.status}`);
-        
         const blob = await response.blob();
         const arrayBuffer = await blob.arrayBuffer();
-        
-        // Load PDF
-        const loadingTask = pdfjs.getDocument({ data: arrayBuffer }).promise;
-        const pdf = await loadingTask;
-        
-        // Render page to canvas
+        const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
         const page = await pdf.getPage(citationBboxData.page_number || 1);
         const viewport = page.getViewport({ scale: 1.0 });
-        
-        const scale = thumbnailWidth / viewport.width;
+        const scale = CITATION_PREVIEW_RENDER_SCALE * (CITATION_PREVIEW_DISPLAY_WIDTH / viewport.width);
         const scaledViewport = page.getViewport({ scale });
-        
-        // Create temporary canvas for rendering
-        const canvas = document.createElement('canvas');
-        canvas.width = scaledViewport.width;
-        canvas.height = scaledViewport.height;
-        
-        const context = canvas.getContext('2d');
+        const fullCanvas = document.createElement('canvas');
+        fullCanvas.width = scaledViewport.width;
+        fullCanvas.height = scaledViewport.height;
+        const context = fullCanvas.getContext('2d');
         if (!context) return;
-        
         await page.render({
           canvasContext: context,
           viewport: scaledViewport,
-          canvas: canvas
+          canvas: fullCanvas
         }).promise;
-        
-        // Convert canvas to image
-        const imageUrl = canvas.toDataURL('image/png');
-        
-        // Cache the result
-        bboxPreviewCache.set(cacheKey, {
-          pageImage: imageUrl,
-          thumbnailHeight: scaledViewport.height,
-          timestamp: Date.now()
+
+        const pw = scaledViewport.width;
+        const ph = scaledViewport.height;
+
+        // Segment: 1/4 of page height centered on citation bbox (normalized 0-1)
+        const segH = CITATION_PREVIEW_SEGMENT_FRACTION;
+        const centerY = bbox.top + bbox.height / 2;
+        const segTop = Math.max(0, Math.min(1 - segH, centerY - segH / 2));
+        const segPxTop = segTop * ph;
+        const segPxHeight = Math.round(segH * ph);
+
+        const cropCanvas = document.createElement('canvas');
+        cropCanvas.width = pw;
+        cropCanvas.height = segPxHeight;
+        const ctx = cropCanvas.getContext('2d');
+        if (!ctx) return;
+        ctx.drawImage(fullCanvas, 0, segPxTop, pw, segPxHeight, 0, 0, pw, segPxHeight);
+        const segmentUrl = cropCanvas.toDataURL('image/png');
+
+        setSegmentImage(segmentUrl);
+        setSegmentDimensions({ width: pw, height: segPxHeight });
+
+        // Bbox in segment-relative pixels (for overlay)
+        setBboxInSegment({
+          left: bbox.left * pw,
+          top: ((bbox.top - segTop) / segH) * segPxHeight,
+          width: bbox.width * pw,
+          height: (bbox.height / segH) * segPxHeight
         });
-        
-        setPageImage(imageUrl);
-        setThumbnailHeight(scaledViewport.height);
         setLoading(false);
-      } catch (error) {
-        console.error('Failed to load document for BBOX preview:', error);
-        setError(error instanceof Error ? error.message : 'Failed to load document');
+      } catch (err) {
+        console.error('Failed to load document for BBOX preview:', err);
+        setError(err instanceof Error ? err.message : 'Failed to load document');
         setLoading(false);
       }
     };
@@ -2082,24 +2232,26 @@ const CitationBboxPreview: React.FC<CitationBboxPreviewProps> = ({ citationBboxD
       setError('No document ID provided');
       setLoading(false);
     }
-  }, [citationBboxData.document_id, citationBboxData.page_number, thumbnailWidth]);
+  }, [citationBboxData.document_id, citationBboxData.page_number, citationBboxData.bbox?.top, citationBboxData.bbox?.height]);
+
+  const segmentDisplayHeight = segmentDimensions.width > 0
+    ? (CITATION_PREVIEW_DISPLAY_WIDTH / segmentDimensions.width) * segmentDimensions.height
+    : 99;
+  const placeholderStyle: React.CSSProperties = {
+    width: `${CITATION_PREVIEW_DISPLAY_WIDTH}px`,
+    height: `${segmentDisplayHeight}px`,
+    backgroundColor: '#f3f4f6',
+    borderRadius: '6px',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    cursor: 'pointer',
+    border: '1px solid #e5e7eb'
+  };
 
   if (error) {
     return (
-      <div 
-        style={{
-          width: `${thumbnailWidth}px`,
-          height: `${thumbnailWidth * 1.414}px`, // A4 aspect ratio
-          backgroundColor: '#f3f4f6',
-          borderRadius: '4px',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          cursor: 'pointer',
-          border: '1px solid #e5e7eb'
-        }}
-        onClick={onClick}
-      >
+      <div style={placeholderStyle} onClick={onClick}>
         <div style={{ color: '#9ca3af', fontSize: '13px', textAlign: 'center', padding: '10px' }}>
           Preview unavailable
         </div>
@@ -2107,128 +2259,61 @@ const CitationBboxPreview: React.FC<CitationBboxPreviewProps> = ({ citationBboxD
     );
   }
 
-  if (loading || !pageImage) {
+  if (loading || !segmentImage) {
     return (
-      <div 
-        style={{
-          width: `${thumbnailWidth}px`,
-          height: `${thumbnailWidth * 1.414}px`, // A4 aspect ratio
-          backgroundColor: '#f3f4f6',
-          borderRadius: '4px',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          cursor: 'pointer',
-          border: '1px solid #e5e7eb'
-        }}
-        onClick={onClick}
-      >
+      <div style={placeholderStyle} onClick={onClick}>
         <div style={{ color: '#9ca3af', fontSize: '14px' }}>Loading...</div>
       </div>
     );
   }
 
-  // Calculate BBOX position and size in thumbnail
-  const bbox = citationBboxData.bbox;
-  
-  // Logo size (same as in full preview)
-  const logoHeight = 0.02 * thumbnailHeight - 1;
-  const logoWidth = logoHeight;
-  
-  // Calculate BBOX dimensions with centered padding
-  const padding = 4; // Equal padding on all sides
-  const originalBboxWidth = bbox.width * thumbnailWidth;
-  const originalBboxHeight = bbox.height * thumbnailHeight;
-  const originalBboxLeft = bbox.left * thumbnailWidth;
-  const originalBboxTop = bbox.top * thumbnailHeight;
-  
-  // Calculate center of original BBOX
-  const centerX = originalBboxLeft + originalBboxWidth / 2;
-  const centerY = originalBboxTop + originalBboxHeight / 2;
-  
-  // Calculate minimum BBOX height to match logo height (prevents staggered appearance)
-  const minBboxHeightPx = logoHeight; // Minimum height = logo height (exact match)
-  const baseBboxHeight = Math.max(originalBboxHeight, minBboxHeightPx);
-  
-  // Calculate final dimensions with equal padding
-  // If at minimum height, don't add padding to keep it exactly at logo height
-  const finalBboxWidth = originalBboxWidth + padding * 2;
-  const finalBboxHeight = baseBboxHeight === minBboxHeightPx 
-    ? minBboxHeightPx // Exactly logo height when at minimum (no padding)
-    : baseBboxHeight + padding * 2; // Add padding only when BBOX is naturally larger
-  
-  // Center the BBOX around the original text
-  const bboxLeft = Math.max(0, centerX - finalBboxWidth / 2);
-  const bboxTop = Math.max(0, centerY - finalBboxHeight / 2);
-  
-  // Ensure BBOX doesn't go outside page bounds
-  const constrainedLeft = Math.min(bboxLeft, thumbnailWidth - finalBboxWidth);
-  const constrainedTop = Math.min(bboxTop, thumbnailHeight - finalBboxHeight);
-  const finalBboxLeft = Math.max(0, constrainedLeft);
-  const finalBboxTop = Math.max(0, constrainedTop);
-  
-  // Position logo: Logo's top-right corner aligns with BBOX's top-left corner
-  // Logo's right border edge overlaps with BBOX's left border edge
-  const logoLeft = finalBboxLeft - logoWidth + 2; // Move 2px right so borders overlap
-  const logoTop = finalBboxTop; // Logo's top = BBOX's top (perfectly aligned)
+  // Segment image is at segmentDimensions; we display it at CITATION_PREVIEW_DISPLAY_WIDTH wide.
+  // Overlay in % of container so it scales exactly with the image (same aspect ratio).
+  const box = bboxInSegment!;
+  const leftPct = (box.left / segmentDimensions.width) * 100;
+  const topPct = (box.top / segmentDimensions.height) * 100;
+  const widthPct = (box.width / segmentDimensions.width) * 100;
+  const heightPct = (box.height / segmentDimensions.height) * 100;
 
   return (
     <div
       style={{
         position: 'relative',
-        width: `${thumbnailWidth}px`,
-        height: `${thumbnailHeight}px`,
-        borderRadius: '4px',
+        width: `${CITATION_PREVIEW_DISPLAY_WIDTH}px`,
+        height: `${segmentDisplayHeight}px`,
+        borderRadius: '6px',
         overflow: 'hidden',
         cursor: 'pointer',
-        boxShadow: 'none',
+        boxShadow: '0 1px 3px rgba(0,0,0,0.08)',
         border: '1px solid #e5e7eb'
       }}
       onClick={onClick}
     >
       <img
-        src={pageImage}
-        alt="Document preview"
+        src={segmentImage}
+        alt="Document excerpt"
         style={{
           width: '100%',
           height: '100%',
-          objectFit: 'contain',
-          display: 'block'
+          objectFit: 'fill',
+          objectPosition: '0 0',
+          display: 'block',
+          verticalAlign: 'top'
         }}
       />
-      {/* BBOX Highlight */}
+      {/* Citation highlight overlay (orange-yellow bar over cited text) */}
       <div
         style={{
           position: 'absolute',
-          left: `${finalBboxLeft}px`,
-          top: `${finalBboxTop}px`,
-          width: `${Math.min(thumbnailWidth, finalBboxWidth)}px`,
-          height: `${Math.min(thumbnailHeight, finalBboxHeight)}px`,
-          backgroundColor: 'rgba(255, 235, 59, 0.4)',
-          border: '2px solid rgba(255, 193, 7, 0.9)',
+          left: `${leftPct}%`,
+          top: `${topPct}%`,
+          width: `${widthPct}%`,
+          height: `${heightPct}%`,
+          backgroundColor: 'rgba(255, 235, 59, 0.45)',
+          border: '1px solid rgba(255, 193, 7, 0.85)',
           borderRadius: '2px',
           pointerEvents: 'none',
           zIndex: 10
-        }}
-      />
-      {/* Velora Logo */}
-      <img
-        src={veloraLogo}
-        alt="Velora"
-        style={{
-          position: 'absolute',
-          left: `${logoLeft}px`,
-          top: `${logoTop}px`,
-          width: `${logoWidth}px`,
-          height: `${logoHeight}px`,
-          objectFit: 'contain',
-          pointerEvents: 'none',
-          zIndex: 11,
-          userSelect: 'none',
-          border: '2px solid rgba(255, 193, 7, 0.9)',
-          borderRadius: '2px',
-          backgroundColor: 'white',
-          boxSizing: 'border-box'
         }}
       />
     </div>
@@ -2803,6 +2888,59 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   const prevChatPanelOpenRef = React.useRef(isChatPanelOpen);
   const [isChatPanelJustToggled, setIsChatPanelJustToggled] = React.useState(false);
   
+  // Citation click panel: show compact preview next to citation instead of opening 50/50 immediately
+  const [citationClickPanel, setCitationClickPanel] = React.useState<{
+    citationData: CitationData;
+    anchorRect: DOMRect;
+    sourceMessageText?: string;
+    messageId?: string;
+    citationNumber?: string;
+  } | null>(null);
+  // Ref so citation click handler always sees current state (StreamingResponseTextMemo doesn't re-render when callback changes)
+  const isDocumentPreviewOpenRef = React.useRef(false);
+  // When panel opens and hover cache is empty, we preload and store here so the panel can show the image
+  const [citationPanelLoadedImage, setCitationPanelLoadedImage] = React.useState<{
+    pageImage: string;
+    imageWidth: number;
+    imageHeight: number;
+  } | null>(null);
+
+  // When citation panel opens: clear stale image, then use cache or preload so preview shows
+  const citationPanelKeyRef = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    if (!citationClickPanel) {
+      setCitationPanelLoadedImage(null);
+      citationPanelKeyRef.current = null;
+      return;
+    }
+    const data = citationClickPanel.citationData as CitationData & { document_id?: string };
+    const docId = data.document_id ?? data.doc_id;
+    const pageNum = data.page ?? data.bbox?.page ?? data.page_number ?? 1;
+    if (!docId) {
+      citationPanelKeyRef.current = null;
+      return;
+    }
+    const panelKey = `${docId}-${pageNum}`;
+    citationPanelKeyRef.current = panelKey;
+    setCitationPanelLoadedImage(null); // reset so we don't show a previous citation's image
+
+    const cacheKey = `hover-${docId}-${pageNum}`;
+    if (hoverPreviewCache.has(cacheKey)) {
+      const entry = hoverPreviewCache.get(cacheKey)!;
+      setCitationPanelLoadedImage({ pageImage: entry.pageImage, imageWidth: entry.imageWidth, imageHeight: entry.imageHeight });
+      return;
+    }
+    let cancelled = false;
+    preloadHoverPreview(docId, pageNum).then((entry) => {
+      if (cancelled) return;
+      if (citationPanelKeyRef.current !== panelKey) return; // panel changed
+      if (entry) {
+        setCitationPanelLoadedImage({ pageImage: entry.pageImage, imageWidth: entry.imageWidth, imageHeight: entry.imageHeight });
+      }
+    });
+    return () => { cancelled = true; };
+  }, [citationClickPanel]);
+
   React.useEffect(() => {
     const justToggled = prevChatPanelOpenRef.current !== isChatPanelOpen;
     setIsChatPanelJustToggled(justToggled);
@@ -2873,6 +3011,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     // Remove BLOCK_CITE_ID references (e.g., "(BLOCK_CITE_ID_136)", "BLOCK_CITE_ID_136", "[BLOCK_CITE_ID_136]")
     // Pattern matches: (BLOCK_CITE_ID_123), BLOCK_CITE_ID_123, [BLOCK_CITE_ID_123], or any variation
     cleaned = cleaned.replace(/\s*[\[\(]?BLOCK_CITE_ID_\d+[\]\)]?\s*/g, ' ');
+    
+    // Strip internal MAIN tags so they never appear in the UI (allow 1–3 closing > for malformed LLM output)
+    cleaned = cleaned.replace(/<<<MAIN>>>/g, '');
+    cleaned = cleaned.replace(/<<<END_MAIN\s*>+/g, '');
     
     // Remove partial CHUNK markers that might appear during streaming
     // These appear at the end of the string as tokens arrive incrementally
@@ -3840,6 +3982,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   // Use ChatStateStore document preview if available, fall back to legacy PreviewContext
   const expandedCardViewDoc = chatStateDocumentPreview || legacyExpandedCardViewDoc;
 
+  // Keep ref in sync so handleUserCitationClick (passed to memoized StreamingResponseText) always sees current state
+  React.useEffect(() => {
+    isDocumentPreviewOpenRef.current = !!expandedCardViewDoc;
+  }, [expandedCardViewDoc]);
+
   // Whether chat panel is in "large" width (>= 600px) for View area minimise/expand
   const isChatLarge = React.useMemo(() => {
     const isDocumentPreviewOpen = isPropertyDetailsOpen || !!expandedCardViewDoc;
@@ -3939,7 +4086,21 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       onChatWidthChange(0);
     }
   }, [isExpanded, isVisible, isPropertyDetailsOpen, draggedWidth, onChatWidthChange, isFullscreenMode, sidebarWidth, isChatPanelOpen, chatPanelWidth, expandedCardViewDoc]);
-  
+
+  // When document preview opens (e.g. from "Analyse with AI"), force chat to move aside: exit fullscreen
+  // so the 50/50 split is used. Without this, chat can stay full width if it entered fullscreen before
+  // the document was set (same tick / effect order).
+  const prevExpandedCardViewDocRef = React.useRef<typeof expandedCardViewDoc>(null);
+  React.useEffect(() => {
+    const docJustOpened = expandedCardViewDoc && !prevExpandedCardViewDocRef.current;
+    prevExpandedCardViewDocRef.current = expandedCardViewDoc;
+    if (docJustOpened && isFullscreenMode && isFullscreenFromDashboardRef.current && !isManualFullscreenRef.current) {
+      setIsFullscreenMode(false);
+      isFullscreenFromDashboardRef.current = false;
+      setDraggedWidth(null);
+    }
+  }, [expandedCardViewDoc, isFullscreenMode]);
+
   // Don't reset dragged width when collapsing - allow custom width to persist
   // User can resize in both expanded and collapsed states
   const hasInitializedAttachmentsRef = React.useRef(false);
@@ -4041,6 +4202,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     clearSelectedDocuments,
     setDocumentSelectionMode
   } = useDocumentSelection();
+  // Ref so async query callback sees latest selection (avoids stale closure when documentIds is undefined)
+  const selectedDocumentIdsRef = React.useRef(selectedDocumentIds);
+  selectedDocumentIdsRef.current = selectedDocumentIds;
   
   // Filing sidebar integration
   const { toggleSidebar: toggleFilingSidebar, isOpen: isFilingSidebarOpen, isResizing: isFilingSidebarResizing, width: filingSidebarWidth } = useFilingSidebar();
@@ -4173,13 +4337,27 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   
   const [submittedQueries, setSubmittedQueries] = React.useState<SubmittedQuery[]>([]);
   const [chatMessages, setChatMessages] = React.useState<ChatMessage[]>([]);
-  // True when we're on the empty "new chat" view (no messages yet) - hide Files, New chat, Agents, reasoning toggle in header
+  // True when we're on the empty "new chat" view (no messages yet) - hide Files, New chat, reasoning toggle in header (Agents button always shown in top right)
   const isNewChatSection = chatMessages.length === 0;
   // CRITICAL: Ref to track current chatMessages for streaming callbacks (avoids stale closure issues)
   const chatMessagesRef = React.useRef<ChatMessage[]>([]);
   // Keep ref in sync with state
   React.useEffect(() => {
     chatMessagesRef.current = chatMessages;
+  }, [chatMessages]);
+  // Preload citation previews when messages have citations (so pop-up loads fast on first click)
+  React.useEffect(() => {
+    const messages = chatMessages || [];
+    for (const msg of messages) {
+      if (!msg.citations || typeof msg.citations !== 'object') continue;
+      for (const cit of Object.values(msg.citations) as any[]) {
+        const cDocId = cit?.doc_id ?? cit?.document_id;
+        const pageNum = cit?.page ?? cit?.page_number ?? cit?.bbox?.page;
+        if (cDocId && pageNum) {
+          preloadHoverPreview(cDocId, pageNum).catch(() => {});
+        }
+      }
+    }
   }, [chatMessages]);
   // Persistent sessionId for conversation continuity (reused across all messages in this chat session)
   const [sessionId] = React.useState<string>(() => `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`);
@@ -5769,9 +5947,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         lastProcessedQueryRef.current = queryText;
         isProcessingQueryRef.current = true;
         
-        // Get selected document IDs if selection mode was used
-        const selectedDocIds = selectedDocumentIds.size > 0 
-          ? Array.from(selectedDocumentIds) 
+        // Get selected document IDs (use ref so we see latest selection at send time)
+        const currentSelectionForMessage = selectedDocumentIdsRef.current;
+        const selectedDocIds = (currentSelectionForMessage?.size ?? 0) > 0 
+          ? Array.from(currentSelectionForMessage) 
           : undefined;
         
         // Try to get document names from property attachments if available
@@ -6005,8 +6184,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 content: msg.text || ''
               }));
             
-            // Merge document IDs: sidebar selection + document chip ids from segments (chip-only usage)
-            const fromSelection = selectedDocumentIds.size > 0 ? Array.from(selectedDocumentIds) : [];
+            // Merge document IDs: use ref so async callback sees latest selection (avoids documentIds: undefined)
+            const currentSelection = selectedDocumentIdsRef.current;
+            const fromSelection = (currentSelection?.size ?? 0) > 0 ? Array.from(currentSelection) : [];
             const docChipIdsFromSegments = effectiveSegments
               .filter((s): s is QueryContentSegment & { type: 'document' } => s.type === 'document')
               .map((s) => s.id)
@@ -6038,10 +6218,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             });
             
             // Link query text and chips into one sentence so the model sees context (e.g. "what is the value of highlands").
-            const queryWithChipContext =
+            const rawQueryWithChip =
               effectiveSegments.length > 0
                 ? (contentSegmentsToLinkedQuery(effectiveSegments) || queryText)
                 : queryText;
+            const queryWithChipContext = stripHtmlFromQuery(rawQueryWithChip);
 
             // Check if attachments have extracted text - show file choice step if so
             let responseMode: 'fast' | 'detailed' | 'full' | undefined;
@@ -7045,15 +7226,21 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   height: 0 
                 };
                 
+                const docId = citation.data.doc_id ?? citation.data.document_id;
+                const pageNum = citation.data.page ?? citation.data.page_number ?? 0;
                 accumulatedCitations[citationNumStr] = {
-                  doc_id: citation.data.doc_id,
-                  page: citation.data.page || citation.data.page_number || 0,
+                  doc_id: docId,
+                  page: pageNum,
                   bbox: finalBbox, // Use normalized bbox or default empty bbox
                   method: citation.data.method, // Include method field
                   block_id: citation.data.block_id, // Include block_id for debugging and validation
-                  original_filename: citation.data.original_filename // Include filename for preloading
+                  original_filename: citation.data.original_filename, // Include filename for preloading
+                  cited_text: citation.data.cited_text
                 };
-                
+                // Preload citation preview so pop-up loads fast when user clicks
+                if (docId && pageNum) {
+                  preloadHoverPreview(docId, pageNum).catch(() => {});
+                }
                 // Always accumulate citations in buffer (for inactive chats)
                 if (queryChatId) {
                   const bufferedState = getBufferedState(queryChatId);
@@ -7064,7 +7251,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 // PRELOAD: Start downloading document in background when citation received (always, background operation)
                 // This ensures documents are ready when user clicks citation (instant BBOX highlight)
                 // Note: Documents may already be preloaded from reasoning steps, but this is a fallback
-                const docId = citation.data.doc_id;
                 if (docId) {
                   // Use the shared preload function (handles deduplication)
                   preloadDocumentById(docId, citation.data.original_filename);
@@ -7785,328 +7971,147 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   }, [expandedCardViewDoc]);
 
 
-  // Phase 1: Handle citation click - fetch document and open in viewer
-  // fromAgentAction: true when called from agent_action handler (backend already emits reasoning step)
-  const handleCitationClick = React.useCallback(async (citationData: CitationData, fromAgentAction: boolean = false) => {
+  // Open citation in 50/50 document view (extracted for use from "View in document" and agent-triggered opens)
+  const openCitationInDocumentView = React.useCallback(async (citationData: CitationData, fromAgentAction: boolean = false) => {
     try {
-      const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
-      
-      console.groupCollapsed('📚 [CITATION] handleCitationClick');
-      console.log('Raw citation payload:', citationData);
-      console.log('Matched chunk metadata:', citationData.matched_chunk_metadata);
-      console.log('fromAgentAction:', fromAgentAction);
-      console.groupEnd();
-
       const docId = citationData.doc_id;
-      
       if (!docId) {
-        console.error('❌ Citation missing doc_id:', citationData);
-        toast({
-          title: "Error",
-          description: "Document ID not found in citation",
-          variant: "destructive",
-        });
+        toast({ title: "Error", description: "Document ID not found in citation", variant: "destructive" });
         return;
       }
-
-      console.log('📎 Opening document from citation:', citationData.original_filename, 'doc_id:', docId);
-      console.log('📎 Citation data received:', JSON.stringify(citationData, null, 2));
-      console.log('📎 source_chunks_metadata:', citationData.source_chunks_metadata);
-
-      // AGENT-NATIVE: Add "Opening citation view" and "Highlighting content" reasoning steps when citation is clicked (only in Agent mode)
-      // This provides instant visual feedback before any async work starts
-      // Only add to the LAST message with reasoning steps (prefer completed, but allow loading if no completed found)
-      // SKIP when called from agent action - backend already emits the reasoning step
       if (isAgentModeRef.current && !fromAgentAction) {
         setChatMessages(prev => {
-          // Find the index of the LAST message with reasoning steps
-          // Prefer completed messages, but fall back to loading message if that's all we have
           let targetMsgIndex = -1;
           let fallbackLoadingIndex = -1;
-          
           for (let i = prev.length - 1; i >= 0; i--) {
             const msg = prev[i];
             if (msg.reasoningSteps && msg.reasoningSteps.length > 0) {
-              if (!msg.isLoading) {
-                // Found a completed message with reasoning steps - use this
-                targetMsgIndex = i;
-                break;
-              } else if (fallbackLoadingIndex === -1) {
-                // Track the first loading message with reasoning steps as fallback
-                fallbackLoadingIndex = i;
-              }
+              if (!msg.isLoading) { targetMsgIndex = i; break; }
+              else if (fallbackLoadingIndex === -1) fallbackLoadingIndex = i;
             }
           }
-          
-          // Use completed message if found, otherwise fall back to loading message
-          if (targetMsgIndex === -1) {
-            targetMsgIndex = fallbackLoadingIndex;
-          }
-          
-          if (targetMsgIndex === -1) {
-            return prev; // No message with reasoning steps found
-          }
-          
-          const updated = prev.map((msg, idx) => {
-            // Only modify the target message
-            if (idx !== targetMsgIndex) {
-              return msg;
-            }
-            
-            // Check if steps already exist (avoid duplicates)
-            // Check for either frontend-added step OR backend-emitted step
-            const hasCombinedStep = msg.reasoningSteps?.some(s => 
-              s.action_type === 'opening' && 
-              (s.step === 'agent_opening_citation' || s.step === 'agent_open_document')
-            );
-            
-            // Add single combined step for opening and highlighting
-            // Skip if backend already added it (from agent action)
-            if (!hasCombinedStep) {
-              const newStep: ReasoningStep = {
-                step: 'agent_opening_citation',
-                action_type: 'opening',
-                message: 'Opening citation view & Highlighting content',
-                timestamp: Number.MAX_SAFE_INTEGER,
-                fromCitationClick: true,
-                details: {
-                  doc_id: docId,
-                  filename: citationData.original_filename || 'document.pdf'
-                }
-              };
-            
-              return {
-                ...msg,
-                reasoningSteps: [...(msg.reasoningSteps || []), newStep]
-              };
-            }
-            return msg;
-          });
+          if (targetMsgIndex === -1) targetMsgIndex = fallbackLoadingIndex;
+          if (targetMsgIndex === -1) return prev;
+          const hasCombinedStep = prev[targetMsgIndex].reasoningSteps?.some(s =>
+            s.action_type === 'opening' && (s.step === 'agent_opening_citation' || s.step === 'agent_open_document'));
+          if (hasCombinedStep) return prev;
+          const newStep: ReasoningStep = {
+            step: 'agent_opening_citation',
+            action_type: 'opening',
+            message: 'Opening citation view & Highlighting content',
+            timestamp: Number.MAX_SAFE_INTEGER,
+            fromCitationClick: true,
+            details: { doc_id: docId, filename: citationData.original_filename || 'document.pdf' }
+          };
+          const updated = prev.map((msg, idx) =>
+            idx !== targetMsgIndex ? msg : { ...msg, reasoningSteps: [...(msg.reasoningSteps || []), newStep] }
+          );
           persistedChatMessagesRef.current = updated;
           return updated;
         });
       }
-
-      // NEW: Validate bbox before using it
-      // OPTIMIZATION: Build highlight data FIRST, then open preview immediately
-      // StandaloneExpandedCardView handles its own document loading with loading state
       const validateBbox = (bbox: any): boolean => {
         if (!bbox || typeof bbox !== 'object') return false;
-        
         const { left, top, width, height } = bbox;
-        
-        // Check if values are valid (0-1 range for normalized coordinates)
-        if (
-          typeof left !== 'number' || left < 0 || left > 1 ||
-          typeof top !== 'number' || top < 0 || top > 1 ||
-          typeof width !== 'number' || width <= 0 || width > 1 ||
-          typeof height !== 'number' || height <= 0 || height > 1
-        ) {
-          console.warn('⚠️ [CITATION] Invalid bbox values:', bbox);
+        if (typeof left !== 'number' || left < 0 || left > 1 || typeof top !== 'number' || top < 0 || top > 1 ||
+            typeof width !== 'number' || width <= 0 || width > 1 || typeof height !== 'number' || height <= 0 || height > 1)
           return false;
-        }
-        
-        // Check if bbox is invalid fallback (covers entire page or is at origin with full size)
         const area = width * height;
-        const isFallbackBbox = (
-          (left === 0 && top === 0 && width === 1 && height === 1) ||  // Full page fallback
-          area > 0.9  // More than 90% of page (likely fallback)
-        );
-        
-        if (isFallbackBbox) {
-          console.warn('⚠️ [CITATION] Rejecting fallback bbox (covers entire page):', { area, bbox });
-          return false;  // Reject invalid fallback bboxes
-        }
-        
-        // Warn if bbox is large but not full page
-        if (area > 0.5) {
-          console.warn('⚠️ [CITATION] Bbox area large (may be imprecise):', { area, bbox });
-        }
-        
+        if ((left === 0 && top === 0 && width === 1 && height === 1) || area > 0.9) return false;
         return true;
       };
-
-      // Use new minimal citation structure: citationData.bbox and citationData.page
-      // Fallback to legacy fields for backward compatibility
       let highlightData: CitationHighlight | undefined;
-
-      // Priority: Use new structure (citationData.bbox) > legacy structure (source_chunks_metadata)
-      if (citationData.bbox && 
-          typeof citationData.bbox.left === 'number' && 
-          typeof citationData.bbox.top === 'number' && 
-          typeof citationData.bbox.width === 'number' && 
-          typeof citationData.bbox.height === 'number') {
-        
-        // Validate bbox before using it
-        if (!validateBbox(citationData.bbox)) {
-          console.warn('⚠️ [CITATION] Invalid bbox in new structure, falling back to legacy structure or no highlight');
-          // Will fall through to legacy structure check below
-        } else {
-          // New minimal structure - use bbox directly
-          const highlightPage = citationData.bbox.page || citationData.page || citationData.page_number || 1;
-          
-          highlightData = {
-            fileId: docId,
-            bbox: {
-              left: citationData.bbox.left,
-              top: citationData.bbox.top,
-              width: citationData.bbox.width,
-              height: citationData.bbox.height,
-              page: highlightPage
-            },
-            // Include full citation metadata for CitationActionMenu
-            doc_id: docId,
-            block_id: citationData.block_id || '',
-            block_content: (citationData as any).cited_text || (citationData as any).block_content || '',
-            original_filename: citationData.original_filename || ''
-          };
-
-          console.log('🎯 [CITATION] Using new minimal citation structure', {
-            fileId: docId,
-            page: highlightPage,
-            bbox: citationData.bbox,
-            block_id: highlightData.block_id
-          });
-        }
+      if (citationData.bbox && typeof citationData.bbox.left === 'number' && typeof citationData.bbox.top === 'number' &&
+          typeof citationData.bbox.width === 'number' && typeof citationData.bbox.height === 'number' && validateBbox(citationData.bbox)) {
+        const highlightPage = citationData.bbox.page || citationData.page || citationData.page_number || 1;
+        highlightData = {
+          fileId: docId,
+          bbox: { left: citationData.bbox.left, top: citationData.bbox.top, width: citationData.bbox.width, height: citationData.bbox.height, page: highlightPage },
+          doc_id: docId,
+          block_id: citationData.block_id || '',
+          block_content: (citationData as any).cited_text || (citationData as any).block_content || '',
+          original_filename: citationData.original_filename || ''
+        };
       }
-      
-      // If new structure didn't work, try legacy structure
       if (!highlightData) {
-        // Fallback to legacy structure for backward compatibility
         const hasValidBbox = (chunk?: CitationChunkData | null): chunk is CitationChunkData & { bbox: NonNullable<CitationChunkData['bbox']> } =>
           !!(chunk && chunk.bbox && typeof chunk.bbox.left === 'number' && typeof chunk.bbox.top === 'number' && typeof chunk.bbox.width === 'number' && typeof chunk.bbox.height === 'number');
-
-        const candidateChunks = citationData.candidate_chunks_metadata?.length
-          ? [...citationData.candidate_chunks_metadata]
-          : [];
-        const sourceChunks = citationData.source_chunks_metadata?.length
-          ? [...citationData.source_chunks_metadata]
-          : [];
-
+        const candidateChunks = citationData.candidate_chunks_metadata?.length ? [...citationData.candidate_chunks_metadata] : [];
+        const sourceChunks = citationData.source_chunks_metadata?.length ? [...citationData.source_chunks_metadata] : [];
         const priorityList: Array<{ chunk?: CitationChunkData; reason: string }> = [
           { chunk: citationData.matched_chunk_metadata, reason: 'matched_chunk_metadata' },
           { chunk: citationData.chunk_metadata, reason: 'chunk_metadata' },
           { chunk: candidateChunks.find((chunk) => hasValidBbox(chunk)), reason: 'candidate_chunks_metadata' },
           { chunk: sourceChunks.find((chunk) => hasValidBbox(chunk)), reason: 'source_chunks_metadata' },
         ];
-
         const highlightSource = priorityList.find((entry) => hasValidBbox(entry.chunk));
         const highlightChunk = highlightSource?.chunk;
-
-        if (highlightChunk && highlightChunk.bbox) {
-          // Validate legacy bbox before using it
-          if (!validateBbox(highlightChunk.bbox)) {
-            console.warn('⚠️ [CITATION] Invalid bbox in legacy structure, falling back to no highlight');
-          } else {
-            const highlightPage = highlightChunk.bbox.page || highlightChunk.page_number || citationData.page || citationData.page_number || 1;
-            
-            highlightData = {
-              fileId: docId,
-              bbox: {
-                left: highlightChunk.bbox.left,
-                top: highlightChunk.bbox.top,
-                width: highlightChunk.bbox.width,
-                height: highlightChunk.bbox.height,
-                page: highlightPage
-              }
-            };
-
-            console.log('🎯 [CITATION] Using legacy citation structure', {
-              fileId: docId,
-              reason: highlightSource?.reason,
-              page: highlightPage,
-              bbox: highlightChunk.bbox
-            });
-          }
-        } else {
-          console.warn('⚠️ [CITATION] Unable to determine highlight from citation data. Falling back to no highlight.');
+        if (highlightChunk?.bbox && validateBbox(highlightChunk.bbox)) {
+          const highlightPage = highlightChunk.bbox.page || highlightChunk.page_number || citationData.page || citationData.page_number || 1;
+          highlightData = {
+            fileId: docId,
+            bbox: { left: highlightChunk.bbox.left, top: highlightChunk.bbox.top, width: highlightChunk.bbox.width, height: highlightChunk.bbox.height, page: highlightPage }
+          };
         }
       }
-
-      console.log('📚 [CITATION] Highlight payload prepared for preview:', {
-        highlightData,
-        docId,
-        highlightFileId: highlightData?.fileId
-      });
-      
-      // Always switch from fullscreen to 50% width when clicking a citation
-      // This creates a 50/50 split with the document preview
-      // Check if we're in fullscreen mode OR if we were in fullscreen before (for subsequent citations)
-      // Use ref to get current fullscreen state (avoids stale closure issues in streaming callbacks)
       const currentFullscreenMode = isFullscreenModeRef.current;
       const isDocumentPreviewAlreadyOpen = !!expandedCardViewDoc;
-      console.log('🔍 [CITATION] Fullscreen mode check:', { currentFullscreenMode, wasFullscreenBefore: wasFullscreenBeforeCitationRef.current, isDocumentPreviewAlreadyOpen });
-      
       if (currentFullscreenMode || wasFullscreenBeforeCitationRef.current) {
-        console.log('🎯 [CITATION] Citation clicked in fullscreen mode - switching to 50% width for 50/50 split');
-        // Track that we were in fullscreen mode so we can restore it when document preview closes
-        // Keep this true for all subsequent citations
         wasFullscreenBeforeCitationRef.current = true;
         setIsExpanded(true);
-        // Clear fullscreen mode to allow 50/50 split with document preview
         setIsFullscreenMode(false);
-        // Don't reset isFullscreenFromDashboardRef here - we'll restore it when closing
-        // Only clear dragged width if no document preview is already open
-        // If document preview is open, user may have adjusted the width - preserve it
-        if (!isDocumentPreviewAlreadyOpen) {
-          setDraggedWidth(null); // Clear any dragged width so unified width calculation takes effect
-        }
-        // NOTE: Don't set lockedWidthRef - the unified calculateChatPanelWidth will use 50% split
-        // when document preview opens (which happens right after this)
-        
-        // Width notification will happen via useEffect when expandedCardViewDoc changes
+        if (!isDocumentPreviewAlreadyOpen) setDraggedWidth(null);
       } else if (isFirstCitationRef.current) {
-        // If not in fullscreen, we weren't in fullscreen before
         wasFullscreenBeforeCitationRef.current = false;
-        // If not in fullscreen but first citation, still expand if collapsed
-        console.log('🎯 [CITATION] First citation clicked - expanding chat panel for 50/50 split view');
         setIsExpanded(true);
-        // Only clear dragged width if no document preview is already open
-        // If document preview is open, user may have adjusted the width - preserve it
-        if (!isDocumentPreviewAlreadyOpen) {
-          setDraggedWidth(null); // Clear any dragged width so unified width calculation takes effect
-        }
-        // NOTE: Don't set lockedWidthRef - the unified calculateChatPanelWidth will use 50% split
-        // when document preview opens (which happens right after this)
-        isFirstCitationRef.current = false; // Mark that we've seen a citation
-        
-        // Width notification will happen via useEffect when expandedCardViewDoc changes
+        if (!isDocumentPreviewAlreadyOpen) setDraggedWidth(null);
+        isFirstCitationRef.current = false;
       } else {
-        // If not in fullscreen and not first citation, we weren't in fullscreen before
         wasFullscreenBeforeCitationRef.current = false;
       }
-
-      // Always open in standalone ExpandedCardView (preferred layout)
-      // Even without highlight data, use StandaloneExpandedCardView instead of DocumentPreviewModal
-      console.log('📚 [CITATION] Opening in standalone ExpandedCardView:', {
-        docId: docId,
-        filename: citationData.original_filename,
-        hasHighlight: !!highlightData,
-        highlight: highlightData,
-        fromAgentAction: fromAgentAction
-      });
-      // CRITICAL: Pass isAgentTriggered flag so agent actions bypass chat panel visibility check
       openExpandedCardView(docId, citationData.original_filename || 'document.pdf', highlightData || undefined, fromAgentAction);
-      
-      // Track ownership of this document preview to prevent cross-contamination
       documentPreviewOwnerRef.current = currentChatIdRef.current || currentChatId;
-      
-      console.log('✅ Document opened in viewer:', {
-        filename: citationData.original_filename,
-        docId: docId,
-        hasHighlight: !!highlightData,
-        highlightPage: highlightData?.bbox?.page,
-        highlightBbox: highlightData?.bbox
-      });
     } catch (error: any) {
       console.error('❌ Error opening citation document:', error);
-      toast({
-        title: "Error",
-        description: error.message || "Failed to open document",
-        variant: "destructive",
-      });
+      toast({ title: "Error", description: error.message || "Failed to open document", variant: "destructive" });
     }
-  }, [openExpandedCardView, toast, isFullscreenMode, onChatWidthChange]);
+  }, [openExpandedCardView, toast, expandedCardViewDoc]);
+
+  // Agent-triggered citation open: open 50/50 directly. User clicks on citation numbers open the small panel instead.
+  const handleCitationClick = React.useCallback((citationData: CitationData, fromAgentAction: boolean = false) => {
+    openCitationInDocumentView(citationData, fromAgentAction);
+  }, [openCitationInDocumentView]);
+
+  // User clicked a citation in message text: if document preview is already open, navigate to citation there; otherwise show compact panel
+  const handleUserCitationClick = React.useCallback((data: CitationDataType, anchorRect?: DOMRect, sourceMessageText?: string, messageId?: string, citationNumber?: string) => {
+    if (isDocumentPreviewOpenRef.current) {
+      // Document preview already open: go straight to this citation in the document view (no panel)
+      openCitationInDocumentView(data as CitationData, false);
+      return;
+    }
+    if (anchorRect != null) {
+      setCitationClickPanel({ citationData: data as CitationData, anchorRect, sourceMessageText, messageId, citationNumber });
+    }
+  }, [openCitationInDocumentView]);
+
+  // Close citation panel on scroll (messages area), window resize, or Escape
+  React.useEffect(() => {
+    if (!citationClickPanel) return;
+    const contentArea = contentAreaRef.current;
+    const onScroll = () => setCitationClickPanel(null);
+    const onResize = () => setCitationClickPanel(null);
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setCitationClickPanel(null);
+    };
+    contentArea?.addEventListener('scroll', onScroll, true);
+    window.addEventListener('resize', onResize);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      contentArea?.removeEventListener('scroll', onScroll, true);
+      window.removeEventListener('resize', onResize);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [citationClickPanel]);
   
   // Add custom scrollbar styling and animations for WebKit browsers (Chrome, Safari, Edge)
   React.useEffect(() => {
@@ -9358,16 +9363,22 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 }
                 
                 const finalBbox = normalizedBbox || { left: 0, top: 0, width: 0, height: 0 };
-                
+                const docId = citation.data.doc_id ?? citation.data.document_id;
+                const pageNum = citation.data.page ?? citation.data.page_number ?? 0;
                 // Accumulate citation locally - will be applied in onComplete
                 accumulatedCitations[citationNumStr] = {
-                  doc_id: citation.data.doc_id,
-                  page: citation.data.page || citation.data.page_number || 0,
+                  doc_id: docId,
+                  page: pageNum,
                   bbox: finalBbox,
                   method: citation.data.method,
                   block_id: citation.data.block_id,
-                  original_filename: citation.data.original_filename
+                  original_filename: citation.data.original_filename,
+                  cited_text: citation.data.cited_text
                 };
+                // Preload citation preview so pop-up loads fast when user clicks
+                if (docId && pageNum) {
+                  preloadHoverPreview(docId, pageNum).catch(() => {});
+                }
               },
               undefined, // onExecutionEvent
               // citationContext: Pass structured citation metadata (hidden from user, for LLM)
@@ -10137,9 +10148,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         attachments: attachmentsToStore 
       }]);
       
-      // Get selected document IDs and names if selection mode was used
-      const selectedDocIds = selectedDocumentIds.size > 0 
-        ? Array.from(selectedDocumentIds) 
+      // Get selected document IDs (use ref so we see latest selection at send time)
+      const currentSel = selectedDocumentIdsRef.current;
+      const selectedDocIds = (currentSel?.size ?? 0) > 0 
+        ? Array.from(currentSel) 
         : undefined;
       
       // Get document names: from property when available, otherwise from atMentionDocumentChips (chip labels)
@@ -10163,6 +10175,24 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         }
       }
       
+      // Citation context: from prop or from first citation_snippet chip (Ask follow up)
+      const effectiveCitationContext = citationContext ?? (() => {
+        const first = segmentInput.segments.find((s) => isChipSegment(s) && s.kind === 'citation_snippet');
+        if (!first || !isChipSegment(first)) return undefined;
+        const p = first.payload as { citationData?: any; sourceMessageText?: string };
+        const c = p?.citationData;
+        if (!c) return undefined;
+        return {
+          document_id: c.document_id ?? c.doc_id ?? '',
+          page_number: c.page ?? c.page_number ?? c.bbox?.page ?? 1,
+          bbox: c.bbox ?? { left: 0, top: 0, width: 0, height: 0 },
+          original_filename: c.original_filename ?? '',
+          cited_text: first.label || c.cited_text || c.block_content || '',
+          block_id: c.block_id,
+          source_message_text: p?.sourceMessageText,
+        };
+      })();
+      
       // Build ordered content segments so the bubble shows chips + text in the same order as the input
       const contentSegments: QueryContentSegment[] = [];
       for (const seg of segmentInput.segments) {
@@ -10183,6 +10213,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 attachment: { id: seg.id, propertyId: seg.id, address: addr, imageUrl: '', property: p }
               });
             }
+          } else if (seg.kind === 'citation_snippet') {
+            contentSegments.push({
+              type: 'citation_snippet',
+              snippet: seg.label,
+              citationData: (seg.payload as any)?.citationData,
+            });
           } else {
             const name = atMentionDocumentChips.find((c) => c.id === seg.id)?.label ?? seg.label ?? seg.id;
             contentSegments.push({ type: 'document', id: seg.id, name });
@@ -10201,13 +10237,13 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         selectedDocumentIds: selectedDocIds,
         selectedDocumentNames: selectedDocNames,
         contentSegments: contentSegments.length > 0 ? contentSegments : undefined,
-        fromCitation: !!citationContext, // Mark if query came from citation
-        citationBboxData: citationContext ? {
-          document_id: citationContext.document_id,
-          page_number: citationContext.page_number,
-          bbox: citationContext.bbox,
-          original_filename: citationContext.original_filename,
-          block_id: (citationContext as any).block_id || undefined
+        fromCitation: !!effectiveCitationContext, // Mark if query came from citation (prop or citation_snippet chip)
+        citationBboxData: effectiveCitationContext ? {
+          document_id: effectiveCitationContext.document_id,
+          page_number: effectiveCitationContext.page_number,
+          bbox: effectiveCitationContext.bbox,
+          original_filename: effectiveCitationContext.original_filename,
+          block_id: (effectiveCitationContext as any).block_id || undefined
         } : undefined
       };
       
@@ -10477,8 +10513,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           // Also set in old ref for backward compatibility
           abortControllerRef.current = handleSubmitAbortController;
           
-          // Merge document IDs: sidebar selection + document chip ids from segments (chip-only usage)
-          const fromSelection = selectedDocumentIds.size > 0 ? Array.from(selectedDocumentIds) : [];
+          // Merge document IDs: use ref so we see latest selection at send time
+          const currentSelectionHandle = selectedDocumentIdsRef.current;
+          const fromSelection = (currentSelectionHandle?.size ?? 0) > 0 ? Array.from(currentSelectionHandle) : [];
           const docChipIdsFromSegments = segmentInput.segments
             .filter((seg): seg is ChipSegment => isChipSegment(seg) && seg.kind === 'document')
             .map((seg) => seg.id)
@@ -10533,8 +10570,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           // Store these values for use in error handler
           const hasAttachmentsForError = attachedFiles.length > 0 || (documentIdsArray && documentIdsArray.length > 0);
           // Link segments so the model sees full sentence with chip context (same rule as query-prop path)
-          const submittedQuery =
+          const rawQuery =
             (segmentInput.segments.length > 0 ? segmentsToLinkedQuery(segmentInput.segments).trim() || submitted : submitted) || '';
+          const submittedQuery = stripHtmlFromQuery(rawQuery);
           
           // Track documents currently being preloaded to avoid duplicates
           const preloadingDocs = new Set<string>();
@@ -11225,10 +11263,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               }
             },
             undefined, // onExecutionEvent
-            // citationContext: Pass structured citation metadata (hidden from user, for LLM)
-            // ALWAYS pass citationContext when available - it contains document_id, page_number, block_id
-            // for fast-path retrieval when user clicks on a citation
-            citationContext || undefined,
+            // citationContext: from prop or from citation_snippet chip (Ask follow up)
+            effectiveCitationContext || undefined,
             responseMode, // responseMode (from file choice)
             attachmentContext, // attachmentContext (extracted text from files)
             // AGENT-NATIVE: Handle agent actions
@@ -11692,6 +11728,33 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     [isEmptyChat]
   );
 
+  // Which citations should show orange highlight in response text (when user added citation_snippet chip from that message/citation)
+  // Use globalThis.Map/Set because Map is imported from lucide-react (icon) and would shadow the built-in.
+  // Stabilize so we don't re-create the map on every keystroke: only update when the set of citation chips actually changes.
+  const prevOrangeCitationRef = React.useRef<{ key: string; map: globalThis.Map<string, Set<string>> }>({ key: '', map: new globalThis.Map() });
+  const orangeCitationNumbersByMessage = React.useMemo(() => {
+    const pairs: string[] = [];
+    for (const seg of segmentInput.segments) {
+      if (!isChipSegment(seg) || seg.kind !== 'citation_snippet') continue;
+      const p = seg.payload as { messageId?: string; citationNumber?: string };
+      if (p?.messageId != null && p?.citationNumber != null)
+        pairs.push(`${p.messageId}:${p.citationNumber}`);
+    }
+    const key = pairs.sort().join(',');
+    if (prevOrangeCitationRef.current.key === key)
+      return prevOrangeCitationRef.current.map;
+    const m = new globalThis.Map<string, Set<string>>();
+    for (const pair of pairs) {
+      const [messageId, citationNumber] = pair.split(':');
+      if (messageId && citationNumber) {
+        if (!m.has(messageId)) m.set(messageId, new globalThis.Set());
+        m.get(messageId)!.add(citationNumber);
+      }
+    }
+    prevOrangeCitationRef.current = { key, map: m };
+    return m;
+  }, [segmentInput.segments]);
+
   // CRITICAL: This useMemo MUST be at top level (not inside JSX) to follow React's Rules of Hooks
   // This fixes "Rendered more hooks than during the previous render" error
   const renderedMessages = useMemo(() => {
@@ -11750,14 +11813,14 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           }}>
             {/* BBOX Preview for citation queries */}
             {message.fromCitation && message.citationBboxData && (
-              <div style={{ marginBottom: '8px' }}>
+              <div style={{ marginBottom: '10px', maxWidth: '100%' }}>
                 <CitationBboxPreview 
                   citationBboxData={message.citationBboxData}
                   onClick={handleCitationPreviewClick}
                 />
               </div>
             )}
-            <div style={{ backgroundColor: '#FFFFFF', borderRadius: '8px', padding: '4px 10px', border: '1px solid #e5e7eb', boxShadow: '0 1px 2px rgba(0, 0, 0, 0.05)', width: 'fit-content', maxWidth: '100%', wordWrap: 'break-word', overflowWrap: 'break-word', display: 'block', boxSizing: 'border-box' }}>
+            <div style={{ backgroundColor: '#FFFFFF', borderRadius: '8px', padding: '4px 6px 4px 10px', border: '1px solid #e5e7eb', boxShadow: '0 1px 2px rgba(0, 0, 0, 0.05)', width: 'fit-content', maxWidth: '100%', wordWrap: 'break-word', overflowWrap: 'break-word', display: 'block', boxSizing: 'border-box' }}>
               {message.attachments?.length > 0 && (
                 <div style={{ marginBottom: (message.text || message.propertyAttachments?.length > 0) ? '8px' : '0', display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
                   {message.attachments.map((attachment, i) => (
@@ -11765,7 +11828,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   ))}
                 </div>
               )}
-              <div style={{ display: 'block', lineHeight: '22px', fontSize: '14px', width: 'fit-content', maxWidth: '100%' }}>
+              <div style={{ display: 'block', lineHeight: '22px', fontSize: '14px', width: 'fit-content', maxWidth: '100%', padding: 0, margin: 0 }}>
                 {message.contentSegments && message.contentSegments.length > 0
                   ? message.contentSegments.map((seg, idx) => {
                       if (seg.type === 'text') {
@@ -11798,9 +11861,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             onMouseEnter={() => setHoveredQueryId(finalKey)}
                             onMouseLeave={() => setHoveredQueryId(null)}
                           >
-                            {message.fromCitation && idx === 0 && (
-                              <TextCursorInput size={16} style={{ flexShrink: 0, color: '#6B7280', marginTop: '3px', verticalAlign: 'middle', marginRight: '4px' }} />
-                            )}
                             <ReactMarkdown components={{
                               p: ({ children }) => <p style={{ margin: 0, padding: 0, display: 'inline', wordWrap: 'break-word', overflowWrap: 'break-word' }}>{children}</p>,
                               h1: ({ children }) => <h1 style={{ fontSize: '18px', fontWeight: 600, margin: '14px 0 10px 0', display: 'block' }}>{children}</h1>,
@@ -11832,12 +11892,23 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           </span>
                         );
                       }
-                      const label = seg.name.length > 30 ? seg.name.slice(0, 27) + '...' : seg.name;
-                      return (
-                        <span key={`d-${idx}-${seg.id}`} style={{ display: 'inline-flex', verticalAlign: 'middle', marginRight: '6px' }}>
-                          <AtMentionChip type="document" label={label} />
-                        </span>
-                      );
+                      if (seg.type === 'citation_snippet') {
+                        const snippetLabel = seg.snippet.length > 50 ? seg.snippet.slice(0, 47) + '...' : seg.snippet;
+                        return (
+                          <span key={`cit-${idx}`} style={{ display: 'inline-flex', verticalAlign: 'middle', marginRight: '6px' }}>
+                            <AtMentionChip type="citation_snippet" label={snippetLabel} />
+                          </span>
+                        );
+                      }
+                      if (seg.type === 'document') {
+                        const label = seg.name.length > 30 ? seg.name.slice(0, 27) + '...' : seg.name;
+                        return (
+                          <span key={`d-${idx}-${seg.id}`} style={{ display: 'inline-flex', verticalAlign: 'middle', marginRight: '6px' }}>
+                            <AtMentionChip type="document" label={label} />
+                          </span>
+                        );
+                      }
+                      return null;
                     })
                   : (
                     <>
@@ -11888,9 +11959,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           onMouseEnter={() => setHoveredQueryId(finalKey)}
                           onMouseLeave={() => setHoveredQueryId(null)}
                         >
-                          {message.fromCitation && (
-                            <TextCursorInput size={16} style={{ flexShrink: 0, color: '#6B7280', marginTop: '3px', verticalAlign: 'middle', marginRight: '4px' }} />
-                          )}
                           <ReactMarkdown components={{
                             p: ({ children }) => <p style={{ margin: 0, padding: 0, display: 'inline', wordWrap: 'break-word', overflowWrap: 'break-word' }}>{children}</p>,
                             h1: ({ children }) => <h1 style={{ fontSize: '18px', fontWeight: 600, margin: '14px 0 10px 0', display: 'block' }}>{children}</h1>,
@@ -11998,21 +12066,78 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 text={message.text}
                 isStreaming={message.isLoading || false} // Allow streaming to continue
                 citations={message.citations}
-                handleCitationClick={handleCitationClick}
+                handleCitationClick={(data: CitationDataType, anchorRect?: DOMRect, citationNumber?: string) => handleUserCitationClick(data, anchorRect, message.text, finalKey, citationNumber)}
                 renderTextWithCitations={renderTextWithCitations}
                 onTextUpdate={scrollToBottom}
                 messageId={finalKey}
-                skipHighlight={!isLatestAssistantMessage || !showHighlight}
+                skipHighlight={!isLatestAssistantMessage || !showHighlight || (orangeCitationNumbersByMessage.get(message.id ?? finalKey)?.size ?? 0) > 0}
                 showCitations={showCitations}
+                orangeCitationNumbers={orangeCitationNumbersByMessage.get(message.id ?? finalKey)}
+                selectedCitationNumber={citationClickPanel?.citationNumber}
+                selectedCitationMessageId={citationClickPanel?.messageId}
               />
             </div>
           )}
         </div>
       );
     }).filter(Boolean);
-  }, [chatMessages, showReasoningTrace, showHighlight, showCitations, restoredMessageIdsRef, handleCitationClick, onOpenProperty, scrollToBottom, expandedCardViewDoc, propertyAttachments]);
+  }, [chatMessages, showReasoningTrace, showHighlight, showCitations, restoredMessageIdsRef, handleUserCitationClick, onOpenProperty, scrollToBottom, expandedCardViewDoc, propertyAttachments, orangeCitationNumbersByMessage, citationClickPanel]);
 
   return (
+    <>
+      {/* Dark overlay when citation panel is open - rendered inside panel so chat bar can sit above it (z-index) */}
+      {citationClickPanel && (() => {
+        const data = citationClickPanel.citationData as CitationData & { document_id?: string };
+        const docId = data.document_id ?? data.doc_id;
+        const pageNum = data.page ?? data.bbox?.page ?? data.page_number ?? 1;
+        const cacheKey = docId ? `hover-${docId}-${pageNum}` : '';
+        const cachedPreview = cacheKey ? (hoverPreviewCache.get(cacheKey) ?? null) : null;
+        const fromCache = cachedPreview
+          ? { pageImage: cachedPreview.pageImage, imageWidth: cachedPreview.imageWidth, imageHeight: cachedPreview.imageHeight }
+          : null;
+        const cachedPageImage = fromCache ?? citationPanelLoadedImage;
+        return createPortal(
+          <CitationClickPanel
+            citationData={citationClickPanel.citationData}
+            anchorRect={citationClickPanel.anchorRect}
+            cachedPageImage={cachedPageImage}
+            onViewInDocument={() => {
+              openCitationInDocumentView(citationClickPanel.citationData, false);
+              setCitationClickPanel(null);
+            }}
+            onAskFollowUp={() => {
+              const citationData = citationClickPanel.citationData as CitationData & { document_id?: string; block_id?: string; cited_text?: string; block_content?: string };
+              const raw = (citationData.cited_text || citationData.block_content || 'this citation').trim().slice(0, 200);
+              // Strip markdown so chip label doesn't show ** or __ etc.
+              const snippet = raw.replace(/\*\*/g, '').replace(/__/g, '');
+              const id = `cite-${citationData.doc_id ?? (citationData as any).document_id ?? 'doc'}-${citationData.page ?? citationData.page_number ?? citationData.bbox?.page ?? 0}-${Date.now()}`;
+              const sourceMessageText = citationClickPanel.sourceMessageText != null ? citationClickPanel.sourceMessageText.slice(-2000) : undefined;
+              segmentInput.insertChipAtCursor(
+                {
+                  type: 'chip',
+                  kind: 'citation_snippet',
+                  id,
+                  label: snippet,
+                  payload: {
+                    citationData: { ...citationData, block_id: citationData.block_id, cited_text: snippet },
+                    sourceMessageText,
+                    messageId: citationClickPanel.messageId,
+                    citationNumber: citationClickPanel.citationNumber,
+                  },
+                },
+                { trailingSpace: true }
+              );
+              setCitationClickPanel(null);
+              requestAnimationFrame(() => {
+                inputRef.current?.focus();
+                requestAnimationFrame(() => restoreSelectionRef.current?.());
+              });
+            }}
+            onClose={() => setCitationClickPanel(null)}
+          />,
+          document.body
+        );
+      })()}
     <AnimatePresence mode="wait">
       {isVisible && (
         <motion.div
@@ -12027,7 +12152,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           transition={{ duration: 0 }} // No animation - instant appearance
           layout={false} // Disable layout animation
           onClick={(e) => e.stopPropagation()} // Prevent clicks from closing agent sidebar
-          className="fixed top-0 bottom-0 z-[10001]"
+          className={`fixed top-0 bottom-0 ${citationClickPanel ? 'z-[10051]' : 'z-[10001]'}`}
           style={{
             left: (() => {
               // Always use sidebarWidth prop which MainContent calculates correctly
@@ -12069,6 +12194,25 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             transform: 'translateZ(0)' // Force GPU acceleration
           }}
         >
+          {/* Dark overlay when citation panel open - fullscreen of chat view, behind chat bar so chat bar stays interactive */}
+          {citationClickPanel && (
+            <div
+              onClick={() => setCitationClickPanel(null)}
+              style={{
+                position: 'absolute',
+                inset: 0,
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+                width: '100%',
+                height: '100%',
+                backgroundColor: 'rgba(0, 0, 0, 0.04)',
+                zIndex: 10050,
+                pointerEvents: 'auto',
+              }}
+            />
+          )}
           {/* Drag handle for resizing from right edge - extends full height above all content */}
           {/* Only show when property details panel is open OR when document preview is NOT open */}
           {/* When document preview is open, the document's left edge handles resize instead */}
@@ -12531,7 +12675,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             Files
                           </button>
                         )}
-                        {isChatLarge ? (
+                        {isFullscreenMode ? (
                           <button
                             type="button"
                             onClick={(e) => {
@@ -12696,8 +12840,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 </div>
                 
                 <div className="flex items-center space-x-2 min-w-0 justify-end">
-                  {/* Agents Sidebar Button (hidden on new chat section) */}
-                  {!isNewChatSection && (
+                  {/* Agents Sidebar Button – shown on opening screen and when chat has messages */}
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
@@ -12710,36 +12853,29 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         toggleChatPanel();
                       }
                     }}
-                    className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150`}
+                    className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1' : 'justify-center'} rounded-sm border-none cursor-pointer transition-all duration-150 ${isChatPanelOpen ? 'bg-black/[0.04]' : 'bg-transparent'} hover:bg-[#f0f0f0] active:bg-[#e8e8e8]`}
                     title={isChatPanelOpen ? "Close Agent Sidebar" : "Agents Sidebar"}
                     type="button"
                     style={{
                       padding: actualPanelWidth < 750 ? '5px' : '5px 8px',
                       height: '26px',
                       minHeight: '26px',
-                      border: 'none',
-                      cursor: 'pointer',
-                      backgroundColor: isChatPanelOpen ? 'rgba(0, 0, 0, 0.04)' : 'transparent'
                     }}
                   >
                     {isChatPanelOpen ? (
                       <PanelRightClose
-                        className="w-3.5 h-3.5 text-[#666]"
+                        className="w-3.5 h-3.5 text-[#666] scale-x-[-1]"
                         strokeWidth={1.75}
                       />
                     ) : (
-                      <Play
-                        className="w-3.5 h-3.5 text-[#666]"
-                        strokeWidth={1.75}
-                      />
+                      <img src={agentIcon} alt="Agents" className="w-5 h-5" aria-hidden />
                     )}
                     {actualPanelWidth >= 750 && (
-                      <span className="text-[12px] font-normal text-[#666]">
+                      <span className={`font-normal text-[#666] ${isChatPanelOpen ? 'text-[12px]' : 'text-[14px]'}`}>
                         {isChatPanelOpen ? "Close" : "Agents"}
                       </span>
                     )}
                   </button>
-                  )}
                   
                   {/* Response (reasoning trace + answer highlight) – hover popover */}
                   {!isNewChatSection && (
@@ -12913,15 +13049,20 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             </div>
             
             {/* Conditional layout: Centered empty state OR normal messages + bottom input */}
+            {/* Single child with key so AnimatePresence mode="wait" never sees multiple children */}
             <AnimatePresence mode="wait">
+            <motion.div
+              key={isEmptyChat ? 'empty-chat-layout' : 'messages-layout'}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0, transition: { duration: 0.1 } }}
+              transition={{ duration: 0.2, ease: [0.4, 0, 0.2, 1] }}
+              style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', position: 'relative', width: '100%' }}
+            >
             {isEmptyChat ? (
               /* Empty chat state - Centered expanded chat bar (like Cursor's new chat) */
-              <motion.div
-                key="empty-chat-layout"
-                initial={{ opacity: 1 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0, transition: { duration: 0.1 } }}
-                transition={{ duration: 0 }}
+              <div
+                key="empty-chat-layout-inner"
                 ref={contentAreaRef}
                 onClick={(e) => e.stopPropagation()}
                 className="flex-1"
@@ -13358,19 +13499,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     </div>
                   </form>
                 </div>
-              </motion.div>
+              </div>
             ) : (
               /* Normal chat state - Messages + bottom input */
-              <motion.div
-                key="messages-layout"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0, transition: { duration: 0.1 } }}
-                transition={{ duration: 0.2, ease: [0.4, 0, 0.2, 1] }}
+              <div
+                key="messages-layout-inner"
                 className="flex-1 flex flex-col"
-                style={{ minWidth: 0, width: '100%', minHeight: 0, overflow: 'visible' }}
+                style={{ position: 'relative', minWidth: 0, width: '100%', minHeight: 0, overflow: 'visible' }}
               >
-                {/* Content area - Query bubbles (ChatGPT-like scrollable area) */}
+                {/* Content area wrapper - position:relative so blur overlay covers only messages, not chat bar */}
+                <div style={{ position: 'relative', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
                 <div 
                   ref={contentAreaRef}
                   onClick={(e) => e.stopPropagation()} // Prevent clicks from closing agent sidebar
@@ -13713,13 +13851,14 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     </div>
                   </div>
                 </div>
+                </div>
             
-                {/* Chat Input at Bottom - Condensed SearchBar design (only for non-empty chat) */}
+                {/* Chat Input at Bottom - Condensed SearchBar design (only for non-empty chat). When citation panel open, transparent so overlay shows; only inner chat bar sits above overlay. */}
                 <div 
                   ref={chatInputContainerRef}
               onClick={(e) => e.stopPropagation()} // Prevent clicks from closing agent sidebar
               style={{ 
-                backgroundColor: '#FCFCF9', 
+                backgroundColor: citationClickPanel ? 'transparent' : '#FCFCF9', 
                 paddingTop: '16px', 
                 paddingBottom: '48px', 
                 paddingLeft: '0', // Remove left padding - centering handled by form
@@ -13731,7 +13870,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 display: 'flex',
                 justifyContent: 'center', // Center the form
                 width: '100%',
-                zIndex: 5, // Ensure input area is above content area
+                zIndex: citationClickPanel ? 10051 : 5, // Above overlay when citation panel open; container bg transparent so overlay shows, only inner chat bar is opaque
                 pointerEvents: 'auto' // Ensure container can receive drag events
               }}
                 >
@@ -13791,14 +13930,14 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 onDragLeave={handleDragLeave}
                 onDrop={handleDrop}
               >
-                {/* Wrapper for chat bar + overlay to enable proper z-index stacking */}
+                {/* Wrapper for chat bar + overlay - no z-index so overlay shows through; only inner chat bar is above overlay */}
                 <div 
                   onClick={(e) => e.stopPropagation()} // Prevent clicks from closing agent sidebar
                   style={{ 
                     position: 'relative', 
                     width: 'min(100%, 640px)', 
                     minWidth: '200px', // Allow narrower wrapper
-                    pointerEvents: 'auto' // Ensure wrapper can receive drag events
+                    pointerEvents: 'auto', // Ensure wrapper can receive drag events
                   }}
                 >
                   {/* Bot Status Overlay - sits BEHIND the chat bar */}
@@ -13808,12 +13947,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     isPaused={isBotPaused}
                     onPauseToggle={handlePauseToggle}
                   />
-                  {/* Chat bar - sits ON TOP of the overlay */}
+                  {/* Chat bar - ONLY element above citation overlay (z 10051); form/container stay behind overlay */}
                   <div 
                     className={`relative flex flex-col ${isSubmitted ? 'opacity-75' : ''}`}
                     onClick={(e) => e.stopPropagation()} // Prevent clicks from closing agent sidebar
                     style={{
-                      background: isDragOver ? '#F0F9FF' : 'rgba(255, 255, 255, 0.72)',
+                      background: isDragOver ? '#F0F9FF' : '#ffffff',
                       backdropFilter: isDragOver ? 'none' : 'blur(16px) saturate(160%)',
                       WebkitBackdropFilter: isDragOver ? 'none' : 'blur(16px) saturate(160%)',
                       border: isDragOver ? '2px dashed rgb(36, 41, 50)' : '1px solid #E0E0E0',
@@ -13832,7 +13971,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       boxSizing: 'border-box',
                       borderRadius: '8px',
                       transition: 'background-color 0.2s ease-in-out, border-color 0.2s ease-in-out, box-shadow 0.2s ease-in-out',
-                      zIndex: 2, // Above the bot status overlay
+                      zIndex: citationClickPanel ? 10051 : 2, // Above citation overlay (10050) when open; above bot overlay otherwise
                     }}
                   >
                   {/* Input row - match SearchBar: gap for spacing to icons */}
@@ -14480,8 +14619,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 </div>
               </form>
                 </div>
-              </motion.div>
+              </div>
             )}
+            </motion.div>
             </AnimatePresence>
           </div>
           </div>
@@ -14606,6 +14746,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         )}
       </AnimatePresence>
     </AnimatePresence>
+    </>
   );
 });
 

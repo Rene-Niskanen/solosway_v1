@@ -1,10 +1,11 @@
 "use client";
 
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Search, Plus, Folder, FolderOpen, FileText, File as FileIcon, ChevronRight, MoreVertical, CheckSquare, Square, Upload, MousePointer2, Trash2, ChevronDown, MapPin, RefreshCw, ListCheck } from 'lucide-react';
+import { X, Search, Plus, Folder, FolderOpen, FileText, File as FileIcon, ChevronRight, MoreVertical, CheckSquare, Square, Upload, MousePointer2, Trash2, ChevronDown, MapPin, RefreshCw, Loader2 } from 'lucide-react';
 import { useFilingSidebar } from '../contexts/FilingSidebarContext';
 import { backendApi } from '../services/backendApi';
+import { preloadDocumentBlobs } from '../services/documentBlobCache';
 import { usePreview } from '../contexts/PreviewContext';
 import { useBackendApi } from './BackendApi';
 import { uploadEvents } from './UploadProgressBar';
@@ -19,6 +20,11 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from './ui/alert-dialog';
+import {
+  PipelineStagesHoverPreview,
+  mapPipelineProgressToStages,
+  type PipelineProgressData,
+} from './PipelineStagesHoverPreview';
 
 interface Document {
   id: string;
@@ -47,6 +53,10 @@ interface FilingSidebarProps {
   isSmallSidebarMode?: boolean;
   /** When true, hide the header close button (e.g. when in chat – close is in View dropdown). */
   hideCloseButton?: boolean;
+  /** When provided, file row click opens the File View pop-up with this doc instead of the shared DocumentPreviewModal. */
+  onOpenFileView?: (doc: Document) => void;
+  /** ID of the document currently open in the File View pop-up; that row gets a faint selection style. */
+  openFileViewDocumentId?: string | null;
 }
 
 /** Parse getAllDocuments() response into a Document array. Shared by preload and open-sidebar fetch. */
@@ -159,7 +169,9 @@ const PendingFileItem: React.FC<{
 export const FilingSidebar: React.FC<FilingSidebarProps> = ({ 
   sidebarWidth,
   isSmallSidebarMode = false,
-  hideCloseButton = false
+  hideCloseButton = false,
+  onOpenFileView,
+  openFileViewDocumentId = null,
 }) => {
   const {
     isOpen,
@@ -240,6 +252,15 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
   // Track documents being reprocessed and successfully reprocessed
   const [reprocessingDocs, setReprocessingDocs] = useState<Set<string>>(new Set());
   const [reprocessedDocs, setReprocessedDocs] = useState<Set<string>>(new Set()); // Successfully reprocessed this session
+  // Pipeline stages hover pop-up: which doc is hovered, progress from API, show popup after delay
+  const [hoveredPipelineDoc, setHoveredPipelineDoc] = useState<{ documentId: string; doc: Document } | null>(null);
+  const [pipelineProgress, setPipelineProgress] = useState<PipelineProgressData | null>(null);
+  const [showPipelinePreview, setShowPipelinePreview] = useState(false);
+  const [pipelinePreviewPosition, setPipelinePreviewPosition] = useState({ x: 0, y: 0 });
+  const [pipelinePreviewBounds, setPipelinePreviewBounds] = useState<{ left: number; right: number } | undefined>(undefined);
+  const pipelineHoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const pipelineLeaveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const pipelinePollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const newMenuRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
@@ -255,8 +276,25 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
   const cacheTimestampRef = useRef<Map<string, number>>(new Map());
   const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes cache duration
   const preloadStartedRef = useRef(false);
+  const hoverPreloadTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const loadingSpinnerDelayRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const { addPreviewFile, setPreviewFiles, setIsPreviewOpen } = usePreview();
+
+  // Preload blob for a single doc (e.g. on hover) so click opens file popup instantly
+  const scheduleHoverPreload = useCallback((doc: Document) => {
+    if (hoverPreloadTimeoutRef.current) clearTimeout(hoverPreloadTimeoutRef.current);
+    hoverPreloadTimeoutRef.current = setTimeout(() => {
+      hoverPreloadTimeoutRef.current = null;
+      preloadDocumentBlobs([{ id: doc.id, s3_path: doc.s3_path }]);
+    }, 200);
+  }, []);
+  const cancelHoverPreload = useCallback(() => {
+    if (hoverPreloadTimeoutRef.current) {
+      clearTimeout(hoverPreloadTimeoutRef.current);
+      hoverPreloadTimeoutRef.current = null;
+    }
+  }, []);
 
   // Pre-load global documents in the background on first load so FilingSidebar opens with cached data
   useEffect(() => {
@@ -264,6 +302,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
     preloadStartedRef.current = true;
     const run = async () => {
       try {
+        await backendApi.warmConnection?.();
         const response = await backendApi.getAllDocuments();
         const docs = parseAllDocumentsResponse(response);
         documentCacheRef.current.set('global', docs);
@@ -275,7 +314,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
     run();
   }, []);
 
-  // Fetch properties and folders when selector opens
+  // Fetch properties and folders when selector opens; prefetch first 2 properties' documents for instant switch
   useEffect(() => {
     if (showPropertySelector && availableProperties.length === 0) {
       const loadProperties = async () => {
@@ -286,6 +325,24 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
               ? response.data 
               : (response.data as any).properties || [];
             setAvailableProperties(properties);
+            // Prefetch documents for first 2 properties so switching to them is instant
+            for (const p of properties.slice(0, 2)) {
+              const id = (p as any)?.property?.id ?? (p as any)?.id;
+              if (id) {
+                backendApi.getPropertyHubDocuments(id).then((res) => {
+                  if (!res.success || !res.data) return;
+                  let docs: any[] = [];
+                  const d = res.data;
+                  if (Array.isArray(d)) docs = d;
+                  else if (d?.data?.documents) docs = d.data.documents;
+                  else if (Array.isArray(d?.documents)) docs = d.documents;
+                  if (docs.length) {
+                    documentCacheRef.current.set(`property_${id}`, docs);
+                    cacheTimestampRef.current.set(`property_${id}`, Date.now());
+                  }
+                }).catch(() => {});
+              }
+            }
           }
         } catch (error) {
           console.error('Failed to load properties:', error);
@@ -308,11 +365,12 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
         ? `property_${selectedPropertyId}`
         : 'global';
       
-      // Check cache first
+      // Check cache first (stale-while-revalidate: show any cached data immediately)
       const cachedDocs = documentCacheRef.current.get(cacheKey);
       const cacheTimestamp = cacheTimestampRef.current.get(cacheKey);
       const now = Date.now();
       const isCacheValid = cachedDocs && cacheTimestamp && (now - cacheTimestamp) < CACHE_DURATION;
+      const hasStaleCache = !!(cachedDocs && cachedDocs.length >= 0);
       
       // Helper function to load folders
       const loadFolders = () => {
@@ -327,31 +385,25 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
         }
       };
 
-      // Use cached data immediately if available
-      if (isCacheValid && cachedDocs) {
-        console.log('📦 FilingSidebar: Using cached documents:', cachedDocs.length, 'documents');
+      // Stale-while-revalidate: show cached data immediately (even if expired) so UI is instant
+      if (hasStaleCache && cachedDocs) {
         setDocuments(cachedDocs);
-        loadFolders(); // Load folders with cached data
-        
+        loadFolders();
         setIsLoading(false);
         setError(null);
-        
-        // Still fetch fresh data in background to update cache
-        // (but don't show loading state or reload folders to avoid double loading)
       } else {
-        // No valid cache, show loading and fetch
-        setIsLoading(true);
+        // Only show spinner after a short delay; if fetch finishes first, never show it
         setError(null);
+        loadingSpinnerDelayRef.current = setTimeout(() => {
+          loadingSpinnerDelayRef.current = null;
+          setIsLoading(true);
+        }, 150);
       }
 
       try {
         if (viewMode === 'property' && selectedPropertyId) {
           // Fetch property-specific documents
           const response = await backendApi.getPropertyHubDocuments(selectedPropertyId);
-          console.log('📄 FilingSidebar: getPropertyHubDocuments response:', response);
-          console.log('📄 FilingSidebar: response.success:', response.success);
-          console.log('📄 FilingSidebar: response.data:', response.data);
-          console.log('📄 FilingSidebar: response.data type:', typeof response.data);
           
           if (response.success && response.data) {
             // Backend returns: { success: True, data: { documents: [...], document_count: N } }
@@ -360,46 +412,29 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
             
             // Try to extract documents from various possible structures
             if (Array.isArray(response.data)) {
-              // Direct array
               docs = response.data;
             } else if (response.data.data && Array.isArray(response.data.data.documents)) {
-              // Double-wrapped: response.data.data.documents
               docs = response.data.data.documents;
             } else if (response.data.data && Array.isArray(response.data.data)) {
-              // response.data.data is array
               docs = response.data.data;
             } else if (Array.isArray(response.data.documents)) {
-              // response.data.documents
               docs = response.data.documents;
             } else if (response.data.documents && Array.isArray(response.data.documents)) {
-              // Nested documents
               docs = response.data.documents;
             }
             
-            console.log('📄 FilingSidebar: Parsed property documents count:', docs.length);
-            if (docs.length > 0) {
-              console.log('📄 FilingSidebar: First property document sample:', docs[0]);
-            }
-            
-            // Update cache
             documentCacheRef.current.set(cacheKey, docs);
             cacheTimestampRef.current.set(cacheKey, Date.now());
             
-            // Only update documents and folders if we didn't use cached data
-            // (to avoid double loading when cache was used)
+            // Update UI when we didn't have valid cache (no cache, or stale-while-revalidate)
             if (!isCacheValid) {
               setDocuments(docs);
               loadFolders();
             }
-            // If cache was used, just update cache silently - don't reload UI
-          } else {
-            // Only set error if we didn't use cached data
-            if (!isCacheValid) {
-              console.warn('📄 FilingSidebar: Property documents request failed:', response.error || 'Unknown error');
-              setError(response.error || 'Failed to load property documents');
-              setDocuments([]);
-              setFolders([]);
-            }
+          } else if (!isCacheValid) {
+            setError(response.error || 'Failed to load property documents');
+            setDocuments([]);
+            setFolders([]);
           }
         } else {
           // Fetch all documents globally
@@ -431,11 +466,21 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
         setError('Failed to load documents');
         setDocuments([]);
       } finally {
+        if (loadingSpinnerDelayRef.current) {
+          clearTimeout(loadingSpinnerDelayRef.current);
+          loadingSpinnerDelayRef.current = null;
+        }
         setIsLoading(false);
       }
     };
 
     fetchData();
+    return () => {
+      if (loadingSpinnerDelayRef.current) {
+        clearTimeout(loadingSpinnerDelayRef.current);
+        loadingSpinnerDelayRef.current = null;
+      }
+    };
   }, [isOpen, viewMode, selectedPropertyId]);
 
   // Fetch property addresses and document-to-property mappings from property hubs
@@ -480,6 +525,14 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
       fetchPropertyData();
     }
   }, [viewMode, isOpen, documents, getAllPropertyHubs]);
+
+  // Preload document blobs when sidebar opens so File View pop-up opens instantly on click
+  useEffect(() => {
+    if (!isOpen || documents.length === 0) return;
+    preloadDocumentBlobs(
+      documents.slice(0, 40).map((d) => ({ id: d.id, s3_path: d.s3_path }))
+    );
+  }, [isOpen, documents]);
 
   // Handle resize functionality - same as SideChatPanel
   const handleResizeStart = (e: React.MouseEvent) => {
@@ -1259,6 +1312,107 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
     }
   };
 
+  // Pipeline stages hover: show popup when hovering over spinner or completed tick
+  const canShowPipelinePopup = (doc: Document) =>
+    reprocessingDocs.has(doc.id) ||
+    doc.status === 'processing' ||
+    reprocessedDocs.has(doc.id) ||
+    doc.status === 'completed';
+
+  const handlePipelineTriggerMouseEnter = (doc: Document, e: React.MouseEvent<HTMLDivElement>) => {
+    if (!canShowPipelinePopup(doc)) return;
+    if (pipelineLeaveTimeoutRef.current) {
+      clearTimeout(pipelineLeaveTimeoutRef.current);
+      pipelineLeaveTimeoutRef.current = null;
+    }
+    const rect = e.currentTarget.getBoundingClientRect();
+    setPipelinePreviewPosition({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 });
+    setHoveredPipelineDoc({ documentId: doc.id, doc });
+    if (doc.status === 'processing' || reprocessingDocs.has(doc.id)) {
+      setPipelineProgress(null);
+    } else {
+      setPipelineProgress(null);
+    }
+    pipelineHoverTimeoutRef.current = setTimeout(() => setShowPipelinePreview(true), 450);
+  };
+
+  const handlePipelineTriggerMouseLeave = () => {
+    if (pipelineHoverTimeoutRef.current) {
+      clearTimeout(pipelineHoverTimeoutRef.current);
+      pipelineHoverTimeoutRef.current = null;
+    }
+    pipelineLeaveTimeoutRef.current = setTimeout(() => {
+      setShowPipelinePreview(false);
+      setHoveredPipelineDoc(null);
+      setPipelineProgress(null);
+      if (pipelinePollingRef.current) {
+        clearInterval(pipelinePollingRef.current);
+        pipelinePollingRef.current = null;
+      }
+      pipelineLeaveTimeoutRef.current = null;
+    }, 100);
+  };
+
+  const handlePipelinePreviewMouseEnter = () => {
+    if (pipelineLeaveTimeoutRef.current) {
+      clearTimeout(pipelineLeaveTimeoutRef.current);
+      pipelineLeaveTimeoutRef.current = null;
+    }
+  };
+
+  const handlePipelinePreviewMouseLeave = () => {
+    setShowPipelinePreview(false);
+    setHoveredPipelineDoc(null);
+    setPipelineProgress(null);
+    if (pipelinePollingRef.current) {
+      clearInterval(pipelinePollingRef.current);
+      pipelinePollingRef.current = null;
+    }
+  };
+
+  // Poll document status when hovering over a processing document
+  useEffect(() => {
+    const doc = hoveredPipelineDoc?.doc;
+    if (!hoveredPipelineDoc || !doc || (doc.status !== 'processing' && !reprocessingDocs.has(doc.id))) {
+      return;
+    }
+    const documentId = hoveredPipelineDoc.documentId;
+    const poll = async () => {
+      try {
+        const response = await backendApi.getDocumentStatus(documentId);
+        if (response?.success && response?.data) {
+          const data = response.data as { status?: string; pipeline_progress?: PipelineProgressData };
+          setPipelineProgress(data.pipeline_progress ?? null);
+          if (data.status === 'completed' || data.status === 'failed') {
+            if (pipelinePollingRef.current) {
+              clearInterval(pipelinePollingRef.current);
+              pipelinePollingRef.current = null;
+            }
+          }
+        }
+      } catch (_) {
+        // Ignore poll errors
+      }
+    };
+    poll();
+    pipelinePollingRef.current = setInterval(poll, 1500);
+    return () => {
+      if (pipelinePollingRef.current) {
+        clearInterval(pipelinePollingRef.current);
+        pipelinePollingRef.current = null;
+      }
+    };
+  }, [hoveredPipelineDoc?.documentId, hoveredPipelineDoc?.doc?.status, reprocessingDocs]);
+
+  // Cleanup pipeline hover timeouts on unmount
+  useEffect(() => {
+    return () => {
+      if (pipelineHoverTimeoutRef.current) clearTimeout(pipelineHoverTimeoutRef.current);
+      if (pipelineLeaveTimeoutRef.current) clearTimeout(pipelineLeaveTimeoutRef.current);
+      if (pipelinePollingRef.current) clearInterval(pipelinePollingRef.current);
+    };
+  }, []);
+
   // Drag and drop handlers
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -1418,15 +1572,29 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
         documentCacheRef.current.delete(uploadCacheKey);
         cacheTimestampRef.current.delete(uploadCacheKey);
         
-        // Refresh documents list
-        const response = await backendApi.getAllDocuments();
-        if (response.success && response.data) {
-          const docs = Array.isArray(response.data) ? response.data : (response.data.documents || []);
-          setDocuments(docs);
-          
-          // Update cache with new documents
-          documentCacheRef.current.set(uploadCacheKey, docs);
-          cacheTimestampRef.current.set(uploadCacheKey, Date.now());
+        // Refresh documents list using the same API as the current view (property vs global)
+        if (viewMode === 'property' && selectedPropertyId) {
+          const response = await backendApi.getPropertyHubDocuments(selectedPropertyId);
+          if (response.success && response.data) {
+            let docs: Document[] = [];
+            const data = response.data;
+            if (Array.isArray(data)) docs = data;
+            else if (data?.data?.documents && Array.isArray(data.data.documents)) docs = data.data.documents;
+            else if (data?.data && Array.isArray(data.data)) docs = data.data;
+            else if (Array.isArray(data?.documents)) docs = data.documents;
+            else if (data?.documents && Array.isArray(data.documents)) docs = data.documents;
+            setDocuments(docs);
+            documentCacheRef.current.set(uploadCacheKey, docs);
+            cacheTimestampRef.current.set(uploadCacheKey, Date.now());
+          }
+        } else {
+          const response = await backendApi.getAllDocuments();
+          const docs = parseAllDocumentsResponse(response);
+          if (response.success) {
+            setDocuments(docs);
+            documentCacheRef.current.set(uploadCacheKey, docs);
+            cacheTimestampRef.current.set(uploadCacheKey, Date.now());
+          }
         }
         setDuplicateDialog({ isOpen: false, filename: '', fileSize: 0, existingDocuments: [], file: null, isExactDuplicate: false });
       } else {
@@ -1593,8 +1761,8 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
           className="fixed top-0 h-full flex flex-col z-[100001]"
           onClick={(e) => e.stopPropagation()}
           style={{
-            // Match sidebar grey background for seamless look - always solid
-            background: '#F1F1F1',
+            // Match ChatPanel / agent sidebar background for consistent look
+            background: '#F2F2EE',
             // Position FilingSidebar at sidebar edge (covers toggle rail for seamless look)
             // When closed, move off-screen to the left to prevent gaps
             // Sidebar widths: w-0 (collapsed) = 0px, w-56 (normal) = 224px
@@ -1668,7 +1836,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
               }}
             >
               {/* Document Icon */}
-              <div className="flex items-center justify-center" style={{ width: '100%', overflow: 'visible' }}>
+              <div className="flex items-center justify-center rounded-lg" style={{ width: '100%', overflow: 'visible', backgroundColor: '#F7F7F9' }}>
                 <img 
                   src="/DocumentUpload2.png" 
                   alt="Upload files" 
@@ -1719,9 +1887,9 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
             </div>
           </div>
 
-          {/* Pending Files Section */}
+          {/* Pending Files Section - z-[70] so Link-to-property dropdown appears above Search/Actions (z-[60]) */}
           {pendingFiles.length > 0 && (
-            <div className="px-4 mb-4">
+            <div className="px-4 mb-4 relative z-[70]">
               <div>
                 <div className="bg-gray-50 border border-gray-200 border-t-0 rounded-b-lg p-2 space-y-1">
                   <AnimatePresence mode="popLayout">
@@ -1747,7 +1915,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                   <div className="relative flex-1 min-w-0">
                     <button
                       onClick={() => setShowPropertySelector(!showPropertySelector)}
-                      className="w-full px-3 py-2 bg-white hover:bg-gray-50 border border-gray-300 text-gray-900 text-xs font-medium rounded transition-colors flex items-center justify-between gap-2"
+                      className="w-full px-3 py-2 bg-white hover:bg-gray-50 border border-gray-300 text-gray-900 text-xs font-medium rounded-sm transition-colors flex items-center justify-between gap-2"
                     >
                       <div className="flex items-center gap-2 min-w-0 flex-1">
                         <MapPin className="w-3.5 h-3.5 text-gray-500 flex-shrink-0" />
@@ -1769,7 +1937,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                         animate={{ opacity: 1, y: 0 }}
                         exit={{ opacity: 0, y: -8 }}
                         transition={{ duration: 0.15 }}
-                        className="absolute z-50 left-0 right-0 top-full mt-1 bg-white border border-gray-200 rounded-sm shadow-lg max-h-64 overflow-hidden"
+                        className="absolute z-[100] left-0 right-0 top-full mt-1 bg-white border border-gray-200 rounded-sm shadow-lg max-h-64 overflow-hidden"
                       >
                           {/* Search Input */}
                           <div className="p-2 border-b border-gray-200">
@@ -1884,10 +2052,10 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                   <button
                     onClick={handleUploadPendingFiles}
                     disabled={isLoading}
-                    className={`px-4 py-2 text-xs font-medium rounded-none transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1.5 flex-shrink-0 relative ${
+                    className={`px-4 py-2 text-xs font-medium rounded-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1.5 flex-shrink-0 relative overflow-hidden ${
                       pendingFiles.length > 0
-                        ? 'border border-green-300 text-green-800'
-                        : 'bg-white hover:bg-gray-50/50 border border-gray-300 text-gray-900'
+                        ? 'ring-1 ring-inset ring-green-300 text-green-800 bg-green-50/80'
+                        : 'bg-white hover:bg-gray-50/50 ring-1 ring-inset ring-gray-300 text-gray-900'
                     }`}
                   >
                     {pendingFiles.length > 0 && (
@@ -1926,8 +2094,8 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
             <div className="h-px bg-gray-200"></div>
           </div>
 
-          {/* Search Bar and Actions Row Container */}
-          <div className="w-full px-4" style={{ boxSizing: 'border-box' }}>
+          {/* Search Bar and Actions Row Container - z-[60] so Add dropdown appears above content (z-50) */}
+          <div className="w-full px-4 relative z-[60]" style={{ boxSizing: 'border-box' }}>
             {/* Search Bar */}
             <div className="relative mb-3">
               <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
@@ -1937,7 +2105,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                 placeholder="Search documents..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full pl-8 pr-3 py-1.5 bg-gray-50 border border-gray-200 rounded-md text-[13px] text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-0"
+                className="w-full pl-8 pr-3 py-1.5 bg-white border border-gray-200 rounded-md text-[13px] text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-0"
                 style={{ WebkitTapHighlightColor: 'transparent', transition: 'none', boxShadow: 'none' }}
               />
             </div>
@@ -1996,20 +2164,16 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                   padding: '3px 6px',
                   height: '22px',
                   minHeight: '22px',
-                  backgroundColor: isSelectionMode ? '#F9FAFB' : '#FFFFFF',
+                  backgroundColor: '#FFFFFF',
                   border: isSelectionMode ? '1px solid rgba(203, 213, 225, 0.6)' : '1px solid rgba(203, 213, 225, 0.3)',
                   opacity: 1,
                   backdropFilter: 'none'
                 }}
                 onMouseEnter={(e) => {
-                  if (isSelectionMode) {
-                    e.currentTarget.style.backgroundColor = '#F3F4F6';
-                  }
+                  e.currentTarget.style.backgroundColor = '#FFFFFF';
                 }}
                 onMouseLeave={(e) => {
-                  if (isSelectionMode) {
-                    e.currentTarget.style.backgroundColor = '#F9FAFB';
-                  }
+                  e.currentTarget.style.backgroundColor = '#FFFFFF';
                 }}
                 title="Select documents"
               >
@@ -2038,7 +2202,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                   <span className="text-slate-600 text-[10px]">Add</span>
                 </button>
 
-              {/* New Menu Popup - Clean style */}
+              {/* New Menu Popup - Compact style */}
               <AnimatePresence>
                 {showNewMenu && (
                   <motion.div
@@ -2046,8 +2210,8 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                     animate={{ opacity: 1, scale: 1, y: 0 }}
                     exit={{ opacity: 0, scale: 0.95, y: -4 }}
                     transition={{ duration: 0.12 }}
-                    className="absolute right-0 top-full mt-1.5 w-48 bg-white rounded-lg py-1 z-50"
-                    style={{ boxShadow: '0 4px 12px rgba(0, 0, 0, 0.08)' }}
+                    className="absolute right-0 top-full mt-1 w-36 bg-white rounded-md py-0.5 z-[100]"
+                    style={{ boxShadow: '0 2px 8px rgba(0, 0, 0, 0.08)' }}
                     onClick={(e) => e.stopPropagation()}
                   >
                     {/* Folder Option */}
@@ -2056,13 +2220,13 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                         setShowNewMenu(false);
                         await handleCreateFolder();
                       }}
-                      className="w-full flex items-center gap-3 px-3 py-2 hover:bg-gray-50 transition-colors text-left"
+                      className="w-full flex items-center gap-2 px-2.5 py-1.5 hover:bg-gray-50 transition-colors text-left"
                     >
-                      <Folder className="w-4 h-4 text-gray-500" strokeWidth={1.75} />
-                      <span className="text-[13px] font-medium text-gray-700">New folder</span>
+                      <Folder className="w-3.5 h-3.5 text-gray-500 flex-shrink-0" strokeWidth={1.75} />
+                      <span className="text-xs font-medium text-gray-700">New folder</span>
                     </button>
 
-                    <div className="h-px bg-gray-100 my-1" />
+                    <div className="h-px bg-gray-100 my-0.5 mx-2" />
 
                     {/* Upload Option */}
                     <button
@@ -2080,10 +2244,10 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                         };
                         input.click();
                       }}
-                      className="w-full flex items-center gap-3 px-3 py-2 hover:bg-gray-50 transition-colors text-left"
+                      className="w-full flex items-center gap-2 px-2.5 py-1.5 hover:bg-gray-50 transition-colors text-left"
                     >
-                      <Upload className="w-4 h-4 text-gray-500" strokeWidth={1.75} />
-                      <span className="text-[13px] font-medium text-gray-700">Upload file</span>
+                      <Upload className="w-3.5 h-3.5 text-gray-500 flex-shrink-0" strokeWidth={1.75} />
+                      <span className="text-xs font-medium text-gray-700">Upload file</span>
                     </button>
                   </motion.div>
                 )}
@@ -2093,58 +2257,6 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
           </div>
           </div>
         </div>
-
-        {/* Bulk Actions Bar - Show when items are selected and in selection mode */}
-        {isSelectionMode && selectedItems.size > 0 && (
-          <div className="px-4 py-1 border-b border-gray-100 w-full" style={{ backgroundColor: '#F1F1F1', boxSizing: 'border-box' }}>
-            <div className="flex items-center gap-3 w-full" style={{ width: '100%', boxSizing: 'border-box' }}>
-              <span className="text-xs font-medium text-gray-600 ml-3">
-                {selectedItems.size} {selectedItems.size === 1 ? 'item' : 'items'} selected
-              </span>
-              <div className="flex items-center gap-1.5 ml-auto">
-                <motion.button
-                  onClick={handleBulkDelete}
-                  whileHover={{ scale: 1.01 }}
-                  whileTap={{ scale: 0.99 }}
-                  className="flex items-center justify-center gap-1.5 px-2 py-1 rounded-none font-medium text-slate-600 hover:text-slate-700 border border-slate-200/60 hover:border-slate-300/80 transition-all duration-200 flex-shrink-0"
-                  style={{
-                    padding: '4px 8px',
-                    height: '24px',
-                    minHeight: '24px',
-                    minWidth: '70px',
-                    width: '70px',
-                    backgroundColor: '#FFFFFF',
-                    opacity: 1,
-                    backdropFilter: 'none'
-                  }}
-                  title="Delete selected"
-                >
-                  <Trash2 className="w-3.5 h-3.5 text-red-600" strokeWidth={1.5} />
-                  <span className="text-slate-600 text-[11px]">Delete</span>
-                </motion.button>
-                <motion.button
-                  onClick={clearSelection}
-                  whileHover={{ scale: 1.01 }}
-                  whileTap={{ scale: 0.99 }}
-                  className="flex items-center justify-center px-2 py-1 rounded-none font-medium text-slate-600 hover:text-slate-700 border border-slate-200/60 hover:border-slate-300/80 transition-all duration-200 flex-shrink-0"
-                  style={{
-                    padding: '4px 8px',
-                    height: '24px',
-                    minHeight: '24px',
-                    minWidth: '70px',
-                    width: '70px',
-                    backgroundColor: '#FFFFFF',
-                    opacity: 1,
-                    backdropFilter: 'none'
-                  }}
-                  title="Cancel selection"
-                >
-                  <span className="text-slate-600 text-[11px]">Cancel</span>
-                </motion.button>
-              </div>
-            </div>
-          </div>
-        )}
 
         {/* Breadcrumb Navigation */}
         {breadcrumbs.length > 0 && (
@@ -2171,8 +2283,12 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
         {/* Content Area - Clean Background - relative z-50 so it stacks above the chat panel */}
         <div className="flex-1 overflow-y-auto w-full px-4 relative z-50" style={{ boxSizing: 'border-box' }}>
           {isLoading ? (
-            <div className="flex items-center justify-center h-full">
-              <div className="text-gray-500">Loading...</div>
+            <div className="flex flex-col items-center justify-center h-full gap-4">
+              <div
+                className="w-10 h-10 rounded-full border-2 border-gray-200 border-t-gray-500 animate-spin"
+                aria-hidden
+              />
+              <span className="text-gray-500 text-sm font-medium">Loading...</span>
             </div>
           ) : error ? (
             <div className="flex items-center justify-center h-full">
@@ -2358,6 +2474,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                           {propertyDocs.map((doc) => {
                             const isLinked = isDocumentLinked(doc);
                             const isSelected = selectedItems.has(doc.id);
+                            const isOpenInFileView = openFileViewDocumentId === doc.id;
                             
                             return (
                               <div
@@ -2368,20 +2485,30 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                                     handleDragStart(e, doc);
                                   }
                                 }}
-                                onMouseEnter={() => setHoveredItemId(doc.id)}
-                                onMouseLeave={() => setHoveredItemId(null)}
-                                className={`flex items-center gap-2.5 pl-3 pr-3 py-1.5 ml-4 mr-8 cursor-pointer group transition-all duration-200 rounded-md border ${
+                                onMouseEnter={() => {
+                                  setHoveredItemId(doc.id);
+                                  if (onOpenFileView) scheduleHoverPreload(doc);
+                                }}
+                                onMouseLeave={() => {
+                                  setHoveredItemId(null);
+                                  cancelHoverPreload();
+                                }}
+                                className={`flex items-center gap-2.5 pl-3 pr-3 py-1.5 ml-4 mr-8 cursor-pointer group rounded-md border transition-[transform,background-color,border-color] duration-150 ease-out active:scale-[0.99] ${
                                   isSelectionMode 
                                     ? (isSelected 
-                                        ? 'bg-gray-100/50 border-gray-300/60 hover:border-gray-400/80' 
-                                        : 'bg-white border-gray-200/60 hover:border-gray-300/80 hover:bg-gray-50/50')
-                                    : 'bg-white border-gray-200/60 hover:border-gray-300/80 hover:bg-gray-50/50'
+                                        ? 'bg-gray-100/50 border-gray-300/60 hover:bg-blue-50/90 hover:border-blue-200/70' 
+                                        : 'bg-white border-gray-200/60 hover:bg-blue-50/90 hover:border-blue-200/70')
+                                    : isOpenInFileView
+                                      ? 'bg-blue-50/60 border-blue-200/50 hover:bg-blue-100/70 hover:border-blue-300/60 active:bg-blue-100/80'
+                                      : 'bg-white border-gray-200/60 hover:bg-blue-50/90 hover:border-blue-200/70 active:bg-blue-50'
                                 }`}
                                 onClick={(e) => {
                                   if (editingItemId) return;
                                   if (isSelectionMode) {
                                     e.stopPropagation();
                                     toggleItemSelection(doc.id);
+                                  } else if (onOpenFileView) {
+                                    onOpenFileView(doc);
                                   } else {
                                     handleDocumentClick(doc);
                                   }
@@ -2462,29 +2589,32 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                                 </div>
                                 {!editingItemId && (
                                   <div className="flex items-center gap-0.5 flex-shrink-0">
-                                    {/* Reprocess button / status indicator */}
-                                    {reprocessingDocs.has(doc.id) ? (
-                                      // Currently reprocessing - show spinning icon
-                                      <div 
-                                        title="Processing document..."
-                                        className="p-0.5 flex-shrink-0"
+                                    {/* Reprocess button / status indicator; hover wrapper for pipeline popup on spinner or tick */}
+                                    {(reprocessingDocs.has(doc.id) || doc.status === 'processing' || reprocessedDocs.has(doc.id) || doc.status === 'completed') ? (
+                                      <div
+                                        onMouseEnter={(e) => handlePipelineTriggerMouseEnter(doc, e)}
+                                        onMouseLeave={handlePipelineTriggerMouseLeave}
+                                        className="p-0.5 flex-shrink-0 cursor-default relative z-10 overflow-visible"
                                       >
-                                        <RefreshCw 
-                                          className="w-3 h-3 text-blue-500 animate-spin" 
-                                          strokeWidth={1.5} 
-                                        />
-                                      </div>
-                                    ) : reprocessedDocs.has(doc.id) || doc.status === 'completed' ? (
-                                      // Successfully reprocessed - show tick icon
-                                      <div 
-                                        title="Document fully processed"
-                                        className="p-0.5 flex-shrink-0"
-                                      >
-                                        <ListCheck 
-                                          className="w-3 h-3" 
-                                          strokeWidth={1.5}
-                                          color="#22c55e"
-                                        />
+                                        {reprocessingDocs.has(doc.id) ? (
+                                          <RefreshCw 
+                                            className="w-3 h-3 text-blue-500 animate-spin" 
+                                            strokeWidth={1.5} 
+                                          />
+                                        ) : doc.status === 'processing' ? (
+                                          <Loader2 
+                                            className="w-3 h-3 text-gray-500 animate-spin" 
+                                            strokeWidth={1.5} 
+                                          />
+                                        ) : (
+                                          <span
+                                            className="w-1.5 h-1.5 rounded-full bg-green-500/60 flex-shrink-0 block relative z-10"
+                                            style={{
+                                              boxShadow: '0 0 0 1px rgba(34, 197, 94, 0.1)',
+                                            }}
+                                            aria-hidden
+                                          />
+                                        )}
                                       </div>
                                     ) : doc.status === 'uploaded' ? (
                                       // Needs reprocessing - show clickable button
@@ -2525,6 +2655,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                   {filteredItems.documents.map((doc) => {
                   const isLinked = isDocumentLinked(doc);
                   const isSelected = selectedItems.has(doc.id);
+                  const isOpenInFileView = openFileViewDocumentId === doc.id;
                   
                   return (
                     <div
@@ -2535,20 +2666,30 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                           handleDragStart(e, doc);
                         }
                       }}
-                      onMouseEnter={() => setHoveredItemId(doc.id)}
-                      onMouseLeave={() => setHoveredItemId(null)}
-                      className={`flex items-center gap-2.5 pl-3 pr-3 py-1.5 mx-4 cursor-pointer group transition-all duration-200 rounded-md border ${
+                      onMouseEnter={() => {
+                        setHoveredItemId(doc.id);
+                        if (onOpenFileView) scheduleHoverPreload(doc);
+                      }}
+                      onMouseLeave={() => {
+                        setHoveredItemId(null);
+                        cancelHoverPreload();
+                      }}
+                      className={`flex items-center gap-2.5 pl-3 pr-3 py-1.5 mx-4 cursor-pointer group rounded-md border transition-[transform,background-color,border-color] duration-150 ease-out active:scale-[0.99] ${
                         isSelectionMode 
                           ? (isSelected 
-                              ? 'bg-gray-100/50 border-gray-300/60 hover:border-gray-400/80' 
-                              : 'bg-white border-gray-200/60 hover:border-gray-300/80 hover:bg-gray-50/50')
-                          : 'bg-white border-gray-200/60 hover:border-gray-300/80 hover:bg-gray-50/50'
+                              ? 'bg-gray-100/50 border-gray-300/60 hover:bg-blue-50/90 hover:border-blue-200/70' 
+                              : 'bg-white border-gray-200/60 hover:bg-blue-50/90 hover:border-blue-200/70')
+                          : isOpenInFileView
+                            ? 'bg-blue-50/60 border-blue-200/50 hover:bg-blue-100/70 hover:border-blue-300/60 active:bg-blue-100/80'
+                            : 'bg-white border-gray-200/60 hover:bg-blue-50/90 hover:border-blue-200/70 active:bg-blue-50'
                       }`}
                       onClick={(e) => {
                         if (editingItemId) return;
                         if (isSelectionMode) {
                           e.stopPropagation();
                           toggleItemSelection(doc.id);
+                        } else if (onOpenFileView) {
+                          onOpenFileView(doc);
                         } else {
                           handleDocumentClick(doc);
                         }
@@ -2629,29 +2770,32 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                       </div>
                       {!editingItemId && (
                         <div className="flex items-center gap-0.5 flex-shrink-0">
-                          {/* Reprocess button / status indicator */}
-                          {reprocessingDocs.has(doc.id) ? (
-                            // Currently reprocessing - show spinning icon
-                            <div 
-                              title="Processing document..."
-                              className="p-0.5 flex-shrink-0"
+                          {/* Reprocess button / status indicator; hover wrapper for pipeline popup on spinner or tick */}
+                          {(reprocessingDocs.has(doc.id) || doc.status === 'processing' || reprocessedDocs.has(doc.id) || doc.status === 'completed') ? (
+                            <div
+                              onMouseEnter={(e) => handlePipelineTriggerMouseEnter(doc, e)}
+                              onMouseLeave={handlePipelineTriggerMouseLeave}
+                              className="p-0.5 flex-shrink-0 cursor-default relative z-10 overflow-visible"
                             >
-                              <RefreshCw 
-                                className="w-3 h-3 text-blue-500 animate-spin" 
-                                strokeWidth={1.5} 
-                              />
-                            </div>
-                          ) : reprocessedDocs.has(doc.id) || doc.status === 'completed' ? (
-                            // Successfully reprocessed - show tick icon
-                            <div 
-                              title="Document fully processed"
-                              className="p-0.5 flex-shrink-0"
-                            >
-                              <ListCheck 
-                                className="w-3 h-3" 
-                                strokeWidth={1.5}
-                                color="#22c55e" 
-                              />
+                              {reprocessingDocs.has(doc.id) ? (
+                                <RefreshCw 
+                                  className="w-3 h-3 text-blue-500 animate-spin" 
+                                  strokeWidth={1.5} 
+                                />
+                              ) : doc.status === 'processing' ? (
+                                <Loader2 
+                                  className="w-3 h-3 text-gray-500 animate-spin" 
+                                  strokeWidth={1.5} 
+                                />
+                              ) : (
+                                <span
+                                  className="w-1.5 h-1.5 rounded-full bg-green-500/60 flex-shrink-0 block relative z-10"
+                                  style={{
+                                    boxShadow: '0 0 0 1px rgba(34, 197, 94, 0.1)',
+                                  }}
+                                  aria-hidden
+                                />
+                              )}
                             </div>
                           ) : doc.status === 'uploaded' ? (
                             // Needs reprocessing - show clickable button
@@ -2685,6 +2829,31 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
             </div>
           )}
         </div>
+
+        {/* Pipeline stages hover pop-up (portal) */}
+        {showPipelinePreview && hoveredPipelineDoc && (() => {
+          const doc = hoveredPipelineDoc.doc;
+          const isComplete = doc.status === 'completed' || reprocessedDocs.has(doc.id);
+          const progressForDoc =
+            doc.status === 'processing' || reprocessingDocs.has(doc.id) ? pipelineProgress : null;
+          const { completedStages, currentStageIndex } = mapPipelineProgressToStages(
+            progressForDoc,
+            doc.status
+          );
+          return (
+            <PipelineStagesHoverPreview
+              position={pipelinePreviewPosition}
+              containerBounds={pipelinePreviewBounds}
+              completedStages={isComplete ? 5 : completedStages}
+              currentStageIndex={isComplete ? null : currentStageIndex}
+              isComplete={isComplete}
+              documentName={doc.original_filename}
+              pipelineProgress={progressForDoc}
+              onMouseEnter={handlePipelinePreviewMouseEnter}
+              onMouseLeave={handlePipelinePreviewMouseLeave}
+            />
+          );
+        })()}
 
         {/* Duplicate Confirmation Dialog */}
         <AnimatePresence>
@@ -2778,12 +2947,11 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: -4 }}
               transition={{ duration: 0.12 }}
-              className="fixed rounded-lg py-1 z-[10000] min-w-[140px]"
+              className="fixed rounded-md py-0.5 z-[10000] min-w-[116px] bg-white border border-slate-200"
               style={{
                 left: `${contextMenuPosition.x}px`,
                 top: `${contextMenuPosition.y}px`,
-                backgroundColor: '#2D2D2D',
-                boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)'
+                boxShadow: '0 4px 12px rgba(0, 0, 0, 0.12)'
               }}
             >
               {(() => {
@@ -2801,7 +2969,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                           handleRename(openContextMenuId!, itemName || '', isFolder);
                         }
                       }}
-                      className="w-full px-3 py-1.5 text-left text-[13px] text-white/90 hover:bg-white/10 transition-colors"
+                      className="w-full px-2.5 py-1 text-left text-xs text-slate-700 hover:bg-slate-100 transition-colors"
                     >
                       Rename
                     </button>
@@ -2812,19 +2980,19 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                           setOpenContextMenuId(null);
                           setContextMenuPosition(null);
                         }}
-                        className="w-full px-3 py-1.5 text-left text-[13px] text-white/90 hover:bg-white/10 transition-colors"
+                        className="w-full px-2.5 py-1 text-left text-xs text-slate-700 hover:bg-slate-100 transition-colors"
                       >
                         Move to folder
                       </button>
                     )}
-                    <div className="h-px bg-white/10 my-1" />
+                    <div className="h-px bg-slate-200 my-0.5" />
                     <button
                       onClick={(e) => {
                         if (item) {
                           handleDeleteClick(openContextMenuId!, isFolder, e);
                         }
                       }}
-                      className="w-full px-3 py-1.5 text-left text-[13px] text-white/90 hover:bg-white/10 transition-colors"
+                      className="w-full px-2.5 py-1 text-left text-xs text-slate-700 hover:bg-slate-100 transition-colors"
                     >
                       Delete
                     </button>
@@ -2834,6 +3002,54 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
             </motion.div>
           )}
         </AnimatePresence>
+
+        {/* Bulk Actions Bar - at bottom of sidebar */}
+        {isSelectionMode && selectedItems.size > 0 && (
+          <div className="px-4 py-2 border-t border-gray-200 w-full flex items-center flex-shrink-0" style={{ backgroundColor: '#F2F2EE', boxSizing: 'border-box', minHeight: '22px' }}>
+            <div className="flex items-center gap-2 w-full" style={{ width: '100%', boxSizing: 'border-box' }}>
+              <span className="text-[10px] font-medium text-gray-600">
+                {selectedItems.size} {selectedItems.size === 1 ? 'item' : 'items'} selected
+              </span>
+              <div className="flex items-center gap-1 ml-auto">
+                <motion.button
+                  onClick={handleBulkDelete}
+                  whileHover={{ scale: 1.01 }}
+                  whileTap={{ scale: 0.99 }}
+                  className="flex items-center justify-center gap-1 px-2 py-1 rounded-sm font-medium text-slate-600 hover:text-slate-700 border border-slate-200/60 hover:border-slate-300/80 transition-all duration-200 flex-shrink-0"
+                  style={{
+                    padding: '3px 6px',
+                    height: '22px',
+                    minHeight: '22px',
+                    backgroundColor: '#FFFFFF',
+                    opacity: 1,
+                    backdropFilter: 'none'
+                  }}
+                  title="Delete selected"
+                >
+                  <Trash2 className="w-3 h-3 text-red-600" strokeWidth={1.5} />
+                  <span className="text-slate-600 text-[10px]">Delete</span>
+                </motion.button>
+                <motion.button
+                  onClick={clearSelection}
+                  whileHover={{ scale: 1.01 }}
+                  whileTap={{ scale: 0.99 }}
+                  className="flex items-center justify-center gap-1 px-2 py-1 rounded-sm font-medium text-slate-600 hover:text-slate-700 border border-slate-200/60 hover:border-slate-300/80 transition-all duration-200 flex-shrink-0"
+                  style={{
+                    padding: '3px 6px',
+                    height: '22px',
+                    minHeight: '22px',
+                    backgroundColor: '#FFFFFF',
+                    opacity: 1,
+                    backdropFilter: 'none'
+                  }}
+                  title="Cancel selection"
+                >
+                  <span className="text-slate-600 text-[10px]">Cancel</span>
+                </motion.button>
+              </div>
+            </div>
+          </div>
+        )}
         
         {/* Drag handle for resizing from right edge - seamless design */}
         <div

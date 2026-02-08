@@ -535,15 +535,36 @@ const ReadingStepWithTransition: React.FC<{
   );
 };
 
-// Planning indicator - text only (no spinner)
+// Small preparing-response icon with faint pulse (matches auth loading screen style)
+const PreparingResponseIcon: React.FC<{ className?: string }> = ({ className }) => (
+  <img
+    src="/preparingresponse.png"
+    alt=""
+    className={className}
+    style={{
+      width: '14px',
+      height: '14px',
+      objectFit: 'contain',
+      flexShrink: 0,
+      marginTop: '2px',
+      display: 'block'
+    }}
+  />
+);
+
+// Planning indicator - preparing response icon + text with faint pulse
 const PlanningIndicator: React.FC = () => (
   <div
     style={{
       fontSize: '12px',
-      padding: '2px 0'
+      padding: '2px 0',
+      display: 'inline-flex',
+      alignItems: 'flex-start',
+      gap: '6px'
     }}
   >
-    <span className="planning-shimmer-full">Planning next moves</span>
+    <PreparingResponseIcon className="preparing-response-icon-pulse" />
+    <span className="planning-shimmer-full">Preparing response</span>
   </div>
 );
 
@@ -679,11 +700,21 @@ const StepRenderer: React.FC<{
 
   switch (step.action_type) {
     case 'planning':
-      // Skip "Preparing response" - planning steps are filtered out by filteredSteps
-      // This case should never be reached, but if it is, return invisible placeholder
-      // Note: The key here doesn't matter since this span is inside a motion.div with its own key
+      // Only "Planning next moves" (planning_next_moves) is allowed through the filter for normal queries
+      if (step.step === 'planning_next_moves') {
+        const isPlanningActive = isLoading && !hasResponseText;
+        return (
+          <span style={{ display: 'inline-flex', alignItems: 'flex-start' }}>
+            {isPlanningActive ? (
+              <span className="ranking-shimmer-active">Planning next moves</span>
+            ) : (
+              <span style={actionStyle}>Planning next moves</span>
+            )}
+          </span>
+        );
+      }
       return <span style={{ display: 'none' }} aria-hidden />;
-    
+
     case 'exploring':
       // "Found 1 relevant document:" or "Found 15 relevant sections:" - text only, no document cards here.
       // Document preview cards appear only under the "Reading [filename]" step.
@@ -838,10 +869,16 @@ const StepRenderer: React.FC<{
         fixedMessage = 'Analyzing documents';
       }
       
+      // Use custom preparing response icon with pulse for "Preparing response" / "Formulating answer"
+      const isPreparingResponse = /^(Preparing response|Formulating answer|Preparing answer)/i.test(fixedMessage.trim());
       return (
         <span style={{ display: 'inline-flex', alignItems: 'flex-start', gap: '6px' }}>
-          <TextSearch style={{ width: '14px', height: '14px', color: ACTION_COLOR, flexShrink: 0, marginTop: '2px' }} />
-          {/* Entire "Analyzing documents" text with flowing gradient animation (only if active) */}
+          {isPreparingResponse ? (
+            <PreparingResponseIcon className="preparing-response-icon-pulse" />
+          ) : (
+            <TextSearch style={{ width: '14px', height: '14px', color: ACTION_COLOR, flexShrink: 0, marginTop: '2px' }} />
+          )}
+          {/* Entire "Analyzing documents" / "Preparing response" text with flowing gradient animation (only if active) */}
           {isRankingActive ? (
             <span className="ranking-shimmer-active">{fixedMessage}</span>
           ) : (
@@ -1162,6 +1199,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
   }, [isLoading]);
   
   // Filter out "Preparing response" steps (planning action type) and context messages
+  // Keep the initial "Planning next moves" step for normal queries so it is not replaced by "Preparing response"
   // Also deduplicate steps to prevent rendering the same step twice
   // In Reader mode, also filter out agent-specific steps (executing, opening, navigating)
   const filteredSteps = useMemo(() => {
@@ -1169,8 +1207,8 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
     const result: ReasoningStep[] = [];
     
     steps.forEach((step, originalIdx) => {
-      // Skip planning steps
-      if (step.action_type === 'planning') return;
+      // Skip planning steps except the initial "Planning next moves" (step === 'planning_next_moves')
+      if (step.action_type === 'planning' && step.step !== 'planning_next_moves') return;
       
       // Skip context messages entirely - they're redundant with the actual response
       if (step.action_type === 'context') return;
@@ -1413,6 +1451,14 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
               background-clip: text;
               animation: shimmer-full 0.8s ease-in-out infinite;
               font-weight: 500;
+            }
+            
+            @keyframes preparing-response-pulse {
+              0%, 100% { transform: scale(1); }
+              50% { transform: scale(1.06); }
+            }
+            .preparing-response-icon-pulse {
+              animation: preparing-response-pulse 1.2s ease-in-out infinite;
             }
             
             .reading-step-reveal {
@@ -1785,6 +1831,14 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
           background-clip: text;
           animation: shimmer-full 0.8s ease-in-out infinite;
           font-weight: 500;
+        }
+        
+        @keyframes preparing-response-pulse {
+          0%, 100% { transform: scale(1); }
+          50% { transform: scale(1.06); }
+        }
+        .preparing-response-icon-pulse {
+          animation: preparing-response-pulse 1.2s ease-in-out infinite;
         }
         
         /* Searching - flowing gradient animation (same as planning) */

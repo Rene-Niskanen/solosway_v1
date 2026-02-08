@@ -478,9 +478,11 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
                 onRemove={
                   removeChipAtSegmentIndex
                     ? () => removeChipAtSegmentIndex(i)
-                    : seg.kind === "property"
-                      ? () => onRemovePropertyChip?.(seg.id)
-                      : () => onRemoveDocumentChip?.(seg.id)
+                    : seg.kind === "citation_snippet"
+                      ? undefined
+                      : seg.kind === "property"
+                        ? () => onRemovePropertyChip?.(seg.id)
+                        : () => onRemoveDocumentChip?.(seg.id)
                 }
               />
             </span>

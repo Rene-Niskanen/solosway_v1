@@ -182,7 +182,7 @@ export function useSegmentInput(
       if (segmentIndex === 0 && offset === 0) return prev;
       if (seg && isChipSegment(seg) && offset === 1) {
         if (seg.kind === "property") onRemovePropertyChip?.(seg.id);
-        else onRemoveDocumentChip?.(seg.id);
+        else if (seg.kind === "document") onRemoveDocumentChip?.(seg.id);
         const next = prev.slice(0, segmentIndex).concat(prev.slice(segmentIndex + 1));
         return next;
       }
@@ -197,7 +197,7 @@ export function useSegmentInput(
         const prevSeg = prev[segmentIndex - 1];
         if (isChipSegment(prevSeg)) {
           if (prevSeg.kind === "property") onRemovePropertyChip?.(prevSeg.id);
-          else onRemoveDocumentChip?.(prevSeg.id);
+          else if (prevSeg.kind === "document") onRemoveDocumentChip?.(prevSeg.id);
           return prev.slice(0, segmentIndex - 1).concat(prev.slice(segmentIndex));
         }
         if (isTextSegment(prevSeg)) {
@@ -238,7 +238,7 @@ export function useSegmentInput(
       const seg = prev[segmentIndex];
       if (seg && isChipSegment(seg) && offset === 0) {
         if (seg.kind === "property") onRemovePropertyChip?.(seg.id);
-        else onRemoveDocumentChip?.(seg.id);
+        else if (seg.kind === "document") onRemoveDocumentChip?.(seg.id);
         return prev.slice(0, segmentIndex).concat(prev.slice(segmentIndex + 1));
       }
       if (seg && isTextSegment(seg) && offset < seg.value.length) {
@@ -463,7 +463,7 @@ export function useSegmentInput(
       });
       removedChips.forEach((seg) => {
         if (seg.kind === "property") onRemovePropertyChip?.(seg.id);
-        else onRemoveDocumentChip?.(seg.id);
+        else if (seg.kind === "document") onRemoveDocumentChip?.(seg.id);
       });
       setCursorState({ segmentIndex: newCursorSeg, offset: newCursorOff });
     },
@@ -476,7 +476,7 @@ export function useSegmentInput(
       const seg = segments[index];
       if (!seg || !isChipSegment(seg)) return;
       if (seg.kind === "property") onRemovePropertyChip?.(seg.id);
-      else onRemoveDocumentChip?.(seg.id);
+      else if (seg.kind === "document") onRemoveDocumentChip?.(seg.id);
       setSegments((prev) => {
         const s = prev[index];
         if (!s || !isChipSegment(s)) return prev;

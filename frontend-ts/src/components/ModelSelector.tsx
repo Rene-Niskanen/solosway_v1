@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { ChevronDown, Check, Sparkles } from 'lucide-react';
+import { ChevronDown, Check, Cpu } from 'lucide-react';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -98,7 +98,7 @@ export function ModelSelector({ className, compact = false }: ModelSelectorProps
             overflow: 'hidden',
           }}
         >
-          {compact && <Sparkles className={iconSize} strokeWidth={2} style={{ color: '#9D9D9D' }} />}
+          {compact && <Cpu className={iconSize} strokeWidth={2} style={{ color: '#9D9D9D' }} />}
           {showText && (
             <span style={{
               ...(currentModel.id === miniModelId ? { color: miniTriggerColor } : {}),

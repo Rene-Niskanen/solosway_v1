@@ -35,6 +35,7 @@ interface UserData {
   email?: string;
   profile_image?: string;
   avatar_url?: string;
+  profile_picture_url?: string;
   phone?: string;
   location?: string;
   address?: string;
@@ -45,6 +46,7 @@ interface UserData {
 
 const Profile: React.FC<ProfileProps> = ({ onNavigate }) => {
   const [userData, setUserData] = React.useState<UserData | null>(null);
+  const [profilePicCacheBust, setProfilePicCacheBust] = React.useState<number | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [contributions, setContributions] = React.useState<ContributionDay[]>([]);
   const [activities, setActivities] = React.useState<ContributionActivity[]>([]);
@@ -56,6 +58,8 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate }) => {
   const { updateProfile, uploadProfilePicture, uploadCompanyLogo, removeProfilePicture, removeCompanyLogo, isUpdating: isProfileUpdating } = useProfileUpdate();
   const [isProfileImageModalOpen, setIsProfileImageModalOpen] = React.useState(false);
   const [isCompanyLogoModalOpen, setIsCompanyLogoModalOpen] = React.useState(false);
+
+  const space = { xs: 4, sm: 8, md: 12, lg: 16, xl: 24, xxl: 32 };
 
   // Safety check: reset to current year if selectedYear is in the future
   React.useEffect(() => {
@@ -231,8 +235,14 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate }) => {
     if (diffDays === 0) return 'Today';
     if (diffDays === 1) return 'Yesterday';
     if (diffDays < 7) return `${diffDays} days ago`;
-    if (diffDays < 30) return `${Math.floor(diffDays / 7)} weeks ago`;
-    if (diffDays < 365) return `${Math.floor(diffDays / 30)} months ago`;
+    if (diffDays < 30) {
+      const w = Math.floor(diffDays / 7);
+      return w === 1 ? '1 week ago' : `${w} weeks ago`;
+    }
+    if (diffDays < 365) {
+      const m = Math.floor(diffDays / 30);
+      return m === 1 ? '1 month ago' : `${m} months ago`;
+    }
     return then.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
   };
 
@@ -358,9 +368,9 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate }) => {
               padding: '32px 28px',
             }}>
               {/* Profile Picture */}
-              <div style={{ marginBottom: '28px', textAlign: 'center' }}>
+              <div style={{ marginBottom: space.xxl, textAlign: 'center' }}>
                 <div 
-                  style={{ position: 'relative', display: 'inline-block', marginBottom: '20px' }}
+                  style={{ position: 'relative', display: 'inline-block', marginBottom: space.xl }}
                   className="group"
                 >
                   <div 
@@ -386,7 +396,10 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate }) => {
                   >
                     <Avatar style={{ width: '96px', height: '96px', margin: '0 auto', borderRadius: '50%', cursor: 'pointer' }}>
                       <AvatarImage 
-                        src={userData?.profile_image || userData?.avatar_url || "/default profile icon.png"} 
+                        src={(() => {
+                          const base = userData?.profile_image || userData?.avatar_url || userData?.profile_picture_url || "/default profile icon.png";
+                          return base.startsWith('http') && profilePicCacheBust ? `${base}?t=${profilePicCacheBust}` : base;
+                        })()} 
                         alt={getUserName()}
                         style={{ objectFit: 'cover', borderRadius: '50%' }}
                       />
@@ -425,7 +438,7 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate }) => {
                 </div>
                 
                 {/* Name - Editable */}
-                <div style={{ marginBottom: '8px' }}>
+                <div style={{ marginBottom: space.sm }}>
                   <EnhancedEditableField
                     value={
                       userData?.first_name || userData?.last_name
@@ -475,7 +488,7 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate }) => {
                 </div>
 
                 {/* Title - Editable */}
-                <div style={{ marginBottom: '4px' }}>
+                <div style={{ marginBottom: space.sm }}>
                   <EnhancedEditableField
                     value={userData?.title || 'Property Manager'}
                     onSave={async (value) => {
@@ -494,13 +507,13 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate }) => {
                 </div>
               </div>
 
-              {/* Divider */}
-              <div style={{ height: '1px', backgroundColor: '#e5e7eb', margin: '0 -28px 24px -28px' }} />
+              {/* Divider - full width via negative margins matching sidebar padding */}
+              <div style={{ height: 1, backgroundColor: '#e5e7eb', marginTop: 0, marginRight: -28, marginBottom: space.xl, marginLeft: -28 }} />
 
               {/* Contact Information */}
-              <div style={{ marginBottom: '24px' }}>
+              <div style={{ marginBottom: space.xl }}>
                 {/* Address - Editable */}
-                <div style={{ marginBottom: '4px' }}>
+                <div style={{ marginBottom: space.md }}>
                   <EnhancedEditableField
                     value={userData?.address || userData?.location || ''}
                     onSave={async (value) => {
@@ -520,7 +533,7 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate }) => {
                 </div>
 
                 {/* Email - Editable */}
-                <div style={{ marginBottom: '4px' }}>
+                <div style={{ marginBottom: space.md }}>
                   <EnhancedEditableField
                     value={userData?.email || ''}
                     onSave={async (value) => {
@@ -561,15 +574,15 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate }) => {
                 </div>
               </div>
 
-              {/* Divider */}
-              <div style={{ height: '1px', backgroundColor: '#e5e7eb', margin: '0 -28px 24px -28px' }} />
+              {/* Divider - full width via negative margins matching sidebar padding */}
+              <div style={{ height: 1, backgroundColor: '#e5e7eb', marginTop: 0, marginRight: -28, marginBottom: space.xl, marginLeft: -28 }} />
 
               {/* Organization */}
-              <div style={{ marginBottom: '8px' }}>
+              <div style={{ marginBottom: space.sm }}>
                 <div style={{ 
                   fontSize: '11px', 
                   color: '#9ca3af', 
-                  marginBottom: '12px', 
+                  marginBottom: space.md, 
                   fontWeight: 600, 
                   letterSpacing: '0.05em', 
                   textTransform: 'uppercase',
@@ -589,7 +602,7 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate }) => {
                 />
                 
                 {/* Logo section */}
-                <div style={{ marginTop: '16px' }}>
+                <div style={{ marginTop: space.lg }}>
                   {userData?.company_logo_url ? (
                     <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                       <div
@@ -707,11 +720,11 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate }) => {
             </div>
 
             {/* Right Main Content */}
-            <div style={{ flex: 1, padding: '32px' }}>
+            <div style={{ flex: 1, padding: space.xxl }}>
               {/* Contributions Heatmap Section */}
-              <div style={{ marginBottom: '32px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-                  <h2 style={{ fontSize: '15px', fontWeight: 600, color: '#1a1a1a' }}>
+              <div style={{ marginBottom: space.xxl }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: space.lg }}>
+                  <h2 style={{ fontSize: '15px', fontWeight: 600, color: '#1a1a1a', lineHeight: 1.25, margin: 0 }}>
                     {totalContributions} contribution{totalContributions !== 1 ? 's' : ''} in {selectedYear}
                   </h2>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
@@ -833,13 +846,13 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate }) => {
                   border: '1px solid #e5e7eb',
                   borderRadius: '12px',
                   padding: '20px',
-                  marginBottom: '16px',
+                  marginBottom: space.lg,
                   overflow: 'hidden',
                 }}>
                   <div style={{ 
                     display: 'flex', 
                     gap: '4px', 
-                    marginBottom: '8px',
+                    marginBottom: space.sm,
                     overflow: 'hidden',
                   }}>
                     {/* Day labels */}
@@ -900,8 +913,8 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate }) => {
                               key={`${month}-${week}`}
                               style={{
                                 position: 'absolute',
-                                left: `${(week / 53) * 100}%`,
-                                transform: 'translateX(-50%)',
+                                left: week === 0 ? '0' : `${(week / 53) * 100}%`,
+                                transform: week === 0 ? 'none' : 'translateX(-50%)',
                               }}
                             >
                               {month}
@@ -998,17 +1011,17 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate }) => {
                     </div>
                   </div>
 
-                  {/* Legend */}
-                  <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: '6px', marginTop: '16px', fontSize: '11px', color: '#9ca3af', fontWeight: 500 }}>
-                    <span>Less</span>
-                    <div style={{ display: 'flex', gap: '3px' }}>
-                      <div style={{ width: '11px', height: '11px', backgroundColor: '#ebedf0', borderRadius: '2px' }}></div>
-                      <div style={{ width: '11px', height: '11px', backgroundColor: '#9BE9A8', borderRadius: '2px' }}></div>
-                      <div style={{ width: '11px', height: '11px', backgroundColor: '#40C463', borderRadius: '2px' }}></div>
-                      <div style={{ width: '11px', height: '11px', backgroundColor: '#30A14E', borderRadius: '2px' }}></div>
-                      <div style={{ width: '11px', height: '11px', backgroundColor: '#216E39', borderRadius: '2px' }}></div>
+                  {/* Legend - text aligned to 11px square height */}
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: space.sm, marginTop: space.lg, fontSize: '11px', color: '#9ca3af', fontWeight: 500 }}>
+                    <span style={{ lineHeight: '11px' }}>Less</span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '3px' }}>
+                      <div style={{ width: 11, height: 11, backgroundColor: '#ebedf0', borderRadius: '2px' }}></div>
+                      <div style={{ width: 11, height: 11, backgroundColor: '#9BE9A8', borderRadius: '2px' }}></div>
+                      <div style={{ width: 11, height: 11, backgroundColor: '#40C463', borderRadius: '2px' }}></div>
+                      <div style={{ width: 11, height: 11, backgroundColor: '#30A14E', borderRadius: '2px' }}></div>
+                      <div style={{ width: 11, height: 11, backgroundColor: '#216E39', borderRadius: '2px' }}></div>
                     </div>
-                    <span>More</span>
+                    <span style={{ lineHeight: '11px' }}>More</span>
                   </div>
                 </div>
 
@@ -1038,8 +1051,8 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate }) => {
 
               {/* Popular Projects Section */}
               {projects && projects.length > 0 && (
-                <div style={{ marginBottom: '32px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                <div style={{ marginBottom: space.xxl }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: space.lg }}>
                     <h2 style={{ fontSize: '15px', fontWeight: 600, color: '#1a1a1a' }}>
                       Popular projects
                     </h2>
@@ -1113,7 +1126,7 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate }) => {
 
               {/* Contribution Activity List */}
               <div>
-                <h2 style={{ fontSize: '15px', fontWeight: 600, color: '#1a1a1a', marginBottom: '16px' }}>
+                <h2 style={{ fontSize: '15px', fontWeight: 600, color: '#1a1a1a', marginBottom: space.lg }}>
                   Contribution activity
                 </h2>
                 
@@ -1142,8 +1155,8 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate }) => {
                   </div>
                 ) : (
                   Object.entries(groupedActivities).map(([month, monthActivities]) => (
-                    <div key={month} style={{ marginBottom: '24px' }}>
-                      <h3 style={{ fontSize: '13px', fontWeight: 600, color: '#6b7280', marginBottom: '12px' }}>
+                    <div key={month} style={{ marginBottom: space.xl }}>
+                      <h3 style={{ fontSize: '13px', fontWeight: 600, color: '#6b7280', marginBottom: space.md }}>
                         {month}
                       </h3>
                       <div style={{ 
@@ -1156,11 +1169,11 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate }) => {
                           <div
                             key={`${activity.timestamp}-${activity.type}-${idx}-${activity.id || ''}`}
                             style={{
-                              padding: '14px 18px',
+                              padding: space.lg,
                               borderBottom: idx < monthActivities.length - 1 ? '1px solid #f3f4f6' : 'none',
                               display: 'flex',
                               alignItems: 'center',
-                              gap: '14px',
+                              gap: space.lg,
                               cursor: 'pointer',
                               transition: 'background-color 150ms ease',
                             }}
@@ -1172,8 +1185,8 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate }) => {
                             }}
                           >
                             <div style={{
-                              width: '32px',
-                              height: '32px',
+                              width: 32,
+                              height: 32,
                               borderRadius: '8px',
                               backgroundColor: activity.type === 'project' ? '#fef3c7' : activity.type === 'property' ? '#dcfce7' : '#e0e7ff',
                               display: 'flex',
@@ -1187,7 +1200,7 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate }) => {
                               {activity.type !== 'project' && activity.type !== 'property' && activity.type !== 'document' && <Plus className="w-4 h-4" style={{ color: '#6b7280' }} />}
                             </div>
                             <div style={{ flex: 1, minWidth: 0 }}>
-                              <p style={{ fontSize: '13px', color: '#374151', fontWeight: 450 }}>
+                              <p style={{ fontSize: '13px', color: '#374151', fontWeight: 450, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                                 {activity.description}
                               </p>
                             </div>
@@ -1217,13 +1230,19 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate }) => {
         onClose={() => setIsProfileImageModalOpen(false)}
         onSave={async (file) => {
           const imageUrl = await uploadProfilePicture(file);
+          const cacheBust = Date.now();
           setUserData(prev => prev ? { ...prev, profile_image: imageUrl, avatar_url: imageUrl } : null);
+          setProfilePicCacheBust(cacheBust);
+          window.dispatchEvent(new CustomEvent('profilePictureUpdated', { detail: { profileImageUrl: imageUrl, avatarUrl: imageUrl, removed: false, cacheBust } }));
         }}
         onRemove={async () => {
           await removeProfilePicture();
+          const cacheBust = Date.now();
           setUserData(prev => prev ? { ...prev, profile_image: undefined, avatar_url: undefined } : null);
+          setProfilePicCacheBust(cacheBust);
+          window.dispatchEvent(new CustomEvent('profilePictureUpdated', { detail: { removed: true, cacheBust } }));
         }}
-        currentImageUrl={userData?.profile_image || userData?.avatar_url}
+        currentImageUrl={userData?.profile_image || userData?.avatar_url || userData?.profile_picture_url}
       />
 
       {/* Company Logo Upload Modal */}

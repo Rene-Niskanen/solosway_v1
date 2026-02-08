@@ -42,6 +42,8 @@ const SECONDARY_COLOR = "#999999";
 const SECONDARY_FONT_SIZE = "10px";
 const ICON_COLOR = "#333333";
 const ICON_SIZE = 13;
+const SHORTCUT_COLOR = "#737373";
+const SHORTCUT_FONT_SIZE = "10px";
 const PROPERTY_ICON_SIZE = 18;
 const ROW_GAP = 7;
 const SEPARATOR_COLOR = "rgba(0, 0, 0, 0.08)";
@@ -62,7 +64,7 @@ export function AtMentionPopover({
 }: AtMentionPopoverProps) {
   const popoverRef = React.useRef<HTMLDivElement>(null);
 
-  // Keyboard: ArrowUp, ArrowDown, Enter, Escape
+  // Keyboard: ArrowUp, ArrowDown, Enter, ⌘/Ctrl (select), Escape
   React.useEffect(() => {
     if (!open) return;
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -81,6 +83,12 @@ export function AtMentionPopover({
         onSelectedIndexChange(Math.max(selectedIndex - 1, 0));
         return;
       }
+      // ⌘ (Mac) or Ctrl (Windows/Linux) alone: select highlighted item and add to chat
+      if ((e.key === "Meta" || e.key === "Control") && items[selectedIndex]) {
+        e.preventDefault();
+        onSelect(items[selectedIndex]);
+        return;
+      }
       if (e.key === "Enter" && items[selectedIndex]) {
         e.preventDefault();
         onSelect(items[selectedIndex]);
@@ -89,6 +97,15 @@ export function AtMentionPopover({
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [open, items, selectedIndex, onSelect, onSelectedIndexChange, onClose]);
+
+  // Scroll the selected option into view when navigating with arrow keys
+  React.useEffect(() => {
+    if (!open || !popoverRef.current) return;
+    const selected = popoverRef.current.querySelector('[aria-selected="true"]');
+    if (selected) {
+      selected.scrollIntoView({ block: "nearest", behavior: "auto" });
+    }
+  }, [open, selectedIndex]);
 
   // Click outside to close
   React.useEffect(() => {
@@ -252,6 +269,21 @@ export function AtMentionPopover({
                   }}
                 >
                   {item.secondaryLabel}
+                </span>
+              ) : null}
+              {isSelected ? (
+                <span
+                  aria-hidden
+                  title="Press ⌘ to select and add to chat"
+                  style={{
+                    flexShrink: 0,
+                    fontSize: SHORTCUT_FONT_SIZE,
+                    color: SHORTCUT_COLOR,
+                    lineHeight: 1.4,
+                    fontWeight: 500,
+                  }}
+                >
+                  ⌘
                 </span>
               ) : null}
             </div>

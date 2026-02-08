@@ -373,13 +373,8 @@ def _renumber_citations_by_appearance(
     })
     """
     Renumber citations based on their order of appearance in the response text.
-    
-    This ensures citations are sequential (1, 2, 3...) based on when they first appear,
-    not based on when they were extracted in Phase 1.
-    
-    CRITICAL: Validates that the fact in the text matches the Phase 1 cited_text.
-    If they don't match, uses semantic search to find the correct block_id.
-    
+    Only reorders and updates citation_number; bbox/block_id are already resolved in add_citation.
+
     Args:
         summary: The LLM response text with citation markers in bracket format [1], [2], [3]
         citations: List of citation dictionaries with citation_number, block_id, etc.
@@ -389,8 +384,7 @@ def _renumber_citations_by_appearance(
         Tuple of (renumbered_summary, renumbered_citations)
     """
     import re
-    from backend.llm.tools.citation_mapping import verify_citation_match
-    
+
     # Find all citation brackets in order of appearance: [1], [2], [3], etc.
     # Pattern matches bracket format: [1], [2], [123], etc.
     citation_pattern = r'\[(\d+)\]'
@@ -425,145 +419,6 @@ def _renumber_citations_by_appearance(
         logger.debug("[RENUMBER_CITATIONS] No valid citation numbers extracted")
         return summary, citations
     
-    # FALLBACK 1: Detect when the same citation number is used for DIFFERENT facts
-    # This happens when the LLM incorrectly reuses [4] for multiple different facts
-    # We need to detect this and assign unique citation numbers to each occurrence
-    citation_occurrences = {}  # Map citation_num -> list of (match_index, context_before)
-    for idx, match in enumerate(matches):
-        citation_num = int(match.group(1))
-        # Extract context before this citation (the fact being cited)
-        context_start = max(0, match.start() - 100)
-        context_before = summary[context_start:match.start()].strip()
-        # Extract the key fact (after last colon or line break)
-        fact_start = max(
-            context_before.rfind(':') + 1,
-            context_before.rfind('\n') + 1,
-            0
-        )
-        fact_text = context_before[fact_start:].strip()[:50]  # First 50 chars of fact
-        
-        if citation_num not in citation_occurrences:
-            citation_occurrences[citation_num] = []
-        citation_occurrences[citation_num].append((idx, fact_text))
-    
-    # Check for citation numbers used for multiple different facts
-    citations_to_split = {}  # Map citation_num -> list of unique facts
-    for cit_num, occurrences in citation_occurrences.items():
-        if len(occurrences) > 1:
-            # Check if the facts are actually different
-            unique_facts = set()
-            for _, fact_text in occurrences:
-                # Normalize: lowercase, remove punctuation, take key terms
-                normalized = re.sub(r'[^\w\s]', '', fact_text.lower()).strip()
-                if len(normalized) > 5:  # Only count meaningful facts
-                    unique_facts.add(normalized)
-            
-            if len(unique_facts) > 1:
-                # Same citation number used for different facts - needs splitting
-                citations_to_split[cit_num] = occurrences
-                logger.warning(
-                    f"[RENUMBER_CITATIONS] ⚠️ Citation [{cit_num}] used for {len(unique_facts)} different facts: "
-                    f"{list(unique_facts)[:3]}..."
-                )
-    
-    # If we found citations that need splitting, renumber them
-    if citations_to_split:
-        logger.warning(
-            f"[RENUMBER_CITATIONS] ⚠️ SPLIT FALLBACK: {len(citations_to_split)} citation numbers "
-            f"used for multiple different facts. Assigning unique numbers."
-        )
-        
-        # Find the next available citation number
-        max_citation_num = max(all_citation_nums_in_text) if all_citation_nums_in_text else 0
-        next_citation_num = max_citation_num + 1
-        
-        # Process the summary from end to start to preserve positions
-        new_summary = summary
-        all_match_positions = [(m.start(), m.end(), int(m.group(1))) for m in matches]
-        all_match_positions.sort(reverse=True)  # Process from end to start
-        
-        processed_first_occurrence = set()  # Track which citation numbers we've seen first occurrence of
-        
-        for start, end, cit_num in all_match_positions:
-            if cit_num in citations_to_split:
-                if cit_num not in processed_first_occurrence:
-                    # Keep the first occurrence with original number
-                    processed_first_occurrence.add(cit_num)
-                else:
-                    # Replace subsequent occurrences with new unique numbers
-                    new_summary = new_summary[:start] + f'[{next_citation_num}]' + new_summary[end:]
-                    logger.info(
-                        f"[RENUMBER_CITATIONS] 🔄 Split citation [{cit_num}] → [{next_citation_num}] for different fact"
-                    )
-                    next_citation_num += 1
-        
-        summary = new_summary
-        
-        # Re-detect citation numbers after splitting
-        matches = list(re.finditer(citation_pattern, summary))
-        all_citation_nums_in_text = [int(m.group(1)) for m in matches]
-        appearance_order = []
-        seen_citation_nums = set()
-        for match in matches:
-            citation_num = int(match.group(1))
-            if citation_num not in seen_citation_nums:
-                appearance_order.append(citation_num)
-                seen_citation_nums.add(citation_num)
-        
-        logger.info(
-            f"[RENUMBER_CITATIONS] After split: {len(all_citation_nums_in_text)} markers, "
-            f"unique numbers: {appearance_order}"
-        )
-    
-    # FALLBACK 2: Detect when all citations have the same number (LLM didn't follow sequential numbering)
-    # This happens when the LLM outputs [1] for all facts instead of [1], [2], [3], etc.
-    if len(appearance_order) == 1 and len(all_citation_nums_in_text) > 1:
-        logger.warning(
-            f"[RENUMBER_CITATIONS] ⚠️ FALLBACK TRIGGERED: All {len(all_citation_nums_in_text)} citations "
-            f"use the same number [{appearance_order[0]}]. Forcing sequential renumbering by position."
-        )
-        
-        # Force sequential renumbering: replace [1] with [1], [2], [3] based on position
-        single_num = appearance_order[0]
-        new_summary = summary
-        citation_positions = []
-        
-        # Find all positions of the single citation number
-        for match in re.finditer(rf'\[{single_num}\]', summary):
-            citation_positions.append(match.start())
-        
-        # Replace from the end to preserve positions
-        for i, pos in enumerate(reversed(citation_positions)):
-            new_num = len(citation_positions) - i
-            # Replace this specific occurrence
-            new_summary = new_summary[:pos] + f'[{new_num}]' + new_summary[pos + len(f'[{single_num}]'):]
-        
-        summary = new_summary
-        
-        # Re-detect citation numbers after forced renumbering
-        matches = list(re.finditer(citation_pattern, summary))
-        all_citation_nums_in_text = [int(m.group(1)) for m in matches]
-        appearance_order = []
-        seen_citation_nums = set()
-        for match in matches:
-            citation_num = int(match.group(1))
-            if citation_num not in seen_citation_nums:
-                appearance_order.append(citation_num)
-                seen_citation_nums.add(citation_num)
-        
-        logger.info(
-            f"[RENUMBER_CITATIONS] After fallback renumbering: unique citations {appearance_order}"
-        )
-        
-        # CRITICAL: Also fix the citations list to have sequential numbers
-        # When all citations had the same number, we need to assign new sequential numbers
-        if len(citations) >= len(appearance_order):
-            for i, cit in enumerate(citations[:len(appearance_order)]):
-                cit['citation_number'] = i + 1
-            logger.info(
-                f"[RENUMBER_CITATIONS] Updated {min(len(citations), len(appearance_order))} citation objects with sequential numbers"
-            )
-    
     # Renumber citations list
     # Create lookup: old citation_number -> citation dict
     citations_by_old_num = {cit.get('citation_number', 0): cit for cit in citations}
@@ -583,32 +438,32 @@ def _renumber_citations_by_appearance(
         )
     
     # Deduplicate citations before renumbering - merge citations that refer to the same fact
-    # CRITICAL: Use (block_id, cited_text) as unique identifier to preserve distinct facts
-    # This ensures each distinct fact gets its own citation, even if they're from the same block
-    seen_citation_keys = {}  # Map (block_id, cited_text) -> old_num
+    # This catches duplicates that might have slipped through Phase 1
+    from backend.llm.tools.citation_mapping import CitationTool
+    # Create a temporary CitationTool instance to use its normalization method
+    temp_tool = CitationTool({})
+    seen_normalized_facts = {}
     deduplicated_citations_by_old_num = {}
     duplicate_mappings = {}  # Map duplicate old_num -> original old_num
     
     for old_num, old_cit in citations_by_old_num.items():
-        block_id = old_cit.get('block_id', '')
         cited_text = old_cit.get('cited_text', '')
-        # Use (block_id, cited_text) as unique key to preserve distinct facts
-        citation_key = (block_id, cited_text)
+        normalized = temp_tool._normalize_cited_text(cited_text)
         
-        # Check if we've seen this exact (block_id, cited_text) combination before
-        if citation_key in seen_citation_keys:
-            # This is a duplicate - use the first citation number we saw for this exact fact
-            existing_old_num = seen_citation_keys[citation_key]
+        # Check if we've seen this normalized fact before
+        if normalized in seen_normalized_facts:
+            # This is a duplicate - use the first citation number we saw for this fact
+            existing_old_num = seen_normalized_facts[normalized]
             logger.info(
                 f"[RENUMBER_CITATIONS] 🔍 Deduplicating: citation {old_num} is duplicate of {existing_old_num} "
-                f"(block_id: {block_id[:20]}..., cited_text: '{cited_text[:50]}...')"
+                f"(normalized: '{normalized}')"
             )
             # Map this old_num to the existing one
             deduplicated_citations_by_old_num[old_num] = deduplicated_citations_by_old_num[existing_old_num]
             duplicate_mappings[old_num] = existing_old_num
         else:
-            # First time seeing this exact fact
-            seen_citation_keys[citation_key] = old_num
+            # First time seeing this fact
+            seen_normalized_facts[normalized] = old_num
             deduplicated_citations_by_old_num[old_num] = old_cit
     
     # Update citations_by_old_num to use deduplicated version
@@ -672,485 +527,15 @@ def _renumber_citations_by_appearance(
                 continue
             
             seen_citation_objects.add(cit_id)
-            cited_text_from_phase1 = old_cit.get('cited_text', '')
-            block_id_from_phase1 = old_cit.get('block_id', 'UNKNOWN')
-            citation_appended = False  # Track if we've appended this citation
-            
-            # Extract the fact from the context around this citation in Phase 2 text
-            citation_matches = list(re.finditer(rf'\[{old_num}\]', summary))
-            if citation_matches:
-                first_match = citation_matches[0]
-                # Extract more context (200 chars) to better capture the fact being cited
-                context_start = max(0, first_match.start() - 200)
-                context_before = summary[context_start:first_match.start()].strip()
-                
-                # Try to extract the complete phrase/sentence containing the citation
-                # Look for the start of the sentence or a label (e.g., "**Label:**")
-                sentence_start = max(
-                    context_before.rfind('.') + 1,  # Last sentence
-                    context_before.rfind(':') + 1,  # Last label (e.g., "**Label:**")
-                    context_before.rfind('\n') + 1,  # Last line break
-                    len(context_before) - 100  # Fallback: last 100 chars
-                )
-                fact_from_phase2_text = context_before[sentence_start:].strip()
-                
-                # Clean up: remove markdown formatting and extra whitespace
-                fact_from_phase2_text = re.sub(r'\*\*([^*]+)\*\*:', r'\1:', fact_from_phase2_text)  # Remove bold from labels
-                fact_from_phase2_text = re.sub(r'\s+', ' ', fact_from_phase2_text).strip()  # Normalize whitespace
-                
-                # CRITICAL: If the fact contains a label (e.g., "Recent Planning History: No recent planning history"),
-                # extract just the fact part after the colon
-                if ':' in fact_from_phase2_text:
-                    # Split on colon and take the part after it (the actual fact)
-                    parts = fact_from_phase2_text.split(':', 1)
-                    if len(parts) == 2:
-                        fact_part = parts[1].strip()
-                        # Only use the fact part if it's meaningful (not too short)
-                        if len(fact_part) >= 10:
-                            fact_from_phase2_text = fact_part
-                
-                # If the fact is very short, try to get more context
-                if len(fact_from_phase2_text) < 20:
-                    fact_from_phase2_text = context_before[-100:].strip()
-                    # Try to extract fact part again if it has a colon
-                    if ':' in fact_from_phase2_text:
-                        parts = fact_from_phase2_text.split(':', 1)
-                        if len(parts) == 2 and len(parts[1].strip()) >= 10:
-                            fact_from_phase2_text = parts[1].strip()
-                
-                # Verify that the fact in Phase 2 text matches the ACTUAL BLOCK CONTENT from Phase 1
-                # CRITICAL: We must verify against the block content, not just the cited_text
-                # The cited_text might match, but the block might not contain the actual figure
-                if cited_text_from_phase1 and fact_from_phase2_text:
-                    # #region agent log
-                    try:
-                        with open(_DEBUG_LOG_PATH, 'a') as f:
-                            f.write(json.dumps({
-                                'sessionId': 'debug-session',
-                                'runId': 'run1',
-                                'hypothesisId': 'H',
-                                'location': 'summary_nodes.py:438',
-                                'message': f'BEFORE VALIDATION: Citation {old_num} -> {new_num}',
-                                'data': {
-                                    'old_citation_number': old_num,
-                                    'new_citation_number': new_num,
-                                    'fact_from_phase2_text': fact_from_phase2_text,
-                                    'cited_text_from_phase1': cited_text_from_phase1,
-                                    'block_id_from_phase1': block_id_from_phase1,
-                                    'has_metadata_lookup_tables': metadata_lookup_tables is not None,
-                                    'fact_contains_1_9m': '1.9' in fact_from_phase2_text or '1,950' in fact_from_phase2_text,
-                                    'fact_contains_2_4m': '2.4' in fact_from_phase2_text or '2,400' in fact_from_phase2_text
-                                },
-                                'timestamp': int(__import__('time').time() * 1000)
-                            }) + '\n')
-                    except: pass
-                    # #endregion
-                    
-                    # Get the actual block content from Phase 1 to verify what it contains
-                    phase1_block_content = None
-                    if metadata_lookup_tables and block_id_from_phase1:
-                        for search_doc_id, search_metadata_table in metadata_lookup_tables.items():
-                            if block_id_from_phase1 in search_metadata_table:
-                                phase1_block_content = search_metadata_table[block_id_from_phase1].get('content', '')
-                                # #region agent log
-                                try:
-                                    with open(_DEBUG_LOG_PATH, 'a') as f:
-                                        f.write(json.dumps({
-                                            'sessionId': 'debug-session',
-                                            'runId': 'run1',
-                                            'hypothesisId': 'H',
-                                            'location': 'summary_nodes.py:448',
-                                            'message': f'FOUND block content for citation {old_num}',
-                                            'data': {
-                                                'old_citation_number': old_num,
-                                                'block_id': block_id_from_phase1,
-                                                'doc_id': search_doc_id[:8],
-                                                'block_content_preview': phase1_block_content[:200] if phase1_block_content else None,
-                                                'block_contains_1_9m': '1.9' in (phase1_block_content or '') or '1,950' in (phase1_block_content or ''),
-                                                'block_contains_2_4m': '2.4' in (phase1_block_content or '') or '2,400' in (phase1_block_content or '')
-                                            },
-                                            'timestamp': int(__import__('time').time() * 1000)
-                                        }) + '\n')
-                                except: pass
-                                # #endregion
-                                break
-                    else:
-                        # #region agent log
-                        try:
-                            with open(_DEBUG_LOG_PATH, 'a') as f:
-                                f.write(json.dumps({
-                                    'sessionId': 'debug-session',
-                                    'runId': 'run1',
-                                    'hypothesisId': 'H',
-                                    'location': 'summary_nodes.py:448',
-                                    'message': f'NO block content found for citation {old_num}',
-                                    'data': {
-                                        'old_citation_number': old_num,
-                                        'block_id': block_id_from_phase1,
-                                        'has_metadata_lookup_tables': metadata_lookup_tables is not None,
-                                        'has_block_id': bool(block_id_from_phase1)
-                                    },
-                                    'timestamp': int(__import__('time').time() * 1000)
-                                }) + '\n')
-                        except: pass
-                        # #endregion
-                    
-                    # Verify against the ACTUAL block content (not just cited_text)
-                    # This ensures the block actually contains the figure being cited
-                    if phase1_block_content:
-                        verification = verify_citation_match(fact_from_phase2_text, phase1_block_content)
-                    else:
-                        # Fallback to cited_text if block content not available
-                        verification = verify_citation_match(fact_from_phase2_text, cited_text_from_phase1)
-                    
-                    # #region agent log
-                    import json
-                    try:
-                        with open(_DEBUG_LOG_PATH, 'a') as f:
-                            f.write(json.dumps({
-                                'sessionId': 'debug-session',
-                                'runId': 'run1',
-                                'hypothesisId': 'G',
-                                'location': 'summary_nodes.py:441',
-                                'message': 'CRITICAL: Validating citation fact match - checking block content contains figure',
-                                'data': {
-                                    'old_citation_number': old_num,
-                                    'new_citation_number': new_num,
-                                    'fact_from_phase2_text': fact_from_phase2_text,
-                                    'cited_text_from_phase1': cited_text_from_phase1,
-                                    'block_id_from_phase1': block_id_from_phase1,
-                                    'phase1_block_content_preview': phase1_block_content[:150] if phase1_block_content else None,
-                                    'verification_match': verification.get('match', False),
-                                    'verification_confidence': verification.get('confidence', 'low'),
-                                    'numeric_matches': verification.get('numeric_matches', []),
-                                    'matched_terms': verification.get('matched_terms', []),
-                                    'missing_terms': verification.get('missing_terms', []),
-                                    'fact_contains_1_9m': '1.9' in fact_from_phase2_text or '1,950' in fact_from_phase2_text,
-                                    'fact_contains_2_4m': '2.4' in fact_from_phase2_text or '2,400' in fact_from_phase2_text,
-                                    'block_contains_1_9m': '1.9' in (phase1_block_content or '') or '1,950' in (phase1_block_content or ''),
-                                    'block_contains_2_4m': '2.4' in (phase1_block_content or '') or '2,400' in (phase1_block_content or ''),
-                                    'verified_against_block_content': phase1_block_content is not None
-                                },
-                                'timestamp': int(__import__('time').time() * 1000)
-                            }) + '\n')
-                    except: pass
-                    # #endregion
-                    
-                    # If fact doesn't match, search for correct block_id using semantic search
-                    if not verification.get('match', False) or verification.get('confidence', 'low') == 'low':
-                        # #region agent log
-                        try:
-                            with open(_DEBUG_LOG_PATH, 'a') as f:
-                                f.write(json.dumps({
-                                    'sessionId': 'debug-session',
-                                    'runId': 'run1',
-                                    'hypothesisId': 'H',
-                                    'location': 'summary_nodes.py:492',
-                                    'message': f'VALIDATION FAILED: Starting semantic search for citation {old_num}',
-                                    'data': {
-                                        'old_citation_number': old_num,
-                                        'verification_match': verification.get('match', False),
-                                        'verification_confidence': verification.get('confidence', 'low'),
-                                        'fact_from_phase2_text': fact_from_phase2_text,
-                                        'phase1_block_content_preview': phase1_block_content[:200] if phase1_block_content else None,
-                                        'numeric_matches': verification.get('numeric_matches', [])
-                                    },
-                                    'timestamp': int(__import__('time').time() * 1000)
-                                }) + '\n')
-                        except: pass
-                        # #endregion
-                        
-                        logger.warning(
-                            f"[RENUMBER_CITATIONS] ⚠️ Citation {old_num} fact mismatch detected!\n"
-                            f"  Phase 2 fact: '{fact_from_phase2_text}'\n"
-                            f"  Phase 1 cited_text: '{cited_text_from_phase1}'\n"
-                            f"  Phase 1 block_id: {block_id_from_phase1}\n"
-                            f"  Verification: match={verification.get('match')}, confidence={verification.get('confidence')}\n"
-                            f"  Searching for correct block_id..."
-                        )
-                        
-                        # Search for correct block_id using semantic matching (same logic as _extract_citations_from_text)
-                        if metadata_lookup_tables:
-                            best_match = None
-                            best_score = -1
-                            best_confidence = 'low'
-                            
-                            # Key semantic terms
-                            valuation_terms = ['market value', 'assessed', 'valuation', 'valued at', 'professional', 'valuer', 'mrics', '90-day', '180-day', 'marketing period']
-                            market_activity_terms = ['offer', 'rejected', 'marketing', 'guide price', 'under offer', 'viewing', 'savills']
-                            
-                            fact_lower = fact_from_phase2_text.lower()
-                            is_valuation_query = any(term in fact_lower for term in valuation_terms)
-                            is_market_activity_query = any(term in fact_lower for term in market_activity_terms)
-                            
-                            # Extract key terms from fact for strict matching (for ALL descriptive citations)
-                            import re
-                            fact_terms = [word.lower() for word in re.findall(r'\b\w{3,}\b', fact_lower)]
-                            # Check if this is a descriptive fact (no numbers, has multiple terms)
-                            has_numbers = bool(re.search(r'\d', fact_from_phase2_text))
-                            is_descriptive = not has_numbers and len(fact_terms) >= 2
-                            is_short_descriptive = is_descriptive and len(fact_terms) <= 4
-                            
-                            # Filter out common/stop words for better matching
-                            common_words = {'the', 'and', 'or', 'but', 'with', 'for', 'from', 'that', 'this', 'are', 'was', 'were', 'been', 'have', 'has', 'had', 'will', 'would', 'could', 'should', 'may', 'might', 'can', 'must', 'shall'}
-                            key_fact_terms = [term for term in fact_terms if term not in common_words]
-                            if len(key_fact_terms) == 0:
-                                key_fact_terms = fact_terms  # Fallback if all terms were common words
-                            
-                            # Check if this is a negative statement (e.g., "no recent planning history")
-                            negative_indicators = ['no ', 'not ', 'none', 'without', 'lack of', 'absence of']
-                            is_negative_statement = any(indicator in fact_lower for indicator in negative_indicators)
-                            
-                            # For negative statements, extract the core concept (without the negative indicator)
-                            core_concept_terms = []
-                            if is_negative_statement:
-                                core_concept = fact_lower
-                                for indicator in negative_indicators:
-                                    core_concept = core_concept.replace(indicator, '').strip()
-                                core_concept_terms = [word.lower() for word in re.findall(r'\b\w{4,}\b', core_concept)]  # Only significant terms (4+ chars)
-                            
-                            for search_doc_id, search_metadata_table in metadata_lookup_tables.items():
-                                for search_block_id, search_block_meta in search_metadata_table.items():
-                                    search_block_content = search_block_meta.get('content', '')
-                                    if not search_block_content:
-                                        continue
-                                    
-                                    block_lower = search_block_content.lower()
-                                    
-                                    # Verify match
-                                    search_verification = verify_citation_match(fact_from_phase2_text, search_block_content)
-                                    score = 0
-                                    
-                                    # CRITICAL: Check for exact phrase match FIRST (highest priority for all citations)
-                                    fact_lower = fact_from_phase2_text.lower().strip()
-                                    block_lower = search_block_content.lower()
-                                    
-                                    # Try exact phrase match
-                                    exact_phrase_match = fact_lower in block_lower
-                                    if not exact_phrase_match:
-                                        # Try with normalized whitespace
-                                        fact_normalized = re.sub(r'\s+', ' ', fact_lower)
-                                        block_normalized = re.sub(r'\s+', ' ', block_lower)
-                                        exact_phrase_match = fact_normalized in block_normalized
-                                    
-                                    # CRITICAL: For ALL descriptive citations, require strict term matching
-                                    # Short descriptive (2-4 terms): require ALL key terms
-                                    # Longer descriptive (5+ terms): require 80%+ of key terms
-                                    if is_descriptive and not exact_phrase_match:
-                                        block_terms = [word.lower() for word in re.findall(r'\b\w{3,}\b', search_block_content.lower())]
-                                        
-                                        if is_short_descriptive:
-                                            # Short descriptive: ALL key terms must be present
-                                            all_key_terms_present = all(term in block_terms for term in key_fact_terms)
-                                            if not all_key_terms_present:
-                                                # Skip this block - it doesn't contain all required terms
-                                                continue
-                                        else:
-                                            # Longer descriptive: require 80%+ of key terms
-                                            matched_key_terms = [term for term in key_fact_terms if term in block_terms]
-                                            match_ratio = len(matched_key_terms) / len(key_fact_terms) if len(key_fact_terms) > 0 else 0
-                                            if match_ratio < 0.8:
-                                                # Skip this block - it doesn't contain enough key terms
-                                                continue
-                                    
-                                    # CRITICAL: For negative statements, require core semantic concept match
-                                    # This prevents "no recent planning history" from matching blocks about something else
-                                    if is_negative_statement and not exact_phrase_match:
-                                        # Check if core concept terms are present in the block
-                                        if core_concept_terms:
-                                            block_terms = [word.lower() for word in re.findall(r'\b\w{4,}\b', block_lower)]
-                                            core_concept_present = all(term in block_terms for term in core_concept_terms)
-                                            
-                                            # Also check if block contains a negative indicator (for semantic accuracy)
-                                            negative_indicators = ['no ', 'not ', 'none', 'without', 'lack of', 'absence of']
-                                            block_has_negative = any(indicator in block_lower for indicator in negative_indicators)
-                                            
-                                            # Require both: core concept AND negative indicator (for accurate semantic matching)
-                                            if core_concept_present and block_has_negative:
-                                                exact_phrase_match = True
-                                            elif not core_concept_present:
-                                                # Skip this block - it doesn't contain the core concept
-                                                continue
-                                        else:
-                                            # No core concept terms extracted - skip
-                                            continue
-                                    
-                                    # Boost score significantly for exact phrase matches (highest priority)
-                                    if exact_phrase_match:
-                                        score += 300  # Very high priority for exact phrase matches
-                                    
-                                    # Base score from verification
-                                    if search_verification['confidence'] == 'high':
-                                        score += 100
-                                    elif search_verification['confidence'] == 'medium':
-                                        score += 50
-                                    else:
-                                        score += 10
-                                    
-                                    # Semantic context bonus
-                                    if is_valuation_query:
-                                        if any(term in block_lower for term in valuation_terms):
-                                            score += 50
-                                        if not is_market_activity_query and any(term in block_lower for term in market_activity_terms):
-                                            score -= 30
-                                    
-                                    if is_market_activity_query:
-                                        if any(term in block_lower for term in market_activity_terms):
-                                            score += 50
-                                    
-                                    # Bonus for matching key terms
-                                    matched_terms = search_verification.get('matched_terms', [])
-                                    if len(matched_terms) > 2:
-                                        score += len(matched_terms) * 5
-                                    
-                                    # Penalty for missing important terms
-                                    missing_terms = search_verification.get('missing_terms', [])
-                                    if len(missing_terms) > 3:
-                                        score -= len(missing_terms) * 3
-                                    
-                                    # CRITICAL: Extra bonus for exact numeric matches
-                                    numeric_matches = search_verification.get('numeric_matches', [])
-                                    if numeric_matches:
-                                        score += len(numeric_matches) * 30
-                                    
-                                    # Update best match if this score is higher
-                                    if score > best_score:
-                                        best_score = score
-                                        best_confidence = 'high' if score >= 100 else ('medium' if score >= 50 else 'low')
-                                        best_match = {
-                                            'block_id': search_block_id,
-                                            'block_metadata': search_block_meta,
-                                            'doc_id': search_doc_id,
-                                            'verification': search_verification,
-                                            'score': score,
-                                            'content': search_block_content
-                                        }
-                            
-                            # #region agent log
-                            try:
-                                with open(_DEBUG_LOG_PATH, 'a') as f:
-                                    f.write(json.dumps({
-                                        'sessionId': 'debug-session',
-                                        'runId': 'run1',
-                                        'hypothesisId': 'H',
-                                        'location': 'summary_nodes.py:575',
-                                        'message': f'SEMANTIC SEARCH RESULT for citation {old_num}',
-                                        'data': {
-                                            'old_citation_number': old_num,
-                                            'found_best_match': best_match is not None,
-                                            'best_confidence': best_confidence,
-                                            'best_score': best_score if best_match else None,
-                                            'best_block_id': best_match['block_id'] if best_match else None,
-                                            'old_block_id': block_id_from_phase1,
-                                            'block_ids_different': best_match['block_id'] != block_id_from_phase1 if best_match else False,
-                                            'best_block_content_preview': best_match['content'][:200] if best_match else None,
-                                            'best_block_contains_1_9m': '1.9' in (best_match['content'] if best_match else '') or '1,950' in (best_match['content'] if best_match else ''),
-                                            'best_block_contains_2_4m': '2.4' in (best_match['content'] if best_match else '') or '2,400' in (best_match['content'] if best_match else ''),
-                                            'numeric_matches': best_match['verification']['numeric_matches'] if best_match else []
-                                        },
-                                        'timestamp': int(__import__('time').time() * 1000)
-                                    }) + '\n')
-                            except: pass
-                            # #endregion
-                            
-                            # Use best match if found and confidence is high/medium
-                            if best_match and best_confidence in ['high', 'medium']:
-                                if best_match['block_id'] != block_id_from_phase1:
-                                    logger.warning(
-                                        f"[RENUMBER_CITATIONS] ✅ Found better block match for citation {old_num}:\n"
-                                        f"  Phase 1 block_id: {block_id_from_phase1} (WRONG - fact mismatch)\n"
-                                        f"  Best match block_id: {best_match['block_id']} (score: {best_score}, confidence: {best_confidence})\n"
-                                        f"  Phase 2 fact: '{fact_from_phase2_text}'\n"
-                                        f"  Best block content: '{best_match['content'][:80]}...'\n"
-                                        f"  Numeric matches: {best_match['verification']['numeric_matches']}\n"
-                                        f"  Matched terms: {best_match['verification']['matched_terms']}"
-                                    )
-                                    
-                                    # Update citation with correct block_id and bbox
-                                    from backend.llm.citation_mapping import map_block_id_to_bbox
-                                    correct_bbox_data = map_block_id_to_bbox(
-                                        best_match['block_id'],
-                                        {best_match['doc_id']: metadata_lookup_tables[best_match['doc_id']]}
-                                    )
-                                    
-                                    if correct_bbox_data:
-                                        # Update citation with correct block_id and bbox
-                                        corrected_cit = old_cit.copy()
-                                        corrected_cit['block_id'] = best_match['block_id']
-                                        corrected_cit['doc_id'] = best_match['doc_id']
-                                        corrected_cit['bbox'] = correct_bbox_data.get('bbox', old_cit.get('bbox', {}))
-                                        corrected_cit['page_number'] = correct_bbox_data.get('page', old_cit.get('page_number', 0))
-                                        corrected_cit['cited_text'] = fact_from_phase2_text  # Update to match Phase 2 fact
-                                        corrected_cit['citation_number'] = new_num
-                                        renumbered_citations.append(corrected_cit)
-                                        citation_appended = True  # Mark as appended
-                                        
-                                        # #region agent log
-                                        try:
-                                            with open(_DEBUG_LOG_PATH, 'a') as f:
-                                                f.write(json.dumps({
-                                                    'sessionId': 'debug-session',
-                                                    'runId': 'run1',
-                                                    'hypothesisId': 'G',
-                                                    'location': 'summary_nodes.py:573',
-                                                    'message': 'CRITICAL: Corrected citation block_id - verifying it matches fact',
-                                                    'data': {
-                                                        'old_citation_number': old_num,
-                                                        'new_citation_number': new_num,
-                                                        'old_block_id': block_id_from_phase1,
-                                                        'new_block_id': best_match['block_id'],
-                                                        'fact_from_phase2_text': fact_from_phase2_text,
-                                                        'corrected_block_content_preview': best_match['content'][:150],
-                                                        'fact_contains_1_9m': '1.9' in fact_from_phase2_text or '1,950' in fact_from_phase2_text,
-                                                        'fact_contains_2_4m': '2.4' in fact_from_phase2_text or '2,400' in fact_from_phase2_text,
-                                                        'corrected_block_contains_1_9m': '1.9' in best_match['content'] or '1,950' in best_match['content'],
-                                                        'corrected_block_contains_2_4m': '2.4' in best_match['content'] or '2,400' in best_match['content'],
-                                                        'numeric_matches': best_match['verification']['numeric_matches'],
-                                                        'score': best_score,
-                                                        'confidence': best_confidence
-                                                    },
-                                                    'timestamp': int(__import__('time').time() * 1000)
-                                                }) + '\n')
-                                        except: pass
-                                        # #endregion
-                                    else:
-                                        logger.error(
-                                            f"[RENUMBER_CITATIONS] ❌ Could not map block_id {best_match['block_id']} to BBOX"
-                                        )
-                                else:
-                                    logger.info(
-                                        f"[RENUMBER_CITATIONS] ✅ Phase 1 block_id {block_id_from_phase1} matches best semantic match "
-                                        f"(score: {best_score}, confidence: {best_confidence})"
-                                    )
-                            elif best_match:
-                                logger.warning(
-                                    f"[RENUMBER_CITATIONS] ⚠️ Low confidence match for citation {old_num} "
-                                    f"(score: {best_score}, confidence: {best_confidence}) - using Phase 1 block_id anyway"
-                                )
-                            else:
-                                logger.error(
-                                    f"[RENUMBER_CITATIONS] ❌ No block match found for citation {old_num} fact: '{fact_from_phase2_text}'"
-                                )
-                        else:
-                            logger.warning(
-                                f"[RENUMBER_CITATIONS] ⚠️ Citation {old_num} fact mismatch but no metadata_lookup_tables provided for semantic search"
-                            )
-                    else:
-                        logger.info(
-                            f"[RENUMBER_CITATIONS] ✅ Citation {old_num} fact matches Phase 1 cited_text "
-                            f"(confidence: {verification.get('confidence')})"
-                        )
-            
-            # Use original Phase 1 citation (either matched or no metadata_lookup_tables for validation)
-            # Only append if we haven't already appended a corrected citation above
-            if not citation_appended:
-                cit = old_cit.copy()
+            # Renumbering only reorders and updates citation_number; bbox/block_id already resolved in add_citation.
+            cit = old_cit.copy()
             cit['citation_number'] = new_num
             renumbered_citations.append(cit)
             logger.debug(
                 f"[RENUMBER_CITATIONS] ✅ Mapped citation {old_num} (block_id: {cit.get('block_id', 'UNKNOWN')}) "
                 f"→ new number {new_num}"
             )
+            continue
         else:
             # ORPHAN CITATION: Citation number appears in text but wasn't captured in Phase 1
             # Try to find the correct block using semantic search on the context around the citation
@@ -1575,7 +960,8 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
         'hybrid': 0,
         'unknown': 0
     }
-    
+    # Chain block IDs across documents so each block has a globally unique ID
+    next_block_id = 1
     for idx, output in enumerate(doc_outputs):
         doc_id = output.get('doc_id', '')
         doc_type = (output.get('classification_type') or 'Property Document').replace('_', ' ').title()
@@ -1600,22 +986,15 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
             'unknown': 'Unknown source'
         }.get(search_source, search_source)
         
-        # OPTIMIZATION: Skip formatting if already done during processing
-        is_formatted = output.get('is_formatted', False)
-        
-        if is_formatted and output.get('formatted_content') and output.get('formatted_metadata_table'):
-            # Use pre-formatted content from processing_nodes
-            formatted_content = output.get('formatted_content')
-            metadata_table = output.get('formatted_metadata_table')
-            logger.debug(
-                f"[SUMMARIZE_RESULTS] Using pre-formatted content for doc {doc_id[:8]}"
-            )
-        else:
-            # Format document with block IDs (for citation mapping)
-            formatted_content, metadata_table, _ = format_document_with_block_ids(output)
-            logger.debug(
-                f"[SUMMARIZE_RESULTS] Formatted doc {doc_id[:8]} in summarize_results"
-            )
+        # Always format here with chained block IDs so the LLM sees globally unique IDs
+        # (no duplicate BLOCK_CITE_ID_1 across chunks). Pre-formatted content from
+        # processing uses starting_block_id=1 per chunk and would collide.
+        formatted_content, metadata_table, next_block_id = format_document_with_block_ids(
+            output, starting_block_id=next_block_id
+        )
+        logger.debug(
+            f"[SUMMARIZE_RESULTS] Formatted doc {doc_id[:8]} in summarize_results (block IDs {next_block_id - len(metadata_table or {})}-{next_block_id - 1})"
+        )
         
         # Format with document header
         doc_header = f"\n### {doc_type}"
@@ -1630,12 +1009,15 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
         
         formatted_outputs_with_ids.append(doc_header + formatted_content)
         
-        # OPTIMIZATION: Build metadata lookup tables incrementally during formatting
-        # Store metadata lookup table for this document (build incrementally)
+        # Build metadata lookup: merge per doc_id so all chunks' blocks are kept (no overwrite).
         if doc_id and metadata_table:
-            metadata_lookup_tables[doc_id] = metadata_table
+            if doc_id in metadata_lookup_tables:
+                metadata_lookup_tables[doc_id].update(metadata_table)
+            else:
+                metadata_lookup_tables[doc_id] = dict(metadata_table)
+            total_blocks = len(metadata_lookup_tables[doc_id])
             logger.info(
-                f"[SUMMARIZE_RESULTS] Formatted doc {doc_id[:8]} with {len(metadata_table)} block IDs"
+                f"[SUMMARIZE_RESULTS] Formatted doc {doc_id[:8]} with {len(metadata_table)} block IDs (total for doc: {total_blocks})"
             )
     
     # Create citation tool with metadata lookup tables

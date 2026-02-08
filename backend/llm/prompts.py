@@ -479,9 +479,9 @@ If user asks about "value" or "valuation", you MUST extract citations for:
 1. Read through ALL document extracts carefully (including pages 28-30+ for valuation scenarios)
 2. Identify EVERY factual claim relevant to the question
 3. For EACH factual claim, call cite_source with:
-   - **block_id**: The BLOCK_CITE_ID from the <BLOCK> tag (e.g., "BLOCK_CITE_ID_42")
+   - **cited_text**: The specific factual claim (required). We use cited_text to locate the exact block in the document; provide the block_id of the block that contains this fact.
+   - **block_id**: The BLOCK_CITE_ID from the <BLOCK> tag that contains this fact (e.g., "BLOCK_CITE_ID_42")
    - **citation_number**: Sequential number starting from 1 (1, 2, 3, 4, 5...)
-   - **cited_text**: The specific factual claim
 
 **EXAMPLES**:
 - Block: <BLOCK id="BLOCK_CITE_ID_42">Content: "Market Value: £Y,YYY,YYY as of DD Month YYYY"</BLOCK>
@@ -678,6 +678,7 @@ def get_final_answer_prompt(
 {value_only_instructions}
 
 **CRITICAL - CITATION MARKERS**:
+- Citation numbers [1], [2], [3]... link to the exact sentence in the source; cite immediately after the fact.
 - Use bracket format [1], [2], [3]... immediately after each fact
 - Write as ONE unit: "£X,XXX,XXX[1]" NOT "£X,XXX,XXX [1]"
 - Match facts to Phase 1 citations - use EXACT citation number from Phase 1 that matches your fact

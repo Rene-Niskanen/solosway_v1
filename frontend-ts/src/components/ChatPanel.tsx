@@ -259,7 +259,7 @@ export const ChatPanel = ({
               style={{ background: 'transparent' }}
             >
             {/* Header */}
-            <div className="px-4 pt-4 pb-2">
+            <div className="px-4 py-3 bg-[#F2F2EE]">
               {archivedChats.length > 0 && (
                 <div className="flex items-center justify-end mb-3">
                   <motion.button
@@ -321,7 +321,7 @@ export const ChatPanel = ({
 
             {/* Chat List */}
             {showChatHistory && (
-              <div className="flex-1 overflow-y-auto overflow-x-hidden px-3 pt-2 pb-3 scrollbar-thin scrollbar-track-transparent scrollbar-thumb-slate-300/50 hover:scrollbar-thumb-slate-400/70">
+              <div className="flex-1 overflow-y-auto overflow-x-hidden px-3 pt-2 pb-3 scrollbar-thin scrollbar-track-transparent scrollbar-thumb-slate-300/50 hover:scrollbar-thumb-slate-400/70 bg-[#F2F2EE]">
                 {/* Agents Heading */}
                 {displayedChats.length > 0 && (
                   <div className="px-0 pt-2 pb-0.5 mb-0.5">
@@ -343,8 +343,8 @@ export const ChatPanel = ({
                         key={chatKey}
                         layout 
                         initial={{
-                          opacity: 0,
-                          x: -20,
+                          opacity: 1,
+                          x: 0,
                           scale: 1
                         }} 
                         animate={{
@@ -362,8 +362,8 @@ export const ChatPanel = ({
                           paddingBottom: 0
                         }} 
                         transition={{
-                          duration: 0.2,
-                          delay: 0.02,
+                          duration: 0,
+                          delay: 0,
                           ease: [0.23, 1, 0.32, 1]
                         }} 
                         onClick={() => handleChatClick(chat.id)} 
@@ -462,7 +462,7 @@ export const ChatPanel = ({
 
             {/* Clear all chats - bottom of panel when chat history is shown */}
             {showChatHistory && baseChats.length > 0 && (
-              <div className="px-4 py-3 border-t border-slate-200/40 flex-shrink-0 relative">
+              <div className="px-4 py-3 border-t border-slate-200/40 flex-shrink-0 relative bg-[#F2F2EE]">
                 <button
                   type="button"
                   onClick={(e) => {
@@ -483,10 +483,10 @@ export const ChatPanel = ({
                       animate={{ opacity: 1, y: 0 }}
                       exit={{ opacity: 0, y: 10 }}
                       transition={{ duration: 0.15 }}
-                      className="absolute bottom-full left-4 right-4 mb-2 p-3 bg-white rounded-lg shadow-lg border border-slate-200"
+                      className="absolute bottom-full left-4 mb-2 px-4 py-3 w-[240px] bg-[#F2F2EF] rounded-lg shadow-lg border border-slate-200/80"
                       onClick={(e) => e.stopPropagation()}
                     >
-                      <p className="text-[11px] text-slate-600 mb-3 text-center">
+                      <p className="text-[11px] text-slate-600 mb-3 text-center leading-tight">
                         Delete all {baseChats.length} chat{baseChats.length !== 1 ? 's' : ''}?
                       </p>
                       <div className="flex gap-2">
@@ -496,7 +496,7 @@ export const ChatPanel = ({
                             e.stopPropagation();
                             setShowClearConfirm(false);
                           }}
-                          className="flex-1 py-1.5 text-[11px] font-medium text-slate-600 hover:bg-slate-100 rounded-md transition-colors border border-slate-200"
+                          className="flex-1 py-1.5 text-[11px] font-medium text-slate-600 hover:bg-slate-200/60 rounded border border-slate-200/80 transition-colors"
                         >
                           Cancel
                         </button>
@@ -508,7 +508,7 @@ export const ChatPanel = ({
                             onNewChat?.();
                             setShowClearConfirm(false);
                           }}
-                          className="flex-1 py-1.5 text-[11px] font-medium text-white bg-red-500 hover:bg-red-600 rounded-md transition-colors"
+                          className="flex-1 py-1.5 text-[11px] font-medium text-white bg-red-500 hover:bg-red-600 rounded transition-colors"
                         >
                           Delete
                         </button>

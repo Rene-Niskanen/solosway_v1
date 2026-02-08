@@ -613,19 +613,13 @@ async def handle_attachment_fast(state: MainWorkflowState) -> MainWorkflowState:
 
 async def handle_citation_query(state: MainWorkflowState) -> MainWorkflowState:
     """
-    ULTRA-FAST citation query handler (~2s).
+    Citation query handler (user asked a follow-up from a citation chip).
     
     When user asks about a specific citation, we already have:
-    - The exact document ID
-    - The exact page number
-    - The exact bounding box
-    - The cited text itself
+    - The exact document ID, page, bbox, and cited text
     
-    So we skip ALL retrieval and do a SINGLE LLM call with just the cited text + user query.
-    This is ~5-10x faster than the normal pipeline.
-    
-    AGENT MODE: When is_agent_mode is True, binds agent action tools (open_document, navigate)
-    to allow the LLM to proactively open the document for the user.
+    We do a single LLM call with the cited text + user query (no retrieval).
+    No automatic document opening: answer only, no agent tools (user preference).
     
     Returns:
         State with final_summary (ready for format_response)
@@ -634,7 +628,6 @@ async def handle_citation_query(state: MainWorkflowState) -> MainWorkflowState:
     from langchain_core.messages import HumanMessage
     from backend.llm.config import config
     from backend.llm.utils.system_prompts import get_system_prompt
-    from backend.llm.tools.agent_actions import create_agent_action_tools
     from datetime import datetime
     
     citation_context = state.get("citation_context", {})
@@ -664,39 +657,16 @@ async def handle_citation_query(state: MainWorkflowState) -> MainWorkflowState:
             }]
         }
     
-    # Create LLM - bind agent tools if in agent mode
-    agent_action_instance = None
+    # Citation chip queries: answer only, no automatic document opening (no agent tools)
+    # User asked to deactivate auto document preview for citation follow-ups
     agent_actions = []
-    
-    if is_agent_mode:
-        # Create agent action tools for proactive document display
-        agent_tools, agent_action_instance = create_agent_action_tools()
-        logger.info(f"⚡ [CITATION_QUERY] Agent mode enabled - binding {len(agent_tools)} agent tools")
-        llm = ChatOpenAI(
-            api_key=config.openai_api_key,
-            model=config.openai_model,
-            temperature=0,
-        ).bind_tools(agent_tools, tool_choice="auto")
-    else:
-        llm = ChatOpenAI(
-            api_key=config.openai_api_key,
-            model=config.openai_model,
-            temperature=0,
-        )
+    llm = ChatOpenAI(
+        api_key=config.openai_api_key,
+        model=config.openai_model,
+        temperature=0,
+    )
     
     system_msg = get_system_prompt('analyze')
-    
-    # Build focused prompt with just the citation context
-    agent_instructions = ""
-    if is_agent_mode:
-        agent_instructions = """
-
-**AGENT MODE INSTRUCTIONS:**
-You have access to the `open_document` tool. Since this is a citation query (the user clicked on a citation):
-- If the user is asking about the content of the citation, CALL open_document to show them the source
-- Use citation_number=1 (this citation) with a reason explaining what they'll see
-- Example: open_document(citation_number=1, reason="Displays the source text the user is asking about")
-"""
     
     human_content = f"""You are answering a question about a specific piece of text from a document.
 
@@ -715,7 +685,7 @@ You have access to the `open_document` tool. Since this is a citation query (the
 4. If the question cannot be answered from the cited text alone, provide relevant general knowledge
 5. Be concise but thorough
 6. Do NOT say you need to search documents - you already have the relevant text above
-7. Include [1] citation marker when referencing the cited text{agent_instructions}
+7. Include [1] citation marker when referencing the cited text
 
 Provide a direct, helpful answer:"""
 
@@ -723,43 +693,6 @@ Provide a direct, helpful answer:"""
         messages = [system_msg, HumanMessage(content=human_content)]
         response = await llm.ainvoke(messages)
         answer = response.content.strip()
-        
-        # Process agent tool calls if in agent mode
-        if is_agent_mode and agent_action_instance:
-            # Check for tool calls in the response
-            if hasattr(response, 'tool_calls') and response.tool_calls:
-                for tool_call in response.tool_calls:
-                    tool_name = tool_call.get('name', '')
-                    tool_args = tool_call.get('args', {})
-                    
-                    if tool_name == 'open_document':
-                        citation_number = tool_args.get('citation_number')
-                        if citation_number is None:
-                            logger.warning(f"⚡ [CITATION_QUERY] LLM called open_document without citation_number - this should not happen!")
-                            citation_number = 1  # Fallback only if truly missing
-                        elif citation_number == 1:
-                            logger.warning(f"⚡ [CITATION_QUERY] LLM used citation_number=1 - verify this matches user's query!")
-                        reason = tool_args.get('reason', 'Displaying source document')
-                        agent_action_instance.open_document(citation_number, reason)
-                        logger.info(f"⚡ [CITATION_QUERY] Agent tool call: open_document({citation_number}, '{reason}')")
-                    elif tool_name == 'navigate_to_property':
-                        property_id = tool_args.get('property_id', '')
-                        reason = tool_args.get('reason', 'Navigating to property')
-                        agent_action_instance.navigate_to_property(property_id, reason)
-                        logger.info(f"⚡ [CITATION_QUERY] Agent tool call: navigate_to_property({property_id}, '{reason}')")
-            
-            agent_actions = agent_action_instance.get_actions()
-            logger.info(f"⚡ [CITATION_QUERY] Collected {len(agent_actions)} agent actions")
-            
-            # If no tools were called but this is a citation query in agent mode,
-            # automatically add an open_document action (the user is asking about a citation)
-            if not agent_actions:
-                logger.info("⚡ [CITATION_QUERY] No agent tool calls - auto-adding open_document for citation query")
-                agent_actions = [{
-                    'action': 'open_document',
-                    'citation_number': 1,
-                    'reason': 'Displaying the source document for this citation'
-                }]
         
         logger.info(f"⚡ [CITATION_QUERY] Generated answer ({len(answer)} chars)")
         

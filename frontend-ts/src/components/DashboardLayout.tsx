@@ -24,7 +24,7 @@ const DashboardLayoutContent = ({
   className
 }: DashboardLayoutProps) => {
   const navigate = useNavigate();
-  const { closeSidebar: closeFilingSidebar } = useFilingSidebar();
+  const { closeSidebar: closeFilingSidebar, isOpen: isFilingSidebarOpen, width: filingSidebarWidth } = useFilingSidebar();
   const { togglePanel: toggleChatPanel, closePanel: closeChatPanel, isOpen: isChatPanelOpen } = useChatPanel();
   const [selectedBackground, setSelectedBackground] = React.useState<string>('default-background');
 
@@ -161,9 +161,9 @@ const DashboardLayoutContent = ({
     // Map should only be visible when explicitly opened via Map button or in search view
     // Views like 'projects', 'analytics', 'settings', etc. should hide the map
     if (viewId !== 'search') {
-      // #region agent log
-      fetch('http://127.0.0.1:7243/ingest/1d8b42de-af74-4269-8506-255a4dc9510b',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'DashboardLayout.tsx:150',message:'Non-search view - clearing sidebar map visibility',data:{viewId,isMapVisibleFromSidebar},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-      // #endregion
+      if (import.meta.env.VITE_LOCAL_DEBUG_INGEST === '1') {
+        fetch('http://127.0.0.1:7243/ingest/1d8b42de-af74-4269-8506-255a4dc9510b',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'DashboardLayout.tsx:150',message:'Non-search view - clearing sidebar map visibility',data:{viewId,isMapVisibleFromSidebar},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+      }
       setIsMapVisibleFromSidebar(false);
       // Don't clear chat map visibility - chat might still be active
     }
@@ -641,6 +641,31 @@ const DashboardLayoutContent = ({
         />
       )}
       
+      {/* FilingSidebar closing toggle rail - visible strip on right edge of FilingSidebar; click closes only FilingSidebar */}
+      {isFilingSidebarOpen && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            closeFilingSidebar();
+          }}
+          aria-label="Close filing sidebar"
+          className="fixed inset-y-0 w-3 group"
+          style={{
+            left: (isSidebarCollapsed ? 12 : 224) + filingSidebarWidth - 12,
+            zIndex: 100002,
+            background: '#F2F2EE',
+            pointerEvents: 'auto',
+            WebkitTapHighlightColor: 'transparent'
+          }}
+        >
+          <div
+            className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity"
+            style={{ background: 'rgba(0, 0, 0, 0.04)' }}
+          />
+        </button>
+      )}
+
       {/* Sidebar - with higher z-index when map is visible */}
       <Sidebar 
         onItemClick={handleViewChange} 

@@ -231,7 +231,7 @@ async def executor_node(state: MainWorkflowState, runnable_config=None) -> MainW
                 label=reasoning_label,
                 detail=reasoning_detail
             )
-    
+        
     # Execute step based on action type
     result = None
     try:
@@ -320,7 +320,6 @@ async def executor_node(state: MainWorkflowState, runnable_config=None) -> MainW
                         label="No relevant information found",
                         detail="The document doesn't contain the requested information"
                     )
-        
         logger.info(f"[EXECUTOR] ✅ Step {resolved_step['id']} completed successfully")
         
     except Exception as e:

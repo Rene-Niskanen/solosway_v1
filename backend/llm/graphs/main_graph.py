@@ -498,19 +498,22 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
         # Citation query (citation click)
         if citation_context or query_type == "citation_query":
             logger.info("[GRAPH] Fast path: citation_query")
-            return "handle_citation_query"
+            return "citation_query"
         
         # Attachment fast mode
         if attached_document and fast_mode:
             logger.info("[GRAPH] Fast path: attachment_fast")
             return "handle_attachment_fast"
         
-        # Chip (document_ids) and everything else: main path (context_manager → planner → executor → responder)
-        # Chip queries no longer use fetch_direct_chunks; they use the same pipeline as normal search
-        if document_ids:
-            logger.info(f"[GRAPH] Chip query (doc_ids present): routing to context_manager (main path)")
-        else:
-            logger.info("[GRAPH] Routing to context_manager (check tokens before agent)")
+        # Direct document (document_ids provided): use fetch_direct_chunks → process_documents → summarize_results
+        # so we get document_outputs and the citation pipeline (block IDs, same-doc fallback). Without this,
+        # we'd go context_manager → planner → executor → responder and never run summarize_results → documents_found: 0.
+        if document_ids and len(document_ids) > 0:
+            logger.info(f"[GRAPH] Direct document path: routing to fetch_direct_chunks (doc_ids={len(document_ids)})")
+            return "fetch_direct_chunks"
+        
+        # Everything else: context_manager → planner → executor → responder
+        logger.info("[GRAPH] Routing to context_manager (check tokens before agent)")
         return "context_manager"
     
     builder.add_conditional_edges(
@@ -535,13 +538,13 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
     builder.add_edge("handle_navigation_action", "format_response")
     logger.debug("Edge: handle_navigation_action -> format_response (INSTANT)")
     
-    # ATTACHMENT FAST PATH: handle → format (ULTRA-FAST ~2s, skips ALL retrieval + processing)
-    builder.add_edge("handle_attachment_fast", "format_response")
-    logger.debug("Edge: handle_attachment_fast -> format_response (ULTRA-FAST)")
+    # Chip-query paths go directly to END so response formatting matches main path (summarize_results → END).
+    # Skipping format_response keeps the same response text structure as normal (no extra LLM formatting pass).
+    builder.add_edge("handle_attachment_fast", END)
+    logger.debug("Edge: handle_attachment_fast -> END (same formatting as normal response)")
     
-    # CITATION PATH: handle → format (ULTRA-FAST ~2s, skips ALL retrieval + processing)
-    builder.add_edge("handle_citation_query", "format_response")
-    logger.debug("Edge: handle_citation_query -> format_response (ULTRA-FAST)")
+    builder.add_edge("handle_citation_query", END)
+    logger.debug("Edge: handle_citation_query -> END (same formatting as normal response)")
 
     # DIRECT PATH: fetch → process → summarize (FASTEST ~2s)
     builder.add_edge("fetch_direct_chunks", "process_documents")

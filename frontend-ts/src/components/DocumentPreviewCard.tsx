@@ -283,7 +283,7 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({
           flexDirection: 'column',
           marginTop: '6px',
           width: '100%',
-          maxWidth: '240px',
+          maxWidth: '380px',
           borderRadius: '6px',
           border: `1px solid ${isHovered || isExpanded ? 'rgba(0, 0, 0, 0.12)' : 'rgba(0, 0, 0, 0.08)'}`,
           backgroundColor: 'transparent',
@@ -518,7 +518,7 @@ export const StackedDocumentPreviews: React.FC<{
         flexDirection: 'column',
         marginTop: '4px',
         width: '100%',
-        maxWidth: '240px',
+        maxWidth: '380px',
         gap: '4px' // Subtle space between stacked cards
       }}
     >

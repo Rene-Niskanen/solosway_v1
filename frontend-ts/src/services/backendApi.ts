@@ -326,6 +326,8 @@ class BackendApiService {
       bbox: { left: number; top: number; width: number; height: number };
       cited_text: string;
       original_filename: string;
+      block_id?: string;
+      source_message_text?: string;
     } | null,
     responseMode?: 'fast' | 'detailed' | 'full', // NEW: Response mode for file attachments
     attachmentContext?: { // NEW: Context from attached files (extracted text)
@@ -1155,6 +1157,39 @@ class BackendApiService {
         };
     }
   }
+
+  /**
+   * Get key facts and summary for a document for FileViewModal.
+   */
+  async getDocumentKeyFacts(documentId: string): Promise<{
+    success: boolean;
+    data?: { key_facts: Array<{ label: string; value: string }>; summary?: string | null };
+    error?: string;
+  }> {
+    try {
+      const response = await this.fetchApi<{
+        key_facts?: Array<{ label: string; value: string }>;
+        summary?: string | null;
+      }>(`/api/documents/${documentId}/key-facts`);
+      if (response?.success && response?.data) {
+        const data = response.data as {
+          key_facts?: Array<{ label: string; value: string }>;
+          summary?: string | null;
+        };
+        return {
+          success: true,
+          data: { key_facts: data.key_facts ?? [], summary: data.summary ?? null },
+        };
+      }
+      return { success: false, error: 'No data' };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error occurred',
+      };
+    }
+  }
+
   /**
    * New upload method using presigned URLs (recommended for large files)
    */

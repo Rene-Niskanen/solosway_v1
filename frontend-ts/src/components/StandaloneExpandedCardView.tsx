@@ -21,6 +21,9 @@ import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 
 pdfjs.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
+/** Padding of the pages container (top/left/right/bottom) - must match the scroll content layout for BBOX centering. */
+const PAGES_CONTAINER_PADDING = 64;
+
 interface StandaloneExpandedCardViewProps {
   docId: string;
   filename: string;
@@ -33,22 +36,28 @@ interface StandaloneExpandedCardViewProps {
     block_content?: string;
     original_filename?: string;
   };
+  /** When this changes, we reset scroll-to-highlight so re-clicking the same citation re-scrolls. */
+  scrollRequestId?: number;
   onClose: () => void;
   chatPanelWidth?: number; // Width of the chat panel (0 when closed)
   sidebarWidth?: number; // Width of the sidebar
   onResizeStart?: (e: React.MouseEvent) => void; // Callback when left edge drag starts
   isResizing?: boolean; // Whether resize is in progress (for cursor styling)
+  /** When true, open in fullscreen overlay (e.g. from file pop-up "View Document") and use higher z-index */
+  initialFullscreen?: boolean;
 }
 
 export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProps> = ({
   docId,
   filename,
   highlight,
+  scrollRequestId,
   onClose,
   chatPanelWidth = 0,
   sidebarWidth = 56,
   onResizeStart,
-  isResizing = false
+  isResizing = false,
+  initialFullscreen = false,
 }) => {
   // Local state for instant close - hides component immediately before parent state updates
   const [isLocallyHidden, setIsLocallyHidden] = useState(false);
@@ -81,7 +90,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
   const [blobType, setBlobType] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(initialFullscreen);
   // Start with filename prop, but always fetch the real name from backend
   // If the filename is a generic fallback like "document.pdf", don't use it - wait for the real name
   const [displayFilename, setDisplayFilename] = useState<string>(
@@ -1055,8 +1064,8 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
           scale = baseScale;
         }
         
-        // OPTIMIZATION: Render citation/highlight page FIRST for instant display
-        // Then render remaining pages in background
+        // Render pages 1..highlightPage first so scroll-to-highlight can run once with correct layout (no correction when more pages load).
+        // Then render remaining pages.
         const newRenderedPages = new Map<number, { canvas: HTMLCanvasElement; dimensions: { width: number; height: number } }>();
         const highlightPage = highlight?.bbox?.page || 1;
         
@@ -1099,30 +1108,26 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
           }
         };
         
-        // STEP 1: Render highlight page FIRST and display immediately
-        // Scroll positioning is handled by useLayoutEffect (runs before paint)
-        if (highlightPage >= 1 && highlightPage <= totalPages) {
-          const highlightPageData = await renderPage(highlightPage);
-          if (cancelled) return;
-          
-          if (highlightPageData) {
-            newRenderedPages.set(highlightPage, highlightPageData);
-            // Show highlight page immediately - useLayoutEffect will position scroll before paint
-            setRenderedPages(new Map(newRenderedPages));
-          }
+        // STEP 1: Render pages 1 through highlightPage (in order) so we have full layout for one-time scroll
+        const from = 1;
+        const to = Math.min(Math.max(1, highlightPage), totalPages);
+        for (let pageNum = from; pageNum <= to; pageNum++) {
+          if (cancelled) break;
+          const pageData = await renderPage(pageNum);
+          if (cancelled) break;
+          if (pageData) newRenderedPages.set(pageNum, pageData);
+        }
+        if (!cancelled && newRenderedPages.size > 0) {
+          setRenderedPages(new Map(newRenderedPages));
         }
         
         // STEP 2: Render remaining pages in background
         for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
           if (cancelled) break;
-          if (pageNum === highlightPage) continue; // Already rendered
-          
+          if (newRenderedPages.has(pageNum)) continue;
           const pageData = await renderPage(pageNum);
           if (cancelled) break;
-          
-          if (pageData) {
-            newRenderedPages.set(pageNum, pageData);
-          }
+          if (pageData) newRenderedPages.set(pageNum, pageData);
         }
         
         // STEP 3: Final update with all pages
@@ -1134,13 +1139,13 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
           prevScaleRef.current = scale;
           
           // Restore viewport center after re-render completes.
-          // IMPORTANT: Don't fight the INITIAL citation jump-to-bbox.
-          // Once we've already jumped to the bbox, resume normal resize preservation.
+          // IMPORTANT: Never overwrite scroll when we have a citation highlight - the scroll-to-highlight
+          // effect sets the position we want; viewport restore uses savedScrollTop from start of render
+          // (often 0), which would "shoot" the view away from the citation.
           const highlightKey = getHighlightKey();
-          const shouldSkipViewportRestoreForInitialHighlightJump =
-            !!highlightKey && didAutoScrollToHighlightRef.current !== highlightKey;
+          const shouldSkipViewportRestoreForHighlight = !!highlightKey;
 
-          if (!shouldSkipViewportRestoreForInitialHighlightJump && oldScale > 0 && oldScale !== scale && savedScrollHeight > 0) {
+          if (!shouldSkipViewportRestoreForHighlight && oldScale > 0 && oldScale !== scale && savedScrollHeight > 0) {
             // Minimal delay for faster adjustment - single RAF is enough
             requestAnimationFrame(() => {
               if (pdfWrapperRef.current && !cancelled) {
@@ -1177,69 +1182,109 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
   }, [pdfDocument, docId, totalPages, baseScale, containerWidth, getCachedRenderedPage, setCachedRenderedPage, getHighlightKey, manualZoom, isFullscreen]);
 
 
-  // Reset scroll tracking when document changes
-  useEffect(() => {
-    didAutoScrollToHighlightRef.current = null;
-  }, [docId]);
-
-  // Auto-scroll to highlight when pages before it are added - position BBOX at ~35% from top
-  // Uses useLayoutEffect to run BEFORE browser paint, preventing visible twitch when pages are added
-  const didAutoScrollToHighlightRef = useRef<string | null>(null);
+  // Reset scroll tracking and "initial scroll applied" when document, highlight, or scroll request changes.
+  // scrollRequestId changes when user re-clicks a citation so we re-apply scroll-to-highlight.
+  // Must run in useLayoutEffect so it runs before the scroll effect below (same commit).
   React.useLayoutEffect(() => {
-    if (highlight && highlight.fileId === docId && highlight.bbox && renderedPages.size > 0 && pdfWrapperRef.current) {
-      const pageNum = highlight.bbox.page;
-      const pageData = renderedPages.get(pageNum);
-      
-      if (pageData) {
-        // Include page count in key so we re-scroll when pages before highlight are added
-        // This ensures proper positioning after progressive page loading
-        const pagesBeforeHighlight = Array.from(renderedPages.keys()).filter(n => n < pageNum).length;
-        const baseKey = getHighlightKey() || `${docId}:${pageNum}`;
-        const key = `${baseKey}:${pagesBeforeHighlight}`;
-        if (didAutoScrollToHighlightRef.current === key) return; // prevent repeated jittery scrolls
-        const expandedBbox = highlight.bbox;
-        
-        // Calculate the vertical position of the BBOX center on the page
-        const bboxTop = expandedBbox.top * pageData.dimensions.height;
-        const bboxHeight = expandedBbox.height * pageData.dimensions.height;
-        const bboxCenterY = bboxTop + (bboxHeight / 2);
-        
-        // Calculate the horizontal position of the BBOX center on the page
-        const bboxLeft = expandedBbox.left * pageData.dimensions.width;
-        const bboxWidth = expandedBbox.width * pageData.dimensions.width;
-        const bboxCenterX = bboxLeft + (bboxWidth / 2);
-        
-        // Calculate the offset from the top of the document to the target page
-        const pageOffset = Array.from(renderedPages.entries())
-          .filter(([num]) => num < pageNum)
-          .reduce((sum, [, data]) => sum + data.dimensions.height + 16, 0); // +16 for margin-bottom
-        
-        // Calculate the absolute position of the BBOX center in the document
-        const bboxCenterAbsoluteY = pageOffset + bboxCenterY;
-        
-        // Get viewport dimensions
-        const viewportHeight = pdfWrapperRef.current.clientHeight;
-        const viewportWidth = pdfWrapperRef.current.clientWidth;
-        
-        // Position BBOX at 35% from top (65% up the page) instead of center
-        // This keeps more context visible below the citation
-        const scrollTop = bboxCenterAbsoluteY - (viewportHeight * 0.35);
-        
-        // Center horizontally
-        const scrollLeft = bboxCenterX - (viewportWidth / 2);
-        
-        // SYNCHRONOUS scroll adjustment - no RAF needed since useLayoutEffect runs before paint
-        // This prevents the visible "twitch" when pages are added before the highlight
-        const maxScrollTop = Math.max(0, pdfWrapperRef.current.scrollHeight - pdfWrapperRef.current.clientHeight);
-        const maxScrollLeft = Math.max(0, pdfWrapperRef.current.scrollWidth - pdfWrapperRef.current.clientWidth);
-        
-        pdfWrapperRef.current.scrollTop = Math.max(0, Math.min(scrollTop, maxScrollTop));
-        pdfWrapperRef.current.scrollLeft = Math.max(0, Math.min(scrollLeft, maxScrollLeft));
-        
-        didAutoScrollToHighlightRef.current = key;
-      }
+    didAutoScrollToHighlightRef.current = null;
+    setInitialScrollApplied(false);
+  }, [docId, highlight?.fileId, highlight?.bbox?.page, scrollRequestId]);
+
+  // Pre-position scroll so the citation is centered the moment the preview opens (no visible correction).
+  const didAutoScrollToHighlightRef = useRef<string | null>(null);
+  const [initialScrollApplied, setInitialScrollApplied] = useState(false);
+
+  const applyScrollToHighlight = useCallback((el: HTMLDivElement) => {
+    if (!highlight || highlight.fileId !== docId || !highlight.bbox) return false;
+    const pageNum = highlight.bbox.page;
+    const pageData = renderedPages.get(pageNum);
+    if (!pageData) return false;
+    const viewportHeight = el.clientHeight;
+    const scrollHeight = el.scrollHeight;
+    if (viewportHeight <= 0 || scrollHeight <= 0) return false;
+
+    const expandedBbox = highlight.bbox;
+    const bboxTop = expandedBbox.top * pageData.dimensions.height;
+    const bboxHeight = expandedBbox.height * pageData.dimensions.height;
+    const bboxCenterY = bboxTop + (bboxHeight / 2);
+    const bboxLeft = expandedBbox.left * pageData.dimensions.width;
+    const bboxWidth = expandedBbox.width * pageData.dimensions.width;
+    const bboxCenterX = bboxLeft + (bboxWidth / 2);
+    const pageOffset = Array.from(renderedPages.entries())
+      .filter(([num]) => num < pageNum)
+      .reduce((sum, [, data]) => sum + data.dimensions.height + 16, 0);
+    // Include top padding so BBOX position matches layout
+    const bboxCenterAbsoluteY = PAGES_CONTAINER_PADDING + pageOffset + bboxCenterY;
+    const viewportWidth = el.clientWidth;
+    // Position BBOX at 35% from top (keeps more context visible below the citation)
+    const scrollTop = bboxCenterAbsoluteY - viewportHeight * 0.35;
+    // Include left padding so BBOX lands on horizontal center of viewport
+    const contentCenterX = PAGES_CONTAINER_PADDING + bboxCenterX;
+    const scrollLeft = contentCenterX - viewportWidth * 0.5;
+    const maxScrollTop = Math.max(0, scrollHeight - viewportHeight);
+    const maxScrollLeft = Math.max(0, el.scrollWidth - viewportWidth);
+    el.scrollTop = Math.max(0, Math.min(scrollTop, maxScrollTop));
+    el.scrollLeft = Math.max(0, Math.min(scrollLeft, maxScrollLeft));
+    return true;
+  }, [highlight, docId, renderedPages]);
+
+  React.useLayoutEffect(() => {
+    if (!highlight || highlight.fileId !== docId || !highlight.bbox || !pdfWrapperRef.current) return;
+    const pageNum = highlight.bbox.page;
+    const pageData = renderedPages.get(pageNum);
+    if (!pageData) return;
+
+    const highlightKey = getHighlightKey();
+    if (didAutoScrollToHighlightRef.current === highlightKey) return;
+
+    for (let i = 1; i <= pageNum; i++) {
+      if (!renderedPages.has(i)) return;
     }
-  }, [highlight, docId, renderedPages, getHighlightKey]);
+
+    const tryApply = (): boolean => {
+      const wrapper = pdfWrapperRef.current;
+      if (!wrapper) return false;
+      void wrapper.offsetHeight; // force layout
+      return applyScrollToHighlight(wrapper);
+    };
+
+    if (tryApply()) {
+      didAutoScrollToHighlightRef.current = highlightKey;
+      setInitialScrollApplied(true);
+      return;
+    }
+    // Container had no dimensions yet: retry a few frames so we apply scroll before first paint
+    const maxRetries = 3;
+    let attempt = 0;
+    let rafId: number;
+    const retry = () => {
+      attempt++;
+      if (didAutoScrollToHighlightRef.current === highlightKey) return;
+      const ok = tryApply();
+      if (ok) {
+        didAutoScrollToHighlightRef.current = highlightKey;
+        setInitialScrollApplied(true);
+        return;
+      }
+      if (attempt < maxRetries) {
+        rafId = requestAnimationFrame(retry);
+      } else {
+        setInitialScrollApplied(true); // show content even if scroll failed so we don't stay hidden
+      }
+    };
+    rafId = requestAnimationFrame(retry);
+    return () => cancelAnimationFrame(rafId);
+  }, [highlight, docId, renderedPages, getHighlightKey, applyScrollToHighlight]);
+
+  // When opening without a highlight (e.g. from "Analyse with AI"), focus the scroll container after layout
+  // so wheel/scroll events target it and don't get lost or applied to the wrong element.
+  useEffect(() => {
+    if (highlight || !docId) return;
+    const t = setTimeout(() => {
+      pdfWrapperRef.current?.focus({ preventScroll: true });
+    }, 200);
+    return () => clearTimeout(t);
+  }, [docId, highlight]);
 
   const isPDF = blobType === 'application/pdf';
   const isImage = blobType?.startsWith('image/');
@@ -1272,12 +1317,33 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
   const agentSidebarWidth = isChatHistoryPanelOpen ? chatHistoryPanelWidth : 0;
   const availableWidth = typeof window !== 'undefined' ? window.innerWidth - sidebarWidth - agentSidebarWidth : 0;
   
+  // When doc opens 50/50, parent may report stale chatPanelWidth for 1–2 frames. Use expected 50% during a short window so opening width doesn't bug out.
+  const docOpenTimeRef = useRef<number>(0);
+  useEffect(() => {
+    if (!isFullscreen) docOpenTimeRef.current = Date.now();
+    return () => { docOpenTimeRef.current = 0; };
+  }, [docId, isFullscreen]);
+  const CORRECT_STALE_MS = 200;
+
   const { panelWidth, leftPosition } = (() => {
     // Minimum width for document preview
     const minDocPreviewWidth = CHAT_PANEL_WIDTH.DOC_PREVIEW_MIN;
-    // Round chatPanelWidth for consistent positioning
-    const roundedChatPanelWidth = Math.round(chatPanelWidth);
     const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1920;
+    // Expected chat width in 50/50 split (matches SideChatPanel's calculateChatPanelWidth when doc preview is open)
+    const expected50ChatWidth = Math.round((viewportWidth - sidebarWidth - agentSidebarWidth) / 2);
+    const roundedProp = Math.round(chatPanelWidth);
+    const isWithinStaleWindow = docOpenTimeRef.current > 0 && Date.now() - docOpenTimeRef.current < CORRECT_STALE_MS;
+    // Stale: parent still reporting fullscreen width (much larger than 50%). Don't correct 0 so we don't treat closed chat as 50/50.
+    const propLooksStale = roundedProp > expected50ChatWidth + 100;
+    // Snap to 50% when within 2px to avoid 1px rounding jitter and glitchy re-renders at exactly 50/50
+    const isNear50 = Math.abs(roundedProp - expected50ChatWidth) <= 2;
+    const effectiveChatWidth =
+      isWithinStaleWindow && propLooksStale
+        ? expected50ChatWidth
+        : isNear50
+          ? expected50ChatWidth
+          : roundedProp;
+    const roundedChatPanelWidth = effectiveChatWidth;
     
     // CORRECT LAYOUT: Sidebar (far left) | Chat Panel (left) | Document Preview (RIGHT)
     // Document preview is positioned AFTER sidebar AND chat panel
@@ -1290,10 +1356,10 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
     const docLeft = Math.min(naturalDocLeft, maxDocLeft);
     
     // Calculate available width for document preview based on capped left position
-    const availableWidth = viewportWidth - docLeft - agentSidebarWidth - 12;
+    const availableDocWidth = viewportWidth - docLeft - agentSidebarWidth - 12;
     
     // Enforce minimum width for document preview
-    const finalWidth = Math.max(availableWidth, minDocPreviewWidth);
+    const finalWidth = Math.max(availableDocWidth, minDocPreviewWidth);
     
     return {
       panelWidth: Math.round(finalWidth),
@@ -1323,7 +1389,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
       animate={{ opacity: 1, scale: 1 }}
       exit={{ opacity: 0 }}
       transition={{ duration: 0 }} // Instant close for responsive feel
-      className={isFullscreen ? "fixed inset-0 bg-white flex flex-col z-[10000]" : "bg-white flex flex-col z-[9999]"}
+      className={isFullscreen ? `fixed inset-0 bg-white flex flex-col ${initialFullscreen ? 'z-[100010]' : 'z-[10000]'}` : "bg-white flex flex-col z-[9999]"}
       style={{
         ...(isFullscreen ? {
           position: 'fixed',
@@ -1345,6 +1411,8 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
           // Top and bottom margins for rounded corner effect
           top: '12px',
           bottom: '12px',
+          // Explicit height so flex child (scroll area) gets correct height at opening width (fixes scroll at narrow width)
+          height: 'calc(100vh - 24px)',
           // Enforce minimum width as CSS fallback
           minWidth: `${CHAT_PANEL_WIDTH.DOC_PREVIEW_MIN}px`,
           maxWidth: `calc(100vw - ${sidebarWidth + agentSidebarWidth + 24}px)`, // Never exceed available space
@@ -1679,12 +1747,13 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
         )}
       </div>
 
-      {/* Content */}
+      {/* Content - tabIndex allows programmatic focus so scroll/wheel targets this container after opening from e.g. Analyse with AI */}
       <div 
         className="bg-gray-50" 
         ref={pdfWrapperRef}
+        tabIndex={-1}
         style={{
-          flex: 1,
+          flex: '1 1 0%', // flex-basis 0 so this column gets correct height at opening width (fixes scroll when narrow)
           minHeight: 0, // Critical: allows flex item to shrink and enable scrolling
           overflow: 'auto',
           borderBottomLeftRadius: isFullscreen ? 0 : '16px',
@@ -1707,11 +1776,11 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
                   display: 'flex',
                   flexDirection: 'column',
                   alignItems: 'center',
-                  padding: '64px',
-                  // Transform is applied directly via DOM manipulation during pinch gestures
-                  // This avoids React re-renders for smooth 60fps performance
+                  padding: `${PAGES_CONTAINER_PADDING}px`,
                   transformOrigin: 'top center',
-                  willChange: isZooming ? 'transform' : 'auto'
+                  willChange: isZooming ? 'transform' : 'auto',
+                  // Pre-position: hide content until scroll is set so first paint shows citation centered (no correction)
+                  visibility: highlight && !initialScrollApplied ? 'hidden' : 'visible'
                 }}
               >
                 {Array.from(renderedPages.entries()).sort(([a], [b]) => a - b).map(([pageNum, { canvas, dimensions }]) => (

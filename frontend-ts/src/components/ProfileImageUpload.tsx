@@ -1,8 +1,8 @@
 "use client";
 
 import * as React from "react";
-import { X, Upload, Loader2, Trash2 } from "lucide-react";
-import { Dialog, DialogContent } from "@/components/ui/dialog";
+import { Upload, Loader2, Trash2 } from "lucide-react";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { validateImageFile, validateImageDimensions } from "@/utils/profileValidation";
 
 interface ProfileImageUploadProps {
@@ -132,7 +132,9 @@ export const ProfileImageUpload: React.FC<ProfileImageUploadProps> = ({
           maxWidth: '500px',
           boxShadow: '0 4px 20px rgba(0, 0, 0, 0.08)',
         }}
+        aria-describedby={undefined}
       >
+        <DialogTitle className="sr-only">{title}</DialogTitle>
         {/* Header */}
         <div style={{
           borderBottom: '1px solid #E9E9EB',
@@ -148,22 +150,6 @@ export const ProfileImageUpload: React.FC<ProfileImageUploadProps> = ({
             }}>
               {title}
             </h2>
-            <button
-              onClick={handleCancel}
-              style={{
-                padding: '4px',
-                backgroundColor: 'transparent',
-                border: 'none',
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                color: '#6C7180',
-              }}
-              title="Close"
-            >
-              <X className="w-4 h-4" />
-            </button>
           </div>
         </div>
 

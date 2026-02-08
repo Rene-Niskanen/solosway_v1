@@ -816,12 +816,10 @@ def query_documents_stream():
                 # Follow-up queries should still show reasoning steps for an agentic experience
                 # The keywords were too broad ('why', 'how', 'can you') and matched most questions
                 
-                # Skip reasoning steps ONLY for citation queries (user clicked on citation text)
+                # Citation queries still show reasoning steps (Planning next moves, then Preparing response)
                 is_fast_path = is_citation_query
                 
                 if is_fast_path:
-                    # Skip initial reasoning step - go straight to LLM (citation queries only)
-                    logger.info("⚡ [CITATION_QUERY] Skipping initial reasoning step - ultra-fast path")
                     timing.mark("intent_extracted")
                 else:
                     # Detect if this is a navigation query (similar to should_route logic)
@@ -848,17 +846,17 @@ def query_documents_stream():
                             is_navigation_query = has_navigation_intent or has_pin_intent
                     
                     timing.mark("intent_extracted")
-                    
-                    # Step (1): Planning next moves (normal retrieval reasoning flow)
-                    initial_reasoning = {
-                        'type': 'reasoning_step',
-                        'step': 'planning_next_moves',
-                        'action_type': 'planning',
-                        'message': 'Planning next moves',
-                        'details': {}
-                    }
-                    yield f"data: {json.dumps(initial_reasoning)}\n\n"
-                    logger.debug("🟡 [REASONING] Emitted step (1): Planning next moves")
+                
+                # Step (1): Planning next moves (all queries including citation - immediate feedback)
+                initial_reasoning = {
+                    'type': 'reasoning_step',
+                    'step': 'planning_next_moves',
+                    'action_type': 'planning',
+                    'message': 'Planning next moves',
+                    'details': {}
+                }
+                yield f"data: {json.dumps(initial_reasoning)}\n\n"
+                logger.debug("🟡 [REASONING] Emitted step (1): Planning next moves")
                 
                 # Detect if user wants agent to perform UI actions (show me, save, navigate)
                 action_intent = detect_action_intent(query)
@@ -997,9 +995,8 @@ def query_documents_stream():
                         # Stream events from graph execution and track state
                         # IMPORTANT: astream_events executes the graph and emits events as nodes run
                         # We MUST emit reasoning steps immediately when nodes start
-                        # EXCEPTION: Citation queries skip reasoning steps for ultra-fast response
                         if is_fast_path:
-                            logger.info("⚡ [CITATION_QUERY] Skipping reasoning step emissions - ultra-fast path")
+                            logger.info("🟡 [REASONING] Citation path - emitting Planning next moves + Preparing response")
                         else:
                             logger.info("🟡 [REASONING] Starting to stream events and emit reasoning steps...")
                         final_result = None
@@ -1071,9 +1068,19 @@ def query_documents_stream():
                                     timing.mark(f"node_{node_name}_start")
                                 
                                 # Capture node start events for reasoning steps - EMIT IMMEDIATELY
-                                # SKIP for citation queries - ultra-fast path, no reasoning steps
-                                if event_type == "on_chain_start" and not is_fast_path:
-                                    if node_name in node_messages and node_name not in processed_nodes:
+                                if event_type == "on_chain_start":
+                                    if is_fast_path and node_name == "handle_citation_query":
+                                        # Citation path: replace "Planning next moves" with "Preparing response"
+                                        reasoning_data = {
+                                            'type': 'reasoning_step',
+                                            'step': 'handle_citation_query',
+                                            'action_type': 'analysing',
+                                            'message': 'Preparing response',
+                                            'details': {}
+                                        }
+                                        yield f"data: {json.dumps(reasoning_data)}\n\n"
+                                        logger.info("🟡 [REASONING] ✅ Emitted citation step: Preparing response")
+                                    elif not is_fast_path and node_name in node_messages and node_name not in processed_nodes:
                                         processed_nodes.add(node_name)
                                         reasoning_data = {
                                             'type': 'reasoning_step',
@@ -1452,6 +1459,7 @@ def query_documents_stream():
                                                     citation_filename = doc_filename_map.get(citation_doc_id, '')
                                                     citation_data = {
                                                         'doc_id': citation_doc_id,
+                                                        'document_id': citation_doc_id,  # Frontend download/panel may expect document_id
                                                         'page': citation_page,
                                                         'bbox': citation_bbox,  # Bbox now has correct page number
                                                         'method': citation.get('method', 'block-id-lookup'),
@@ -1471,6 +1479,12 @@ def query_documents_stream():
                                                     )
                                                     
                                                     processed_citations[citation_num_str] = citation_data
+                                                    if citation_num_str == '1':
+                                                        logger.info(
+                                                            "[CITATION_DEBUG] views: citation 1 -> block_id=%s doc_id=%s page=%s cited_text=%s",
+                                                            citation.get('block_id'), (citation_doc_id or '')[:12], citation_page,
+                                                            (citation.get('cited_text') or '')[:100]
+                                                        )
                                                     
                                                     # #region agent log
                                                     try:
@@ -1958,6 +1972,7 @@ def query_documents_stream():
                                 # Build citation map entry for frontend
                                 citations_map_for_frontend[citation_num] = {
                                     'doc_id': doc_id,
+                                    'document_id': doc_id,  # Frontend download/panel may expect document_id
                                     'page': page,
                                     'bbox': bbox,
                                     'method': citation_data.get('method', 'block-id-lookup'),
@@ -2072,6 +2087,7 @@ def query_documents_stream():
                                 # Build citation map entry for frontend
                                 citations_map_for_frontend[citation_num] = {
                                     'doc_id': doc_id,
+                                    'document_id': doc_id,  # Frontend download/panel may expect document_id
                                     'original_filename': original_filename,  # NEW: Include filename for frontend
                                     'page': page,
                                     'bbox': bbox,
@@ -2133,6 +2149,7 @@ def query_documents_stream():
                                     
                                     citations_map_for_frontend[citation_num] = {
                                         'doc_id': doc_id,
+                                        'document_id': doc_id,  # Frontend download/panel may expect document_id
                                         'original_filename': original_filename,  # Include filename for frontend
                                         'page': page,
                                         'bbox': bbox,
@@ -5010,6 +5027,147 @@ def get_document_processing_history(document_id):
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+def _get_document_text_from_vectors(document_id):
+    """Fallback: get document text by concatenating chunk_text from document_vectors (same as sections/retrieval)."""
+    try:
+        supabase = get_supabase_client()
+        result = supabase.table('document_vectors').select('chunk_text, chunk_index').eq(
+            'document_id', str(document_id)
+        ).order('chunk_index', desc=False).execute()
+        if not result.data:
+            return ''
+        parts = [row.get('chunk_text') or '' for row in result.data if row.get('chunk_text')]
+        return '\n'.join(parts).strip()
+    except Exception as e:
+        logger.debug("Key facts: document_vectors fallback failed: %s", e)
+        return ''
+
+
+def _get_document_text_for_key_facts(document, doc_summary, document_id=None):
+    """Get full document text from document row, document_summary, or document_vectors (same sources as sections/chunking)."""
+    text = (document.get('parsed_text') or '').strip()
+    if not text and isinstance(doc_summary, dict):
+        text = (doc_summary.get('reducto_parsed_text') or '').strip()
+    if not text and isinstance(doc_summary, dict):
+        chunks = doc_summary.get('reducto_chunks') or []
+        parts = []
+        for ch in chunks:
+            if isinstance(ch, dict):
+                part = ch.get('content') or ch.get('embed') or ch.get('text') or ''
+                if part and isinstance(part, str):
+                    parts.append(part)
+        if parts:
+            text = '\n'.join(parts).strip()
+    if not text and document_id:
+        text = _get_document_text_from_vectors(document_id)
+    return text or ''
+
+
+# Max length for key fact value in UI (match FileViewModal KEY_FACT_VALUE_MAX_LENGTH)
+_KEY_FACT_VALUE_MAX_LENGTH = 60
+
+
+def _build_key_facts_from_document(document, document_id=None):
+    """Build key_facts list from document (Supabase row with document_summary). Returns list of {label, value}.
+    Uses document_summary (address, type, parties) first; then extracts key facts from document text
+    using the same logic as sections/citation (extract_key_facts_from_text). Text is taken from
+    parsed_text, document_summary.reducto_parsed_text, document_summary.reducto_chunks, or document_vectors.
+    """
+    doc_summary = document.get('document_summary') or {}
+    if isinstance(doc_summary, str):
+        try:
+            doc_summary = json.loads(doc_summary)
+        except Exception:
+            doc_summary = {}
+    if doc_summary is None:
+        doc_summary = {}
+    facts = []
+    # Address / location (generic for any document type)
+    addr = doc_summary.get('extracted_address') or doc_summary.get('normalized_address') or doc_summary.get('filename_address')
+    if addr and str(addr).strip():
+        facts.append({'label': 'Address', 'value': str(addr).strip()})
+    # Document type (from summary or top-level document)
+    doc_type = doc_summary.get('classification_type') or document.get('classification_type')
+    if doc_type and str(doc_type).strip():
+        facts.append({'label': 'Document type', 'value': str(doc_type).replace('_', ' ').strip()})
+    # Party names (e.g. client, tenant) - can be dict or list
+    party_names = doc_summary.get('party_names')
+    if isinstance(party_names, dict):
+        for role, name in party_names.items():
+            if name and str(name).strip():
+                facts.append({'label': role.replace('_', ' ').title(), 'value': str(name).strip()})
+    elif isinstance(party_names, list):
+        for item in party_names:
+            if isinstance(item, dict) and item.get('name'):
+                label = item.get('role', 'Party').replace('_', ' ').title()
+                facts.append({'label': label, 'value': str(item['name']).strip()})
+            elif isinstance(item, str) and item.strip():
+                facts.append({'label': 'Party', 'value': item.strip()})
+
+    # Same as sections logic: extract key facts from document text (values, dates, names) when we have parsed content
+    existing_labels = {f['label'].lower() for f in facts}
+    doc_text = _get_document_text_for_key_facts(document, doc_summary, document_id=document_id)
+    if doc_text:
+        try:
+            from backend.llm.nodes.responder_node import extract_key_facts_from_text
+            text_facts = extract_key_facts_from_text(doc_text)
+            for tf in text_facts:
+                label = (tf.get('label') or 'Fact').strip()
+                if not label:
+                    continue
+                value = (tf.get('text') or '').strip()
+                if not value:
+                    continue
+                if label.lower() in existing_labels:
+                    continue
+                existing_labels.add(label.lower())
+                if len(value) > _KEY_FACT_VALUE_MAX_LENGTH:
+                    value = value[: _KEY_FACT_VALUE_MAX_LENGTH - 1].rstrip() + '…'
+                facts.append({'label': label, 'value': value})
+        except Exception as e:
+            logger.warning("Key facts from text extraction failed: %s", e)
+    elif document_id:
+        logger.info("Key facts: no document text available for document_id=%s (parsed_text, reducto_parsed_text, reducto_chunks, document_vectors all empty or missing)", str(document_id)[:8])
+
+    return facts
+
+
+@views.route('/api/documents/<uuid:document_id>/key-facts', methods=['GET'])
+@login_required
+def get_document_key_facts(document_id):
+    """Get key facts for a document (address, type, parties) from document_summary."""
+    try:
+        doc_service = SupabaseDocumentService()
+        document = doc_service.get_document_by_id(str(document_id))
+        if not document:
+            return jsonify({'success': False, 'error': 'Document not found'}), 404
+        doc_business_id = document.get('business_id')
+        doc_business_uuid = document.get('business_uuid')
+        user_business_id = str(current_user.business_id) if current_user.business_id else None
+        user_company_name = current_user.company_name
+        is_authorized = (
+            (doc_business_id and user_company_name and str(doc_business_id) == str(user_company_name)) or
+            (doc_business_uuid and user_business_id and str(doc_business_uuid) == user_business_id) or
+            (doc_business_id and user_business_id and str(doc_business_id) == user_business_id)
+        )
+        if not is_authorized:
+            return jsonify({'success': False, 'error': 'Unauthorized'}), 403
+        key_facts = _build_key_facts_from_document(document, document_id=str(document_id))
+        doc_summary = document.get('document_summary') or {}
+        if isinstance(doc_summary, str):
+            try:
+                doc_summary = json.loads(doc_summary)
+            except Exception:
+                doc_summary = {}
+        if doc_summary is None:
+            doc_summary = {}
+        summary = doc_summary.get('summary') or None
+        return jsonify({'success': True, 'data': {'key_facts': key_facts, 'summary': summary}}), 200
+    except Exception as e:
+        logger.error(f"Error getting document key facts: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 @views.route('/api/documents/<uuid:document_id>/status', methods=['GET'])
 @login_required
 def get_document_status(document_id):
@@ -5362,7 +5520,21 @@ def api_dashboard():
                 'document_count': len(prop.documents) if prop.documents else 0
             })
     
-        # User data
+        # User data (include profile picture and title from Supabase if available)
+        profile_picture_url = None
+        title = None
+        try:
+            from .services.supabase_auth_service import SupabaseAuthService
+            auth_service = SupabaseAuthService()
+            supabase_user = auth_service.get_user_by_id(current_user.id)
+            if supabase_user:
+                s3_key = supabase_user.get('profile_picture_url')
+                title = supabase_user.get('title')
+                # Return profile picture as API URL so frontend can use it in <img src>
+                if s3_key and s3_key.strip():
+                    profile_picture_url = request.host_url.rstrip('/') + 'api/user/profile-picture'
+        except Exception:
+            pass
         user_data = {
             'id': current_user.id,
             'email': current_user.email,
@@ -5370,7 +5542,9 @@ def api_dashboard():
             'company_name': current_user.company_name,
             'business_id': str(current_user.business_id) if current_user.business_id else None,
             'company_website': current_user.company_website,
-            'role': current_user.role.name
+            'role': current_user.role.name,
+            'profile_picture_url': profile_picture_url,
+            'title': title
         }
         
         return jsonify({
@@ -5387,6 +5561,99 @@ def api_dashboard():
     except Exception as e:
         current_app.logger.exception("Dashboard error")
         return jsonify({'error': str(e)}), 500
+
+
+@views.route('/api/user/profile-picture', methods=['GET'])
+@login_required
+def serve_profile_picture():
+    """Serve the current user's profile picture from S3 (for img src)."""
+    try:
+        from .services.supabase_auth_service import SupabaseAuthService
+        from botocore.exceptions import ClientError
+        auth_service = SupabaseAuthService()
+        supabase_user = auth_service.get_user_by_id(current_user.id)
+        if not supabase_user:
+            return jsonify({'error': 'User not found'}), 404
+        s3_key = supabase_user.get('profile_picture_url')
+        if not s3_key or not s3_key.strip():
+            return jsonify({'error': 'No profile picture'}), 404
+        s3_client = boto3.client(
+            's3',
+            aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+            aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
+            region_name=os.environ.get('AWS_DEFAULT_REGION', 'us-east-1')
+        )
+        obj = s3_client.get_object(Bucket=os.environ['S3_UPLOAD_BUCKET'], Key=s3_key)
+        return Response(
+            obj['Body'].read(),
+            mimetype=obj.get('ContentType', 'image/jpeg'),
+            headers={'Cache-Control': 'private, max-age=300'}
+        )
+    except ClientError as e:
+        if e.response.get('Error', {}).get('Code') == 'NoSuchKey':
+            return jsonify({'error': 'Profile picture not found'}), 404
+        raise
+    except Exception as e:
+        current_app.logger.exception("Error serving profile picture")
+        return jsonify({'error': str(e)}), 500
+
+
+@views.route('/api/user/profile-picture', methods=['POST', 'OPTIONS'])
+@login_required
+def upload_profile_picture():
+    """Upload and set the current user's profile picture (S3 + Supabase)."""
+    if request.method == 'OPTIONS':
+        response = jsonify({})
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
+        response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
+        return response, 200
+    file = request.files.get('image')
+    if not file or file.filename == '':
+        return jsonify({'error': 'No image file provided'}), 400
+    ext = os.path.splitext(secure_filename(file.filename))[1].lower() or '.jpg'
+    if ext not in ('.jpg', '.jpeg', '.png', '.webp'):
+        return jsonify({'error': 'Invalid image type. Use JPEG, PNG, or WebP.'}), 400
+    s3_key = f"profile_pictures/{current_user.id}/{uuid.uuid4()}{ext}"
+    try:
+        s3_client = boto3.client(
+            's3',
+            aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+            aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
+            region_name=os.environ.get('AWS_DEFAULT_REGION', 'us-east-1')
+        )
+        file.seek(0)
+        s3_client.put_object(
+            Bucket=os.environ['S3_UPLOAD_BUCKET'],
+            Key=s3_key,
+            Body=file.read(),
+            ContentType=file.content_type or 'image/jpeg'
+        )
+        from .services.supabase_auth_service import SupabaseAuthService
+        auth_service = SupabaseAuthService()
+        auth_service.update_user(current_user.id, {'profile_picture_url': s3_key})
+        base_url = request.host_url.rstrip('/')
+        profile_url = f"{base_url}api/user/profile-picture"
+        return jsonify({'profile_image_url': profile_url, 'avatar_url': profile_url})
+    except Exception as e:
+        current_app.logger.exception("Error uploading profile picture")
+        return jsonify({'error': str(e)}), 500
+
+
+@views.route('/api/user/profile-picture', methods=['DELETE'])
+@login_required
+def delete_profile_picture():
+    """Remove the current user's profile picture."""
+    try:
+        from .services.supabase_auth_service import SupabaseAuthService
+        auth_service = SupabaseAuthService()
+        auth_service.update_user(current_user.id, {'profile_picture_url': None})
+        return jsonify({'success': True})
+    except Exception as e:
+        current_app.logger.exception("Error removing profile picture")
+        return jsonify({'error': str(e)}), 500
+
 
 @views.route('/dashboard')
 @login_required
