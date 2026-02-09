@@ -5,7 +5,8 @@
 
 const MAX_CACHE_SIZE = 50;
 const PRELOAD_LIMIT = 40;
-const PRELOAD_CONCURRENCY = 10;
+// Higher concurrency so the visible batch (first ~15 docs) loads in one parallel burst
+const PRELOAD_CONCURRENCY = 18;
 
 type CacheEntry = { url: string };
 const cache = new Map<string, CacheEntry>();

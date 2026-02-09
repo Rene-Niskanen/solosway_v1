@@ -10,11 +10,47 @@ FAST ROUTER: 4 execution paths for speed optimization
 """
 
 import logging
+import re
 from typing import List
 from backend.llm.types import MainWorkflowState, RetrievedDocument
 from backend.services.supabase_client_factory import get_supabase_client
 
 logger = logging.getLogger(__name__)
+
+
+def _query_for_direct_document_retrieval(user_query: str, document_filenames: List[str]) -> str:
+    """
+    Strip document filename references from the query so retrieval is intent-based.
+    When the user asks "what is the EPC rating of [document chip: Highlands_Berden_...]",
+    the chip text is the document name; using that in semantic search can match the wrong
+    chunks (filename-style text instead of the EPC section). We keep only the intent
+    part (e.g. "what is the EPC rating") for retrieve_chunks.
+    """
+    if not user_query or not document_filenames:
+        return user_query or ""
+    q = user_query.strip()
+    for filename in document_filenames:
+        if not filename:
+            continue
+        # Exact filename (with or without extension)
+        name_no_ext = re.sub(r"\.[a-zA-Z0-9]+$", "", filename)
+        for candidate in (filename, name_no_ext):
+            if not candidate:
+                continue
+            # Case-insensitive remove; also remove truncated form (chip often shows shortened name)
+            pattern = re.escape(candidate)
+            q = re.sub(pattern, " ", q, flags=re.IGNORECASE)
+        # Chip display is often truncated (e.g. "Highlands_Berden_Bishops_St..."); try filename prefixes
+        for length in (35, 30, 25, 20):
+            prefix = (name_no_ext or filename)[:length]
+            if len(prefix) >= 10:
+                q = re.sub(re.escape(prefix) + r"\.?\.?\.?", " ", q, flags=re.IGNORECASE)
+    # Strip trailing segment that looks like a chip/filename (Word_Word_...)
+    q = re.sub(r"\s+[A-Za-z0-9]+_[A-Za-z0-9_]+\.?\.?\.?\s*$", " ", q)
+    # Collapse spaces and strip; remove trailing "of" / "for" so we don't end with "what is the EPC rating of"
+    q = re.sub(r"\s+", " ", q).strip()
+    q = re.sub(r"\s+(of|for)\s*$", "", q, flags=re.IGNORECASE).strip()
+    return q
 
 
 def route_query(state: MainWorkflowState) -> MainWorkflowState:
@@ -452,13 +488,32 @@ async def fetch_direct_document_chunks(state: MainWorkflowState) -> MainWorkflow
     # Query-aware branch: when user_query is non-empty, use retrieve_chunks (vector/hybrid within docs) instead of fetch-all
     if user_query and business_id:
         from backend.llm.tools.chunk_retriever_tool import retrieve_chunks
+        # When the query was built from a document chip, it often contains the document name
+        # (e.g. "what is the EPC rating of Highlands_Berden_Bishops_St..."). Use intent-only
+        # query for retrieval so we match content (EPC section) not filename-style text.
+        retrieval_query = user_query
+        try:
+            doc_result = get_supabase_client().table("documents").select("original_filename").in_("id", document_ids).eq("business_uuid", business_id).execute()
+            if doc_result.data:
+                filenames = [r.get("original_filename") or "" for r in doc_result.data if r.get("original_filename")]
+                if filenames:
+                    intent_query = _query_for_direct_document_retrieval(user_query, filenames)
+                    if intent_query and len(intent_query.strip()) >= 5:
+                        retrieval_query = intent_query.strip()
+                        logger.info(
+                            "[DIRECT_DOC] Using intent-only query for retrieval: %r -> %r",
+                            user_query[:60],
+                            retrieval_query[:60],
+                        )
+        except Exception as e:  # pylint: disable=broad-except
+            logger.debug("[DIRECT_DOC] Could not normalize query for retrieval: %s", e)
         logger.info(
             "[DIRECT_DOC] Query provided; using retrieve_chunks document_ids=%s query=%s",
             document_ids,
-            user_query[:80] if len(user_query) > 80 else user_query,
+            retrieval_query[:80] if len(retrieval_query) > 80 else retrieval_query,
         )
         chunks_result = retrieve_chunks(
-            query=user_query,
+            query=retrieval_query,
             document_ids=document_ids,
             business_id=business_id,
         )

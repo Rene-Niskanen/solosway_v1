@@ -5066,12 +5066,71 @@ def _get_document_text_for_key_facts(document, doc_summary, document_id=None):
 # Max length for key fact value in UI (match FileViewModal KEY_FACT_VALUE_MAX_LENGTH)
 _KEY_FACT_VALUE_MAX_LENGTH = 60
 
+# Max document text length to send to LLM for key-facts summarisation (avoid token limits)
+_LLM_KEY_FACTS_TEXT_MAX_LENGTH = 12000
+
+
+def _llm_summarise_document_for_key_facts(doc_text):
+    """Use LLM to produce a short summary and optional key facts from document text.
+    Returns (summary_str or None, list of {label, value}) or (None, []) on failure.
+    """
+    if not doc_text or len(doc_text.strip()) < 100:
+        return None, []
+    text = doc_text.strip()
+    if len(text) > _LLM_KEY_FACTS_TEXT_MAX_LENGTH:
+        text = text[:_LLM_KEY_FACTS_TEXT_MAX_LENGTH] + "\n\n[Document truncated for summary.]"
+    try:
+        from langchain_openai import ChatOpenAI
+        from langchain_core.messages import HumanMessage, SystemMessage
+        from backend.llm.config import config
+        if not getattr(config, 'openai_api_key', None):
+            logger.debug("Key facts LLM: no OpenAI API key, skipping LLM summarisation")
+            return None, []
+        llm = ChatOpenAI(
+            api_key=config.openai_api_key,
+            model=config.openai_model,
+            temperature=0,
+        )
+        system_msg = SystemMessage(content="""You extract key information from any type of document (reports, letters, forms, etc.).
+Respond with valid JSON only, no markdown or extra text, in this exact shape:
+{"summary": "Two to four sentences summarising the document.", "key_facts": [{"label": "Fact label", "value": "Fact value"}, ...]}
+- summary: brief overview (2-4 sentences). Required.
+- key_facts: 3-8 items relevant to this document. Each has "label" (short, e.g. "Date", "Parties", "Amount", "Location", "Subject") and "value" (concise, under 60 chars if possible). Choose labels that fit the document type.
+- Labels and values must be plain text, no newlines. If the document has no clear facts, set key_facts to [] but always provide a summary.""")
+        human_msg = HumanMessage(content=f"Document text:\n\n{text}")
+        response = llm.invoke([system_msg, human_msg])
+        content = (response.content or "").strip()
+        # Strip markdown code fence if present
+        if content.startswith("```"):
+            content = re.sub(r"^```(?:json)?\s*", "", content)
+            content = re.sub(r"\s*```$", "", content)
+        data = json.loads(content)
+        summary = (data.get("summary") or "").strip() or None
+        raw_facts = data.get("key_facts") or []
+        facts = []
+        for item in raw_facts:
+            if isinstance(item, dict):
+                label = (item.get("label") or "").strip()
+                value = (item.get("value") or "").strip()
+                if label and value:
+                    if len(value) > _KEY_FACT_VALUE_MAX_LENGTH:
+                        value = value[: _KEY_FACT_VALUE_MAX_LENGTH - 1].rstrip() + "…"
+                    facts.append({"label": label, "value": value})
+        return summary, facts
+    except json.JSONDecodeError as e:
+        logger.warning("Key facts LLM: invalid JSON from model: %s", e)
+        return None, []
+    except Exception as e:
+        logger.warning("Key facts LLM summarisation failed: %s", e)
+        return None, []
+
 
 def _build_key_facts_from_document(document, document_id=None):
-    """Build key_facts list from document (Supabase row with document_summary). Returns list of {label, value}.
+    """Build key_facts list from document (Supabase row with document_summary). Returns (facts, llm_summary).
+    facts: list of {label, value}. llm_summary: str or None (only set when LLM fallback was used).
     Uses document_summary (address, type, parties) first; then extracts key facts from document text
-    using the same logic as sections/citation (extract_key_facts_from_text). Text is taken from
-    parsed_text, document_summary.reducto_parsed_text, document_summary.reducto_chunks, or document_vectors.
+    using the same logic as sections/citation (extract_key_facts_from_text). If no facts and we have
+    document text, uses LLM to summarise and extract key facts.
     """
     doc_summary = document.get('document_summary') or {}
     if isinstance(doc_summary, str):
@@ -5129,7 +5188,20 @@ def _build_key_facts_from_document(document, document_id=None):
     elif document_id:
         logger.info("Key facts: no document text available for document_id=%s (parsed_text, reducto_parsed_text, reducto_chunks, document_vectors all empty or missing)", str(document_id)[:8])
 
-    return facts
+    # When we have document text but no facts, use LLM to summarise and extract key facts for display
+    llm_summary = None
+    if doc_text and len(doc_text.strip()) >= 100 and len(facts) == 0:
+        llm_summary, llm_facts = _llm_summarise_document_for_key_facts(doc_text)
+        if llm_facts:
+            for f in llm_facts:
+                label = (f.get('label') or '').strip()
+                value = (f.get('value') or '').strip()
+                if label and value and label.lower() not in existing_labels:
+                    existing_labels.add(label.lower())
+                    facts.append({'label': label, 'value': value})
+        # If LLM returned only a summary (no facts), we still use it; caller will show it in summary field
+
+    return facts, llm_summary
 
 
 @views.route('/api/documents/<uuid:document_id>/key-facts', methods=['GET'])
@@ -5152,7 +5224,7 @@ def get_document_key_facts(document_id):
         )
         if not is_authorized:
             return jsonify({'success': False, 'error': 'Unauthorized'}), 403
-        key_facts = _build_key_facts_from_document(document, document_id=str(document_id))
+        key_facts, llm_summary = _build_key_facts_from_document(document, document_id=str(document_id))
         doc_summary = document.get('document_summary') or {}
         if isinstance(doc_summary, str):
             try:
@@ -5161,7 +5233,8 @@ def get_document_key_facts(document_id):
                 doc_summary = {}
         if doc_summary is None:
             doc_summary = {}
-        summary = doc_summary.get('summary') or None
+        # Use stored summary if present, otherwise LLM-generated summary (when extraction had no facts)
+        summary = doc_summary.get('summary') or llm_summary or None
         return jsonify({'success': True, 'data': {'key_facts': key_facts, 'summary': summary}}), 200
     except Exception as e:
         logger.error(f"Error getting document key facts: {e}")

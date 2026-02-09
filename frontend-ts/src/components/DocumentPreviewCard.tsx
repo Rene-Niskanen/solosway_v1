@@ -379,6 +379,7 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({
                 onClick={handleOpenDocument}
                 style={{
                   margin: '0 6px 6px 6px',
+                  padding: '0 8px',
                   borderRadius: '4px',
                   overflow: 'auto',
                   backgroundColor: '#FAFAFA',

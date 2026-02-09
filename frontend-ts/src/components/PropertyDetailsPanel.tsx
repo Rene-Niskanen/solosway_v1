@@ -682,7 +682,7 @@ const ExpandedCardView: React.FC<{
       }}
     >
         {/* Preview Header */}
-        <div className="h-14 px-4 border-b border-gray-100 flex items-center justify-between bg-white shrink-0">
+        <div className="h-14 px-4 border-b border-gray-100 flex items-center justify-between shrink-0" style={{ backgroundColor: '#F2F2EF' }}>
           <div className="flex items-center gap-3 overflow-hidden">
             <div className="w-8 h-8 rounded-lg bg-gray-50 flex items-center justify-center shrink-0">
               {isPDF ? <FileText size={16} className="text-slate-700" /> : 

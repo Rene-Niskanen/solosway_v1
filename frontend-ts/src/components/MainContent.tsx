@@ -5592,46 +5592,43 @@ export const MainContent = ({
       {/* MapChatBar removed - using unified SearchBar instead */}
       
       {/* Standalone ExpandedCardView - for document preview */}
-      {/* Renders when a document is open, regardless of chat panel visibility */}
-      {/* For user-triggered opens (dashboard clicks), renders immediately */}
-      {/* For agent-triggered opens (silently set), will show when document is set */}
-      {/* StandaloneExpandedCardView handles positioning for both cases (chat open vs closed) */}
-      {expandedCardViewDoc && (
-        <StandaloneExpandedCardView
-          docId={expandedCardViewDoc.docId}
-          filename={expandedCardViewDoc.filename}
-          highlight={expandedCardViewDoc.highlight}
-          scrollRequestId={(expandedCardViewDoc as { scrollRequestId?: number }).scrollRequestId}
-          onClose={closeExpandedCardView}
-          chatPanelWidth={chatPanelWidth}
-          sidebarWidth={(() => {
-            // Use EXACT same calculation as SideChatPanel's sidebarWidth prop
-            // This ensures document preview aligns perfectly with chat panel's right edge
-            const SIDEBAR_NORMAL_WIDTH = 224; // w-56 = 14rem = 224px
-            const TOGGLE_RAIL_WIDTH = 12; // w-3 = 12px
-            
-            // Add FilingSidebar width when it's open OR when it's closing (during transition)
-            if (isFilingSidebarOpen || isFilingSidebarClosing) {
-              // FilingSidebar starts at:
-              // - 224px when sidebar not collapsed (covering toggle rail)
-              // - 12px when sidebar collapsed (after toggle rail)
-              const filingSidebarStart = isSidebarCollapsed ? TOGGLE_RAIL_WIDTH : SIDEBAR_NORMAL_WIDTH;
-              return filingSidebarStart + filingSidebarWidth;
-            } else {
-              // FilingSidebar closed: use sidebar + toggle rail width
-              const baseSidebarWidth = isSidebarCollapsed ? 0 : SIDEBAR_NORMAL_WIDTH;
-              return baseSidebarWidth + TOGGLE_RAIL_WIDTH;
-            }
-          })()}
-          // Pass resize handlers from SideChatPanel for left-edge resize
-          // Only enabled when chat panel is visible (side-by-side mode)
-          // Use callback to access ref at call time, not render time
-          onResizeStart={chatPanelWidth > 0 ? (e: React.MouseEvent) => {
-            sideChatPanelRef.current?.handleResizeStart(e);
-          } : undefined}
-          isResizing={sideChatPanelRef.current?.isResizing ?? false}
-        />
-      )}
+      {/* AnimatePresence + key by chat/doc so switching chats gets a smooth open/exit effect */}
+      <AnimatePresence mode="wait">
+        {expandedCardViewDoc && (
+          <motion.div
+            key={`doc-preview-${activeChatId ?? 'none'}-${expandedCardViewDoc.docId}`}
+            initial={false}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0, transition: { duration: 0.12 } }}
+            transition={{ duration: 0 }}
+            style={{ position: 'fixed', inset: 0, pointerEvents: 'none' }}
+          >
+            <StandaloneExpandedCardView
+              docId={expandedCardViewDoc.docId}
+              filename={expandedCardViewDoc.filename}
+              highlight={expandedCardViewDoc.highlight}
+              scrollRequestId={(expandedCardViewDoc as { scrollRequestId?: number }).scrollRequestId}
+              onClose={closeExpandedCardView}
+              chatPanelWidth={chatPanelWidth}
+              sidebarWidth={(() => {
+                // Use EXACT same calculation as SideChatPanel's sidebarWidth prop
+                const SIDEBAR_NORMAL_WIDTH = 224;
+                const TOGGLE_RAIL_WIDTH = 12;
+                if (isFilingSidebarOpen || isFilingSidebarClosing) {
+                  const filingSidebarStart = isSidebarCollapsed ? TOGGLE_RAIL_WIDTH : SIDEBAR_NORMAL_WIDTH;
+                  return filingSidebarStart + filingSidebarWidth;
+                }
+                const baseSidebarWidth = isSidebarCollapsed ? 0 : SIDEBAR_NORMAL_WIDTH;
+                return baseSidebarWidth + TOGGLE_RAIL_WIDTH;
+              })()}
+              onResizeStart={chatPanelWidth > 0 ? (e: React.MouseEvent) => {
+                sideChatPanelRef.current?.handleResizeStart(e);
+              } : undefined}
+              isResizing={sideChatPanelRef.current?.isResizing ?? false}
+            />
+          </motion.div>
+        )}
+      </AnimatePresence>
       
       {/* File View pop-up (from FilingSidebar file row) — overlay on chat/map/dashboard, never on Settings */}
       {fileViewDocument && currentView !== 'settings' && (

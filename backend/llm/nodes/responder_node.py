@@ -46,6 +46,13 @@ from backend.llm.citation import (
 logger = logging.getLogger(__name__)
 
 
+def _strip_markdown_for_citation(text: str) -> str:
+    """Strip common markdown so we can extract values from e.g. **£2,400,000**."""
+    if not text:
+        return text
+    return re.sub(r'\*+', '', text).strip()
+
+
 def _distinctive_values_from_cited_text(cited_text: str) -> List[str]:
     """
     Extract distinctive values (numbers, currency, dates) from cited text so we can
@@ -55,22 +62,41 @@ def _distinctive_values_from_cited_text(cited_text: str) -> List[str]:
     """
     if not cited_text or not cited_text.strip():
         return []
+    # Strip markdown so **£2,400,000** is matched as £2,400,000
+    text = _strip_markdown_for_citation(cited_text)
     values = []
     # Currency amounts: £2,300,000 or £6,000 (keep as-is for substring match)
-    for m in re.finditer(r"£[\d,]+(?:\.[\d]+)?", cited_text):
+    for m in re.finditer(r"£[\d,]+(?:\.[\d]+)?", text):
         values.append(m.group(0))
     # Large numbers with commas (often valuations): 2,300,000
-    for m in re.finditer(r"\b[\d]{1,3}(?:,[\d]{3})+\b", cited_text):
+    for m in re.finditer(r"\b[\d]{1,3}(?:,[\d]{3})+\b", text):
         val = m.group(0)
         if val not in values:
             values.append(val)
+        # Also add digits-only form so we match blocks that have "2400000" or "2 400 000"
+        digits_only = val.replace(",", "")
+        if digits_only not in values:
+            values.append(digits_only)
     # Date-like: "12th February 2024" or "February 12, 2024"
-    for m in re.finditer(r"\d{1,2}(?:st|nd|rd|th)?\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4}", cited_text, re.IGNORECASE):
+    for m in re.finditer(r"\d{1,2}(?:st|nd|rd|th)?\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4}", text, re.IGNORECASE):
         values.append(m.group(0))
-    for m in re.finditer(r"(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s+\d{4}", cited_text, re.IGNORECASE):
+    for m in re.finditer(r"(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s+\d{4}", text, re.IGNORECASE):
         if m.group(0) not in values:
             values.append(m.group(0))
     return values
+
+
+def _block_looks_like_footer_or_url(block_content: str) -> bool:
+    """True if block is likely footer/header/URL, not the cited factual content."""
+    if not block_content or len(block_content.strip()) < 20:
+        return True
+    s = block_content.lower().strip()
+    if "www." in s or ".com" in s or ".co.uk" in s:
+        return True
+    # Short boilerplate line like "United Kingdom - Spain - Portugal - Gibraltar"
+    if len(block_content) < 100 and "united kingdom" in s and ("spain" in s or "portugal" in s or "gibraltar" in s):
+        return True
+    return False
 
 
 # Evidence-First Citation Architecture Types
@@ -333,10 +359,10 @@ def extract_citations_with_positions(
             best_block_info = None
             
             blocks = metadata.get('blocks', [])
+            distinctive = _distinctive_values_from_cited_text(cited_text_for_bbox) if cited_text_for_bbox else []
             if blocks and isinstance(blocks, list) and len(blocks) > 0:
                 # Distinctive values (e.g. £2,300,000, 12th February 2024) so we pick the block
                 # that actually contains the cited figure, not a similar block (e.g. "180 days").
-                distinctive = _distinctive_values_from_cited_text(cited_text_for_bbox)
                 best_match_score = 0
 
                 for block_idx, block in enumerate(blocks):
@@ -354,6 +380,14 @@ def extract_citations_with_positions(
                     # Skip headings/titles (they're usually not what we want to highlight)
                     if block_type in ['title', 'heading']:
                         continue
+
+                    # When we have cited figures, skip blocks that look like footer/URL
+                    # (e.g. "www.mjgroupint.com" or "United Kingdom - Spain - Portugal")
+                    if distinctive and _block_looks_like_footer_or_url(block_content_raw):
+                        continue
+
+                    # Normalize block content for value check (remove spaces in numbers: "2 400 000" -> "2400000")
+                    block_normalized = re.sub(r'(\d)\s+(\d)', r'\1\2', block_content_raw) if block_content_raw else ''
 
                     # Calculate match score based on keyword overlap
                     context_words = set(word for word in citation_context.split() if len(word) > 3)
@@ -374,9 +408,12 @@ def extract_citations_with_positions(
 
                     # When the citation contains distinctive values (e.g. £2,300,000, 12th February 2024),
                     # only consider blocks that contain at least one of them. Otherwise we can highlight
-                    # the wrong block (e.g. "Market Value... 180 days" instead of "£2,300,000").
+                    # the wrong block (e.g. "Market Value... 180 days" or footer "www.mjgroupint.com").
                     if distinctive:
-                        block_has_value = any(val in block_content_raw for val in distinctive)
+                        block_has_value = any(
+                            val in block_content_raw or val in block_normalized
+                            for val in distinctive
+                        )
                         if not block_has_value:
                             continue  # skip this block
                         match_score += 100  # strong bonus for containing the cited value
@@ -427,27 +464,62 @@ def extract_citations_with_positions(
             if not isinstance(best_bbox, dict):
                 logger.warning(f"Citation {idx}: bbox is not a dict (got {type(best_bbox)}), using fallback")
                 best_bbox = None
+
+            # Use page from the selected block's bbox when available (not chunk-level default).
+            page_number = metadata.get('page_number', 0)
+            if isinstance(best_bbox, dict) and best_bbox.get('page') is not None:
+                try:
+                    page_number = int(best_bbox.get('page', page_number))
+                except (TypeError, ValueError):
+                    pass
+
+            # Use the LLM's source ID as citation number so [1] maps to source 1 (no renumbering by appearance).
+            try:
+                citation_number = int(short_id) if short_id.isdigit() else idx
+            except (TypeError, ValueError):
+                citation_number = idx
+
+            chunk_id = metadata.get('chunk_id', '')
+            block_index = best_block_info.get('block_index') if best_block_info else None
+            block_id = f"chunk_{chunk_id or 'unknown'}_block_{block_index if block_index is not None else 0}" if (chunk_id or block_index is not None) else None
+
+            # Debug payload: exact data used to choose this bbox (for citation mapping diagnosis)
+            citation_debug = {
+                'short_id': short_id,
+                'citation_number': citation_number,
+                'cited_text_for_bbox': cited_text_for_bbox,  # Exact sentence/markdown used for matching
+                'distinctive_values': list(distinctive),
+                'chosen_bbox': dict(best_bbox) if isinstance(best_bbox, dict) else None,
+                'block_id': block_id,
+                'block_index': block_index,
+                'block_type': best_block_info.get('block_type') if best_block_info else None,
+                'block_content_preview': (best_block_info.get('content', '') or best_block_info.get('content_preview', ''))[:300] if best_block_info else None,
+                'match_score': best_block_info.get('match_score') if best_block_info else None,
+                'source': 'block' if best_block_info else 'chunk',
+                'num_blocks_considered': len(blocks) if blocks else 0,
+            }
             
             citation = {
-                'citation_number': idx,  # Sequential citation number [1], [2], [3]
+                'citation_number': citation_number,
                 'short_id': short_id,
-                'chunk_id': metadata.get('chunk_id'),
+                'chunk_id': chunk_id,
                 'position': start_position,
                 'end_position': end_position,
                 'bbox': best_bbox,  # Best matching block bbox or chunk-level bbox
-                'page_number': metadata.get('page_number', 0),
+                'page_number': page_number,  # From selected block when available
                 'doc_id': metadata.get('doc_id'),
                 'original_filename': metadata.get('original_filename', ''),
                 'method': 'direct-id-extraction',
                 'block_info': best_block_info,  # For debugging
                 'cited_text': cited_text_for_bbox,  # For sub-level bbox: match exact line in block
+                'citation_debug': citation_debug,
             }
             citations.append(citation)
             
             logger.info(
                 f"[CITATION_DEBUG] Citation {idx} extracted: "
                 f"doc_id={metadata.get('doc_id', '')[:8]}, "
-                f"page={metadata.get('page_number', 0)}, "
+                f"page={page_number}, "
                 f"bbox_valid={isinstance(best_bbox, dict)}, "
                 f"bbox_left={best_bbox.get('left', 'N/A') if isinstance(best_bbox, dict) else 'N/A'}, "
                 f"bbox_top={best_bbox.get('top', 'N/A') if isinstance(best_bbox, dict) else 'N/A'}"
@@ -513,6 +585,7 @@ def format_citations_for_frontend(
     Format citations for frontend consumption.
     
     Converts internal citation dictionaries to Citation TypedDict format expected by the frontend.
+    Deduplicates by citation_number so each displayed number has one payload (same source cited multiple times).
     
     Args:
         citations: List of citation dictionaries from extract_citations_with_positions()
@@ -521,8 +594,13 @@ def format_citations_for_frontend(
         List of Citation dictionaries for frontend
     """
     frontend_citations = []
-    
+    seen_citation_numbers = set()
+
     for citation in citations:
+        citation_number = citation.get('citation_number', 0)
+        if citation_number in seen_citation_numbers:
+            continue
+        seen_citation_numbers.add(citation_number)
         # Extract bbox data - only include if valid
         bbox_data = citation.get('bbox')
         bbox = None
@@ -564,7 +642,7 @@ def format_citations_for_frontend(
         # Create Citation TypedDict-compatible dictionary
         # Note: bbox can be None - frontend will handle opening document on correct page without highlighting
         frontend_citation: Dict[str, Any] = {
-            'citation_number': citation.get('citation_number', 0),
+            'citation_number': citation_number,
             'chunk_id': chunk_id,
             'block_id': block_id,  # For citation mapping (frontend) - synthetic from chunk_id + block_index when needed
             'block_index': block_index,  # Pass through for views.py synthetic block_id when block_id missing
@@ -577,7 +655,8 @@ def format_citations_for_frontend(
             'method': citation.get('method', 'direct-id-extraction'),
             'block_content': None,  # Not used in direct citation system
             'verification': None,  # Not used in direct citation system
-            'matched_block_content': None  # Not used in direct citation system
+            'matched_block_content': None,  # Not used in direct citation system
+            'debug': citation.get('citation_debug'),  # For UI: bbox choice, cited text, block id, etc.
         }
         frontend_citations.append(frontend_citation)
     
@@ -714,6 +793,83 @@ def extract_key_facts_from_text(text: str) -> List[Dict[str, Any]]:
                 'match_start': match.start(),
                 'match_end': match.end()
             })
+    
+    # Month YYYY dates (e.g. "February 2024") - common in reports
+    month_year_patterns = [
+        (r'(\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4})\b', 'Date', 15),
+    ]
+    for pattern, label, context_size in month_year_patterns:
+        matches = list(re.finditer(pattern, text, re.IGNORECASE))
+        for match in matches:
+            match_key = (match.start(), match.end())
+            if any(start <= match.start() < end or start < match.end() <= end for start, end in seen_matches):
+                continue
+            seen_matches.add(match_key)
+            start = max(0, match.start() - context_size)
+            end = min(len(text), match.end() + context_size)
+            context = text[start:end].strip()
+            facts.append({
+                'text': context,
+                'confidence': 'high',
+                'type': 'date',
+                'label': label,
+                'match_start': match.start(),
+                'match_end': match.end()
+            })
+    
+    # UK address / postcode (e.g. "..., Town, POSTCODE" or standalone postcode)
+    uk_postcode = r'[A-Z]{1,2}\d{1,2}[A-Z]?\s*\d[A-Z]{2}'
+    address_patterns = [
+        (rf'(Address[:\s]+(.{{10,80}}?{uk_postcode}))', 'Address', 0),  # "Address: ... CM23 1AB"
+        (rf'((?:[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*,?\s+){{1,4}},?\s*{uk_postcode})', 'Location', 0),  # "..., Town, CM23 1AB"
+        (rf'(\b{uk_postcode}\b)', 'Postcode', 20),
+    ]
+    for pattern, label, context_size in address_patterns:
+        matches = list(re.finditer(pattern, text, re.IGNORECASE))
+        for match in matches:
+            match_key = (match.start(), match.end())
+            if any(start <= match.start() < end or start < match.end() <= end for start, end in seen_matches):
+                continue
+            seen_matches.add(match_key)
+            start = max(0, match.start() - context_size)
+            end = min(len(text), match.end() + context_size)
+            context = text[start:end].strip()
+            # Normalise whitespace and cap length for display
+            if len(context) > 80:
+                context = context[:77].rstrip() + '…'
+            facts.append({
+                'text': context,
+                'confidence': 'high',
+                'type': 'address',
+                'label': label,
+                'match_start': match.start(),
+                'match_end': match.end()
+            })
+    
+    # Fallback: if we have substantial text but no structured facts, add first meaningful line as "Summary"
+    if not facts and len(text.strip()) > 100:
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        for line in lines[:3]:
+            if len(line) >= 20 and len(line) <= 120 and not line.startswith(('•', '-', '*', '1.', '2.')):
+                facts.append({
+                    'text': line,
+                    'confidence': 'low',
+                    'type': 'summary',
+                    'label': 'Summary',
+                    'match_start': 0,
+                    'match_end': len(line)
+                })
+                break
+            if 20 <= len(line) <= 120:
+                facts.append({
+                    'text': line[:100] + ('…' if len(line) > 100 else ''),
+                    'confidence': 'low',
+                    'type': 'summary',
+                    'label': 'Summary',
+                    'match_start': 0,
+                    'match_end': min(100, len(line))
+                })
+                break
     
     # Sort by match position to maintain order
     facts.sort(key=lambda x: x.get('match_start', 0))

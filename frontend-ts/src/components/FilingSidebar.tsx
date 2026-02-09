@@ -296,7 +296,11 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
     }
   }, []);
 
-  // Pre-load global documents in the background on first load so FilingSidebar opens with cached data
+  // Number of doc blobs to preload for "above the fold" in the sidebar (viewable height)
+  const VISIBLE_PRELOAD_COUNT = 15;
+
+  // Pre-load global documents in the background on first load so FilingSidebar opens with cached data.
+  // Also start preloading blobs for the first VISIBLE_PRELOAD_COUNT docs so File View opens instantly when user clicks.
   useEffect(() => {
     if (preloadStartedRef.current) return;
     preloadStartedRef.current = true;
@@ -307,6 +311,12 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
         const docs = parseAllDocumentsResponse(response);
         documentCacheRef.current.set('global', docs);
         cacheTimestampRef.current.set('global', Date.now());
+        // Preload blobs for docs that fit in the sidebar viewport so they're ready as soon as user opens sidebar
+        if (docs.length > 0) {
+          preloadDocumentBlobs(
+            docs.slice(0, VISIBLE_PRELOAD_COUNT).map((d) => ({ id: d.id, s3_path: d.s3_path }))
+          );
+        }
       } catch (_) {
         // Ignore; sidebar will fetch when opened
       }
@@ -2283,12 +2293,11 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
         {/* Content Area - Clean Background - relative z-50 so it stacks above the chat panel */}
         <div className="flex-1 overflow-y-auto w-full px-4 relative z-50" style={{ boxSizing: 'border-box' }}>
           {isLoading ? (
-            <div className="flex flex-col items-center justify-center h-full gap-4">
+            <div className="flex flex-col items-center justify-center h-full gap-4 -mt-8">
               <div
-                className="w-10 h-10 rounded-full border-2 border-gray-200 border-t-gray-500 animate-spin"
+                className="w-5 h-5 rounded-full border-2 border-gray-200 border-t-gray-500 animate-[spin_0.35s_linear_infinite] will-change-transform [backface-visibility:hidden]"
                 aria-hidden
               />
-              <span className="text-gray-500 text-sm font-medium">Loading...</span>
             </div>
           ) : error ? (
             <div className="flex items-center justify-center h-full">

@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { motion } from 'framer-motion';
-import { X, ChevronLeft, ChevronRight, Download, Loader2, BookOpen } from 'lucide-react';
+import { X, ChevronLeft, ChevronRight, Download, Loader2 } from 'lucide-react';
 import * as pdfjs from 'pdfjs-dist';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
@@ -18,7 +18,7 @@ import { Avatar, AvatarImage, AvatarFallback } from '@/components/ui/avatar';
 
 pdfjs.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
-const POPUP_BG = '#6F6F6F';
+const POPUP_BG = '#F2F2EF';
 
 const KEY_FACT_VALUE_MAX_LENGTH = 60;
 
@@ -95,6 +95,10 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
   const modalContainerRef = useRef<HTMLDivElement | null>(null);
   const pipelineModalRef = useRef<HTMLDivElement | null>(null);
 
+  /** Stable container size for PDF canvas; only updated when size changes by more than 2px to avoid resize loops */
+  const [containerSize, setContainerSize] = useState<{ w: number; h: number } | null>(null);
+  const lastContainerSizeRef = useRef<{ w: number; h: number } | null>(null);
+
   const formatDate = useCallback((dateStr: string | undefined) => {
     if (!dateStr) return '—';
     try {
@@ -132,6 +136,8 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
       setKeyFactsLoading(false);
       setError(null);
       setResolvedFileSize(null);
+      setContainerSize(null);
+      lastContainerSizeRef.current = null;
       lastDocIdRef.current = null;
       return;
     }
@@ -228,17 +234,16 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
     };
   }, [previewUrl, doc?.id, doc?.file_type, loading]);
 
-  // Fetch key facts when modal opens with a document
-  useEffect(() => {
-    if (!isOpen || !doc) return;
+  // Fetch key facts when modal opens (or when user refreshes). No re-ingest needed — backend generates on demand.
+  const fetchKeyFacts = useCallback((cancelledRef?: React.MutableRefObject<boolean | null>) => {
+    if (!doc) return;
     setKeyFactsLoading(true);
     setKeyFacts(null);
     setKeyFactsSummary(null);
-    let cancelled = false;
     backendApi
       .getDocumentKeyFacts(doc.id)
       .then((res) => {
-        if (cancelled) return;
+        if (cancelledRef?.current) return;
         setKeyFactsLoading(false);
         if (res.success && res.data) {
           setKeyFacts(res.data.key_facts);
@@ -249,24 +254,86 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
         }
       })
       .catch(() => {
-        if (!cancelled) {
-          setKeyFactsLoading(false);
-          setKeyFacts([]);
-          setKeyFactsSummary(null);
+        if (cancelledRef?.current) return;
+        setKeyFactsLoading(false);
+        setKeyFacts([]);
+        setKeyFactsSummary(null);
+      });
+  }, [doc?.id]);
+
+  const keyFactsCancelledRef = useRef<boolean | null>(false);
+  useEffect(() => {
+    if (!isOpen || !doc) return;
+    keyFactsCancelledRef.current = false;
+    fetchKeyFacts(keyFactsCancelledRef);
+    return () => {
+      keyFactsCancelledRef.current = true;
+    };
+  }, [isOpen, doc?.id, fetchKeyFacts]);
+
+  // Observe preview container size and update state only when it changes by more than 2px.
+  // This avoids render loops from subpixel/fractional sizes (e.g. 299.5 vs 300) and defers
+  // updates so we don't set state during layout (ResizeObserver runs synchronously in layout).
+  // We also run an initial measurement after layout (double rAF) so the first open gets a valid
+  // size even when the first ResizeObserver callback fires with 0x0 before layout is complete.
+  const SIZE_THRESHOLD_PX = 2;
+  useEffect(() => {
+    if (!isOpen || !containerRef.current) return;
+    const container = containerRef.current;
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const w = entry.contentRect.width;
+        const h = entry.contentRect.height;
+        if (w <= 0 || h <= 0) continue;
+        const last = lastContainerSizeRef.current;
+        const changed =
+          last == null ||
+          Math.abs(w - last.w) > SIZE_THRESHOLD_PX ||
+          Math.abs(h - last.h) > SIZE_THRESHOLD_PX;
+        if (changed) {
+          lastContainerSizeRef.current = { w, h };
+          queueMicrotask(() => setContainerSize({ w, h }));
+        }
+      }
+    });
+    ro.observe(container);
+
+    // Capture initial size after layout; first open often has 0x0 until layout completes.
+    let cancelled = false;
+    const raf1 = requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (cancelled || !containerRef.current) return;
+        const w = containerRef.current.clientWidth;
+        const h = containerRef.current.clientHeight;
+        if (w > 0 && h > 0) {
+          const last = lastContainerSizeRef.current;
+          const changed =
+            last == null ||
+            Math.abs(w - last.w) > SIZE_THRESHOLD_PX ||
+            Math.abs(h - last.h) > SIZE_THRESHOLD_PX;
+          if (changed) {
+            lastContainerSizeRef.current = { w, h };
+            setContainerSize({ w, h });
+          }
         }
       });
+    });
+
     return () => {
       cancelled = true;
+      cancelAnimationFrame(raf1);
+      ro.disconnect();
     };
-  }, [isOpen, doc?.id]);
+  }, [isOpen]);
 
   useEffect(() => {
     if (!pdfDocument || !canvasRef.current || !containerRef.current) return;
 
     const canvas = canvasRef.current;
     const container = containerRef.current;
-    const width = container.clientWidth;
-    const height = container.clientHeight;
+    // Prefer stable size from ResizeObserver to avoid reading during layout thrash; fallback to ref
+    const width = containerSize ? containerSize.w : container.clientWidth;
+    const height = containerSize ? containerSize.h : container.clientHeight;
     if (width <= 0 || height <= 0) return;
 
     // Use devicePixelRatio for sharp rendering on retina/high-DPI (cap at 3 to avoid huge canvases)
@@ -290,7 +357,7 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [pdfDocument, currentPage]);
+  }, [pdfDocument, currentPage, containerSize]);
 
   const handlePrevPage = () => setCurrentPage((p) => Math.max(1, p - 1));
   const handleNextPage = () => setCurrentPage((p) => Math.min(totalPages, p + 1));
@@ -424,6 +491,7 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
           width: 'min(50vw, 540px)',
           maxHeight: '62vh',
           backgroundColor: POPUP_BG,
+          border: '2px solid #E4E4E1',
         }}
       >
         {/* Header - extra right padding so role text doesn't sit under close button */}
@@ -431,7 +499,7 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
           <div className="flex items-center gap-2 min-w-0 pr-2">
             <Avatar
               className="w-10 h-10 flex-shrink-0 rounded-lg overflow-hidden"
-              style={{ backgroundColor: 'rgba(255,255,255,0.2)' }}
+              style={{ backgroundColor: 'rgba(0,0,0,0.08)' }}
             >
               <AvatarImage
                 src={uploaderAvatarUrl || '/default profile icon.png'}
@@ -439,26 +507,26 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
                 className="object-cover"
               />
               <AvatarFallback
-                className="text-white text-sm font-medium bg-transparent"
-                style={{ backgroundColor: 'rgba(255,255,255,0.2)' }}
+                className="text-gray-700 text-sm font-medium bg-transparent"
+                style={{ backgroundColor: 'rgba(0,0,0,0.08)' }}
               >
                 {(uploaderName || 'U').charAt(0).toUpperCase()}
               </AvatarFallback>
             </Avatar>
             <div className="min-w-0">
-              <div className="text-white font-medium text-sm truncate" style={{ fontFamily: 'system-ui, sans-serif' }}>
+              <div className="text-gray-900 font-medium text-sm truncate" style={{ fontFamily: 'system-ui, sans-serif' }}>
                 {uploaderName}
               </div>
-              <div className="text-white/80 text-xs truncate" style={{ fontFamily: 'system-ui, sans-serif' }}>
+              <div className="text-gray-600 text-xs truncate" style={{ fontFamily: 'system-ui, sans-serif' }}>
                 Last updated on {formatDate(lastUpdated)}
               </div>
             </div>
           </div>
           <div className="flex items-end flex-col flex-shrink-0 min-w-0 max-w-[60%] overflow-visible">
-            <div className="text-white/90 text-xs truncate text-right" style={{ fontFamily: 'system-ui, sans-serif' }}>
+            <div className="text-gray-700 text-xs truncate text-right" style={{ fontFamily: 'system-ui, sans-serif' }}>
               {displayFileType}{displayFileSize !== '—' ? ` · ${displayFileSize}` : ''}
             </div>
-            <div className="text-white/70 text-[11px] text-right flex items-center justify-end gap-1.5 pl-2.5 overflow-visible" style={{ fontFamily: 'system-ui, sans-serif' }}>
+            <div className="text-gray-600 text-[11px] text-right flex items-center justify-end gap-1.5 pl-2.5 overflow-visible" style={{ fontFamily: 'system-ui, sans-serif' }}>
               <span
                 className="w-2 h-2 rounded-full flex-shrink-0"
                 style={{
@@ -474,7 +542,7 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
           <button
             type="button"
             onClick={handleCloseRequest}
-            className="absolute right-2 top-2 p-1 rounded text-white/80 hover:bg-white/10 flex-shrink-0"
+            className="absolute right-2 top-2 p-1 rounded text-gray-600 hover:bg-black/10 flex-shrink-0"
             aria-label="Close"
           >
             <X className="w-4 h-4" strokeWidth={2} />
@@ -487,43 +555,46 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
           <div className="flex flex-col flex-1 min-w-0 p-2" style={{ backgroundColor: POPUP_BG }}>
             <div
               ref={containerRef}
-              className="w-full bg-white/10 rounded-lg flex items-center justify-center overflow-hidden relative flex-1 min-h-0"
+              className="w-full bg-black/5 rounded-lg flex items-center justify-center overflow-hidden relative flex-1 min-h-0"
               style={{ aspectRatio: '210/297' }}
             >
               {loading && (
                 <div className="absolute inset-0 flex items-center justify-center">
-                  <Loader2 className="w-8 h-8 text-white animate-spin" />
+                  <Loader2 className="w-8 h-8 text-gray-600 animate-spin" />
                 </div>
               )}
               {error && (
-                <div className="text-white/90 text-xs p-2 text-center">{error}</div>
+                <div className="text-gray-700 text-xs p-2 text-center">{error}</div>
               )}
               {!loading && !error && pdfDocument && (
                 <canvas ref={canvasRef} className="w-full h-full object-contain" />
               )}
               {!loading && !error && !pdfDocument && previewUrl && (doc?.file_type || '').toLowerCase().includes('pdf') && (
                 <div className="absolute inset-0 flex items-center justify-center">
-                  <Loader2 className="w-8 h-8 text-white animate-spin" />
+                  <Loader2 className="w-8 h-8 text-gray-600 animate-spin" />
                 </div>
               )}
               {!loading && !error && !pdfDocument && previewUrl && !(doc?.file_type || '').toLowerCase().includes('pdf') && (
-                <div className="text-white/80 text-xs">Preview not available for this file type.</div>
+                <div className="text-gray-600 text-xs">Preview not available for this file type.</div>
               )}
             </div>
             {/* Footer: page counter + prev/next left, download right */}
             <div
               className="flex items-center justify-between gap-2 mt-1.5 px-2 py-1.5 rounded-lg"
-              style={{ backgroundColor: 'rgba(0,0,0,0.2)' }}
+              style={{ backgroundColor: 'rgba(0,0,0,0.06)' }}
             >
               <div className="flex items-center gap-2 ml-3">
-                <span className="text-white text-xs" style={{ fontFamily: 'system-ui, sans-serif' }}>
+                <span
+                  className="text-gray-700 text-xs tabular-nums min-w-[5.25rem] inline-block text-left"
+                  style={{ fontFamily: 'system-ui, sans-serif' }}
+                >
                   {currentPage}/{totalPages} pages
                 </span>
                 <button
                   type="button"
                   onClick={handlePrevPage}
                   disabled={currentPage <= 1 || !pdfDocument}
-                  className="p-1 rounded text-white hover:bg-white/20 disabled:opacity-40 disabled:pointer-events-none"
+                  className="p-1 rounded text-gray-700 hover:bg-black/10 disabled:opacity-40 disabled:pointer-events-none"
                   aria-label="Previous page"
                 >
                   <ChevronLeft className="w-4 h-4" strokeWidth={2} />
@@ -532,7 +603,7 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
                   type="button"
                   onClick={handleNextPage}
                   disabled={currentPage >= totalPages || !pdfDocument}
-                  className="p-1 rounded text-white hover:bg-white/20 disabled:opacity-40 disabled:pointer-events-none"
+                  className="p-1 rounded text-gray-700 hover:bg-black/10 disabled:opacity-40 disabled:pointer-events-none"
                   aria-label="Next page"
                 >
                   <ChevronRight className="w-4 h-4" strokeWidth={2} />
@@ -541,7 +612,7 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
               <button
                 type="button"
                 onClick={handleDownload}
-                className="p-1 rounded text-white hover:bg-white/20"
+                className="p-1 rounded text-gray-700 hover:bg-black/10"
                 aria-label="Download"
               >
                 <Download className="w-4 h-4" strokeWidth={2} />
@@ -555,22 +626,34 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
             style={{ backgroundColor: POPUP_BG }}
           >
             <div className="flex-1 min-h-0 overflow-y-auto py-2 pl-2 pr-2">
-              <div className="text-white text-xs font-medium px-1 pb-2" style={{ fontFamily: 'system-ui, sans-serif' }}>
-                Key facts
+              <div className="flex items-center justify-between gap-1 px-1 pb-2">
+                <span className="text-gray-900 text-xs font-medium" style={{ fontFamily: 'system-ui, sans-serif' }}>
+                  Key facts
+                </span>
+                <button
+                  type="button"
+                  onClick={() => fetchKeyFacts()}
+                  disabled={keyFactsLoading || !doc}
+                  className="text-xs text-gray-500 hover:text-gray-700 disabled:opacity-50 disabled:cursor-not-allowed underline focus:outline-none"
+                  style={{ fontFamily: 'system-ui, sans-serif' }}
+                  title="Regenerate summary and key facts"
+                >
+                  {keyFactsLoading ? '…' : 'Refresh'}
+                </button>
               </div>
               {keyFactsLoading && (
-                <div className="text-white/70 text-xs px-2 py-1" style={{ fontFamily: 'system-ui, sans-serif' }}>
+                <div className="text-gray-600 text-xs px-2 py-1" style={{ fontFamily: 'system-ui, sans-serif' }}>
                   Loading…
                 </div>
               )}
               {!keyFactsLoading && keyFacts !== null && !keyFactsSummary && keyFacts.length === 0 && (
-                <div className="text-white/70 text-xs px-2 py-1" style={{ fontFamily: 'system-ui, sans-serif' }}>
+                <div className="text-gray-600 text-xs px-2 py-1" style={{ fontFamily: 'system-ui, sans-serif' }}>
                   No key facts extracted for this document.
                 </div>
               )}
               {!keyFactsLoading && keyFactsSummary && (
                 <p
-                  className="text-white/90 text-xs leading-relaxed px-1 pb-2 break-words"
+                  className="text-gray-700 text-xs leading-relaxed px-1 pb-2 break-words"
                   style={{ fontFamily: 'system-ui, sans-serif' }}
                 >
                   {keyFactsSummary}
@@ -586,12 +669,12 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
                     return (
                       <div
                         key={index}
-                        className="px-3 py-2.5 rounded-lg text-white text-xs flex-shrink-0 flex flex-col gap-0.5"
-                        style={{ backgroundColor: 'rgba(0,0,0,0.15)', fontFamily: 'system-ui, sans-serif' }}
+                        className="px-3 py-2.5 rounded-lg text-gray-800 text-xs flex-shrink-0 flex flex-col gap-0.5"
+                        style={{ backgroundColor: 'rgba(0,0,0,0.06)', fontFamily: 'system-ui, sans-serif' }}
                         title={fact.value}
                       >
-                        <span className="text-white/80 font-medium">{fact.label}</span>
-                        <span className="text-white break-words">{displayValue}</span>
+                        <span className="text-gray-600 font-medium">{fact.label}</span>
+                        <span className="text-gray-800 break-words">{displayValue}</span>
                       </div>
                     );
                   })}
@@ -608,12 +691,13 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
         style={{
           backgroundColor: POPUP_BG,
           padding: '6px 10px',
+          border: '2px solid #E4E4E1',
         }}
       >
         <button
           type="button"
           onClick={handleViewDocument}
-          className="px-3 py-1.5 rounded-lg text-white text-xs font-medium hover:bg-white/10 transition-colors"
+          className="px-3 py-1.5 rounded-lg text-gray-800 text-xs font-medium hover:bg-black/10 transition-colors"
           style={{ fontFamily: 'system-ui, sans-serif' }}
         >
           View Document
@@ -621,16 +705,16 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
         <button
           type="button"
           onClick={handleAnalyseWithAI}
-          className="px-3 py-1.5 rounded-lg text-white text-xs font-medium hover:bg-white/10 transition-colors flex items-center gap-1.5"
+          className="px-3 py-1.5 rounded-lg text-gray-800 text-xs font-medium hover:bg-black/10 transition-colors flex items-center gap-1.5"
           style={{ fontFamily: 'system-ui, sans-serif' }}
         >
-          <BookOpen className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+          <img src="/analysewithai.png?v=2" alt="" className="w-4 h-4 flex-shrink-0 object-contain" />
           Analyse with AI
         </button>
         <button
           type="button"
           onClick={handleViewDetails}
-          className="px-3 py-1.5 rounded-lg text-white text-xs font-medium hover:bg-white/10 transition-colors"
+          className="px-3 py-1.5 rounded-lg text-gray-800 text-xs font-medium hover:bg-black/10 transition-colors"
           style={{ fontFamily: 'system-ui, sans-serif' }}
         >
           View details

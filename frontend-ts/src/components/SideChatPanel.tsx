@@ -614,11 +614,13 @@ const StreamingResponseText: React.FC<{
   orangeCitationNumbers?: Set<string>; // Citation numbers (e.g. "0","1") to highlight in orange (cited text when chip is in input)
   selectedCitationNumber?: string; // When citation click panel is open, the citation number that was clicked
   selectedCitationMessageId?: string; // When citation click panel is open, the message id that owns that citation
-}> = ({ text, isStreaming, citations, handleCitationClick, renderTextWithCitations, onTextUpdate, messageId, skipHighlight, showCitations = true, orangeCitationNumbers, selectedCitationNumber, selectedCitationMessageId }) => {
+  /** When true (e.g. just opened this chat), do not run the blue highlight swoop – show instant. */
+  skipHighlightSwoop?: boolean;
+}> = ({ text, isStreaming, citations, handleCitationClick, renderTextWithCitations, onTextUpdate, messageId, skipHighlight, showCitations = true, orangeCitationNumbers, selectedCitationNumber, selectedCitationMessageId, skipHighlightSwoop = false }) => {
   const [shouldAnimate, setShouldAnimate] = React.useState(false);
   const hasAnimatedRef = React.useRef(false);
   const hasSwoopedBlueRef = React.useRef(false);
-  const runBlueSwoop = !skipHighlight && !isStreaming && !hasSwoopedBlueRef.current;
+  const runBlueSwoop = !skipHighlight && !isStreaming && !hasSwoopedBlueRef.current && !skipHighlightSwoop;
   if (!skipHighlight) hasSwoopedBlueRef.current = true;
 
   if (!text) {
@@ -1074,6 +1076,7 @@ function streamingResponseTextAreEqual(
     prev.isStreaming === next.isStreaming &&
     prev.messageId === next.messageId &&
     prev.skipHighlight === next.skipHighlight &&
+    prev.skipHighlightSwoop === next.skipHighlightSwoop &&
     prev.showCitations === next.showCitations &&
     prev.citations === next.citations &&
     prev.orangeCitationNumbers === next.orangeCitationNumbers &&
@@ -1155,6 +1158,7 @@ interface CitationChunkData {
 
 interface CitationDataType {
   doc_id: string;
+  document_id?: string;  // Backend may send this; we normalize to doc_id
   page: number;  // Primary field for page number
   bbox: {
     left: number;
@@ -1183,6 +1187,7 @@ interface CitationDataType {
 
 interface CitationData {
   doc_id: string;
+  document_id?: string;  // Backend may send this; we normalize to doc_id
   original_filename?: string | null;
   page?: number;
   page_number?: number;
@@ -1201,6 +1206,14 @@ interface CitationData {
   source_chunks_metadata?: CitationChunkData[];
   candidate_chunks_metadata?: CitationChunkData[];
   chunk_metadata?: CitationChunkData;
+  /** Backend citation-debug payload: why this bbox was chosen (for diagnosis). */
+  debug?: import('./CitationClickPanel').CitationDebugInfo | null;
+}
+
+/** Ensure citation has doc_id set (from document_id if missing) so View in document and pop-up always have a valid ID. */
+function normalizeCitationDocId(cit: any): CitationDataType {
+  if (!cit || typeof cit !== 'object') return cit;
+  return { ...cit, doc_id: cit.doc_id ?? cit.document_id };
 }
 
 const CitationLink: React.FC<{
@@ -2905,6 +2918,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     imageHeight: number;
   } | null>(null);
 
+  // Response IDs we've already called updateChatStatus('completed') for when text first appeared (avoid calling inside setState updater)
+  const chatStatusCompletedForResponseIdRef = React.useRef<Set<string>>(new Set());
   // When citation panel opens: clear stale image, then use cache or preload so preview shows
   const citationPanelKeyRef = React.useRef<string | null>(null);
   React.useEffect(() => {
@@ -4364,6 +4379,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   
   // Chat title state management
   const [currentChatId, setCurrentChatId] = React.useState<string | null>(null);
+  /** When set, we just switched to this chat – disable response highlight swoop for a brief period. */
+  const [skipSwoopForChatId, setSkipSwoopForChatId] = React.useState<string | null>(null);
   const [chatTitle, setChatTitle] = React.useState<string>('');
   const [isEditingTitle, setIsEditingTitle] = React.useState<boolean>(false);
   const [editingTitleValue, setEditingTitleValue] = React.useState<string>('');
@@ -4744,7 +4761,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     // Also update the doc ref for document operations
     currentChatIdForDocRef.current = currentChatId;
   }, [currentChatId]);
-  
+
+  // When switching to a chat, disable response highlight swoop for a brief period so opening feels instant
+  React.useEffect(() => {
+    if (!currentChatId) return;
+    setSkipSwoopForChatId(currentChatId);
+    const t = window.setTimeout(() => setSkipSwoopForChatId(null), 80);
+    return () => clearTimeout(t);
+  }, [currentChatId]);
+
   // ========== CHAT STATE STORE INTEGRATION ==========
   // Wrapper: Open document with per-chat isolation (writes to ChatStateStore)
   // Also calls legacy openExpandedCardView during migration for backward compatibility
@@ -6402,17 +6427,17 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           textLength: cleanedText.length,
                           textPreview: cleanedText.substring(0, 100)
                         });
-                        
-                        // Update chat status to completed when text first appears
-                        if (currentChatId) {
-                          updateChatStatus(currentChatId, 'completed');
-                        }
                       }
                       
                       return { ...msg, text: cleanedText, isLoading: false };
                     }
                     return msg;
                   }));
+                  // Update chat status outside setState updater to avoid "Cannot update component while rendering another" (once per response when text first appears)
+                  if (cleanedText.trim().length > 0 && currentChatId && !chatStatusCompletedForResponseIdRef.current.has(loadingResponseId)) {
+                    chatStatusCompletedForResponseIdRef.current.add(loadingResponseId);
+                    updateChatStatus(currentChatId, 'completed');
+                  }
                   
                   // Determine delay based on block type and size
                   // Headings: slightly longer delay
@@ -6672,12 +6697,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   }
                   
                   // Use citations from complete event, fallback to accumulated citations
-                  // Ensure all citation keys are strings (backend may send mixed types)
+                  // Ensure all citation keys are strings and each citation has doc_id set (from document_id if missing)
                   const normalizeCitations = (cits: any): Record<string, CitationDataType> => {
                     if (!cits || typeof cits !== 'object') return {};
                     const normalized: Record<string, CitationDataType> = {};
                     for (const [key, value] of Object.entries(cits)) {
-                      normalized[String(key)] = value as CitationDataType;
+                      normalized[String(key)] = normalizeCitationDocId(value) as CitationDataType;
                     }
                     return normalized;
                   };
@@ -7974,7 +7999,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   // Open citation in 50/50 document view (extracted for use from "View in document" and agent-triggered opens)
   const openCitationInDocumentView = React.useCallback(async (citationData: CitationData, fromAgentAction: boolean = false) => {
     try {
-      const docId = citationData.doc_id;
+      const docId = citationData.doc_id ?? (citationData as { document_id?: string }).document_id;
       if (!docId) {
         toast({ title: "Error", description: "Document ID not found in citation", variant: "destructive" });
         return;
@@ -9061,17 +9086,17 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           textLength: cleanedText.length,
                           textPreview: cleanedText.substring(0, 100)
                         });
-                        
-                        // Update chat status to completed when text first appears
-                        if (currentChatId) {
-                          updateChatStatus(currentChatId, 'completed');
-                        }
                       }
                       
                       return { ...msg, text: cleanedText, isLoading: false };
                     }
                     return msg;
                   }));
+                  // Update chat status outside setState updater to avoid "Cannot update component while rendering another" (once per response when text first appears)
+                  if (cleanedText.trim().length > 0 && currentChatId && !chatStatusCompletedForResponseIdRef.current.has(loadingResponseId)) {
+                    chatStatusCompletedForResponseIdRef.current.add(loadingResponseId);
+                    updateChatStatus(currentChatId, 'completed');
+                  }
                   
                   // Determine delay based on block type and size
                   // Headings: slightly longer delay
@@ -9162,9 +9187,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 // Fallback to data.summary only if displayedText is empty
                   const finalText = cleanResponseText(displayedText || data.summary || accumulatedText || "I found some information for you.");
                   
-                  // Merge accumulated citations with any from backend complete message
-                  const mergedCitations = { ...accumulatedCitations, ...(data.citations || {}) };
-                
+                  // Merge accumulated citations with any from backend complete message; ensure doc_id set from document_id
+                  const mergedRaw = { ...accumulatedCitations, ...(data.citations || {}) };
+                  const mergedCitations: Record<string, CitationDataType> = {};
+                  for (const [k, v] of Object.entries(mergedRaw)) {
+                    mergedCitations[String(k)] = normalizeCitationDocId(v) as CitationDataType;
+                  }
                 console.log('✅ SideChatPanel: LLM streaming complete for initial query:', {
                   summary: finalText.substring(0, 100),
                   documentsFound: data.relevant_documents?.length || 0,
@@ -10463,17 +10491,17 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         textLength: cleanedText.length,
                         textPreview: cleanedText.substring(0, 100)
                       });
-                      
-                      // Update chat status to completed when text first appears
-                      if (queryChatId) {
-                        updateChatStatus(queryChatId, 'completed');
-                      }
                     }
                     
                     return { ...msg, text: cleanedText, isLoading: false };
                   }
                   return msg;
                 }));
+                // Update chat status outside setState updater to avoid "Cannot update component while rendering another" (once per response when text first appears)
+                if (cleanedText.trim().length > 0 && queryChatId && !chatStatusCompletedForResponseIdRef.current.has(loadingResponseId)) {
+                  chatStatusCompletedForResponseIdRef.current.add(loadingResponseId);
+                  updateChatStatus(queryChatId, 'completed');
+                }
                 
                 // Determine delay based on block type and size
                 // Headings: slightly longer delay
@@ -10750,9 +10778,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               // Fallback to data.summary only if displayedText is empty
                 const finalText = cleanResponseText(displayedText || data.summary || accumulatedText || "I found some information for you.");
               
-                // Merge accumulated citations with any from backend complete message
-                const mergedCitations = { ...accumulatedCitations, ...(data.citations || {}) };
-              
+                // Merge accumulated citations with any from backend complete message; ensure doc_id set from document_id
+                const mergedRaw = { ...accumulatedCitations, ...(data.citations || {}) };
+                const mergedCitations: Record<string, CitationDataType> = {};
+                for (const [k, v] of Object.entries(mergedRaw)) {
+                  mergedCitations[String(k)] = normalizeCitationDocId(v) as CitationDataType;
+                }
               console.log('✅ SideChatPanel: LLM streaming complete:', {
                 summary: finalText.substring(0, 100),
                 documentsFound: data.relevant_documents?.length || 0,
@@ -11239,9 +11270,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               
               const finalBbox = normalizedBbox || { left: 0, top: 0, width: 0, height: 0 };
               
+              const docId = citation.data.doc_id ?? citation.data.document_id;
               // Accumulate citation locally - will be applied in onComplete
               accumulatedCitations[citationNumStr] = {
-                doc_id: citation.data.doc_id,
+                doc_id: docId,
                 page: citation.data.page || citation.data.page_number || 0,
                 bbox: finalBbox,
                 method: citation.data.method,
@@ -11257,7 +11289,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               }
               
               // Preload document in background (no state update, always happens)
-              const docId = citation.data.doc_id;
               if (docId) {
                 preloadDocumentById(docId, citation.data.original_filename);
               }
@@ -11820,7 +11851,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 />
               </div>
             )}
-            <div style={{ backgroundColor: '#FFFFFF', borderRadius: '8px', padding: '4px 6px 4px 10px', border: '1px solid #e5e7eb', boxShadow: '0 1px 2px rgba(0, 0, 0, 0.05)', width: 'fit-content', maxWidth: '100%', wordWrap: 'break-word', overflowWrap: 'break-word', display: 'block', boxSizing: 'border-box' }}>
+            <div style={{ backgroundColor: '#FFFFFF', borderRadius: '14px', padding: '4px 6px 4px 10px', width: 'fit-content', maxWidth: '100%', wordWrap: 'break-word', overflowWrap: 'break-word', display: 'block', boxSizing: 'border-box' }}>
               {message.attachments?.length > 0 && (
                 <div style={{ marginBottom: (message.text || message.propertyAttachments?.length > 0) ? '8px' : '0', display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
                   {message.attachments.map((attachment, i) => (
@@ -12075,13 +12106,14 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 orangeCitationNumbers={orangeCitationNumbersByMessage.get(message.id ?? finalKey)}
                 selectedCitationNumber={citationClickPanel?.citationNumber}
                 selectedCitationMessageId={citationClickPanel?.messageId}
+                skipHighlightSwoop={currentChatId !== null && currentChatId === skipSwoopForChatId}
               />
             </div>
           )}
         </div>
       );
     }).filter(Boolean);
-  }, [chatMessages, showReasoningTrace, showHighlight, showCitations, restoredMessageIdsRef, handleUserCitationClick, onOpenProperty, scrollToBottom, expandedCardViewDoc, propertyAttachments, orangeCitationNumbersByMessage, citationClickPanel]);
+  }, [chatMessages, showReasoningTrace, showHighlight, showCitations, restoredMessageIdsRef, handleUserCitationClick, onOpenProperty, scrollToBottom, expandedCardViewDoc, propertyAttachments, orangeCitationNumbersByMessage, citationClickPanel, currentChatId, skipSwoopForChatId]);
 
   return (
     <>
@@ -12871,7 +12903,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       <img src={agentIcon} alt="Agents" className="w-5 h-5" aria-hidden />
                     )}
                     {actualPanelWidth >= 750 && (
-                      <span className={`font-normal text-[#666] ${isChatPanelOpen ? 'text-[12px]' : 'text-[14px]'}`}>
+                      <span className="font-normal text-[12px] text-[#666]">
                         {isChatPanelOpen ? "Close" : "Agents"}
                       </span>
                     )}
@@ -13049,14 +13081,14 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             </div>
             
             {/* Conditional layout: Centered empty state OR normal messages + bottom input */}
-            {/* Single child with key so AnimatePresence mode="wait" never sees multiple children */}
+            {/* Key by currentChatId so switching chats gets a clean transition (no swooping) */}
             <AnimatePresence mode="wait">
             <motion.div
-              key={isEmptyChat ? 'empty-chat-layout' : 'messages-layout'}
+              key={isEmptyChat ? `empty-${currentChatId ?? 'new'}` : `messages-${currentChatId ?? 'new'}`}
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0, transition: { duration: 0.1 } }}
-              transition={{ duration: 0.2, ease: [0.4, 0, 0.2, 1] }}
+              transition={{ duration: 0.15 }}
               style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', position: 'relative', width: '100%' }}
             >
             {isEmptyChat ? (

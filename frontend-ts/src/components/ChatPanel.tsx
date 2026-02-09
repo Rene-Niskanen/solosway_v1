@@ -2,9 +2,10 @@
 
 import * as React from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { MessageSquare, Plus, MoreVertical, Archive, ArchiveRestore, X, Trash2, Loader2 } from "lucide-react";
+import { MessageSquare, Plus, MoreVertical, Archive, ArchiveRestore, X, Trash2, Loader2, CircleCheck, SlidersHorizontal } from "lucide-react";
 import { useChatHistory } from "./ChatHistoryContext";
 import { useChatPanel } from "../contexts/ChatPanelContext";
+import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 
 export interface ChatPanelProps {
   onChatSelect?: (chatId: string) => void;
@@ -47,42 +48,9 @@ export const ChatPanel = ({
     timeoutId: NodeJS.Timeout;
   } | null>(null);
   const [showClearConfirm, setShowClearConfirm] = React.useState<boolean>(false);
-  // Track chats that were loading and have now completed (for green outline)
-  const [completedUnseenChats, setCompletedUnseenChats] = React.useState<Set<string>>(new Set());
-  // Track previous loading states to detect completion
-  const prevLoadingChatsRef = React.useRef<Set<string>>(new Set());
-  
-  // Detect when chats complete (transition from loading to completed)
-  React.useEffect(() => {
-    const currentLoadingChats = new Set(
-      chatHistory.filter(chat => chat.status === 'loading').map(chat => chat.id)
-    );
-    
-    // Find chats that were loading but are now completed
-    prevLoadingChatsRef.current.forEach(chatId => {
-      if (!currentLoadingChats.has(chatId)) {
-        // This chat just completed
-        const chat = chatHistory.find(c => c.id === chatId);
-        if (chat && chat.status === 'completed') {
-          setCompletedUnseenChats(prev => new Set([...prev, chatId]));
-        }
-      }
-    });
-    
-    prevLoadingChatsRef.current = currentLoadingChats;
-  }, [chatHistory]);
-  
-  // Mark chat as seen when clicked (remove green outline)
-  const markChatAsSeen = (chatId: string) => {
-    setCompletedUnseenChats(prev => {
-      const newSet = new Set(prev);
-      newSet.delete(chatId);
-      return newSet;
-    });
-  };
+  const [optionsMenuOpen, setOptionsMenuOpen] = React.useState<boolean>(false);
   const handleChatClick = (chatId: string) => {
     if (editingChatId === chatId) return;
-    markChatAsSeen(chatId);
     onChatSelect?.(chatId);
   };
 
@@ -284,21 +252,64 @@ export const ChatPanel = ({
                   placeholder="Search"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full pl-2 pr-8 py-1.5 text-[11px] bg-transparent border-none focus:outline-none placeholder:text-[#A0A0A0]"
+                  className="w-full pl-2 pr-14 py-1.5 text-[11px] bg-transparent border-none focus:outline-none placeholder:text-[#A0A0A0]"
                   style={{ color: '#6B7280' }}
                 />
-                {/* Close Button - Inline with Search Input */}
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    closePanel();
-                  }}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded-full hover:bg-slate-200/50 active:bg-slate-200/70 transition-all duration-150 z-10 flex items-center justify-center"
-                  title="Close Agent Sidebar"
-                  type="button"
-                >
-                  <X className="w-4 h-4 text-[#A0A0A0] hover:text-slate-500" strokeWidth={1.5} />
-                </button>
+                {/* Options (sliders) + Close - Inline with Search Input */}
+                <div className="absolute right-1 top-1/2 -translate-y-1/2 flex items-center gap-0.5 z-10">
+                  <Popover open={optionsMenuOpen} onOpenChange={setOptionsMenuOpen}>
+                    <PopoverTrigger asChild>
+                      <button
+                        type="button"
+                        onClick={(e) => e.stopPropagation()}
+                        className="p-1 rounded-full hover:bg-slate-200/50 active:bg-slate-200/70 transition-all duration-150 flex items-center justify-center"
+                        title="Options"
+                        aria-haspopup="true"
+                        aria-expanded={optionsMenuOpen}
+                      >
+                        <SlidersHorizontal className="w-4 h-4 text-[#A0A0A0] hover:text-slate-500" strokeWidth={1.5} />
+                      </button>
+                    </PopoverTrigger>
+                    <PopoverContent
+                      align="end"
+                      side="bottom"
+                      sideOffset={4}
+                      className="min-w-[180px] w-auto rounded-lg border border-gray-200 bg-white p-2 shadow-md"
+                      onOpenAutoFocus={(e) => e.preventDefault()}
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <div className="flex flex-col gap-0.5">
+                        {showChatHistory && baseChats.length > 0 ? (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setOptionsMenuOpen(false);
+                              setShowClearConfirm(true);
+                            }}
+                            className="flex items-center gap-2 w-full rounded-sm px-2 py-2 text-left hover:bg-[#f5f5f5] text-[12px] text-[#374151]"
+                          >
+                            <Trash2 className="w-3.5 h-3.5 text-[#666] flex-shrink-0" strokeWidth={1.5} />
+                            Clear all chats
+                          </button>
+                        ) : (
+                          <span className="px-2 py-2 text-[12px] text-[#9CA3AF]">No chats to clear</span>
+                        )}
+                      </div>
+                    </PopoverContent>
+                  </Popover>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      closePanel();
+                    }}
+                    className="p-1 rounded-full hover:bg-slate-200/50 active:bg-slate-200/70 transition-all duration-150 flex items-center justify-center"
+                    title="Close Agent Sidebar"
+                    type="button"
+                  >
+                    <X className="w-4 h-4 text-[#A0A0A0] hover:text-slate-500" strokeWidth={1.5} />
+                  </button>
+                </div>
               </div>
               
               {/* New Agent Button - Full Width */}
@@ -367,14 +378,13 @@ export const ChatPanel = ({
                           ease: [0.23, 1, 0.32, 1]
                         }} 
                         onClick={() => handleChatClick(chat.id)} 
-                        className={`group relative px-2.5 py-1.5 rounded-md cursor-pointer w-full ${
+                        className={`group relative px-2.5 py-1.5 rounded-md cursor-pointer w-full mb-0.5 transition-colors duration-150 ${
                           selectedChatId === chat.id 
-                            ? 'bg-[#E3E9F3]/60' 
-                            : openMenuId ? '' : 'hover:bg-[#E5E5E2]'
-                        } ${completedUnseenChats.has(chat.id) ? 'ring-1 ring-green-400/40 mb-2.5' : 'mb-0.5'}`}
+                            ? 'bg-white' 
+                            : openMenuId ? '' : 'hover:bg-[#E0E0DC]'
+                        }`}
                         style={{ 
-                          borderBottom: '1px solid rgba(0, 0, 0, 0.04)',
-                          ...(completedUnseenChats.has(chat.id) ? { backgroundColor: 'rgba(34, 197, 94, 0.04)' } : {})
+                          borderBottom: '1px solid rgba(0, 0, 0, 0.04)'
                         }}
                       >
                         {isEditing ? (
@@ -398,6 +408,9 @@ export const ChatPanel = ({
                             <div className="flex items-center gap-1.5 text-[12px] font-normal text-slate-800 truncate pr-5">
                               {chat.status === 'loading' && (
                                 <Loader2 className="w-3 h-3 text-slate-500 animate-spin flex-shrink-0" />
+                              )}
+                              {chat.status === 'completed' && (
+                                <CircleCheck className="w-3 h-3 text-slate-500 flex-shrink-0" aria-hidden />
                               )}
                               <span className="truncate">{chat.title}</span>
                             </div>
@@ -444,7 +457,7 @@ export const ChatPanel = ({
                                   <div className="h-px bg-gray-200 my-1 mx-1" />
                                   <button
                                     onClick={(e) => handleDeleteChat(e, chat.id)}
-                                    className="w-full px-2 py-1 text-left text-[11px] text-gray-800 hover:bg-[#007AFF] hover:text-white rounded transition-colors"
+                                    className="w-full px-2 py-1.5 text-center text-[11px] font-medium text-white bg-[#4285F4] hover:bg-[#3367D6] rounded transition-colors"
                                   >
                                     Delete
                                   </button>
@@ -469,9 +482,9 @@ export const ChatPanel = ({
                     e.stopPropagation();
                     setShowClearConfirm(true);
                   }}
-                  className="w-full py-2 text-[11px] font-medium text-slate-500 hover:text-slate-700 hover:bg-[#E5E5E2] rounded-md transition-colors flex items-center justify-center gap-1.5"
+                  className="w-full py-2 text-[11px] font-medium text-slate-700 bg-white hover:bg-[#FAFAF9] rounded-md transition-colors flex items-center justify-center gap-1.5 border border-slate-200/80"
                 >
-                  <Trash2 className="w-3.5 h-3.5" />
+                  <Trash2 className="w-3.5 h-3.5 shrink-0" />
                   Clear all chats
                 </button>
                 
@@ -483,20 +496,20 @@ export const ChatPanel = ({
                       animate={{ opacity: 1, y: 0 }}
                       exit={{ opacity: 0, y: 10 }}
                       transition={{ duration: 0.15 }}
-                      className="absolute bottom-full left-4 mb-2 px-4 py-3 w-[240px] bg-[#F2F2EF] rounded-lg shadow-lg border border-slate-200/80"
+                      className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-2 w-[200px] bg-white rounded-md shadow-lg border border-slate-200/80"
                       onClick={(e) => e.stopPropagation()}
                     >
-                      <p className="text-[11px] text-slate-600 mb-3 text-center leading-tight">
+                      <p className="text-[11px] text-slate-800 mb-2 text-center leading-tight">
                         Delete all {baseChats.length} chat{baseChats.length !== 1 ? 's' : ''}?
                       </p>
-                      <div className="flex gap-2">
+                      <div className="flex gap-1.5">
                         <button
                           type="button"
                           onClick={(e) => {
                             e.stopPropagation();
                             setShowClearConfirm(false);
                           }}
-                          className="flex-1 py-1.5 text-[11px] font-medium text-slate-600 hover:bg-slate-200/60 rounded border border-slate-200/80 transition-colors"
+                          className="flex-1 py-1 text-[11px] font-medium text-slate-600 hover:bg-slate-200/60 rounded border border-slate-200/80 transition-colors"
                         >
                           Cancel
                         </button>
@@ -508,7 +521,7 @@ export const ChatPanel = ({
                             onNewChat?.();
                             setShowClearConfirm(false);
                           }}
-                          className="flex-1 py-1.5 text-[11px] font-medium text-white bg-red-500 hover:bg-red-600 rounded transition-colors"
+                          className="flex-1 py-1 text-[11px] font-medium text-white bg-[#4285F4] hover:bg-[#3367D6] rounded transition-colors"
                         >
                           Delete
                         </button>

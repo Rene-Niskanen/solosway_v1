@@ -1224,13 +1224,16 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
         return;
       }
       
-      // Deduplicate: Create a unique key for this step based on action_type, message, doc_id, and original index
-      // CRITICAL: Include originalIdx to ensure uniqueness even if all other fields are identical
+      // Deduplicate: Create a unique key for this step.
+      // For 'searching': use only action_type + message so duplicate "Searching for X" lines collapse to one (no-results case).
+      // For 'reading': include doc_id so multiple reads of different docs show; for 'exploring' use message + timestamp/index.
       const stepKey = step.action_type === 'reading' && step.details?.doc_metadata?.doc_id
         ? `${step.action_type}-${step.details.doc_metadata.doc_id}-${step.timestamp || originalIdx}`
-        : step.action_type === 'exploring'
-          ? `${step.action_type}-${step.message}-${step.timestamp || originalIdx}`
-          : `${step.action_type}-${step.message}-${step.timestamp || originalIdx}`;
+        : step.action_type === 'searching'
+          ? `${step.action_type}-${step.message}`
+          : step.action_type === 'exploring'
+            ? `${step.action_type}-${step.message}-${step.timestamp || originalIdx}`
+            : `${step.action_type}-${step.message}-${step.timestamp || originalIdx}`;
       
       // Skip if we've already seen this exact step
       if (seen.has(stepKey)) {
@@ -1271,13 +1274,29 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
     return result;
   }, [steps]);
 
-  // When no-results response, collapse to max 2 steps for display: first searching + first "No relevant"
+  const isPlanningPlaceholder = (s: ReasoningStep) =>
+    s.step === 'planning_next_moves' || (s.action_type === 'summarising' && s.message === 'Planning next moves');
+
+  // When no-results (or when we only have Planning + Searching + Preparing): show one search line and replace "Planning next moves"
+  // so we don't show Planning + duplicate Searching; we show a single "Searching for X" line then "Preparing response".
   const stepsToRender = useMemo(() => {
-    if (!isNoResultsResponse || !filteredSteps || filteredSteps.length <= 2) return filteredSteps;
-    const firstSearching = filteredSteps.find(s => s.action_type === 'searching');
-    const firstNoRelevant = filteredSteps.find(s => /No relevant/i.test(s.message || ''));
-    const collapsed = [firstSearching, firstNoRelevant].filter((s): s is ReasoningStep => !!s);
-    return collapsed.length > 0 ? collapsed : filteredSteps.slice(0, 2);
+    if (!filteredSteps || filteredSteps.length === 0) return filteredSteps;
+    const hasSearching = filteredSteps.some(s => s.action_type === 'searching');
+    const hasExploringOrReading = filteredSteps.some(s => s.action_type === 'exploring' || s.action_type === 'reading');
+    // When we have searching but no docs found: drop "Planning next moves" so the first line is the single search (replaces Planning).
+    const replacePlanningWithSearch = hasSearching && !hasExploringOrReading;
+    let list = filteredSteps;
+    if (replacePlanningWithSearch) {
+      list = filteredSteps.filter(s => !isPlanningPlaceholder(s));
+    }
+    // When no-results response and still many steps: collapse to first searching + first "No relevant"
+    if (isNoResultsResponse && list.length > 2) {
+      const firstSearching = list.find(s => s.action_type === 'searching');
+      const firstNoRelevant = list.find(s => /No relevant/i.test(s.message || ''));
+      const collapsed = [firstSearching, firstNoRelevant].filter((s): s is ReasoningStep => !!s);
+      return collapsed.length > 0 ? collapsed : list.slice(0, 2);
+    }
+    return list;
   }, [filteredSteps, isNoResultsResponse]);
 
   // Preload document covers IMMEDIATELY when documents are found (optimized for instant thumbnail loading)

@@ -4,6 +4,22 @@ import * as React from "react";
 import { FileSearchCorner, MessageCircle } from "lucide-react";
 import veloraLogo from "/Velora Logo.jpg";
 
+/** Debug payload from backend: why this bbox was chosen (for citation mapping diagnosis). */
+export interface CitationDebugInfo {
+  short_id?: string;
+  citation_number?: number;
+  cited_text_for_bbox?: string;
+  distinctive_values?: string[];
+  chosen_bbox?: { left?: number; top?: number; width?: number; height?: number; page?: number } | null;
+  block_id?: string | null;
+  block_index?: number | null;
+  block_type?: string | null;
+  block_content_preview?: string | null;
+  match_score?: number | null;
+  source?: "block" | "chunk";
+  num_blocks_considered?: number;
+}
+
 export interface CitationClickPanelData {
   doc_id: string;
   original_filename?: string | null;
@@ -13,6 +29,7 @@ export interface CitationClickPanelData {
   block_content?: string;
   cited_text?: string;
   classification_type?: string;
+  debug?: CitationDebugInfo | null;
 }
 
 export interface CachedPageImage {
@@ -101,6 +118,8 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
 
   const previewContainerRef = React.useRef<HTMLDivElement>(null);
   const [previewSize, setPreviewSize] = React.useState({ width: PANEL_WIDTH, height: 280 });
+  const [debugExpanded, setDebugExpanded] = React.useState(false);
+  const debug = citationData.debug;
 
   React.useLayoutEffect(() => {
     const el = previewContainerRef.current;
@@ -278,6 +297,74 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Citation debug: why this bbox was chosen (for diagnosing wrong highlights) */}
+      {debug && (
+        <div style={{ flexShrink: 0, borderBottom: "1px solid #f0f0f0" }}>
+          <button
+            type="button"
+            onClick={() => setDebugExpanded((e) => !e)}
+            style={{
+              width: "100%",
+              padding: "8px 16px",
+              textAlign: "left",
+              fontSize: "11px",
+              fontWeight: 600,
+              color: "#6b7280",
+              background: "#f9fafb",
+              border: "none",
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+            }}
+          >
+            Citation debug (bbox choice)
+            <span style={{ fontSize: "10px", color: "#9ca3af" }}>{debugExpanded ? "▼" : "▶"}</span>
+          </button>
+          {debugExpanded && (
+            <pre
+              style={{
+                margin: 0,
+                padding: "12px 16px 14px",
+                fontSize: "10px",
+                lineHeight: 1.45,
+                color: "#374151",
+                background: "#f3f4f6",
+                overflow: "auto",
+                maxHeight: 220,
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-word",
+                fontFamily: "ui-monospace, monospace",
+                borderTop: "1px solid #e5e7eb",
+              }}
+            >
+              {[
+                `short_id: ${debug.short_id ?? "—"}`,
+                `citation_number: ${debug.citation_number ?? "—"}`,
+                `source: ${debug.source ?? "—"} (block = one block chosen, chunk = fallback)`,
+                `block_id: ${debug.block_id ?? "—"}`,
+                `block_index: ${debug.block_index ?? "—"}`,
+                `block_type: ${debug.block_type ?? "—"}`,
+                `match_score: ${debug.match_score ?? "—"}`,
+                `num_blocks_considered: ${debug.num_blocks_considered ?? "—"}`,
+                "",
+                "cited_text_for_bbox (exact sentence used for matching):",
+                (debug.cited_text_for_bbox ?? "—").slice(0, 500) + ((debug.cited_text_for_bbox?.length ?? 0) > 500 ? "…" : ""),
+                "",
+                "distinctive_values extracted:",
+                (debug.distinctive_values?.length ? debug.distinctive_values.join(", ") : "—"),
+                "",
+                "chosen_bbox:",
+                debug.chosen_bbox ? JSON.stringify(debug.chosen_bbox, null, 2) : "—",
+                "",
+                "block_content_preview (selected block text):",
+                (debug.block_content_preview ?? "—").slice(0, 400) + ((debug.block_content_preview?.length ?? 0) > 400 ? "…" : ""),
+              ].join("\n")}
+            </pre>
+          )}
+        </div>
+      )}
 
       {/* Content: scrollable with hidden scrollbar; buttons overlay on top of document */}
       <div

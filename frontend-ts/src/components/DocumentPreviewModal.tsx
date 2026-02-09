@@ -66,7 +66,15 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
       setIsLocallyHidden(false);
     }
   }, [isOpen]);
-  
+
+  // Reset PDF render width trigger when modal closes so next open gets a fresh render
+  React.useEffect(() => {
+    if (!isOpen) {
+      setContainerWidthForPdfRender(null);
+      lastContainerWidthForPdfRenderRef.current = null;
+    }
+  }, [isOpen]);
+
   // Instant close handler - hides immediately, then notifies parent
   const handleInstantClose = React.useCallback(() => {
     setIsLocallyHidden(true); // Hide immediately (local re-render returns null)
@@ -232,8 +240,12 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
   const [baseScale, setBaseScale] = React.useState<number>(1.0); // Base scale for rendering (calculated once)
   // Track the last width used for scale calculation to detect when recalculation is needed
   const lastScaleWidthRef = React.useRef<number>(0);
+  const lastRenderedFileIdRef = React.useRef<string | null>(null);
   const [dimensionsStable, setDimensionsStable] = React.useState<boolean>(false); // Track when dimensions are stable for bbox positioning
   const pdfPagesContainerRef = React.useRef<HTMLDivElement>(null);
+  // Width that triggers PDF full re-render; only updated when width changes by >50px to avoid jitter and restarts
+  const [containerWidthForPdfRender, setContainerWidthForPdfRender] = React.useState<number | null>(null);
+  const lastContainerWidthForPdfRenderRef = React.useRef<number | null>(null);
   
   // Reprocess document state
   const [isReprocessing, setIsReprocessing] = React.useState(false);
@@ -503,104 +515,49 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
     });
   }, [showAllChunkBboxes, fileHighlight]);
 
-  // Auto-scroll to highlighted page when highlight is set (for continuous scrolling PDFs)
-  // Only runs after dimensions are stable to ensure consistent positioning
+  // Single "open to target" scroll: after dimensions stable, scroll to citation (if any) or to first page.
+  // Uses the same logic whether opening from a citation or not, so behavior is consistent and doesn't bug out.
   React.useEffect(() => {
-    // Only scroll if modal is open, pages are rendered, not currently rendering, AND dimensions are stable
-    // dimensionsStable ensures we wait for PDF to render at correct scale before scrolling
-    if (!isOpen || pdfPageRendering || !dimensionsStable) return;
-    
-    if (fileHighlight && isPDF && fileHighlight.bbox.page && pdfWrapperRef.current && pageOffsets.size > 0 && renderedPages.size > 0) {
+    if (!isOpen || !isPDF || pdfPageRendering || !dimensionsStable || !pdfWrapperRef.current || pageOffsets.size === 0 || renderedPages.size === 0) return;
+
+    const scrollContainer = pdfWrapperRef.current;
+    if (scrollContainer.scrollHeight <= 0) return;
+
+    const viewportHeight = scrollContainer.clientHeight;
+    const viewportWidth = scrollContainer.clientWidth;
+    const maxScrollTop = Math.max(0, scrollContainer.scrollHeight - viewportHeight);
+    const maxScrollLeft = Math.max(0, scrollContainer.scrollWidth - viewportWidth);
+
+    let scrollTop = 0;
+    let scrollLeft = 0;
+
+    if (fileHighlight?.bbox?.page && expandedBbox) {
       const targetPage = fileHighlight.bbox.page;
       const pageOffset = pageOffsets.get(targetPage);
       const pageData = renderedPages.get(targetPage);
-      
-      if (pageOffset !== undefined && pageData && expandedBbox) {
-        // Calculate the vertical position of the BBOX center on the page
+      if (pageOffset !== undefined && pageData) {
         const bboxTop = expandedBbox.top * pageData.dimensions.height;
         const bboxHeight = expandedBbox.height * pageData.dimensions.height;
         const bboxCenterY = bboxTop + (bboxHeight / 2);
-        
-        // Calculate the horizontal position of the BBOX center on the page
         const bboxLeft = expandedBbox.left * pageData.dimensions.width;
         const bboxWidth = expandedBbox.width * pageData.dimensions.width;
         const bboxCenterX = bboxLeft + (bboxWidth / 2);
-        
-        // Calculate the absolute position of the BBOX center in the document
         const bboxCenterAbsoluteY = pageOffset + bboxCenterY;
-        
-        console.log('📄 Auto-scrolling to page', targetPage, 'centering BBOX (dimensions stable)', {
-          pageOffset,
-          bboxTop: expandedBbox.top,
-          bboxLeft: expandedBbox.left,
-          pageHeight: pageData.dimensions.height,
-          pageWidth: pageData.dimensions.width,
-          bboxCenterY,
-          bboxCenterX,
-          bboxCenterAbsoluteY,
-          isOpen,
-          pagesRendered: renderedPages.size,
-          totalPages,
-          dimensionsStable
-        });
-        
-        // Scroll immediately using requestAnimationFrame for next paint (no artificial delays)
-        requestAnimationFrame(() => {
-          if (pdfWrapperRef.current && isOpen) {
-            const scrollContainer = pdfWrapperRef.current;
-            
-            // Get viewport dimensions
-            const viewportHeight = scrollContainer.clientHeight;
-            const viewportWidth = scrollContainer.clientWidth;
-            
-            // Calculate scroll position to center the BBOX vertically
-            const scrollTop = bboxCenterAbsoluteY - (viewportHeight / 2);
-            
-            // Calculate scroll position to center the BBOX horizontally
-            const scrollLeft = bboxCenterX - (viewportWidth / 2);
-            
-            // Ensure container has proper dimensions before scrolling
-            if (scrollContainer.scrollHeight > 0) {
-              const maxScrollTop = Math.max(0, scrollContainer.scrollHeight - viewportHeight);
-              const maxScrollLeft = Math.max(0, scrollContainer.scrollWidth - viewportWidth);
-              
-              // Use smooth scroll to center BBOX
-              scrollContainer.scrollTo({
-                top: Math.max(0, Math.min(scrollTop, maxScrollTop)),
-                left: Math.max(0, Math.min(scrollLeft, maxScrollLeft)),
-                behavior: 'smooth'
-              });
-              
-              console.log('✅ Scrolled to center BBOX:', {
-                scrollTop: Math.max(0, Math.min(scrollTop, maxScrollTop)),
-                scrollLeft: Math.max(0, Math.min(scrollLeft, maxScrollLeft)),
-                containerHeight: scrollContainer.scrollHeight,
-                containerWidth: scrollContainer.scrollWidth
-              });
-            } else {
-              // Container not ready - try again on next frame
-              requestAnimationFrame(() => {
-                if (pdfWrapperRef.current && pdfWrapperRef.current.scrollHeight > 0) {
-                  const retryViewportHeight = pdfWrapperRef.current.clientHeight;
-                  const retryViewportWidth = pdfWrapperRef.current.clientWidth;
-                  const retryScrollTop = bboxCenterAbsoluteY - (retryViewportHeight / 2);
-                  const retryScrollLeft = bboxCenterX - (retryViewportWidth / 2);
-                  const retryMaxScrollTop = Math.max(0, pdfWrapperRef.current.scrollHeight - retryViewportHeight);
-                  const retryMaxScrollLeft = Math.max(0, pdfWrapperRef.current.scrollWidth - retryViewportWidth);
-                  
-                  pdfWrapperRef.current.scrollTo({
-                    top: Math.max(0, Math.min(retryScrollTop, retryMaxScrollTop)),
-                    left: Math.max(0, Math.min(retryScrollLeft, retryMaxScrollLeft)),
-                    behavior: 'smooth'
-                  });
-                }
-              });
-            }
-          }
-        });
+        scrollTop = bboxCenterAbsoluteY - (viewportHeight / 2);
+        scrollLeft = bboxCenterX - (viewportWidth / 2);
       }
     }
-  }, [fileHighlight, isPDF, isOpen, pageOffsets, renderedPages, expandedBbox, pdfPageRendering, totalPages, dimensionsStable]);
+
+    requestAnimationFrame(() => {
+      if (!pdfWrapperRef.current || !isOpen) return;
+      const c = pdfWrapperRef.current;
+      c.scrollTo({
+        top: Math.max(0, Math.min(scrollTop, Math.max(0, c.scrollHeight - c.clientHeight))),
+        left: Math.max(0, Math.min(scrollLeft, Math.max(0, c.scrollWidth - c.clientWidth))),
+        behavior: 'smooth'
+      });
+    });
+  }, [fileHighlight, isPDF, isOpen, pageOffsets, renderedPages, expandedBbox, pdfPageRendering, dimensionsStable]);
 
   // Load PDF with PDF.js for canvas-based rendering (enables precise highlight positioning)
   // OPTIMIZATION: Use cached PDF document if available to avoid reloading when switching
@@ -667,14 +624,27 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
     };
   }, [isPDF, file?.file, file?.id, isOpen, getCachedPdfDocument, setCachedPdfDocument]);
 
-  // Render ALL PDF pages to canvas for continuous scrolling
-  // OPTIMIZATION: Use cached rendered pages if available for instant switching
+  // Render ALL PDF pages to canvas for continuous scrolling.
+  // Only re-runs when containerWidthForPdfRender changes (set once after layout, then on resize >50px) so we don't restart on jitter.
   React.useEffect(() => {
     if (!pdfDocument || !isOpen || !file || totalPages === 0) return;
-    
+    if (containerWidthForPdfRender == null) return;
+
+    const currentContainerWidth =
+      containerWidthForPdfRender ||
+      (previewAreaRef.current?.clientWidth > 100 ? previewAreaRef.current.clientWidth : 0) ||
+      (pdfWrapperRef.current?.clientWidth > 100 ? pdfWrapperRef.current.clientWidth : 0) ||
+      (typeof calculatedModalWidth === 'number' && calculatedModalWidth > 100 ? calculatedModalWidth : 0) ||
+      (typeof calculatedModalWidth === 'string' && calculatedModalWidth.endsWith('vw')
+        ? Math.round((parseFloat(calculatedModalWidth) / 100) * window.innerWidth)
+        : 0) ||
+      (typeof calculatedModalWidth === 'string' && calculatedModalWidth.endsWith('px') ? parseInt(calculatedModalWidth, 10) || 0 : 0);
+
+    if (currentContainerWidth <= 100) return;
+
     let cancelled = false;
     const renderTasks = new Map<number, any>(); // Track render tasks per page
-    
+
     const renderAllPages = async () => {
       try {
         // Always render at base scale - zoom will be applied via CSS transform for smooth experience
@@ -884,9 +854,10 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
         }
         
         if (!cancelled) {
+          if (file?.id) lastRenderedFileIdRef.current = file.id;
           setRenderedPages(newRenderedPages);
           setPageOffsets(newPageOffsets);
-          
+
           // Set dimensions for first page (for BBOX positioning reference)
           if (newRenderedPages.size > 0) {
             const firstPage = newRenderedPages.get(1);
@@ -894,7 +865,7 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
               setPdfCanvasDimensions(firstPage.dimensions);
             }
           }
-          
+
           setPdfPageRendering(false);
           // Mark dimensions as stable - PDF is now rendered at correct scale
           // This allows bbox auto-scroll to proceed with accurate coordinates
@@ -923,10 +894,7 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
       }
       });
     };
-  // Note: baseScale removed from dependencies to prevent race condition
-  // The effect re-runs on calculatedModalWidth changes, which resets baseScale to 1.0 via ResizeObserver
-  // This triggers recalculation inside the effect without causing immediate re-runs
-  }, [pdfDocument, totalPages, rotation, isOpen, file?.id, calculatedModalWidth, getCachedRenderedPage, setCachedRenderedPage, isResizing]);
+  }, [pdfDocument, totalPages, rotation, isOpen, file?.id, containerWidthForPdfRender, getCachedRenderedPage, setCachedRenderedPage, isResizing]);
 
   // Upload DOCX for Office Online Viewer
   React.useEffect(() => {
@@ -1463,80 +1431,88 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
     };
   }, [isImage, isMapVisible, blobUrl]);
 
-  // Watch ALL sidebar width changes (base sidebar, filing sidebar, chat panel) and force instant recalculation
-  // This ensures document adjusts INSTANTLY when ANY sidebar opens/closes/resizes
+  // When sidebar/chat widths change, only trigger PDF re-render when needed. Do NOT set
+  // calculatedModalWidth/Height here — the modal is already constrained by CSS (maxWidth uses
+  // sidebarWidth + chatPanelWidth). Let ResizeObserver be the single source for dimension updates
+  // so we avoid a race on open (sidebar effect reading 0 or stale size and fighting with ResizeObserver).
   React.useEffect(() => {
-    if (!isOpen) return;
-    
-    // SYNCHRONOUS update - no requestAnimationFrame delay for instant response
-    // Directly measure and update immediately when any sidebar width changes
-    if (previewAreaRef.current) {
-      const container = previewAreaRef.current;
-      const currentWidth = container.clientWidth;
-      const currentHeight = container.clientHeight;
-      
-      // Use flushSync for INSTANT synchronous updates (bypasses React batching)
-      flushSync(() => {
-        setCalculatedModalWidth(currentWidth);
-        setCalculatedModalHeight(currentHeight);
-        
-        // Force baseScale recalculation for PDFs IMMEDIATELY
-        if (isPDF) {
-          setBaseScale(1.0);
-          lastScaleWidthRef.current = 0; // Reset width tracking to force recalculation
-          setDimensionsStable(false); // Reset until PDF re-renders
-        }
+    if (!isOpen || !isPDF) return;
+    if (!previewAreaRef.current) return;
+    const container = previewAreaRef.current;
+    const currentWidth = container.clientWidth;
+    if (currentWidth <= 100) return;
+    const prevPdfWidth = lastContainerWidthForPdfRenderRef.current;
+    const pdfWidthSignificant = prevPdfWidth === null || Math.abs(currentWidth - prevPdfWidth) > 50;
+    if (pdfWidthSignificant) {
+      queueMicrotask(() => {
+        lastContainerWidthForPdfRenderRef.current = currentWidth;
+        setContainerWidthForPdfRender(currentWidth);
+        setBaseScale(1.0);
+        lastScaleWidthRef.current = 0;
+        setDimensionsStable(false);
       });
     }
   }, [sidebarWidth, chatPanelWidth, filingSidebarWidth, isOpen, isPDF]);
 
-  // ResizeObserver to detect modal size changes and trigger instant document recalculation
+  // ResizeObserver to detect modal size changes; use 2px threshold to avoid render loops from subpixel jitter.
+  // On first open the container is often 0x0 until layout completes - capture initial size after layout (double rAF).
+  const RESIZE_THRESHOLD_PX = 2;
   React.useEffect(() => {
     if (!isOpen || !previewAreaRef.current) return;
 
     const container = previewAreaRef.current;
     let lastWidth = container.clientWidth;
     let lastHeight = container.clientHeight;
-    
-    const resizeObserver = new ResizeObserver((entries) => {
-      // ResizeObserver callbacks fire synchronously during layout
-      // IMPORTANT: We must NOT call flushSync directly inside ResizeObserver - it can cause
-      // React errors ("Cannot update while rendering") and crashes/infinite loops.
-      // Instead, we defer the update with queueMicrotask which runs after the current task
-      // but before the next paint - still effectively instant for the user.
+
+    const applySize = (width: number, height: number) => {
+      if (width <= 100 || height <= 100) return;
+      const layoutWidthChanged = Math.abs(width - lastWidth) > RESIZE_THRESHOLD_PX;
+      const layoutHeightChanged = Math.abs(height - lastHeight) > RESIZE_THRESHOLD_PX;
+      lastWidth = width;
+      lastHeight = height;
+      const prevPdfWidth = lastContainerWidthForPdfRenderRef.current;
+      const pdfWidthSignificant = prevPdfWidth === null || Math.abs(width - prevPdfWidth) > 50;
+      queueMicrotask(() => {
+        if (layoutWidthChanged || layoutHeightChanged) {
+          setCalculatedModalWidth(width);
+          setCalculatedModalHeight(height);
+        }
+        if (isPDF && pdfWidthSignificant) {
+          lastContainerWidthForPdfRenderRef.current = width;
+          setContainerWidthForPdfRender(width);
+          setBaseScale(1.0);
+          lastScaleWidthRef.current = 0;
+          setDimensionsStable(false);
+        }
+      });
+    };
+
+    const ro = new ResizeObserver((entries) => {
       for (const entry of entries) {
         const { width, height } = entry.contentRect;
-        if (width > 100 && height > 100) {
-          // Update on ANY change for instant response (no threshold - detect all changes)
-          const widthChanged = Math.abs(width - lastWidth) > 0.01; // Even more sensitive
-          const heightChanged = Math.abs(height - lastHeight) > 0.01;
-          
-          if (widthChanged || heightChanged) {
-            lastWidth = width;
-            lastHeight = height;
-            
-            // Defer the state update to avoid React errors from ResizeObserver callback
-            // queueMicrotask runs after current task but before next paint - still instant
-            queueMicrotask(() => {
-              setCalculatedModalWidth(width);
-              setCalculatedModalHeight(height);
-              
-              // Force baseScale recalculation for PDFs
-              if (isPDF) {
-                setBaseScale(1.0);
-                lastScaleWidthRef.current = 0; // Reset width tracking to force recalculation
-                setDimensionsStable(false); // Reset until PDF re-renders at new size
-              }
-            });
-          }
-        }
+        if (width <= 100 || height <= 100) continue;
+        const widthChanged = Math.abs(width - lastWidth) > RESIZE_THRESHOLD_PX;
+        const heightChanged = Math.abs(height - lastHeight) > RESIZE_THRESHOLD_PX;
+        if (widthChanged || heightChanged) applySize(width, height);
       }
     });
+    ro.observe(container);
 
-    resizeObserver.observe(container);
+    // First open often has 0x0 until layout completes - capture after layout
+    let cancelled = false;
+    const raf1 = requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (cancelled || !previewAreaRef.current) return;
+        const w = previewAreaRef.current.clientWidth;
+        const h = previewAreaRef.current.clientHeight;
+        if (w > 100 && h > 100) applySize(w, h);
+      });
+    });
 
     return () => {
-      resizeObserver.disconnect();
+      cancelled = true;
+      cancelAnimationFrame(raf1);
+      ro.disconnect();
     };
   }, [isOpen, isPDF, isDOCX, isImage]);
 
@@ -2308,8 +2284,9 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
                   scrollbarWidth: 'thin',
                   scrollbarColor: 'rgba(0, 0, 0, 0.2) transparent',
                 } : {
-                  padding: '0', // Infinity pool style - no outer padding, inner wrapper handles spacing
+                  padding: '0',
                   boxSizing: 'border-box',
+                  minHeight: 0, // Allow flex shrinking so inner overflow:auto can scroll
                 }),
                 // Instant transitions - no animation like section opening
                 transition: 'none',

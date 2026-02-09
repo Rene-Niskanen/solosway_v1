@@ -1385,12 +1385,13 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
       data-document-preview="true"
       data-sidebar-width={sidebarWidth}
       data-agent-sidebar-width={agentSidebarWidth}
-      initial={{ opacity: 0, scale: 0.98 }}
+      initial={false}
       animate={{ opacity: 1, scale: 1 }}
-      exit={{ opacity: 0 }}
-      transition={{ duration: 0 }} // Instant close for responsive feel
-      className={isFullscreen ? `fixed inset-0 bg-white flex flex-col ${initialFullscreen ? 'z-[100010]' : 'z-[10000]'}` : "bg-white flex flex-col z-[9999]"}
+      exit={{ opacity: 0, transition: { duration: 0.12 } }}
+      transition={{ duration: 0 }}
+      className={isFullscreen ? `fixed inset-0 flex flex-col ${initialFullscreen ? 'z-[100010]' : 'z-[10000]'}` : "flex flex-col z-[9999]"}
       style={{
+        backgroundColor: '#F2F2EF',
         ...(isFullscreen ? {
           position: 'fixed',
           top: 0,
@@ -1465,114 +1466,11 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
         />
       )}
       
-      {/* Agent Glow Border Effect - Pulsing gradient when agent opens document */}
-      {isAgentOpening && (
-        <div 
-          className="agent-glow-overlay"
-          style={{
-            position: 'absolute',
-            inset: 0,
-            pointerEvents: 'none',
-            zIndex: 10000,
-            borderRadius: isFullscreen ? 0 : '16px', // Match container - all corners rounded
-            overflow: 'hidden',
-          }}
-        >
-          {/* Top edge glow */}
-          <div style={{
-            position: 'absolute',
-            top: 0,
-            left: 0,
-            right: 0,
-            height: '20px',
-            background: 'linear-gradient(to bottom, rgba(217, 119, 8, 0.6), rgba(217, 119, 8, 0))',
-            animation: 'agentGlowPulse 1.5s ease-in-out infinite',
-          }} />
-          {/* Bottom edge glow */}
-          <div style={{
-            position: 'absolute',
-            bottom: 0,
-            left: 0,
-            right: 0,
-            height: '20px',
-            background: 'linear-gradient(to top, rgba(217, 119, 8, 0.6), rgba(217, 119, 8, 0))',
-            animation: 'agentGlowPulse 1.5s ease-in-out infinite',
-          }} />
-          {/* Left edge glow */}
-          <div style={{
-            position: 'absolute',
-            top: 0,
-            bottom: 0,
-            left: 0,
-            width: '20px',
-            background: 'linear-gradient(to right, rgba(217, 119, 8, 0.6), rgba(217, 119, 8, 0))',
-            animation: 'agentGlowPulse 1.5s ease-in-out infinite',
-          }} />
-          {/* Right edge glow */}
-          <div style={{
-            position: 'absolute',
-            top: 0,
-            bottom: 0,
-            right: 0,
-            width: '20px',
-            background: 'linear-gradient(to left, rgba(217, 119, 8, 0.6), rgba(217, 119, 8, 0))',
-            animation: 'agentGlowPulse 1.5s ease-in-out infinite',
-          }} />
-          {/* Corner glow overlays for smoother corners */}
-          <div style={{
-            position: 'absolute',
-            top: 0,
-            left: 0,
-            width: '40px',
-            height: '40px',
-            background: 'radial-gradient(ellipse at top left, rgba(217, 119, 8, 0.5), rgba(217, 119, 8, 0) 70%)',
-            animation: 'agentGlowPulse 1.5s ease-in-out infinite',
-          }} />
-          <div style={{
-            position: 'absolute',
-            top: 0,
-            right: 0,
-            width: '40px',
-            height: '40px',
-            background: 'radial-gradient(ellipse at top right, rgba(217, 119, 8, 0.5), rgba(217, 119, 8, 0) 70%)',
-            animation: 'agentGlowPulse 1.5s ease-in-out infinite',
-          }} />
-          <div style={{
-            position: 'absolute',
-            bottom: 0,
-            left: 0,
-            width: '40px',
-            height: '40px',
-            background: 'radial-gradient(ellipse at bottom left, rgba(217, 119, 8, 0.5), rgba(217, 119, 8, 0) 70%)',
-            animation: 'agentGlowPulse 1.5s ease-in-out infinite',
-          }} />
-          <div style={{
-            position: 'absolute',
-            bottom: 0,
-            right: 0,
-            width: '40px',
-            height: '40px',
-            background: 'radial-gradient(ellipse at bottom right, rgba(217, 119, 8, 0.5), rgba(217, 119, 8, 0) 70%)',
-            animation: 'agentGlowPulse 1.5s ease-in-out infinite',
-          }} />
-          {/* CSS Keyframes injected via style tag */}
-          <style>{`
-            @keyframes agentGlowPulse {
-              0%, 100% {
-                opacity: 1;
-              }
-              50% {
-                opacity: 0.4;
-              }
-            }
-          `}</style>
-        </div>
-      )}
-
-      {/* Header */}
+      {/* Header - filename bar (close, PDF icon, name, fullscreen) */}
       <div className="pr-4 pl-6 shrink-0" style={{ 
-        backgroundColor: 'white',
-        border: '4px solid white',
+        background: '#F2F2EF',
+        backgroundColor: '#F2F2EF',
+        border: '4px solid #F2F2EF',
         paddingTop: '15px',
         paddingBottom: '19px',
         borderTopLeftRadius: isFullscreen ? 0 : '16px',
@@ -1749,13 +1647,13 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
 
       {/* Content - tabIndex allows programmatic focus so scroll/wheel targets this container after opening from e.g. Analyse with AI */}
       <div 
-        className="bg-gray-50" 
         ref={pdfWrapperRef}
         tabIndex={-1}
         style={{
           flex: '1 1 0%', // flex-basis 0 so this column gets correct height at opening width (fixes scroll when narrow)
           minHeight: 0, // Critical: allows flex item to shrink and enable scrolling
           overflow: 'auto',
+          backgroundColor: '#F2F2EF',
           borderBottomLeftRadius: isFullscreen ? 0 : '16px',
           borderBottomRightRadius: isFullscreen ? 0 : '16px'
         }}
@@ -2000,7 +1898,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
   }
 
   // Background layer that fills the entire document preview area (without rounded corners)
-  // This prevents seeing through to the map behind the rounded corners
+  // This prevents seeing through to the map behind the rounded corners - match chat panel colour
   const backgroundLayer = (
     <div
       style={{
@@ -2010,7 +1908,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
         width: `${panelWidth + 24}px`, // Extend to cover rounded corner area
         top: 0,
         bottom: 0,
-        backgroundColor: '#FCFCF9', // Match the chat panel background
+        backgroundColor: '#FCFCF9', // Same as chat panel
         zIndex: 9998, // Below the document preview (9999)
         pointerEvents: 'none',
         transition: 'none',
