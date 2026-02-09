@@ -356,7 +356,7 @@ const ReadingStepWithTransition: React.FC<{
   keepAnimating?: boolean; // Keep the green animation going until planning indicator appears
   hasResponseText?: boolean; // Stop all animations when response text appears
   hasSummarisingStep?: boolean; // Close viewer when summarising step appears
-  hasPreparingResponseStep?: boolean; // Stop animation and show Read when "Preparing response" step is shown
+  hasPreparingResponseStep?: boolean; // Stop animation and show Read when "Synthesising findings" step is shown
   thoughtCompleted?: boolean; // When true, use faint font colour (under thought dropdown, completed)
 }> = ({ filename, docMetadata, llmContext, readingIndex, isLoading, onDocumentClick, showPreview = true, isLastReadingStep = false, hasNextStep = false, keepAnimating = false, hasResponseText = false, hasSummarisingStep = false, hasPreparingResponseStep = false, thoughtCompleted = false }) => {
   const [phase, setPhase] = useState<'reading' | 'read'>('reading');
@@ -393,7 +393,7 @@ const ReadingStepWithTransition: React.FC<{
       return;
     }
     
-    // When "Preparing response" reasoning step is shown, stop animation and show Read
+    // When "Synthesising findings" reasoning step is shown, stop animation and show Read
     if (hasPreparingResponseStep) {
       setPhase('read');
       setShowReadAnimation(false);
@@ -559,7 +559,7 @@ const PlanningIndicator: React.FC = () => (
       gap: '6px'
     }}
   >
-    <span className="planning-shimmer-full">Preparing response</span>
+    <span className="planning-shimmer-full">Synthesising findings</span>
   </div>
 );
 
@@ -821,9 +821,9 @@ const StepRenderer: React.FC<{
       
       // Check if a summarising step has appeared - if so, close reading viewers
       const hasSummarisingStep = allSteps.some(s => s.action_type === 'summarising');
-      // Check if "Preparing response" (analysing) step has appeared - stop reading animation and show Read
+      // Check if "Synthesising findings" (analysing) step has appeared - stop reading animation and show Read
       const hasPreparingResponseStep = allSteps.some(s =>
-        s.action_type === 'analysing' && /^(Preparing response|Formulating answer|Preparing answer)/i.test((s.message || '').trim())
+        s.action_type === 'analysing' && /^(Synthesising findings|Preparing response|Formulating answer|Preparing answer)/i.test((s.message || '').trim())
       );
       
       // Keep the green animation going on ALL reading steps until response is complete
@@ -865,24 +865,28 @@ const StepRenderer: React.FC<{
       
       // Transform message to be more natural and conversational (OpenAI/Claude style)
       let fixedMessage = step.message || 'Analyzing documents';
+      // Normalise legacy/alternate labels to current copy
+      if (/^(Preparing response|Formulating answer|Preparing answer)$/i.test((fixedMessage || '').trim())) {
+        fixedMessage = 'Synthesising findings';
+      }
       // Fix grammar: "1 documents" -> "1 document"
       fixedMessage = fixedMessage.replace(/\b1 documents\b/gi, '1 document');
       // Convert British spelling to US spelling and make more conversational
       fixedMessage = fixedMessage.replace(/\bAnalysing\b/gi, 'Analyzing');
-      // Keep complete phrases like "Preparing response" / "Formulating answer"; only default to "Analyzing documents" when vague or empty
-      const isCompletePhrase = /^(Preparing response|Formulating answer|Preparing answer)/i.test(fixedMessage.trim());
+      // Keep complete phrases like "Synthesising findings" / "Formulating answer"; only default to "Analyzing documents" when vague or empty
+      const isCompletePhrase = /^(Synthesising findings|Preparing response|Formulating answer|Preparing answer)/i.test(fixedMessage.trim());
       if (!isCompletePhrase && !fixedMessage.toLowerCase().includes('document')) {
         fixedMessage = 'Analyzing documents';
       }
       
-      // No icon for "Preparing response" / "Formulating answer"; use TextSearch for other analysing steps
-      const isPreparingResponse = /^(Preparing response|Formulating answer|Preparing answer)/i.test(fixedMessage.trim());
+      // No icon for "Synthesising findings" / "Formulating answer"; use TextSearch for other analysing steps
+      const isPreparingResponse = /^(Synthesising findings|Preparing response|Formulating answer|Preparing answer)/i.test(fixedMessage.trim());
       return (
         <span style={{ display: 'inline-flex', alignItems: 'flex-start', gap: '6px' }}>
           {!isPreparingResponse && (
             <TextSearch style={{ width: '14px', height: '14px', color: ACTION_COLOR, flexShrink: 0, marginTop: '2px' }} />
           )}
-          {/* Entire "Analyzing documents" / "Preparing response" text with flowing gradient animation (only if active) */}
+          {/* Entire "Analyzing documents" / "Synthesising findings" text with flowing gradient animation (only if active) */}
           {isRankingActive ? (
             <span className="ranking-shimmer-active">{fixedMessage}</span>
           ) : (
@@ -893,7 +897,7 @@ const StepRenderer: React.FC<{
     
     case 'summarising':
       // During streaming: "Planning next moves" 
-      // After completion: "Summarising content"
+      // After completion: "Synthesising findings"
       const nextStepAfterSummarizing = stepIndex < allSteps.length - 1 ? allSteps[stepIndex + 1] : null;
       const isSummarizingActive = isLoading && !hasResponseText && (!nextStepAfterSummarizing || nextStepAfterSummarizing.action_type === 'summarising');
       
@@ -1202,8 +1206,8 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
     wasLoadingRef.current = isLoading;
   }, [isLoading]);
   
-  // Filter out "Preparing response" steps (planning action type) and context messages
-  // Keep the initial "Planning next moves" step for normal queries so it is not replaced by "Preparing response"
+  // Filter out "Synthesising findings" steps (planning action type) and context messages
+  // Keep the initial "Planning next moves" step for normal queries so it is not replaced by "Synthesising findings"
   // Also deduplicate steps to prevent rendering the same step twice
   // In Reader mode, also filter out agent-specific steps (executing, opening, navigating)
   const filteredSteps = useMemo(() => {

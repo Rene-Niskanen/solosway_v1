@@ -865,16 +865,18 @@ def get_response_formatting_prompt(raw_response: str, user_query: str) -> str:
 - Do NOT add periods before citations
 
 **CANONICAL TEMPLATE ENFORCEMENT**:
-1. Verify H1 (#) exists and must contain or start with the direct answer (e.g. the category or value), not only a topic sentence. Ensure H2 (##) sections follow proper order.
+1. Verify H1 (#) exists and must contain or start with the direct answer (e.g. the category or value), not only a topic sentence. When the response is a structured overview, start with one main # heading for the topic.
 2. Verify information ordering: primary answer (the figure/category that answers the question) first, key facts directly with citations, optional sections last.
 3. Enforce cognitive load: Split paragraphs >50 words, limit lists to 3-5 items, limit paragraphs to 3 sentences.
 4. Apply structure: # H1 → ## H2 → ### H3 hierarchy. Present information naturally - no separate "Key Concepts" sections.
+5. For lists of provisions or key points: use a numbered list (1., 2., 3.); put each provision title on its own line (or as ###), then the description in the following paragraph.
+6. Avoid orphan lines: do not leave a short fragment (e.g. "of 2025") on a line by itself; attach it to the previous sentence or heading.
 
 **FORMATTING STANDARDS**:
 - Use markdown: # for H1, ## for H2, ### for H3
 - **BOLD**: Section headers (## Header), labels (**Market Value:**)
 - **REGULAR TEXT**: Actual values (£X,XXX,XXX[1]), dates, names
-- Use vertical label-value format:
+- Use vertical label-value format (label on one line, value on the next):
   ```
   **Label:**
   Value[1]

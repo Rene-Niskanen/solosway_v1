@@ -9,6 +9,7 @@ import { PropertyAttachmentData } from './PropertyAttachment';
 import { AtMentionChip } from './AtMentionChip';
 import { usePreview } from '../contexts/PreviewContext';
 import { ReasoningSteps, ReasoningStep } from './ReasoningSteps';
+import { prepareResponseTextForDisplay } from '../utils/responseTextPreprocessing';
 import type { QueryContentSegment } from '@/types/segmentInput';
 
 interface CitationDataType {
@@ -768,10 +769,10 @@ export const FloatingChatBubble: React.FC<FloatingChatBubbleProps> = ({
                                   components={{
                                     p: ({ children }) => <p style={{ margin: 0, padding: 0, display: 'block' }}>{children}</p>,
                                     h1: ({ children }) => <h1 style={{ fontSize: '12px', fontWeight: 600, margin: '8px 0 6px 0' }}>{children}</h1>,
-                                    h2: () => null,
-                                    h3: ({ children }) => <h3 style={{ fontSize: '11px', fontWeight: 600, margin: '6px 0 3px 0' }}>{children}</h3>,
-                                    ul: ({ children }) => <ul style={{ margin: '6px 0', paddingLeft: '16px' }}>{children}</ul>,
-                                    ol: ({ children }) => <ol style={{ margin: '6px 0', paddingLeft: '16px' }}>{children}</ol>,
+                                    h2: ({ children }) => <h2 style={{ fontSize: '11px', fontWeight: 600, margin: '6px 0 3px 0', color: '#111827' }}>{children}</h2>,
+                                    h3: ({ children }) => <h3 style={{ fontSize: '11px', fontWeight: 600, margin: '6px 0 3px 0', color: '#111827' }}>{children}</h3>,
+                                    ul: ({ children }) => <ul style={{ margin: '6px 0', paddingLeft: '18px', listStylePosition: 'outside' }}>{children}</ul>,
+                                    ol: ({ children }) => <ol style={{ margin: '6px 0', paddingLeft: '18px', listStylePosition: 'outside' }}>{children}</ol>,
                                     li: ({ children }) => <li style={{ marginBottom: '3px' }}>{children}</li>,
                                     strong: ({ children }) => <strong style={{ fontWeight: 600 }}>{children}</strong>,
                                     em: ({ children }) => <em style={{ fontStyle: 'italic' }}>{children}</em>,
@@ -790,7 +791,7 @@ export const FloatingChatBubble: React.FC<FloatingChatBubbleProps> = ({
                                     td: ({ children }) => <td style={{ padding: '8px 12px', textAlign: 'left', color: '#374151' }}>{children}</td>,
                                   }}
                                 >
-                                  {message.text}
+                                  {prepareResponseTextForDisplay(message.text)}
                                 </ReactMarkdown>
                               </span>
                             ) : null}
@@ -905,10 +906,10 @@ export const FloatingChatBubble: React.FC<FloatingChatBubbleProps> = ({
                               return <p style={{ margin: 0, marginBottom: '4px', textAlign: 'left' }}>{processChildren(children)}</p>;
                             },
                             h1: ({ children }) => <h1 style={{ fontSize: '11px', fontWeight: 600, margin: '6px 0 4px 0', color: '#111827', textAlign: 'left' }}>{children}</h1>,
-                            h2: () => null,
-                            h3: ({ children }) => <h3 style={{ fontSize: '10px', fontWeight: 600, margin: '4px 0 2px 0', textAlign: 'left' }}>{children}</h3>,
-                            ul: ({ children }) => <ul style={{ margin: '4px 0', paddingLeft: '14px', textAlign: 'left' }}>{children}</ul>,
-                            ol: ({ children }) => <ol style={{ margin: '4px 0', paddingLeft: '14px', textAlign: 'left' }}>{children}</ol>,
+                            h2: ({ children }) => <h2 style={{ fontSize: '10.5px', fontWeight: 600, margin: '5px 0 3px 0', color: '#111827', textAlign: 'left' }}>{children}</h2>,
+                            h3: ({ children }) => <h3 style={{ fontSize: '10px', fontWeight: 600, margin: '4px 0 2px 0', color: '#111827', textAlign: 'left' }}>{children}</h3>,
+                            ul: ({ children }) => <ul style={{ margin: '4px 0', paddingLeft: '18px', listStylePosition: 'outside', textAlign: 'left' }}>{children}</ul>,
+                            ol: ({ children }) => <ol style={{ margin: '4px 0', paddingLeft: '18px', listStylePosition: 'outside', textAlign: 'left' }}>{children}</ol>,
                             li: ({ children }) => <li style={{ marginBottom: '2px', textAlign: 'left' }}>{children}</li>,
                             strong: ({ children }) => {
                               const citationSeen = new Set<string>();
@@ -951,7 +952,7 @@ export const FloatingChatBubble: React.FC<FloatingChatBubbleProps> = ({
                             hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '8px 0' }} />,
                           }}
                         >
-                          {message.text}
+                          {prepareResponseTextForDisplay(message.text)}
                         </ReactMarkdown>
                       </div>
                     )}

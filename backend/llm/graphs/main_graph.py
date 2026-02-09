@@ -471,17 +471,17 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
 
     # BUILD GRAPH EDGES - SIMPLIFIED ROUTING
     # START → simple router (only handles fast paths, everything else → context_manager → agent)
-    def simple_route(state: MainWorkflowState) -> Literal["handle_navigation_action", "handle_citation_query", "handle_attachment_fast", "fetch_direct_chunks", "context_manager"]:
+    def simple_route(state: MainWorkflowState) -> Literal["handle_navigation_action", "handle_citation_query", "handle_attachment_fast", "context_manager"]:
         """
         Simplified routing from START.
         
-        Fast paths (skip agent):
+        Fast paths (skip main agent):
         - Navigation actions
         - Citation queries
         - Attachment fast mode
-        - Direct document access (document_ids provided)
         
-        Everything else → agent (agent decides its own strategy)
+        Everything else (including chip/@ document or property selection) → context_manager → planner → executor → responder,
+        so response formatting is the same whether or not the user used @.
         """
         # Check for fast paths
         query_type = state.get("query_type")
@@ -505,15 +505,11 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
             logger.info("[GRAPH] Fast path: attachment_fast")
             return "handle_attachment_fast"
         
-        # Direct document (document_ids provided): use fetch_direct_chunks → process_documents → summarize_results
-        # so we get document_outputs and the citation pipeline (block IDs, same-doc fallback). Without this,
-        # we'd go context_manager → planner → executor → responder and never run summarize_results → documents_found: 0.
-        if document_ids and len(document_ids) > 0:
-            logger.info(f"[GRAPH] Direct document path: routing to fetch_direct_chunks (doc_ids={len(document_ids)})")
-            return "fetch_direct_chunks"
-        
-        # Everything else: context_manager → planner → executor → responder
-        logger.info("[GRAPH] Routing to context_manager (check tokens before agent)")
+        # Chip selection (@ property/document): use same route as regular queries so response formatting
+        # is identical (planner → executor → responder). Planner already creates 1-step retrieve_chunks
+        # when document_ids are in state, so we do not use fetch_direct_chunks → summarize_results here.
+        # Everything (including when document_ids present) → context_manager → planner → executor → responder
+        logger.info("[GRAPH] Routing to context_manager (check tokens before agent)%s", f" (doc_ids={len(document_ids)})" if document_ids and len(document_ids) > 0 else "")
         return "context_manager"
     
     builder.add_conditional_edges(

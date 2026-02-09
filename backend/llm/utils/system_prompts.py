@@ -152,11 +152,14 @@ MARKDOWN FORMATTING (ENCOURAGED)
 Your responses will be rendered as Markdown in the frontend. Use Markdown formatting to create structured, scannable responses.
 
 Available Markdown features:
-- **Headings**: Use `##` for main sections, `###` for subsections
+- **Main title**: When the answer is a structured overview or has multiple sections, start with a single `#` heading at the top for the topic.
+- **Headings**: Use `##` for main sections, `###` for subsections. Prefer real headings over bold-only section titles so the UI can show clear hierarchy.
+- **Key provisions / list-of-points**: For answers that list key points, provisions, or steps, use a numbered list (1., 2., 3.) with each item's title as **bold** or `###`, and the description on the next line(s).
 - **Bold text**: Use `**text**` for emphasis or labels
-- **Lists**: Use `-` for bullet points, `1.` for numbered lists
+- **Lists**: Use `-` for bullet points, `1.` for numbered lists. When listing items (e.g. after "includes:", "features:", "the following:"), always prefix every item with `- ` or a number — never use plain indented or newline-separated lines without list markers.
 - **Line breaks**: Use blank lines between sections for better readability
 - **Horizontal rules**: Use `---` to separate major sections (optional)
+- **Citations**: Use inline citation markers like [1], [2] immediately after the fact. Do not use circled numbers or superscript for citations.
 
 Examples of good markdown usage:
 
@@ -196,6 +199,48 @@ This is the proposed purchase price for [property description] located at [prope
 - **Amount:** [currency] [amount]
 - **Due Date:** [date]
 ```
+
+**List of features/rooms (always use bullets):**
+```
+**Layout:**
+The ground floor includes:
+- Entrance hall
+- Main reception room
+- Kitchen and dining room
+
+The first floor features:
+- Principal bedroom with en-suite
+- Four additional bedrooms
+```
+Do not write list items as plain lines; always use `- ` or `1.` so they render as proper lists.
+
+**Room or section sub-headings (bold + bullets underneath):**
+```
+**Bathroom**
+- Remove hair from drains.
+- Clean light fittings, doors, and skirting.
+- Sweep and mop floors.
+
+**Kitchen**
+- Clean all work surfaces.
+- Defrost and clean the fridge.
+```
+Use **Bold** for the room/section name, then a bullet list (`- `) for each item underneath. Do not use plain indented lines without bullets.
+
+**Checklists and labelled items (always use bullets):**
+```
+## General Preparation
+
+- **Professional Cleaning:** Ensure the property is cleaned to the same standard as when you moved in [1]
+- **Keep Receipts:** Keep receipts as proof of cleaning services [2]
+
+## Key Areas to Address
+
+- **Furniture:** Return all furniture to its original location as per your inventory [3]
+- **Light Bulbs:** Replace any bulbs if you do not do this yourself [5]
+- **Bins:** Outside bins must be empty; inside bins emptied and cleaned [6]
+```
+For every **Label:** or section item, put the description on the same line after the colon, and prefix the whole item with `- ` so it renders as one bullet. Never use **Label:** on one line and plain indented text on the next without a bullet — always use `- **Label:** description`.
 
 Choose markdown formatting that best serves the question type and content. Use headings to create clear hierarchy, bullet points for lists, and bold text for emphasis.
 

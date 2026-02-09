@@ -816,7 +816,7 @@ def query_documents_stream():
                 # Follow-up queries should still show reasoning steps for an agentic experience
                 # The keywords were too broad ('why', 'how', 'can you') and matched most questions
                 
-                # Citation queries still show reasoning steps (Planning next moves, then Preparing response)
+                # Citation queries still show reasoning steps (Planning next moves, then Synthesising findings)
                 is_fast_path = is_citation_query
                 
                 if is_fast_path:
@@ -980,14 +980,14 @@ def query_documents_stream():
                             },
                             'summarize_results': {
                                 'action_type': 'planning',
-                                'message': 'Preparing response',
+                                'message': 'Synthesising findings',
                                 'details': {}
                             },
                             # Main retrieval path: step (1) "Planning next moves" from initial_reasoning; (2) from phase "Searching for {query}"
                             # planner/executor not in node_messages to avoid duplicates
                             'responder': {
                                 'action_type': 'analysing',
-                                'message': 'Preparing response',
+                                'message': 'Synthesising findings',
                                 'details': {}
                             },
                         }
@@ -996,7 +996,7 @@ def query_documents_stream():
                         # IMPORTANT: astream_events executes the graph and emits events as nodes run
                         # We MUST emit reasoning steps immediately when nodes start
                         if is_fast_path:
-                            logger.info("🟡 [REASONING] Citation path - emitting Planning next moves + Preparing response")
+                            logger.info("🟡 [REASONING] Citation path - emitting Planning next moves + Synthesising findings")
                         else:
                             logger.info("🟡 [REASONING] Starting to stream events and emit reasoning steps...")
                         final_result = None
@@ -1070,16 +1070,16 @@ def query_documents_stream():
                                 # Capture node start events for reasoning steps - EMIT IMMEDIATELY
                                 if event_type == "on_chain_start":
                                     if is_fast_path and node_name == "handle_citation_query":
-                                        # Citation path: replace "Planning next moves" with "Preparing response"
+                                        # Citation path: replace "Planning next moves" with "Synthesising findings"
                                         reasoning_data = {
                                             'type': 'reasoning_step',
                                             'step': 'handle_citation_query',
                                             'action_type': 'analysing',
-                                            'message': 'Preparing response',
+                                            'message': 'Synthesising findings',
                                             'details': {}
                                         }
                                         yield f"data: {json.dumps(reasoning_data)}\n\n"
-                                        logger.info("🟡 [REASONING] ✅ Emitted citation step: Preparing response")
+                                        logger.info("🟡 [REASONING] ✅ Emitted citation step: Synthesising findings")
                                     elif not is_fast_path and node_name in node_messages and node_name not in processed_nodes:
                                         processed_nodes.add(node_name)
                                         reasoning_data = {
@@ -1556,7 +1556,7 @@ def query_documents_stream():
                                                 'type': 'reasoning_step',
                                                 'step': 'summarizing_content',
                                                 'action_type': 'summarising',
-                                                'message': 'Summarising content',
+                                                'message': 'Synthesising findings',
                                                 'timestamp': summarize_timestamp,  # After reading steps
                                                 'details': {'documents_processed': doc_count}
                                             }

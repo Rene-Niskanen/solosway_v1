@@ -23,6 +23,7 @@ import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import veloraLogo from '/Velora Logo.jpg';
 import citationIcon from '/citation.png';
 import agentIcon from '/agent.png';
+import { prepareResponseTextForDisplay } from '../utils/responseTextPreprocessing';
 
 // Configure PDF.js worker globally (same as other components)
 pdfjs.GlobalWorkerOptions.workerSrc = pdfjsWorker;
@@ -681,25 +682,6 @@ const StreamingResponseText: React.FC<{
     return filteredText;
   }, [filteredText]);
 
-  // Helper to ensure balanced bold markers for display (avoid leaking **)
-  const ensureBalancedBoldForDisplay = (text: string): string => {
-    const count = (text.match(/\*\*/g) || []).length;
-    if (count % 2 !== 0) {
-      // Odd number of ** - strip trailing ** if present, otherwise append one
-      if (text.trimEnd().endsWith('**')) {
-        return text.trimEnd().slice(0, -2);
-      }
-      return text + '**';
-    }
-    return text;
-  };
-
-  // Insert paragraph breaks before bold section labels (e.g. **Flood Zone 2:**, **Surface Water Flooding:**)
-  // so multi-section answers render with visual separation instead of one long paragraph
-  const ensureParagraphBreaksBeforeBoldSections = (text: string): string => {
-    return text.replace(/(\.\s*|\s-\s)\s*\*\*([^*]+):\*\*/g, '$1\n\n**$2:**');
-  };
-
   // Parse <<<MAIN>>>...<<<END_MAIN>>> (LLM wraps the direct answer); replace with placeholders so we highlight each segment
   // Match 1–3 closing > so malformed tags (<<<END_MAIN>, <<<END_MAIN>>, <<<END_MAIN>>>) are stripped
   const mainTagEndRe = /<<<END_MAIN\s*>+/;
@@ -773,11 +755,10 @@ const StreamingResponseText: React.FC<{
     return processedText;
   };
   
-  // Process citations before markdown parsing (and insert paragraph breaks before bold section labels)
+  // Process citations before markdown parsing (shared preprocessing + citation placeholders)
   const textWithCitationPlaceholders = React.useMemo(() => {
-    const withBold = ensureBalancedBoldForDisplay(textWithTagsStripped);
-    const withSections = ensureParagraphBreaksBeforeBoldSections(withBold);
-    return processCitationsBeforeMarkdown(withSections);
+    const prepared = prepareResponseTextForDisplay(textWithTagsStripped);
+    return processCitationsBeforeMarkdown(prepared);
   }, [textWithTagsStripped, citations, showCitations]);
   
   // Helper to render citation placeholders (no deduplication - show all citations)
@@ -988,20 +969,40 @@ const StreamingResponseText: React.FC<{
         wordBreak: 'break-word'
       }}>{processChildrenWithCitationsFlattened(children ?? null, 'h1')}</h1>;
     },
-    h2: () => null, 
-    h3: () => null,
+    h2: ({ children }: { children?: React.ReactNode }) => {
+      return <h2 style={{ 
+        fontSize: '16px', 
+        fontWeight: 600, 
+        margin: '12px 0 8px 0', 
+        color: '#111827',
+        wordWrap: 'break-word',
+        overflowWrap: 'break-word',
+        wordBreak: 'break-word'
+      }}>{processChildrenWithCitationsFlattened(children ?? null, 'h2')}</h2>;
+    },
+    h3: ({ children }: { children?: React.ReactNode }) => {
+      return <h3 style={{ 
+        fontSize: '14px', 
+        fontWeight: 600, 
+        margin: '10px 0 6px 0', 
+        color: '#111827',
+        wordWrap: 'break-word',
+        overflowWrap: 'break-word',
+        wordBreak: 'break-word'
+      }}>{processChildrenWithCitationsFlattened(children ?? null, 'h3')}</h3>;
+    },
     ul: ({ children }: { children?: React.ReactNode }) => <ul style={{ 
       margin: '10px 0', 
-      paddingLeft: 0, 
-      listStylePosition: 'inside',
+      paddingLeft: '20px', 
+      listStylePosition: 'outside',
       wordWrap: 'break-word',
       overflowWrap: 'break-word',
       wordBreak: 'break-word'
     }}>{children}</ul>,
     ol: ({ children }: { children?: React.ReactNode }) => <ol style={{ 
       margin: '10px 0', 
-      paddingLeft: 0, 
-      listStylePosition: 'inside',
+      paddingLeft: '20px', 
+      listStylePosition: 'outside',
       wordWrap: 'break-word',
       overflowWrap: 'break-word',
       wordBreak: 'break-word'
@@ -2938,6 +2939,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     messageId?: string;
     citationNumber?: string;
   } | null>(null);
+  // When user clicks "View in document", keep this citation highlighted (blue) in chat while document view is open
+  const [citationViewedInDocument, setCitationViewedInDocument] = React.useState<{ messageId: string; citationNumber: string } | null>(null);
   // Ref so citation click handler always sees current state (StreamingResponseTextMemo doesn't re-render when callback changes)
   const isDocumentPreviewOpenRef = React.useRef(false);
   // When panel opens and hover cache is empty, we preload and store here so the panel can show the image
@@ -4040,6 +4043,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   // Keep ref in sync so handleUserCitationClick (passed to memoized StreamingResponseText) always sees current state
   React.useEffect(() => {
     isDocumentPreviewOpenRef.current = !!expandedCardViewDoc;
+  }, [expandedCardViewDoc]);
+
+  // Clear "viewed in document" citation highlight when document preview is closed
+  React.useEffect(() => {
+    if (!expandedCardViewDoc) setCitationViewedInDocument(null);
   }, [expandedCardViewDoc]);
 
   // Whether chat panel is in "large" width (>= 600px) for View area minimise/expand
@@ -12207,8 +12215,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 skipHighlight={!isLatestAssistantMessage || !showHighlight || (orangeCitationNumbersByMessage.get(message.id ?? finalKey)?.size ?? 0) > 0}
                 showCitations={showCitations}
                 orangeCitationNumbers={orangeCitationNumbersByMessage.get(message.id ?? finalKey)}
-                selectedCitationNumber={citationClickPanel?.citationNumber}
-                selectedCitationMessageId={citationClickPanel?.messageId}
+                selectedCitationNumber={citationClickPanel?.citationNumber ?? (expandedCardViewDoc && citationViewedInDocument ? citationViewedInDocument.citationNumber : undefined)}
+                selectedCitationMessageId={citationClickPanel?.messageId ?? (expandedCardViewDoc && citationViewedInDocument ? citationViewedInDocument.messageId : undefined)}
                 skipHighlightSwoop={currentChatId !== null && currentChatId === skipSwoopForChatId}
               />
             </div>
@@ -12216,7 +12224,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         </div>
       );
     }).filter(Boolean);
-  }, [chatMessages, showReasoningTrace, showHighlight, showCitations, expandedThoughtMessageIds, toggleThoughtExpanded, restoredMessageIdsRef, handleUserCitationClick, onOpenProperty, scrollToBottom, expandedCardViewDoc, propertyAttachments, orangeCitationNumbersByMessage, citationClickPanel, currentChatId, skipSwoopForChatId]);
+  }, [chatMessages, showReasoningTrace, showHighlight, showCitations, expandedThoughtMessageIds, toggleThoughtExpanded, restoredMessageIdsRef, handleUserCitationClick, onOpenProperty, scrollToBottom, expandedCardViewDoc, propertyAttachments, orangeCitationNumbersByMessage, citationClickPanel, citationViewedInDocument, currentChatId, skipSwoopForChatId]);
 
   return (
     <>
@@ -12237,7 +12245,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             anchorRect={citationClickPanel.anchorRect}
             cachedPageImage={cachedPageImage}
             onViewInDocument={() => {
+              const { messageId, citationNumber } = citationClickPanel;
               openCitationInDocumentView(citationClickPanel.citationData, false);
+              setCitationViewedInDocument(messageId != null && citationNumber != null ? { messageId, citationNumber } : null);
               setCitationClickPanel(null);
             }}
             onAskFollowUp={() => {
