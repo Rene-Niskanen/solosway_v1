@@ -11851,7 +11851,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 />
               </div>
             )}
-            <div style={{ backgroundColor: '#FFFFFF', borderRadius: '14px', padding: '4px 6px 4px 10px', width: 'fit-content', maxWidth: '100%', wordWrap: 'break-word', overflowWrap: 'break-word', display: 'block', boxSizing: 'border-box', border: '1px solid rgba(0, 0, 0, 0.08)' }}>
+            <div style={{ backgroundColor: '#F3F3F3', borderRadius: '14px', padding: '4px 6px 4px 10px', width: 'fit-content', maxWidth: '100%', wordWrap: 'break-word', overflowWrap: 'break-word', display: 'block', boxSizing: 'border-box' }}>
               {message.attachments?.length > 0 && (
                 <div style={{ marginBottom: (message.text || message.propertyAttachments?.length > 0) ? '8px' : '0', display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
                   {message.attachments.map((attachment, i) => (
