@@ -294,35 +294,69 @@ def format_chunks_with_short_ids(chunks_metadata: List[Dict[str, Any]]) -> Tuple
     return formatted_text, short_id_lookup
 
 
+# Regex for optional (BLOCK_CITE_ID_N) after a citation - used for jan28th-style block-id lookup
+_BLOCK_ID_IN_RESPONSE = re.compile(r'\s*\(\s*(BLOCK_CITE_ID_\d+)\s*\)')
+# Fallback: block id without parentheses (e.g. [ID: 1] BLOCK_CITE_ID_42)
+_BLOCK_ID_NO_PARENS = re.compile(r'\s+(BLOCK_CITE_ID_\d+)\b')
+
+# Max blocks per doc in the prompt metadata table (avoids token overflow; resolution still uses full table)
+MAX_BLOCKS_PER_DOC_IN_PROMPT = 500
+
+
+def _resolve_block_id_to_metadata(
+    block_id: str,
+    metadata_lookup_tables: Dict[str, Dict[str, Dict[str, Any]]],
+) -> Optional[Dict[str, Any]]:
+    """Resolve BLOCK_CITE_ID_N to bbox, doc_id, page (jan28th-style). Returns None if not found."""
+    for doc_id, table in metadata_lookup_tables.items():
+        if block_id in table:
+            meta = table[block_id].copy()
+            meta['doc_id'] = doc_id
+            meta['original_filename'] = meta.get('original_filename', '')
+            meta['bbox'] = {
+                'left': meta.get('bbox_left', 0),
+                'top': meta.get('bbox_top', 0),
+                'width': meta.get('bbox_width', 0),
+                'height': meta.get('bbox_height', 0),
+                'page': meta.get('page', 0),
+            }
+            return meta
+    return None
+
+
 def extract_citations_with_positions(
-    llm_response: str, 
-    short_id_lookup: Dict[str, Dict[str, Any]]
+    llm_response: str,
+    short_id_lookup: Dict[str, Dict[str, Any]],
+    metadata_lookup_tables: Optional[Dict[str, Dict[str, Dict[str, Any]]]] = None,
 ) -> List[Dict[str, Any]]:
     """
-    Extract citations from LLM response using regex pattern matching.
-    
-    The LLM should include citations in the format [ID: X] where X is a short ID (1, 2, 3, etc.).
-    This function extracts these citations and maps them to full chunk metadata.
-    It also matches each citation to the best block within the chunk based on context.
-    
-    Args:
-        llm_response: The LLM's response text containing [ID: X] citations
-        short_id_lookup: Dictionary mapping short_id -> full chunk metadata
-    
-    Returns:
-        List of citation dictionaries with position, metadata, and citation number
+    Extract citations from LLM response. Prefers jan28th-style [ID: X](BLOCK_CITE_ID_N):
+    when (BLOCK_CITE_ID_N) is present, resolve bbox from metadata_lookup_tables. Otherwise
+    use short_id_lookup and select best block within the chunk.
     """
     citations = []
-    # Robust regex pattern: matches [ID: 1], [ID:1], [ID: 12], etc.
     pattern = r'\[ID:\s*([^\]]+)\]'
     matches = list(re.finditer(pattern, llm_response))
-    
+
     logger.info(f"[CITATION_DEBUG] Extracting citations from LLM response ({len(matches)} matches found)")
-    
+
     for idx, match in enumerate(matches, start=1):
         short_id = match.group(1).strip()
         start_position = match.start()
         end_position = match.end()
+
+        # Jan28th-style: look for (BLOCK_CITE_ID_N) or BLOCK_CITE_ID_N immediately after [ID: X]
+        block_id_from_response = None
+        search_span = llm_response[end_position:end_position + 60]
+        block_id_match = _BLOCK_ID_IN_RESPONSE.match(search_span)
+        if block_id_match:
+            block_id_from_response = block_id_match.group(1)
+            end_position = end_position + block_id_match.end()
+        else:
+            block_id_match = _BLOCK_ID_NO_PARENS.match(search_span)
+            if block_id_match:
+                block_id_from_response = block_id_match.group(1)
+                end_position = end_position + block_id_match.end()
         
         # Extract context around the citation to help match to the right block
         # Use a smaller context window to get more specific context
@@ -350,8 +384,52 @@ def extract_citations_with_positions(
         cited_text_for_bbox = sentence_context if sentence_context else llm_response[max(0, start_position - 80):start_position].strip()
         if len(cited_text_for_bbox) > 200:
             cited_text_for_bbox = cited_text_for_bbox[-200:]
-        
-        # Look up full metadata for this short ID
+
+        # Jan28th-style: resolve by block_id when present (exact bbox, no heuristic)
+        # Citation number = order of appearance (1, 2, 3...) so UI shows [1], [2], [3], not block id.
+        if block_id_from_response and metadata_lookup_tables:
+            resolved = _resolve_block_id_to_metadata(block_id_from_response, metadata_lookup_tables)
+            if resolved:
+                citation_number = idx  # Sequential by appearance in response
+                bbox = resolved.get('bbox')
+                page_number = int(resolved.get('page', 0))
+                citation = {
+                    'citation_number': citation_number,
+                    'short_id': short_id,
+                    'chunk_id': '',
+                    'position': start_position,
+                    'end_position': end_position,
+                    'bbox': bbox,
+                    'page_number': page_number,
+                    'doc_id': resolved.get('doc_id', ''),
+                    'original_filename': resolved.get('original_filename', ''),
+                    'block_id': block_id_from_response,
+                    'method': 'block-id-lookup',
+                    'block_info': None,
+                    'cited_text': cited_text_for_bbox,
+                    'citation_debug': {
+                        'short_id': short_id,
+                        'citation_number': citation_number,
+                        'cited_text_for_bbox': cited_text_for_bbox,
+                        'distinctive_values': [],
+                        'chosen_bbox': dict(bbox) if isinstance(bbox, dict) else None,
+                        'block_id': block_id_from_response,
+                        'block_index': None,
+                        'block_type': None,
+                        'block_content_preview': None,
+                        'match_score': None,
+                        'source': 'block-id-lookup',
+                        'num_blocks_considered': 0,
+                    },
+                }
+                citations.append(citation)
+                logger.info(
+                    f"[CITATION_DEBUG] Citation {idx} resolved by block_id {block_id_from_response} "
+                    f"(page={page_number}, doc_id={resolved.get('doc_id', '')[:8]})"
+                )
+                continue
+
+        # Look up full metadata for this short ID (fallback when no block_id in response)
         metadata = short_id_lookup.get(short_id)
         if metadata:
             # Find the best matching block for this citation
@@ -473,11 +551,8 @@ def extract_citations_with_positions(
                 except (TypeError, ValueError):
                     pass
 
-            # Use the LLM's source ID as citation number so [1] maps to source 1 (no renumbering by appearance).
-            try:
-                citation_number = int(short_id) if short_id.isdigit() else idx
-            except (TypeError, ValueError):
-                citation_number = idx
+            # Citation number = order of appearance (1, 2, 3...) so UI shows [1], [2], [3].
+            citation_number = idx
 
             chunk_id = metadata.get('chunk_id', '')
             block_index = best_block_info.get('block_index') if best_block_info else None
@@ -534,6 +609,112 @@ def extract_citations_with_positions(
     return citations
 
 
+def format_chunks_with_block_ids(
+    chunks_metadata: List[Dict[str, Any]]
+) -> Tuple[str, Dict[str, Dict[str, Any]], Dict[str, Dict[str, Dict[str, Any]]]]:
+    """
+    Format chunks with block-level BLOCK_CITE_ID tags (jan28th-style) and build metadata lookup.
+    The LLM sees each block with an id and must cite using [ID: X](BLOCK_CITE_ID_N).
+    Returns:
+        - formatted_text: [SOURCE_ID: 1] followed by <BLOCK id="BLOCK_CITE_ID_N">Content: ...</BLOCK> per block
+        - short_id_lookup: short_id -> chunk metadata (for fallback when block_id missing)
+        - metadata_lookup_tables: doc_id -> block_id -> { page, bbox_left, bbox_top, bbox_width, bbox_height, doc_id, original_filename }
+    """
+    formatted_parts = []
+    short_id_lookup = {}
+    metadata_lookup_tables = {}  # doc_id -> block_id -> metadata
+    block_id_counter = 1
+
+    for idx, chunk in enumerate(chunks_metadata, start=1):
+        short_id = str(idx)
+        chunk_id = chunk.get('chunk_id', '')
+        chunk_text = chunk.get('chunk_text', '')
+        doc_id = chunk.get('document_id', '')
+        original_filename = chunk.get('document_filename', '') or ''
+        page_number = chunk.get('page_number', 0)
+        chunk_bbox = chunk.get('bbox')
+        blocks = chunk.get('blocks', [])
+
+        if not chunk_id or not chunk_text:
+            continue
+
+        # Ensure we have a metadata table for this doc
+        if doc_id not in metadata_lookup_tables:
+            metadata_lookup_tables[doc_id] = {}
+
+        block_parts = []
+        if blocks and isinstance(blocks, list):
+            for block in blocks:
+                if not isinstance(block, dict):
+                    continue
+                block_content = (block.get('content') or '').strip()
+                if not block_content:
+                    continue
+                block_id = f"BLOCK_CITE_ID_{block_id_counter}"
+                block_id_counter += 1
+                block_parts.append(
+                    f'<BLOCK id="{block_id}">\nContent: {block_content}\n</BLOCK>'
+                )
+                bbox = block.get('bbox') or {}
+                bbox_left = float(bbox.get('left', 0)) if isinstance(bbox, dict) else 0.0
+                bbox_top = float(bbox.get('top', 0)) if isinstance(bbox, dict) else 0.0
+                bbox_width = float(bbox.get('width', 0)) if isinstance(bbox, dict) else 0.0
+                bbox_height = float(bbox.get('height', 0)) if isinstance(bbox, dict) else 0.0
+                block_page = bbox.get('page') if isinstance(bbox, dict) else page_number
+                if block_page is None:
+                    block_page = page_number
+                metadata_lookup_tables[doc_id][block_id] = {
+                    'page': int(block_page) if block_page is not None else 0,
+                    'bbox_left': round(bbox_left, 4),
+                    'bbox_top': round(bbox_top, 4),
+                    'bbox_width': round(bbox_width, 4),
+                    'bbox_height': round(bbox_height, 4),
+                    'doc_id': doc_id,
+                    'original_filename': original_filename,
+                }
+        if not block_parts:
+            # No blocks: one block per chunk
+            block_id = f"BLOCK_CITE_ID_{block_id_counter}"
+            block_id_counter += 1
+            block_parts.append(
+                f'<BLOCK id="{block_id}">\nContent: {chunk_text}\n</BLOCK>'
+            )
+            bbox_left = bbox_top = bbox_width = bbox_height = 0.0
+            if isinstance(chunk_bbox, dict):
+                bbox_left = float(chunk_bbox.get('left', 0))
+                bbox_top = float(chunk_bbox.get('top', 0))
+                bbox_width = float(chunk_bbox.get('width', 0))
+                bbox_height = float(chunk_bbox.get('height', 0))
+            metadata_lookup_tables[doc_id][block_id] = {
+                'page': int(page_number) if page_number is not None else 0,
+                'bbox_left': round(bbox_left, 4),
+                'bbox_top': round(bbox_top, 4),
+                'bbox_width': round(bbox_width, 4),
+                'bbox_height': round(bbox_height, 4),
+                'doc_id': doc_id,
+                'original_filename': original_filename,
+            }
+
+        formatted_parts.append(f"[SOURCE_ID: {short_id}]\n" + "\n".join(block_parts))
+        short_id_lookup[short_id] = {
+            'chunk_id': chunk_id,
+            'short_id': short_id,
+            'page_number': page_number,
+            'bbox': chunk_bbox,
+            'blocks': blocks,
+            'doc_id': doc_id,
+            'original_filename': original_filename,
+            'chunk_text': chunk_text,
+        }
+
+    formatted_text = "\n\n---\n\n".join(formatted_parts)
+    logger.info(
+        f"[CITATION_DEBUG] Formatted chunks with block IDs: {block_id_counter - 1} blocks, "
+        f"{len(metadata_lookup_tables)} docs"
+    )
+    return formatted_text, short_id_lookup, metadata_lookup_tables
+
+
 def replace_ids_with_citation_numbers(
     llm_response: str, 
     citations: List[Dict[str, Any]]
@@ -585,22 +766,20 @@ def format_citations_for_frontend(
     Format citations for frontend consumption.
     
     Converts internal citation dictionaries to Citation TypedDict format expected by the frontend.
-    Deduplicates by citation_number so each displayed number has one payload (same source cited multiple times).
+    Keeps every citation (one payload per in-text [1], [2], [3]) so numbers match the response.
     
     Args:
-        citations: List of citation dictionaries from extract_citations_with_positions()
+        citations: List of citation dictionaries (already with sequential citation_number 1,2,3...)
     
     Returns:
         List of Citation dictionaries for frontend
     """
     frontend_citations = []
-    seen_citation_numbers = set()
+    # Sort by position so order matches the response text
+    sorted_citations = sorted(citations, key=lambda c: c.get('position', 0))
 
-    for citation in citations:
+    for citation in sorted_citations:
         citation_number = citation.get('citation_number', 0)
-        if citation_number in seen_citation_numbers:
-            continue
-        seen_citation_numbers.add(citation_number)
         # Extract bbox data - only include if valid
         bbox_data = citation.get('bbox')
         bbox = None
@@ -1858,29 +2037,48 @@ Answer (use Markdown formatting for structure and clarity):""")
     return answer_text, pre_created_citations
 
 
+def _build_metadata_table_section(metadata_lookup_tables: Dict[str, Dict[str, Dict[str, Any]]]) -> str:
+    """Build the Metadata Look-Up Table section for the prompt (jan28th-style)."""
+    if not metadata_lookup_tables:
+        return ""
+    lines = [
+        "",
+        "--- Metadata Look-Up Table ---",
+        "Block IDs below map to bbox coordinates. When you cite a fact, use the block id from the <BLOCK> tag that contains that fact.",
+        ""
+    ]
+    for doc_id, table in metadata_lookup_tables.items():
+        doc_short = (doc_id[:12] + "...") if len(doc_id) > 12 else doc_id
+        lines.append(f"Document {doc_short}:")
+        limited = list(sorted(table.items()))[:MAX_BLOCKS_PER_DOC_IN_PROMPT]
+        for block_id, meta in limited:
+            p = meta.get("page", 0)
+            l_ = meta.get("bbox_left", 0)
+            t = meta.get("bbox_top", 0)
+            w = meta.get("bbox_width", 0)
+            h = meta.get("bbox_height", 0)
+            lines.append(f"  {block_id}: page={p}, bbox=({l_:.4f},{t:.4f},{w:.4f},{h:.4f})")
+        lines.append("")
+    return "\n".join(lines)
+
+
 async def generate_conversational_answer_with_citations(
     user_query: str,
-    formatted_chunks: str
+    formatted_chunks: str,
+    metadata_lookup_tables: Optional[Dict[str, Dict[str, Dict[str, Any]]]] = None,
 ) -> str:
     """
-    Generate conversational answer with citation instructions.
-    
-    This version includes instructions for the LLM to use [ID: X] format for citations.
-    The LLM should cite sources using short IDs (1, 2, 3) that correspond to the [SOURCE_ID: X] labels.
-    
-    Args:
-        user_query: User's question
-        formatted_chunks: Chunks formatted with [SOURCE_ID: X] labels
-    
-    Returns:
-        LLM response with [ID: X] citations embedded
+    Generate conversational answer with citation instructions (jan28th-style).
+    The LLM sees content with <BLOCK id="BLOCK_CITE_ID_N"> and must cite as [ID: X](BLOCK_CITE_ID_N).
     """
     llm = ChatOpenAI(
         model=config.openai_model,
         temperature=0.3,
         max_tokens=2000
     )
-    
+
+    metadata_section = _build_metadata_table_section(metadata_lookup_tables or {})
+
     system_prompt = SystemMessage(content="""
 You are an expert analytical assistant for professional documents. Your role is to help users understand information clearly, accurately, and neutrally based solely on the content provided.
 
@@ -1910,74 +2108,63 @@ You are an expert analytical assistant for professional documents. Your role is 
    - Use `##` for main sections, `###` for subsections
    - Use `**bold**` for emphasis or labels
    - Use `-` for bullet points, `1.` for numbered lists
-   - Use a blank line (double newline) before each major section (e.g. **Flood Zone 2:**, **Surface Water Flooding:**) so the answer appears as separate paragraphs, not one long block. Do not put blank lines between list items.
+   - Use a blank line (double newline) before each major section so the answer appears as separate paragraphs. Do not put blank lines between list items.
 
 4. **No Hallucination**: If the answer is not contained within the provided excerpts, state: "I cannot find the specific information in the uploaded documents." Do not use outside knowledge.
 
 # CITATION INSTRUCTIONS (CRITICAL)
 
-**SIMPLE RULE: Any information you use from excerpts MUST be cited.**
+You have been provided with document excerpts. Each excerpt is labeled [SOURCE_ID: 1], [SOURCE_ID: 2], etc. Within each excerpt, facts appear inside <BLOCK id="BLOCK_CITE_ID_N"> tags.
 
-Whether it's a fact, explanation, definition, or any other type of information - if it comes from an excerpt, it needs a citation.
+**HOW TO CITE:**
+For EVERY fact you use from the excerpts, you MUST cite it using BOTH the source number AND the block id from the <BLOCK> tag that contains that fact. Use this exact format:
 
-You have been provided with document excerpts labeled with source IDs:
-- [SOURCE_ID: 1] - First excerpt
-- [SOURCE_ID: 2] - Second excerpt
-- [SOURCE_ID: 3] - Third excerpt
-- etc.
+[ID: X](BLOCK_CITE_ID_N)
 
-**HOW TO CITE SOURCES:**
+- X = the SOURCE_ID number (1, 2, 3, ...) of the excerpt.
+- BLOCK_CITE_ID_N = the id of the <BLOCK> tag that contains the fact you are citing (e.g. BLOCK_CITE_ID_42).
 
-When you use ANY information from a specific excerpt, you MUST include a citation using the format:
-[ID: X]
-
-Where X is the SOURCE_ID number (1, 2, 3, etc.) that corresponds to the excerpt you're referencing.
-
-**EXAMPLES:** (figure first; MAIN wraps only the figure)
-- "£500,000 [ID: 1] is the Market Value. This represents the purchase price [ID: 1]."
-- "£2,000 per month [ID: 2] is the rent. This is payable in advance [ID: 2]."
-- "15th March 2024 [ID: 1] is the valuation date, and 123 Main Street [ID: 3] is the property address."
+**EXAMPLES:**
+- "The **EPC rating** is **56 D** [ID: 1](BLOCK_CITE_ID_42) with a potential of **71 C** [ID: 1](BLOCK_CITE_ID_42)."
+- "Market Value is **£2,400,000** [ID: 1](BLOCK_CITE_ID_7) as of **12th February 2024** [ID: 1](BLOCK_CITE_ID_7)."
+- "Valuer: Sukhbir Tiwana MRICS [ID: 2](BLOCK_CITE_ID_15)."
 
 **RULES:**
-1. **ALWAYS cite when using ANY information from excerpts** - facts, explanations, definitions, everything
-2. **Place citations immediately after the information you're citing** (e.g., "£500,000 [ID: 1]")
-3. **Use the exact SOURCE_ID number** from the [SOURCE_ID: X] label
-4. **You can cite the same source multiple times** if you reference different information from it
-5. **If you're synthesizing information from multiple sources, cite all relevant sources**
-
-**IMPORTANT:**
-- Do NOT use [1], [2], [3] - use [ID: 1], [ID: 2], [ID: 3]
-- Do NOT invent citations - only cite sources that were actually provided
-- Do NOT cite sources for general knowledge or your own analysis
+1. **ALWAYS** include the block id in parentheses immediately after [ID: X]. The block id must be the id of the <BLOCK> that contains the fact.
+2. **Cite ONLY the <BLOCK> whose content actually contains that fact** (e.g. for "EPC 56 D" cite the block that contains "56" and "D", not a different block about something else).
+3. **Place citations immediately after the information you're citing.**
+4. **Use the exact block id** from the <BLOCK> tag (e.g. BLOCK_CITE_ID_42, not BLOCK_CITE_ID_41).
+5. You may cite the same block multiple times for different facts from that block.
+6. Do NOT use [1], [2] - use [ID: 1], [ID: 2] followed by (BLOCK_CITE_ID_N).
+7. Do NOT invent block ids - only use ids that appear in the excerpts above.
 
 # TONE & STYLE
 
 - Be direct and professional.
-- Avoid phrases like "Based on the documents provided..." or "According to chunk 1...". Just provide the answer.
-- Do not mention document names, filenames, IDs, or retrieval steps.
-- Do not reference "documents", "files", "chunks", "tools", or "searches".
+- Do not mention document names, filenames, or retrieval steps.
 - Speak as if the information is simply *known*, but cite sources for transparency.
 
-Answer (use Markdown formatting for structure and clarity, and include [ID: X] citations where appropriate):""")
-    
+Answer (use Markdown and cite every fact with [ID: X](BLOCK_CITE_ID_N)):""")
+
     human_message = HumanMessage(content=f"""
 **User Question:**
 {user_query}
 
-**Relevant Excerpts from Documents:**
+**Document content (each fact is inside a <BLOCK id="..."> tag):**
 
 {formatted_chunks}
+{metadata_section}
 
 **Instructions:**
-- Answer the user's question based on the excerpts provided above
-- Include [ID: X] citations when referencing specific facts from the excerpts
-- Use Markdown formatting for clarity
-- Be concise, accurate, and helpful
+- Answer based on the content above. For each fact you use, cite it as [ID: X](BLOCK_CITE_ID_N) where the block id is from the <BLOCK> whose content actually contains that fact (e.g. the block with "56" and "D" for EPC current rating).
+- Use Markdown. Be concise and accurate.
 """)
-    
-    logger.info(f"[RESPONDER] Invoking LLM with citation instructions for {len(formatted_chunks.split('[SOURCE_ID:')) - 1} chunks")
+
+    logger.info(
+        f"[RESPONDER] Invoking LLM with block-id citation instructions "
+        f"({len(formatted_chunks.split('[SOURCE_ID:')) - 1} source groups)"
+    )
     response = await llm.ainvoke([system_prompt, human_message])
-    
     answer_text = response.content if hasattr(response, 'content') and response.content else ""
     return answer_text
 
@@ -2015,19 +2202,32 @@ async def generate_answer_with_direct_citations(
             return "No relevant information found.", []
         
         logger.info(f"[DIRECT_CITATIONS] Extracted {len(chunks_metadata)} chunks with metadata")
-        
-        # Step 2: Format chunks with short IDs and create lookup
-        formatted_chunks, short_id_lookup = format_chunks_with_short_ids(chunks_metadata)
-        logger.info(f"[DIRECT_CITATIONS] Formatted chunks with short IDs: {list(short_id_lookup.keys())}")
-        
-        # Step 3: Generate LLM response (LLM will include [ID: 1], [ID: 2], etc.)
-        logger.info(f"[DIRECT_CITATIONS] Generating LLM response with citation instructions...")
-        llm_response = await generate_conversational_answer_with_citations(user_query, formatted_chunks)
+
+        # Step 2: Format chunks with block-level BLOCK_CITE_ID tags and metadata table (jan28th-style)
+        formatted_chunks, short_id_lookup, metadata_lookup_tables = format_chunks_with_block_ids(chunks_metadata)
+        logger.info(
+            f"[DIRECT_CITATIONS] Formatted chunks with block IDs: "
+            f"{list(short_id_lookup.keys())}, {sum(len(t) for t in metadata_lookup_tables.values())} blocks"
+        )
+
+        # Step 3: Generate LLM response (LLM must include [ID: X](BLOCK_CITE_ID_N) for each citation)
+        logger.info(f"[DIRECT_CITATIONS] Generating LLM response with block-id citation instructions...")
+        llm_response = await generate_conversational_answer_with_citations(
+            user_query, formatted_chunks, metadata_lookup_tables
+        )
         logger.info(f"[DIRECT_CITATIONS] LLM response generated ({len(llm_response)} chars)")
-        
-        # Step 4: Extract citations from response (maps short IDs to full metadata)
-        citations = extract_citations_with_positions(llm_response, short_id_lookup)
+
+        # Step 4: Extract citations (prefer block_id lookup when (BLOCK_CITE_ID_N) present)
+        citations = extract_citations_with_positions(
+            llm_response, short_id_lookup, metadata_lookup_tables
+        )
         logger.info(f"[DIRECT_CITATIONS] Extracted {len(citations)} citations from response")
+
+        # Step 4b: Assign sequential citation numbers 1, 2, 3... by order of appearance (position).
+        # This ensures UI shows [1], [2], [3] and we never collapse two in-text citations into one.
+        citations.sort(key=lambda c: c.get('position', 0))
+        for seq, citation in enumerate(citations, start=1):
+            citation['citation_number'] = seq
         
         # Step 5: Validate citations
         if not validate_citations(citations, short_id_lookup):

@@ -500,17 +500,25 @@ export const Sidebar = ({
                       transition={{ duration: 0.2, ease: [0.4, 0, 0.2, 1] }}
                       className="overflow-hidden"
                     >
-                      <div className="mt-1">
+                      <div className="mt-3">
                         {/* Menu Items — same size and style as nav items (px-3 py-1.5, gap-3, text-[13px], icon 18px) */}
-                        <div className="py-0.5">
+                        <div className="pt-2 pb-0.5">
                           {/* Profile */}
                           <button
                             onClick={() => {
-                              setIsBrandDropdownOpen(false);
                               closeFilingSidebar();
                               onNavigate?.('profile');
                             }}
-                            className="w-full flex items-center gap-3 px-3 py-1.5 rounded text-gray-600 hover:bg-white/60 hover:text-gray-900 transition-colors text-left group"
+                            className={`w-full flex items-center gap-3 px-3 py-1.5 rounded transition-colors text-left group border ${
+                              activeItem === 'profile'
+                                ? 'bg-white text-gray-900 border-gray-300'
+                                : 'text-gray-600 hover:bg-white/60 hover:text-gray-900 border-transparent'
+                            }`}
+                            style={
+                              activeItem === 'profile'
+                                ? { boxShadow: '0 1px 2px rgba(0, 0, 0, 0.04)' }
+                                : undefined
+                            }
                           >
                             <User className="w-[18px] h-[18px] flex-shrink-0" strokeWidth={1.75} />
                             <span className="text-[13px] font-normal">Profile</span>

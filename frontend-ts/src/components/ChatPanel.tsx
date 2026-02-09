@@ -234,7 +234,7 @@ export const ChatPanel = ({
                     onClick={() => setShowArchived(!showArchived)}
                     whileHover={{ scale: 1.05 }}
                     whileTap={{ scale: 0.95 }}
-                    className={`p-1.5 text-xs rounded-md transition-all duration-200 ${
+                    className={`p-1.5 text-xs rounded-md transition-colors duration-75 ease-out ${
                       showArchived 
                         ? 'bg-amber-100 text-amber-700 hover:bg-amber-200' 
                         : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
@@ -262,7 +262,7 @@ export const ChatPanel = ({
                       <button
                         type="button"
                         onClick={(e) => e.stopPropagation()}
-                        className="p-1 rounded-full hover:bg-slate-200/50 active:bg-slate-200/70 transition-all duration-150 flex items-center justify-center"
+                        className="p-1 rounded-full hover:bg-slate-200/50 active:bg-slate-200/70 transition-colors duration-75 ease-out flex items-center justify-center"
                         title="Options"
                         aria-haspopup="true"
                         aria-expanded={optionsMenuOpen}
@@ -287,7 +287,7 @@ export const ChatPanel = ({
                               setOptionsMenuOpen(false);
                               setShowClearConfirm(true);
                             }}
-                            className="flex items-center gap-2 w-full rounded-sm px-2 py-2 text-left hover:bg-[#f5f5f5] text-[12px] text-[#374151]"
+                            className="flex items-center gap-2 w-full rounded-sm px-2 py-2 text-left hover:bg-[#f5f5f5] text-[12px] text-[#374151] transition-colors duration-75 ease-out"
                           >
                             <Trash2 className="w-3.5 h-3.5 text-[#666] flex-shrink-0" strokeWidth={1.5} />
                             Clear all chats
@@ -303,7 +303,7 @@ export const ChatPanel = ({
                       e.stopPropagation();
                       closePanel();
                     }}
-                    className="p-1 rounded-full hover:bg-slate-200/50 active:bg-slate-200/70 transition-all duration-150 flex items-center justify-center"
+                    className="p-1 rounded-full hover:bg-slate-200/50 active:bg-slate-200/70 transition-colors duration-75 ease-out flex items-center justify-center"
                     title="Close Agent Sidebar"
                     type="button"
                   >
@@ -320,7 +320,7 @@ export const ChatPanel = ({
                 }} 
                 whileHover={{ scale: 1.01 }} 
                 whileTap={{ scale: 0.99 }} 
-                className="w-full flex items-center justify-center gap-2 px-3 py-2 border border-slate-300/70 hover:border-slate-400/80 rounded-md transition-all duration-200 group"
+                className="w-full flex items-center justify-center gap-2 px-3 py-2 border border-slate-300/70 hover:border-slate-400/80 rounded-md transition-[border-color,background-color] duration-75 ease-out group"
                 style={{ backgroundColor: '#FCFCF9', opacity: 1, backdropFilter: 'none' }}
               >
                 <Plus className="w-3.5 h-3.5 text-slate-500" />
@@ -378,14 +378,11 @@ export const ChatPanel = ({
                           ease: [0.23, 1, 0.32, 1]
                         }} 
                         onClick={() => handleChatClick(chat.id)} 
-                        className={`group relative px-2.5 py-1.5 rounded-md cursor-pointer w-full mb-0.5 transition-colors duration-150 ${
+                        className={`group relative px-2.5 py-1.5 rounded-md cursor-pointer w-full mb-0.5 transition-[background-color] duration-75 ease-out ${
                           selectedChatId === chat.id 
                             ? 'bg-white' 
                             : openMenuId ? '' : 'hover:bg-[#E0E0DC]'
                         }`}
-                        style={{ 
-                          borderBottom: '1px solid rgba(0, 0, 0, 0.04)'
-                        }}
                       >
                         {isEditing ? (
                           <div className="flex items-center space-x-2" onClick={(e) => e.stopPropagation()}>
@@ -424,9 +421,9 @@ export const ChatPanel = ({
                             <div className="absolute right-0 top-0">
                               <button
                                 onClick={(e) => handleMenuToggle(e, chat.id)}
-                                className="opacity-0 group-hover:opacity-100 p-0.5 rounded transition-all duration-150 transform hover:scale-110 active:scale-95"
+                                className="opacity-0 group-hover:opacity-100 p-0.5 rounded transition-[opacity,transform] duration-75 ease-out transform hover:scale-110 active:scale-95"
                               >
-                                <MoreVertical className="w-3.5 h-3.5 text-slate-400 transition-all duration-150" />
+                                <MoreVertical className="w-3.5 h-3.5 text-slate-400 transition-colors duration-75 ease-out" />
                               </button>
                               
                               {openMenuId === chat.id && (
@@ -444,20 +441,20 @@ export const ChatPanel = ({
                                 >
                                   <button
                                     onClick={(e) => handleRename(e, chat.id, chat.title)}
-                                    className="w-full px-2 py-1 text-left text-[11px] text-gray-800 hover:bg-[#007AFF] hover:text-white rounded transition-colors"
+                                    className="w-full px-2 py-1 text-left text-[11px] text-gray-800 hover:bg-[#007AFF] hover:text-white rounded transition-colors duration-75 ease-out"
                                   >
                                     Rename
                                   </button>
                                   <button
                                     onClick={(e) => chat.archived ? handleUnarchiveChat(e, chat.id) : handleArchiveChat(e, chat.id)}
-                                    className="w-full px-2 py-1 text-left text-[11px] text-gray-800 hover:bg-[#007AFF] hover:text-white rounded transition-colors"
+                                    className="w-full px-2 py-1 text-left text-[11px] text-gray-800 hover:bg-[#007AFF] hover:text-white rounded transition-colors duration-75 ease-out"
                                   >
                                     {chat.archived ? 'Unarchive' : 'Archive'}
                                   </button>
                                   <div className="h-px bg-gray-200 my-1 mx-1" />
                                   <button
                                     onClick={(e) => handleDeleteChat(e, chat.id)}
-                                    className="w-full px-2 py-1.5 text-center text-[11px] font-medium text-white bg-[#4285F4] hover:bg-[#3367D6] rounded transition-colors"
+                                    className="w-full px-2 py-1.5 text-center text-[11px] font-medium text-white bg-[#4285F4] hover:bg-[#3367D6] rounded transition-colors duration-75 ease-out"
                                   >
                                     Delete
                                   </button>
@@ -482,7 +479,7 @@ export const ChatPanel = ({
                     e.stopPropagation();
                     setShowClearConfirm(true);
                   }}
-                  className="w-full py-2 text-[11px] font-medium text-slate-700 bg-white hover:bg-[#FAFAF9] rounded-md transition-colors flex items-center justify-center gap-1.5 border border-slate-200/80"
+                  className="w-full py-2 text-[11px] font-medium text-slate-700 bg-white hover:bg-[#FAFAF9] rounded-md transition-colors duration-75 ease-out flex items-center justify-center gap-1.5 border border-slate-200/80"
                 >
                   <Trash2 className="w-3.5 h-3.5 shrink-0" />
                   Clear all chats
@@ -507,23 +504,23 @@ export const ChatPanel = ({
                           type="button"
                           onClick={(e) => {
                             e.stopPropagation();
+                            clearAllChats();
+                            onNewChat?.();
                             setShowClearConfirm(false);
                           }}
-                          className="flex-1 py-1 text-[11px] font-medium text-slate-600 hover:bg-slate-200/60 rounded border border-slate-200/80 transition-colors"
+                          className="flex-1 py-1 text-[11px] font-medium text-white bg-slate-700 hover:bg-slate-800 rounded border border-slate-600/80 transition-colors duration-75 ease-out"
                         >
-                          Cancel
+                          Delete
                         </button>
                         <button
                           type="button"
                           onClick={(e) => {
                             e.stopPropagation();
-                            clearAllChats();
-                            onNewChat?.();
                             setShowClearConfirm(false);
                           }}
-                          className="flex-1 py-1 text-[11px] font-medium text-white bg-[#4285F4] hover:bg-[#3367D6] rounded transition-colors"
+                          className="flex-1 py-1 text-[11px] font-medium text-slate-600 hover:bg-slate-200/60 rounded border border-slate-200/80 transition-colors duration-75 ease-out"
                         >
-                          Delete
+                          Cancel
                         </button>
                       </div>
                     </motion.div>

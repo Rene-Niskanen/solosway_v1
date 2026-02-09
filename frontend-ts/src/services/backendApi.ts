@@ -1168,17 +1168,17 @@ class BackendApiService {
   }> {
     try {
       const response = await this.fetchApi<{
-        key_facts?: Array<{ label: string; value: string }>;
-        summary?: string | null;
+        success?: boolean;
+        data?: { key_facts?: Array<{ label: string; value: string }>; summary?: string | null };
       }>(`/api/documents/${documentId}/key-facts`);
       if (response?.success && response?.data) {
-        const data = response.data as {
-          key_facts?: Array<{ label: string; value: string }>;
-          summary?: string | null;
-        };
+        // Backend returns { success, data: { key_facts, summary } }; fetchApi puts that whole body in response.data
+        const inner = (response.data as { data?: { key_facts?: Array<{ label: string; value: string }>; summary?: string | null } }).data;
+        const key_facts = inner?.key_facts ?? [];
+        const summary = inner?.summary ?? null;
         return {
           success: true,
-          data: { key_facts: data.key_facts ?? [], summary: data.summary ?? null },
+          data: { key_facts, summary },
         };
       }
       return { success: false, error: 'No data' };

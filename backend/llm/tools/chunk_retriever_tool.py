@@ -281,6 +281,10 @@ def retrieve_chunks(
                             blocks = row.get('blocks', [])
                             
                             if chunk_id in chunks_dict:
+                                # Always attach blocks for block-level citations (match_chunks RPC doesn't return them)
+                                if blocks and isinstance(blocks, list):
+                                    chunks_dict[chunk_id]['blocks'] = blocks
+                                    logger.debug(f"   ✅ Added {len(blocks)} blocks to {chunk_id[:8]}...")
                                 # Prefer chunk-level bbox, fallback to first block's bbox
                                 if isinstance(bbox, dict) and bbox.get('left') is not None:
                                     chunks_dict[chunk_id]['bbox'] = bbox
@@ -471,31 +475,35 @@ def retrieve_chunks(
                     'id, bbox, blocks'
                 ).in_('id', chunks_needing_bbox).execute()
                 
-                # Create lookup map
+                # Create lookup maps for bbox and blocks (chunks may lack both when from RPCs that don't return them)
                 bbox_lookup = {}
+                blocks_lookup = {}
                 for row in bbox_response.data or []:
                     chunk_id = row.get('id')
                     bbox = row.get('bbox')
                     blocks = row.get('blocks', [])
-                    
+                    if blocks and isinstance(blocks, list):
+                        blocks_lookup[chunk_id] = blocks
                     # Prefer chunk-level bbox, fallback to first block's bbox
                     if isinstance(bbox, dict) and bbox.get('left') is not None:
                         bbox_lookup[chunk_id] = bbox
                     elif blocks and isinstance(blocks, list) and len(blocks) > 0:
-                        # Extract bbox from first block
                         first_block = blocks[0]
                         if isinstance(first_block, dict):
                             block_bbox = first_block.get('bbox')
                             if isinstance(block_bbox, dict) and block_bbox.get('left') is not None:
                                 bbox_lookup[chunk_id] = block_bbox
-                                logger.debug(f"   Using block bbox for chunk {chunk_id[:8]}...")
+                                logger.debug(f"   Using block bbox for chunk {str(chunk_id)[:8]}...")
                 
-                # Update chunks with bbox data
+                # Update chunks with bbox and blocks
                 for chunk in unique_chunks:
                     chunk_id = chunk.get('chunk_id')
                     if chunk_id in bbox_lookup:
                         chunk['bbox'] = bbox_lookup[chunk_id]
-                        logger.debug(f"   ✅ Added bbox to chunk {chunk_id[:8]}...")
+                        logger.debug(f"   ✅ Added bbox to chunk {str(chunk_id)[:8]}...")
+                    if chunk_id in blocks_lookup:
+                        chunk['blocks'] = blocks_lookup[chunk_id]
+                        logger.debug(f"   ✅ Added {len(blocks_lookup[chunk_id])} blocks to chunk {str(chunk_id)[:8]}...")
             except Exception as bbox_error:
                 logger.warning(f"   Failed to fetch bbox data: {bbox_error}")
                 # Continue without bbox - citations will still work but without highlighting
