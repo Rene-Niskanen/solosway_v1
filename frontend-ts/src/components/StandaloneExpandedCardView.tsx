@@ -1319,11 +1319,12 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
   
   // When doc opens 50/50, parent may report stale chatPanelWidth for 1–2 frames. Use expected 50% during a short window so opening width doesn't bug out.
   const docOpenTimeRef = useRef<number>(0);
+  const docOpenTimeSetForRef = useRef<string | null>(null);
   useEffect(() => {
     if (!isFullscreen) docOpenTimeRef.current = Date.now();
     return () => { docOpenTimeRef.current = 0; };
   }, [docId, isFullscreen]);
-  const CORRECT_STALE_MS = 200;
+  const CORRECT_STALE_MS = 600; // Use 50% for first 600ms so panel never jumps when opening from "View in document"
 
   const { panelWidth, leftPosition } = (() => {
     // Minimum width for document preview
@@ -1332,13 +1333,17 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
     // Expected chat width in 50/50 split (matches SideChatPanel's calculateChatPanelWidth when doc preview is open)
     const expected50ChatWidth = Math.round((viewportWidth - sidebarWidth - agentSidebarWidth) / 2);
     const roundedProp = Math.round(chatPanelWidth);
+    // Set open time synchronously on first render for this doc so position is correct immediately (no jump when loading)
+    if (docId && !isFullscreen && docOpenTimeSetForRef.current !== docId) {
+      docOpenTimeRef.current = Date.now();
+      docOpenTimeSetForRef.current = docId;
+    }
     const isWithinStaleWindow = docOpenTimeRef.current > 0 && Date.now() - docOpenTimeRef.current < CORRECT_STALE_MS;
-    // Stale: parent still reporting fullscreen width (much larger than 50%). Don't correct 0 so we don't treat closed chat as 50/50.
-    const propLooksStale = roundedProp > expected50ChatWidth + 100;
     // Snap to 50% when within 2px to avoid 1px rounding jitter and glitchy re-renders at exactly 50/50
     const isNear50 = Math.abs(roundedProp - expected50ChatWidth) <= 2;
+    // During open window: always use 50% so the panel never moves when it loads (no jump after load)
     const effectiveChatWidth =
-      isWithinStaleWindow && propLooksStale
+      isWithinStaleWindow
         ? expected50ChatWidth
         : isNear50
           ? expected50ChatWidth

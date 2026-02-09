@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { X } from "lucide-react";
+import { X, ChevronDown, ChevronUp } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { FileAttachmentData } from './FileAttachment';
 import { PropertyAttachmentData } from './PropertyAttachment';
@@ -42,6 +42,18 @@ interface ChatMessage {
   citations?: Record<string, CitationDataType>;
 }
 
+/** Compute "Thought Xs" label from reasoning step timestamps (ms). Returns e.g. "Thought 5s", "Thought <1s", or "Thought ?". */
+function getThoughtDurationLabel(steps: ReasoningStep[]): string {
+  const withTs = steps.filter((s) => s.timestamp != null && Number.isFinite(s.timestamp)) as Array<{ timestamp: number }>;
+  if (withTs.length === 0) return 'Thought ?';
+  const minTs = Math.min(...withTs.map((s) => s.timestamp));
+  const maxTs = Math.max(...withTs.map((s) => s.timestamp));
+  const durationMs = maxTs - minTs;
+  const durationSec = Math.round(durationMs / 1000);
+  if (durationSec <= 0) return 'Thought <1s';
+  return `Thought ${durationSec}s`;
+}
+
 interface FloatingChatBubbleProps {
   chatMessages: ChatMessage[];
   onOpenChat: () => void;
@@ -68,7 +80,7 @@ const CitationLink: React.FC<{
         display: 'inline-flex',
         alignItems: 'center',
         justifyContent: 'center',
-        marginLeft: '2px',
+        marginLeft: '1px',
         marginRight: '1px',
         minWidth: '14px',
         height: '14px',
@@ -283,6 +295,17 @@ export const FloatingChatBubble: React.FC<FloatingChatBubbleProps> = ({
   // State for gold glow animation
   const [showGoldGlow, setShowGoldGlow] = React.useState(false);
   const hasAnimatedRef = React.useRef(false);
+
+  // Per-message expanded state for "Thought" dropdown (collapsed by default when response is finished)
+  const [expandedThoughtMessageIds, setExpandedThoughtMessageIds] = React.useState<Set<string>>(() => new Set());
+  const toggleThoughtExpanded = React.useCallback((messageId: string) => {
+    setExpandedThoughtMessageIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(messageId)) next.delete(messageId);
+      else next.add(messageId);
+      return next;
+    });
+  }, []);
   
   // Check if bubble should be visible: only when query sent, user left, and response is loading
   const shouldShowBubble = React.useMemo(() => {
@@ -390,7 +413,11 @@ export const FloatingChatBubble: React.FC<FloatingChatBubbleProps> = ({
           />
         );
       }
-      return <span key={`text-${idx}`}>{part}</span>;
+      // Don't show commas between adjacent citations; use no space so they sit close together
+      const isBetweenCitations = idx > 0 && idx < parts.length - 1 &&
+        citationPlaceholders[parts[idx - 1]] && citationPlaceholders[parts[idx + 1]];
+      const displayText = isBetweenCitations && /^[\s,]*$/.test(part) ? '' : part;
+      return <span key={`text-${idx}`}>{displayText}</span>;
     });
   }, []);
   
@@ -676,10 +703,30 @@ export const FloatingChatBubble: React.FC<FloatingChatBubbleProps> = ({
                                 />
                               );
                             }
-                            const label = seg.name.length > 30 ? seg.name.slice(0, 27) + '...' : seg.name;
-                            return (
-                              <AtMentionChip key={`d-${idx}-${seg.id}`} type="document" label={label} />
-                            );
+                            if (seg.type === 'document') {
+                              const label = seg.name.length > 30 ? seg.name.slice(0, 27) + '...' : seg.name;
+                              return (
+                                <AtMentionChip key={`d-${idx}-${seg.id}`} type="document" label={label} />
+                              );
+                            }
+                            if (seg.type === 'citation_snippet') {
+                              return (
+                                <span
+                                  key={`c-${idx}`}
+                                  style={{
+                                    color: '#0D0D0D',
+                                    fontSize: '11px',
+                                    lineHeight: '13px',
+                                    margin: 0,
+                                    padding: 0,
+                                    fontFamily: 'system-ui, -apple-system, sans-serif'
+                                  }}
+                                >
+                                  {seg.snippet}
+                                </span>
+                              );
+                            }
+                            return null;
                           })
                         : (
                           <>
@@ -771,17 +818,56 @@ export const FloatingChatBubble: React.FC<FloatingChatBubbleProps> = ({
                     position: 'relative',
                     minHeight: '1px'
                   }}>
-                    {/* Reasoning Steps - scaled down version */}
+                    {/* Reasoning Steps: when loading show inline; when finished show under collapsible "Thought Xs" header (collapsed by default) */}
                     {message.reasoningSteps && message.reasoningSteps.length > 0 && (message.isLoading || message.text) && (
-                      <div style={{ transform: 'scale(0.85)', transformOrigin: 'top left', marginBottom: '4px' }}>
-                        <ReasoningSteps 
-                          key={`reasoning-${message.id}`} 
-                          steps={message.reasoningSteps} 
-                          isLoading={message.isLoading} 
-                          onDocumentClick={() => {}} 
-                          hasResponseText={!!message.text} 
-                        />
-                      </div>
+                      message.isLoading ? (
+                        <div style={{ transform: 'scale(0.85)', transformOrigin: 'top left', marginBottom: '4px' }}>
+                          <ReasoningSteps
+                            key={`reasoning-${message.id}`}
+                            steps={message.reasoningSteps}
+                            isLoading={true}
+                            onDocumentClick={() => {}}
+                            hasResponseText={!!message.text}
+                          />
+                        </div>
+                      ) : (
+                        <div key={`thought-${message.id}`} style={{ marginBottom: '16px' }}>
+                          <button
+                            type="button"
+                            onClick={() => toggleThoughtExpanded(message.id)}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '4px',
+                              padding: 0,
+                              border: 'none',
+                              background: 'none',
+                              cursor: 'pointer',
+                              fontSize: '11px',
+                              color: '#6b7280',
+                              fontFamily: 'inherit'
+                            }}
+                          >
+                            <span style={{ fontWeight: 600 }}>{getThoughtDurationLabel(message.reasoningSteps)}</span>
+                            {expandedThoughtMessageIds.has(message.id) ? (
+                              <ChevronUp style={{ width: '12px', height: '12px', flexShrink: 0 }} />
+                            ) : (
+                              <ChevronDown style={{ width: '12px', height: '12px', flexShrink: 0 }} />
+                            )}
+                          </button>
+                          {expandedThoughtMessageIds.has(message.id) && (
+                            <div style={{ marginTop: '4px', transform: 'scale(0.85)', transformOrigin: 'top left' }}>
+                              <ReasoningSteps
+                                steps={message.reasoningSteps}
+                                isLoading={false}
+                                onDocumentClick={() => {}}
+                                hasResponseText={!!message.text}
+                                thoughtCompleted={true}
+                              />
+                            </div>
+                          )}
+                        </div>
+                      )
                     )}
                     
                     

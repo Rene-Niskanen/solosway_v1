@@ -45,6 +45,16 @@ from backend.llm.citation import (
 
 logger = logging.getLogger(__name__)
 
+# Shared prompt block for closing and follow-up (used in conversational answer prompts)
+CLOSING_AND_FOLLOWUP_PROMPT = """
+# CLOSING AND FOLLOW-UP
+
+- Put any closing or sign-off on its own line: add a blank line before it so it appears as a separate paragraph (e.g. after the last factual sentence, not on the same line).
+- **Follow-up must be context-aware and intelligent.** Base it on what you actually said and what the user was asking for. Do NOT use the same generic phrase every time (e.g. avoid "If you have any further questions or need more details, feel free to ask!" or "Hope that helps." as a default).
+- Offer a **topic-specific** follow-up when appropriate: reference the subject of the answer and suggest concrete next steps (e.g. after planning info: "Want me to clarify anything about the TPOs or conservation status?"; after valuation: "I can break down any of these figures or assumptions if helpful."; after travel info: "Need anything else for your trip?"). One short line is enough.
+- Be aware of what the user is looking for and structure the follow-up accordingly—invite clarification on specific points you raised, or a natural next question in that domain, rather than a generic "anything else?"
+"""
+
 
 def _strip_markdown_for_citation(text: str) -> str:
     """Strip common markdown so we can extract values from e.g. **£2,400,000**."""
@@ -1775,6 +1785,7 @@ When information IS in the excerpts:
 When information is NOT in the excerpts:
 - State: "I cannot find the specific information in the uploaded documents."
 - Provide helpful context about what type of information would answer the question
+{CLOSING_AND_FOLLOWUP_PROMPT}
 """
     
     system_prompt = SystemMessage(content=system_prompt_content)
@@ -1810,6 +1821,7 @@ Provide a helpful, conversational answer using Markdown formatting:
 - Use `**bold**` for emphasis or labels
 - Use `-` for bullet points when listing items
 - Use line breaks between sections for better readability
+- Put any closing or sign-off on a new line; if you add a follow-up, make it context-aware (tied to what you said and what they asked), not generic.
 - Extract and present information directly from the excerpts if it is present
 - Only say information is not found if it is genuinely not in the excerpts
 - Include appropriate context based on question type
@@ -1989,6 +2001,7 @@ When information IS in the excerpts:
 When information is NOT in the excerpts:
 - State: "I cannot find the specific information in the uploaded documents."
 - Provide helpful context about what type of information would answer the question
+{CLOSING_AND_FOLLOWUP_PROMPT}
 """
     
     system_prompt = SystemMessage(content=system_prompt_content)
@@ -2018,6 +2031,7 @@ Provide a helpful, conversational answer using Markdown formatting:
 - Use `**bold**` for emphasis or labels
 - Use `-` for bullet points when listing items
 - Use line breaks between sections for better readability
+- Put any closing or sign-off on a new line; if you add a follow-up, make it context-aware (tied to what you said and what they asked), not generic.
 - Extract and present information directly from the excerpts if it is present
 - Only say information is not found if it is genuinely not in the excerpts
 - Include appropriate context based on question type
@@ -2071,46 +2085,24 @@ async def generate_conversational_answer_with_citations(
     Generate conversational answer with citation instructions (jan28th-style).
     The LLM sees content with <BLOCK id="BLOCK_CITE_ID_N"> and must cite as [ID: X](BLOCK_CITE_ID_N).
     """
+    # Temperature 0.38: slight increase for more natural variation; revert if responses become inconsistent or repetitive (see plan: conversational responses).
     llm = ChatOpenAI(
         model=config.openai_model,
-        temperature=0.3,
+        temperature=0.38,
         max_tokens=2000
     )
 
     metadata_section = _build_metadata_table_section(metadata_lookup_tables or {})
 
     system_prompt = SystemMessage(content="""
-You are an expert analytical assistant for professional documents. Your role is to help users understand information clearly, accurately, and neutrally based solely on the content provided.
+You are a helpful expert who explains document content in clear, natural language, like a knowledgeable colleague in a dialogue. Answer based solely on the content provided.
 
 # FORMATTING RULES
 
-1. **Response Style**: Use clean Markdown. Use bolding for key terms and bullet points for lists to ensure scannability.
-
-2. **List Formatting**: When creating numbered lists (1., 2., 3.) or bullet lists (-, -, -), keep all items on consecutive lines without blank lines between them. Blank lines between list items will break the list into separate lists.
-
-   **CORRECT:**
-   ```
-   1. First item
-   2. Second item
-   3. Third item
-   ```
-
-   **WRONG:**
-   ```
-   1. First item
-
-   2. Second item
-
-   3. Third item
-   ```
-
-3. **Markdown Features**: 
-   - Use `##` for main sections, `###` for subsections
-   - Use `**bold**` for emphasis or labels
-   - Use `-` for bullet points, `1.` for numbered lists
-   - Use a blank line (double newline) before each major section so the answer appears as separate paragraphs. Do not put blank lines between list items.
-
-4. **No Hallucination**: If the answer is not contained within the provided excerpts, state: "I cannot find the specific information in the uploaded documents." Do not use outside knowledge.
+- Use Markdown (bold for key terms, lists, headings) when it improves readability. Prefer natural paragraphs and full sentences; use lists when listing distinct points.
+- Vary sentence length and use short paragraphs where it helps. You may use brief lead-ins like "In short…" or "So essentially…" when useful.
+- When using lists, keep list items on consecutive lines without blank lines between them.
+- **No Hallucination**: If the answer is not contained within the provided excerpts, state: "I cannot find the specific information in the uploaded documents." Do not use outside knowledge.
 
 # CITATION INSTRUCTIONS (CRITICAL)
 
@@ -2129,10 +2121,16 @@ For EVERY fact you use from the excerpts, you MUST cite it using BOTH the source
 - "Market Value is **£2,400,000** [ID: 1](BLOCK_CITE_ID_7) as of **12th February 2024** [ID: 1](BLOCK_CITE_ID_7)."
 - "Valuer: Sukhbir Tiwana MRICS [ID: 2](BLOCK_CITE_ID_15)."
 
+**CITATION PLACEMENT (CRITICAL):**
+- Place each citation **immediately after the specific fact or phrase** it supports, not at the end of the sentence.
+- **WRONG:** "The bill clarifies that payment stablecoins are not considered securities, amending various acts to reflect this [ID: 1](BLOCK_CITE_ID_5) [ID: 1](BLOCK_CITE_ID_6)." (citations at end of sentence)
+- **CORRECT:** "The bill clarifies that **payment stablecoins are not considered securities** [ID: 1](BLOCK_CITE_ID_5) [ID: 1](BLOCK_CITE_ID_6), amending various acts to reflect this."
+- When a sentence contains multiple facts, put each citation right after the fact it supports: "A moratorium applies to **endogenously collateralized stablecoins** [ID: 1](BLOCK_CITE_ID_8) for two years. The Secretary must **report within 365 days** [ID: 1](BLOCK_CITE_ID_11)."
+
 **RULES:**
 1. **ALWAYS** include the block id in parentheses immediately after [ID: X]. The block id must be the id of the <BLOCK> that contains the fact.
 2. **Cite ONLY the <BLOCK> whose content actually contains that fact** (e.g. for "EPC 56 D" cite the block that contains "56" and "D", not a different block about something else).
-3. **Place citations immediately after the information you're citing.**
+3. **Place each citation immediately after the fact or phrase it supports**—never group all citations at the end of a sentence.
 4. **Use the exact block id** from the <BLOCK> tag (e.g. BLOCK_CITE_ID_42, not BLOCK_CITE_ID_41).
 5. You may cite the same block multiple times for different facts from that block.
 6. Do NOT use [1], [2] - use [ID: 1], [ID: 2] followed by (BLOCK_CITE_ID_N).
@@ -2140,10 +2138,9 @@ For EVERY fact you use from the excerpts, you MUST cite it using BOTH the source
 
 # TONE & STYLE
 
-- Be direct and professional.
-- Do not mention document names, filenames, or retrieval steps.
-- Speak as if the information is simply *known*, but cite sources for transparency.
-
+- Write in a natural, conversational tone—like a knowledgeable colleague explaining the document. Be direct and clear; stay on topic and accurate.
+- Do not mention document names, filenames, or retrieval steps. Explain as if you are familiar with the material; cite sources for transparency.
+""" + CLOSING_AND_FOLLOWUP_PROMPT + """
 Answer (use Markdown and cite every fact with [ID: X](BLOCK_CITE_ID_N)):""")
 
     human_message = HumanMessage(content=f"""
@@ -2157,7 +2154,9 @@ Answer (use Markdown and cite every fact with [ID: X](BLOCK_CITE_ID_N)):""")
 
 **Instructions:**
 - Answer based on the content above. For each fact you use, cite it as [ID: X](BLOCK_CITE_ID_N) where the block id is from the <BLOCK> whose content actually contains that fact (e.g. the block with "56" and "D" for EPC current rating).
-- Use Markdown. Be concise and accurate.
+- **Place each citation immediately after the fact it supports**, not at the end of the sentence (e.g. "...payment stablecoins are not considered securities [ID: 1](BLOCK_CITE_ID_5), amending various acts..." not "...to reflect this [ID: 1](BLOCK_CITE_ID_5).").
+- Put any closing or sign-off on a new line; if you add a follow-up, make it context-aware (tied to what you said and what they asked), not generic.
+- Explain in a clear, conversational way; use Markdown where it helps readability. Be accurate.
 """)
 
     logger.info(

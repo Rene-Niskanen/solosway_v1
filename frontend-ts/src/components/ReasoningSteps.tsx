@@ -239,6 +239,8 @@ interface ReasoningStepsProps {
   skipAnimations?: boolean; // Skip animations when restoring a chat (instant display)
   /** When true, collapse to max 2 steps (first searching + first "No relevant") for display */
   isNoResultsResponse?: boolean;
+  /** When true, steps are shown under the thought dropdown after completion - use faint font colour for "Found X relevant document:" and document names */
+  thoughtCompleted?: boolean;
 }
 
 // True 3D Globe component using CSS 3D transforms (scaled for reasoning steps) - Blue version
@@ -339,6 +341,7 @@ const READING_ANIMATION_DURATION = 100; // Brief animation to show "Reading" sta
 const ACTION_COLOR = '#9CA3AF'; // Light gray for main actions (the circled parts)
 const DETAIL_COLOR = '#374151'; // Dark gray for details and other text
 const LIGHT_DETAIL_COLOR = '#6B7280'; // Medium gray for secondary details
+const FAINT_COLOR = '#9CA3AF'; // Faint when under thought dropdown and completed
 
 const ReadingStepWithTransition: React.FC<{
   filename: string;
@@ -353,7 +356,9 @@ const ReadingStepWithTransition: React.FC<{
   keepAnimating?: boolean; // Keep the green animation going until planning indicator appears
   hasResponseText?: boolean; // Stop all animations when response text appears
   hasSummarisingStep?: boolean; // Close viewer when summarising step appears
-}> = ({ filename, docMetadata, llmContext, readingIndex, isLoading, onDocumentClick, showPreview = true, isLastReadingStep = false, hasNextStep = false, keepAnimating = false, hasResponseText = false, hasSummarisingStep = false }) => {
+  hasPreparingResponseStep?: boolean; // Stop animation and show Read when "Preparing response" step is shown
+  thoughtCompleted?: boolean; // When true, use faint font colour (under thought dropdown, completed)
+}> = ({ filename, docMetadata, llmContext, readingIndex, isLoading, onDocumentClick, showPreview = true, isLastReadingStep = false, hasNextStep = false, keepAnimating = false, hasResponseText = false, hasSummarisingStep = false, hasPreparingResponseStep = false, thoughtCompleted = false }) => {
   const [phase, setPhase] = useState<'reading' | 'read'>('reading');
   const [showReadAnimation, setShowReadAnimation] = useState(false); // Track if "Read" should show animation
   
@@ -383,6 +388,13 @@ const ReadingStepWithTransition: React.FC<{
     
     // If summarising step has appeared, close the reading viewer so summarising can show its viewer
     if (hasSummarisingStep) {
+      setPhase('read');
+      setShowReadAnimation(false);
+      return;
+    }
+    
+    // When "Preparing response" reasoning step is shown, stop animation and show Read
+    if (hasPreparingResponseStep) {
       setPhase('read');
       setShowReadAnimation(false);
       return;
@@ -418,10 +430,11 @@ const ReadingStepWithTransition: React.FC<{
     return () => {
       if (readTimer) clearTimeout(readTimer);
     };
-  }, [docMetadata, onDocumentClick, keepAnimating, hasResponseText, hasSummarisingStep]); // Re-run if docMetadata changes (backend updates status) or response text appears or summarising starts
+  }, [docMetadata, onDocumentClick, keepAnimating, hasResponseText, hasSummarisingStep, hasPreparingResponseStep]); // Re-run if docMetadata changes (backend updates status) or response text appears or summarising/preparing response starts
   
+  const textColor = thoughtCompleted ? FAINT_COLOR : undefined;
   const actionStyle: React.CSSProperties = {
-    color: ACTION_COLOR,
+    color: thoughtCompleted ? FAINT_COLOR : ACTION_COLOR,
     fontWeight: 500
   };
 
@@ -454,7 +467,7 @@ const ReadingStepWithTransition: React.FC<{
         ) : phase === 'reading' ? (
           <img src="/PDF.png" alt="PDF" style={{ width: '14px', height: '14px', flexShrink: 0 }} />
         ) : (
-          <BookOpenCheck style={{ width: '14px', height: '14px', color: ACTION_COLOR, flexShrink: 0 }} />
+          <BookOpenCheck style={{ width: '14px', height: '14px', color: thoughtCompleted ? FAINT_COLOR : ACTION_COLOR, flexShrink: 0 }} />
         )}
         {phase === 'reading' ? (
           <span className="reading-reveal-text">
@@ -463,13 +476,13 @@ const ReadingStepWithTransition: React.FC<{
             {keepAnimating && !hasResponseText ? (
                 <span className="reading-shimmer-active">{filename}</span>
             ) : (
-                <span style={{ color: DETAIL_COLOR }}>{filename}</span>
+                <span style={{ color: textColor ?? DETAIL_COLOR }}>{filename}</span>
             )}
           </span>
         ) : (
           // Cursor-style: "Read [filename] L1-[totalLines]" in unified light gray
-          <span style={{ color: '#9CA3AF' }}>
-            Read {filename}{lineRange ? ` ${lineRange}` : ''}
+          <span style={{ color: thoughtCompleted ? FAINT_COLOR : '#9CA3AF' }}>
+            Read <span style={textColor ? { color: textColor } : undefined}>{filename}</span>{lineRange ? ` ${lineRange}` : ''}
           </span>
         )}
       </span>
@@ -535,24 +548,7 @@ const ReadingStepWithTransition: React.FC<{
   );
 };
 
-// Small preparing-response icon with faint pulse (matches auth loading screen style)
-const PreparingResponseIcon: React.FC<{ className?: string }> = ({ className }) => (
-  <img
-    src="/preparingresponse.png"
-    alt=""
-    className={className}
-    style={{
-      width: '14px',
-      height: '14px',
-      objectFit: 'contain',
-      flexShrink: 0,
-      marginTop: '2px',
-      display: 'block'
-    }}
-  />
-);
-
-// Planning indicator - preparing response icon + text with faint pulse
+// Planning indicator - text only with faint pulse (no icon)
 const PlanningIndicator: React.FC = () => (
   <div
     style={{
@@ -563,7 +559,6 @@ const PlanningIndicator: React.FC = () => (
       gap: '6px'
     }}
   >
-    <PreparingResponseIcon className="preparing-response-icon-pulse" />
     <span className="planning-shimmer-full">Preparing response</span>
   </div>
 );
@@ -583,14 +578,15 @@ const StepRenderer: React.FC<{
   allReadingComplete?: boolean; // All reading steps have completed
   hasResponseText?: boolean; // Stop animations when response text has started
   model?: 'gpt-4o-mini' | 'gpt-4o' | 'claude-sonnet' | 'claude-opus';
-}> = ({ step, allSteps, stepIndex, isLoading, readingStepIndex = 0, isLastReadingStep = false, totalReadingSteps = 0, onDocumentClick, shownDocumentsRef, allReadingComplete = false, hasResponseText = false, model = 'gpt-4o-mini' }) => {
+  thoughtCompleted?: boolean; // When true, use faint font for "Found X relevant document:" and document names
+}> = ({ step, allSteps, stepIndex, isLoading, readingStepIndex = 0, isLastReadingStep = false, totalReadingSteps = 0, onDocumentClick, shownDocumentsRef, allReadingComplete = false, hasResponseText = false, model = 'gpt-4o-mini', thoughtCompleted = false }) => {
   const actionStyle: React.CSSProperties = {
-    color: ACTION_COLOR, // Light gray for main actions (the circled parts)
+    color: thoughtCompleted ? FAINT_COLOR : ACTION_COLOR, // Light gray for main actions (the circled parts)
     fontWeight: 500
   };
 
   const targetStyle: React.CSSProperties = {
-    color: DETAIL_COLOR // Dark gray for targets/details
+    color: thoughtCompleted ? FAINT_COLOR : DETAIL_COLOR // Dark gray for targets/details
   };
 
   const highlightStyle: React.CSSProperties = {
@@ -680,7 +676,9 @@ const StepRenderer: React.FC<{
   }
 
   // Component for "Found X documents:" (no animation). Use single ":" (avoid "::" if prefix already has colon).
-  const FoundDocumentsText: React.FC<{ prefix: string; actionStyle: React.CSSProperties }> = ({ prefix, actionStyle }) => {
+  const detailColor = thoughtCompleted ? FAINT_COLOR : DETAIL_COLOR;
+  const FoundDocumentsText: React.FC<{ prefix: string; actionStyle: React.CSSProperties; detailColor?: string }> = ({ prefix, actionStyle, detailColor: detailColorProp }) => {
+    const color = detailColorProp ?? DETAIL_COLOR;
     const foundMatch = prefix.match(/^(Found)\s+(.+)$/);
     const ensureSingleColon = (s: string) => (s.trimEnd().endsWith(':') ? s.trimEnd() : `${s.trimEnd()}:`);
 
@@ -688,7 +686,7 @@ const StepRenderer: React.FC<{
       return (
         <span>
           <span style={actionStyle}>{foundMatch[1]}</span>
-          <span style={{ color: DETAIL_COLOR }}> {ensureSingleColon(foundMatch[2])}</span>
+          <span style={{ color }}> {ensureSingleColon(foundMatch[2])}</span>
         </span>
       );
     } else {
@@ -702,7 +700,9 @@ const StepRenderer: React.FC<{
     case 'planning':
       // Only "Planning next moves" (planning_next_moves) is allowed through the filter for normal queries
       if (step.step === 'planning_next_moves') {
-        const isPlanningActive = isLoading && !hasResponseText;
+        // Stop shimmering when the next reasoning step has been inserted
+        const hasStepAfterPlanning = stepIndex < allSteps.length - 1;
+        const isPlanningActive = isLoading && !hasResponseText && !hasStepAfterPlanning;
         return (
           <span style={{ display: 'inline-flex', alignItems: 'flex-start' }}>
             {isPlanningActive ? (
@@ -730,11 +730,11 @@ const StepRenderer: React.FC<{
       return (
         <div>
           <div className="found-reveal-text" style={{ display: 'flex', alignItems: 'flex-start', gap: '6px', position: 'relative', zIndex: 1 }}>
-            <SearchCheck style={{ width: '14px', height: '14px', color: ACTION_COLOR, flexShrink: 0, marginTop: '2px' }} />
-            <FoundDocumentsText prefix={prefix} actionStyle={actionStyle} />
+            <SearchCheck style={{ width: '14px', height: '14px', color: thoughtCompleted ? FAINT_COLOR : ACTION_COLOR, flexShrink: 0, marginTop: '2px' }} />
+            <FoundDocumentsText prefix={prefix} actionStyle={actionStyle} detailColor={detailColor} />
           </div>
           {!isSectionsStep && !isNoResultsStep && !(step.details?.doc_previews?.length) ? (
-            <div style={{ marginTop: '2px', paddingLeft: '0', color: DETAIL_COLOR, fontStyle: 'italic', fontSize: '12px' }}>
+            <div style={{ marginTop: '2px', paddingLeft: '0', color: detailColor, fontStyle: 'italic', fontSize: '12px' }}>
               (document details not available)
             </div>
           ) : null}
@@ -821,15 +821,19 @@ const StepRenderer: React.FC<{
       
       // Check if a summarising step has appeared - if so, close reading viewers
       const hasSummarisingStep = allSteps.some(s => s.action_type === 'summarising');
+      // Check if "Preparing response" (analysing) step has appeared - stop reading animation and show Read
+      const hasPreparingResponseStep = allSteps.some(s =>
+        s.action_type === 'analysing' && /^(Preparing response|Formulating answer|Preparing answer)/i.test((s.message || '').trim())
+      );
       
       // Keep the green animation going on ALL reading steps until response is complete
       // Not just the last one - all documents should animate while loading
       // Stop animating immediately when response text has started (don't block response)
-      // Also stop when summarising step appears - reading viewers should close first
-      const shouldKeepAnimating = isLoading && !hasResponseText && !allReadingComplete && !hasSummarisingStep;
+      // Also stop when summarising or preparing response step appears - reading viewers should close first
+      const shouldKeepAnimating = isLoading && !hasResponseText && !allReadingComplete && !hasSummarisingStep && !hasPreparingResponseStep;
       
-      // If response text has started OR summarising has started, don't keep animating - show read immediately
-      const finalKeepAnimating = (hasResponseText || hasSummarisingStep) ? false : shouldKeepAnimating;
+      // If response text has started OR summarising/preparing response has started, don't keep animating - show read immediately
+      const finalKeepAnimating = (hasResponseText || hasSummarisingStep || hasPreparingResponseStep) ? false : shouldKeepAnimating;
       
       // Extract LLM context blocks for visualization
       const llmContext = step.details?.llm_context;
@@ -848,6 +852,8 @@ const StepRenderer: React.FC<{
           keepAnimating={finalKeepAnimating}
           hasResponseText={hasResponseText}
           hasSummarisingStep={hasSummarisingStep}
+          hasPreparingResponseStep={hasPreparingResponseStep}
+          thoughtCompleted={thoughtCompleted}
         />
       );
     
@@ -869,13 +875,11 @@ const StepRenderer: React.FC<{
         fixedMessage = 'Analyzing documents';
       }
       
-      // Use custom preparing response icon with pulse for "Preparing response" / "Formulating answer"
+      // No icon for "Preparing response" / "Formulating answer"; use TextSearch for other analysing steps
       const isPreparingResponse = /^(Preparing response|Formulating answer|Preparing answer)/i.test(fixedMessage.trim());
       return (
         <span style={{ display: 'inline-flex', alignItems: 'flex-start', gap: '6px' }}>
-          {isPreparingResponse ? (
-            <PreparingResponseIcon className="preparing-response-icon-pulse" />
-          ) : (
+          {!isPreparingResponse && (
             <TextSearch style={{ width: '14px', height: '14px', color: ACTION_COLOR, flexShrink: 0, marginTop: '2px' }} />
           )}
           {/* Entire "Analyzing documents" / "Preparing response" text with flowing gradient animation (only if active) */}
@@ -1152,7 +1156,7 @@ const StepRenderer: React.FC<{
  * Cursor-style compact stacked list of reasoning steps.
  * Always visible (no dropdown), subtle design, fits seamlessly into chat UI.
  */
-export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading, onDocumentClick, hasResponseText = false, isAgentMode = true, skipAnimations = false, isNoResultsResponse = false }) => {
+export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading, onDocumentClick, hasResponseText = false, isAgentMode = true, skipAnimations = false, isNoResultsResponse = false, thoughtCompleted = false }) => {
   // Get current model from context
   const { model } = useModel();
   
@@ -1277,16 +1281,12 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
   const isPlanningPlaceholder = (s: ReasoningStep) =>
     s.step === 'planning_next_moves' || (s.action_type === 'summarising' && s.message === 'Planning next moves');
 
-  // When no-results (or when we only have Planning + Searching + Preparing): show one search line and replace "Planning next moves"
-  // so we don't show Planning + duplicate Searching; we show a single "Searching for X" line then "Preparing response".
+  // Remove "Planning next moves" as soon as the very next reasoning step appears (searching, exploring, reading, analysing, etc.).
   const stepsToRender = useMemo(() => {
     if (!filteredSteps || filteredSteps.length === 0) return filteredSteps;
-    const hasSearching = filteredSteps.some(s => s.action_type === 'searching');
-    const hasExploringOrReading = filteredSteps.some(s => s.action_type === 'exploring' || s.action_type === 'reading');
-    // When we have searching but no docs found: drop "Planning next moves" so the first line is the single search (replaces Planning).
-    const replacePlanningWithSearch = hasSearching && !hasExploringOrReading;
+    const hasAnyOtherStep = filteredSteps.some(s => !isPlanningPlaceholder(s));
     let list = filteredSteps;
-    if (replacePlanningWithSearch) {
+    if (hasAnyOtherStep) {
       list = filteredSteps.filter(s => !isPlanningPlaceholder(s));
     }
     // When no-results response and still many steps: collapse to first searching + first "No relevant"
@@ -1470,14 +1470,6 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
               background-clip: text;
               animation: shimmer-full 0.8s ease-in-out infinite;
               font-weight: 500;
-            }
-            
-            @keyframes preparing-response-pulse {
-              0%, 100% { transform: scale(1); }
-              50% { transform: scale(1.06); }
-            }
-            .preparing-response-icon-pulse {
-              animation: preparing-response-pulse 1.2s ease-in-out infinite;
             }
             
             .reading-step-reveal {
@@ -1741,6 +1733,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
                 shownDocumentsRef={shownDocumentsRef}
                 allReadingComplete={allReadingComplete}
                 model={model}
+                thoughtCompleted={thoughtCompleted}
               />
               </motion.div>
             );
@@ -1802,6 +1795,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
                   shownDocumentsRef={shownDocumentsRef}
                   allReadingComplete={allReadingComplete}
                   model={model}
+                  thoughtCompleted={thoughtCompleted}
                 />
               </div>
             );

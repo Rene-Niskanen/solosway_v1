@@ -283,13 +283,14 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({
           flexDirection: 'column',
           marginTop: '6px',
           width: '100%',
-          maxWidth: '380px',
+          maxWidth: '320px',
           borderRadius: '6px',
           border: `1px solid ${isHovered || isExpanded ? 'rgba(0, 0, 0, 0.12)' : 'rgba(0, 0, 0, 0.08)'}`,
           backgroundColor: 'transparent',
           transition: 'border-color 0.1s ease, box-shadow 0.1s ease',
           overflow: 'hidden',
-          boxShadow: isHovered || isExpanded ? '0 2px 8px rgba(0, 0, 0, 0.04)' : 'none'
+          boxShadow: isHovered || isExpanded ? '0 2px 8px rgba(0, 0, 0, 0.04)' : 'none',
+          boxSizing: 'border-box'
         }}
       >
         {/* Collapsible Header Row */}
@@ -373,29 +374,31 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({
               animate={{ height: 'auto', opacity: 1 }}
               exit={{ height: 0, opacity: 0 }}
               transition={{ duration: 0.2, ease: [0.25, 0.1, 0.25, 1] }}
-              style={{ overflow: 'hidden' }}
+              style={{ overflow: 'hidden', padding: '0 8px 8px 8px', boxSizing: 'border-box' }}
             >
               <div
                 onClick={handleOpenDocument}
                 style={{
-                  margin: '0 6px 6px 6px',
-                  padding: '0 8px',
+                  width: '100%',
+                  padding: 0,
                   borderRadius: '4px',
                   overflow: 'auto',
                   backgroundColor: '#FAFAFA',
                   cursor: onClick ? 'pointer' : 'default',
                   boxShadow: 'inset 0 1px 2px rgba(0, 0, 0, 0.04)',
                   border: '1px solid rgba(0, 0, 0, 0.04)',
-                  width: '100%',
                   maxHeight: '120px',
                   display: 'flex',
                   alignItems: 'flex-start',
-                  justifyContent: 'center'
+                  justifyContent: 'stretch',
+                  boxSizing: 'border-box'
                 }}
               >
         <div
           style={{
             width: '100%',
+            minWidth: 0,
+            flex: 1,
             flexShrink: 0,
             aspectRatio: '1 / 1.414',
             display: 'flex',

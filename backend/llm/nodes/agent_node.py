@@ -259,6 +259,7 @@ Provide a helpful, conversational answer using Markdown formatting:
 - Use `**bold**` for emphasis or labels
 - Use `-` for bullet points when listing items
 - Use line breaks between sections for better readability
+- Put any closing or sign-off on a new line; if you add a follow-up, make it context-aware (tied to what you said and what they asked), not generic.
 - **Extract and present information directly from the excerpts if it is present**
 - Only say information is not found if it is genuinely not in the excerpts
 - Includes appropriate context based on question type

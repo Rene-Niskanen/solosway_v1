@@ -223,7 +223,7 @@ export const ChatPanel = ({
               transition={{
                 duration: 0
               }} 
-              className={`h-full w-full flex flex-col ${className || ''}`}
+              className={`h-full w-full flex flex-col relative ${className || ''}`}
               style={{ background: 'transparent' }}
             >
             {/* Header */}
@@ -274,7 +274,7 @@ export const ChatPanel = ({
                       align="end"
                       side="bottom"
                       sideOffset={4}
-                      className="min-w-[180px] w-auto rounded-lg border border-gray-200 bg-white p-2 shadow-md"
+                      className="z-[10001] min-w-[200px] w-auto rounded-lg border border-gray-200 bg-white p-3 shadow-md"
                       onOpenAutoFocus={(e) => e.preventDefault()}
                       onClick={(e) => e.stopPropagation()}
                     >
@@ -470,64 +470,59 @@ export const ChatPanel = ({
               </div>
             )}
 
-            {/* Clear all chats - bottom of panel when chat history is shown */}
-            {showChatHistory && baseChats.length > 0 && (
-              <div className="px-4 py-3 border-t border-slate-200/40 flex-shrink-0 relative bg-[#F2F2EE]">
-                <button
-                  type="button"
+            {/* Clear-all confirmation overlay (shown when triggered from Options dropdown) */}
+            <AnimatePresence>
+              {showClearConfirm && (
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.15 }}
+                  className="absolute inset-0 z-10 flex items-center justify-center bg-black/10"
                   onClick={(e) => {
                     e.stopPropagation();
-                    setShowClearConfirm(true);
+                    setShowClearConfirm(false);
                   }}
-                  className="w-full py-2 text-[11px] font-medium text-slate-700 bg-white hover:bg-[#FAFAF9] rounded-md transition-colors duration-75 ease-out flex items-center justify-center gap-1.5 border border-slate-200/80"
                 >
-                  <Trash2 className="w-3.5 h-3.5 shrink-0" />
-                  Clear all chats
-                </button>
-                
-                {/* Confirmation popup */}
-                <AnimatePresence>
-                  {showClearConfirm && (
-                    <motion.div
-                      initial={{ opacity: 0, y: 10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: 10 }}
-                      transition={{ duration: 0.15 }}
-                      className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-2 w-[200px] bg-white rounded-md shadow-lg border border-slate-200/80"
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      <p className="text-[11px] text-slate-800 mb-2 text-center leading-tight">
-                        Delete all {baseChats.length} chat{baseChats.length !== 1 ? 's' : ''}?
-                      </p>
-                      <div className="flex gap-1.5">
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            clearAllChats();
-                            onNewChat?.();
-                            setShowClearConfirm(false);
-                          }}
-                          className="flex-1 py-1 text-[11px] font-medium text-white bg-slate-700 hover:bg-slate-800 rounded border border-slate-600/80 transition-colors duration-75 ease-out"
-                        >
-                          Delete
-                        </button>
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setShowClearConfirm(false);
-                          }}
-                          className="flex-1 py-1 text-[11px] font-medium text-slate-600 hover:bg-slate-200/60 rounded border border-slate-200/80 transition-colors duration-75 ease-out"
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-              </div>
-            )}
+                  <motion.div
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: 10 }}
+                    transition={{ duration: 0.15 }}
+                    className="px-3 py-2 w-[200px] bg-white rounded-md shadow-lg border border-slate-200/80"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <p className="text-[11px] text-slate-800 mb-2 text-center leading-tight">
+                      Delete all {baseChats.length} chat{baseChats.length !== 1 ? 's' : ''}?
+                    </p>
+                    <div className="flex gap-1.5">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          clearAllChats();
+                          onNewChat?.();
+                          setShowClearConfirm(false);
+                        }}
+                        className="flex-1 py-1 text-[11px] font-medium text-white bg-slate-700 hover:bg-slate-800 rounded border border-slate-600/80 transition-colors duration-75 ease-out"
+                      >
+                        Delete
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setShowClearConfirm(false);
+                        }}
+                        className="flex-1 py-1 text-[11px] font-medium text-slate-600 hover:bg-slate-200/60 rounded border border-slate-200/80 transition-colors duration-75 ease-out"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </motion.div>
+                </motion.div>
+              )}
+            </AnimatePresence>
 
             {/* Empty State when no chat history should be shown */}
             {!showChatHistory && (

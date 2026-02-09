@@ -58,6 +58,27 @@ function stripHtmlFromQuery(s: string): string {
   return s.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
 }
 
+/** Compute "Thought Xs" label from actual response generation time (responseStartedAt → responseCompletedAt) or fallback to step timestamps. */
+function getThoughtDurationLabel(
+  steps: ReasoningStep[],
+  message?: { responseStartedAt?: number; responseCompletedAt?: number }
+): string {
+  if (message?.responseStartedAt != null && message?.responseCompletedAt != null && message.responseCompletedAt >= message.responseStartedAt) {
+    const durationMs = message.responseCompletedAt - message.responseStartedAt;
+    const durationSec = Math.round(durationMs / 1000);
+    if (durationSec <= 0) return 'Thought <1s';
+    return `Thought ${durationSec}s`;
+  }
+  const withTs = steps.filter((s) => s.timestamp != null && Number.isFinite(s.timestamp)) as Array<{ timestamp: number }>;
+  if (withTs.length === 0) return 'Thought ?';
+  const minTs = Math.min(...withTs.map((s) => s.timestamp));
+  const maxTs = Math.max(...withTs.map((s) => s.timestamp));
+  const durationMs = maxTs - minTs;
+  const durationSec = Math.round(durationMs / 1000);
+  if (durationSec <= 0) return 'Thought <1s';
+  return `Thought ${durationSec}s`;
+}
+
 // ============================================================================
 // CHAT PANEL WIDTH CONSTANTS
 // Single source of truth for all width values used in chat panel calculations
@@ -911,10 +932,14 @@ const StreamingResponseText: React.FC<{
               result.push(<React.Fragment key={`cit-${idx}-${part}`}>{citationNode}</React.Fragment>);
             }
           } else if (part) {
+            // Don't show commas between adjacent citations; use no space so they sit close together (streaming path)
+            const isBetweenCitations = idx > 0 && idx < parts.length - 1 &&
+              parts[idx - 1].startsWith('%%CITATION_') && parts[idx + 1].startsWith('%%CITATION_');
+            const segmentToRender = isBetweenCitations && /^[\s,]*$/.test(part) ? '' : part;
             const nextPart = parts[idx + 1];
             const nextCitNum = nextPart && citationNumFromPlaceholder(nextPart);
             const wrapOrange = nextCitNum != null && (orangeCitationNumbers?.has(nextCitNum) ?? false);
-            const content = renderStringSegment(part, `text-${idx}`);
+            const content = renderStringSegment(segmentToRender, `text-${idx}`);
             if (wrapOrange) {
               result.push(<OrangeCitationSwoopHighlight key={`orange-${idx}`}>{content}</OrangeCitationSwoopHighlight>);
             } else {
@@ -1415,8 +1440,8 @@ const CitationLink: React.FC<{
           display: 'inline-flex',
           alignItems: 'center',
           justifyContent: 'center',
-          marginLeft: '3px',
-          marginRight: '2px',
+          marginLeft: '1px',
+          marginRight: '1px',
           minWidth: '19px',
           height: '19px',
           padding: '0 6px',
@@ -1662,7 +1687,11 @@ const renderTextWithCitations = (
         />
       );
     }
-    return <span key={`text-${idx}`}>{part}</span>;
+    // Don't show commas between adjacent citations; use no space so they sit close together
+    const isBetweenCitations = idx > 0 && idx < parts.length - 1 &&
+      citationPlaceholders[parts[idx - 1]] && citationPlaceholders[parts[idx + 1]];
+    const displayText = isBetweenCitations && /^[\s,]*$/.test(part) ? '' : part;
+    return <span key={`text-${idx}`}>{displayText}</span>;
   });
 };
 
@@ -3382,6 +3411,17 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     localStorage.setItem('showReasoningTrace', JSON.stringify(showReasoningTrace));
   }, [showReasoningTrace]);
 
+  // Per-message expanded state for "Thought" dropdown (collapsed by default when response is finished)
+  const [expandedThoughtMessageIds, setExpandedThoughtMessageIds] = React.useState<Set<string>>(() => new Set());
+  const toggleThoughtExpanded = React.useCallback((messageId: string) => {
+    setExpandedThoughtMessageIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(messageId)) next.delete(messageId);
+      else next.add(messageId);
+      return next;
+    });
+  }, []);
+
   // State for blue highlight toggle - persisted to localStorage
   const [showHighlight, setShowHighlight] = React.useState<boolean>(() => {
     try {
@@ -4348,6 +4388,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     };
     /** Ordered segments for query display (chips + text in input order) */
     contentSegments?: QueryContentSegment[];
+    /** When response generation started (ms); used for "Thought Xs" duration. */
+    responseStartedAt?: number;
+    /** When response generation finished (ms); used for "Thought Xs" duration. */
+    responseCompletedAt?: number;
   }
   
   const [submittedQueries, setSubmittedQueries] = React.useState<SubmittedQuery[]>([]);
@@ -6172,7 +6216,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           text: '',
           isLoading: true,
           reasoningSteps: [], // Initialize empty array for reasoning steps
-          citations: {} // Initialize empty object for citations
+          citations: {}, // Initialize empty object for citations
+          responseStartedAt: Date.now()
         };
         setChatMessages(prev => {
           const updated = [...prev, loadingMessage];
@@ -6429,7 +6474,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         });
                       }
                       
-                      return { ...msg, text: cleanedText, isLoading: false };
+                      return { ...msg, text: cleanedText, isLoading: false, responseCompletedAt: msg.responseCompletedAt ?? Date.now() };
                     }
                     return msg;
                   }));
@@ -6770,7 +6815,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         text: finalText || 'Response received', // Ensure text is never empty
                         isLoading: false,
                         reasoningSteps: existingMessage?.reasoningSteps || [], // Preserve reasoning steps
-                        citations: finalCitations // Use final citations (normalized to string keys)
+                        citations: finalCitations, // Use final citations (normalized to string keys)
+                        responseStartedAt: existingMessage?.responseStartedAt,
+                        responseCompletedAt: existingMessage?.responseCompletedAt ?? Date.now()
                       };
                       
                       const updated = prev.map(msg => 
@@ -6814,11 +6861,13 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       text: finalText || 'Response received',
                       isLoading: false,
                       reasoningSteps: existingMessage?.reasoningSteps || [],
-                      citations: finalCitations
+                      citations: finalCitations,
+                      responseStartedAt: existingMessage?.responseStartedAt,
+                      responseCompletedAt: existingMessage?.responseCompletedAt ?? Date.now()
                     };
                     
                     // Update buffered messages
-                    const updatedMessages = bufferedState.messages.map(msg => 
+                    const updatedMessages = bufferedState.messages.map(msg =>
                       msg.id === loadingResponseId ? responseMessage : msg
                     );
                     if (!updatedMessages.find(msg => msg.id === loadingResponseId)) {
@@ -6979,14 +7028,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   
                   setChatMessages(prev => {
                     const existingMessage = prev.find(msg => msg.id === loadingResponseId);
-                    const errorMessage: ChatMessage = {
-                      id: loadingResponseId,
-                      type: 'response',
-                      text: errorText,
-                      isLoading: false,
-                      reasoningSteps: existingMessage?.reasoningSteps || [] // Preserve reasoning steps
-                    };
-                    
+                const errorMessage: ChatMessage = {
+                  id: loadingResponseId,
+                  type: 'response',
+                  text: errorText,
+                    isLoading: false,
+                    reasoningSteps: existingMessage?.reasoningSteps || [], // Preserve reasoning steps
+                  responseStartedAt: existingMessage?.responseStartedAt,
+                  responseCompletedAt: existingMessage?.responseCompletedAt ?? Date.now()
+                };
+                
                     const updated = prev.map(msg => 
                       msg.id === loadingResponseId 
                         ? errorMessage
@@ -7006,7 +7057,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     type: 'response',
                     text: errorText,
                     isLoading: false,
-                    reasoningSteps: existingMessage?.reasoningSteps || []
+                    reasoningSteps: existingMessage?.reasoningSteps || [],
+                    responseStartedAt: existingMessage?.responseStartedAt,
+                    responseCompletedAt: existingMessage?.responseCompletedAt ?? Date.now()
                   };
                   
                   const updatedMessages = bufferedState.messages.map(msg => 
@@ -8713,7 +8766,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 id: `loading-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
                 type: 'response',
                 text: '',
-                isLoading: true
+                isLoading: true,
+                responseStartedAt: Date.now()
               };
               const messagesWithLoading = [...restoredMessages, loadingMessage];
               setChatMessages(messagesWithLoading);
@@ -8967,7 +9021,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           text: '',
           isLoading: true,
           reasoningSteps: [], // Initialize empty array for reasoning steps
-          citations: {} // Initialize empty object for citations
+          citations: {}, // Initialize empty object for citations
+          responseStartedAt: Date.now()
         };
         setChatMessages(prev => {
           const updated = [...prev, loadingMessage];
@@ -9088,7 +9143,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         });
                       }
                       
-                      return { ...msg, text: cleanedText, isLoading: false };
+                      return { ...msg, text: cleanedText, isLoading: false, responseCompletedAt: msg.responseCompletedAt ?? Date.now() };
                     }
                     return msg;
                   }));
@@ -9217,7 +9272,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   text: finalText,
                     isLoading: false,
                     reasoningSteps: existingMessage?.reasoningSteps || [], // Preserve reasoning steps
-                      citations: mergedCitations // Merged citations applied once
+                      citations: mergedCitations, // Merged citations applied once
+                    responseStartedAt: existingMessage?.responseStartedAt,
+                    responseCompletedAt: existingMessage?.responseCompletedAt ?? Date.now()
                 };
                 
                   const updated = prev.map(msg => 
@@ -9281,7 +9338,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   type: 'response',
                   text: errorText,
                     isLoading: false,
-                    reasoningSteps: existingMessage?.reasoningSteps || [] // Preserve reasoning steps
+                    reasoningSteps: existingMessage?.reasoningSteps || [], // Preserve reasoning steps
+                  responseStartedAt: existingMessage?.responseStartedAt,
+                  responseCompletedAt: existingMessage?.responseCompletedAt ?? Date.now()
                 };
                 
                   const updated = prev.map(msg => 
@@ -10368,7 +10427,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         type: 'response',
         text: '',
         isLoading: true,
-        reasoningSteps: [] // Initialize empty array for reasoning steps
+        reasoningSteps: [], // Initialize empty array for reasoning steps
+        responseStartedAt: Date.now()
       };
       setChatMessages(prev => {
         const updated = [...prev, loadingMessage];
@@ -10493,7 +10553,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       });
                     }
                     
-                    return { ...msg, text: cleanedText, isLoading: false };
+                    return { ...msg, text: cleanedText, isLoading: false, responseCompletedAt: msg.responseCompletedAt ?? Date.now() };
                   }
                   return msg;
                 }));
@@ -10836,7 +10896,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       text: finalText,
                       isLoading: false,
                       reasoningSteps: latestReasoningSteps.length > 0 ? latestReasoningSteps : (existingMessage?.reasoningSteps || []), // Preserve reasoning steps
-                      citations: mergedCitations // Merged citations applied once
+                      citations: mergedCitations, // Merged citations applied once
+                      responseStartedAt: existingMessage?.responseStartedAt,
+                      responseCompletedAt: existingMessage?.responseCompletedAt ?? Date.now()
                     };
                     
                     const updated = prev.map(msg => 
@@ -10859,7 +10921,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     text: finalText,
                     isLoading: false,
                     reasoningSteps: latestReasoningSteps.length > 0 ? latestReasoningSteps : (existingMessage?.reasoningSteps || []),
-                    citations: mergedCitations
+                    citations: mergedCitations,
+                    responseStartedAt: existingMessage?.responseStartedAt,
+                    responseCompletedAt: existingMessage?.responseCompletedAt ?? Date.now()
                   };
                   
                   // Update buffered messages
@@ -11000,7 +11064,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     type: 'response',
                     text: errorText,
                     isLoading: false,
-                    reasoningSteps: existingMessage?.reasoningSteps || [] // Preserve reasoning steps
+                    reasoningSteps: existingMessage?.reasoningSteps || [], // Preserve reasoning steps
+                    responseStartedAt: existingMessage?.responseStartedAt,
+                    responseCompletedAt: existingMessage?.responseCompletedAt ?? Date.now()
                   };
                   
                   const updated = prev.map(msg => 
@@ -11031,7 +11097,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   type: 'response',
                   text: errorText,
                   isLoading: false,
-                  reasoningSteps: existingMessage?.reasoningSteps || []
+                  reasoningSteps: existingMessage?.reasoningSteps || [],
+                  responseStartedAt: existingMessage?.responseStartedAt,
+                  responseCompletedAt: existingMessage?.responseCompletedAt ?? Date.now()
                 };
                 
                 const updatedMessages = bufferedState.messages.map(msg => 
@@ -11556,7 +11624,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             type: 'response',
             text: errorText,
               isLoading: false,
-              reasoningSteps: existingMessage?.reasoningSteps || [] // Preserve reasoning steps
+              reasoningSteps: existingMessage?.reasoningSteps || [], // Preserve reasoning steps
+            responseStartedAt: existingMessage?.responseStartedAt,
+            responseCompletedAt: existingMessage?.responseCompletedAt ?? Date.now()
           };
           
             const updated = prev.map(msg => 
@@ -12074,9 +12144,42 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             position: 'relative',
             minHeight: '1px' // Prevent collapse
           }}>
-          {/* Reasoning Steps - show when loading, or after response if toggle is enabled */}
+          {/* Reasoning Steps: when loading show inline; when finished show under collapsible "Thought Xs" header (collapsed by default) */}
           {message.reasoningSteps && message.reasoningSteps.length > 0 && (message.isLoading || showReasoningTrace) && (
-            <ReasoningSteps key={`reasoning-${finalKey}`} steps={message.reasoningSteps} isLoading={message.isLoading} hasResponseText={!!message.text} isAgentMode={isAgentMode} skipAnimations={!!isRestored} />
+            message.isLoading ? (
+              <ReasoningSteps key={`reasoning-${finalKey}`} steps={message.reasoningSteps} isLoading={true} hasResponseText={!!message.text} isAgentMode={isAgentMode} skipAnimations={!!isRestored} />
+            ) : (
+              <div key={`thought-${finalKey}`} style={{ marginBottom: '16px' }}>
+                <button
+                  type="button"
+                  onClick={() => toggleThoughtExpanded(finalKey)}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                    padding: 0,
+                    border: 'none',
+                    background: 'none',
+                    cursor: 'pointer',
+                    fontSize: '12px',
+                    color: '#6b7280',
+                    fontFamily: 'inherit'
+                  }}
+                >
+                  <span style={{ fontWeight: 600 }}>{getThoughtDurationLabel(message.reasoningSteps, message)}</span>
+                  {expandedThoughtMessageIds.has(finalKey) ? (
+                    <ChevronUp style={{ width: '14px', height: '14px', flexShrink: 0 }} />
+                  ) : (
+                    <ChevronDown style={{ width: '14px', height: '14px', flexShrink: 0 }} />
+                  )}
+                </button>
+                {expandedThoughtMessageIds.has(finalKey) && (
+                  <div style={{ marginTop: '4px' }}>
+                    <ReasoningSteps steps={message.reasoningSteps} isLoading={false} hasResponseText={!!message.text} isAgentMode={isAgentMode} skipAnimations={!!isRestored} thoughtCompleted={true} />
+                  </div>
+                )}
+              </div>
+            )
           )}
             {/* Show bouncing dot only after ALL reading is complete - right before response text arrives */}
             {message.isLoading && !message.text && 
@@ -12113,7 +12216,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         </div>
       );
     }).filter(Boolean);
-  }, [chatMessages, showReasoningTrace, showHighlight, showCitations, restoredMessageIdsRef, handleUserCitationClick, onOpenProperty, scrollToBottom, expandedCardViewDoc, propertyAttachments, orangeCitationNumbersByMessage, citationClickPanel, currentChatId, skipSwoopForChatId]);
+  }, [chatMessages, showReasoningTrace, showHighlight, showCitations, expandedThoughtMessageIds, toggleThoughtExpanded, restoredMessageIdsRef, handleUserCitationClick, onOpenProperty, scrollToBottom, expandedCardViewDoc, propertyAttachments, orangeCitationNumbersByMessage, citationClickPanel, currentChatId, skipSwoopForChatId]);
 
   return (
     <>

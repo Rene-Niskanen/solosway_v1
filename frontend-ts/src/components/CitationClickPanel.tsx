@@ -52,7 +52,7 @@ function clampPanelPosition(
   anchorRect: DOMRect,
   panelWidth: number,
   panelHeight: number
-): { left: number; top: number } {
+): { left: number; top?: number; bottom?: number; openAbove: boolean } {
   const vw = typeof window !== "undefined" ? window.innerWidth : 1200;
   const vh = typeof window !== "undefined" ? window.innerHeight : 800;
 
@@ -64,29 +64,33 @@ function clampPanelPosition(
   if (left < VIEWPORT_MARGIN) left = VIEWPORT_MARGIN;
 
   // Prefer above: panel bottom = citation top - GAP (same gap as below)
-  let top = anchorRect.top - GAP - panelHeight;
-  let openAbove = top >= VIEWPORT_MARGIN;
+  const topIfAbove = anchorRect.top - GAP - panelHeight;
+  let openAbove = topIfAbove >= VIEWPORT_MARGIN;
 
   if (!openAbove) {
     // Not enough room above: open below with same GAP (panel top = citation bottom + GAP)
-    top = anchorRect.bottom + GAP;
-  }
-
-  // Viewport clamp: keep panel on screen. If we're above and clamping would push the panel down
-  // (increasing the gap), switch to below so the gap stays GAP.
-  if (top + panelHeight > vh - VIEWPORT_MARGIN) {
-    if (openAbove) {
-      top = anchorRect.bottom + GAP;
-      if (top + panelHeight > vh - VIEWPORT_MARGIN) {
-        top = vh - panelHeight - VIEWPORT_MARGIN;
-      }
-    } else {
+    let top = anchorRect.bottom + GAP;
+    if (top + panelHeight > vh - VIEWPORT_MARGIN) {
       top = vh - panelHeight - VIEWPORT_MARGIN;
     }
+    if (top < VIEWPORT_MARGIN) top = VIEWPORT_MARGIN;
+    return { left, top, openAbove: false };
   }
-  if (top < VIEWPORT_MARGIN) top = VIEWPORT_MARGIN;
 
-  return { left, top };
+  // Open above: position by bottom so gap is always GAP (panel height doesn't affect gap)
+  let bottom = vh - (anchorRect.top - GAP);
+  const topOfPanel = vh - bottom - panelHeight;
+  if (topOfPanel < VIEWPORT_MARGIN) {
+    // Not enough room above; switch to below
+    let top = anchorRect.bottom + GAP;
+    if (top + panelHeight > vh - VIEWPORT_MARGIN) {
+      top = vh - panelHeight - VIEWPORT_MARGIN;
+    }
+    if (top < VIEWPORT_MARGIN) top = VIEWPORT_MARGIN;
+    return { left, top, openAbove: false };
+  }
+  bottom = Math.max(VIEWPORT_MARGIN, Math.min(bottom, vh - panelHeight - VIEWPORT_MARGIN));
+  return { left, bottom, openAbove: true };
 }
 
 export interface CitationClickPanelProps {
@@ -107,7 +111,8 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
   onClose,
 }) => {
   const maxHeightPx = typeof window !== "undefined" ? (window.innerHeight * PANEL_MAX_HEIGHT_VH) / 100 : 500;
-  const { left, top } = clampPanelPosition(anchorRect, PANEL_WIDTH, Math.min(ESTIMATED_PANEL_HEIGHT, maxHeightPx));
+  const position = clampPanelPosition(anchorRect, PANEL_WIDTH, Math.min(ESTIMATED_PANEL_HEIGHT, maxHeightPx));
+  const { left, top, bottom, openAbove } = position;
 
   const filename = citationData.original_filename || "Document";
   const pageNum = citationData.page ?? citationData.bbox?.page ?? citationData.page_number ?? 1;
@@ -226,7 +231,7 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
       style={{
         position: "fixed",
         left: `${left}px`,
-        top: `${top}px`,
+        ...(openAbove && bottom !== undefined ? { bottom: `${bottom}px` } : { top: `${top}px` }),
         width: `${PANEL_WIDTH}px`,
         minHeight: 420,
         maxHeight: `${PANEL_MAX_HEIGHT_VH}vh`,
