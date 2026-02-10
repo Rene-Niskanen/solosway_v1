@@ -38,6 +38,9 @@ interface Document {
   folder_id?: string;
   s3_path?: string;
   status?: string; // 'uploaded', 'processing', 'completed', 'failed'
+  /** From list API; when present, FileViewModal shows key facts without an extra request */
+  key_facts?: Array<{ label: string; value: string }>;
+  summary?: string | null;
 }
 
 interface Folder {
@@ -270,6 +273,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
   const rafIdRef = useRef<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const propertySelectorRef = useRef<HTMLDivElement>(null);
+  const uploadZoneBottomRef = useRef<HTMLDivElement>(null);
   
   // Document cache: key is "viewMode_propertyId" or "viewMode_global"
   const documentCacheRef = useRef<Map<string, Document[]>>(new Map());
@@ -1468,9 +1472,23 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
   const handleUploadPendingFiles = async () => {
     if (pendingFiles.length === 0) return;
     
-    // Process each pending file
-    for (const file of pendingFiles) {
-      await handleFileUpload(file);
+    // Show loading immediately so user gets feedback as soon as they click Upload
+    setIsLoading(true);
+    const filesToUpload = [...pendingFiles];
+    
+    try {
+      for (let i = 0; i < filesToUpload.length; i++) {
+        const file = filesToUpload[i];
+        await handleFileUpload(file);
+        // Brief pause between files so the loading spinner visibly stops then starts again for each file
+        if (i < filesToUpload.length - 1) {
+          setIsLoading(false);
+          await new Promise((r) => setTimeout(r, 280));
+          setIsLoading(true);
+        }
+      }
+    } finally {
+      setIsLoading(false);
     }
     
     // Clear pending files and property selection after processing
@@ -1493,7 +1511,8 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
         const { is_duplicate, is_exact_duplicate, existing_document, existing_documents } = duplicateCheck.data;
         
         if (is_duplicate) {
-          // Show dialog for both exact duplicates and same name/different size
+          // Stop loading so user isn't stuck with spinner while deciding in dialog
+          setIsLoading(false);
           setDuplicateDialog({
             isOpen: true,
             filename: file.name,
@@ -2099,8 +2118,8 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
             </div>
           )}
 
-          {/* Divider between upload area and file listing */}
-          <div className="my-8 px-4">
+          {/* Divider between upload area and file listing (ref used to avoid pipeline popup overlapping this zone) */}
+          <div ref={uploadZoneBottomRef} className="my-8 px-4">
             <div className="h-px bg-gray-200"></div>
           </div>
 
@@ -2853,6 +2872,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
             <PipelineStagesHoverPreview
               position={pipelinePreviewPosition}
               containerBounds={pipelinePreviewBounds}
+              minTop={(() => { const r = uploadZoneBottomRef.current?.getBoundingClientRect(); return r != null ? r.bottom + 8 : undefined; })()}
               completedStages={isComplete ? 5 : completedStages}
               currentStageIndex={isComplete ? null : currentStageIndex}
               isComplete={isComplete}

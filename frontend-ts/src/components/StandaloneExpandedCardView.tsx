@@ -3,14 +3,14 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Maximize, Maximize2, Minimize2, ZoomIn, ZoomOut, ChevronDown, Download } from 'lucide-react';
+import { X, Maximize, Maximize2, Minimize2, ZoomIn, ZoomOut, ChevronDown, ChevronLeft, ChevronRight, Download } from 'lucide-react';
 import { usePreview } from '../contexts/PreviewContext';
 import { backendApi } from '../services/backendApi';
 import { useFilingSidebar } from '../contexts/FilingSidebarContext';
 import { useChatPanel } from '../contexts/ChatPanelContext';
 import { CitationActionMenu } from './CitationActionMenu';
-import { useActiveChatState } from '../contexts/ChatStateStore';
-import type { CitationData } from '../contexts/ChatStateStore';
+import { useActiveChatState, useChatStateStore } from '../contexts/ChatStateStore';
+import type { CitationData, ChatMessage } from '../contexts/ChatStateStore';
 import { CHAT_PANEL_WIDTH } from './SideChatPanel';
 import veloraLogo from '/Velora Logo.jpg';
 
@@ -23,6 +23,40 @@ pdfjs.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
 /** Padding of the pages container (top/left/right/bottom) - must match the scroll content layout for BBOX centering. */
 const PAGES_CONTAINER_PADDING = 64;
+
+/** Match two citations by doc_id and bbox (page, left, top). */
+function citationBboxMatch(a: CitationData, b: CitationData): boolean {
+  if ((a.doc_id || '') !== (b.doc_id || '')) return false;
+  const pageA = a.page ?? a.bbox?.page ?? (a as { page_number?: number }).page_number ?? 0;
+  const pageB = b.page ?? b.bbox?.page ?? (b as { page_number?: number }).page_number ?? 0;
+  if (pageA !== pageB) return false;
+  const tol = 0.001;
+  return (
+    Math.abs((a.bbox?.left ?? 0) - (b.bbox?.left ?? 0)) < tol &&
+    Math.abs((a.bbox?.top ?? 0) - (b.bbox?.top ?? 0)) < tol
+  );
+}
+
+/** Find messageId and citationNumber for a citation by searching messages and streaming citations. */
+function findViewedCitationForCitation(
+  citation: CitationData,
+  messages: ChatMessage[],
+  streamingCitations: Record<string, CitationData>
+): { messageId: string; citationNumber: string } | null {
+  for (const msg of messages) {
+    if (!msg.citations) continue;
+    for (const [num, c] of Object.entries(msg.citations)) {
+      if (citationBboxMatch(c, citation)) return { messageId: msg.id, citationNumber: num };
+    }
+  }
+  for (const [num, c] of Object.entries(streamingCitations)) {
+    if (citationBboxMatch(c, citation)) {
+      const lastResponse = [...messages].reverse().find((m) => m.type === 'response');
+      if (lastResponse) return { messageId: lastResponse.id, citationNumber: num };
+    }
+  }
+  return null;
+}
 
 interface StandaloneExpandedCardViewProps {
   docId: string;
@@ -45,6 +79,8 @@ interface StandaloneExpandedCardViewProps {
   isResizing?: boolean; // Whether resize is in progress (for cursor styling)
   /** When true, open in fullscreen overlay (e.g. from file pop-up "View Document") and use higher z-index */
   initialFullscreen?: boolean;
+  /** Citations from the last response for this document (from chat panel). When provided, used for citation nav so buttons appear. */
+  citationsFromLastResponse?: CitationData[];
 }
 
 export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProps> = ({
@@ -53,6 +89,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
   highlight,
   scrollRequestId,
   onClose,
+  citationsFromLastResponse,
   chatPanelWidth = 0,
   sidebarWidth = 56,
   onResizeStart,
@@ -134,42 +171,44 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
   const { previewFiles, getCachedPdfDocument, setCachedPdfDocument, getCachedRenderedPage, setCachedRenderedPage, isAgentOpening, setIsAgentOpening, openExpandedCardView } = usePreview();
   const { isOpen: isFilingSidebarOpen, width: filingSidebarWidth, isResizing: isFilingSidebarResizing } = useFilingSidebar();
   const { isOpen: isChatHistoryPanelOpen, width: chatHistoryPanelWidth } = useChatPanel();
-  
+  const { activeChatId, setDocumentViewedCitation } = useChatStateStore();
+
   // Get active chat state to access citations
   const activeChatState = useActiveChatState();
   
-  // Collect and sort citations for the current document
+  // Collect and sort citations for the current document (from last response / streaming).
+  // Prefer citationsFromLastResponse when provided (from chat panel) so nav buttons appear when user clicked a citation.
   const { sortedCitations, currentCitationIndex, hasMultipleCitations } = useMemo(() => {
-    if (!activeChatState || !highlight) {
-      return { sortedCitations: [], currentCitationIndex: -1, hasMultipleCitations: false };
+    let documentCitations: CitationData[];
+
+    if (citationsFromLastResponse && citationsFromLastResponse.length > 0) {
+      documentCitations = citationsFromLastResponse;
+    } else if (activeChatState) {
+      const streamingCitations = Object.values(activeChatState.streaming.citations || {});
+      const messageCitations: CitationData[] = [];
+      activeChatState.messages.forEach(msg => {
+        if (msg.citations) {
+          messageCitations.push(...Object.values(msg.citations));
+        }
+      });
+      const allCitations = [...streamingCitations, ...messageCitations];
+      const docIdStr = String(docId);
+      const fileIdStr = highlight ? String(highlight.fileId) : docIdStr;
+      documentCitations = allCitations.filter(citation => {
+        const cid = String(citation.doc_id ?? (citation as any).document_id ?? '');
+        return cid === docIdStr || cid === fileIdStr;
+      });
+    } else {
+      documentCitations = [];
     }
     
-    // Collect citations from streaming state
-    const streamingCitations = Object.values(activeChatState.streaming.citations || {});
-    
-    // Collect citations from messages
-    const messageCitations: CitationData[] = [];
-    activeChatState.messages.forEach(msg => {
-      if (msg.citations) {
-        messageCitations.push(...Object.values(msg.citations));
-      }
-    });
-    
-    // Combine all citations
-    const allCitations = [...streamingCitations, ...messageCitations];
-    
-    // Filter citations for the current document
-    const documentCitations = allCitations.filter(citation => 
-      citation.doc_id === docId || citation.doc_id === highlight.fileId
-    );
-    
     // Remove duplicates based on bbox coordinates
-    const uniqueCitations = documentCitations.filter((citation, index, self) => 
-      index === self.findIndex(c => 
-        c.doc_id === citation.doc_id &&
-        c.bbox?.page === citation.bbox?.page &&
-        Math.abs((c.bbox?.left || 0) - (citation.bbox?.left || 0)) < 0.001 &&
-        Math.abs((c.bbox?.top || 0) - (citation.bbox?.top || 0)) < 0.001
+    const uniqueCitations = documentCitations.filter((citation, index, self) =>
+      index === self.findIndex(c =>
+        String(c.doc_id ?? (c as any).document_id ?? '') === String(citation.doc_id ?? (citation as any).document_id ?? '') &&
+        (c.bbox?.page ?? c.page ?? c.page_number) === (citation.bbox?.page ?? citation.page ?? citation.page_number) &&
+        Math.abs((c.bbox?.left ?? 0) - (citation.bbox?.left ?? 0)) < 0.001 &&
+        Math.abs((c.bbox?.top ?? 0) - (citation.bbox?.top ?? 0)) < 0.001
       )
     );
     
@@ -194,36 +233,35 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
       return leftA - leftB;
     });
     
-    // Find current citation index
-    let currentIndex = -1;
-    if (highlight && highlight.bbox) {
+    // Find current citation index (when we have a highlight from clicking a citation)
+    let currentIndex = 0;
+    if (highlight?.bbox && sorted.length > 0) {
       currentIndex = sorted.findIndex(citation => {
         const citationPage = citation.page || citation.bbox?.page || citation.page_number || 0;
-        const citationTop = citation.bbox?.top || 0;
-        const citationLeft = citation.bbox?.left || 0;
-        
+        const citationTop = citation.bbox?.top ?? 0;
+        const citationLeft = citation.bbox?.left ?? 0;
         return (
           citationPage === highlight.bbox.page &&
           Math.abs(citationTop - highlight.bbox.top) < 0.001 &&
           Math.abs(citationLeft - highlight.bbox.left) < 0.001
         );
       });
-    }
-    
-    // If current citation not found, try to match by page only (in case bbox coordinates differ slightly)
-    if (currentIndex === -1 && highlight && highlight.bbox) {
-      currentIndex = sorted.findIndex(citation => {
-        const citationPage = citation.page || citation.bbox?.page || citation.page_number || 0;
-        return citationPage === highlight.bbox.page;
-      });
+      // If no exact bbox match, try matching by page only
+      if (currentIndex === -1) {
+        currentIndex = sorted.findIndex(citation => {
+          const citationPage = citation.page || citation.bbox?.page || citation.page_number || 0;
+          return citationPage === highlight.bbox.page;
+        });
+      }
+      if (currentIndex === -1) currentIndex = 0;
     }
     
     return {
       sortedCitations: sorted,
-      currentCitationIndex: currentIndex >= 0 ? currentIndex : 0,
+      currentCitationIndex: currentIndex,
       hasMultipleCitations: sorted.length > 1
     };
-  }, [activeChatState, docId, highlight]);
+  }, [activeChatState, docId, highlight, citationsFromLastResponse]);
   
   // Navigate to next citation
   const handleReviewNextCitation = useCallback(() => {
@@ -259,7 +297,54 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
       highlightData,
       false // Not agent-triggered
     );
-  }, [hasMultipleCitations, sortedCitations, currentCitationIndex, docId, filename, openExpandedCardView]);
+    // Sync blue citation button in chat to this citation
+    if (activeChatId && activeChatState) {
+      const viewed = findViewedCitationForCitation(
+        nextCitation,
+        activeChatState.messages,
+        activeChatState.streaming?.citations ?? {}
+      );
+      if (viewed) setDocumentViewedCitation(activeChatId, viewed);
+    }
+  }, [hasMultipleCitations, sortedCitations, currentCitationIndex, docId, filename, openExpandedCardView, activeChatId, activeChatState, setDocumentViewedCitation]);
+
+  // Navigate to previous citation
+  const handleReviewPrevCitation = useCallback(() => {
+    if (sortedCitations.length === 0) return;
+    const prevIndex = currentCitationIndex <= 0 ? sortedCitations.length - 1 : currentCitationIndex - 1;
+    const prevCitation = sortedCitations[prevIndex];
+    if (!prevCitation || !prevCitation.bbox) return;
+    const pageNumber = prevCitation.page || prevCitation.bbox?.page || prevCitation.page_number || 1;
+    const highlightData = {
+      fileId: prevCitation.doc_id || docId,
+      bbox: {
+        left: prevCitation.bbox.left,
+        top: prevCitation.bbox.top,
+        width: prevCitation.bbox.width,
+        height: prevCitation.bbox.height,
+        page: pageNumber
+      },
+      doc_id: prevCitation.doc_id,
+      block_id: prevCitation.block_id,
+      block_content: prevCitation.matched_chunk_metadata?.content || '',
+      original_filename: prevCitation.original_filename || filename
+    };
+    openExpandedCardView(
+      prevCitation.doc_id || docId,
+      prevCitation.original_filename || filename,
+      highlightData,
+      false
+    );
+    // Sync blue citation button in chat to this citation
+    if (activeChatId && activeChatState) {
+      const viewed = findViewedCitationForCitation(
+        prevCitation,
+        activeChatState.messages,
+        activeChatState.streaming?.citations ?? {}
+      );
+      if (viewed) setDocumentViewedCitation(activeChatId, viewed);
+    }
+  }, [sortedCitations, currentCitationIndex, docId, filename, openExpandedCardView, activeChatId, activeChatState, setDocumentViewedCitation]);
 
   // Fetch document metadata to get the real filename
   useEffect(() => {
@@ -1522,8 +1607,35 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
             </span>
           </div>
           
-          {/* Right: Fullscreen button and zoom controls */}
+          {/* Right: Citations nav (when viewing cited doc) + Download + Fullscreen */}
           <div className="flex items-center gap-2 justify-end" style={{ minWidth: '80px' }}>
+            {/* Citations: label + counter + prev/next buttons (when we have citations for this doc) */}
+            {sortedCitations.length > 0 && (
+              <div className="flex items-center gap-2 mr-1">
+                <span className="text-slate-600 text-xs font-medium whitespace-nowrap">Citations</span>
+                <span className="text-slate-500 text-xs tabular-nums whitespace-nowrap">
+                  {currentCitationIndex + 1}/{sortedCitations.length}
+                </span>
+                <button
+                  type="button"
+                  onClick={handleReviewPrevCitation}
+                  disabled={sortedCitations.length <= 1}
+                  className="p-1 rounded text-gray-700 hover:bg-black/10 disabled:opacity-40 disabled:pointer-events-none"
+                  aria-label="Previous citation"
+                >
+                  <ChevronLeft className="w-4 h-4" strokeWidth={2} />
+                </button>
+                <button
+                  type="button"
+                  onClick={handleReviewNextCitation}
+                  disabled={sortedCitations.length <= 1}
+                  className="p-1 rounded text-gray-700 hover:bg-black/10 disabled:opacity-40 disabled:pointer-events-none"
+                  aria-label="Next citation"
+                >
+                  <ChevronRight className="w-4 h-4" strokeWidth={2} />
+                </button>
+              </div>
+            )}
             {/* Quick Zoom dropdown - only show in fullscreen mode */}
             {isFullscreen && (
               <div className="relative">
@@ -1611,43 +1723,6 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
             </motion.button>
           </div>
         </div>
-        
-        {/* Review Next Citation button */}
-        {hasMultipleCitations && (
-          <div className="flex justify-center w-full mt-3">
-            <button
-              onClick={handleReviewNextCitation}
-              style={{
-                backgroundColor: '#f5f5f5',
-                color: '#333',
-                border: 'none',
-                borderRadius: '8px',
-                padding: '8px 16px',
-                fontSize: '14px',
-                fontFamily: 'system-ui, -apple-system, sans-serif',
-                fontWeight: 400,
-                cursor: 'pointer',
-                boxShadow: '0 1px 2px rgba(0, 0, 0, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.5)',
-                transition: 'background-color 0.2s ease',
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.backgroundColor = '#e8e8e8';
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.backgroundColor = '#f5f5f5';
-              }}
-              onMouseDown={(e) => {
-                e.currentTarget.style.backgroundColor = '#dcdcdc';
-              }}
-              onMouseUp={(e) => {
-                e.currentTarget.style.backgroundColor = '#e8e8e8';
-              }}
-              title={`Review next citation (${currentCitationIndex + 1} of ${sortedCitations.length})`}
-            >
-              Review Next Citation
-            </button>
-          </div>
-        )}
       </div>
 
       {/* Content - tabIndex allows programmatic focus so scroll/wheel targets this container after opening from e.g. Analyse with AI */}

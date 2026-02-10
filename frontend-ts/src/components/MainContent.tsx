@@ -24,7 +24,7 @@ import 'mapbox-gl/dist/mapbox-gl.css';
 import { DocumentPreviewModal } from './DocumentPreviewModal';
 import { FileAttachmentData } from './FileAttachment';
 import { usePreview } from '../contexts/PreviewContext';
-import { useChatStateStore, useActiveChatDocumentPreview } from '../contexts/ChatStateStore';
+import { useChatStateStore, useActiveChatDocumentPreview, type CitationData } from '../contexts/ChatStateStore';
 import { StandaloneExpandedCardView } from './StandaloneExpandedCardView';
 import { AgentTaskOverlay } from './AgentTaskOverlay';
 import { RecentProjectsSection } from './RecentProjectsSection';
@@ -36,7 +36,6 @@ import { FilingSidebarProvider, useFilingSidebar } from '../contexts/FilingSideb
 import { useChatPanel } from '../contexts/ChatPanelContext';
 import { FilingSidebar } from './FilingSidebar';
 import { FileViewModal, type FileViewDocument } from './FileViewModal';
-import { UploadProgressBar } from './UploadProgressBar';
 import { ProjectsPage } from './ProjectsPage';
 import { PropertyDetailsPanel } from './PropertyDetailsPanel';
 import { useChatHistory } from './ChatHistoryContext';
@@ -2508,6 +2507,19 @@ export const MainContent = ({
     // (documents are opened in both states, so both must be cleared)
     legacyCloseExpandedCardView();
   }, [activeChatId, chatStateDocumentPreview, closeDocumentForChat, legacyCloseExpandedCardView]);
+
+  // Citations from the last response for the open document — so citation nav (prev/next) appears when user opened doc from a citation
+  const citationsForDocumentPreview = React.useMemo((): CitationData[] | undefined => {
+    if (!expandedCardViewDoc?.docId || !chatMessages?.length) return undefined;
+    const lastResponse = [...chatMessages].reverse().find((m: { type?: string }) => m.type === 'response');
+    const citations: CitationData[] = lastResponse?.citations ? Object.values(lastResponse.citations) : [];
+    const docIdStr = String(expandedCardViewDoc.docId);
+    const forDoc = citations.filter((c) => {
+      const cid = String(c?.doc_id ?? (c as any)?.document_id ?? '');
+      return cid === docIdStr;
+    });
+    return forDoc.length > 0 ? forDoc : undefined;
+  }, [expandedCardViewDoc?.docId, chatMessages]);
   
   // Sync chat panel visibility to PreviewContext for document preview gating
   // Document preview will only open when chat panel is visible; otherwise it queues silently
@@ -5022,9 +5034,6 @@ export const MainContent = ({
     onDragLeave={handleDragLeave}
     onDrop={handleDrop}
   >
-      {/* Global Upload Progress Bar */}
-      <UploadProgressBar />
-      
       {/* Background Map - Always rendered but only visible/interactive when map view is active */}
         {((currentView === 'search' || currentView === 'home') && (isMapVisible || externalIsMapVisible)) && (
         <div 
@@ -5592,7 +5601,6 @@ export const MainContent = ({
       {/* MapChatBar removed - using unified SearchBar instead */}
       
       {/* Standalone ExpandedCardView - for document preview */}
-      {/* AnimatePresence + key by chat/doc so switching chats gets a smooth open/exit effect */}
       <AnimatePresence mode="wait">
         {expandedCardViewDoc && (
           <motion.div
@@ -5608,6 +5616,7 @@ export const MainContent = ({
               filename={expandedCardViewDoc.filename}
               highlight={expandedCardViewDoc.highlight}
               scrollRequestId={(expandedCardViewDoc as { scrollRequestId?: number }).scrollRequestId}
+              citationsFromLastResponse={citationsForDocumentPreview}
               onClose={closeExpandedCardView}
               chatPanelWidth={chatPanelWidth}
               sidebarWidth={(() => {

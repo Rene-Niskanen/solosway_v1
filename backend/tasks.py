@@ -1066,6 +1066,31 @@ def process_document_classification(self, document_id, file_content, original_fi
                         merge=True
                 )
                 
+                # Generate and store key facts once (so key-facts API returns instantly on refresh)
+                try:
+                    from .services.key_facts_service import build_key_facts_from_document
+                    doc_for_facts = {
+                        **document,
+                        'document_summary': document_summary,
+                        'parsed_text': document_text,
+                    }
+                    key_facts, llm_summary = build_key_facts_from_document(
+                        doc_for_facts, document_id=str(document_id)
+                    )
+                    summary_for_storage = llm_summary or document_summary.get('summary') or ''
+                    doc_storage.update_document_summary(
+                        document_id=str(document_id),
+                        business_id=business_id,
+                        updates={
+                            'stored_key_facts': key_facts,
+                            'summary': summary_for_storage,
+                        },
+                        merge=True,
+                    )
+                    logger.info(f"✅ Stored key facts for document {document_id} ({len(key_facts)} facts)")
+                except Exception as kf_err:
+                    logger.warning("Key facts generation during pipeline failed (non-fatal): %s", kf_err)
+                
                 # Log text extraction success (non-fatal if history_id is None)
                 if history_id:
                     history_service.log_step_completion(

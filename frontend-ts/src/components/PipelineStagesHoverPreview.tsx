@@ -601,6 +601,8 @@ export const PipelineStagesDetail: React.FC<PipelineStagesDetailProps> = ({
 export interface PipelineStagesHoverPreviewProps {
   position: { x: number; y: number };
   containerBounds?: { left: number; right: number };
+  /** Minimum top (viewport Y) so the card never overlaps the upload zone or other fixed UI */
+  minTop?: number;
   completedStages: number;
   currentStageIndex: number | null;
   isComplete: boolean;
@@ -613,6 +615,7 @@ export interface PipelineStagesHoverPreviewProps {
 export const PipelineStagesHoverPreview: React.FC<PipelineStagesHoverPreviewProps> = ({
   position,
   containerBounds,
+  minTop,
   completedStages,
   currentStageIndex,
   isComplete,
@@ -622,10 +625,16 @@ export const PipelineStagesHoverPreview: React.FC<PipelineStagesHoverPreviewProp
   onMouseLeave,
 }) => {
   const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1200;
+  const viewportHeight = typeof window !== 'undefined' ? window.innerHeight : 800;
   const minLeft = containerBounds?.left ?? 10;
   const maxRight = containerBounds?.right ?? viewportWidth - 10;
   const showAbove = position.y > CARD_MIN_HEIGHT + 20;
-  const topPosition = showAbove ? position.y - CARD_MIN_HEIGHT - 10 : position.y + 30;
+  let topPosition = showAbove ? position.y - CARD_MIN_HEIGHT - 10 : position.y + 30;
+  // Never overlap the upload zone or other fixed UI at the top
+  if (minTop != null && topPosition < minTop) topPosition = minTop;
+  // Keep card on screen at bottom
+  const maxTop = viewportHeight - CARD_MIN_HEIGHT - 20;
+  if (topPosition > maxTop) topPosition = maxTop;
   let leftPosition = position.x - CARD_WIDTH / 2;
   if (leftPosition < minLeft) leftPosition = minLeft;
   if (leftPosition + CARD_WIDTH > maxRight) leftPosition = maxRight - CARD_WIDTH;

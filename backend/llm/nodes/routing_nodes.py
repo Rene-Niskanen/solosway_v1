@@ -654,7 +654,9 @@ async def handle_attachment_fast(state: MainWorkflowState) -> MainWorkflowState:
         temperature=0,
     )
     
-    system_msg = SystemMessage(content="You are a helpful assistant that answers questions based on provided document content.")
+    from backend.llm.prompts.routing import get_attachment_fast_system_prompt
+
+    system_msg = SystemMessage(content=get_attachment_fast_system_prompt())
     human_msg = HumanMessage(content=prompt)
     
     logger.info(f"[ATTACHMENT_FAST] Calling LLM with {len(prompt)} chars of context")
@@ -721,28 +723,10 @@ async def handle_citation_query(state: MainWorkflowState) -> MainWorkflowState:
         temperature=0,
     )
     
+    from backend.llm.prompts.routing import get_citation_query_human_prompt
+
     system_msg = get_system_prompt('analyze')
-    
-    human_content = f"""You are answering a question about a specific piece of text from a document.
-
-**CITATION CONTEXT:**
-- Document: {filename}
-- Page: {page_number}
-- Cited text: "{cited_text}"
-
-**USER'S QUESTION:**
-{user_query}
-
-**INSTRUCTIONS:**
-1. Answer the user's question based on the cited text and your knowledge
-2. If the cited text contains the answer, quote relevant parts
-3. If the user is asking for more context or explanation, provide helpful information
-4. If the question cannot be answered from the cited text alone, provide relevant general knowledge
-5. Be concise but thorough
-6. Do NOT say you need to search documents - you already have the relevant text above
-7. Include [1] citation marker when referencing the cited text
-
-Provide a direct, helpful answer:"""
+    human_content = get_citation_query_human_prompt(filename, page_number, cited_text, user_query)
 
     try:
         messages = [system_msg, HumanMessage(content=human_content)]

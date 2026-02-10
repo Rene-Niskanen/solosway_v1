@@ -232,19 +232,13 @@ def create_middleware_config() -> list:
     
     # 1. Summarization Middleware (prevent token overflow)
     try:
+        from backend.llm.prompts.graph import get_middleware_summary_prompt
+
         summarization = SummarizationMiddleware(
             model="gpt-4o-mini",  # Cheap model for summaries
             trigger=("tokens", 8000),  # FIXED: Use tuple not dict
             keep=("messages", 6),  # FIXED: Use tuple not dict
-            summary_prompt="""Summarize the conversation history concisely.
-
-Focus on:
-1. User's primary questions and goals
-2. Key facts discovered (property addresses, valuations, dates)
-3. Documents referenced and their relevance
-4. Open questions or unresolved issues
-
-Keep the summary under 300 words. Be specific and factual."""
+            summary_prompt=get_middleware_summary_prompt(),
         )
         middleware.append(summarization)
         logger.info("✅ Added SummarizationMiddleware (trigger: 8k tokens, keep: 6 msgs)")
@@ -650,35 +644,18 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
                     except (json.JSONDecodeError, AttributeError, TypeError):
                         pass
         
+        from backend.llm.prompts.graph import (
+            get_force_chunk_message_with_doc_ids,
+            get_force_chunk_message_fallback,
+        )
+
         # Create system message forcing chunk retrieval
         if document_ids:
-            doc_ids_str = str(document_ids[:3])  # Show first 3 IDs
-            force_message = SystemMessage(content=f"""🚨 CRITICAL VIOLATION DETECTED:
-
-You have identified {len(document_ids)} relevant document(s) but you have NOT retrieved any document text.
-
-**YOU ARE NOT ALLOWED TO ANSWER DOCUMENT-BASED QUESTIONS WITHOUT RETRIEVING CHUNKS.**
-
-**YOU MUST IMMEDIATELY:**
-1. Call retrieve_chunks(document_ids={doc_ids_str}, query="...") with the document IDs you found
-2. Wait for the chunk text to be returned
-3. THEN answer based on the chunk content
-
-**REMEMBER:**
-- Document metadata (filenames, IDs, scores) is NOT sufficient evidence
-- Chunk text is the ONLY source of truth for answering questions
-- You cannot answer without chunk content
-
-Proceed immediately with chunk retrieval.""")
+            force_message = SystemMessage(
+                content=get_force_chunk_message_with_doc_ids(document_ids)
+            )
         else:
-            # Fallback if we can't find document IDs
-            force_message = SystemMessage(content="""🚨 CRITICAL: You have identified documents but NOT retrieved chunks.
-
-You MUST call retrieve_chunks() before answering any document-based question.
-
-Document metadata is NOT sufficient. You need actual chunk text to answer.
-
-Proceed immediately with chunk retrieval.""")
+            force_message = SystemMessage(content=get_force_chunk_message_fallback())
         
         logger.warning(f"[GRAPH] ⚠️ FORCING chunk retrieval - {len(document_ids)} documents found but no chunks retrieved")
         

@@ -12,7 +12,7 @@ import { PropertyAttachmentData } from './PropertyAttachment';
 import { AtMentionChip } from './AtMentionChip';
 import { toast } from "@/hooks/use-toast";
 import { usePreview, type CitationHighlight } from '../contexts/PreviewContext';
-import { useChatStateStore, useActiveChatDocumentPreview } from '../contexts/ChatStateStore';
+import { useChatStateStore, useActiveChatDocumentPreview, type DocumentPreview } from '../contexts/ChatStateStore';
 import { usePropertySelection } from '../contexts/PropertySelectionContext';
 import { useDocumentSelection } from '../contexts/DocumentSelectionContext';
 import { useFilingSidebar } from '../contexts/FilingSidebarContext';
@@ -2911,6 +2911,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     getChatState,
     initializeChatState,
     openDocumentForChat,
+    setDocumentViewedCitation,
     closeDocumentForChat,
     setMessagesForChat,
     updateMessageInChat,
@@ -8007,12 +8008,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   // Track if we're restoring fullscreen from citation (to enable smooth transition)
   const [isRestoringFullscreen, setIsRestoringFullscreen] = React.useState<boolean>(false);
   
-  // Restore fullscreen mode when document preview closes (if we were in fullscreen before)
+  // Restore fullscreen mode when document preview closes (e.g. user hits X on document)
+  // So chat always goes full width after closing the doc, including when opened via "Analyse with AI"
+  const prevExpandedCardViewForRestoreRef = React.useRef<typeof expandedCardViewDoc>(undefined);
   React.useEffect(() => {
-    // When expandedCardViewDoc becomes null (document preview closed)
-    // Check if we were in fullscreen before - this flag is set when clicking a citation in fullscreen mode
+    const hadDocument = !!prevExpandedCardViewForRestoreRef.current;
+    prevExpandedCardViewForRestoreRef.current = expandedCardViewDoc;
+    // Only restore when we transition from document open -> closed (not on initial mount when there was no doc)
+    const documentJustClosed = hadDocument && !expandedCardViewDoc;
     // CRITICAL: Skip restoration if we're navigating (agent navigation closes preview but shouldn't restore fullscreen)
-    if (!expandedCardViewDoc && wasFullscreenBeforeCitationRef.current && !isNavigatingTaskRef.current) {
+    if (documentJustClosed && !isNavigatingTaskRef.current) {
       console.log('🔄 [CITATION] Document preview closed - restoring fullscreen mode instantly (snap, no animation)');
       
       // Use justEnteredFullscreen to disable transition (same as initial fullscreen entry)
@@ -8173,12 +8178,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     if (isDocumentPreviewOpenRef.current) {
       // Document preview already open: go straight to this citation in the document view (no panel)
       openCitationInDocumentView(data as CitationData, false);
+      if (currentChatId && messageId != null && citationNumber != null) {
+        setDocumentViewedCitation(currentChatId, { messageId, citationNumber });
+      }
       return;
     }
     if (anchorRect != null) {
       setCitationClickPanel({ citationData: data as CitationData, anchorRect, sourceMessageText, messageId, citationNumber });
     }
-  }, [openCitationInDocumentView]);
+  }, [openCitationInDocumentView, currentChatId, setDocumentViewedCitation]);
 
   // Close citation panel on scroll (messages area), window resize, or Escape
   React.useEffect(() => {
@@ -12215,8 +12223,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 skipHighlight={!isLatestAssistantMessage || !showHighlight || (orangeCitationNumbersByMessage.get(message.id ?? finalKey)?.size ?? 0) > 0}
                 showCitations={showCitations}
                 orangeCitationNumbers={orangeCitationNumbersByMessage.get(message.id ?? finalKey)}
-                selectedCitationNumber={citationClickPanel?.citationNumber ?? (expandedCardViewDoc && citationViewedInDocument ? citationViewedInDocument.citationNumber : undefined)}
-                selectedCitationMessageId={citationClickPanel?.messageId ?? (expandedCardViewDoc && citationViewedInDocument ? citationViewedInDocument.messageId : undefined)}
+                selectedCitationNumber={citationClickPanel?.citationNumber ?? (expandedCardViewDoc ? (() => { const v = (expandedCardViewDoc as DocumentPreview).viewedCitation ?? citationViewedInDocument; return v ? v.citationNumber : undefined; })() : undefined)}
+                selectedCitationMessageId={citationClickPanel?.messageId ?? (expandedCardViewDoc ? (() => { const v = (expandedCardViewDoc as DocumentPreview).viewedCitation ?? citationViewedInDocument; return v ? v.messageId : undefined; })() : undefined)}
                 skipHighlightSwoop={currentChatId !== null && currentChatId === skipSwoopForChatId}
               />
             </div>
@@ -12247,7 +12255,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             onViewInDocument={() => {
               const { messageId, citationNumber } = citationClickPanel;
               openCitationInDocumentView(citationClickPanel.citationData, false);
-              setCitationViewedInDocument(messageId != null && citationNumber != null ? { messageId, citationNumber } : null);
+              const viewed = messageId != null && citationNumber != null ? { messageId, citationNumber } : null;
+              setCitationViewedInDocument(viewed);
+              if (currentChatId && viewed) setDocumentViewedCitation(currentChatId, viewed);
               setCitationClickPanel(null);
             }}
             onAskFollowUp={() => {

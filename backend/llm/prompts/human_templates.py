@@ -2,7 +2,7 @@
 Centralized prompt templates for all LLM agents in the system.
 
 This file contains human message content templates (task-specific instructions and examples).
-System-level prompts are handled separately in backend.llm.utils.system_prompts.
+System-level prompts are in backend.llm.prompts.base_system (same package).
 
 This file ensures:
 - Consistency across agents

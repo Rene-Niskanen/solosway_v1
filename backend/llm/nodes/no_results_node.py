@@ -12,6 +12,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from backend.llm.config import config
 from backend.llm.types import MainWorkflowState
+from backend.llm.prompts.no_results import get_no_results_system_prompt, get_no_results_human_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -83,39 +84,21 @@ async def no_results_node(state: MainWorkflowState) -> MainWorkflowState:
         temperature=0,
     )
     
-    system_prompt = """You are a helpful assistant that explains search failures to users.
-
-When document or chunk retrieval fails after multiple retry attempts, generate a helpful
-failure message that:
-1. Explains what was searched (query, document types, retry attempts)
-2. Asks a clarification question if the query is ambiguous
-3. Suggests rephrasing based on failure reasons
-4. Mentions document types found (if any) that might be relevant
-5. Is friendly, helpful, and actionable
-
-Be concise but informative. Don't be overly technical."""
+    system_prompt = get_no_results_system_prompt()
 
     # Safely join document types (already filtered for None values)
     document_types_str = ', '.join(document_types_found) if document_types_found else 'none'
-    
-    human_prompt = f"""The user asked: "{user_query}"
 
-Search failed after retries:
-{failure_description}
-
-Failure context: {failure_context}
-Document retry attempts: {document_retry_count}
-Chunk retry attempts: {chunk_retry_count}
-Document types found: {document_types_str}
-Query intent: {query_intent.get('search_goal', 'unknown')} ({query_intent.get('query_type', 'unknown')} query)
-
-Generate a helpful failure message that:
-- Explains what was searched
-- Suggests alternative queries or rephrasing
-- Asks for clarification if needed
-- Mentions any relevant document types found
-
-Keep it concise and actionable."""
+    human_prompt = get_no_results_human_prompt(
+        user_query=user_query,
+        failure_description=failure_description,
+        failure_context=failure_context,
+        document_retry_count=document_retry_count,
+        chunk_retry_count=chunk_retry_count,
+        document_types_str=document_types_str,
+        query_intent_search_goal=query_intent.get('search_goal', 'unknown'),
+        query_intent_query_type=query_intent.get('query_type', 'unknown'),
+    )
 
     try:
         messages = [

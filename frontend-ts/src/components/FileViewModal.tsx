@@ -33,6 +33,10 @@ export interface FileViewDocument {
   folder_id?: string;
   s3_path?: string;
   status?: string;
+  /** When present (from list API), key facts show immediately without a separate request */
+  key_facts?: KeyFact[];
+  /** When present (from list API), summary shows immediately */
+  summary?: string | null;
 }
 
 export interface KeyFact {
@@ -234,7 +238,7 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
     };
   }, [previewUrl, doc?.id, doc?.file_type, loading]);
 
-  // Fetch key facts when modal opens (or when user refreshes). No re-ingest needed — backend generates on demand.
+  // Fetch key facts from API (used when list didn't provide them or when user clicks Refresh).
   const fetchKeyFacts = useCallback((cancelledRef?: React.MutableRefObject<boolean | null>) => {
     if (!doc) return;
     setKeyFactsLoading(true);
@@ -265,11 +269,18 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
   useEffect(() => {
     if (!isOpen || !doc) return;
     keyFactsCancelledRef.current = false;
+    // Use list-embedded key_facts/summary when present (same pattern as document blob cache).
+    if (Array.isArray(doc.key_facts)) {
+      setKeyFacts(doc.key_facts);
+      setKeyFactsSummary(doc.summary ?? null);
+      setKeyFactsLoading(false);
+      return;
+    }
     fetchKeyFacts(keyFactsCancelledRef);
     return () => {
       keyFactsCancelledRef.current = true;
     };
-  }, [isOpen, doc?.id, fetchKeyFacts]);
+  }, [isOpen, doc?.id, doc?.key_facts, doc?.summary, fetchKeyFacts]);
 
   // Observe preview container size and update state only when it changes by more than 2px.
   // This avoids render loops from subpixel/fractional sizes (e.g. 299.5 vs 300) and defers
@@ -660,25 +671,20 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
                 </p>
               )}
               {!keyFactsLoading && keyFacts && keyFacts.length > 0 && (
-                <div className="flex flex-col gap-2">
-                  {keyFacts.map((fact, index) => {
-                    const displayValue =
-                      fact.value.length > KEY_FACT_VALUE_MAX_LENGTH
-                        ? `${fact.value.slice(0, KEY_FACT_VALUE_MAX_LENGTH)}…`
-                        : fact.value;
-                    return (
-                      <div
-                        key={index}
-                        className="px-3 py-2.5 rounded-lg text-gray-800 text-xs flex-shrink-0 flex flex-col gap-0.5"
-                        style={{ backgroundColor: 'rgba(0,0,0,0.06)', fontFamily: 'system-ui, sans-serif' }}
-                        title={fact.value}
-                      >
-                        <span className="text-gray-600 font-medium">{fact.label}</span>
-                        <span className="text-gray-800 break-words">{displayValue}</span>
-                      </div>
-                    );
-                  })}
-                </div>
+                <p
+                  className="text-gray-700 text-xs leading-relaxed px-1 pb-2 break-words m-0"
+                  style={{ fontFamily: 'system-ui, sans-serif' }}
+                >
+                  {keyFacts
+                    .map((fact) => {
+                      const value =
+                        fact.value.length > KEY_FACT_VALUE_MAX_LENGTH
+                          ? `${fact.value.slice(0, KEY_FACT_VALUE_MAX_LENGTH)}…`
+                          : fact.value;
+                      return `${fact.label}: ${value}`;
+                    })
+                    .join('. ')}
+                </p>
               )}
             </div>
           </div>

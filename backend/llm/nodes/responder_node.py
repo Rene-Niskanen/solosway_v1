@@ -25,6 +25,22 @@ from backend.llm.nodes.agent_node import generate_conversational_answer, extract
 from backend.llm.contracts.validators import validate_responder_output
 from backend.llm.config import config
 from backend.llm.prompts import _get_main_answer_tagging_rule, ensure_main_tags_when_missing
+from backend.llm.prompts.responder import (
+    get_responder_fact_mapping_system_prompt,
+    get_responder_fact_mapping_human_prompt,
+    get_responder_natural_language_system_prompt,
+    get_responder_natural_language_human_prompt,
+    get_responder_conversational_tool_citations_system_prompt,
+    get_responder_conversational_pre_citations_system_prompt,
+    get_responder_block_citation_system_content,
+    get_responder_formatted_answer_system_prompt,
+    get_responder_formatted_answer_human_prompt,
+)
+from backend.llm.utils.personality_prompts import (
+    PERSONALITY_CHOICE_INSTRUCTION,
+    VALID_PERSONALITY_IDS,
+    DEFAULT_PERSONALITY_ID,
+)
 from backend.llm.tools.citation_mapping import create_chunk_citation_tool, _narrow_bbox_to_cited_line
 from backend.services.supabase_client_factory import get_supabase_client
 
@@ -44,17 +60,6 @@ from backend.llm.citation import (
 )
 
 logger = logging.getLogger(__name__)
-
-# Shared prompt block for closing and follow-up (used in conversational answer prompts)
-CLOSING_AND_FOLLOWUP_PROMPT = """
-# CLOSING AND FOLLOW-UP
-
-- Put any closing or sign-off on its own line: add a blank line before it so it appears as a separate paragraph (e.g. after the last factual sentence, not on the same line).
-- **Follow-up must be context-aware and intelligent.** Base it on what you actually said and what the user was asking for. Do NOT use the same generic phrase every time (e.g. avoid "If you have any further questions or need more details, feel free to ask!" or "Hope that helps." as a default).
-- Offer a **topic-specific** follow-up when appropriate: reference the subject of the answer and suggest concrete next steps (e.g. after planning info: "Want me to clarify anything about the TPOs or conservation status?"; after valuation: "I can break down any of these figures or assumptions if helpful."; after travel info: "Need anything else for your trip?"). One short line is enough.
-- Be aware of what the user is looking for and structure the follow-up accordingly—invite clarification on specific points you raised, or a natural next question in that domain, rather than a generic "anything else?"
-"""
-
 
 def _strip_markdown_for_citation(text: str) -> str:
     """Strip common markdown so we can extract values from e.g. **£2,400,000**."""
@@ -111,6 +116,16 @@ def _block_looks_like_footer_or_url(block_content: str) -> bool:
 
 # Evidence-First Citation Architecture Types
 EvidenceType = Literal["atomic", "clause"]
+
+
+class PersonalityResponse(BaseModel):
+    """Structured output: chosen personality and the answer text (same-call personality selection)."""
+    personality_id: str = Field(
+        description="One of: default, friendly, efficient, professional, nerdy, candid, cynical, listener, robot, quirky"
+    )
+    response: str = Field(
+        description="The full answer to the user in Markdown, with citations as [ID: X](BLOCK_CITE_ID_N)"
+    )
 
 
 class EvidenceAnswerOutput(BaseModel):
@@ -911,13 +926,17 @@ def extract_key_facts_from_text(text: str) -> List[Dict[str, Any]]:
                 continue
             
             seen_matches.add(match_key)
-            # Get context
-            start = max(0, match.start() - context_size)
-            end = min(len(text), match.end() + context_size)
-            context = text[start:end].strip()
-            
+            # Use capturing group as value when present to avoid context-window leakage (e.g. markdown)
+            if match.lastindex and match.lastindex >= 1:
+                value_text = (match.group(1) or '').strip()
+            else:
+                start = max(0, match.start() - context_size)
+                end = min(len(text), match.end() + context_size)
+                value_text = text[start:end].strip()
+            if not value_text:
+                continue
             facts.append({
-                'text': context,
+                'text': value_text,
                 'confidence': 'high',
                 'type': 'value',
                 'label': label,
@@ -941,12 +960,16 @@ def extract_key_facts_from_text(text: str) -> List[Dict[str, Any]]:
                 continue
             
             seen_matches.add(match_key)
-            start = max(0, match.start() - context_size)
-            end = min(len(text), match.end() + context_size)
-            context = text[start:end].strip()
-            
+            if match.lastindex and match.lastindex >= 1:
+                value_text = (match.group(1) or '').strip()
+            else:
+                start = max(0, match.start() - context_size)
+                end = min(len(text), match.end() + context_size)
+                value_text = text[start:end].strip()
+            if not value_text:
+                continue
             facts.append({
-                'text': context,
+                'text': value_text,
                 'confidence': 'high',
                 'type': 'date',
                 'label': label,
@@ -970,12 +993,16 @@ def extract_key_facts_from_text(text: str) -> List[Dict[str, Any]]:
                 continue
             
             seen_matches.add(match_key)
-            start = max(0, match.start() - context_size)
-            end = min(len(text), match.end() + context_size)
-            context = text[start:end].strip()
-            
+            if match.lastindex and match.lastindex >= 1:
+                value_text = (match.group(1) or '').strip()
+            else:
+                start = max(0, match.start() - context_size)
+                end = min(len(text), match.end() + context_size)
+                value_text = text[start:end].strip()
+            if not value_text:
+                continue
             facts.append({
-                'text': context,
+                'text': value_text,
                 'confidence': 'high',
                 'type': 'name',
                 'label': label,
@@ -994,11 +1021,16 @@ def extract_key_facts_from_text(text: str) -> List[Dict[str, Any]]:
             if any(start <= match.start() < end or start < match.end() <= end for start, end in seen_matches):
                 continue
             seen_matches.add(match_key)
-            start = max(0, match.start() - context_size)
-            end = min(len(text), match.end() + context_size)
-            context = text[start:end].strip()
+            if match.lastindex and match.lastindex >= 1:
+                value_text = (match.group(1) or '').strip()
+            else:
+                start = max(0, match.start() - context_size)
+                end = min(len(text), match.end() + context_size)
+                value_text = text[start:end].strip()
+            if not value_text:
+                continue
             facts.append({
-                'text': context,
+                'text': value_text,
                 'confidence': 'high',
                 'type': 'date',
                 'label': label,
@@ -1020,14 +1052,19 @@ def extract_key_facts_from_text(text: str) -> List[Dict[str, Any]]:
             if any(start <= match.start() < end or start < match.end() <= end for start, end in seen_matches):
                 continue
             seen_matches.add(match_key)
-            start = max(0, match.start() - context_size)
-            end = min(len(text), match.end() + context_size)
-            context = text[start:end].strip()
+            if match.lastindex and match.lastindex >= 1:
+                value_text = (match.group(1) or '').strip()
+            else:
+                start = max(0, match.start() - context_size)
+                end = min(len(text), match.end() + context_size)
+                value_text = text[start:end].strip()
             # Normalise whitespace and cap length for display
-            if len(context) > 80:
-                context = context[:77].rstrip() + '…'
+            if len(value_text) > 80:
+                value_text = value_text[:77].rstrip() + '…'
+            if not value_text:
+                continue
             facts.append({
-                'text': context,
+                'text': value_text,
                 'confidence': 'high',
                 'type': 'address',
                 'label': label,
@@ -1115,43 +1152,9 @@ async def generate_evidence_selection(
     
     NO prose. NO Markdown. NO creativity.
     """
-    # Concise system prompt (~200 tokens)
-    system_prompt_content = """You are a fact-mapping system. Match user questions to evidence.
+    system_prompt_content = get_responder_fact_mapping_system_prompt()
+    human_message_content = get_responder_fact_mapping_human_prompt(user_query, evidence_table)
 
-**INPUT:**
-- User question
-- Evidence table with citations [1], [2], [3]...
-
-**OUTPUT:**
-- Structured JSON: claims + citations
-- NO prose, NO Markdown
-
-**RULES:**
-1. For each question part, identify supporting evidence
-2. Create one claim per fact
-3. List citation numbers for each claim
-4. If question asks about something NOT in evidence, add to unsupported_claims
-5. Do NOT write prose - only structured claims
-
-**EXAMPLE:**
-Question: "What is the rent and when is it due?"
-Output: {
-  "facts": [
-    {"claim": "Monthly rent amount", "citations": [1]},
-    {"claim": "Rent due date", "citations": [2]}
-  ],
-  "unsupported_claims": []
-}"""
-
-    # Concise human message (~300 tokens)
-    human_message_content = f"""Question: {user_query}
-
-Evidence:
-{evidence_table}
-
-Map question to evidence. Return structured claims with citations."""
-
-    # Create LLM with structured output
     llm = ChatOpenAI(
         api_key=config.openai_api_key,
         model=config.openai_model,
@@ -1160,7 +1163,6 @@ Map question to evidence. Return structured claims with citations."""
     
     structured_llm = llm.with_structured_output(EvidenceSelectionOutput)
     
-    # Invoke
     response = await structured_llm.ainvoke([
         SystemMessage(content=system_prompt_content),
         HumanMessage(content=human_message_content)
@@ -1216,43 +1218,9 @@ async def generate_evidence_selection(
     
     NO prose. NO Markdown. NO creativity.
     """
-    # Concise system prompt (~200 tokens)
-    system_prompt_content = """You are a fact-mapping system. Match user questions to evidence.
+    system_prompt_content = get_responder_fact_mapping_system_prompt()
+    human_message_content = get_responder_fact_mapping_human_prompt(user_query, evidence_table)
 
-**INPUT:**
-- User question
-- Evidence table with citations [1], [2], [3]...
-
-**OUTPUT:**
-- Structured JSON: claims + citations
-- NO prose, NO Markdown
-
-**RULES:**
-1. For each question part, identify supporting evidence
-2. Create one claim per fact
-3. List citation numbers for each claim
-4. If question asks about something NOT in evidence, add to unsupported_claims
-5. Do NOT write prose - only structured claims
-
-**EXAMPLE:**
-Question: "What is the rent and when is it due?"
-Output: {
-  "facts": [
-    {"claim": "Monthly rent amount", "citations": [1]},
-    {"claim": "Rent due date", "citations": [2]}
-  ],
-  "unsupported_claims": []
-}"""
-
-    # Concise human message (~300 tokens)
-    human_message_content = f"""Question: {user_query}
-
-Evidence:
-{evidence_table}
-
-Map question to evidence. Return structured claims with citations."""
-
-    # Create LLM with structured output
     llm = ChatOpenAI(
         api_key=config.openai_api_key,
         model=config.openai_model,
@@ -1261,7 +1229,6 @@ Map question to evidence. Return structured claims with citations."""
     
     structured_llm = llm.with_structured_output(EvidenceSelectionOutput)
     
-    # Invoke
     response = await structured_llm.ainvoke([
         SystemMessage(content=system_prompt_content),
         HumanMessage(content=human_message_content)
@@ -1295,45 +1262,11 @@ async def generate_natural_language_answer(
         for claim in evidence_selection.facts
     ])
     
-    # System prompt (~300 tokens)
-    system_prompt_content = """You are a natural language renderer. Convert structured claims into conversational prose.
+    system_prompt_content = get_responder_natural_language_system_prompt()
+    human_message_content = get_responder_natural_language_human_prompt(
+        user_query, claims_text, evidence_table
+    )
 
-**INPUT:**
-- User question
-- Structured claims with citations (from Pass 1)
-- Evidence table (for reference only)
-
-**OUTPUT:**
-- Conversational answer with citations embedded
-- Markdown formatting
-- Professional tone
-
-**CRITICAL RULES:**
-1. Use EXACTLY the claims provided - do NOT add facts
-2. Do NOT remove any claims
-3. Embed citations naturally: [1], [2], [3]
-4. Use Markdown for structure
-5. Minimum 2-3 sentences with context
-
-**EXAMPLE:**
-Claims:
-- Monthly rent amount [citations: 1]
-- Rent due date [citations: 2]
-
-Answer: '**[AMOUNT]** [1] is the monthly rent, which is payable monthly in advance before the 5th day of each month [2].'"""
-
-    # Human message (~800 tokens)
-    human_message_content = f"""Question: {user_query}
-
-Claims to render:
-{claims_text}
-
-Evidence reference:
-{evidence_table}
-
-Convert claims into conversational answer. Use Markdown. Do NOT add or remove facts."""
-
-    # Create LLM with structured output
     llm = ChatOpenAI(
         api_key=config.openai_api_key,
         model=config.openai_model,
@@ -1689,105 +1622,8 @@ async def generate_conversational_answer_with_citations(
         Tuple of (answer_text, citations_list)
     """
     # NOTE: This is a fallback function using tool-based citations
-    # Raw chunk text removed - LLM will use citation tool based on question
-    # This function is used when evidence extraction fails
-    # System prompt - reuse existing prompt but add citation instructions
     main_tagging_rule = _get_main_answer_tagging_rule()
-    system_prompt_content = f"""
-You are an expert analytical assistant for professional documents. Your role is to help users understand information clearly, accurately, and neutrally based solely on the content provided.
-
-# FORMATTING RULES
-
-1. **Response Style**: Use clean Markdown. Use bolding for key terms and bullet points for lists to ensure scannability.
-
-2. **List Formatting**: When creating numbered lists (1., 2., 3.) or bullet lists (-, -, -), keep all items on consecutive lines without blank lines between them. Blank lines between list items will break the list into separate lists.
-
-   **CORRECT:**
-   ```
-   1. First item
-   2. Second item
-   3. Third item
-   ```
-
-   **WRONG:**
-   ```
-   1. First item
-
-   2. Second item
-
-   3. Third item
-   ```
-
-3. **Markdown Features**: 
-   - Use `##` for main sections, `###` for subsections
-   - Use `**bold**` for emphasis or labels
-   - Use `-` for bullet points, `1.` for numbered lists
-   - Use a blank line (double newline) before each major section (e.g. **Flood Zone 2:**, **Surface Water Flooding:**) so the answer appears as separate paragraphs, not one long block. Do not put blank lines between list items.
-
-4. **No Hallucination**: If the answer is not contained within the provided excerpts, state: "I cannot find the specific information in the uploaded documents." Do not use outside knowledge.
-
-# CITATION WORKFLOW
-
-**SIMPLE RULE: Any information you use from chunks MUST be cited.**
-
-Whether it's a fact, explanation, definition, or any other type of information - if it comes from a chunk, it needs a citation.
-
-When you use information from chunks in your answer:
-1. Use the EXACT text from the chunk (shown in [CHUNK_ID: ...] blocks)
-2. For ANY information you use from a chunk, call match_citation_to_chunk with:
-   - chunk_id: The CHUNK_ID from the chunk you're citing
-   - cited_text: The EXACT text from that chunk (not a paraphrase)
-3. Call this tool for EVERY piece of information you mention that comes from chunks
-4. **CRITICAL**: After calling match_citation_to_chunk, include citation numbers in your answer text using [1], [2], [3] format
-   - Example: "<<<MAIN>>>[AMOUNT]<<<END_MAIN>>> is the offer value [1]. This represents the purchase price [1]. <<<MAIN>>>[AMOUNT]<<<END_MAIN>>> is the deposit [2]."
-   - Each citation number corresponds to a match_citation_to_chunk tool call you made
-   - Number them sequentially: [1], [2], [3], etc.
-
-**IMPORTANT:**
-- Use the original text from chunks, not your paraphrased version
-- Call match_citation_to_chunk BEFORE finishing your answer
-- **Include citation numbers immediately after each piece of information from chunks** - place [1], [2], [3] right after the information within the same sentence or paragraph
-- Example: "<<<MAIN>>>[AMOUNT]<<<END_MAIN>>> is the property value [1]. The lease term is one year [2]. <<<MAIN>>>[AMOUNT]<<<END_MAIN>>> is the monthly rent [3]."
-- **DO NOT** wait until the end of your answer to include citations - they must appear inline with the information
-
-# TONE & STYLE
-
-- Be direct and professional.
-- Avoid phrases like "Based on the documents provided..." or "According to chunk 1...". Just provide the answer.
-- Do not mention document names, filenames, IDs, or retrieval steps.
-- Do not reference "documents", "files", "chunks", "tools", or "searches".
-- Speak as if the information is simply *known*, not retrieved.
-- **Do NOT start your response** with a fragment like "of [property name]" or "of [X]". Start directly with the figure, category, or fact (amount/number/date/category name). Do not start with a topic sentence or heading.
-
-**CRITICAL – HIGHLIGHTING THE USER'S ANSWER IS EXTREMELY IMPORTANT**
-You MUST wrap the exact thing the user is looking for in <<<MAIN>>>...<<<END_MAIN>>>. This is mandatory for every response. Never skip this.
-
-{main_tagging_rule}
-
-# EXTRACTING INFORMATION
-
-The excerpts provided ARE the source of truth. When the user asks a question:
-1. Carefully read through ALL the excerpts provided
-2. If the answer IS present, extract and present it directly – put the key fact/number/answer in the opening words
-3. If the answer is NOT present, only then say it's not found
-
-**DO NOT say "the excerpts do not contain" if the information IS actually in the excerpts.**
-**DO NOT be overly cautious - if you see the information, extract and present it.**
-
-When information IS in the excerpts:
-- Put the key figure or fact first (number, date, name), then add what it refers to
-- Extract specific details (names, values, dates, etc.)
-- Present them clearly and directly
-- Use the exact information from the excerpts
-- Format it in a scannable way
-- **Call match_citation_to_chunk for ANY information you use from chunks** - facts, explanations, definitions, everything
-
-When information is NOT in the excerpts:
-- State: "I cannot find the specific information in the uploaded documents."
-- Provide helpful context about what type of information would answer the question
-{CLOSING_AND_FOLLOWUP_PROMPT}
-"""
-    
+    system_prompt_content = get_responder_conversational_tool_citations_system_prompt(main_tagging_rule)
     system_prompt = SystemMessage(content=system_prompt_content)
     
     # Create citation tool
@@ -1902,108 +1738,9 @@ async def generate_conversational_answer_with_pre_citations(
     Returns:
         Tuple of (answer_text, citations_list)
     """
-    # NOTE: Raw chunk text removed - using pre-created citations only
-    # This fallback function is used when evidence extraction fails
-    # Format pre-created citations
     citations_display = format_pre_created_citations(pre_created_citations)
-    
     main_tagging_rule = _get_main_answer_tagging_rule()
-    system_prompt_content = f"""
-You are an expert analytical assistant for professional documents. Your role is to help users understand information clearly, accurately, and neutrally based solely on the content provided.
-
-# FORMATTING RULES
-
-1. **Response Style**: Use clean Markdown. Use bolding for key terms and bullet points for lists to ensure scannability.
-
-2. **List Formatting**: When creating numbered lists (1., 2., 3.) or bullet lists (-, -, -), keep all items on consecutive lines without blank lines between them. Blank lines between list items will break the list into separate lists.
-
-   **CORRECT:**
-   ```
-   1. First item
-   2. Second item
-   3. Third item
-   ```
-
-   **WRONG:**
-   ```
-   1. First item
-
-   2. Second item
-
-   3. Third item
-   ```
-
-3. **Markdown Features**: 
-   - Use `##` for main sections, `###` for subsections
-   - Use `**bold**` for emphasis or labels
-   - Use `-` for bullet points, `1.` for numbered lists
-   - Use a blank line (double newline) before each major section (e.g. **Flood Zone 2:**, **Surface Water Flooding:**) so the answer appears as separate paragraphs, not one long block. Do not put blank lines between list items.
-
-4. **No Hallucination**: If the answer is not contained within the provided excerpts, state: "I cannot find the specific information in the uploaded documents." Do not use outside knowledge.
-
-# CITATION WORKFLOW
-
-**SIMPLE RULE: Any information you use from chunks MUST be cited.**
-
-Whether it's a fact, explanation, definition, or any other type of information - if it comes from a chunk, it needs a citation.
-
-You have been provided with pre-created citations below. These citations are already mapped to exact locations in the documents.
-
-**HOW TO USE CITATIONS:**
-1. When you use ANY information that matches a citation, use the citation number: [1], [2], [3], etc.
-2. The citation numbers correspond to the pre-created citations shown below
-3. **DO NOT** call any citation tools - citations are already created
-4. Simply include citation numbers in your answer where you reference information from chunks
-5. Place citation numbers immediately after the information you're citing
-
-**EXAMPLE:** (figure first; MAIN wraps only the figure)
-If citation [1] supports the Market Value and [2] the date, your answer might be:
-"<<<MAIN>>>[AMOUNT]<<<END_MAIN>>> is the Market Value [1]. This represents the purchase price [1] as of [DATE] [2]."
-
-**IMPORTANT:**
-- Use citation numbers [1], [2], [3] when you reference ANY information from chunks - facts, explanations, definitions, everything
-- Do NOT call any tools - citations are pre-created
-- Include citation numbers immediately after the information you're citing
-- Each citation number corresponds to a pre-created citation shown below
-
-# TONE & STYLE
-
-- Be direct and professional.
-- Avoid phrases like "Based on the documents provided..." or "According to chunk 1...". Just provide the answer.
-- Do not mention document names, filenames, IDs, or retrieval steps.
-- Do not reference "documents", "files", "chunks", "tools", or "searches".
-- Speak as if the information is simply *known*, not retrieved.
-- **Do NOT start your response** with a fragment like "of [property name]" or "of [X]". Start directly with the figure, category, or fact (amount/number/date/category name). Do not start with a topic sentence or heading.
-
-**CRITICAL – HIGHLIGHTING THE USER'S ANSWER IS EXTREMELY IMPORTANT**
-You MUST wrap the exact thing the user is looking for in <<<MAIN>>>...<<<END_MAIN>>>. This is mandatory for every response. Never skip this.
-
-{main_tagging_rule}
-
-# EXTRACTING INFORMATION
-
-The excerpts provided ARE the source of truth. When the user asks a question:
-1. Carefully read through ALL the excerpts provided
-2. If the answer IS present, extract and present it directly – put the key fact/number/answer in the opening words
-3. If the answer is NOT present, only then say it's not found
-
-**DO NOT say "the excerpts do not contain" if the information IS actually in the excerpts.**
-**DO NOT be overly cautious - if you see the information, extract and present it.**
-
-When information IS in the excerpts:
-- Put the key figure or fact first (number, date, name), then add what it refers to
-- Extract specific details (names, values, dates, etc.)
-- Present them clearly and directly
-- Use the exact information from the excerpts
-- Format it in a scannable way
-- **Use citation numbers [1], [2], [3] when referencing ANY information from chunks** - facts, explanations, definitions, everything
-
-When information is NOT in the excerpts:
-- State: "I cannot find the specific information in the uploaded documents."
-- Provide helpful context about what type of information would answer the question
-{CLOSING_AND_FOLLOWUP_PROMPT}
-"""
-    
+    system_prompt_content = get_responder_conversational_pre_citations_system_prompt(main_tagging_rule)
     system_prompt = SystemMessage(content=system_prompt_content)
     
     # Create LLM WITHOUT citation tool (not needed - citations are pre-created)
@@ -2080,10 +1817,13 @@ async def generate_conversational_answer_with_citations(
     user_query: str,
     formatted_chunks: str,
     metadata_lookup_tables: Optional[Dict[str, Dict[str, Dict[str, Any]]]] = None,
-) -> str:
+    previous_personality: Optional[str] = None,
+    is_first_message: bool = False,
+) -> Tuple[str, str]:
     """
     Generate conversational answer with citation instructions (jan28th-style).
     The LLM sees content with <BLOCK id="BLOCK_CITE_ID_N"> and must cite as [ID: X](BLOCK_CITE_ID_N).
+    Also chooses personality for this turn and returns (personality_id, answer_text).
     """
     # Temperature 0.38: slight increase for more natural variation; revert if responses become inconsistent or repetitive (see plan: conversational responses).
     llm = ChatOpenAI(
@@ -2094,54 +1834,12 @@ async def generate_conversational_answer_with_citations(
 
     metadata_section = _build_metadata_table_section(metadata_lookup_tables or {})
 
-    system_prompt = SystemMessage(content="""
-You are a helpful expert who explains document content in clear, natural language, like a knowledgeable colleague in a dialogue. Answer based solely on the content provided.
-
-# FORMATTING RULES
-
-- Use Markdown (bold for key terms, lists, headings) when it improves readability. Prefer natural paragraphs and full sentences; use lists when listing distinct points.
-- Vary sentence length and use short paragraphs where it helps. You may use brief lead-ins like "In short…" or "So essentially…" when useful.
-- When using lists, keep list items on consecutive lines without blank lines between them.
-- **No Hallucination**: If the answer is not contained within the provided excerpts, state: "I cannot find the specific information in the uploaded documents." Do not use outside knowledge.
-
-# CITATION INSTRUCTIONS (CRITICAL)
-
-You have been provided with document excerpts. Each excerpt is labeled [SOURCE_ID: 1], [SOURCE_ID: 2], etc. Within each excerpt, facts appear inside <BLOCK id="BLOCK_CITE_ID_N"> tags.
-
-**HOW TO CITE:**
-For EVERY fact you use from the excerpts, you MUST cite it using BOTH the source number AND the block id from the <BLOCK> tag that contains that fact. Use this exact format:
-
-[ID: X](BLOCK_CITE_ID_N)
-
-- X = the SOURCE_ID number (1, 2, 3, ...) of the excerpt.
-- BLOCK_CITE_ID_N = the id of the <BLOCK> tag that contains the fact you are citing (e.g. BLOCK_CITE_ID_42).
-
-**EXAMPLES:**
-- "The **EPC rating** is **56 D** [ID: 1](BLOCK_CITE_ID_42) with a potential of **71 C** [ID: 1](BLOCK_CITE_ID_42)."
-- "Market Value is **£2,400,000** [ID: 1](BLOCK_CITE_ID_7) as of **12th February 2024** [ID: 1](BLOCK_CITE_ID_7)."
-- "Valuer: Sukhbir Tiwana MRICS [ID: 2](BLOCK_CITE_ID_15)."
-
-**CITATION PLACEMENT (CRITICAL):**
-- Place each citation **immediately after the specific fact or phrase** it supports, not at the end of the sentence.
-- **WRONG:** "The bill clarifies that payment stablecoins are not considered securities, amending various acts to reflect this [ID: 1](BLOCK_CITE_ID_5) [ID: 1](BLOCK_CITE_ID_6)." (citations at end of sentence)
-- **CORRECT:** "The bill clarifies that **payment stablecoins are not considered securities** [ID: 1](BLOCK_CITE_ID_5) [ID: 1](BLOCK_CITE_ID_6), amending various acts to reflect this."
-- When a sentence contains multiple facts, put each citation right after the fact it supports: "A moratorium applies to **endogenously collateralized stablecoins** [ID: 1](BLOCK_CITE_ID_8) for two years. The Secretary must **report within 365 days** [ID: 1](BLOCK_CITE_ID_11)."
-
-**RULES:**
-1. **ALWAYS** include the block id in parentheses immediately after [ID: X]. The block id must be the id of the <BLOCK> that contains the fact.
-2. **Cite ONLY the <BLOCK> whose content actually contains that fact** (e.g. for "EPC 56 D" cite the block that contains "56" and "D", not a different block about something else).
-3. **Place each citation immediately after the fact or phrase it supports**—never group all citations at the end of a sentence.
-4. **Use the exact block id** from the <BLOCK> tag (e.g. BLOCK_CITE_ID_42, not BLOCK_CITE_ID_41).
-5. You may cite the same block multiple times for different facts from that block.
-6. Do NOT use [1], [2] - use [ID: 1], [ID: 2] followed by (BLOCK_CITE_ID_N).
-7. Do NOT invent block ids - only use ids that appear in the excerpts above.
-
-# TONE & STYLE
-
-- Write in a natural, conversational tone—like a knowledgeable colleague explaining the document. Be direct and clear; stay on topic and accurate.
-- Do not mention document names, filenames, or retrieval steps. Explain as if you are familiar with the material; cite sources for transparency.
-""" + CLOSING_AND_FOLLOWUP_PROMPT + """
-Answer (use Markdown and cite every fact with [ID: X](BLOCK_CITE_ID_N)):""")
+    personality_context = f"""
+Previous personality for this conversation (or None if first message): {previous_personality or 'None'}
+Is this the first message in the conversation? {is_first_message}
+"""
+    system_content = get_responder_block_citation_system_content(personality_context)
+    system_prompt = SystemMessage(content=system_content)
 
     human_message = HumanMessage(content=f"""
 **User Question:**
@@ -2163,43 +1861,59 @@ Answer (use Markdown and cite every fact with [ID: X](BLOCK_CITE_ID_N)):""")
         f"[RESPONDER] Invoking LLM with block-id citation instructions "
         f"({len(formatted_chunks.split('[SOURCE_ID:')) - 1} source groups)"
     )
-    response = await llm.ainvoke([system_prompt, human_message])
-    answer_text = response.content if hasattr(response, 'content') and response.content else ""
-    return answer_text
+    structured_llm = llm.with_structured_output(PersonalityResponse)
+    try:
+        parsed = await structured_llm.ainvoke([system_prompt, human_message])
+        personality_id = (
+            parsed.personality_id
+            if parsed.personality_id in VALID_PERSONALITY_IDS
+            else DEFAULT_PERSONALITY_ID
+        )
+        answer_text = (parsed.response or "").strip()
+        logger.info(f"[RESPONDER] Chose personality_id={personality_id}")
+        return personality_id, answer_text
+    except Exception as e:
+        logger.warning(f"[RESPONDER] Structured output failed, using default personality: {e}")
+        # Fallback: invoke without structured output and return default personality
+        fallback_llm = ChatOpenAI(model=config.openai_model, temperature=0.38, max_tokens=2000)
+        response = await fallback_llm.ainvoke([system_prompt, human_message])
+        answer_text = response.content if hasattr(response, 'content') and response.content else ""
+        return DEFAULT_PERSONALITY_ID, answer_text
 
 
 async def generate_answer_with_direct_citations(
     user_query: str,
-    execution_results: list[Dict[str, Any]]
-) -> Tuple[str, List[Dict[str, Any]]]:
+    execution_results: list[Dict[str, Any]],
+    previous_personality: Optional[str] = None,
+    is_first_message: bool = False,
+) -> Tuple[str, List[Dict[str, Any]], str]:
     """
     Generate answer using direct citation system with short IDs.
-    
+
     Flow:
     1. Extract chunks with metadata
-    2. Format chunks with short IDs (1, 2, 3) and create lookup dictionary
-    3. Generate LLM response (LLM includes [ID: 1] in text)
-    4. Extract short IDs from response with positions
-    5. Map short IDs to full chunk metadata (UUID, bbox, page_number)
-    6. Replace [ID: 1] with [1], [ID: 2] with [2], etc. (safe position-based replacement)
-    7. Format citations for frontend
-    8. Return formatted answer and citations
-    
+    2. Format chunks with block-level BLOCK_CITE_ID tags
+    3. Generate LLM response (with personality selection); get (personality_id, raw response)
+    4. Extract citations, replace IDs, format for frontend
+    5. Return (formatted_answer, citations_list, personality_id)
+
     Args:
         user_query: User's question
         execution_results: Execution results from executor node
-    
+        previous_personality: Personality from previous turn (or None)
+        is_first_message: True if this is the first message in the conversation
+
     Returns:
-        Tuple of (formatted_answer, citations_list)
+        Tuple of (formatted_answer, citations_list, personality_id)
     """
     try:
         # Step 1: Extract chunks with metadata
         chunks_metadata = extract_chunks_with_metadata(execution_results)
-        
+
         if not chunks_metadata:
             logger.warning("[DIRECT_CITATIONS] No chunks found in execution results")
-            return "No relevant information found.", []
-        
+            return "No relevant information found.", [], DEFAULT_PERSONALITY_ID
+
         logger.info(f"[DIRECT_CITATIONS] Extracted {len(chunks_metadata)} chunks with metadata")
 
         # Step 2: Format chunks with block-level BLOCK_CITE_ID tags and metadata table (jan28th-style)
@@ -2209,12 +1923,14 @@ async def generate_answer_with_direct_citations(
             f"{list(short_id_lookup.keys())}, {sum(len(t) for t in metadata_lookup_tables.values())} blocks"
         )
 
-        # Step 3: Generate LLM response (LLM must include [ID: X](BLOCK_CITE_ID_N) for each citation)
+        # Step 3: Generate LLM response (with personality selection)
         logger.info(f"[DIRECT_CITATIONS] Generating LLM response with block-id citation instructions...")
-        llm_response = await generate_conversational_answer_with_citations(
-            user_query, formatted_chunks, metadata_lookup_tables
+        personality_id, llm_response = await generate_conversational_answer_with_citations(
+            user_query, formatted_chunks, metadata_lookup_tables,
+            previous_personality=previous_personality,
+            is_first_message=is_first_message,
         )
-        logger.info(f"[DIRECT_CITATIONS] LLM response generated ({len(llm_response)} chars)")
+        logger.info(f"[DIRECT_CITATIONS] LLM response generated ({len(llm_response)} chars), personality_id={personality_id}")
 
         # Step 4: Extract citations (prefer block_id lookup when (BLOCK_CITE_ID_N) present)
         citations = extract_citations_with_positions(
@@ -2239,9 +1955,9 @@ async def generate_answer_with_direct_citations(
         # Step 7: Format citations for frontend
         frontend_citations = format_citations_for_frontend(citations)
         logger.info(f"[DIRECT_CITATIONS] Formatted {len(frontend_citations)} citations for frontend")
-        
-        return formatted_response, frontend_citations
-        
+
+        return formatted_response, frontend_citations, personality_id
+
     except Exception as e:
         logger.error(f"[DIRECT_CITATIONS] Error in citation generation: {e}", exc_info=True)
         # Fallback: return answer without citations
@@ -2250,8 +1966,8 @@ async def generate_answer_with_direct_citations(
             chunk_texts = [chunk.get('chunk_text', '') for chunk in chunks_metadata if chunk.get('chunk_text')]
             formatted_chunk_text = "\n\n---\n\n".join(chunk_texts)
             fallback_answer = await generate_conversational_answer(user_query, formatted_chunk_text)
-            return fallback_answer, []
-        return "I encountered an error while generating the answer. Please try again.", []
+            return fallback_answer, [], DEFAULT_PERSONALITY_ID
+        return "I encountered an error while generating the answer. Please try again.", [], DEFAULT_PERSONALITY_ID
 
 
 async def generate_formatted_answer(
@@ -2277,17 +1993,10 @@ async def generate_formatted_answer(
         if chunk_texts:
             new_block = "<new_retrieval>\n" + "\n\n---\n\n".join(chunk_texts) + "\n</new_retrieval>\n\n"
 
-    system_content = """You combine prior conversation and/or new retrieval into a single response.
-Output exactly what the user asked for. Follow the format instruction precisely.
-Output one block of text, copy-paste friendly (no meta-commentary, no "Here is...")."""
-
-    user_content = f"""User request: {user_query}
-
-Format instruction: {format_instruction}
-
-{prior_block}{new_block}
-
-Produce one block of text that satisfies the format instruction. Use prior answer and new retrieval as needed. Output only the formatted text."""
+    system_content = get_responder_formatted_answer_system_prompt()
+    user_content = get_responder_formatted_answer_human_prompt(
+        user_query, format_instruction, prior_block, new_block
+    )
 
     llm = ChatOpenAI(api_key=config.openai_api_key, model=config.openai_model, temperature=0)
     response = await llm.ainvoke([SystemMessage(content=system_content), HumanMessage(content=user_content)])
@@ -2316,6 +2025,8 @@ async def responder_node(state: MainWorkflowState, runnable_config=None) -> Main
     prior_turn_content = state.get("prior_turn_content")
     format_instruction = (state.get("format_instruction") or "").strip()
     emitter = state.get("execution_events")
+    previous_personality = state.get("personality_id")
+    is_first_message = previous_personality is None
     if emitter is None:
         logger.warning("[RESPONDER] ⚠️  Emitter is None - reasoning events will not be emitted")
     plan_refinement_count = state.get("plan_refinement_count", 0)
@@ -2335,6 +2046,7 @@ async def responder_node(state: MainWorkflowState, runnable_config=None) -> Main
             formatted_answer = ensure_main_tags_when_missing(formatted_answer, user_query)
             responder_output = {
                 "final_summary": formatted_answer,
+                "personality_id": previous_personality or DEFAULT_PERSONALITY_ID,
                 "citations": [],
                 "chunk_citations": [],
                 "messages": [AIMessage(content=formatted_answer)],
@@ -2346,6 +2058,7 @@ async def responder_node(state: MainWorkflowState, runnable_config=None) -> Main
             fallback_msg = "I couldn't reformat that. Please try again."
             return {
                 "final_summary": fallback_msg,
+                "personality_id": previous_personality or DEFAULT_PERSONALITY_ID,
                 "citations": [],
                 "chunk_citations": [],
                 "messages": [AIMessage(content=fallback_msg)],
@@ -2375,21 +2088,24 @@ async def responder_node(state: MainWorkflowState, runnable_config=None) -> Main
                 detail=None
             )
         
-        # Generate answer with direct citations
+        # Generate answer with direct citations (includes personality selection in same LLM call)
         try:
             logger.info(f"[RESPONDER] Generating answer with direct citation system...")
-            formatted_answer, citations = await generate_answer_with_direct_citations(user_query, execution_results)
+            formatted_answer, citations, personality_id = await generate_answer_with_direct_citations(
+                user_query, execution_results,
+                previous_personality=previous_personality,
+                is_first_message=is_first_message,
+            )
             formatted_answer = ensure_main_tags_when_missing(formatted_answer, user_query)
-            
-            logger.info(f"[RESPONDER] ✅ Answer generated ({len(formatted_answer)} chars) with {len(citations)} citations")
-            
-            # Prepare output with citations
-            # Set both 'citations' and 'chunk_citations' for compatibility with views.py
-            # Append AIMessage so checkpoint has full thread (refine/format + follow-up)
+
+            logger.info(f"[RESPONDER] ✅ Answer generated ({len(formatted_answer)} chars) with {len(citations)} citations, personality_id={personality_id}")
+
+            # Prepare output with citations and persist chosen personality for next turn
             responder_output = {
                 "final_summary": formatted_answer,
+                "personality_id": personality_id,
                 "citations": citations if citations else [],
-                "chunk_citations": citations if citations else [],  # Also set chunk_citations for views.py processing
+                "chunk_citations": citations if citations else [],
                 "messages": [AIMessage(content=formatted_answer)],
             }
             
@@ -2414,9 +2130,10 @@ async def responder_node(state: MainWorkflowState, runnable_config=None) -> Main
                 logger.error(f"[RESPONDER] ❌ Fallback also failed: {fallback_error}", exc_info=True)
                 error_answer = "I encountered an error while generating the answer. Please try again."
             
-            # Prepare error output
+            # Prepare error output (keep previous personality)
             error_output = {
                 "final_summary": error_answer,
+                "personality_id": previous_personality or DEFAULT_PERSONALITY_ID,
                 "messages": [AIMessage(content=error_answer)],
             }
             
@@ -2427,7 +2144,11 @@ async def responder_node(state: MainWorkflowState, runnable_config=None) -> Main
                 logger.error(f"[RESPONDER] ❌ Error output contract violation: {e}")
                 # Fallback to minimal valid output
                 fallback_msg = "I encountered an error. Please try again."
-                error_output = {"final_summary": fallback_msg, "messages": [AIMessage(content=fallback_msg)]}
+                error_output = {
+                    "final_summary": fallback_msg,
+                    "personality_id": previous_personality or DEFAULT_PERSONALITY_ID,
+                    "messages": [AIMessage(content=fallback_msg)],
+                }
             
             if emitter:
                 emitter.emit_reasoning(
@@ -2452,9 +2173,10 @@ async def responder_node(state: MainWorkflowState, runnable_config=None) -> Main
         else:
             answer = "I couldn't find relevant information. Try rephrasing or adding more context."
         
-        # Prepare no-results output
+        # Prepare no-results output (keep previous personality)
         no_results_output = {
             "final_summary": answer,
+            "personality_id": previous_personality or DEFAULT_PERSONALITY_ID,
             "messages": [AIMessage(content=answer)],
         }
         

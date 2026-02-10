@@ -122,6 +122,7 @@ class MainWorkflowState(TypedDict, total=False):
     plan_refinement_count: int  # Track how many times plan has been refined (circuit breaker, default: 0, max: 3)
     prior_turn_content: Optional[str]  # Previous assistant answer when use_prior_context (for refine/format)
     format_instruction: Optional[str]  # User-requested output format (e.g. "one concise paragraph")
+    personality_id: Optional[str]  # Chosen response tone (e.g. "default", "friendly", "efficient"); set by responder from LLM structured output
 
 class DocumentQAState(TypedDict, total=False):
     """State for per-document Q&A subgraph"""
