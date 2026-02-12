@@ -293,10 +293,6 @@ export const FloatingChatBubble: React.FC<FloatingChatBubbleProps> = ({
   const messagesContainerRef = React.useRef<HTMLDivElement>(null);
   const { openExpandedCardView } = usePreview();
   
-  // State for gold glow animation
-  const [showGoldGlow, setShowGoldGlow] = React.useState(false);
-  const hasAnimatedRef = React.useRef(false);
-
   // Per-message expanded state for "Thought" dropdown (collapsed by default when response is finished)
   const [expandedThoughtMessageIds, setExpandedThoughtMessageIds] = React.useState<Set<string>>(() => new Set());
   const toggleThoughtExpanded = React.useCallback((messageId: string) => {
@@ -317,22 +313,6 @@ export const FloatingChatBubble: React.FC<FloatingChatBubbleProps> = ({
     // Only show if query exists and response is loading
     return hasQuery && hasLoadingResponse;
   }, [chatMessages]);
-  
-  // Trigger gold glow animation when bubble becomes visible
-  React.useEffect(() => {
-    if (shouldShowBubble && !hasAnimatedRef.current) {
-      hasAnimatedRef.current = true;
-      setShowGoldGlow(true);
-      // Remove glow after animation completes (800ms)
-      const timer = setTimeout(() => {
-        setShowGoldGlow(false);
-      }, 800);
-      return () => clearTimeout(timer);
-    } else if (!shouldShowBubble) {
-      // Reset animation flag when bubble hides so it can animate again next time
-      hasAnimatedRef.current = false;
-    }
-  }, [shouldShowBubble]);
   
   // Helper function to render text with clickable citation links (scaled down version)
   const renderTextWithCitations = React.useCallback((
@@ -527,7 +507,7 @@ export const FloatingChatBubble: React.FC<FloatingChatBubbleProps> = ({
         >
           <h3
             style={{
-              fontSize: '11px',
+              fontSize: '12px',
               fontWeight: 500,
               color: '#6B7280',
               margin: 0,
@@ -594,19 +574,19 @@ export const FloatingChatBubble: React.FC<FloatingChatBubbleProps> = ({
               const isNewPair = prevMessage && prevMessage.type === 'response' && message.type === 'query';
               
               return message.type === 'query' ? (
-                // Query message container - aligned with response text
+                // Query message container - aligned with response text (sizing +10%)
                 <div
                   key={message.id}
                   style={{
                     width: '100%',
-                    marginTop: isNewPair ? '8px' : '8px',
+                    marginTop: isNewPair ? '8.8px' : '8.8px',
                     marginLeft: '0',
                     marginBottom: '0',
                     display: 'flex',
                     flexDirection: 'column',
-                    gap: '6px',
-                    paddingLeft: '12px', // Match response text padding
-                    paddingRight: '12px',
+                    gap: '6.6px',
+                    paddingLeft: '13.2px',
+                    paddingRight: '13.2px',
                     boxSizing: 'border-box'
                   }}
                 >
@@ -614,23 +594,23 @@ export const FloatingChatBubble: React.FC<FloatingChatBubbleProps> = ({
                   <div
                     style={{
                       backgroundColor: '#F3F3F3',
-                      borderRadius: '8px',
-                      paddingTop: '4px',
-                      paddingBottom: '4px',
-                      paddingLeft: '8px',
-                      paddingRight: '8px',
+                      borderRadius: '8.8px',
+                      paddingTop: '4.4px',
+                      paddingBottom: '4.4px',
+                      paddingLeft: '8.8px',
+                      paddingRight: '8.8px',
                       boxShadow: '0 1px 2px rgba(0, 0, 0, 0.05)',
                       width: 'fit-content',
                       maxWidth: '100%',
                       wordWrap: 'break-word',
                       display: 'inline-block',
                       boxSizing: 'border-box',
-                      marginLeft: '0' // Ensure bubble starts at container's left edge (which has 12px padding)
+                      marginLeft: '0'
                     }}
                   >
                     {/* Display file attachments if any */}
                     {message.attachments && message.attachments.length > 0 && (
-                      <div style={{ marginBottom: (message.text || (message.propertyAttachments && message.propertyAttachments.length > 0)) ? '8px' : '0', display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+                      <div style={{ marginBottom: (message.text || (message.propertyAttachments && message.propertyAttachments.length > 0)) ? '8.8px' : '0', display: 'flex', flexWrap: 'wrap', gap: '4.4px' }}>
                         {message.attachments.map((attachment) => (
                           <QueryAttachment key={attachment.id} attachment={attachment} />
                         ))}
@@ -638,7 +618,7 @@ export const FloatingChatBubble: React.FC<FloatingChatBubbleProps> = ({
                     )}
                     
                     {/* Chips + query text in input order (contentSegments) or fallback to chips then text */}
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', alignItems: 'center', width: '100%' }}>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6.6px', alignItems: 'center', width: '100%' }}>
                       {message.contentSegments && message.contentSegments.length > 0
                         ? message.contentSegments.map((seg, idx) => {
                             if (seg.type === 'text') {
@@ -648,8 +628,8 @@ export const FloatingChatBubble: React.FC<FloatingChatBubbleProps> = ({
                                   key={`t-${idx}`}
                                   style={{
                                     color: '#0D0D0D',
-                                    fontSize: '11px',
-                                    lineHeight: '13px',
+                                    fontSize: '11.9px',
+                                    lineHeight: '14.1px',
                                     margin: 0,
                                     padding: 0,
                                     textAlign: 'left',
@@ -663,27 +643,27 @@ export const FloatingChatBubble: React.FC<FloatingChatBubbleProps> = ({
                                   <ReactMarkdown
                                     components={{
                                       p: ({ children }) => <p style={{ margin: 0, padding: 0, display: 'block' }}>{children}</p>,
-                                      h1: ({ children }) => <h1 style={{ fontSize: '12px', fontWeight: 600, margin: '8px 0 6px 0' }}>{children}</h1>,
+                                      h1: ({ children }) => <h1 style={{ fontSize: '14px', fontWeight: 600, margin: '8.8px 0 6.6px 0' }}>{children}</h1>,
                                       h2: () => null,
-                                      h3: ({ children }) => <h3 style={{ fontSize: '11px', fontWeight: 600, margin: '6px 0 3px 0' }}>{children}</h3>,
-                                      ul: ({ children }) => <ul style={{ margin: '6px 0', paddingLeft: '16px' }}>{children}</ul>,
-                                      ol: ({ children }) => <ol style={{ margin: '6px 0', paddingLeft: '16px' }}>{children}</ol>,
-                                      li: ({ children }) => <li style={{ marginBottom: '3px' }}>{children}</li>,
+                                      h3: ({ children }) => <h3 style={{ fontSize: '10px', fontWeight: 600, margin: '6.6px 0 3.3px 0' }}>{children}</h3>,
+                                      ul: ({ children }) => <ul style={{ margin: '6.6px 0', paddingLeft: '17.5px' }}>{children}</ul>,
+                                      ol: ({ children }) => <ol style={{ margin: '6.6px 0', paddingLeft: '17.5px' }}>{children}</ol>,
+                                      li: ({ children }) => <li style={{ marginBottom: '3.3px' }}>{children}</li>,
                                       strong: ({ children }) => <strong style={{ fontWeight: 600 }}>{children}</strong>,
                                       em: ({ children }) => <em style={{ fontStyle: 'italic' }}>{children}</em>,
-                                      code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '1px 3px', borderRadius: '2px', fontSize: '10px', fontFamily: 'monospace' }}>{children}</code>,
-                                      blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #d1d5db', paddingLeft: '12px', margin: '8px 0', color: '#6b7280' }}>{children}</blockquote>,
-                                      hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '16px 0' }} />,
+                                      code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '1.1px 3.3px', borderRadius: '2.2px', fontSize: '10.8px', fontFamily: 'monospace' }}>{children}</code>,
+                                      blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #d1d5db', paddingLeft: '13.2px', margin: '8.8px 0', color: '#6b7280' }}>{children}</blockquote>,
+                                      hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '17.6px 0' }} />,
                                       table: ({ children }) => (
-                                        <div style={{ overflowX: 'auto', margin: '12px 0' }}>
-                                          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>{children}</table>
+                                        <div style={{ overflowX: 'auto', margin: '13.2px 0' }}>
+                                          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '14.2px' }}>{children}</table>
                                         </div>
                                       ),
                                       thead: ({ children }) => <thead style={{ backgroundColor: '#f9fafb' }}>{children}</thead>,
                                       tbody: ({ children }) => <tbody>{children}</tbody>,
                                       tr: ({ children }) => <tr style={{ borderBottom: '1px solid #e5e7eb' }}>{children}</tr>,
-                                      th: ({ children }) => <th style={{ padding: '8px 12px', textAlign: 'left', fontWeight: 600, color: '#111827', borderBottom: '2px solid #d1d5db' }}>{children}</th>,
-                                      td: ({ children }) => <td style={{ padding: '8px 12px', textAlign: 'left', color: '#374151' }}>{children}</td>,
+                                      th: ({ children }) => <th style={{ padding: '8.8px 13.2px', textAlign: 'left', fontWeight: 600, color: '#111827', borderBottom: '2px solid #d1d5db' }}>{children}</th>,
+                                      td: ({ children }) => <td style={{ padding: '8.8px 13.2px', textAlign: 'left', color: '#374151' }}>{children}</td>,
                                     }}
                                   >
                                     {seg.value}
@@ -716,8 +696,8 @@ export const FloatingChatBubble: React.FC<FloatingChatBubbleProps> = ({
                                   key={`c-${idx}`}
                                   style={{
                                     color: '#0D0D0D',
-                                    fontSize: '11px',
-                                    lineHeight: '13px',
+                                    fontSize: '11.9px',
+                                    lineHeight: '14.1px',
                                     margin: 0,
                                     padding: 0,
                                     fontFamily: 'system-ui, -apple-system, sans-serif'
@@ -753,8 +733,8 @@ export const FloatingChatBubble: React.FC<FloatingChatBubbleProps> = ({
                             {message.text ? (
                               <span style={{
                                 color: '#0D0D0D',
-                                fontSize: '11px',
-                                lineHeight: '13px',
+                                fontSize: '11.9px',
+                                lineHeight: '14.1px',
                                 margin: 0,
                                 padding: 0,
                                 textAlign: 'left',
@@ -768,27 +748,27 @@ export const FloatingChatBubble: React.FC<FloatingChatBubbleProps> = ({
                                 <ReactMarkdown
                                   components={{
                                     p: ({ children }) => <p style={{ margin: 0, padding: 0, display: 'block' }}>{children}</p>,
-                                    h1: ({ children }) => <h1 style={{ fontSize: '12px', fontWeight: 600, margin: '8px 0 6px 0' }}>{children}</h1>,
-                                    h2: ({ children }) => <h2 style={{ fontSize: '11px', fontWeight: 600, margin: '6px 0 3px 0', color: '#111827' }}>{children}</h2>,
-                                    h3: ({ children }) => <h3 style={{ fontSize: '11px', fontWeight: 600, margin: '6px 0 3px 0', color: '#111827' }}>{children}</h3>,
-                                    ul: ({ children }) => <ul style={{ margin: '6px 0', paddingLeft: '18px', listStylePosition: 'outside' }}>{children}</ul>,
-                                    ol: ({ children }) => <ol style={{ margin: '6px 0', paddingLeft: '18px', listStylePosition: 'outside' }}>{children}</ol>,
-                                    li: ({ children }) => <li style={{ marginBottom: '3px' }}>{children}</li>,
+                                    h1: ({ children }) => <h1 style={{ fontSize: '14px', fontWeight: 600, margin: '8.8px 0 6.6px 0' }}>{children}</h1>,
+                                    h2: ({ children }) => <h2 style={{ fontSize: '12px', fontWeight: 600, margin: '6.6px 0 3.3px 0', color: '#111827' }}>{children}</h2>,
+                                    h3: ({ children }) => <h3 style={{ fontSize: '10px', fontWeight: 600, margin: '6.6px 0 3.3px 0', color: '#111827' }}>{children}</h3>,
+                                    ul: ({ children }) => <ul style={{ margin: '6.6px 0', paddingLeft: '19.7px', listStylePosition: 'outside' }}>{children}</ul>,
+                                    ol: ({ children }) => <ol style={{ margin: '6.6px 0', paddingLeft: '19.7px', listStylePosition: 'outside' }}>{children}</ol>,
+                                    li: ({ children }) => <li style={{ marginBottom: '3.3px' }}>{children}</li>,
                                     strong: ({ children }) => <strong style={{ fontWeight: 600 }}>{children}</strong>,
                                     em: ({ children }) => <em style={{ fontStyle: 'italic' }}>{children}</em>,
-                                    code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '1px 3px', borderRadius: '2px', fontSize: '10px', fontFamily: 'monospace' }}>{children}</code>,
-                                    blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #d1d5db', paddingLeft: '12px', margin: '8px 0', color: '#6b7280' }}>{children}</blockquote>,
-                                    hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '16px 0' }} />,
+                                    code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '1.1px 3.3px', borderRadius: '2.2px', fontSize: '10.8px', fontFamily: 'monospace' }}>{children}</code>,
+                                    blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #d1d5db', paddingLeft: '13.2px', margin: '8.8px 0', color: '#6b7280' }}>{children}</blockquote>,
+                                    hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '17.6px 0' }} />,
                                     table: ({ children }) => (
-                                      <div style={{ overflowX: 'auto', margin: '12px 0' }}>
-                                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>{children}</table>
+                                      <div style={{ overflowX: 'auto', margin: '13.2px 0' }}>
+                                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '14.2px' }}>{children}</table>
                                       </div>
                                     ),
                                     thead: ({ children }) => <thead style={{ backgroundColor: '#f9fafb' }}>{children}</thead>,
                                     tbody: ({ children }) => <tbody>{children}</tbody>,
                                     tr: ({ children }) => <tr style={{ borderBottom: '1px solid #e5e7eb' }}>{children}</tr>,
-                                    th: ({ children }) => <th style={{ padding: '8px 12px', textAlign: 'left', fontWeight: 600, color: '#111827', borderBottom: '2px solid #d1d5db' }}>{children}</th>,
-                                    td: ({ children }) => <td style={{ padding: '8px 12px', textAlign: 'left', color: '#374151' }}>{children}</td>,
+                                    th: ({ children }) => <th style={{ padding: '8.8px 13.2px', textAlign: 'left', fontWeight: 600, color: '#111827', borderBottom: '2px solid #d1d5db' }}>{children}</th>,
+                                    td: ({ children }) => <td style={{ padding: '8.8px 13.2px', textAlign: 'left', color: '#374151' }}>{children}</td>,
                                   }}
                                 >
                                   {prepareResponseTextForDisplay(message.text)}
@@ -801,14 +781,14 @@ export const FloatingChatBubble: React.FC<FloatingChatBubbleProps> = ({
                   </div>
                 </div>
               ) : (
-                // Response message - same styling as SideChatPanel (scaled down)
+                // Response message - same styling as SideChatPanel (sizing +10%)
                 <div
                   key={message.id}
                   style={{
                     width: '100%',
                     padding: '0',
                     margin: '0',
-                    marginTop: '6px',
+                    marginTop: '6.6px',
                     marginBottom: '0',
                     wordWrap: 'break-word',
                     position: 'relative',
@@ -832,19 +812,19 @@ export const FloatingChatBubble: React.FC<FloatingChatBubbleProps> = ({
                           />
                         </div>
                       ) : (
-                        <div key={`thought-${message.id}`} style={{ marginBottom: '16px' }}>
+                        <div key={`thought-${message.id}`} style={{ marginBottom: '17.6px' }}>
                           <button
                             type="button"
                             onClick={() => toggleThoughtExpanded(message.id)}
                             style={{
                               display: 'flex',
                               alignItems: 'center',
-                              gap: '4px',
+                              gap: '4.4px',
                               padding: 0,
                               border: 'none',
                               background: 'none',
                               cursor: 'pointer',
-                              fontSize: '11px',
+                              fontSize: '10.9px',
                               color: '#6b7280',
                               fontFamily: 'inherit'
                             }}
@@ -872,14 +852,14 @@ export const FloatingChatBubble: React.FC<FloatingChatBubbleProps> = ({
                     )}
                     
                     
-                    {/* Display response text with citations - rendered markdown */}
+                    {/* Display response text with citations - rendered markdown (sizing +10%) */}
                     {message.text && (
                       <div style={{
                         color: '#374151',
-                        fontSize: '10px',
-                        lineHeight: '14px',
+                        fontSize: '10.8px',
+                        lineHeight: '15.2px',
                         margin: 0,
-                        padding: '2px 10px',
+                        padding: '2.2px 11px',
                         textAlign: 'left',
                         fontFamily: 'system-ui, -apple-system, sans-serif',
                         fontWeight: 400
@@ -903,14 +883,14 @@ export const FloatingChatBubble: React.FC<FloatingChatBubbleProps> = ({
                                   return child;
                                 });
                               };
-                              return <p style={{ margin: 0, marginBottom: '4px', textAlign: 'left' }}>{processChildren(children)}</p>;
+                              return <p style={{ margin: 0, marginBottom: '4.4px', textAlign: 'left' }}>{processChildren(children)}</p>;
                             },
-                            h1: ({ children }) => <h1 style={{ fontSize: '11px', fontWeight: 600, margin: '6px 0 4px 0', color: '#111827', textAlign: 'left' }}>{children}</h1>,
-                            h2: ({ children }) => <h2 style={{ fontSize: '10.5px', fontWeight: 600, margin: '5px 0 3px 0', color: '#111827', textAlign: 'left' }}>{children}</h2>,
-                            h3: ({ children }) => <h3 style={{ fontSize: '10px', fontWeight: 600, margin: '4px 0 2px 0', color: '#111827', textAlign: 'left' }}>{children}</h3>,
-                            ul: ({ children }) => <ul style={{ margin: '4px 0', paddingLeft: '18px', listStylePosition: 'outside', textAlign: 'left' }}>{children}</ul>,
-                            ol: ({ children }) => <ol style={{ margin: '4px 0', paddingLeft: '18px', listStylePosition: 'outside', textAlign: 'left' }}>{children}</ol>,
-                            li: ({ children }) => <li style={{ marginBottom: '2px', textAlign: 'left' }}>{children}</li>,
+                            h1: ({ children }) => <h1 style={{ fontSize: '14px', fontWeight: 600, margin: '6.6px 0 4.4px 0', color: '#111827', textAlign: 'left' }}>{children}</h1>,
+                            h2: ({ children }) => <h2 style={{ fontSize: '12px', fontWeight: 600, margin: '5.5px 0 3.3px 0', color: '#111827', textAlign: 'left' }}>{children}</h2>,
+                            h3: ({ children }) => <h3 style={{ fontSize: '10px', fontWeight: 600, margin: '4.4px 0 2.2px 0', color: '#111827', textAlign: 'left' }}>{children}</h3>,
+                            ul: ({ children }) => <ul style={{ margin: '4.4px 0', paddingLeft: '19.7px', listStylePosition: 'outside', textAlign: 'left' }}>{children}</ul>,
+                            ol: ({ children }) => <ol style={{ margin: '4.4px 0', paddingLeft: '19.7px', listStylePosition: 'outside', textAlign: 'left' }}>{children}</ol>,
+                            li: ({ children }) => <li style={{ marginBottom: '2.2px', textAlign: 'left' }}>{children}</li>,
                             strong: ({ children }) => {
                               const citationSeen = new Set<string>();
                               const processChildren = (nodes: React.ReactNode): React.ReactNode => {
@@ -947,9 +927,9 @@ export const FloatingChatBubble: React.FC<FloatingChatBubbleProps> = ({
                               };
                               return <em style={{ fontStyle: 'italic', textAlign: 'left' }}>{processChildren(children)}</em>;
                             },
-                            code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '1px 2px', borderRadius: '2px', fontSize: '9px', fontFamily: 'monospace', textAlign: 'left' }}>{children}</code>,
-                            blockquote: ({ children }) => <blockquote style={{ borderLeft: '2px solid #d1d5db', paddingLeft: '10px', margin: '4px 0', color: '#6b7280', textAlign: 'left' }}>{children}</blockquote>,
-                            hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '8px 0' }} />,
+                            code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '1.1px 2.2px', borderRadius: '2.2px', fontSize: '9.9px', fontFamily: 'monospace', textAlign: 'left' }}>{children}</code>,
+                            blockquote: ({ children }) => <blockquote style={{ borderLeft: '2px solid #d1d5db', paddingLeft: '11px', margin: '4.4px 0', color: '#6b7280', textAlign: 'left' }}>{children}</blockquote>,
+                            hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '8.8px 0' }} />,
                           }}
                         >
                           {prepareResponseTextForDisplay(message.text)}
@@ -981,7 +961,7 @@ export const FloatingChatBubble: React.FC<FloatingChatBubbleProps> = ({
               color: '#111827',
               border: '1px solid rgba(229, 231, 235, 0.8)',
               borderRadius: '8px',
-              fontSize: '11px',
+              fontSize: '10.9px',
               fontWeight: 500,
               cursor: 'pointer',
               transition: 'all 0.2s ease',

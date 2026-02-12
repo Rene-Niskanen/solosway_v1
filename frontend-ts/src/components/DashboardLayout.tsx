@@ -683,14 +683,14 @@ const DashboardLayoutContent = ({
             right: chatPanelWidth,
             width: 12,
             zIndex: 10001,
-            background: '#F2F2EF',
+            background: '#FDFDFB',
             pointerEvents: 'auto',
             WebkitTapHighlightColor: 'transparent'
           }}
         >
           <div
             className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity"
-            style={{ background: 'rgba(0, 0, 0, 0.04)' }}
+            style={{ background: 'rgba(0, 0, 0, 0.06)' }}
           />
         </button>
       )}
@@ -715,7 +715,7 @@ const DashboardLayoutContent = ({
         >
           <div
             className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity"
-            style={{ background: 'rgba(0, 0, 0, 0.04)' }}
+            style={{ background: '#F2F2EF' }}
           />
         </button>
       )}

@@ -687,11 +687,13 @@ const StreamingResponseText: React.FC<{
   selectedCitationMessageId?: string; // When citation click panel is open, the message id that owns that citation
   /** When true (e.g. just opened this chat), do not run the blue highlight swoop – show instant. */
   skipHighlightSwoop?: boolean;
+  /** When true (e.g. re-entered chat with persisted messages), do not run line-by-line reveal – show full text instantly. */
+  skipRevealAnimation?: boolean;
   /** Called when the line-by-line reveal animation has fully finished. Used to show feedback bar only after animation. */
   onRevealComplete?: (messageId: string) => void;
   /** Citation numbers (e.g. "1", "2") that have been saved for docx export for this message – those links render greyer. */
   savedCitationNumbersForMessage?: Set<string>;
-}> = ({ text, isStreaming, citations, handleCitationClick, renderTextWithCitations, onTextUpdate, messageId, skipHighlight, showCitations = true, orangeCitationNumbers, selectedCitationNumber, selectedCitationMessageId, skipHighlightSwoop = false, onRevealComplete, savedCitationNumbersForMessage }) => {
+}> = ({ text, isStreaming, citations, handleCitationClick, renderTextWithCitations, onTextUpdate, messageId, skipHighlight, showCitations = true, orangeCitationNumbers, selectedCitationNumber, selectedCitationMessageId, skipHighlightSwoop = false, skipRevealAnimation = false, onRevealComplete, savedCitationNumbersForMessage }) => {
   const [shouldAnimate, setShouldAnimate] = React.useState(false);
   const hasAnimatedRef = React.useRef(false);
   const hasSwoopedBlueRef = React.useRef(false);
@@ -747,7 +749,7 @@ const StreamingResponseText: React.FC<{
     range.selectNodeContents(container);
     const rects = range.getClientRects();
     const containerRect = container.getBoundingClientRect();
-    const LINE_HEIGHT_PX = 22;
+    const LINE_HEIGHT_PX = 23.88; // 24 * 0.995 (-0.5% non-title)
     const MAX_ONE_LINE_PX = LINE_HEIGHT_PX * 1.4;
 
     const expanded: { top: number; left: number; right: number; bottom: number }[] = [];
@@ -1094,15 +1096,15 @@ const StreamingResponseText: React.FC<{
               justifyContent: 'center',
               marginLeft: '0.35em',
               marginRight: '1px',
-              minWidth: '19px',
-              height: '19px',
-              padding: '0 6px',
-              fontSize: '11px',
+              minWidth: '20.9px',
+              height: '20.9px',
+              padding: '0 6.6px',
+              fontSize: '12px',
               fontWeight: 600,
               fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
               color: '#9CA3AF',
               backgroundColor: '#F3F4F6',
-              borderRadius: '6px',
+              borderRadius: '6.6px',
               border: '1px solid #E5E7EB',
               verticalAlign: 'middle',
               position: 'relative',
@@ -1279,7 +1281,7 @@ const StreamingResponseText: React.FC<{
   const markdownComponents = React.useMemo(() => ({
     p: ({ children }: { children?: React.ReactNode }) => {
       return <p style={{ 
-        margin: '0 0 16px 0', 
+        margin: '0 0 17.5px 0', 
         textAlign: 'left',
         lineHeight: '1.7',
         wordWrap: 'break-word',
@@ -1289,9 +1291,9 @@ const StreamingResponseText: React.FC<{
     },
     h1: ({ children }: { children?: React.ReactNode }) => {
       return <h1 style={{ 
-        fontSize: '18px', 
+        fontSize: '22px', 
         fontWeight: 600, 
-        margin: '14px 0 10px 0', 
+        margin: '15.2px 0 11px 0', 
         color: '#111827',
         wordWrap: 'break-word',
         overflowWrap: 'break-word',
@@ -1300,9 +1302,9 @@ const StreamingResponseText: React.FC<{
     },
     h2: ({ children }: { children?: React.ReactNode }) => {
       return <h2 style={{ 
-        fontSize: '16px', 
+        fontSize: '19px', 
         fontWeight: 600, 
-        margin: '12px 0 8px 0', 
+        margin: '13.1px 0 8.8px 0', 
         color: '#111827',
         wordWrap: 'break-word',
         overflowWrap: 'break-word',
@@ -1311,9 +1313,9 @@ const StreamingResponseText: React.FC<{
     },
     h3: ({ children }: { children?: React.ReactNode }) => {
       return <h3 style={{ 
-        fontSize: '14px', 
+        fontSize: '16px', 
         fontWeight: 600, 
-        margin: '10px 0 6px 0', 
+        margin: '10.9px 0 6.6px 0', 
         color: '#111827',
         wordWrap: 'break-word',
         overflowWrap: 'break-word',
@@ -1321,8 +1323,8 @@ const StreamingResponseText: React.FC<{
       }}>{processChildrenWithCitationsFlattened(children ?? null, 'h3')}</h3>;
     },
     ul: ({ children }: { children?: React.ReactNode }) => <ul style={{ 
-      margin: '8px 0 4px 0', 
-      paddingLeft: '24px', 
+      margin: '8.8px 0 4.4px 0', 
+      paddingLeft: '26.3px', 
       listStyleType: 'disc',
       listStylePosition: 'outside',
       wordWrap: 'break-word',
@@ -1330,8 +1332,8 @@ const StreamingResponseText: React.FC<{
       wordBreak: 'break-word'
     }}>{children}</ul>,
     ol: ({ children }: { children?: React.ReactNode }) => <ol style={{ 
-      margin: '8px 0 4px 0', 
-      paddingLeft: '24px', 
+      margin: '8.8px 0 4.4px 0', 
+      paddingLeft: '26.3px', 
       listStylePosition: 'outside',
       wordWrap: 'break-word',
       overflowWrap: 'break-word',
@@ -1339,9 +1341,9 @@ const StreamingResponseText: React.FC<{
     }}>{children}</ol>,
     li: ({ children }: { children?: React.ReactNode }) => {
       return <li style={{ 
-        marginBottom: '6px',
+        marginBottom: '6.6px',
         lineHeight: '1.7',
-        paddingLeft: '8px',
+        paddingLeft: '8.8px',
         wordWrap: 'break-word',
         overflowWrap: 'break-word',
         wordBreak: 'break-word'
@@ -1369,9 +1371,9 @@ const StreamingResponseText: React.FC<{
     },
     code: ({ children }: { children?: React.ReactNode }) => <code style={{ 
       backgroundColor: '#f3f4f6', 
-      padding: '2px 5px', 
-      borderRadius: '4px', 
-      fontSize: '14px', 
+      padding: '2.2px 5.5px', 
+      borderRadius: '4.4px', 
+      fontSize: '15.2px', 
       fontFamily: 'monospace',
       wordWrap: 'break-word',
       overflowWrap: 'break-word',
@@ -1379,14 +1381,14 @@ const StreamingResponseText: React.FC<{
     }}>{children}</code>,
     blockquote: ({ children }: { children?: React.ReactNode }) => <blockquote style={{ 
       borderLeft: '3px solid #d1d5db', 
-      paddingLeft: '12px', 
-      margin: '8px 0', 
+      paddingLeft: '13.1px', 
+      margin: '8.8px 0', 
       color: '#6b7280',
       wordWrap: 'break-word',
       overflowWrap: 'break-word',
       wordBreak: 'break-word'
     }}>{children}</blockquote>,
-    hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '16px 0' }} />,
+    hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '17.5px 0' }} />,
   }), [renderCitationPlaceholder, skipHighlight, runBlueSwoop, isStreaming]);
 
   return (
@@ -1394,14 +1396,14 @@ const StreamingResponseText: React.FC<{
       <style>{`
         .streaming-response-text p:last-child {
           margin-bottom: 0 !important;
-          margin-top: 28px !important;
+          margin-top: 30.6px !important;
         }
         .streaming-response-text p:first-child {
           margin-top: 0 !important;
         }
         .streaming-response-text p + ul,
         .streaming-response-text p + ol {
-          margin-top: 10px !important;
+          margin-top: 10.9px !important;
         }
         .streaming-response-text h1 + ul,
         .streaming-response-text h2 + ul,
@@ -1409,11 +1411,11 @@ const StreamingResponseText: React.FC<{
         .streaming-response-text h1 + ol,
         .streaming-response-text h2 + ol,
         .streaming-response-text h3 + ol {
-          margin-top: 6px !important;
+          margin-top: 6.6px !important;
         }
         .streaming-response-text ul + p,
         .streaming-response-text ol + p {
-          margin-top: 32px !important;
+          margin-top: 35px !important;
         }
         .streaming-response-text h1:first-child,
         .streaming-response-text h2:first-child,
@@ -1424,13 +1426,13 @@ const StreamingResponseText: React.FC<{
         .streaming-response-text h1 + p,
         .streaming-response-text h2 + p,
         .streaming-response-text h3 + p {
-          margin-top: 4px !important;
+          margin-top: 4.4px !important;
         }
         .streaming-response-text p:has(+ p) {
-          margin-bottom: 4px !important;
+          margin-bottom: 4.4px !important;
         }
         .streaming-response-text p + p {
-          margin-top: 4px !important;
+          margin-top: 4.4px !important;
         }
       `}</style>
       <div ref={wrapperRef} style={{ position: 'relative' }}>
@@ -1439,10 +1441,10 @@ const StreamingResponseText: React.FC<{
           className="streaming-response-text"
           style={{
             color: '#374151',
-            fontSize: '14px',
-            lineHeight: '1.6',
+            fontSize: '15.2px',
+            lineHeight: '1.74',
             margin: 0,
-            padding: '4px 0',
+            padding: '4.4px 0',
             textAlign: 'left',
             fontFamily: 'Inter, system-ui, sans-serif',
             fontWeight: 400,
@@ -1504,6 +1506,7 @@ function streamingResponseTextAreEqual(
     prev.messageId === next.messageId &&
     prev.skipHighlight === next.skipHighlight &&
     prev.skipHighlightSwoop === next.skipHighlightSwoop &&
+    prev.skipRevealAnimation === next.skipRevealAnimation &&
     prev.showCitations === next.showCitations &&
     prev.citations === next.citations &&
     prev.orangeCitationNumbers === next.orangeCitationNumbers &&
@@ -1849,13 +1852,13 @@ const CitationLink: React.FC<{
           justifyContent: 'center',
           marginLeft: '0.35em',
           marginRight: '1px',
-          minWidth: '17px',
-          height: '17px',
-          padding: '0 5px',
-          fontSize: '10px',
+          minWidth: '18.9px',
+          height: '18.9px',
+          padding: '0 5.5px',
+          fontSize: '10.9px',
           fontWeight: 600,
           fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-          borderRadius: '5px',
+          borderRadius: '5.5px',
           border: isSelected ? '1px solid #3B82F6' : '1px solid #E5E7EB',
           cursor: 'pointer',
           verticalAlign: 'middle',
@@ -1917,15 +1920,15 @@ const truncateQueryText = (
   measureElement.style.width = containerWidth 
     ? `${containerWidth * (maxWidthPercent / 100)}px`
     : `${maxWidthPercent}%`;
-  measureElement.style.fontSize = '14px';
-  measureElement.style.lineHeight = '20px';
+  measureElement.style.fontSize = '15.2px';
+  measureElement.style.lineHeight = '21.8px';
   measureElement.style.fontFamily = 'system-ui, -apple-system, sans-serif';
   measureElement.style.whiteSpace = 'pre-wrap';
   measureElement.style.wordWrap = 'break-word';
   document.body.appendChild(measureElement);
   
-  // Calculate max height for 2 lines
-  const lineHeight = 20;
+  // Calculate max height for 2 lines (-0.5% again)
+  const lineHeight = 21.8;
   const maxHeight = lineHeight * maxLines;
   
   // Try full text first
@@ -2134,9 +2137,9 @@ const QueryPropertyAttachment: React.FC<{
           e.stopPropagation();
         }}
         style={{
-          width: '40px',
-          height: '40px',
-          borderRadius: '4px',
+          width: '44px',
+          height: '44px',
+          borderRadius: '4.4px',
           overflow: 'hidden',
           backgroundColor: '#F3F4F6',
           border: '1px solid #E5E7EB',
@@ -2169,7 +2172,7 @@ const QueryPropertyAttachment: React.FC<{
             pointerEvents: 'none' // Allow clicks to pass through to parent div
           }}
           onError={(e) => {
-            e.currentTarget.src = 'https://via.placeholder.com/40x40/94a3b8/ffffff?text=Property';
+            e.currentTarget.src = 'https://via.placeholder.com/44x44/94a3b8/ffffff?text=Property';
           }}
         />
       </div>
@@ -2185,9 +2188,9 @@ const QueryPropertyAttachment: React.FC<{
         e.stopPropagation();
       }}
       style={{
-        width: '40px',
-        height: '40px',
-        borderRadius: '4px',
+        width: '44px',
+        height: '44px',
+        borderRadius: '4.4px',
         backgroundColor: '#F3F4F6',
         border: '1px solid #E5E7EB',
         display: 'inline-flex',
@@ -2208,7 +2211,7 @@ const QueryPropertyAttachment: React.FC<{
       }}
       title={`Click to view ${attachment.address}`}
     >
-      <span style={{ fontSize: '20px', pointerEvents: 'none' }}>🏠</span>
+      <span style={{ fontSize: '21.9px', pointerEvents: 'none' }}>🏠</span>
     </div>
   );
 };
@@ -2253,9 +2256,9 @@ const QueryAttachment: React.FC<{ attachment: FileAttachmentData }> = ({ attachm
       <div
         onClick={handleImageClick}
         style={{
-          width: '56px',
-          height: '56px',
-          borderRadius: '6px',
+          width: '62px',
+          height: '62px',
+          borderRadius: '6.6px',
           overflow: 'hidden',
           backgroundColor: '#F3F4F6',
           border: '1px solid #E5E7EB',
@@ -2292,14 +2295,14 @@ const QueryAttachment: React.FC<{ attachment: FileAttachmentData }> = ({ attachm
   return (
     <div
       style={{
-        fontSize: '13px',
+        fontSize: '14.2px',
         color: '#6B7280',
         backgroundColor: '#F3F4F6',
-        padding: '3px 8px',
-        borderRadius: '5px',
+        padding: '3.3px 8.8px',
+        borderRadius: '5.5px',
         display: 'inline-flex',
         alignItems: 'center',
-        gap: '6px'
+        gap: '6.6px'
       }}
     >
       <span>📎</span>
@@ -5224,21 +5227,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     onActiveChatChange?.(hasLoadingMessage);
   }, [chatMessages, onActiveChatChange]);
   
-  // Track previous message count for first chat glow detection
-  const prevGlowMessageCountRef = React.useRef(0);
-  
-  // Trigger gold glow animation only when creating the FIRST chat (messages go from 0 to having content)
-  React.useEffect(() => {
-    const messageCount = chatMessages.length;
-    
-    // Trigger glow only when this is the first chat (was 0 messages, now has messages)
-    if (prevGlowMessageCountRef.current === 0 && messageCount > 0) {
-      triggerGlow();
-    }
-    
-    prevGlowMessageCountRef.current = messageCount;
-  }, [chatMessages.length, triggerGlow]);
-  
   // Track message IDs that existed when panel was last opened (for animation control)
   const restoredMessageIdsRef = React.useRef<Set<string>>(new Set());
   const MAX_FILES = 4;
@@ -5665,10 +5653,22 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       chatMessagesRef.current = [];
       setSubmittedQueries([]);
       
+      // Capture draft (text + attachments) to transfer to new agent chat (Cursor-style)
+      const draftText = segmentInput.getPlainText().trim();
+      const draftFiles = attachedFilesRef.current.length > 0 ? [...attachedFilesRef.current] : [];
       const wasFocused = inputRef.current && document.activeElement === inputRef.current.getRootElement();
       clearInputAndChips();
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
+          // Restore draft into new agent input so user can continue typing / send in new chat
+          if (draftText) {
+            segmentInput.setSegments([{ type: 'text', value: draftText }]);
+            setInputValue(draftText);
+          }
+          if (draftFiles.length > 0) {
+            setAttachedFiles(draftFiles);
+            attachedFilesRef.current = draftFiles;
+          }
           if (wasFocused && inputRef.current) {
             Promise.resolve().then(() => {
               inputRef.current?.focus();
@@ -8845,96 +8845,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         }
       }
       
-      /* Gold clockwise wave glow animation for Agents Sidebar button */
-      @keyframes goldClockwiseGlow {
-        0% {
-          box-shadow: inset 0 -2px 8px rgba(212, 175, 55, 0.8),
-                      0 0 12px rgba(255, 215, 0, 0.6);
-          border-color: rgba(212, 175, 55, 0.9);
-        }
-        12.5% {
-          box-shadow: inset 2px -2px 8px rgba(212, 175, 55, 0.7),
-                      3px 0 12px rgba(255, 215, 0, 0.5);
-          border-color: rgba(212, 175, 55, 0.85);
-        }
-        25% {
-          box-shadow: inset 2px 0 8px rgba(212, 175, 55, 0.7),
-                      3px 2px 12px rgba(255, 215, 0, 0.5);
-          border-color: rgba(212, 175, 55, 0.8);
-        }
-        37.5% {
-          box-shadow: inset 2px 2px 8px rgba(212, 175, 55, 0.6),
-                      0 3px 12px rgba(255, 215, 0, 0.4);
-          border-color: rgba(212, 175, 55, 0.7);
-        }
-        50% {
-          box-shadow: inset 0 2px 8px rgba(212, 175, 55, 0.5),
-                      -3px 2px 12px rgba(255, 215, 0, 0.3);
-          border-color: rgba(212, 175, 55, 0.6);
-        }
-        62.5% {
-          box-shadow: inset -2px 2px 8px rgba(212, 175, 55, 0.4),
-                      -3px 0 10px rgba(255, 215, 0, 0.2);
-          border-color: rgba(212, 175, 55, 0.5);
-        }
-        75% {
-          box-shadow: inset -2px 0 6px rgba(212, 175, 55, 0.3),
-                      -2px -2px 8px rgba(255, 215, 0, 0.15);
-          border-color: rgba(212, 175, 55, 0.4);
-        }
-        87.5% {
-          box-shadow: inset -1px -1px 4px rgba(212, 175, 55, 0.15),
-                      0 -2px 6px rgba(255, 215, 0, 0.1);
-          border-color: rgba(203, 213, 225, 0.7);
-        }
-        100% {
-          box-shadow: none;
-          border-color: rgba(203, 213, 225, 0.7);
-        }
-      }
-      
-      .agent-sidebar-gold-glow {
-        animation: goldClockwiseGlow 0.8s ease-out forwards !important;
-      }
-      
-      .agent-sidebar-gold-glow span {
-        animation: goldTextPulse 0.6s ease-out forwards;
-      }
-      
-      .agent-sidebar-gold-glow svg {
-        animation: goldIconPulse 0.6s ease-out forwards;
-      }
-      
-      @keyframes goldTextPulse {
-        0% {
-          color: rgba(180, 145, 45, 1);
-          text-shadow: 0 0 6px rgba(255, 215, 0, 0.5);
-        }
-        50% {
-          color: rgba(180, 145, 45, 0.7);
-          text-shadow: 0 0 3px rgba(255, 215, 0, 0.25);
-        }
-        100% {
-          color: inherit;
-          text-shadow: none;
-        }
-      }
-      
-      @keyframes goldIconPulse {
-        0% {
-          color: rgba(180, 145, 45, 1);
-          filter: drop-shadow(0 0 4px rgba(255, 215, 0, 0.6));
-        }
-        50% {
-          color: rgba(180, 145, 45, 0.7);
-          filter: drop-shadow(0 0 2px rgba(255, 215, 0, 0.3));
-        }
-        100% {
-          color: inherit;
-          filter: none;
-        }
-      }
-    `;
+          `;
     if (!document.getElementById('sidechat-scrollbar-style')) {
       document.head.appendChild(style);
     }
@@ -12535,28 +12446,28 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           <div key={finalKey} style={{
             alignSelf: 'flex-end', maxWidth: '85%', width: 'fit-content',
             minWidth: 0, // Allow shrinking to prevent overflow
-            marginTop: '8px', marginLeft: 'auto', marginRight: '0',
-            display: 'flex', flexDirection: 'column', gap: '6px', alignItems: 'flex-end',
+            marginTop: '8.8px', marginLeft: 'auto', marginRight: '0',
+            display: 'flex', flexDirection: 'column', gap: '6.6px', alignItems: 'flex-end',
             boxSizing: 'border-box'
           }}>
             {/* BBOX Preview for citation queries */}
             {message.fromCitation && message.citationBboxData && (
-              <div style={{ marginBottom: '10px', maxWidth: '100%' }}>
+              <div style={{ marginBottom: '11px', maxWidth: '100%' }}>
                 <CitationBboxPreview 
                   citationBboxData={message.citationBboxData}
                   onClick={handleCitationPreviewClick}
                 />
               </div>
             )}
-            <div style={{ backgroundColor: '#F3F3F3', borderRadius: '14px', padding: '4px 6px 4px 10px', width: 'fit-content', maxWidth: '100%', wordWrap: 'break-word', overflowWrap: 'break-word', display: 'block', boxSizing: 'border-box' }}>
+            <div style={{ backgroundColor: '#F3F3F3', borderRadius: '15.4px', padding: '4.4px 6.6px 4.4px 11px', width: 'fit-content', maxWidth: '100%', wordWrap: 'break-word', overflowWrap: 'break-word', display: 'block', boxSizing: 'border-box' }}>
               {message.attachments?.length > 0 && (
-                <div style={{ marginBottom: (message.text || message.propertyAttachments?.length > 0) ? '8px' : '0', display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+                <div style={{ marginBottom: (message.text || message.propertyAttachments?.length > 0) ? '8.8px' : '0', display: 'flex', flexWrap: 'wrap', gap: '4.4px' }}>
                   {message.attachments.map((attachment, i) => (
                     <QueryAttachment key={attachment.id || attachment.name || `att-${i}`} attachment={attachment} />
                   ))}
                 </div>
               )}
-              <div style={{ display: 'block', lineHeight: '22px', fontSize: '14px', width: 'fit-content', maxWidth: '100%', padding: 0, margin: 0 }}>
+              <div style={{ display: 'block', lineHeight: '24px', fontSize: '15.2px', width: 'fit-content', maxWidth: '100%', padding: 0, margin: 0 }}>
                 {message.contentSegments && message.contentSegments.length > 0
                   ? message.contentSegments.map((seg, idx) => {
                       if (seg.type === 'text') {
@@ -12569,11 +12480,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             key={`t-${idx}`}
                             style={{
                               color: '#0D0D0D',
-                              fontSize: '14px',
-                              lineHeight: '22px',
+                              fontSize: '15.2px',
+                              lineHeight: '24px',
                               margin: 0,
                               padding: 0,
-                              marginRight: '6px',
+                              marginRight: '6.6px',
                               textAlign: 'left',
                               fontFamily: 'system-ui, -apple-system, sans-serif',
                               display: 'inline',
@@ -12582,7 +12493,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               overflowWrap: 'break-word',
                               textDecoration: segTruncated ? 'underline' : 'none',
                               textDecorationStyle: segTruncated ? ('dotted' as const) : undefined,
-                              textUnderlineOffset: '3px'
+                              textUnderlineOffset: '3.3px'
                             }}
                             onClick={segTruncated ? handleCitationPreviewClick : undefined}
                             title={segTruncated ? 'Click to view citation' : undefined}
@@ -12591,16 +12502,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           >
                             <ReactMarkdown components={{
                               p: ({ children }) => <p style={{ margin: 0, padding: 0, display: 'inline', wordWrap: 'break-word', overflowWrap: 'break-word' }}>{children}</p>,
-                              h1: ({ children }) => <h1 style={{ fontSize: '18px', fontWeight: 600, margin: '14px 0 10px 0', display: 'block' }}>{children}</h1>,
-                              h2: () => null, h3: ({ children }) => <h3 style={{ fontSize: '16px', fontWeight: 600, margin: '10px 0 6px 0' }}>{children}</h3>,
-                              ul: ({ children }) => <ul style={{ margin: '10px 0', paddingLeft: '22px' }}>{children}</ul>,
-                              ol: ({ children }) => <ol style={{ margin: '10px 0', paddingLeft: '22px' }}>{children}</ol>,
-                              li: ({ children }) => <li style={{ marginBottom: '6px' }}>{children}</li>,
+                              h1: ({ children }) => <h1 style={{ fontSize: '22px', fontWeight: 600, margin: '15.2px 0 11px 0', display: 'block' }}>{children}</h1>,
+                              h2: () => null, h3: ({ children }) => <h3 style={{ fontSize: '16px', fontWeight: 600, margin: '10.9px 0 6.6px 0' }}>{children}</h3>,
+                              ul: ({ children }) => <ul style={{ margin: '11px 0', paddingLeft: '24.1px' }}>{children}</ul>,
+                              ol: ({ children }) => <ol style={{ margin: '11px 0', paddingLeft: '24.1px' }}>{children}</ol>,
+                              li: ({ children }) => <li style={{ marginBottom: '6.6px' }}>{children}</li>,
                               strong: ({ children }) => <strong style={{ fontWeight: 600 }}>{children}</strong>,
                               em: ({ children }) => <em style={{ fontStyle: 'italic' }}>{children}</em>,
-                              code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2px 5px', borderRadius: '4px', fontSize: '14px', fontFamily: 'monospace' }}>{children}</code>,
-                              blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #d1d5db', paddingLeft: '14px', margin: '10px 0', color: '#6b7280' }}>{children}</blockquote>,
-                              hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '18px 0' }} />,
+                              code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2.2px 5.5px', borderRadius: '4.4px', fontSize: '15.2px', fontFamily: 'monospace' }}>{children}</code>,
+                              blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #d1d5db', paddingLeft: '15.3px', margin: '10.9px 0', color: '#6b7280' }}>{children}</blockquote>,
+                              hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '19.7px 0' }} />,
                             }}>{segText}</ReactMarkdown>
                           </span>
                         );
@@ -12667,11 +12578,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         <span
                           style={{
                             color: '#0D0D0D',
-                            fontSize: '14px',
-                            lineHeight: '22px',
+                            fontSize: '15.2px',
+                            lineHeight: '24px',
                             margin: 0,
                             padding: 0,
-                            marginRight: '6px',
+                            marginRight: '6.6px',
                             textAlign: 'left',
                             fontFamily: 'system-ui, -apple-system, sans-serif',
                             display: 'inline',
@@ -12680,7 +12591,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             overflowWrap: 'break-word',
                             textDecoration: isTruncated ? 'underline' : 'none',
                             textDecorationStyle: isTruncated ? ('dotted' as const) : undefined,
-                            textUnderlineOffset: '3px'
+                            textUnderlineOffset: '3.3px'
                           }}
                           onClick={isTruncated ? handleCitationPreviewClick : undefined}
                           title={isTruncated ? 'Click to view citation' : undefined}
@@ -12689,16 +12600,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         >
                           <ReactMarkdown components={{
                             p: ({ children }) => <p style={{ margin: 0, padding: 0, display: 'inline', wordWrap: 'break-word', overflowWrap: 'break-word' }}>{children}</p>,
-                            h1: ({ children }) => <h1 style={{ fontSize: '18px', fontWeight: 600, margin: '14px 0 10px 0', display: 'block' }}>{children}</h1>,
-                            h2: () => null, h3: ({ children }) => <h3 style={{ fontSize: '16px', fontWeight: 600, margin: '10px 0 6px 0' }}>{children}</h3>,
-                            ul: ({ children }) => <ul style={{ margin: '10px 0', paddingLeft: '22px' }}>{children}</ul>,
-                            ol: ({ children }) => <ol style={{ margin: '10px 0', paddingLeft: '22px' }}>{children}</ol>,
-                            li: ({ children }) => <li style={{ marginBottom: '6px' }}>{children}</li>,
+                            h1: ({ children }) => <h1 style={{ fontSize: '22px', fontWeight: 600, margin: '15.2px 0 11px 0', display: 'block' }}>{children}</h1>,
+                            h2: () => null, h3: ({ children }) => <h3 style={{ fontSize: '16px', fontWeight: 600, margin: '10.9px 0 6.6px 0' }}>{children}</h3>,
+                            ul: ({ children }) => <ul style={{ margin: '11px 0', paddingLeft: '24.1px' }}>{children}</ul>,
+                            ol: ({ children }) => <ol style={{ margin: '11px 0', paddingLeft: '24.1px' }}>{children}</ol>,
+                            li: ({ children }) => <li style={{ marginBottom: '6.6px' }}>{children}</li>,
                             strong: ({ children }) => <strong style={{ fontWeight: 600 }}>{children}</strong>,
                             em: ({ children }) => <em style={{ fontStyle: 'italic' }}>{children}</em>,
-                            code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2px 5px', borderRadius: '4px', fontSize: '14px', fontFamily: 'monospace' }}>{children}</code>,
-                            blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #d1d5db', paddingLeft: '14px', margin: '10px 0', color: '#6b7280' }}>{children}</blockquote>,
-                            hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '18px 0' }} />,
+                            code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2.2px 5.5px', borderRadius: '4.4px', fontSize: '15.2px', fontFamily: 'monospace' }}>{children}</code>,
+                            blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #d1d5db', paddingLeft: '15.3px', margin: '10.9px 0', color: '#6b7280' }}>{children}</blockquote>,
+                            hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '19.7px 0' }} />,
                           }}>{truncatedText}</ReactMarkdown>
                         </span>
                       ) : null}
@@ -12720,13 +12631,13 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 style={{
                   background: 'none',
                   border: 'none',
-                  padding: '2px',
+                  padding: '2.2px',
                   cursor: 'pointer',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
                   color: copiedQueryId === finalKey ? '#10B981' : '#9CA3AF',
-                  marginTop: '2px'
+                  marginTop: '2.2px'
                 }}
                 onMouseEnter={(e) => {
                   if (copiedQueryId !== finalKey) {
@@ -12741,9 +12652,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 title={copiedQueryId === finalKey ? 'Copied!' : 'Copy'}
               >
                 {copiedQueryId === finalKey ? (
-                  <Check size={14} />
+                  <Check size={15} />
                 ) : (
-                  <Copy size={14} />
+                  <Copy size={15} />
                 )}
               </motion.button>
             )}
@@ -12793,7 +12704,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           width: '100%', 
           padding: '0', 
           margin: '0', 
-          marginTop: '8px', 
+          marginTop: '8.8px', 
           wordWrap: 'break-word',
           overflowWrap: 'break-word',
           wordBreak: 'break-word',
@@ -12812,19 +12723,19 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             message.isLoading ? (
               <ReasoningSteps key={`reasoning-${finalKey}`} steps={message.reasoningSteps} isLoading={true} hasResponseText={!!message.text} isAgentMode={isAgentMode} skipAnimations={!!isRestored} />
             ) : (
-              <div key={`thought-${finalKey}`} style={{ marginBottom: '16px' }}>
+              <div key={`thought-${finalKey}`} style={{ marginBottom: '17.6px' }}>
                 <button
                   type="button"
                   onClick={() => toggleThoughtExpanded(finalKey)}
                   style={{
                     display: 'flex',
                     alignItems: 'center',
-                    gap: '4px',
+                    gap: '4.4px',
                     padding: 0,
                     border: 'none',
                     background: 'none',
                     cursor: 'pointer',
-                    fontSize: '12px',
+                    fontSize: '13.1px',
                     color: '#6b7280',
                     fontFamily: 'inherit'
                   }}
@@ -12872,7 +12783,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 orangeCitationNumbers={orangeCitationNumbersByMessage.get(message.id ?? finalKey)}
                 selectedCitationNumber={citationClickPanel?.citationNumber ?? (expandedCardViewDoc ? (() => { const v = (expandedCardViewDoc as DocumentPreview).viewedCitation ?? citationViewedInDocument; return v ? v.citationNumber : undefined; })() : undefined)}
                 selectedCitationMessageId={citationClickPanel?.messageId ?? (expandedCardViewDoc ? (() => { const v = (expandedCardViewDoc as DocumentPreview).viewedCitation ?? citationViewedInDocument; return v ? v.messageId : undefined; })() : undefined)}
-                skipHighlightSwoop={currentChatId !== null && currentChatId === skipSwoopForChatId}
+                skipHighlightSwoop={isRestored || (currentChatId !== null && currentChatId === skipSwoopForChatId)}
+                skipRevealAnimation={isRestored}
                 onRevealComplete={(id) => {
                   // Only count reveal as complete when stream is 100% done, so feedback bar stays hidden until response is fully generated
                   if (!message.isLoading) {
@@ -13800,7 +13712,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             e.stopPropagation();
                             handleToggleEdit();
                           }}
-                          className={`${isNearEditButton ? 'opacity-100' : 'opacity-0'} p-1 rounded hover:bg-gray-100 transition-opacity flex-shrink-0`}
+                          className={`${isHoveringName ? 'opacity-100' : 'opacity-0'} p-1 rounded hover:bg-gray-100 transition-opacity flex-shrink-0`}
                           title="Edit chat name"
                           type="button"
                         >

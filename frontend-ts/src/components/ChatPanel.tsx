@@ -24,7 +24,7 @@ export const ChatPanel = ({
   sidebarWidth = 224, // Default to 224px (normal sidebar width)
   selectedChatId = null // Currently selected chat ID
 }: ChatPanelProps) => {
-  const { isOpen, width, closePanel, showGlow } = useChatPanel();
+  const { isOpen, width, closePanel } = useChatPanel();
   console.log('ChatPanel rendering with isOpen:', isOpen, 'showChatHistory:', showChatHistory);
   
   const {
@@ -137,71 +137,18 @@ export const ChatPanel = ({
   
   return (
     <>
-      {/* Gold glow animation styles */}
-      <style>{`
-        @keyframes goldClockwiseGlow {
-          0% {
-            box-shadow: inset 0 -2px 8px rgba(212, 175, 55, 0.8),
-                        0 0 12px rgba(255, 215, 0, 0.6);
-            border-color: rgba(212, 175, 55, 0.9);
-          }
-          12.5% {
-            box-shadow: inset 2px -2px 8px rgba(212, 175, 55, 0.7),
-                        3px 0 12px rgba(255, 215, 0, 0.5);
-            border-color: rgba(212, 175, 55, 0.85);
-          }
-          25% {
-            box-shadow: inset 2px 0 8px rgba(212, 175, 55, 0.7),
-                        3px 2px 12px rgba(255, 215, 0, 0.5);
-            border-color: rgba(212, 175, 55, 0.8);
-          }
-          37.5% {
-            box-shadow: inset 2px 2px 8px rgba(212, 175, 55, 0.6),
-                        0 3px 12px rgba(255, 215, 0, 0.4);
-            border-color: rgba(212, 175, 55, 0.7);
-          }
-          50% {
-            box-shadow: inset 0 2px 8px rgba(212, 175, 55, 0.5),
-                        -3px 2px 12px rgba(255, 215, 0, 0.3);
-            border-color: rgba(212, 175, 55, 0.6);
-          }
-          62.5% {
-            box-shadow: inset -2px 2px 8px rgba(212, 175, 55, 0.4),
-                        -3px 0 10px rgba(255, 215, 0, 0.2);
-            border-color: rgba(212, 175, 55, 0.5);
-          }
-          75% {
-            box-shadow: inset -2px 0 6px rgba(212, 175, 55, 0.3),
-                        -2px -2px 8px rgba(255, 215, 0, 0.15);
-            border-color: rgba(212, 175, 55, 0.4);
-          }
-          87.5% {
-            box-shadow: inset -1px -1px 4px rgba(212, 175, 55, 0.15),
-                        0 -2px 6px rgba(255, 215, 0, 0.1);
-            border-color: rgba(226, 232, 240, 0.6);
-          }
-          100% {
-            box-shadow: none;
-            border-color: rgba(226, 232, 240, 0.6);
-          }
-        }
-        
-        .agent-sidebar-gold-glow {
-          animation: goldClockwiseGlow 0.8s ease-out forwards !important;
-        }
-      `}</style>
       {/* No backdrop - panel can only be closed via the close button */}
       <div
         ref={panelRef}
         data-chat-panel="true"
-        className={`fixed top-0 h-full flex flex-col z-[10000]${showGlow ? ' agent-sidebar-gold-glow' : ''}`}
+        className="fixed top-0 h-full flex flex-col z-[10000]"
         onClick={(e) => {
           e.stopPropagation();
           // Close any open menu when clicking on the panel (but not inside menu)
           if (openMenuId) setOpenMenuId(null);
         }}
         style={{
-          background: '#F2F2EF',
+          background: '#FDFDFB',
           right: isOpen ? '0px' : '-1000px', // Move off-screen when closed
           width: isOpen ? `${width}px` : '320px',
           transition: 'right 0s ease-out, width 0s ease-out',
@@ -227,7 +174,7 @@ export const ChatPanel = ({
               style={{ background: 'transparent' }}
             >
             {/* Header */}
-            <div className="px-4 py-3 bg-[#F9F9F7]">
+            <div className="px-4 py-3" style={{ backgroundColor: '#FDFDFB' }}>
               {archivedChats.length > 0 && (
                 <div className="flex items-center justify-end mb-3">
                   <motion.button
