@@ -803,9 +803,19 @@ const StreamingResponseText: React.FC<{
       if (newCount === currentTarget) {
         setLines(lineRects);
         lineRectsRef.current = lineRects;
-        if (wrapperRef.current) {
-          wrapperRef.current.style.height = '';
-          wrapperRef.current.style.overflow = '';
+        if (wrapperRef.current && newCount > 0) {
+          const topPadding = 4;
+          const pos = revealPositionRef.current;
+          const currentLine = Math.min(Math.floor(pos), newCount - 1);
+          const rect = lineRects[currentLine];
+          const currentLineBottom = rect.top + rect.height;
+          const nextLineTop = currentLine + 1 < newCount ? lineRects[currentLine + 1].top : currentLineBottom;
+          const LINE_BUFFER_PX = 3;
+          const revealedBottom = currentLine + 1 < newCount
+            ? Math.min(currentLineBottom, nextLineTop - LINE_BUFFER_PX)
+            : currentLineBottom;
+          wrapperRef.current.style.height = `${topPadding + Math.floor(revealedBottom)}px`;
+          wrapperRef.current.style.overflow = 'hidden';
         }
         return;
       }
@@ -815,22 +825,17 @@ const StreamingResponseText: React.FC<{
     revealTargetRef.current = newCount;
     if (newCount > 0 && wrapperRef.current) {
       const topPadding = 4;
-      if (streamingRef.current) {
-        wrapperRef.current.style.height = '';
-        wrapperRef.current.style.overflow = '';
-      } else {
-        const pos = revealPositionRef.current;
-        const currentLine = Math.min(Math.floor(pos), newCount - 1);
-        const rect = lineRects[currentLine];
-        const currentLineBottom = rect.top + rect.height;
-        const nextLineTop = currentLine + 1 < newCount ? lineRects[currentLine + 1].top : currentLineBottom;
-        const LINE_BUFFER_PX = 3;
-        const revealedBottom = currentLine + 1 < newCount
-          ? Math.min(currentLineBottom, nextLineTop - LINE_BUFFER_PX)
-          : currentLineBottom;
-        wrapperRef.current.style.height = `${topPadding + Math.floor(revealedBottom)}px`;
-        wrapperRef.current.style.overflow = 'hidden';
-      }
+      const pos = revealPositionRef.current;
+      const currentLine = Math.min(Math.floor(pos), newCount - 1);
+      const rect = lineRects[currentLine];
+      const currentLineBottom = rect.top + rect.height;
+      const nextLineTop = currentLine + 1 < newCount ? lineRects[currentLine + 1].top : currentLineBottom;
+      const LINE_BUFFER_PX = 3;
+      const revealedBottom = currentLine + 1 < newCount
+        ? Math.min(currentLineBottom, nextLineTop - LINE_BUFFER_PX)
+        : currentLineBottom;
+      wrapperRef.current.style.height = `${topPadding + Math.floor(revealedBottom)}px`;
+      wrapperRef.current.style.overflow = 'hidden';
       for (let i = 0; i < newCount; i++) {
         const pos = revealPositionRef.current;
         const currentLine = Math.min(Math.floor(pos), newCount - 1);
@@ -845,11 +850,11 @@ const StreamingResponseText: React.FC<{
     if (revealRunningRef.current || !wrapperRef.current) return;
     revealRunningRef.current = true;
     const wrapper = wrapperRef.current;
-    const SPEED = 0.018;
-    const MAX_STEP = 0.12;
-    const SMOOTH = 0.05;
-    const MIN_STEP = 0.002;
-    const MAX_STEP_FIRST_LINES = 0.012;
+    const SPEED = 0.055;
+    const MAX_STEP = 0.28;
+    const SMOOTH = 0.14;
+    const MIN_STEP = 0.005;
+    const MAX_STEP_FIRST_LINES = 0.035;
     const FIRST_LINES_COUNT = 3;
 
     const tick = () => {
@@ -877,21 +882,16 @@ const StreamingResponseText: React.FC<{
       const overlayCount = overlayCountRef.current;
       if (rects.length > 0 && overlayCount > 0) {
         const topPadding = 4;
-        if (streamingRef.current) {
-          wrapper.style.height = '';
-          wrapper.style.overflow = '';
-        } else {
-          const currentLineIdx = Math.min(Math.floor(pos), rects.length - 1, overlayCount - 1);
-          const rect = rects[currentLineIdx];
-          const currentLineBottom = rect.top + rect.height;
-          const nextLineTop = currentLineIdx + 1 < rects.length ? rects[currentLineIdx + 1].top : currentLineBottom;
-          const LINE_BUFFER_PX = 3;
-          const revealedBottom = currentLineIdx + 1 < rects.length
-            ? Math.min(currentLineBottom, nextLineTop - LINE_BUFFER_PX)
-            : currentLineBottom;
-          wrapper.style.height = `${topPadding + Math.floor(revealedBottom)}px`;
-          wrapper.style.overflow = 'hidden';
-        }
+        const currentLineIdx = Math.min(Math.floor(pos), rects.length - 1, overlayCount - 1);
+        const rect = rects[currentLineIdx];
+        const currentLineBottom = rect.top + rect.height;
+        const nextLineTop = currentLineIdx + 1 < rects.length ? rects[currentLineIdx + 1].top : currentLineBottom;
+        const LINE_BUFFER_PX = 3;
+        const revealedBottom = currentLineIdx + 1 < rects.length
+          ? Math.min(currentLineBottom, nextLineTop - LINE_BUFFER_PX)
+          : currentLineBottom;
+        wrapper.style.height = `${topPadding + Math.floor(revealedBottom)}px`;
+        wrapper.style.overflow = 'hidden';
       }
 
       const done = pos >= target - 0.001 && !streamingRef.current;
@@ -919,6 +919,12 @@ const StreamingResponseText: React.FC<{
     if (grew && !overlayRevealDoneRef.current) {
       setShowOverlay(true);
       measureLines();
+      // Deferred re-measure so blur overlay gets line rects even if DOM wasn't ready on first run
+      // (e.g. after citation placeholders or markdown commit; prevents "lost" blur during streaming)
+      const raf = requestAnimationFrame(() => {
+        requestAnimationFrame(measureLines);
+      });
+      return () => cancelAnimationFrame(raf);
     }
   }, [text, measureLines]);
 
@@ -1004,10 +1010,9 @@ const StreamingResponseText: React.FC<{
       stripped = stripped.replace(/\s+\./g, '.').replace(/\s+,/g, ',').replace(/\s{2,}/g, ' ');
       return stripped;
     }
-    if (!citations || Object.keys(citations).length === 0) {
-      return text;
-    }
-    
+    // Never return raw text when we might have [1] etc. — always replace with placeholders so we never flash "[1]" during streaming.
+    // When citation data isn't available yet we use PENDING placeholders and render a pill; when it arrives we render CitationLink.
+
     // Map superscript characters to numbers
     const superscriptMap: Record<string, string> = {
       '¹': '1', '²': '2', '³': '3', '⁴': '4', '⁵': '5',
@@ -1025,7 +1030,7 @@ const StreamingResponseText: React.FC<{
       for (const char of match) {
         numStr += superscriptMap[char] || (/\d/.test(char) ? char : '');
       }
-      const citData = citations[numStr];
+      const citData = citations?.[numStr];
       if (citData) {
         return `%%CITATION_SUPERSCRIPT_${numStr}%%`;
       }
@@ -1041,7 +1046,7 @@ const StreamingResponseText: React.FC<{
     
     // Process bracket citations
     processedText = processedText.replace(bracketPattern, (match, num) => {
-      const citData = citations[num];
+      const citData = citations?.[num];
       if (citData) {
         return `%%CITATION_BRACKET_${num}%%`;
       }
@@ -1078,7 +1083,36 @@ const StreamingResponseText: React.FC<{
         if (citData) {
           return <CitationLink key={key} citationNumber={num} citationData={citData} onClick={onClick} isSelected={isCitationSelectedStable(num)} isSaved={isSavedNum(num)} />;
         }
-        return isStreaming ? <span key={key} style={{ opacity: 0.5 }}>[{num}]</span> : <span key={key}>[{num}]</span>;
+        // Never show raw "[1]" — render same pill style as CitationLink so citation appears instantly during streaming
+        return (
+          <span
+            key={key}
+            aria-label={`Citation ${num} (loading)`}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              marginLeft: '0.35em',
+              marginRight: '1px',
+              minWidth: '19px',
+              height: '19px',
+              padding: '0 6px',
+              fontSize: '11px',
+              fontWeight: 600,
+              fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+              color: '#9CA3AF',
+              backgroundColor: '#F3F4F6',
+              borderRadius: '6px',
+              border: '1px solid #E5E7EB',
+              verticalAlign: 'middle',
+              position: 'relative',
+              top: '-1px',
+              lineHeight: 1,
+            }}
+          >
+            {num}
+          </span>
+        );
       }
     }
     if (superscriptMatch) {
@@ -1799,6 +1833,7 @@ const CitationLink: React.FC<{
     <>
       <button
         ref={buttonRef}
+        className={`citation-link-btn${isSaved ? ' citation-link-btn--saved' : ''}${isSelected ? ' citation-link-btn--selected' : ''}`}
         onClick={(e) => {
           e.preventDefault();
           e.stopPropagation();
@@ -1814,15 +1849,13 @@ const CitationLink: React.FC<{
           justifyContent: 'center',
           marginLeft: '0.35em',
           marginRight: '1px',
-          minWidth: '19px',
-          height: '19px',
-          padding: '0 6px',
-          fontSize: '11px',
+          minWidth: '17px',
+          height: '17px',
+          padding: '0 5px',
+          fontSize: '10px',
           fontWeight: 600,
           fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-          color: isSelected ? '#1E40AF' : (isSaved ? '#6B7280' : '#5D5D5D'),
-          backgroundColor: isSelected ? '#DBEAFE' : (isSaved ? '#F3F4F6' : '#FFFFFF'),
-          borderRadius: '6px',
+          borderRadius: '5px',
           border: isSelected ? '1px solid #3B82F6' : '1px solid #E5E7EB',
           cursor: 'pointer',
           verticalAlign: 'middle',
@@ -1833,7 +1866,7 @@ const CitationLink: React.FC<{
         }}
         onMouseEnter={(e) => {
           if (!isSelected) {
-            e.currentTarget.style.backgroundColor = isSaved ? '#E5E7EB' : '#F3F4F6';
+            e.currentTarget.style.backgroundColor = isSaved ? '#DEDEDE' : '#F3F4F6';
             e.currentTarget.style.color = '#374151';
             e.currentTarget.style.transform = 'scale(1.05)';
           }
@@ -1841,12 +1874,12 @@ const CitationLink: React.FC<{
         }}
         onMouseLeave={(e) => {
           if (!isSelected) {
-            e.currentTarget.style.backgroundColor = isSaved ? '#F3F4F6' : '#FFFFFF';
-            e.currentTarget.style.color = isSaved ? '#6B7280' : '#5D5D5D';
+            e.currentTarget.style.backgroundColor = '';
+            e.currentTarget.style.color = '';
             e.currentTarget.style.transform = 'scale(1)';
           } else {
-            e.currentTarget.style.backgroundColor = '#DBEAFE';
-            e.currentTarget.style.color = '#1E40AF';
+            e.currentTarget.style.backgroundColor = '';
+            e.currentTarget.style.color = '';
           }
           handleMouseLeave(e);
         }}
@@ -2549,6 +2582,94 @@ const clearBboxPreviewCache = (citationContext?: {
   }
 };
 
+// Segment cache for CitationBboxPreview (preload on "Ask follow up" so image is ready when query sends)
+function citationBboxSegmentCacheKey(data: { document_id: string; page_number: number; bbox: { left: number; top: number; width: number; height: number } }): string {
+  const b = data.bbox;
+  return `${data.document_id}-${data.page_number}-${Number(b.left).toFixed(4)}-${Number(b.top).toFixed(4)}-${Number(b.width).toFixed(4)}-${Number(b.height).toFixed(4)}`;
+}
+interface CitationBboxSegmentCacheEntry {
+  segmentImage: string;
+  segmentDimensions: { width: number; height: number };
+  bboxInSegment: { left: number; top: number; width: number; height: number };
+  timestamp: number;
+}
+const citationBboxSegmentCache = new globalThis.Map<string, CitationBboxSegmentCacheEntry>();
+
+async function loadCitationBboxSegment(citationBboxData: {
+  document_id: string;
+  page_number: number;
+  bbox: { left: number; top: number; width: number; height: number };
+}): Promise<CitationBboxSegmentCacheEntry | null> {
+  const bbox = citationBboxData.bbox;
+  try {
+    const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
+    const downloadUrl = `${backendUrl}/api/files/download?document_id=${citationBboxData.document_id}`;
+    const response = await fetch(downloadUrl, { credentials: 'include' });
+    if (!response.ok) throw new Error(`Failed to download: ${response.status}`);
+    const blob = await response.blob();
+    const arrayBuffer = await blob.arrayBuffer();
+    const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
+    const page = await pdf.getPage(citationBboxData.page_number || 1);
+    const viewport = page.getViewport({ scale: 1.0 });
+    const scale = CITATION_PREVIEW_RENDER_SCALE * (CITATION_PREVIEW_DISPLAY_WIDTH / viewport.width);
+    const scaledViewport = page.getViewport({ scale });
+    const fullCanvas = document.createElement('canvas');
+    fullCanvas.width = scaledViewport.width;
+    fullCanvas.height = scaledViewport.height;
+    const context = fullCanvas.getContext('2d');
+    if (!context) return null;
+    await page.render({
+      canvasContext: context,
+      viewport: scaledViewport,
+      canvas: fullCanvas
+    }).promise;
+    const pw = scaledViewport.width;
+    const ph = scaledViewport.height;
+    const segH = CITATION_PREVIEW_SEGMENT_FRACTION;
+    const centerY = bbox.top + bbox.height / 2;
+    const segTop = Math.max(0, Math.min(1 - segH, centerY - segH / 2));
+    const segPxTop = segTop * ph;
+    const segPxHeight = Math.round(segH * ph);
+    const cropCanvas = document.createElement('canvas');
+    cropCanvas.width = pw;
+    cropCanvas.height = segPxHeight;
+    const ctx = cropCanvas.getContext('2d');
+    if (!ctx) return null;
+    ctx.drawImage(fullCanvas, 0, segPxTop, pw, segPxHeight, 0, 0, pw, segPxHeight);
+    const segmentUrl = cropCanvas.toDataURL('image/png');
+    const bboxInSegment = {
+      left: bbox.left * pw,
+      top: ((bbox.top - segTop) / segH) * segPxHeight,
+      width: bbox.width * pw,
+      height: (bbox.height / segH) * segPxHeight
+    };
+    return {
+      segmentImage: segmentUrl,
+      segmentDimensions: { width: pw, height: segPxHeight },
+      bboxInSegment,
+      timestamp: Date.now()
+    };
+  } catch (err) {
+    console.warn('[CitationBboxPreview] loadCitationBboxSegment failed:', err);
+    return null;
+  }
+}
+
+function preloadCitationBboxSegment(citationContext: {
+  document_id: string;
+  page_number: number;
+  bbox: { left: number; top: number; width: number; height: number };
+}): void {
+  const key = citationBboxSegmentCacheKey(citationContext);
+  if (citationBboxSegmentCache.has(key)) return;
+  loadCitationBboxSegment(citationContext).then((entry) => {
+    if (entry) {
+      citationBboxSegmentCache.set(key, entry);
+      console.log('✅ [CitationBboxPreview] Preloaded segment:', key);
+    }
+  });
+}
+
 // Citation BBOX Preview Component - shows thumbnail of document page with BBOX highlight
 interface CitationBboxPreviewProps {
   citationBboxData: {
@@ -2575,78 +2696,37 @@ const CitationBboxPreview: React.FC<CitationBboxPreviewProps> = ({ citationBboxD
   const [error, setError] = React.useState<string | null>(null);
   const [bboxInSegment, setBboxInSegment] = React.useState<{ left: number; top: number; width: number; height: number } | null>(null);
 
-  // Load page, render only a 1/4 segment centered on citation, at higher quality (no full-page cache for this path)
+  // Load segment: use preloaded cache if available (from "Ask follow up"), else load and cache
   React.useEffect(() => {
-    const bbox = citationBboxData.bbox;
-
-    const loadDocument = async () => {
-      try {
-        setLoading(true);
-        const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
-        const downloadUrl = `${backendUrl}/api/files/download?document_id=${citationBboxData.document_id}`;
-        const response = await fetch(downloadUrl, { credentials: 'include' });
-        if (!response.ok) throw new Error(`Failed to download: ${response.status}`);
-        const blob = await response.blob();
-        const arrayBuffer = await blob.arrayBuffer();
-        const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
-        const page = await pdf.getPage(citationBboxData.page_number || 1);
-        const viewport = page.getViewport({ scale: 1.0 });
-        const scale = CITATION_PREVIEW_RENDER_SCALE * (CITATION_PREVIEW_DISPLAY_WIDTH / viewport.width);
-        const scaledViewport = page.getViewport({ scale });
-        const fullCanvas = document.createElement('canvas');
-        fullCanvas.width = scaledViewport.width;
-        fullCanvas.height = scaledViewport.height;
-        const context = fullCanvas.getContext('2d');
-        if (!context) return;
-        await page.render({
-          canvasContext: context,
-          viewport: scaledViewport,
-          canvas: fullCanvas
-        }).promise;
-
-        const pw = scaledViewport.width;
-        const ph = scaledViewport.height;
-
-        // Segment: 1/4 of page height centered on citation bbox (normalized 0-1)
-        const segH = CITATION_PREVIEW_SEGMENT_FRACTION;
-        const centerY = bbox.top + bbox.height / 2;
-        const segTop = Math.max(0, Math.min(1 - segH, centerY - segH / 2));
-        const segPxTop = segTop * ph;
-        const segPxHeight = Math.round(segH * ph);
-
-        const cropCanvas = document.createElement('canvas');
-        cropCanvas.width = pw;
-        cropCanvas.height = segPxHeight;
-        const ctx = cropCanvas.getContext('2d');
-        if (!ctx) return;
-        ctx.drawImage(fullCanvas, 0, segPxTop, pw, segPxHeight, 0, 0, pw, segPxHeight);
-        const segmentUrl = cropCanvas.toDataURL('image/png');
-
-        setSegmentImage(segmentUrl);
-        setSegmentDimensions({ width: pw, height: segPxHeight });
-
-        // Bbox in segment-relative pixels (for overlay)
-        setBboxInSegment({
-          left: bbox.left * pw,
-          top: ((bbox.top - segTop) / segH) * segPxHeight,
-          width: bbox.width * pw,
-          height: (bbox.height / segH) * segPxHeight
-        });
-        setLoading(false);
-      } catch (err) {
-        console.error('Failed to load document for BBOX preview:', err);
-        setError(err instanceof Error ? err.message : 'Failed to load document');
-        setLoading(false);
-      }
-    };
-
-    if (citationBboxData.document_id) {
-      loadDocument();
-    } else {
+    if (!citationBboxData.document_id) {
       setError('No document ID provided');
       setLoading(false);
+      return;
     }
-  }, [citationBboxData.document_id, citationBboxData.page_number, citationBboxData.bbox?.top, citationBboxData.bbox?.height]);
+    const key = citationBboxSegmentCacheKey(citationBboxData);
+    const cached = citationBboxSegmentCache.get(key);
+    if (cached) {
+      setSegmentImage(cached.segmentImage);
+      setSegmentDimensions(cached.segmentDimensions);
+      setBboxInSegment(cached.bboxInSegment);
+      setLoading(false);
+      setError(null);
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    loadCitationBboxSegment(citationBboxData).then((entry) => {
+      if (entry) {
+        citationBboxSegmentCache.set(key, entry);
+        setSegmentImage(entry.segmentImage);
+        setSegmentDimensions(entry.segmentDimensions);
+        setBboxInSegment(entry.bboxInSegment);
+      } else {
+        setError('Failed to load document');
+      }
+      setLoading(false);
+    });
+  }, [citationBboxData.document_id, citationBboxData.page_number, citationBboxData.bbox?.left, citationBboxData.bbox?.top, citationBboxData.bbox?.width, citationBboxData.bbox?.height]);
 
   const segmentDisplayHeight = segmentDimensions.width > 0
     ? (CITATION_PREVIEW_DISPLAY_WIDTH / segmentDimensions.width) * segmentDimensions.height
@@ -3473,6 +3553,13 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   const [sourcesDropdownMessageId, setSourcesDropdownMessageId] = React.useState<string | null>(null);
   // Which response is hovered (for showing feedback bar on older messages); latest response always shows bar when stream done
   const [showBarForResponseId, setShowBarForResponseId] = React.useState<string | null>(null);
+  const feedbackBarHoverEnterRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const feedbackBarHoverLeaveRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const feedbackBarPendingIdRef = React.useRef<string | null>(null);
+  React.useEffect(() => () => {
+    if (feedbackBarHoverEnterRef.current) clearTimeout(feedbackBarHoverEnterRef.current);
+    if (feedbackBarHoverLeaveRef.current) clearTimeout(feedbackBarHoverLeaveRef.current);
+  }, []);
   const handleThumbsUpResponse = React.useCallback((messageId: string) => {
     setLikedResponseIds((prev) => {
       const next = new Set(prev);
@@ -6540,14 +6627,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           setCurrentChatId(newChatId);
           currentChatIdRef.current = newChatId; // Update ref synchronously for streaming callbacks
           
-          // Generate smart title from first query
-          const generatedTitle = generateSmartChatTitle(
-            queryText,
-            propertyAttachments,
-            attachedFiles.length > 0 ? attachedFiles : initialAttachedFiles
-          );
-          
-          // Extract description from query
+          // Title will be streamed from backend (title_chunk); use placeholder until then
           const description = extractDescription(queryText || '');
           
           // Create chat history entry with unique sessionId
@@ -6556,7 +6636,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           chatSessionId = chatHistorySessionId; // Use chat's sessionId for this query
           
           savedChatId = addChatToHistory({
-            title: generatedTitle,
+            title: 'New chat',
             timestamp: new Date().toISOString(),
             preview: queryText || '',
             messages: [],
@@ -6582,8 +6662,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             description
           });
           
-          // Stream the title with typing effect
-          streamTitle(generatedTitle);
+          // Title will be streamed from backend via onTitleChunk and set in onComplete
         } else if (currentChatId) {
           // For existing chat, get sessionId from chat history
           const existingChat = getChatById(currentChatId);
@@ -7438,6 +7517,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   
                   updateChatInHistory(queryChatId, finalMessages);
                   updateChatStatus(queryChatId, 'completed');
+                  
+                  // Apply streamed title from backend (everything shown to user is streamed)
+                  const streamedTitleFromBackend = data.title;
+                  if (streamedTitleFromBackend) {
+                    setChatTitle(streamedTitleFromBackend);
+                    updateChatTitle(queryChatId, streamedTitleFromBackend);
+                  }
+                  setIsTitleStreaming(false);
+                  setStreamedTitle('');
                   
                   // Clean up abort controller
                   delete abortControllersRef.current[queryChatId];
@@ -9725,6 +9813,14 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               },
               // onComplete: Final response received - flush buffer and complete animation
               (data: any) => {
+                // Apply streamed title from backend (everything shown to user is streamed)
+                if (data?.title && currentChatId) {
+                  setChatTitle(data.title);
+                  updateChatTitle(currentChatId, data.title);
+                }
+                setIsTitleStreaming(false);
+                setStreamedTitle('');
+                
                 // Extract any remaining complete blocks
                 extractCompleteBlocks();
                 
@@ -10147,6 +10243,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               // onThinkingComplete: Finalize thinking content
               (fullThinking: string) => {
                 console.log('🧠 Extended thinking complete:', fullThinking.length, 'chars');
+              },
+              undefined, // onPlanChunk
+              undefined, // onPlanComplete
+              false, // planMode
+              undefined, // existingPlan
+              // onTitleChunk: Stream chat title from backend (everything shown to user is streamed)
+              (token: string) => {
+                setIsTitleStreaming(true);
+                setStreamedTitle(prev => prev + token);
               }
             );
             
@@ -10869,14 +10974,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         setCurrentChatId(newChatId);
         currentChatIdRef.current = newChatId; // Update ref synchronously for streaming callbacks
         
-        // Generate smart title from first query
-        const generatedTitle = generateSmartChatTitle(
-          submitted || '',
-          propertiesToStore,
-          attachmentsToStore
-        );
-        
-        // Extract description from query
+        // Title will be streamed from backend (title_chunk); use placeholder until then
         const description = extractDescription(submitted || '');
         
         // Create chat history entry with unique sessionId
@@ -10885,7 +10983,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         chatSessionId = chatHistorySessionId; // Use chat's sessionId for this query
         
         savedChatId = addChatToHistory({
-          title: generatedTitle,
+          title: 'New chat',
           timestamp: new Date().toISOString(),
           preview: submitted || '',
           messages: [],
@@ -10911,8 +11009,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           description
         });
         
-        // Stream the title with typing effect
-        streamTitle(generatedTitle);
+        // Title will be streamed from backend via onTitleChunk and set in onComplete
       } else if (currentChatId) {
         // For existing chat, get sessionId from chat history
         const existingChat = getChatById(currentChatId);
@@ -11497,6 +11594,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   
                   updateChatInHistory(queryChatId, finalMessages);
                   updateChatStatus(queryChatId, 'completed');
+                  
+                  // Apply streamed title from backend (everything shown to user is streamed)
+                  const streamedTitleFromBackend = data.title;
+                  if (streamedTitleFromBackend) {
+                    setChatTitle(streamedTitleFromBackend);
+                    updateChatTitle(queryChatId, streamedTitleFromBackend);
+                  }
+                  setIsTitleStreaming(false);
+                  setStreamedTitle('');
                   
                   // Clean up abort controller
                   delete abortControllersRef.current[queryChatId];
@@ -12094,6 +12200,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             // onThinkingComplete: Finalize thinking content
             (fullThinking: string) => {
               console.log('🧠 Extended thinking complete:', fullThinking.length, 'chars');
+            },
+            undefined, // onPlanChunk
+            undefined, // onPlanComplete
+            false, // planMode
+            undefined, // existingPlan
+            // onTitleChunk: Stream chat title from backend (everything shown to user is streamed)
+            (token: string) => {
+              setIsTitleStreaming(true);
+              setStreamedTitle(prev => prev + token);
             }
           );
           
@@ -12642,8 +12757,38 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       return (
         <div
           key={finalKey}
-          onMouseEnter={() => message.type !== 'query' && message.text && setShowBarForResponseId(finalKey)}
-          onMouseLeave={() => setShowBarForResponseId((id) => (id === finalKey ? null : id))}
+          onMouseEnter={() => {
+            if (message.type === 'query' || !message.text) return;
+            if (feedbackBarHoverLeaveRef.current) {
+              clearTimeout(feedbackBarHoverLeaveRef.current);
+              feedbackBarHoverLeaveRef.current = null;
+            }
+            if (feedbackBarHoverEnterRef.current) clearTimeout(feedbackBarHoverEnterRef.current);
+            feedbackBarPendingIdRef.current = finalKey;
+            feedbackBarHoverEnterRef.current = setTimeout(() => {
+              feedbackBarHoverEnterRef.current = null;
+              const target = feedbackBarPendingIdRef.current;
+              if (target === finalKey) {
+                React.startTransition(() => {
+                  setShowBarForResponseId((prev) => (prev === target ? prev : target));
+                });
+              }
+            }, 320);
+          }}
+          onMouseLeave={() => {
+            if (feedbackBarHoverEnterRef.current) {
+              clearTimeout(feedbackBarHoverEnterRef.current);
+              feedbackBarHoverEnterRef.current = null;
+            }
+            feedbackBarPendingIdRef.current = null;
+            if (feedbackBarHoverLeaveRef.current) clearTimeout(feedbackBarHoverLeaveRef.current);
+            feedbackBarHoverLeaveRef.current = setTimeout(() => {
+              feedbackBarHoverLeaveRef.current = null;
+              React.startTransition(() => {
+                setShowBarForResponseId((id) => (id === finalKey ? null : id));
+              });
+            }, 380);
+          }}
           style={{ 
           width: '100%', 
           padding: '0', 
@@ -12729,8 +12874,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 selectedCitationMessageId={citationClickPanel?.messageId ?? (expandedCardViewDoc ? (() => { const v = (expandedCardViewDoc as DocumentPreview).viewedCitation ?? citationViewedInDocument; return v ? v.messageId : undefined; })() : undefined)}
                 skipHighlightSwoop={currentChatId !== null && currentChatId === skipSwoopForChatId}
                 onRevealComplete={(id) => {
-                  revealEndedForResponseIdRef.current.add(id);
-                  setRevealCompleteTick((t) => t + 1);
+                  // Only count reveal as complete when stream is 100% done, so feedback bar stays hidden until response is fully generated
+                  if (!message.isLoading) {
+                    revealEndedForResponseIdRef.current.add(id);
+                    setRevealCompleteTick((t) => t + 1);
+                  }
                 }}
                 savedCitationNumbersForMessage={savedCitationNumbersForMessageByMessageId.get(finalKey)}
               />
@@ -12738,7 +12886,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           )}
           {/* Feedback bar slot: reserve fixed space so hover doesn't move the query bubble below */}
           {message.text && hasCurrentStreamFinished && revealEndedForResponseIdRef.current.has(finalKey) && (
-            <div style={{ minHeight: 28, marginTop: '8px' }}>
+            <motion.div
+              initial={{ opacity: 0, height: 0, marginTop: 0 }}
+              animate={showFeedbackBar ? { opacity: 1, height: 28, marginTop: 8 } : { opacity: 0, height: 28, marginTop: 8 }}
+              transition={{ duration: 0.28, ease: [0.25, 0.46, 0.45, 0.94] }}
+              style={{ overflow: 'hidden' }}
+            >
               {showFeedbackBar && (() => {
                 const sources = getSourcesFromReadingStepsOrCitations(message);
                 const isSourcesOpen = sourcesDropdownMessageId === finalKey;
@@ -12763,20 +12916,53 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     <Download size={13} />
                   </button>
                 </DropdownMenuTrigger>
-                <DropdownMenuContent align="start" sideOffset={4} onClick={(e) => e.stopPropagation()}>
+                <DropdownMenuContent align="start" sideOffset={4} onClick={(e) => e.stopPropagation()} style={{ width: '220px', borderRadius: '10px', overflow: 'hidden', padding: 0 }}>
                   <DropdownMenuItem
                     onClick={(e) => { e.stopPropagation(); handleDownloadResponseAsDocxForMessage(message.text || '', finalKey); }}
-                    style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                      padding: '6px 10px',
+                      cursor: 'pointer',
+                      color: '#374151',
+                      fontSize: '11px',
+                      textAlign: 'left',
+                      width: '100%',
+                      border: 'none',
+                      borderRadius: 0,
+                      borderBottom: '1px solid #f3f4f6',
+                      transition: 'background 0.1s ease',
+                    }}
+                    title="Word Document (.docx)"
+                    onMouseEnter={(e) => { (e.currentTarget as HTMLDivElement).style.background = '#f9fafb'; }}
+                    onMouseLeave={(e) => { (e.currentTarget as HTMLDivElement).style.background = ''; }}
                   >
-                    <FileText size={13} />
-                    Download as Word
+                    <img src="/word.png" alt="Word" style={{ width: 12, height: 12, flexShrink: 0, objectFit: 'contain' }} />
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>Word Document (.docx)</span>
                   </DropdownMenuItem>
                   <DropdownMenuItem
                     onClick={(e) => { e.stopPropagation(); handleDownloadResponse(message.text || '', finalKey); }}
-                    style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                      padding: '6px 10px',
+                      cursor: 'pointer',
+                      color: '#374151',
+                      fontSize: '11px',
+                      textAlign: 'left',
+                      width: '100%',
+                      border: 'none',
+                      borderRadius: 0,
+                      transition: 'background 0.1s ease',
+                    }}
+                    title="Text file (.txt)"
+                    onMouseEnter={(e) => { (e.currentTarget as HTMLDivElement).style.background = '#f9fafb'; }}
+                    onMouseLeave={(e) => { (e.currentTarget as HTMLDivElement).style.background = ''; }}
                   >
-                    <FileIcon size={13} />
-                    Download as text
+                    <FileIcon size={12} style={{ flexShrink: 0, color: '#9ca3af' }} />
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>Text file (.txt)</span>
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
@@ -12806,6 +12992,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   <ThumbsDown size={13} />
                 </button>
               )}
+              {sources.count > 0 && (
               <Popover open={isSourcesOpen} onOpenChange={(open) => setSourcesDropdownMessageId(open ? finalKey : null)}>
                 <PopoverTrigger asChild>
                   <button
@@ -12818,11 +13005,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   </button>
                 </PopoverTrigger>
                 <PopoverContent className="p-0" align="start" sideOffset={4} style={{ width: '240px', borderRadius: '10px', overflow: 'hidden', zIndex: 1 }}>
-                  {sources.items.length === 0 ? (
-                    <p style={{ margin: 0, padding: '8px 12px', fontSize: '12px', color: '#6b7280' }}>No sources</p>
-                  ) : (
-                    <div style={{ display: 'flex', flexDirection: 'column' }}>
-                      {sources.items.map((item, idx) => {
+                  <div style={{ display: 'flex', flexDirection: 'column' }}>
+                    {sources.items.map((item, idx) => {
                         const rawName = item.filename || `Document ${item.docId.slice(0, 8)}`;
                         const isPDF = rawName.toLowerCase().endsWith('.pdf');
                         const truncatedName = (() => {
@@ -12864,13 +13048,13 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         );
                       })}
                     </div>
-                  )}
                 </PopoverContent>
               </Popover>
+              )}
             </div>
           );
           })()}
-            </div>
+            </motion.div>
           )}
         </div>
       );
@@ -12881,17 +13065,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     <>
       <style>{`
         @keyframes feedback-action-bar-enter {
-          from {
-            opacity: 0;
-            transform: translateY(6px);
-          }
-          to {
-            opacity: 1;
-            transform: translateY(0);
-          }
+          from { opacity: 0; }
+          to { opacity: 1; }
         }
         .feedback-action-bar-enter {
-          animation: feedback-action-bar-enter 0.4s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+          animation: feedback-action-bar-enter 0.32s cubic-bezier(0.25, 0.46, 0.45, 0.94) 0.05s forwards;
         }
       `}</style>
       {/* Dark overlay when citation panel is open - rendered inside panel so chat bar can sit above it (z-index) */}
@@ -12919,11 +13097,17 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               setCitationClickPanel(null);
             }}
             onAskFollowUp={() => {
-              const citationData = citationClickPanel.citationData as CitationData & { document_id?: string; block_id?: string; cited_text?: string; block_content?: string };
+              const citationData = citationClickPanel.citationData as CitationData & { document_id?: string; block_id?: string; cited_text?: string; block_content?: string; bbox?: { left: number; top: number; width: number; height: number }; page?: number; page_number?: number };
+              const docId = citationData.document_id ?? (citationData as any).doc_id;
+              const pageNum = citationData.page ?? citationData.page_number ?? (citationData.bbox as any)?.page ?? 1;
+              const bbox = citationData.bbox ?? { left: 0, top: 0, width: 0, height: 0 };
+              if (docId) {
+                preloadCitationBboxSegment({ document_id: docId, page_number: pageNum, bbox });
+              }
               const raw = (citationData.cited_text || citationData.block_content || 'this citation').trim().slice(0, 200);
               // Strip markdown so chip label doesn't show ** or __ etc.
               const snippet = raw.replace(/\*\*/g, '').replace(/__/g, '');
-              const id = `cite-${citationData.doc_id ?? (citationData as any).document_id ?? 'doc'}-${citationData.page ?? citationData.page_number ?? citationData.bbox?.page ?? 0}-${Date.now()}`;
+              const id = `cite-${docId ?? 'doc'}-${pageNum}-${Date.now()}`;
               const sourceMessageText = citationClickPanel.sourceMessageText != null ? citationClickPanel.sourceMessageText.slice(-2000) : undefined;
               segmentInput.insertChipAtCursor(
                 {
@@ -13970,7 +14154,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         backdropFilter: isDragOver ? 'none' : 'blur(16px) saturate(160%)',
                         WebkitBackdropFilter: isDragOver ? 'none' : 'blur(16px) saturate(160%)',
                         border: isDragOver ? '2px dashed rgb(36, 41, 50)' : '1px solid #E0E0E0',
-                        boxShadow: isDragOver ? '0 4px 12px 0 rgba(59, 130, 246, 0.15), 0 2px 4px 0 rgba(59, 130, 246, 0.10)' : '0 1px 3px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.04)',
+                        boxShadow: isDragOver ? '0 4px 12px 0 rgba(59, 130, 246, 0.15), 0 2px 4px 0 rgba(59, 130, 246, 0.10)' : '0 1px 3px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.02)',
                         position: 'relative',
                         paddingTop: '12px',
                         paddingBottom: '12px',
@@ -13981,7 +14165,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         height: 'auto',
                         minHeight: '160px', // Taller for empty state
                         boxSizing: 'border-box',
-                        borderRadius: '8px',
+                        borderRadius: '14px',
                         transition: 'background-color 0.2s ease-in-out, border-color 0.2s ease-in-out, box-shadow 0.2s ease-in-out',
                       }}
                     >
@@ -14737,16 +14921,17 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           justifyContent: 'center',
                           width: '40px',
                           height: '40px',
+                          padding: 0,
                           borderRadius: '50%',
-                          border: '1px solid rgba(0,0,0,0.06)',
-                          backgroundColor: 'rgba(255, 255, 255, 0.85)',
-                          boxShadow: '0 2px 8px rgba(0,0,0,0.08)',
+                          border: '1px solid rgba(0,0,0,0.08)',
+                          backgroundColor: 'rgba(255, 255, 255, 0.98)',
+                          boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
                           cursor: 'pointer',
                           color: '#374151',
                           flexShrink: 0
                         }}
                       >
-                        <ChevronDown size={20} strokeWidth={2} style={{ flexShrink: 0 }} />
+                        <ChevronDown size={20} strokeWidth={2} style={{ flexShrink: 0, display: 'block', margin: 'auto' }} />
                       </button>
                     </div>
                   )}
@@ -14877,7 +15062,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       border: isDragOver ? '2px dashed rgb(36, 41, 50)' : '1px solid #E0E0E0',
                       boxShadow: isDragOver 
                         ? '0 4px 12px 0 rgba(59, 130, 246, 0.15), 0 2px 4px 0 rgba(59, 130, 246, 0.10)' 
-                        : '0 1px 3px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.04)',
+                        : '0 1px 3px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.02)',
                       position: 'relative',
                       paddingTop: '12px',
                       paddingBottom: '12px',
@@ -14888,7 +15073,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       height: 'auto',
                       minHeight: '48px',
                       boxSizing: 'border-box',
-                      borderRadius: '8px',
+                      borderRadius: '14px',
                       transition: 'background-color 0.2s ease-in-out, border-color 0.2s ease-in-out, box-shadow 0.2s ease-in-out',
                       zIndex: citationClickPanel ? 10051 : 2, // Above citation overlay (10050) when open; above bot overlay otherwise
                     }}
@@ -15668,5 +15853,3 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     </>
   );
 });
-
-

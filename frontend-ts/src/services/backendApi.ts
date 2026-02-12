@@ -366,7 +366,9 @@ class BackendApiService {
     // PLAN MODE: Whether to generate a plan before execution
     planMode?: boolean,
     // PLAN UPDATE: Existing plan content for updates (when user provides follow-up)
-    existingPlan?: string
+    existingPlan?: string,
+    // STREAMED TITLE: Chat title streamed from backend (so everything shown to user is streamed)
+    onTitleChunk?: (token: string) => void
   ): Promise<void> {
     const baseUrl = this.baseUrl || BACKEND_URL;
     const url = `${baseUrl}/api/llm/query/stream`;
@@ -490,6 +492,11 @@ class BackendApiService {
                       citation_number: String(data.citation_number),
                       data: data.data
                     });
+                  }
+                  break;
+                case 'title_chunk':
+                  if (onTitleChunk) {
+                    onTitleChunk(data.token ?? '');
                   }
                   break;
                 case 'token':

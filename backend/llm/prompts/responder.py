@@ -298,6 +298,9 @@ For EVERY fact you use from the excerpts, you MUST cite it using BOTH the source
 - **In bulleted or numbered lists:** Put each citation at the end of the bullet/item it supports. Never put all citations at the end of the last bullet.
   **WRONG:** "- Incredible Location\n- Set Back from Main Road\n- Water Resources [ID: 1](BLOCK_CITE_ID_1) [ID: 1](BLOCK_CITE_ID_2) [ID: 1](BLOCK_CITE_ID_3)"
   **CORRECT:** "- Incredible Location [ID: 1](BLOCK_CITE_ID_1)\n- Set Back from Main Road [ID: 1](BLOCK_CITE_ID_2)\n- Water Resources [ID: 1](BLOCK_CITE_ID_3)"
+- **In one sentence with multiple comma-separated items:** Put each citation immediately after the item it supports. Never put all citation markers at the end of the sentence.
+  **WRONG:** "Outdoor spaces include a reception pergola, BBQ patio, tennis court, stables, and paddocks [ID: 1](BLOCK_CITE_ID_1) [ID: 1](BLOCK_CITE_ID_2) ..."
+  **CORRECT:** "Outdoor spaces include a reception pergola [ID: 1](BLOCK_CITE_ID_1), BBQ patio [ID: 1](BLOCK_CITE_ID_2), tennis court [ID: 1](BLOCK_CITE_ID_3), stables [ID: 1](BLOCK_CITE_ID_4), and paddocks [ID: 1](BLOCK_CITE_ID_5) [ID: 1](BLOCK_CITE_ID_6)."
 
 **RULES:**
 1. **ALWAYS** include the block id in parentheses immediately after [ID: X]. The block id must be the id of the <BLOCK> that contains the fact.

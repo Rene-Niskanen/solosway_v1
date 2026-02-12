@@ -201,7 +201,7 @@ export const ChatPanel = ({
           if (openMenuId) setOpenMenuId(null);
         }}
         style={{
-          background: '#FEFEFC',
+          background: '#F2F2EF',
           right: isOpen ? '0px' : '-1000px', // Move off-screen when closed
           width: isOpen ? `${width}px` : '320px',
           transition: 'right 0s ease-out, width 0s ease-out',
@@ -334,7 +334,7 @@ export const ChatPanel = ({
             {showChatHistory && (
               <div
                 className="flex-1 overflow-y-auto overflow-x-hidden px-3 pt-2 pb-3 scrollbar-thin scrollbar-track-transparent scrollbar-thumb-slate-300/50 hover:scrollbar-thumb-slate-400/70"
-                style={{ backgroundColor: '#F9F9F7' }}
+                style={{ backgroundColor: '#FDFDFB' }}
               >
                 {/* Agents Heading */}
                 {displayedChats.length > 0 && (

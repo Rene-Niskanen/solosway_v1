@@ -2,7 +2,6 @@
 
 import React, { useState, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { Loader2, Check, AlertCircle, ChevronDown, ChevronRight, ChevronUp } from 'lucide-react';
 import {
   Tooltip,
   TooltipContent,
@@ -199,8 +198,8 @@ function formatDuration(seconds: number): string {
   return s > 0 ? `${m}m ${s}s` : `${m}m`;
 }
 
-const CARD_WIDTH = 280;
-const CARD_MIN_HEIGHT = 220;
+const CARD_WIDTH = 160;
+const CARD_MIN_HEIGHT = 100;
 
 // ---- Shared detail component props ----
 
@@ -263,11 +262,11 @@ export const PipelineStagesDetail: React.FC<PipelineStagesDetailProps> = ({
   const rootStyle: React.CSSProperties = {
     backgroundColor: 'white',
     border: '1px solid rgba(0,0,0,0.04)',
-    borderRadius: 14,
-    boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
+    borderRadius: 8,
+    boxShadow: '0 2px 6px rgba(0,0,0,0.06)',
     overflow: 'hidden',
-    minHeight: variant === 'modal' ? 220 : CARD_MIN_HEIGHT,
-    width: variant === 'modal' ? 320 : CARD_WIDTH,
+    minHeight: variant === 'modal' ? 120 : CARD_MIN_HEIGHT,
+    width: variant === 'modal' ? 200 : CARD_WIDTH,
     maxHeight: variant === 'modal' ? '85vh' : undefined,
     display: 'flex',
     flexDirection: 'column',
@@ -276,6 +275,7 @@ export const PipelineStagesDetail: React.FC<PipelineStagesDetailProps> = ({
 
   return (
     <TooltipProvider delayDuration={300}>
+      <style dangerouslySetInnerHTML={{ __html: '@keyframes pipeline-spinner { to { transform: rotate(360deg); } }' }} />
       <div
         className={className}
         style={rootStyle}
@@ -290,13 +290,13 @@ export const PipelineStagesDetail: React.FC<PipelineStagesDetailProps> = ({
           style={{
             display: 'flex',
             flexDirection: 'column',
-            gap: '6px',
-            padding: '14px 16px',
+            gap: 3,
+            padding: '5px 8px',
             backgroundColor: '#F9FAFB',
             borderBottom: '1px solid #E5E7EB',
           }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
             <button
               type="button"
               onClick={() => setCollapsed((c) => !c)}
@@ -314,13 +314,11 @@ export const PipelineStagesDetail: React.FC<PipelineStagesDetailProps> = ({
               aria-expanded={!collapsed}
               aria-label={collapsed ? 'Expand stages' : 'Collapse stages'}
             >
-              {collapsed ? (
-                <ChevronDown style={{ width: 16, height: 16 }} />
-              ) : (
-                <ChevronUp style={{ width: 16, height: 16 }} />
-              )}
+              <span style={{ fontSize: 9, lineHeight: 1, color: 'inherit' }} aria-hidden>
+                {collapsed ? '▾' : '▴'}
+              </span>
             </button>
-            <span style={{ fontSize: 14, fontWeight: 600, color: '#4A4A4A', letterSpacing: '-0.01em', flex: 1, minWidth: 0 }}>
+            <span style={{ fontSize: 11, fontWeight: 600, color: '#4A4A4A', letterSpacing: '-0.01em', flex: 1, minWidth: 0 }}>
               {variant === 'hover' ? shortTitle : title.length > 45 ? shortTitle : title}
             </span>
             {!isLoading && (
@@ -330,23 +328,23 @@ export const PipelineStagesDetail: React.FC<PipelineStagesDetailProps> = ({
                 aria-valuemin={0}
                 aria-valuemax={5}
                 aria-label={`Step ${completedStages} of 5 complete`}
-                style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}
+                style={{ display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0 }}
               >
-                <div style={{ display: 'flex', gap: 3, width: 76, height: 5 }}>
+                <div style={{ display: 'flex', gap: 1, width: 40, height: 4 }}>
                   {[0, 1, 2, 3, 4].map((i) => (
                     <div
                       key={i}
                       style={{
                         flex: 1,
                         height: '100%',
-                        borderRadius: 2,
+                        borderRadius: 0,
                         backgroundColor: i < completedStages ? '#4CAF50' : '#E0E0E0',
                         transition: 'background-color 0.2s ease',
                       }}
                     />
                   ))}
                 </div>
-                <span style={{ fontSize: 12, fontWeight: 500, minWidth: 24 }}>
+                <span style={{ fontSize: 10, fontWeight: 500, minWidth: 16 }}>
                   <span style={{ color: '#4CAF50' }}>{completedStages}</span>
                   <span style={{ color: '#A0A0A0' }}>/5</span>
                 </span>
@@ -356,7 +354,7 @@ export const PipelineStagesDetail: React.FC<PipelineStagesDetailProps> = ({
           {variant === 'hover' && documentName && (
             <div
               style={{
-                fontSize: 12,
+                fontSize: 9,
                 fontWeight: 400,
                 color: '#6B7280',
                 overflow: 'hidden',
@@ -370,12 +368,12 @@ export const PipelineStagesDetail: React.FC<PipelineStagesDetailProps> = ({
             </div>
           )}
           {!isLoading && currentStepLabel && (
-            <span style={{ fontSize: 11, color: '#9CA3AF' }}>
+            <span style={{ fontSize: 9, color: '#9CA3AF' }}>
               Step {currentStageIndex! + 1} of 5: {currentStepLabel}
             </span>
           )}
           {isMinimal && !isLoading && (
-            <span style={{ fontSize: 11, color: '#9CA3AF' }}>Minimal pipeline</span>
+            <span style={{ fontSize: 9, color: '#9CA3AF' }}>Minimal pipeline</span>
           )}
         </div>
 
@@ -385,10 +383,10 @@ export const PipelineStagesDetail: React.FC<PipelineStagesDetailProps> = ({
             {failedCount > 0 && !isLoading && (
               <div
                 style={{
-                  padding: '8px 16px',
+                  padding: '3px 8px',
                   backgroundColor: '#FEF2F2',
                   borderBottom: '1px solid #FECACA',
-                  fontSize: 12,
+                  fontSize: 9,
                   color: '#B91C1C',
                   fontWeight: 500,
                 }}
@@ -402,16 +400,25 @@ export const PipelineStagesDetail: React.FC<PipelineStagesDetailProps> = ({
               style={{
                 display: 'flex',
                 flexDirection: 'column',
-                gap: 12,
-                padding: '14px 16px',
+                gap: 3,
+                padding: '5px 8px',
                 flex: 1,
                 minHeight: 0,
                 overflowY: variant === 'modal' ? 'auto' : 'hidden',
               }}
             >
               {isLoading ? (
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 32 }}>
-                  <Loader2 style={{ width: 32, height: 32, color: '#9CA3AF' }} className="animate-spin" />
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 10 }}>
+                  <span
+                    style={{
+                      width: 14,
+                      height: 14,
+                      border: '1.5px solid #E5E7EB',
+                      borderTopColor: '#9CA3AF',
+                      borderRadius: '50%',
+                      animation: 'pipeline-spinner 0.7s linear infinite',
+                    }}
+                  />
                 </div>
               ) : (
                 PIPELINE_STAGE_LABELS.map((label, index) => {
@@ -431,38 +438,41 @@ export const PipelineStagesDetail: React.FC<PipelineStagesDetailProps> = ({
                   style={{
                     display: 'flex',
                     alignItems: 'center',
-                    gap: 12,
+                    gap: 5,
                   }}
                 >
-                  <div style={{ flexShrink: 0, width: 22, height: 22, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <div style={{ flexShrink: 0, width: 14, height: 14, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                     {isFailed ? (
-                      <AlertCircle style={{ width: 18, height: 18, color: '#DC2626' }} aria-label="Failed" />
+                      <span style={{ fontSize: 9, color: '#DC2626', fontWeight: 700 }} aria-label="Failed">!</span>
                     ) : isDone ? (
                       <div
                         style={{
-                          width: 22,
-                          height: 22,
+                          width: 14,
+                          height: 14,
                           borderRadius: '50%',
                           backgroundColor: '#4CAF50',
                           display: 'flex',
                           alignItems: 'center',
                           justifyContent: 'center',
+                          color: 'white',
+                          fontSize: 9,
+                          fontWeight: 700,
                         }}
                       >
-                        <Check style={{ width: 12, height: 12, color: 'white', strokeWidth: 2.5 }} />
+                        ✓
                       </div>
                     ) : isActive ? (
                       <div
                         style={{
-                          width: 22,
-                          height: 22,
+                          width: 14,
+                          height: 14,
                           borderRadius: '50%',
                           backgroundColor: '#000000',
                           display: 'flex',
                           alignItems: 'center',
                           justifyContent: 'center',
                           color: 'white',
-                          fontSize: 12,
+                          fontSize: 8,
                           fontWeight: 700,
                         }}
                       >
@@ -471,15 +481,15 @@ export const PipelineStagesDetail: React.FC<PipelineStagesDetailProps> = ({
                     ) : (
                       <div
                         style={{
-                          width: 22,
-                          height: 22,
+                          width: 14,
+                          height: 14,
                           borderRadius: '50%',
                           backgroundColor: '#E0E0E0',
                           display: 'flex',
                           alignItems: 'center',
                           justifyContent: 'center',
                           color: '#6B7280',
-                          fontSize: 12,
+                          fontSize: 8,
                           fontWeight: 700,
                         }}
                       >
@@ -490,7 +500,7 @@ export const PipelineStagesDetail: React.FC<PipelineStagesDetailProps> = ({
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <span
                       style={{
-                        fontSize: 13,
+                        fontSize: 10,
                         fontWeight: isActive ? 600 : 400,
                         color: isPending ? '#6B7280' : isFailed ? '#B91C1C' : '#4A4A4A',
                       }}
@@ -500,9 +510,9 @@ export const PipelineStagesDetail: React.FC<PipelineStagesDetailProps> = ({
                     {summary && (
                       <div
                         style={{
-                          fontSize: 11,
+                          fontSize: 9,
                           color: '#6B7280',
-                          marginTop: 2,
+                          marginTop: 0,
                           overflow: 'hidden',
                           textOverflow: 'ellipsis',
                           whiteSpace: 'nowrap',
@@ -512,7 +522,7 @@ export const PipelineStagesDetail: React.FC<PipelineStagesDetailProps> = ({
                       </div>
                     )}
                     {isFailed && entry?.step_message && variant === 'hover' && (
-                      <div style={{ fontSize: 11, color: '#B91C1C', marginTop: 2 }}>{entry.step_message}</div>
+                      <div style={{ fontSize: 9, color: '#B91C1C', marginTop: 0 }}>{entry.step_message}</div>
                     )}
                   </div>
                   {variant === 'modal' && (summary || entry) ? (
@@ -520,7 +530,7 @@ export const PipelineStagesDetail: React.FC<PipelineStagesDetailProps> = ({
                       type="button"
                       onClick={() => toggleExpanded(index)}
                       style={{
-                        padding: 4,
+                        padding: 0,
                         border: 'none',
                         background: 'transparent',
                         cursor: 'pointer',
@@ -529,26 +539,24 @@ export const PipelineStagesDetail: React.FC<PipelineStagesDetailProps> = ({
                         alignItems: 'center',
                         justifyContent: 'center',
                         marginLeft: 'auto',
+                        fontSize: 9,
                       }}
                       aria-expanded={isExpanded}
                       aria-label={isExpanded ? 'Hide details' : 'Show details'}
                     >
-                      {isExpanded ? (
-                        <ChevronDown style={{ width: 16, height: 16 }} />
-                      ) : (
-                        <ChevronRight style={{ width: 16, height: 16 }} />
-                      )}
+                      {isExpanded ? '▾' : '›'}
                     </button>
                   ) : showRightChevron ? (
-                    <ChevronRight
+                    <span
                       style={{
-                        width: 16,
-                        height: 16,
+                        fontSize: 9,
                         color: isActive ? '#4A4A4A' : '#9CA3AF',
                         flexShrink: 0,
                         marginLeft: 'auto',
                       }}
-                    />
+                    >
+                      ›
+                    </span>
                   ) : null}
                 </div>
               );
@@ -581,25 +589,25 @@ export const PipelineStagesDetail: React.FC<PipelineStagesDetailProps> = ({
                   {variant === 'modal' && isExpanded && entry && (
                     <div
                       style={{
-                        marginLeft: 26,
-                        marginBottom: 8,
-                        padding: 10,
+                        marginLeft: 16,
+                        marginBottom: 4,
+                        padding: 6,
                         backgroundColor: '#F9FAFB',
-                        borderRadius: 8,
-                        fontSize: 12,
+                        borderRadius: 4,
+                        fontSize: 9,
                         color: '#374151',
                         border: '1px solid #E5E7EB',
                       }}
                     >
                       {entry.step_message && (
-                        <p style={{ marginBottom: 6 }}>{entry.step_message}</p>
+                        <p style={{ marginBottom: 4, fontSize: 10 }}>{entry.step_message}</p>
                       )}
                       {entry.duration_seconds != null && (
-                        <p style={{ marginBottom: 4 }}>Duration: {entry.duration_seconds}s</p>
+                        <p style={{ marginBottom: 3, fontSize: 10 }}>Duration: {entry.duration_seconds}s</p>
                       )}
                       {entry.step_metadata && Object.keys(entry.step_metadata).length > 0 && (
-                        <div style={{ marginTop: 6 }}>
-                          <span style={{ fontWeight: 600, fontSize: 11, color: '#6B7280' }}>Details</span>
+                        <div style={{ marginTop: 4 }}>
+                          <span style={{ fontWeight: 600, fontSize: 10, color: '#6B7280' }}>Details</span>
                           <ul style={{ marginTop: 4, paddingLeft: 16 }}>
                             {Object.entries(entry.step_metadata).map(([k, v]) => (
                               <li key={k}>
@@ -623,16 +631,16 @@ export const PipelineStagesDetail: React.FC<PipelineStagesDetailProps> = ({
         {variant === 'modal' && (
           <div
             style={{
-              padding: '12px 16px',
+              padding: '5px 8px',
               borderTop: '1px solid #E5E7EB',
               backgroundColor: '#F9FAFB',
               display: 'flex',
               flexDirection: 'column',
-              gap: 8,
+              gap: 5,
             }}
           >
             {totalSeconds != null && isComplete && (
-              <span style={{ fontSize: 12, color: '#6B7280' }}>
+              <span style={{ fontSize: 9, color: '#6B7280' }}>
                 Completed in {formatDuration(totalSeconds)}
               </span>
             )}
@@ -642,12 +650,12 @@ export const PipelineStagesDetail: React.FC<PipelineStagesDetailProps> = ({
                 onClick={onClose}
                 style={{
                   width: '100%',
-                  padding: '10px 16px',
-                  borderRadius: 8,
+                  padding: '5px 8px',
+                  borderRadius: 4,
                   border: 'none',
                   backgroundColor: '#E5E7EB',
                   color: '#111827',
-                  fontSize: 14,
+                  fontSize: 11,
                   fontWeight: 500,
                   cursor: 'pointer',
                 }}
@@ -695,8 +703,15 @@ export const PipelineStagesHoverPreview: React.FC<PipelineStagesHoverPreviewProp
   const viewportHeight = typeof window !== 'undefined' ? window.innerHeight : 800;
   const minLeft = containerBounds?.left ?? 10;
   const maxRight = containerBounds?.right ?? viewportWidth - 10;
-  const showAbove = position.y > CARD_MIN_HEIGHT + 20;
-  let topPosition = showAbove ? position.y - CARD_MIN_HEIGHT - 10 : position.y + 30;
+  const gap = 28;
+  // Estimated full card height (header + 5 stages) so we don't overlap the cursor
+  const estimatedCardHeight = 180;
+  // Prefer card above cursor so it doesn't cover the cursor; only show below when not enough space above
+  const spaceAbove = minTop != null ? position.y - minTop : position.y - 20;
+  const showAbove = spaceAbove >= estimatedCardHeight + gap;
+  let topPosition = showAbove
+    ? position.y - estimatedCardHeight - gap  // card bottom well above cursor
+    : position.y + gap;                        // card top below cursor (cursor stays above card)
   // Never overlap the upload zone or other fixed UI at the top
   if (minTop != null && topPosition < minTop) topPosition = minTop;
   // Keep card on screen at bottom
@@ -713,7 +728,7 @@ export const PipelineStagesHoverPreview: React.FC<PipelineStagesHoverPreviewProp
         position: 'fixed',
         left: `${leftPosition}px`,
         top: `${topPosition}px`,
-        zIndex: 99999,
+        zIndex: 100003, // Above DashboardLayout toggle rail (100002)
         pointerEvents: 'auto',
       }}
     >

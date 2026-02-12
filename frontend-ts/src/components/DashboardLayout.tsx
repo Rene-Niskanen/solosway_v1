@@ -683,7 +683,7 @@ const DashboardLayoutContent = ({
             right: chatPanelWidth,
             width: 12,
             zIndex: 10001,
-            background: '#FEFEFC',
+            background: '#F2F2EF',
             pointerEvents: 'auto',
             WebkitTapHighlightColor: 'transparent'
           }}

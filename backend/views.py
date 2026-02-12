@@ -732,6 +732,39 @@ def query_documents_stream():
                 logger.info("🟢 [STREAM] Yielding initial status message")
                 yield f"data: {json.dumps({'type': 'status', 'message': 'Searching documents...'})}\n\n"
                 
+                # Generate and stream chat title from query (so everything shown to user is streamed)
+                def generate_chat_title_from_query(q: str) -> str:
+                    """Generate a short chat title from the user query (mirrors frontend logic)."""
+                    if not q or not (q := q.strip()):
+                        return "New chat"
+                    # Extract topic: look for "of X" / "for X" or capitalized words
+                    q_lower = q.lower()
+                    title = None
+                    for sep in (" of ", " for "):
+                        if sep in q_lower:
+                            parts = q_lower.split(sep, 1)
+                            if len(parts) == 2 and parts[1].strip():
+                                # Take 1-2 words from the part after of/for
+                                words = parts[1].strip().split()[:2]
+                                title = " ".join(w.title() for w in words)
+                                break
+                    if not title:
+                        words = q.split()
+                        caps = [w for w in words if len(w) > 2 and w[0].isupper() and w.lower() not in {"the", "a", "an", "of", "in", "for", "to", "and", "or", "please", "find", "me", "what", "is", "are", "show", "get", "tell", "who", "how", "why", "when", "where"}]
+                        if caps:
+                            title = " ".join(caps[:2])
+                    if not title:
+                        if len(q) > 50:
+                            last_space = q[:47].rfind(" ")
+                            title = (q[:last_space] + "...") if last_space > 20 else q[:47] + "..."
+                        else:
+                            title = q
+                    return title[:50] if len(title) > 50 else title
+                
+                streamed_chat_title = generate_chat_title_from_query(query)
+                for ch in streamed_chat_title:
+                    yield f"data: {json.dumps({'type': 'title_chunk', 'token': ch})}\n\n"
+                
                 # Extract intent from query for contextual reasoning step
                 # Simple heuristic: identify what user is looking for and where
                 def extract_query_intent(q: str) -> str:
@@ -2620,7 +2653,7 @@ def query_documents_stream():
                         #     logger.info(f"🎯 [AUTO_OPEN] Citations present but no open_document action - automatically opening")
                         #     ... (auto-open logic disabled - citations are clickable instead)
                         
-                        # Send complete message with metadata
+                        # Send complete message with metadata (include streamed title for persistence)
                         complete_data = {
                             'type': 'complete',
                             'data': {
@@ -2629,7 +2662,8 @@ def query_documents_stream():
                                 'document_outputs': doc_outputs,
                                 'citations': citations_map_for_frontend,  # Frontend expects Record<string, CitationDataType>
                                 'citations_array': structured_citations,  # NEW: Structured array format (for future use)
-                                'session_id': session_id
+                                'session_id': session_id,
+                                'title': streamed_chat_title  # Streamed earlier as title_chunk; include for persistence
                             }
                         }
                         yield f"data: {json.dumps(complete_data)}\n\n"

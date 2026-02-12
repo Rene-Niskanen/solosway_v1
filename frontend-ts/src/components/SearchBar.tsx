@@ -1406,7 +1406,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                 // ChatGPT-style subtle drop shadow: soft lift, minimal offset, light opacity.
                 boxShadow: isDragOver 
                   ? '0 4px 12px 0 rgba(59, 130, 246, 0.15), 0 2px 4px 0 rgba(59, 130, 246, 0.10)' 
-                  : '0 1px 3px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.04)',
+                  : '0 1px 3px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.02)',
                 paddingTop: '12px',
                 paddingBottom: '12px',
                 paddingRight: '12px',
@@ -1423,7 +1423,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                 // In dashboard mode, cap height so it doesn't expand into the Recent Projects section.
                 maxHeight: isMapVisible ? 'calc(100vh - 96px)' : (isDashboardView ? '220px' : undefined),
                 boxSizing: 'border-box',
-                borderRadius: '8px', // Match SideChatPanel rounded corners
+                borderRadius: '14px', // Match SideChatPanel chat bar corners
                 // IMPORTANT: don't animate layout (height) while typing; textarea auto-resizes on keystrokes.
                 // Restrict transitions to purely visual properties to avoid "step up" / reflow animations.
                 transition: 'background-color 0.2s ease-in-out, border-color 0.2s ease-in-out, box-shadow 0.2s ease-in-out, opacity 0.2s ease-in-out',

@@ -250,18 +250,18 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
       <div
         style={{
           flexShrink: 0,
-          padding: "14px 16px 10px",
+          padding: "8px 16px 6px",
           display: "flex",
           alignItems: "flex-start",
-          gap: "12px",
+          gap: "10px",
           borderBottom: "1px solid #f0f0f0",
         }}
       >
         <div
           style={{
-            width: 36,
-            height: 36,
-            borderRadius: "8px",
+            width: 30,
+            height: 30,
+            borderRadius: "6px",
             backgroundColor: "#FFFFFF",
             border: "1px solid rgba(0,0,0,0.08)",
             boxShadow: "0 1px 2px rgba(0,0,0,0.06)",
@@ -275,16 +275,16 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
           <img
             src="/PDF.png"
             alt="PDF"
-            style={{ width: 18, height: 18, objectFit: "contain" }}
+            style={{ width: 16, height: 16, objectFit: "contain" }}
           />
         </div>
         <div style={{ minWidth: 0, flex: 1 }}>
           <div
             style={{
               fontWeight: 600,
-              fontSize: "13px",
+              fontSize: "12px",
               color: "#1f2937",
-              lineHeight: 1.3,
+              lineHeight: 1.25,
               overflow: "hidden",
               textOverflow: "ellipsis",
               whiteSpace: "nowrap",
@@ -294,9 +294,9 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
           </div>
           <div
             style={{
-              fontSize: "12px",
+              fontSize: "11px",
               color: "#9ca3af",
-              marginTop: "2px",
+              marginTop: "1px",
             }}
           >
             {displayDocType} · Page {pageNum}
@@ -308,8 +308,8 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
           aria-label="Close citation"
           style={{
             flexShrink: 0,
-            width: 28,
-            height: 28,
+            width: 26,
+            height: 26,
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
@@ -317,7 +317,7 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
             borderRadius: "6px",
             background: "transparent",
             color: "#6b7280",
-            fontSize: "18px",
+            fontSize: "16px",
             lineHeight: 1,
             cursor: "pointer",
             marginTop: -2,
@@ -332,7 +332,7 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
             e.currentTarget.style.color = "#6b7280";
           }}
         >
-          <ChevronDown size={18} strokeWidth={2} />
+          <ChevronDown size={16} strokeWidth={2} />
         </button>
       </div>
 

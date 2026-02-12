@@ -300,7 +300,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
 
   // Navigate to next citation
   const handleReviewNextCitation = useCallback(() => {
-    if (!hasMultipleCitations || sortedCitations.length === 0) return;
+    if (sortedCitations.length === 0) return;
     
     // Calculate next citation index (wrap around if at end)
     const nextIndex = (currentCitationIndex + 1) % sortedCitations.length;
@@ -349,7 +349,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
     }
     openExpandedCardView(nextDocId, nextFilename, highlightData, false);
     if (activeChatId && viewed) setDocumentViewedCitation(activeChatId, viewed);
-  }, [hasMultipleCitations, sortedCitations, currentCitationIndex, docId, filename, openExpandedCardView, openDocumentForChat, activeChatId, activeChatState, setDocumentViewedCitation, lastResponseMessageId, lastResponseCitations]);
+  }, [sortedCitations, currentCitationIndex, docId, filename, openExpandedCardView, openDocumentForChat, activeChatId, activeChatState, setDocumentViewedCitation, lastResponseMessageId, lastResponseCitations]);
 
   // Navigate to previous citation
   const handleReviewPrevCitation = useCallback(() => {
@@ -1602,7 +1602,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
                   <button
                     type="button"
                     onClick={handleReviewPrevCitation}
-                    disabled={sortedCitations.length <= 1}
+                    disabled={sortedCitations.length === 0}
                     className="p-1 rounded text-gray-700 hover:bg-black/5 disabled:opacity-40 disabled:pointer-events-none"
                     aria-label="Previous citation"
                   >
@@ -1611,7 +1611,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
                   <button
                     type="button"
                     onClick={handleReviewNextCitation}
-                    disabled={sortedCitations.length <= 1}
+                    disabled={sortedCitations.length === 0}
                     className="p-1 rounded text-gray-700 hover:bg-black/5 disabled:opacity-40 disabled:pointer-events-none"
                     aria-label="Next citation"
                   >
@@ -1678,7 +1678,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
               }}
               whileHover={{ backgroundColor: '#f0f0f0' }}
               whileTap={{ backgroundColor: '#e8e8e8' }}
-              className="flex items-center justify-center rounded-sm transition-all duration-150"
+              className="flex items-center justify-center rounded-sm transition-all duration-150 mr-1.5"
               style={{
                 padding: '5px',
                 height: '26px',

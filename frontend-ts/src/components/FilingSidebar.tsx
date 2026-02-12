@@ -1339,8 +1339,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
       clearTimeout(pipelineLeaveTimeoutRef.current);
       pipelineLeaveTimeoutRef.current = null;
     }
-    const rect = e.currentTarget.getBoundingClientRect();
-    setPipelinePreviewPosition({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 });
+    setPipelinePreviewPosition({ x: e.clientX, y: e.clientY });
     setHoveredPipelineDoc({ documentId: doc.id, doc });
     if (doc.status === 'processing' || reprocessingDocs.has(doc.id)) {
       setPipelineProgress(null);
@@ -2132,8 +2131,8 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                 placeholder="Search documents..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full pl-8 pr-3 py-1.5 bg-white border border-gray-200 rounded-md text-[13px] text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-0"
-                style={{ WebkitTapHighlightColor: 'transparent', transition: 'none', boxShadow: 'none' }}
+                className="w-full pl-8 pr-3 py-1.5 bg-white border border-gray-200 text-[13px] text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-0"
+                style={{ borderRadius: '14px', WebkitTapHighlightColor: 'transparent', transition: 'none', boxShadow: 'none' }}
               />
             </div>
 
@@ -2619,6 +2618,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                                     {(reprocessingDocs.has(doc.id) || doc.status === 'processing' || reprocessedDocs.has(doc.id) || doc.status === 'completed') ? (
                                       <div
                                         onMouseEnter={(e) => handlePipelineTriggerMouseEnter(doc, e)}
+                                        onMouseMove={(e) => setPipelinePreviewPosition({ x: e.clientX, y: e.clientY })}
                                         onMouseLeave={handlePipelineTriggerMouseLeave}
                                         className="p-0.5 flex-shrink-0 cursor-default relative z-10 overflow-visible"
                                       >
@@ -2800,6 +2800,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                           {(reprocessingDocs.has(doc.id) || doc.status === 'processing' || reprocessedDocs.has(doc.id) || doc.status === 'completed') ? (
                             <div
                               onMouseEnter={(e) => handlePipelineTriggerMouseEnter(doc, e)}
+                              onMouseMove={(e) => setPipelinePreviewPosition({ x: e.clientX, y: e.clientY })}
                               onMouseLeave={handlePipelineTriggerMouseLeave}
                               className="p-0.5 flex-shrink-0 cursor-default relative z-10 overflow-visible"
                             >

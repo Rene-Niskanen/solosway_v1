@@ -466,7 +466,7 @@ const ReadingStepWithTransition: React.FC<{
         {/* Show spinning wheel when actively reading, FileText when reading (not animating), BookOpenCheck when read */}
         {phase === 'reading' && keepAnimating && !hasResponseText ? (
           <span style={{ display: 'inline-flex', flexShrink: 0, width: 10, height: 10 }}>
-            <OrbitProgress color="#6b7280" size="medium" dense text="" textColor="" style={{ fontSize: '2px' }} />
+            <OrbitProgress color="#6b7280" size="medium" dense text="" textColor="" speedPlus={1} style={{ fontSize: '2px' }} />
           </span>
         ) : phase === 'reading' ? (
           <img src="/PDF.png" alt="PDF" style={{ width: '14px', height: '14px', flexShrink: 0 }} />
@@ -475,7 +475,11 @@ const ReadingStepWithTransition: React.FC<{
         )}
         {phase === 'reading' ? (
           <span className="reading-reveal-text" style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
-            <span style={actionStyle}>Reading</span>
+            {keepAnimating && !hasResponseText ? (
+              <span className="planning-shimmer-full">Reading</span>
+            ) : (
+              <span style={actionStyle}>Reading</span>
+            )}
             <span
               style={{
                 display: 'inline-flex',

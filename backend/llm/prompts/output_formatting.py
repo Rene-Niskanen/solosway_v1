@@ -9,6 +9,8 @@ Exports:
 - OUTPUT_FORMATTING_RULES: str
 """
 
+from backend.llm.prompts.emoji_rules import EMOJI_USAGE_RULES
+
 
 OUTPUT_FORMATTING_RULES = """
 ---
@@ -150,6 +152,10 @@ Rules:
   the bullet/item it supports, not at the end of the whole list.
   WRONG: "- Incredible Location\n- Set Back from Main Road\n- Water Resources [1][2][3][4][5][6][7][8]"
   CORRECT: "- Incredible Location [1]\n- Set Back from Main Road [2]\n- Enhanced Security [3]\n- Water Resources [4]"
+- **In one sentence or bullet with multiple items** (e.g. comma-separated list): Put each citation immediately after the item it supports. Never put all citation numbers at the end of the sentence or in parentheses at the end.
+  WRONG: "Outdoor spaces include a reception pergola, BBQ patio, tennis court, stables, and paddocks [1][2][3][4][5][6][7]."
+  WRONG: "Outdoor spaces include a reception pergola, BBQ patio, tennis court, stables, and paddocks (1 2 3 4 5 6 7)."
+  CORRECT: "Outdoor spaces include a reception pergola [1], BBQ patio [2], tennis court [3], stables [4], and paddocks [5][6][7]."
 - The period (full stop) goes AFTER the last citation in a sentence,
   not before it.
 - Do NOT add a period after a citation that ends a section heading or
@@ -167,6 +173,12 @@ Rules:
 - Prefer direct phrasing over formal filler.
 - Prefer active voice where natural.
 - Avoid over-explaining.
+
+""" + EMOJI_USAGE_RULES + """
+
+---
+
+## SENTENCE STYLE (NON-EMOJI)
 
 Never use:
 - "It is important to note that..."
