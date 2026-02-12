@@ -50,7 +50,8 @@ except ImportError:
     logger.warning("langgraph.checkpoint.postgres not available - checkpointer features disabled")
 
 from backend.llm.types import MainWorkflowState
-from backend.llm.nodes.routing_nodes import fetch_direct_document_chunks, handle_citation_query, handle_attachment_fast, handle_navigation_action
+from backend.llm.nodes.routing_nodes import fetch_direct_document_chunks, handle_citation_query, handle_attachment_fast, handle_navigation_action, classify_intent
+from backend.llm.nodes.conversation_node import conversation_node
 from backend.llm.nodes.processing_nodes import process_documents
 from backend.llm.nodes.summary_nodes import summarize_results
 from backend.llm.nodes.formatting_nodes import format_response
@@ -519,10 +520,30 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
     )
     logger.debug("START -> [navigation_action|citation_query|attachment_fast|direct_chunks|context_manager]")
     
-    # Context manager → planner (NEW: Planner → Executor → Responder architecture)
-    # OLD: builder.add_edge("context_manager", "agent") - replaced with planner flow
-    builder.add_edge("context_manager", "planner")
-    logger.debug("Edge: context_manager -> planner (after token check/summarization)")
+    # Conversation node (chat without document retrieval — greetings, small talk, personal)
+    builder.add_node("conversation", conversation_node)
+    logger.info("Added conversation node (chat-only path)")
+
+    # Context manager → classify intent → conversation or planner
+    # The classifier is VERY conservative: only obvious chat goes to conversation.
+    # Anything that *might* need documents goes to planner (same as the original branch).
+    async def after_context_manager(state):
+        intent = await classify_intent(state)
+        return intent  # "conversation" or "document"
+
+    builder.add_conditional_edges(
+        "context_manager",
+        after_context_manager,
+        {
+            "conversation": "conversation",
+            "document": "planner",
+        }
+    )
+    logger.debug("Conditional: context_manager -> [conversation|planner] (conservative classifier)")
+
+    # Conversation → END (single LLM call, no retrieval)
+    builder.add_edge("conversation", END)
+    logger.debug("Edge: conversation -> END")
     
     # NAVIGATION PATH: handle → format (INSTANT, skips ALL retrieval - just emits agent actions)
     builder.add_edge("handle_navigation_action", "format_response")
@@ -723,10 +744,8 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
     builder.add_edge("force_chunks", "agent")
     logger.debug("Edge: force_chunks -> agent (loop back for chunk retrieval)")
     
-    # NEW: Planner → Executor → Evaluator → Responder flow
-    # Context manager → Planner (start planning flow)
-    builder.add_edge("context_manager", "planner")
-    logger.debug("Edge: context_manager -> planner")
+    # Planner → Executor → Evaluator → Responder flow
+    # (context_manager → planner edge is set above via conditional edges)
     
     # Planner → Executor or Responder (0 steps = skip executor, go straight to responder for refine/format)
     def after_planner(state: MainWorkflowState) -> Literal["executor", "responder"]:

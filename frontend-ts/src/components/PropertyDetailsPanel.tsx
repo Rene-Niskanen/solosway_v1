@@ -16,7 +16,6 @@ import { useFilingSidebar } from '../contexts/FilingSidebarContext';
 import { useChatPanel } from '../contexts/ChatPanelContext';
 import { CitationActionMenu } from './CitationActionMenu';
 import { usePropertyAccess } from '../hooks/usePropertyAccess';
-import veloraLogo from '/Velora Logo.jpg';
 
 // PDF.js for canvas-based PDF rendering with precise highlight positioning
 import * as pdfjs from 'pdfjs-dist';
@@ -500,8 +499,7 @@ const ExpandedCardView: React.FC<{
             }
             
             if (containerWidth > 100) {
-              const availableWidth = containerWidth - 32; // Account for padding
-              const fitScale = (availableWidth / pageWidth) * 0.98;
+              const fitScale = containerWidth / pageWidth;
               
               if (fitScale >= 0.8 && fitScale <= 2.5) {
                 scale = fitScale;
@@ -855,26 +853,6 @@ const ExpandedCardView: React.FC<{
                               
                               return (
                                 <>
-                                  {/* Velora logo - positioned so top-right aligns with BBOX top-left */}
-                                  <img
-                                    src={veloraLogo}
-                                    alt="Velora"
-                                    style={{
-                                      position: 'absolute',
-                                      left: `${logoLeft}px`,
-                                      top: `${logoTop}px`,
-                                      width: `${logoWidth}px`,
-                                      height: `${logoHeight}px`,
-                                      objectFit: 'contain',
-                                      pointerEvents: 'none',
-                                      zIndex: 11,
-                                      userSelect: 'none',
-                                      border: '2px solid rgba(255, 193, 7, 0.9)',
-                                      borderRadius: '2px',
-                                      backgroundColor: 'white', // Ensure logo has background for border visibility
-                                      boxSizing: 'border-box' // Ensure border is included in width/height for proper overlap
-                                    }}
-                                  />
                                   {/* BBOX highlight */}
                                   <div
                                     onClick={(e) => {
@@ -896,23 +874,22 @@ const ExpandedCardView: React.FC<{
                                       top: `${finalBboxTop}px`,
                                       width: `${Math.min(pageDimensions.width, finalBboxWidth)}px`,
                                       height: `${Math.min(pageDimensions.height, finalBboxHeight)}px`,
-                                      backgroundColor: 'rgba(255, 235, 59, 0.4)',
-                                      border: '2px solid rgba(255, 193, 7, 0.9)',
+                                      backgroundColor: 'rgba(188, 212, 235, 0.4)',
+                                      border: '2px solid rgba(188, 212, 235, 0.4)',
                                       borderRadius: '2px',
                       pointerEvents: 'auto',
                                       cursor: 'pointer',
                                       zIndex: 10,
-                                      boxShadow: '0 2px 8px rgba(255, 193, 7, 0.3)',
                                       transformOrigin: 'top left',
-                                      transition: 'none' // No animation when changing between BBOXs
+                                      transition: 'none'
                                     }}
                                     onMouseEnter={(e) => {
-                                      e.currentTarget.style.backgroundColor = 'rgba(255, 235, 59, 0.6)';
-                                      e.currentTarget.style.borderColor = 'rgba(255, 193, 7, 1)';
+                                      e.currentTarget.style.backgroundColor = 'rgba(188, 212, 235, 0.6)';
+                                      e.currentTarget.style.borderColor = 'rgba(188, 212, 235, 0.6)';
                                     }}
                                     onMouseLeave={(e) => {
-                                      e.currentTarget.style.backgroundColor = 'rgba(255, 235, 59, 0.4)';
-                                      e.currentTarget.style.borderColor = 'rgba(255, 193, 7, 0.9)';
+                                      e.currentTarget.style.backgroundColor = 'rgba(188, 212, 235, 0.4)';
+                                      e.currentTarget.style.borderColor = 'rgba(188, 212, 235, 0.4)';
                                     }}
                                     title="Click to interact with this citation"
                                   />
@@ -3329,7 +3306,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                                     doc.parsed_text
                                   ) : (
                                     /* High-fidelity text simulation */
-                                    Array(30).fill("The property valuation report indicates a substantial increase in market value over the last fiscal quarter. Comparable sales in the immediate vicinity support this assessment, with three recent transactions involving similar square footage and amenities. Environmental factors and zoning regulations remain favorable for continued appreciation. The structure appears sound with no immediate repairs required. Rental yield projections suggest a stable income stream for investors.").join(" ")
+                                    "Document content will appear here when available."
                                   )}
               </div>
                                 {/* Realistic Page Fade */}

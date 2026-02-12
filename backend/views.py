@@ -90,6 +90,10 @@ views = Blueprint('views', __name__)
 # Set up logging
 logger = logging.getLogger(__name__)
 
+# Stream response pacing: delay in ms between chunks (0 = no delay); chunk size in characters
+STREAM_CHUNK_DELAY_MS = int(os.environ.get("STREAM_CHUNK_DELAY_MS", "18"))
+STREAM_CHUNK_SIZE = int(os.environ.get("STREAM_CHUNK_SIZE", "8"))
+
 # ---------------------------------------------------------------------------
 # Performance timing helpers (lightweight, server-side only)
 # ---------------------------------------------------------------------------
@@ -374,6 +378,66 @@ def chat_completion():
             'success': False,
             'error': str(e)
         }), 500
+
+
+@views.route('/api/chat-feedback', methods=['POST', 'OPTIONS'])
+@login_required
+def submit_chat_feedback():
+    """
+    Accept chat feedback (thumbs down) and send email to connect@solosway.co.
+    Body: category (required), details (optional), messageId (optional), conversationSnippet (optional).
+    If SMTP env vars are not set, payload is logged and 200 is returned so the UI still works.
+    """
+    if request.method == 'OPTIONS':
+        return jsonify({}), 200
+    data = request.get_json() or {}
+    category = (data.get('category') or '').strip()
+    if not category:
+        return jsonify({'success': False, 'error': 'category is required'}), 400
+    details = (data.get('details') or '').strip()
+    message_id = data.get('messageId')
+    conversation_snippet = (data.get('conversationSnippet') or '')[:2000]
+    user_email = getattr(current_user, 'email', None) or 'unknown'
+    from_email = os.environ.get('FEEDBACK_FROM_EMAIL') or os.environ.get('SMTP_USER') or 'feedback@solosway.co'
+    to_email = 'connect@solosway.co'
+    body_lines = [
+        f'Chat feedback from {user_email}',
+        f'Category: {category}',
+        f'Message ID: {message_id or "(none)"}',
+        '',
+        'Details:',
+        details or '(none)',
+        '',
+        'Conversation snippet:',
+        conversation_snippet or '(none)',
+    ]
+    body = '\n'.join(body_lines)
+    smtp_host = os.environ.get('SMTP_HOST')
+    smtp_port = int(os.environ.get('SMTP_PORT', '587'))
+    smtp_user = os.environ.get('SMTP_USER')
+    smtp_password = os.environ.get('SMTP_PASSWORD')
+    if smtp_host and smtp_user and smtp_password:
+        try:
+            import smtplib
+            from email.mime.text import MIMEText
+            from email.mime.multipart import MIMEMultipart
+            msg = MIMEMultipart()
+            msg['Subject'] = f'Chat feedback: {category[:50]}'
+            msg['From'] = from_email
+            msg['To'] = to_email
+            msg.attach(MIMEText(body, 'plain'))
+            with smtplib.SMTP(smtp_host, smtp_port) as server:
+                server.starttls()
+                server.login(smtp_user, smtp_password)
+                server.sendmail(from_email, [to_email], msg.as_string())
+            logger.info(f'Chat feedback email sent to {to_email} from {user_email}')
+        except Exception as e:
+            logger.exception('Failed to send chat feedback email')
+            return jsonify({'success': False, 'error': str(e)}), 500
+    else:
+        logger.info('Chat feedback (SMTP not configured): category=%s user=%s messageId=%s', category, user_email, message_id)
+    return jsonify({'success': True}), 200
+
 
 # Add before_request handler to respond to OPTIONS (CORS preflight) with 200 so browser gets HTTP OK
 @views.before_request
@@ -816,7 +880,7 @@ def query_documents_stream():
                 # Follow-up queries should still show reasoning steps for an agentic experience
                 # The keywords were too broad ('why', 'how', 'can you') and matched most questions
                 
-                # Citation queries still show reasoning steps (Planning next moves, then Synthesising findings)
+                # Citation queries still show reasoning steps (Planning next moves, then Summarising content)
                 is_fast_path = is_citation_query
                 
                 if is_fast_path:
@@ -980,14 +1044,14 @@ def query_documents_stream():
                             },
                             'summarize_results': {
                                 'action_type': 'planning',
-                                'message': 'Synthesising findings',
+                                'message': 'Summarising content',
                                 'details': {}
                             },
                             # Main retrieval path: step (1) "Planning next moves" from initial_reasoning; (2) from phase "Searching for {query}"
                             # planner/executor not in node_messages to avoid duplicates
                             'responder': {
                                 'action_type': 'analysing',
-                                'message': 'Synthesising findings',
+                                'message': 'Summarising content',
                                 'details': {}
                             },
                         }
@@ -996,12 +1060,13 @@ def query_documents_stream():
                         # IMPORTANT: astream_events executes the graph and emits events as nodes run
                         # We MUST emit reasoning steps immediately when nodes start
                         if is_fast_path:
-                            logger.info("🟡 [REASONING] Citation path - emitting Planning next moves + Synthesising findings")
+                            logger.info("🟡 [REASONING] Citation path - emitting Planning next moves + Summarising content")
                         else:
                             logger.info("🟡 [REASONING] Starting to stream events and emit reasoning steps...")
                         final_result = None
                         summary_already_streamed = False  # Track if we've already streamed the summary
                         streamed_summary = None  # Store the exact summary that was streamed to ensure consistency
+                        memory_storage_scheduled = False  # Track if Mem0 memory storage has been scheduled for this request
                         
                         # Execute graph with error handling for connection timeouts during execution
                         # Since we create a new graph for the current loop, we can use astream_events directly
@@ -1068,31 +1133,37 @@ def query_documents_stream():
                                     timing.mark(f"node_{node_name}_start")
                                 
                                 # Capture node start events for reasoning steps - EMIT IMMEDIATELY
+                                # Only emit steps for phases that are actually happening (searching, reading, etc.)
+                                # Do NOT emit "Summarising content" when responder starts - emit it when we actually start streaming
                                 if event_type == "on_chain_start":
                                     if is_fast_path and node_name == "handle_citation_query":
-                                        # Citation path: replace "Planning next moves" with "Synthesising findings"
+                                        # Citation path: replace "Planning next moves" with "Summarising content"
                                         reasoning_data = {
                                             'type': 'reasoning_step',
                                             'step': 'handle_citation_query',
                                             'action_type': 'analysing',
-                                            'message': 'Synthesising findings',
+                                            'message': 'Summarising content',
                                             'details': {}
                                         }
                                         yield f"data: {json.dumps(reasoning_data)}\n\n"
-                                        logger.info("🟡 [REASONING] ✅ Emitted citation step: Synthesising findings")
+                                        logger.info("🟡 [REASONING] ✅ Emitted citation step: Summarising content")
                                     elif not is_fast_path and node_name in node_messages and node_name not in processed_nodes:
-                                        processed_nodes.add(node_name)
-                                        reasoning_data = {
-                                            'type': 'reasoning_step',
-                                            'step': node_name,
-                                            'action_type': node_messages[node_name].get('action_type', 'analysing'),
-                                            'message': node_messages[node_name]['message'],
-                                            'details': node_messages[node_name]['details']
-                                        }
-                                        reasoning_json = json.dumps(reasoning_data)
-                                        yield f"data: {reasoning_json}\n\n"
-                                        logger.info(f"🟡 [REASONING] ✅ Emitted step: {node_name} - {node_messages[node_name]['message']}")
-                                        logger.debug(f"🟡 [REASONING] JSON: {reasoning_json}")
+                                        # Skip responder: "Summarising content" is emitted when we actually start streaming (first token), not when node starts
+                                        if node_name == "responder":
+                                            pass
+                                        else:
+                                            processed_nodes.add(node_name)
+                                            reasoning_data = {
+                                                'type': 'reasoning_step',
+                                                'step': node_name,
+                                                'action_type': node_messages[node_name].get('action_type', 'analysing'),
+                                                'message': node_messages[node_name]['message'],
+                                                'details': node_messages[node_name]['details']
+                                            }
+                                            reasoning_json = json.dumps(reasoning_data)
+                                            yield f"data: {reasoning_json}\n\n"
+                                            logger.info(f"🟡 [REASONING] ✅ Emitted step: {node_name} - {node_messages[node_name]['message']}")
+                                            logger.debug(f"🟡 [REASONING] JSON: {reasoning_json}")
                                 
                                 # Capture node end events to update details and track state
                                 elif event.get("event") == "on_chain_end":
@@ -1436,6 +1507,18 @@ def query_documents_stream():
                                             except Exception as cit_err:
                                                 logger.warning(f"🟡 [CITATION_STREAM] Error streaming responder citations: {cit_err}")
                                     
+                                    # Handle conversation node completion (chat-only path, no doc retrieval)
+                                    elif node_name == "conversation":
+                                        state_data = state_update if state_update else output
+                                        if final_result is None:
+                                            final_result = {}
+                                        final_summary_from_conversation = state_data.get('final_summary', '')
+                                        if final_summary_from_conversation:
+                                            final_result['final_summary'] = final_summary_from_conversation
+                                            logger.info(f"🟢 [STREAM] Captured final_summary from conversation ({len(final_summary_from_conversation)} chars)")
+                                        if state_data.get('personality_id'):
+                                            final_result['personality_id'] = state_data['personality_id']
+
                                     # Handle summarize_results node completion - citations already have bbox coordinates
                                     elif node_name == "summarize_results":
                                         state_data = state_update if state_update else output
@@ -1598,7 +1681,7 @@ def query_documents_stream():
                                                 'type': 'reasoning_step',
                                                 'step': 'summarizing_content',
                                                 'action_type': 'summarising',
-                                                'message': 'Synthesising findings',
+                                                'message': 'Summarising content',
                                                 'timestamp': summarize_timestamp,  # After reading steps
                                                 'details': {'documents_processed': doc_count}
                                             }
@@ -1619,12 +1702,13 @@ def query_documents_stream():
                                             logger.info("🚀 [STREAM] Streaming final response directly (preserving formatting)")
                                             
                                             # Stream in chunks to maintain formatting while still providing smooth streaming
-                                            chunk_size = 10  # Stream 10 characters at a time for smooth UX
-                                            for i in range(0, len(final_summary_from_state), chunk_size):
+                                            for i in range(0, len(final_summary_from_state), STREAM_CHUNK_SIZE):
                                                 if i == 0:
                                                     logger.info("🚀 [STREAM] First chunk streamed IMMEDIATELY from summarize_results")
-                                                chunk = final_summary_from_state[i:i + chunk_size]
+                                                chunk = final_summary_from_state[i:i + STREAM_CHUNK_SIZE]
                                                 yield f"data: {json.dumps({'type': 'token', 'token': chunk})}\n\n"
+                                                if STREAM_CHUNK_DELAY_MS > 0:
+                                                    time.sleep(STREAM_CHUNK_DELAY_MS / 1000.0)
                                             
                                             summary_already_streamed = True
                                             logger.info(f"🚀 [STREAM] Summary fully streamed ({len(final_summary_from_state)} chars) - continuing event loop for cleanup")
@@ -1901,6 +1985,28 @@ def query_documents_stream():
                         full_summary = streamed_summary if streamed_summary else final_result.get('final_summary', '')
                         # Strip leading "of [property]" leakage (intent phrase fragment) before streaming/complete
                         full_summary = _strip_intent_fragment_from_response(full_summary or "")
+
+                        # --- Mem0: Schedule memory storage (fire-and-forget) ---
+                        if not memory_storage_scheduled and full_summary:
+                            try:
+                                from backend.llm.config import config as llm_config
+                                if getattr(llm_config, "mem0_enabled", False):
+                                    from backend.services.memory_service import velora_memory
+                                    user_id_for_mem = initial_state.get("user_id", "anonymous")
+                                    asyncio.create_task(
+                                        velora_memory.add(
+                                            messages=[
+                                                {"role": "user", "content": query},
+                                                {"role": "assistant", "content": full_summary},
+                                            ],
+                                            user_id=str(user_id_for_mem),
+                                            metadata={"thread_id": str(session_id)},
+                                        )
+                                    )
+                                    memory_storage_scheduled = True
+                                    logger.info(f"[MEMORY] Scheduled memory storage for user={str(user_id_for_mem)[:8]}...")
+                            except Exception as mem_err:
+                                logger.warning(f"[MEMORY] Failed to schedule memory storage: {mem_err}")
                         
                         # Check if we have a summary (even if doc_outputs is empty, summary means we processed documents)
                         if not full_summary:
@@ -1930,6 +2036,17 @@ def query_documents_stream():
                         else:
                             # Stream the existing summary token by token (simulate streaming for UX)
                             logger.info("🟡 [STREAM] Streaming existing summary (no redundant LLM call)")
+                            # Emit "Summarising content" only when we actually start streaming (so UI shows it as the step happening now, not for the whole LLM call)
+                            summarizing_data = {
+                                'type': 'reasoning_step',
+                                'step': 'summarizing_content',
+                                'action_type': 'analysing',
+                                'message': 'Summarising content',
+                                'timestamp': time.time(),
+                                'details': {}
+                            }
+                            yield f"data: {json.dumps(summarizing_data)}\n\n"
+                            logger.info("✨ [STREAM] Emitted 'Summarising content' reasoning step (at stream start)")
                             yield f"data: {json.dumps({'type': 'status', 'message': 'Streaming response...'})}\n\n"
                             
                             # Stream the final response text directly - preserve all formatting
@@ -1937,12 +2054,13 @@ def query_documents_stream():
                             logger.info("🟡 [STREAM] Streaming final response directly (preserving formatting)")
                             
                             # Stream in chunks to maintain formatting while still providing smooth streaming
-                            chunk_size = 10  # Stream 10 characters at a time for smooth UX
-                            for i in range(0, len(full_summary), chunk_size):
+                            for i in range(0, len(full_summary), STREAM_CHUNK_SIZE):
                                 if i == 0:
                                     logger.info("🟡 [STREAM] First chunk streamed from existing summary")
-                                chunk = full_summary[i:i + chunk_size]
+                                chunk = full_summary[i:i + STREAM_CHUNK_SIZE]
                                 yield f"data: {json.dumps({'type': 'token', 'token': chunk})}\n\n"
+                                if STREAM_CHUNK_DELAY_MS > 0:
+                                    time.sleep(STREAM_CHUNK_DELAY_MS / 1000.0)
                         
                         # Build citations_map_for_frontend to match the SOURCE of the displayed answer.
                         # Conflict fix: citation numbers (¹²³) in the text must map to the same pipeline
@@ -2573,30 +2691,29 @@ def query_documents_stream():
                         try:
                             new_loop.run_until_complete(consume_async_gen())
                         finally:
-                            # Cleanup: Cancel pending tasks before closing event loop
-                            # This reduces "Task was destroyed but it is pending" warnings
+                            # Cleanup: Let pending tasks (e.g. Mem0 memory storage) finish, then cancel any left
                             try:
-                                # Get all pending tasks
                                 pending = [t for t in asyncio.all_tasks(new_loop) if not t.done()]
                                 if pending:
-                                    # Cancel all pending tasks (e.g., connection pool workers)
-                                    for task in pending:
-                                        if not task.done():
-                                            task.cancel()
-                                    # Give tasks a brief moment to handle cancellation
-                                    # Use a short timeout to avoid blocking
+                                    # Give tasks time to complete (e.g. Mem0 add runs as create_task)
                                     try:
                                         new_loop.run_until_complete(
                                             asyncio.wait_for(
                                                 asyncio.gather(*pending, return_exceptions=True),
-                                                timeout=0.3
+                                                timeout=3.0
                                             )
                                         )
-                                    except (asyncio.TimeoutError, Exception):
-                                        # Tasks didn't complete in time - this is OK, they'll be cleaned up
+                                    except asyncio.TimeoutError:
+                                        # After 3s, cancel any still pending
+                                        for task in pending:
+                                            if not task.done():
+                                                task.cancel()
+                                        new_loop.run_until_complete(
+                                            asyncio.gather(*pending, return_exceptions=True)
+                                        )
+                                    except Exception:
                                         pass
                             except Exception:
-                                # Ignore cleanup errors - event loop is closing anyway
                                 pass
                             
                             # Close the event loop
@@ -3361,6 +3478,28 @@ def query_documents():
         
         # Format response for frontend
         final_summary = result.get("final_summary", "")
+        
+        # --- Mem0: Schedule memory storage (non-streaming path) ---
+        if final_summary:
+            try:
+                from backend.llm.config import config as llm_config
+                if getattr(llm_config, "mem0_enabled", False):
+                    from backend.services.memory_service import velora_memory
+                    _ns_user_id = str(current_user.id) if current_user.is_authenticated else "anonymous"
+                    import asyncio as _aio
+                    _aio.run(
+                        velora_memory.add(
+                            messages=[
+                                {"role": "user", "content": query},
+                                {"role": "assistant", "content": final_summary},
+                            ],
+                            user_id=_ns_user_id,
+                            metadata={"thread_id": str(session_id)},
+                        )
+                    )
+                    logger.info(f"[MEMORY] Stored memories (non-streaming) for user={_ns_user_id[:8]}...")
+            except Exception as mem_err:
+                logger.warning(f"[MEMORY] Failed to store memories (non-streaming): {mem_err}")
         
         # Let agent handle empty responses naturally - no hard-coded fallbacks
         
@@ -4698,24 +4837,63 @@ def upload_document():
         response.headers.add('Access-Control-Allow-Credentials', 'true')
         return response, 500
 
+# One-time tokens for "open in Word Online" - token -> (bucket, key, expiry_ts). Office Online needs a URL it can fetch; presigned S3 URLs often fail.
+_temp_preview_tokens = {}
+_TEMP_PREVIEW_TOKEN_TTL_SEC = 3600
+
+
 @views.route('/api/documents/temp-preview', methods=['POST'])
 @login_required
 def temp_preview():
-    """Simple temp upload for preview - no DB save"""
+    """Simple temp upload for preview - no DB save. Returns presigned_url and open_in_word_url (proxy URL so Office Online can open the doc)."""
     file = request.files.get('file')
     if not file:
         return jsonify({'error': 'No file'}), 400
-    
+
+    bucket = os.environ['S3_UPLOAD_BUCKET']
     s3_key = f"temp-preview/{uuid.uuid4()}/{secure_filename(file.filename)}"
-    s3_client = boto3.client('s3', 
+    s3_client = boto3.client('s3',
         aws_access_key_id=os.environ['AWS_ACCESS_KEY_ID'],
         aws_secret_access_key=os.environ['AWS_SECRET_ACCESS_KEY'],
         region_name=os.environ.get('AWS_DEFAULT_REGION', 'us-east-1'))
-    
+
     file.seek(0)
-    s3_client.put_object(Bucket=os.environ['S3_UPLOAD_BUCKET'], Key=s3_key, Body=file.read(), ContentType=file.content_type)
-    url = s3_client.generate_presigned_url('get_object', Params={'Bucket': os.environ['S3_UPLOAD_BUCKET'], 'Key': s3_key}, ExpiresIn=3600)
-    return jsonify({'presigned_url': url}), 200
+    content_type = file.content_type or 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    s3_client.put_object(Bucket=bucket, Key=s3_key, Body=file.read(), ContentType=content_type)
+    presigned_url = s3_client.generate_presigned_url('get_object', Params={'Bucket': bucket, 'Key': s3_key}, ExpiresIn=3600)
+
+    token = uuid.uuid4().hex
+    _temp_preview_tokens[token] = (bucket, s3_key, time.time() + _TEMP_PREVIEW_TOKEN_TTL_SEC)
+    base = request.url_root.rstrip('/')
+    open_in_word_url = f"{base}/api/documents/open-in-word?token={token}"
+
+    return jsonify({'presigned_url': presigned_url, 'open_in_word_url': open_in_word_url}), 200
+
+
+@views.route('/api/documents/open-in-word', methods=['GET'])
+def open_in_word():
+    """Stream a temp-preview doc by one-time token so Office Online can open it (no auth; token is the secret)."""
+    token = request.args.get('token')
+    if not token:
+        return jsonify({'error': 'Missing token'}), 400
+    entry = _temp_preview_tokens.pop(token, None)
+    if not entry:
+        return jsonify({'error': 'Invalid or expired token'}), 404
+    bucket, key, expiry = entry
+    if time.time() > expiry:
+        return jsonify({'error': 'Link expired'}), 410
+    try:
+        s3_client = boto3.client('s3',
+            aws_access_key_id=os.environ['AWS_ACCESS_KEY_ID'],
+            aws_secret_access_key=os.environ['AWS_SECRET_ACCESS_KEY'],
+            region_name=os.environ.get('AWS_DEFAULT_REGION', 'us-east-1'))
+        resp = s3_client.get_object(Bucket=bucket, Key=key)
+        body = resp['Body']
+        content_type = resp.get('ContentType') or 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        return Response(body.read(), mimetype=content_type, headers={'Content-Disposition': 'inline'})
+    except Exception as e:
+        logging.exception("open_in_word get_object failed: %s", e)
+        return jsonify({'error': 'Failed to load document'}), 500
 
 @views.route('/api/documents/test-s3', methods=['POST'])
 @login_required
@@ -5074,7 +5252,6 @@ def get_document_processing_history(document_id):
 def get_document_key_facts(document_id):
     """Get key facts for a document. Returns stored key facts when present (no re-generation on refresh)."""
     try:
-        from .services.key_facts_service import build_key_facts_from_document
         doc_service = SupabaseDocumentService()
         document = doc_service.get_document_by_id(str(document_id))
         if not document:
@@ -5100,14 +5277,17 @@ def get_document_key_facts(document_id):
         if doc_summary is None:
             doc_summary = {}
 
+        from .services.key_facts_service import build_key_facts_from_document, sanitise_key_facts_list
+
         # Return stored key facts when present (generated once at processing time)
         if 'stored_key_facts' in doc_summary and isinstance(doc_summary.get('stored_key_facts'), list):
-            key_facts = doc_summary['stored_key_facts']
+            key_facts = sanitise_key_facts_list(doc_summary['stored_key_facts'])
             summary = doc_summary.get('summary') or None
             return jsonify({'success': True, 'data': {'key_facts': key_facts, 'summary': summary}}), 200
 
         # Fallback: build on the fly (e.g. legacy docs) and optionally persist for next time
         key_facts, llm_summary = build_key_facts_from_document(document, document_id=str(document_id))
+        key_facts = sanitise_key_facts_list(key_facts)
         summary = doc_summary.get('summary') or llm_summary or None
         # Lazy write-back so future loads use stored key facts
         try:

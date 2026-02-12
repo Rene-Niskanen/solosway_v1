@@ -887,3 +887,148 @@ async def handle_navigation_action(state: MainWorkflowState) -> MainWorkflowStat
         }],
         "agent_actions": None
         }
+
+
+# =============================================================================
+# INTENT CLASSIFIER (conservative, hardcoded-first)
+# =============================================================================
+#
+# Philosophy: NEVER let a document question slip through to conversation.
+# Only pure chat (greetings, small talk, personal info, opinions) goes to
+# conversation. Everything else — including anything even slightly ambiguous
+# — goes to the document/retrieval path. This preserves the retrieval
+# behaviour from the branch while still giving Velora a chat mode.
+#
+# Decision order:
+#   1. document_ids present            → document (hard rule)
+#   2. property_id present             → document (user has a property open)
+#   3. any real-estate / doc keyword   → document
+#   4. query is an obvious greeting    → conversation
+#   5. query is very short & personal  → conversation
+#   6. everything else                 → document (safe default)
+# =============================================================================
+
+# Greeting patterns that are CLEARLY just chat (no info request)
+_GREETING_EXACT = frozenset({
+    "hi", "hello", "hey", "yo", "hiya", "howdy",
+    "good morning", "good afternoon", "good evening",
+    "morning", "afternoon", "evening",
+    "hey there", "hi there", "hello there",
+    "whats up", "what's up", "sup",
+    "thanks", "thank you", "cheers", "ta",
+    "bye", "goodbye", "see you", "see ya",
+})
+
+# Short personal / about-velora patterns (only match when NO property is selected)
+_PERSONAL_STARTS = (
+    "who are you", "what are you", "what's your name", "what is your name",
+    "how are you", "how do you work", "what can you do",
+    "tell me about yourself", "introduce yourself",
+    "my name is", "i'm called", "i am called", "call me",
+    "remember that i", "remember my", "can you remember",
+    "do you remember",
+)
+
+def _strip_velora_greeting(query: str) -> str:
+    """
+    Strip greeting prefix + 'velora' so 'hey velora, how are you?' becomes 'how are you'.
+    This lets the classifier match personal/greeting patterns even when the user addresses Velora by name.
+    """
+    import re
+    # Remove leading greeting + optional 'velora' + optional punctuation/comma
+    # e.g. "hey velora, how are you" -> "how are you"
+    # e.g. "hi velora" -> ""
+    # e.g. "hello there velora, what can you do" -> "what can you do"
+    cleaned = re.sub(
+        r"^(hey|hi|hello|yo|hiya|howdy|good morning|good afternoon|good evening|morning|afternoon|evening)"
+        r"(\s+there)?"
+        r"(\s+velora)?"
+        r"[,!.\s]*",
+        "", query, flags=re.IGNORECASE,
+    ).strip()
+    return cleaned
+
+# Keywords that signal the query is about documents / real-estate data
+_DOC_KEYWORDS = frozenset({
+    # document types
+    "lease", "valuation", "report", "epc", "inspection", "contract", "filing",
+    "document", "certificate", "appraisal", "survey", "assessment",
+    # property / real-estate terms
+    "property", "value", "price", "worth", "rent", "tenant", "landlord",
+    "freehold", "leasehold", "planning", "permission", "building",
+    "floor area", "sq ft", "square", "hectare", "acre",
+    "market value", "gross internal", "net internal",
+    # actions that need documents
+    "summarise", "summarize", "summary", "overview", "details",
+    "compare", "comparison", "list", "table",
+    "find", "search", "look up", "look for", "show me", "give me",
+    "fetch", "retrieve", "pull", "get me",
+    # specific names users might ask about (will also match via property_id rule)
+    "highlands", "berden",
+})
+
+
+async def classify_intent(state: MainWorkflowState) -> str:
+    """
+    Classify user message as 'conversation' or 'document'.
+
+    VERY conservative: defaults to 'document' so retrieval is never skipped
+    by accident. Only obvious greetings / personal chat goes to 'conversation'.
+
+    No LLM call — pure heuristic for speed and reliability.
+    """
+    document_ids = state.get("document_ids") or []
+
+    # ── Rule 1: files attached → always document ──
+    if document_ids:
+        logger.info("[CLASSIFY] document_ids present -> document")
+        return "document"
+
+    user_query = (state.get("user_query") or "").strip()
+    query_lower = user_query.lower().strip("!?.,' ")
+    property_id = state.get("property_id")
+
+    # ── Rule 2: property selected → always document ──
+    # If the user has a property open, any question is very likely about it.
+    if property_id:
+        logger.info("[CLASSIFY] property_id present (%s) -> document", property_id[:8])
+        return "document"
+
+    # ── Rule 3: any document / real-estate keyword → document ──
+    if any(kw in query_lower for kw in _DOC_KEYWORDS):
+        logger.info("[CLASSIFY] doc keyword found -> document (query: '%s')", user_query[:60])
+        return "document"
+
+    # ── Rule 4: exact greeting match → conversation ──
+    # Also try after stripping "velora" address (e.g. "hey velora" → "hey" → match)
+    if query_lower in _GREETING_EXACT:
+        logger.info("[CLASSIFY] greeting -> conversation (query: '%s')", user_query[:60])
+        return "conversation"
+
+    # Strip greeting prefix + "velora" so "hey velora, how are you?" → "how are you"
+    stripped = _strip_velora_greeting(query_lower)
+
+    # Check if the whole message was just a greeting to velora (e.g. "hey velora" → stripped is empty)
+    if not stripped and "velora" in query_lower:
+        logger.info("[CLASSIFY] greeting to Velora -> conversation (query: '%s')", user_query[:60])
+        return "conversation"
+
+    # ── Rule 5: short personal / about-velora question → conversation ──
+    # Check both the original query and the stripped version (after removing greeting prefix)
+    if any(query_lower.startswith(p) for p in _PERSONAL_STARTS):
+        logger.info("[CLASSIFY] personal/about-velora -> conversation (query: '%s')", user_query[:60])
+        return "conversation"
+    if stripped and any(stripped.startswith(p) for p in _PERSONAL_STARTS):
+        logger.info("[CLASSIFY] personal/about-velora (after stripping greeting) -> conversation (query: '%s')", user_query[:60])
+        return "conversation"
+
+    # ── Rule 6: very short message with no doc keywords → conversation ──
+    # e.g. "ok", "cool", "nice one", "lol", "haha"
+    word_count = len(user_query.split())
+    if word_count <= 3:
+        logger.info("[CLASSIFY] short message (%d words), no doc keywords -> conversation (query: '%s')", word_count, user_query[:60])
+        return "conversation"
+
+    # ── Default: document (safe — better to search and find nothing) ──
+    logger.info("[CLASSIFY] default -> document (query: '%s')", user_query[:60])
+    return "document"

@@ -24,7 +24,8 @@ import 'mapbox-gl/dist/mapbox-gl.css';
 import { DocumentPreviewModal } from './DocumentPreviewModal';
 import { FileAttachmentData } from './FileAttachment';
 import { usePreview } from '../contexts/PreviewContext';
-import { useChatStateStore, useActiveChatDocumentPreview, type CitationData } from '../contexts/ChatStateStore';
+import { useChatStateStore, useActiveChatDocumentPreview, type CitationData, type DocumentPreview } from '../contexts/ChatStateStore';
+import { CitationExportProvider } from '../contexts/CitationExportContext';
 import { StandaloneExpandedCardView } from './StandaloneExpandedCardView';
 import { AgentTaskOverlay } from './AgentTaskOverlay';
 import { RecentProjectsSection } from './RecentProjectsSection';
@@ -2508,18 +2509,30 @@ export const MainContent = ({
     legacyCloseExpandedCardView();
   }, [activeChatId, chatStateDocumentPreview, closeDocumentForChat, legacyCloseExpandedCardView]);
 
-  // Citations from the last response for the open document — so citation nav (prev/next) appears when user opened doc from a citation
+  // Message whose citations we use for the document preview (nav + highlight). When moving through
+  // citations from a previous response, use that message so the selected citation stays highlighted there.
+  const messageForDocPreview = React.useMemo(() => {
+    if (!chatMessages?.length) return null;
+    const docPreview = expandedCardViewDoc as DocumentPreview | null | undefined;
+    const viewedMessageId = docPreview?.viewedCitation?.messageId;
+    if (viewedMessageId) {
+      const msg = chatMessages.find((m: { id?: string }) => m.id === viewedMessageId);
+      if (msg && msg.type === 'response') return msg;
+    }
+    return [...chatMessages].reverse().find((m: { type?: string }) => m.type === 'response') ?? null;
+  }, [chatMessages, expandedCardViewDoc]);
+
+  // Citations from the owning message for the open document — so citation nav (prev/next) and highlight stay in that response
   const citationsForDocumentPreview = React.useMemo((): CitationData[] | undefined => {
-    if (!expandedCardViewDoc?.docId || !chatMessages?.length) return undefined;
-    const lastResponse = [...chatMessages].reverse().find((m: { type?: string }) => m.type === 'response');
-    const citations: CitationData[] = lastResponse?.citations ? Object.values(lastResponse.citations) : [];
+    if (!expandedCardViewDoc?.docId || !messageForDocPreview?.citations) return undefined;
+    const citations: CitationData[] = Object.values(messageForDocPreview.citations);
     const docIdStr = String(expandedCardViewDoc.docId);
     const forDoc = citations.filter((c) => {
       const cid = String(c?.doc_id ?? (c as any)?.document_id ?? '');
       return cid === docIdStr;
     });
     return forDoc.length > 0 ? forDoc : undefined;
-  }, [expandedCardViewDoc?.docId, chatMessages]);
+  }, [expandedCardViewDoc?.docId, messageForDocPreview]);
   
   // Sync chat panel visibility to PreviewContext for document preview gating
   // Document preview will only open when chat panel is visible; otherwise it queues silently
@@ -5021,6 +5034,7 @@ export const MainContent = ({
   const leftMargin = isSidebarCollapsed ? 'ml-0' : 'ml-56';
   
   return (
+    <CitationExportProvider>
     <div 
     className={`flex-1 relative ${(currentView === 'search' || currentView === 'home') ? '' : 'bg-white'} ${leftMargin} ${className || ''}`} 
     style={{ 
@@ -5617,6 +5631,8 @@ export const MainContent = ({
               highlight={expandedCardViewDoc.highlight}
               scrollRequestId={(expandedCardViewDoc as { scrollRequestId?: number }).scrollRequestId}
               citationsFromLastResponse={citationsForDocumentPreview}
+              lastResponseMessageId={messageForDocPreview?.id}
+              lastResponseCitations={messageForDocPreview?.citations}
               onClose={closeExpandedCardView}
               chatPanelWidth={chatPanelWidth}
               sidebarWidth={(() => {
@@ -5889,5 +5905,6 @@ export const MainContent = ({
         onOpenChatHistory={onOpenChatHistory}
       />
     </div>
+    </CitationExportProvider>
   );
   };

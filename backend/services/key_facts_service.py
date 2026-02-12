@@ -13,23 +13,83 @@ logger = logging.getLogger(__name__)
 _KEY_FACT_VALUE_MAX_LENGTH = 60
 _LLM_KEY_FACTS_TEXT_MAX_LENGTH = 12000
 
+# Patterns that indicate sentence/boilerplate fragments (e.g. "REEMENT is made the 28th February 2023 between X")
+_DATE_IN_TEXT = re.compile(
+    r'(?:'
+    r'\d{1,2}(?:st|nd|rd|th)?\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4}'
+    r'|(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4}'
+    r'|\d{1,2}/\d{1,2}/\d{2,4}'
+    r')',
+    re.IGNORECASE,
+)
+
+
+def _extract_date_from_value(s: str) -> Optional[str]:
+    """If the value looks like contract boilerplate containing a date, return just the date."""
+    if not s or len(s) < 10:
+        return None
+    # Sentence fragments like "REEMENT is made the 28th February 2023 between Martin"
+    if re.search(r'\b(?:is\s+made\s+the|between|dated?)\b', s, re.IGNORECASE):
+        m = _DATE_IN_TEXT.search(s)
+        if m:
+            return m.group(0).strip()
+    return None
+
+
+def _is_likely_gibberish(value: str) -> bool:
+    """Reject values that look like OCR/context noise or sentence fragments."""
+    if not value or len(value) < 2:
+        return True
+    # Starts with lowercase and is long → likely sentence fragment
+    if value[0].islower() and len(value) > 25:
+        return True
+    # Single word (no space) and not a number/date
+    if ' ' not in value and len(value) > 30:
+        return True
+    return False
+
+
+def _strip_html_and_markdown(s: str) -> str:
+    """Remove HTML tags and markdown/XML fragments; replace with space and collapse."""
+    if not s:
+        return ''
+    # Remove HTML/XML tags: <br />, <br>, </p>, <...>, /> at start (leftover from tag)
+    s = re.sub(r'<br\s*/?>', ' ', s, flags=re.IGNORECASE)
+    s = re.sub(r'</?[a-zA-Z][^>]*>', ' ', s)  # <tag>, </tag>
+    s = re.sub(r'/?>', ' ', s)  # lone /> or >
+    s = re.sub(r'\s+', ' ', s).strip()
+    # Strip leading punctuation and markdown headings
+    s = re.sub(r'^[\s.\-,;:*#]+\s*', '', s)
+    s = re.sub(r'\s*#+\s*', ' ', s)
+    s = re.sub(r'\s+', ' ', s).strip()
+    return s
+
 
 def _sanitise_key_fact_value(value: str) -> str:
     """
-    Sanitise a key-fact value for display: strip markdown, collapse whitespace, truncate.
+    Sanitise a key-fact value for display: strip HTML, markdown, collapse whitespace, truncate.
+    Extracts clean dates from boilerplate fragments. Rejects gibberish.
     Applied to all fact values (from doc_summary, text extraction, and LLM).
     """
     if not value or not isinstance(value, str):
         return ''
-    # Collapse newlines and multiple spaces to single space
-    s = re.sub(r'\s+', ' ', value).strip()
-    # Strip common markdown / structure chars (##, **, |, leading -/*)
-    s = re.sub(r'^#+\s*', '', s)
-    s = re.sub(r'\s*#+\s*', ' ', s)
+    s = _strip_html_and_markdown(value)
+    if not s:
+        return ''
+    # Collapse newlines and multiple spaces to single space (again after any earlier steps)
+    s = re.sub(r'\s+', ' ', s).strip()
+    # Strip remaining markdown / structure chars (**, |, leading -/*)
+    s = re.sub(r'^[\s\-*•]+\s*', '', s)
     s = re.sub(r'\*\*', '', s)
     s = re.sub(r'\s*\|\s*', ' ', s)
-    s = re.sub(r'^[\s\-*•]+\s*', '', s)
     s = re.sub(r'\s+', ' ', s).strip()
+    # Remove redundant "Address: " or "Label: " style prefix when value contains its own label
+    s = re.sub(r'^(?:Address|Location|Date|Document type|Valuer|Postcode)\s*:\s*', '', s, flags=re.IGNORECASE)
+    s = s.strip()
+    # Replace boilerplate sentence fragments with just the date when present
+    extracted_date = _extract_date_from_value(s)
+    if extracted_date:
+        s = extracted_date
     # First line only if multi-line leakage remains
     if '\n' in s:
         s = s.split('\n')[0].strip()
@@ -40,9 +100,28 @@ def _sanitise_key_fact_value(value: str) -> str:
             if 0 < idx < _KEY_FACT_VALUE_MAX_LENGTH:
                 s = s[: idx + 1].strip()
                 break
+    # Remove trailing incomplete parenthetical or fragment (e.g. "(10 mile", "(12")
+    s = re.sub(r'\s*\(\d+\s*(?:mile|km|m)\s*$', '', s)
+    s = re.sub(r'\s*\(\s*$', '', s)
+    s = s.strip()
     if len(s) > _KEY_FACT_VALUE_MAX_LENGTH:
         s = s[:_KEY_FACT_VALUE_MAX_LENGTH - 1].rstrip() + '…'
+    if _is_likely_gibberish(s):
+        return ''
     return s
+
+
+def sanitise_key_facts_list(facts: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    """Run each fact's value through _sanitise_key_fact_value; drop facts with empty value. Use when returning key facts (e.g. stored) so old data gets current formatting rules."""
+    out = []
+    for item in facts:
+        if not isinstance(item, dict):
+            continue
+        label = (item.get('label') or '').strip()
+        value = _sanitise_key_fact_value((item.get('value') or '').strip())
+        if label and value:
+            out.append({'label': label, 'value': value})
+    return out
 
 
 def _get_document_text_from_vectors(document_id: str) -> str:
@@ -108,12 +187,12 @@ def llm_summarise_document_for_key_facts(doc_text: str) -> Tuple[Optional[str], 
             model=config.openai_model,
             temperature=0,
         )
-        system_msg = SystemMessage(content="""You extract key information from any type of document (reports, letters, forms, etc.).
+        system_msg = SystemMessage(content="""You extract key information from any type of document (reports, letters, forms, contracts, etc.).
 Respond with valid JSON only, no markdown or extra text, in this exact shape:
 {"summary": "Two to four sentences summarising the document.", "key_facts": [{"label": "Fact label", "value": "Fact value"}, ...]}
-- summary: brief overview (2-4 sentences). Required.
-- key_facts: 3-8 items relevant to this document. Each has "label" (short, e.g. "Date", "Parties", "Amount", "Location", "Subject") and "value" (concise, under 60 chars if possible). Choose labels that fit the document type.
-- Labels and values must be plain text, no newlines. If the document has no clear facts, set key_facts to [] but always provide a summary.""")
+- summary: brief overview in 2-4 clear sentences. Required. Use proper grammar and full words (e.g. "tenancy agreement", not "tenancy_agreement").
+- key_facts: 3-8 items. Each "label" is short (e.g. "Date", "Parties", "Amount", "Location", "Document type"). Each "value" must be a short, self-contained phrase only: a date (e.g. "28 February 2023"), an amount, names, or a single term. Do NOT include sentence fragments or boilerplate (e.g. do not use "is made the", "between X and Y" as the value—extract just the date or just the party names).
+- Labels and values: plain text only, no newlines, no markdown. If the document has no clear facts, set key_facts to [] but always provide a summary.""")
         human_msg = HumanMessage(content=f"Document text:\n\n{text}")
         response = llm.invoke([system_msg, human_msg])
         content = (response.content or "").strip()
@@ -160,24 +239,34 @@ def build_key_facts_from_document(
     # Address / location (generic for any document type)
     addr = doc_summary.get('extracted_address') or doc_summary.get('normalized_address') or doc_summary.get('filename_address')
     if addr and str(addr).strip():
-        facts.append({'label': 'Address', 'value': _sanitise_key_fact_value(str(addr).strip())})
+        v = _sanitise_key_fact_value(str(addr).strip())
+        if v:
+            facts.append({'label': 'Address', 'value': v})
     # Document type
     doc_type = doc_summary.get('classification_type') or document.get('classification_type')
     if doc_type and str(doc_type).strip():
-        facts.append({'label': 'Document type', 'value': _sanitise_key_fact_value(str(doc_type).replace('_', ' ').strip())})
+        v = _sanitise_key_fact_value(str(doc_type).replace('_', ' ').strip())
+        if v:
+            facts.append({'label': 'Document type', 'value': v})
     # Party names
     party_names = doc_summary.get('party_names')
     if isinstance(party_names, dict):
         for role, name in party_names.items():
             if name and str(name).strip():
-                facts.append({'label': role.replace('_', ' ').title(), 'value': _sanitise_key_fact_value(str(name).strip())})
+                v = _sanitise_key_fact_value(str(name).strip())
+                if v:
+                    facts.append({'label': role.replace('_', ' ').title(), 'value': v})
     elif isinstance(party_names, list):
         for item in party_names:
             if isinstance(item, dict) and item.get('name'):
                 label = item.get('role', 'Party').replace('_', ' ').title()
-                facts.append({'label': label, 'value': _sanitise_key_fact_value(str(item['name']).strip())})
+                v = _sanitise_key_fact_value(str(item['name']).strip())
+                if v:
+                    facts.append({'label': label, 'value': v})
             elif isinstance(item, str) and item.strip():
-                facts.append({'label': 'Party', 'value': _sanitise_key_fact_value(item.strip())})
+                v = _sanitise_key_fact_value(item.strip())
+                if v:
+                    facts.append({'label': 'Party', 'value': v})
 
     existing_labels = {f['label'].lower() for f in facts}
     doc_text = get_document_text_for_key_facts(document, doc_summary, document_id=document_id)

@@ -42,6 +42,7 @@ from backend.llm.utils.personality_prompts import (
     DEFAULT_PERSONALITY_ID,
 )
 from backend.llm.tools.citation_mapping import create_chunk_citation_tool, _narrow_bbox_to_cited_line
+from backend.llm.prompts.conversation import format_memories_section
 from backend.services.supabase_client_factory import get_supabase_client
 
 # Import from new citation architecture modules
@@ -1819,6 +1820,7 @@ async def generate_conversational_answer_with_citations(
     metadata_lookup_tables: Optional[Dict[str, Dict[str, Dict[str, Any]]]] = None,
     previous_personality: Optional[str] = None,
     is_first_message: bool = False,
+    user_id: Optional[str] = None,
 ) -> Tuple[str, str]:
     """
     Generate conversational answer with citation instructions (jan28th-style).
@@ -1839,6 +1841,23 @@ Previous personality for this conversation (or None if first message): {previous
 Is this the first message in the conversation? {is_first_message}
 """
     system_content = get_responder_block_citation_system_content(personality_context)
+
+    # --- Mem0 memory injection (Phase 2) ---
+    if getattr(config, "mem0_enabled", False):
+        try:
+            from backend.services.memory_service import velora_memory
+            _mem_results = await velora_memory.search(
+                query=user_query,
+                user_id=user_id or "anonymous",
+                limit=getattr(config, "mem0_search_limit", 5),
+            )
+            _mem_text = format_memories_section(_mem_results)
+            if _mem_text:
+                system_content = system_content + "\n" + _mem_text
+                logger.info(f"[RESPONDER] Injected {len(_mem_results)} memories")
+        except Exception as _mem_err:
+            logger.warning(f"[RESPONDER] Memory search failed: {_mem_err}")
+
     system_prompt = SystemMessage(content=system_content)
 
     human_message = HumanMessage(content=f"""
@@ -1853,6 +1872,7 @@ Is this the first message in the conversation? {is_first_message}
 **Instructions:**
 - Answer based on the content above. For each fact you use, cite it as [ID: X](BLOCK_CITE_ID_N) where the block id is from the <BLOCK> whose content actually contains that fact (e.g. the block with "56" and "D" for EPC current rating).
 - **Place each citation immediately after the fact it supports**, not at the end of the sentence (e.g. "...payment stablecoins are not considered securities [ID: 1](BLOCK_CITE_ID_5), amending various acts..." not "...to reflect this [ID: 1](BLOCK_CITE_ID_5).").
+- **In bullet lists:** put each citation at the end of the bullet it supports (e.g. "- Incredible Location [ID: 1](BLOCK_CITE_ID_1)"), never all citations at the end of the last bullet.
 - Put any closing or sign-off on a new line; if you add a follow-up, make it context-aware (tied to what you said and what they asked), not generic.
 - Explain in a clear, conversational way; use Markdown where it helps readability. Be accurate.
 """)
@@ -1886,6 +1906,7 @@ async def generate_answer_with_direct_citations(
     execution_results: list[Dict[str, Any]],
     previous_personality: Optional[str] = None,
     is_first_message: bool = False,
+    user_id: Optional[str] = None,
 ) -> Tuple[str, List[Dict[str, Any]], str]:
     """
     Generate answer using direct citation system with short IDs.
@@ -1929,6 +1950,7 @@ async def generate_answer_with_direct_citations(
             user_query, formatted_chunks, metadata_lookup_tables,
             previous_personality=previous_personality,
             is_first_message=is_first_message,
+            user_id=user_id,
         )
         logger.info(f"[DIRECT_CITATIONS] LLM response generated ({len(llm_response)} chars), personality_id={personality_id}")
 
@@ -2095,6 +2117,7 @@ async def responder_node(state: MainWorkflowState, runnable_config=None) -> Main
                 user_query, execution_results,
                 previous_personality=previous_personality,
                 is_first_message=is_first_message,
+                user_id=state.get("user_id"),
             )
             formatted_answer = ensure_main_tags_when_missing(formatted_answer, user_query)
 

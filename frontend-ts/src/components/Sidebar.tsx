@@ -25,6 +25,7 @@ import {
 } from "lucide-react";
 import { useChatHistory } from "./ChatHistoryContext";
 import { useFilingSidebar } from "../contexts/FilingSidebarContext";
+import { useFeedbackModal } from "../contexts/FeedbackModalContext";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { backendApi } from "@/services/backendApi";
 
@@ -89,6 +90,7 @@ export const Sidebar = ({
   const [profilePicCacheBust, setProfilePicCacheBust] = React.useState<number | null>(null);
   const brandButtonRef = React.useRef<HTMLButtonElement>(null);
   const brandDropdownRef = React.useRef<HTMLDivElement>(null);
+  const { isOpen: isFeedbackModalOpen } = useFeedbackModal();
 
   // Chat history state
   const {
@@ -408,7 +410,7 @@ export const Sidebar = ({
         className={`flex flex-col fixed top-0 h-full ${className?.includes('z-[150]') ? 'z-[150]' : 'z-[1000]'} ${className || ''}`}
         style={{
           // Match agentsidebar background
-          background: '#F2F2EE',
+          background: '#F2F2EF',
           // When collapsed OR (map visible AND collapsed), move off-screen to the left
           // When open (even in map view if user toggled it), position at left: 0
           left: shouldHideSidebar ? '-1000px' : '0px',
@@ -574,7 +576,7 @@ export const Sidebar = ({
 
         {/* Expanded Sidebar Content (Chat History) - OpenAI/Claude style */}
         {isExpanded && !shouldHideSidebar && (
-          <div className="absolute inset-0 flex flex-col" style={{ background: '#F2F2EE' }}>
+          <div className="absolute inset-0 flex flex-col" style={{ background: '#F2F2EF' }}>
             {/* Header with New Chat button */}
             <div className="px-3 pt-4 pb-2">
               <div className="flex items-center justify-between mb-4">
@@ -719,7 +721,7 @@ export const Sidebar = ({
       </div>
 
       {/* Sidebar Toggle Rail - seamless with sidebar and adjacent panels */}
-      {/* Always show toggle rail, even in map view */}
+      {/* Hidden when Share feedback modal is open so it's not visible behind the overlay */}
       <button
         type="button"
         onClick={(e) => {
@@ -735,8 +737,9 @@ export const Sidebar = ({
           // Otherwise, position at the right edge of the sidebar
           left: isCollapsed ? '0px' : (isExpanded ? '320px' : '224px'),
           // Match agentsidebar background
-          background: '#F2F2EE',
-          pointerEvents: 'auto',
+          background: '#F2F2EF',
+          pointerEvents: isFeedbackModalOpen ? 'none' : 'auto',
+          visibility: isFeedbackModalOpen ? 'hidden' : 'visible',
           transition: 'left 0s ease-out' // Instant transition to prevent gaps
         }}
       >

@@ -81,7 +81,7 @@ const CitationLink: React.FC<{
         display: 'inline-flex',
         alignItems: 'center',
         justifyContent: 'center',
-        marginLeft: '1px',
+        marginLeft: '0.35em',
         marginRight: '1px',
         minWidth: '14px',
         height: '14px',

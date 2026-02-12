@@ -2,7 +2,7 @@
 
 import React, { useState, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { Loader2, Check, Circle, AlertCircle, ChevronDown, ChevronRight } from 'lucide-react';
+import { Loader2, Check, AlertCircle, ChevronDown, ChevronRight, ChevronUp } from 'lucide-react';
 import {
   Tooltip,
   TooltipContent,
@@ -239,6 +239,7 @@ export const PipelineStagesDetail: React.FC<PipelineStagesDetailProps> = ({
   style: styleProp,
 }) => {
   const [expandedIndex, setExpandedIndex] = useState<number | null>(null);
+  const [collapsed, setCollapsed] = useState(false);
   const history = pipelineProgress?.history ?? [];
   const failedCount = getFailedStepCount(history);
   const failedIndices = getFailedStageIndices(history);
@@ -256,15 +257,14 @@ export const PipelineStagesDetail: React.FC<PipelineStagesDetailProps> = ({
       : documentName ? `Processing ${documentName}…` : 'Processing…';
   const shortTitle = isLoading ? 'Loading…' : isComplete ? 'Ready' : 'Processing…';
 
-  const progressFraction = completedStages / 5;
   const currentStepLabel =
     currentStageIndex != null ? PIPELINE_STAGE_LABELS[currentStageIndex] : null;
 
   const rootStyle: React.CSSProperties = {
     backgroundColor: 'white',
-    border: '1px solid rgba(0,0,0,0.06)',
-    borderRadius: variant === 'modal' ? 16 : 16,
-    boxShadow: '0 4px 12px rgba(0,0,0,0.08)',
+    border: '1px solid rgba(0,0,0,0.04)',
+    borderRadius: 14,
+    boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
     overflow: 'hidden',
     minHeight: variant === 'modal' ? 220 : CARD_MIN_HEIGHT,
     width: variant === 'modal' ? 320 : CARD_WIDTH,
@@ -291,43 +291,64 @@ export const PipelineStagesDetail: React.FC<PipelineStagesDetailProps> = ({
             display: 'flex',
             flexDirection: 'column',
             gap: '6px',
-            padding: '12px 16px',
+            padding: '14px 16px',
             backgroundColor: '#F9FAFB',
             borderBottom: '1px solid #E5E7EB',
           }}
         >
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
-            <span style={{ fontSize: 14, fontWeight: 600, color: '#111827', letterSpacing: '-0.01em', flex: 1, minWidth: 0 }}>
+            <button
+              type="button"
+              onClick={() => setCollapsed((c) => !c)}
+              style={{
+                padding: 0,
+                border: 'none',
+                background: 'transparent',
+                cursor: 'pointer',
+                color: '#6B7280',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                flexShrink: 0,
+              }}
+              aria-expanded={!collapsed}
+              aria-label={collapsed ? 'Expand stages' : 'Collapse stages'}
+            >
+              {collapsed ? (
+                <ChevronDown style={{ width: 16, height: 16 }} />
+              ) : (
+                <ChevronUp style={{ width: 16, height: 16 }} />
+              )}
+            </button>
+            <span style={{ fontSize: 14, fontWeight: 600, color: '#4A4A4A', letterSpacing: '-0.01em', flex: 1, minWidth: 0 }}>
               {variant === 'hover' ? shortTitle : title.length > 45 ? shortTitle : title}
             </span>
             {!isLoading && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-                <div
-                  role="progressbar"
-                  aria-valuenow={completedStages}
-                  aria-valuemin={0}
-                  aria-valuemax={5}
-                  aria-label={`Step ${completedStages} of 5 complete`}
-                  style={{
-                    width: 76,
-                    height: 4,
-                    borderRadius: 2,
-                    backgroundColor: '#E5E7EB',
-                    overflow: 'hidden',
-                  }}
-                >
-                  <div
-                    style={{
-                      width: `${progressFraction * 100}%`,
-                      height: '100%',
-                      backgroundColor: '#3B82F6',
-                      borderRadius: 2,
-                      transition: 'width 0.2s ease',
-                    }}
-                  />
+              <div
+                role="progressbar"
+                aria-valuenow={completedStages}
+                aria-valuemin={0}
+                aria-valuemax={5}
+                aria-label={`Step ${completedStages} of 5 complete`}
+                style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}
+              >
+                <div style={{ display: 'flex', gap: 3, width: 76, height: 5 }}>
+                  {[0, 1, 2, 3, 4].map((i) => (
+                    <div
+                      key={i}
+                      style={{
+                        flex: 1,
+                        height: '100%',
+                        borderRadius: 2,
+                        backgroundColor: i < completedStages ? '#4CAF50' : '#E0E0E0',
+                        transition: 'background-color 0.2s ease',
+                      }}
+                    />
+                  ))}
                 </div>
-                <span style={{ fontSize: 12, fontWeight: 600, color: '#6B7280', minWidth: 24 }}>
-                  {completedStages}/5
+                <span style={{ fontSize: 12, fontWeight: 500, minWidth: 24 }}>
+                  <span style={{ color: '#4CAF50' }}>{completedStages}</span>
+                  <span style={{ color: '#A0A0A0' }}>/5</span>
                 </span>
               </div>
             )}
@@ -349,49 +370,51 @@ export const PipelineStagesDetail: React.FC<PipelineStagesDetailProps> = ({
             </div>
           )}
           {!isLoading && currentStepLabel && (
-            <span style={{ fontSize: 11, color: '#6B7280' }}>
+            <span style={{ fontSize: 11, color: '#9CA3AF' }}>
               Step {currentStageIndex! + 1} of 5: {currentStepLabel}
             </span>
           )}
           {isMinimal && !isLoading && (
-            <span style={{ fontSize: 11, color: '#6B7280' }}>Minimal pipeline</span>
+            <span style={{ fontSize: 11, color: '#9CA3AF' }}>Minimal pipeline</span>
           )}
         </div>
 
-        {/* Error strip */}
-        {failedCount > 0 && !isLoading && (
-          <div
-            style={{
-              padding: '8px 16px',
-              backgroundColor: '#FEF2F2',
-              borderBottom: '1px solid #FECACA',
-              fontSize: 12,
-              color: '#B91C1C',
-              fontWeight: 500,
-            }}
-          >
-            {failedCount} step{failedCount !== 1 ? 's' : ''} failed
-          </div>
-        )}
+        {!collapsed && (
+          <>
+            {/* Error strip */}
+            {failedCount > 0 && !isLoading && (
+              <div
+                style={{
+                  padding: '8px 16px',
+                  backgroundColor: '#FEF2F2',
+                  borderBottom: '1px solid #FECACA',
+                  fontSize: 12,
+                  color: '#B91C1C',
+                  fontWeight: 500,
+                }}
+              >
+                {failedCount} step{failedCount !== 1 ? 's' : ''} failed
+              </div>
+            )}
 
-        {/* Body: stages list */}
-        <div
-          style={{
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 0,
-            padding: variant === 'modal' ? '12px 16px' : '12px 16px',
-            flex: 1,
-            minHeight: 0,
-            overflowY: variant === 'modal' ? 'auto' : 'hidden',
-          }}
-        >
-          {isLoading ? (
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 32 }}>
-              <Loader2 style={{ width: 32, height: 32, color: '#9CA3AF' }} className="animate-spin" />
-            </div>
-          ) : (
-            PIPELINE_STAGE_LABELS.map((label, index) => {
+            {/* Body: stages list */}
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 12,
+                padding: '14px 16px',
+                flex: 1,
+                minHeight: 0,
+                overflowY: variant === 'modal' ? 'auto' : 'hidden',
+              }}
+            >
+              {isLoading ? (
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 32 }}>
+                  <Loader2 style={{ width: 32, height: 32, color: '#9CA3AF' }} className="animate-spin" />
+                </div>
+              ) : (
+                PIPELINE_STAGE_LABELS.map((label, index) => {
               const isDone = index < completedStages;
               const isActive = currentStageIndex === index;
               const isFailed = failedIndices.includes(index);
@@ -400,45 +423,76 @@ export const PipelineStagesDetail: React.FC<PipelineStagesDetailProps> = ({
               const summary = getStageSummary(history, index);
               const isExpanded = variant === 'modal' && expandedIndex === index;
 
+              const stepNumber = index + 1;
+              const showRightChevron = !isDone && (variant === 'modal' ? (summary || entry) : true);
               const row = (
                 <div
                   key={index}
                   style={{
                     display: 'flex',
                     alignItems: 'center',
-                    gap: 10,
-                    ...(isActive ? { margin: '0 4px', padding: '6px 12px', borderRadius: 6, backgroundColor: '#F9FAFB' } : {}),
+                    gap: 12,
                   }}
                 >
-                  <div style={{ flexShrink: 0, width: 16, height: 16, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <div style={{ flexShrink: 0, width: 22, height: 22, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                     {isFailed ? (
-                      <AlertCircle style={{ width: 16, height: 16, color: '#DC2626' }} aria-label="Failed" />
+                      <AlertCircle style={{ width: 18, height: 18, color: '#DC2626' }} aria-label="Failed" />
                     ) : isDone ? (
                       <div
                         style={{
-                          width: 14,
-                          height: 14,
+                          width: 22,
+                          height: 22,
                           borderRadius: '50%',
-                          backgroundColor: '#22c55e',
+                          backgroundColor: '#4CAF50',
                           display: 'flex',
                           alignItems: 'center',
                           justifyContent: 'center',
                         }}
                       >
-                        <Check style={{ width: 8, height: 8, color: 'white', strokeWidth: 2 }} />
+                        <Check style={{ width: 12, height: 12, color: 'white', strokeWidth: 2.5 }} />
                       </div>
                     ) : isActive ? (
-                      <Loader2 style={{ width: 18, height: 18, color: '#6B7280' }} className="animate-spin" />
+                      <div
+                        style={{
+                          width: 22,
+                          height: 22,
+                          borderRadius: '50%',
+                          backgroundColor: '#000000',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          color: 'white',
+                          fontSize: 12,
+                          fontWeight: 700,
+                        }}
+                      >
+                        {stepNumber}
+                      </div>
                     ) : (
-                      <Circle style={{ width: 16, height: 16, color: '#D1D5DB', strokeWidth: 2 }} />
+                      <div
+                        style={{
+                          width: 22,
+                          height: 22,
+                          borderRadius: '50%',
+                          backgroundColor: '#E0E0E0',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          color: '#6B7280',
+                          fontSize: 12,
+                          fontWeight: 700,
+                        }}
+                      >
+                        {stepNumber}
+                      </div>
                     )}
                   </div>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <span
                       style={{
                         fontSize: 13,
-                        fontWeight: 400,
-                        color: isPending ? '#9CA3AF' : isFailed ? '#B91C1C' : '#111827',
+                        fontWeight: isActive ? 600 : 400,
+                        color: isPending ? '#6B7280' : isFailed ? '#B91C1C' : '#4A4A4A',
                       }}
                     >
                       {label}
@@ -461,7 +515,7 @@ export const PipelineStagesDetail: React.FC<PipelineStagesDetailProps> = ({
                       <div style={{ fontSize: 11, color: '#B91C1C', marginTop: 2 }}>{entry.step_message}</div>
                     )}
                   </div>
-                  {variant === 'modal' && (summary || entry) && (
+                  {variant === 'modal' && (summary || entry) ? (
                     <button
                       type="button"
                       onClick={() => toggleExpanded(index)}
@@ -470,10 +524,11 @@ export const PipelineStagesDetail: React.FC<PipelineStagesDetailProps> = ({
                         border: 'none',
                         background: 'transparent',
                         cursor: 'pointer',
-                        color: '#6B7280',
+                        color: isActive ? '#4A4A4A' : '#6B7280',
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'center',
+                        marginLeft: 'auto',
                       }}
                       aria-expanded={isExpanded}
                       aria-label={isExpanded ? 'Hide details' : 'Show details'}
@@ -484,7 +539,17 @@ export const PipelineStagesDetail: React.FC<PipelineStagesDetailProps> = ({
                         <ChevronRight style={{ width: 16, height: 16 }} />
                       )}
                     </button>
-                  )}
+                  ) : showRightChevron ? (
+                    <ChevronRight
+                      style={{
+                        width: 16,
+                        height: 16,
+                        color: isActive ? '#4A4A4A' : '#9CA3AF',
+                        flexShrink: 0,
+                        marginLeft: 'auto',
+                      }}
+                    />
+                  ) : null}
                 </div>
               );
 
@@ -549,8 +614,10 @@ export const PipelineStagesDetail: React.FC<PipelineStagesDetailProps> = ({
                 </div>
               );
             })
-          )}
-        </div>
+              )}
+            </div>
+          </>
+        )}
 
         {/* Footer (modal only) */}
         {variant === 'modal' && (

@@ -1791,7 +1791,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
           onClick={(e) => e.stopPropagation()}
           style={{
             // Match ChatPanel / agent sidebar background for consistent look
-            background: '#F2F2EE',
+            background: '#F2F2EF',
             // Position FilingSidebar at sidebar edge (covers toggle rail for seamless look)
             // When closed, move off-screen to the left to prevent gaps
             // Sidebar widths: w-0 (collapsed) = 0px, w-56 (normal) = 224px
@@ -1830,12 +1830,10 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
             {!hideCloseButton ? (
               <button
                 onClick={closeSidebar}
-                className="w-8 h-8 flex items-center justify-center rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-50 transition-colors"
+                className="p-1 rounded text-gray-600 hover:bg-black/10 flex-shrink-0 transition-colors"
                 aria-label="Close sidebar"
               >
-                <div className="w-4 h-4 flex items-center justify-center">
-                  <X className="w-4 h-4" strokeWidth={1.5} />
-                </div>
+                <X className="w-4 h-4" strokeWidth={2} />
               </button>
             ) : null}
           </div>
@@ -3014,17 +3012,6 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                         Move to folder
                       </button>
                     )}
-                    <div className="h-px bg-slate-200 my-0.5" />
-                    <button
-                      onClick={(e) => {
-                        if (item) {
-                          handleDeleteClick(openContextMenuId!, isFolder, e);
-                        }
-                      }}
-                      className="w-full px-2.5 py-1 text-left text-xs text-slate-700 hover:bg-slate-100 transition-colors"
-                    >
-                      Delete
-                    </button>
                   </>
                 );
               })()}

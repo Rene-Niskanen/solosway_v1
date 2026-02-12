@@ -135,18 +135,17 @@ export const ProjectGlassCard: React.FC<ProjectGlassCardProps> = React.memo(({ p
 
   return (
     <motion.div 
-      className="cursor-pointer relative select-none"
+      className="cursor-pointer relative select-none overflow-hidden"
       style={{
         width: '260px',
         maxWidth: '260px',
         borderRadius: '10px',
-        padding: '16px',
+        padding: '16px 16px 0 16px',
         background: 'linear-gradient(145deg, #ffffff 0%, #f8f9fa 100%)',
         boxShadow: isDragOver 
           ? '0 8px 24px rgba(59, 130, 246, 0.2), 0 4px 8px rgba(0, 0, 0, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.9)'
           : '0 8px 20px -4px rgba(0, 0, 0, 0.1), 0 4px 8px -2px rgba(0, 0, 0, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.9)',
-        border: '1px solid rgba(0, 0, 0, 0.06)',
-        borderTop: '1px solid rgba(255, 255, 255, 0.8)',
+        border: 'none',
         outline: isDragOver ? '2px dashed #3B82F6' : 'none',
         outlineOffset: '4px',
       }}
@@ -162,31 +161,24 @@ export const ProjectGlassCard: React.FC<ProjectGlassCardProps> = React.memo(({ p
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
-      {/* Vertical layout for compact card */}
-      <div className="flex flex-col">
-        {/* Top: Property image */}
-        <div className="relative w-full mb-3" style={{ height: '120px' }}>
-          <div 
-            className="overflow-hidden w-full h-full"
-            style={{
-              borderRadius: '6px',
-              background: 'linear-gradient(145deg, #ffffff 0%, #f5f5f5 100%)',
-              boxShadow: '0 4px 12px -2px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06)',
-              border: '1px solid rgba(0, 0, 0, 0.05)',
-            }}
-          >
-            <img 
-              src={property.primary_image_url || '/PROJECTS-no.image.png'} 
-              alt={propertyName}
-              className="w-full h-full object-cover pointer-events-none"
-              style={{ backgroundColor: '#FAFAFA' }}
-              draggable={false}
-            />
-          </div>
+      {/* Vertical layout: image bleeds into card padding (infinity pool), content below */}
+      <div className="flex flex-col" style={{ margin: '-16px -16px 0 -16px' }}>
+        {/* Top: Property image - full bleed via negative margin, no inner padding */}
+        <div 
+          className="relative w-full overflow-hidden"
+          style={{ height: '120px', borderRadius: '10px 10px 0 0' }}
+        >
+          <img 
+            src={property.primary_image_url || '/defaultproject.png'} 
+            alt={propertyName}
+            className="w-full h-full object-cover pointer-events-none"
+            style={{ display: 'block' }}
+            draggable={false}
+          />
         </div>
-        
-        {/* Bottom: Text Content */}
-        <div className="min-w-0">
+
+        {/* Bottom: Text Content - restore original spacing (padding lives on card) */}
+        <div className="min-w-0 pt-3 pb-0" style={{ paddingLeft: '16px', paddingRight: '16px', paddingBottom: '16px' }}>
           {/* Title */}
           <h2 
             className="mb-1 truncate"

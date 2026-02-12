@@ -671,20 +671,26 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
                 </p>
               )}
               {!keyFactsLoading && keyFacts && keyFacts.length > 0 && (
-                <p
-                  className="text-gray-700 text-xs leading-relaxed px-1 pb-2 break-words m-0"
-                  style={{ fontFamily: 'system-ui, sans-serif' }}
-                >
+                <ul className="list-none space-y-2 px-1 pb-2 m-0" style={{ fontFamily: 'system-ui, sans-serif' }}>
                   {keyFacts
-                    .map((fact) => {
-                      const value =
-                        fact.value.length > KEY_FACT_VALUE_MAX_LENGTH
-                          ? `${fact.value.slice(0, KEY_FACT_VALUE_MAX_LENGTH)}…`
-                          : fact.value;
-                      return `${fact.label}: ${value}`;
-                    })
-                    .join('. ')}
-                </p>
+                    .filter((fact) => fact.value && fact.value.trim())
+                    .map((fact, idx) => {
+                    const value =
+                      fact.value.length > KEY_FACT_VALUE_MAX_LENGTH
+                        ? `${fact.value.slice(0, KEY_FACT_VALUE_MAX_LENGTH)}…`
+                        : fact.value;
+                    return (
+                      <li key={idx} className="flex flex-col gap-0.5">
+                        <span className="text-gray-500 text-xs font-medium uppercase tracking-wide">
+                          {fact.label}
+                        </span>
+                        <span className="text-gray-700 text-xs leading-relaxed break-words">
+                          {value}
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ul>
               )}
             </div>
           </div>

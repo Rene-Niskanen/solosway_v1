@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Maximize, Maximize2, Minimize2, ZoomIn, ZoomOut, ChevronDown, ChevronLeft, ChevronRight, Download } from 'lucide-react';
+import { X, Maximize, Maximize2, Minimize2, ZoomIn, ZoomOut, ChevronDown, ChevronLeft, ChevronRight, Download, TextCursorInput } from 'lucide-react';
 import { usePreview } from '../contexts/PreviewContext';
 import { backendApi } from '../services/backendApi';
 import { useFilingSidebar } from '../contexts/FilingSidebarContext';
@@ -11,8 +11,9 @@ import { useChatPanel } from '../contexts/ChatPanelContext';
 import { CitationActionMenu } from './CitationActionMenu';
 import { useActiveChatState, useChatStateStore } from '../contexts/ChatStateStore';
 import type { CitationData, ChatMessage } from '../contexts/ChatStateStore';
+import { useCitationExportOptional } from '../contexts/CitationExportContext';
+import { cropPageImageToBbox } from '../utils/citationExport';
 import { CHAT_PANEL_WIDTH } from './SideChatPanel';
-import veloraLogo from '/Velora Logo.jpg';
 
 // PDF.js for canvas-based PDF rendering
 import * as pdfjs from 'pdfjs-dist';
@@ -22,7 +23,7 @@ import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 pdfjs.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
 /** Padding of the pages container (top/left/right/bottom) - must match the scroll content layout for BBOX centering. */
-const PAGES_CONTAINER_PADDING = 64;
+const PAGES_CONTAINER_PADDING = 2;
 
 /** Match two citations by doc_id and bbox (page, left, top). */
 function citationBboxMatch(a: CitationData, b: CitationData): boolean {
@@ -41,7 +42,9 @@ function citationBboxMatch(a: CitationData, b: CitationData): boolean {
 function findViewedCitationForCitation(
   citation: CitationData,
   messages: ChatMessage[],
-  streamingCitations: Record<string, CitationData>
+  streamingCitations: Record<string, CitationData>,
+  lastResponseMessageId?: string,
+  lastResponseCitations?: Record<string, CitationData>
 ): { messageId: string; citationNumber: string } | null {
   for (const msg of messages) {
     if (!msg.citations) continue;
@@ -53,6 +56,12 @@ function findViewedCitationForCitation(
     if (citationBboxMatch(c, citation)) {
       const lastResponse = [...messages].reverse().find((m) => m.type === 'response');
       if (lastResponse) return { messageId: lastResponse.id, citationNumber: num };
+    }
+  }
+  // Fallback: match against last response citations by bbox (e.g. when messages use different refs)
+  if (lastResponseMessageId && lastResponseCitations) {
+    for (const [num, c] of Object.entries(lastResponseCitations)) {
+      if (citationBboxMatch(c, citation)) return { messageId: lastResponseMessageId, citationNumber: num };
     }
   }
   return null;
@@ -81,6 +90,10 @@ interface StandaloneExpandedCardViewProps {
   initialFullscreen?: boolean;
   /** Citations from the last response for this document (from chat panel). When provided, used for citation nav so buttons appear. */
   citationsFromLastResponse?: CitationData[];
+  /** Last response message id (for saving citation from document view to docx). */
+  lastResponseMessageId?: string;
+  /** Last response citations keyed by number (for matching clicked citation to citation number). */
+  lastResponseCitations?: Record<string, CitationData>;
 }
 
 export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProps> = ({
@@ -90,6 +103,8 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
   scrollRequestId,
   onClose,
   citationsFromLastResponse,
+  lastResponseMessageId,
+  lastResponseCitations,
   chatPanelWidth = 0,
   sidebarWidth = 56,
   onResizeStart,
@@ -155,13 +170,19 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
   const targetScaleRef = useRef<number>(1.0); // Track target scale for smooth transitions
   const firstPageCacheRef = useRef<{ page: any; viewport: any } | null>(null); // Cache first page for instant scale calculation
   const wasFullscreenRef = useRef<boolean>(false); // Track previous fullscreen state for zoom reset
+  // When doc opens 50/50, avoid forcing PDF re-render when chatPanelWidth propagates (causes visible resize)
+  const docOpenTimeRef = useRef<number>(0);
+  const docOpenTimeSetForRef = useRef<string | null>(null);
+  const DOC_OPEN_STALE_MS = 600;
   
   // Citation action menu state
   const [citationMenuPosition, setCitationMenuPosition] = useState<{ x: number; y: number } | null>(null);
   const [selectedCitation, setSelectedCitation] = useState<any>(null);
 
-  // Build a stable key for the current highlight target (doc + page + bbox coords).
-  // Used to coordinate one-time "jump to bbox" with resize scroll-preservation logic.
+  // Citation export: screenshot mode (Choose) - drag to capture region
+  const citationExport = useCitationExportOptional();
+
+  // Stable key for the current highlight (doc + page + bbox) so we only apply center-scroll once per citation.
   const getHighlightKey = useCallback(() => {
     if (!highlight || highlight.fileId !== docId || !highlight.bbox) return null;
     const b = highlight.bbox;
@@ -171,17 +192,31 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
   const { previewFiles, getCachedPdfDocument, setCachedPdfDocument, getCachedRenderedPage, setCachedRenderedPage, isAgentOpening, setIsAgentOpening, openExpandedCardView } = usePreview();
   const { isOpen: isFilingSidebarOpen, width: filingSidebarWidth, isResizing: isFilingSidebarResizing } = useFilingSidebar();
   const { isOpen: isChatHistoryPanelOpen, width: chatHistoryPanelWidth } = useChatPanel();
-  const { activeChatId, setDocumentViewedCitation } = useChatStateStore();
+  const { activeChatId, setDocumentViewedCitation, openDocumentForChat } = useChatStateStore();
 
   // Get active chat state to access citations
   const activeChatState = useActiveChatState();
   
-  // Collect and sort citations for the current document (from last response / streaming).
-  // Prefer citationsFromLastResponse when provided (from chat panel) so nav buttons appear when user clicked a citation.
+  // Collect and sort citations for the current document — always scoped to a single response.
+  // When we have message context (lastResponseMessageId + lastResponseCitations), use only that message's citations
+  // so 1/X does not merge with citations from other responses (same document in another message = separate 1/X).
   const { sortedCitations, currentCitationIndex, hasMultipleCitations } = useMemo(() => {
     let documentCitations: CitationData[];
+    const docIdStr = String(docId);
+    const fileIdStr = highlight ? String(highlight.fileId) : docIdStr;
+    const matchDoc = (c: CitationData) => {
+      const cid = String(c.doc_id ?? (c as any).document_id ?? '');
+      return cid === docIdStr || cid === fileIdStr;
+    };
 
-    if (citationsFromLastResponse && citationsFromLastResponse.length > 0) {
+    const useLastResponseOrder = !!(lastResponseMessageId && lastResponseCitations && Object.keys(lastResponseCitations).length > 0);
+    if (useLastResponseOrder) {
+      // Use message citations in number order (1,2,3,4) so pill count matches response; no bbox dedup
+      const entries = Object.entries(lastResponseCitations!).filter(([, c]) => matchDoc(c));
+      documentCitations = entries
+        .sort(([a], [b]) => parseInt(a, 10) - parseInt(b, 10))
+        .map(([, c]) => c);
+    } else if (citationsFromLastResponse && citationsFromLastResponse.length > 0) {
       documentCitations = citationsFromLastResponse;
     } else if (activeChatState) {
       const streamingCitations = Object.values(activeChatState.streaming.citations || {});
@@ -192,28 +227,28 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
         }
       });
       const allCitations = [...streamingCitations, ...messageCitations];
-      const docIdStr = String(docId);
-      const fileIdStr = highlight ? String(highlight.fileId) : docIdStr;
-      documentCitations = allCitations.filter(citation => {
-        const cid = String(citation.doc_id ?? (citation as any).document_id ?? '');
-        return cid === docIdStr || cid === fileIdStr;
-      });
+      documentCitations = allCitations.filter(matchDoc);
     } else {
       documentCitations = [];
     }
     
-    // Remove duplicates based on bbox coordinates
-    const uniqueCitations = documentCitations.filter((citation, index, self) =>
-      index === self.findIndex(c =>
-        String(c.doc_id ?? (c as any).document_id ?? '') === String(citation.doc_id ?? (citation as any).document_id ?? '') &&
-        (c.bbox?.page ?? c.page ?? c.page_number) === (citation.bbox?.page ?? citation.page ?? citation.page_number) &&
-        Math.abs((c.bbox?.left ?? 0) - (citation.bbox?.left ?? 0)) < 0.001 &&
-        Math.abs((c.bbox?.top ?? 0) - (citation.bbox?.top ?? 0)) < 0.001
-      )
-    );
+    // When using lastResponseCitations we keep citation order (1,2,3,4) — no bbox dedup so count matches response.
+    // Otherwise remove duplicates by bbox and sort by page/position.
+    const uniqueCitations = useLastResponseOrder
+      ? documentCitations
+      : documentCitations.filter((citation, index, self) =>
+          index === self.findIndex(c =>
+            String(c.doc_id ?? (c as any).document_id ?? '') === String(citation.doc_id ?? (citation as any).document_id ?? '') &&
+            (c.bbox?.page ?? c.page ?? c.page_number) === (citation.bbox?.page ?? citation.page ?? citation.page_number) &&
+            Math.abs((c.bbox?.left ?? 0) - (citation.bbox?.left ?? 0)) < 0.001 &&
+            Math.abs((c.bbox?.top ?? 0) - (citation.bbox?.top ?? 0)) < 0.001
+          )
+        );
     
-    // Sort citations by page number, then by position (top to bottom, left to right)
-    const sorted = uniqueCitations.sort((a, b) => {
+    // Sort: when using lastResponseCitations order is already 1,2,3,4; else by page then position
+    const sorted = useLastResponseOrder
+      ? uniqueCitations
+      : [...uniqueCitations].sort((a, b) => {
       const pageA = a.page || a.bbox?.page || a.page_number || 0;
       const pageB = b.page || b.bbox?.page || b.page_number || 0;
       
@@ -261,8 +296,8 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
       currentCitationIndex: currentIndex,
       hasMultipleCitations: sorted.length > 1
     };
-  }, [activeChatState, docId, highlight, citationsFromLastResponse]);
-  
+  }, [activeChatState, docId, highlight, citationsFromLastResponse, lastResponseMessageId, lastResponseCitations]);
+
   // Navigate to next citation
   const handleReviewNextCitation = useCallback(() => {
     if (!hasMultipleCitations || sortedCitations.length === 0) return;
@@ -290,23 +325,31 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
       original_filename: nextCitation.original_filename || filename
     };
     
-    // Navigate to next citation
-    openExpandedCardView(
-      nextCitation.doc_id || docId,
-      nextCitation.original_filename || filename,
-      highlightData,
-      false // Not agent-triggered
-    );
-    // Sync blue citation button in chat to this citation
-    if (activeChatId && activeChatState) {
-      const viewed = findViewedCitationForCitation(
-        nextCitation,
-        activeChatState.messages,
-        activeChatState.streaming?.citations ?? {}
-      );
-      if (viewed) setDocumentViewedCitation(activeChatId, viewed);
+    // Resolve which citation in the response this is (so the blue citation button in chat updates)
+    const viewed = activeChatState
+      ? findViewedCitationForCitation(
+          nextCitation,
+          activeChatState.messages,
+          activeChatState.streaming?.citations ?? {},
+          lastResponseMessageId,
+          lastResponseCitations
+        )
+      : null;
+
+    // Update document preview so we navigate to the next citation (MainContent reads ChatStateStore first)
+    const nextDocId = nextCitation.doc_id || docId;
+    const nextFilename = nextCitation.original_filename || filename;
+    if (activeChatId) {
+      openDocumentForChat(activeChatId, {
+        docId: nextDocId,
+        filename: nextFilename,
+        highlight: highlightData,
+        viewedCitation: viewed ?? null,
+      });
     }
-  }, [hasMultipleCitations, sortedCitations, currentCitationIndex, docId, filename, openExpandedCardView, activeChatId, activeChatState, setDocumentViewedCitation]);
+    openExpandedCardView(nextDocId, nextFilename, highlightData, false);
+    if (activeChatId && viewed) setDocumentViewedCitation(activeChatId, viewed);
+  }, [hasMultipleCitations, sortedCitations, currentCitationIndex, docId, filename, openExpandedCardView, openDocumentForChat, activeChatId, activeChatState, setDocumentViewedCitation, lastResponseMessageId, lastResponseCitations]);
 
   // Navigate to previous citation
   const handleReviewPrevCitation = useCallback(() => {
@@ -329,22 +372,31 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
       block_content: prevCitation.matched_chunk_metadata?.content || '',
       original_filename: prevCitation.original_filename || filename
     };
-    openExpandedCardView(
-      prevCitation.doc_id || docId,
-      prevCitation.original_filename || filename,
-      highlightData,
-      false
-    );
-    // Sync blue citation button in chat to this citation
-    if (activeChatId && activeChatState) {
-      const viewed = findViewedCitationForCitation(
-        prevCitation,
-        activeChatState.messages,
-        activeChatState.streaming?.citations ?? {}
-      );
-      if (viewed) setDocumentViewedCitation(activeChatId, viewed);
+    // Resolve which citation in the response this is (so the blue citation button in chat updates)
+    const viewed = activeChatState
+      ? findViewedCitationForCitation(
+          prevCitation,
+          activeChatState.messages,
+          activeChatState.streaming?.citations ?? {},
+          lastResponseMessageId,
+          lastResponseCitations
+        )
+      : null;
+
+    // Update document preview so we navigate to the previous citation (MainContent reads ChatStateStore first)
+    const prevDocId = prevCitation.doc_id || docId;
+    const prevFilename = prevCitation.original_filename || filename;
+    if (activeChatId) {
+      openDocumentForChat(activeChatId, {
+        docId: prevDocId,
+        filename: prevFilename,
+        highlight: highlightData,
+        viewedCitation: viewed ?? null,
+      });
     }
-  }, [sortedCitations, currentCitationIndex, docId, filename, openExpandedCardView, activeChatId, activeChatState, setDocumentViewedCitation]);
+    openExpandedCardView(prevDocId, prevFilename, highlightData, false);
+    if (activeChatId && viewed) setDocumentViewedCitation(activeChatId, viewed);
+  }, [sortedCitations, currentCitationIndex, docId, filename, openExpandedCardView, openDocumentForChat, activeChatId, activeChatState, setDocumentViewedCitation, lastResponseMessageId, lastResponseCitations]);
 
   // Fetch document metadata to get the real filename
   useEffect(() => {
@@ -573,14 +625,15 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
         return null;
       }
       
-      const availableWidth = containerWidth - 128; // Account for padding (64px on each side)
+      // Use full container width so the document fills the preview (no reserved side padding)
+      const availableWidth = containerWidth;
       
       // In fullscreen mode, use fixed 100% (1.0x) zoom as starting level
       if (isFullscreen) {
         return 1.0; // 100% starting zoom for fullscreen mode
       } else {
-        // Normal mode: scale to fit available width (no cap - allow zooming beyond 100%)
-        const fitScale = (availableWidth / pageWidth) * 0.98;
+        // Normal mode: scale to fit width
+        const fitScale = availableWidth / pageWidth;
         // Only enforce a minimum scale to prevent documents from being too small
         if (fitScale >= 0.3) {
           return fitScale;
@@ -881,33 +934,35 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
   // Force recalculation when positioning changes (filing sidebar, chat panel)
   // This ensures zoom updates even when container width doesn't change but available space does
   // BUT: Skip recalculation if user has set manual zoom (don't override user's choice)
+  // When doc just opened ("View in document"), skip the heavy recalc so we don't re-render size when chatPanelWidth propagates
   useEffect(() => {
     if (pdfDocument && totalPages > 0 && manualZoom === null) {
-      // Only recalculate if manual zoom is not set
-      // Immediate synchronous update - no RAF delay
       if (pdfWrapperRef.current) {
         const currentWidth = pdfWrapperRef.current.clientWidth;
-        if (currentWidth > 50) {
-          // Calculate and apply visual scale immediately (synchronous)
+        const withinStaleWindow = docOpenTimeRef.current > 0 && Date.now() - docOpenTimeRef.current < DOC_OPEN_STALE_MS;
+        if (withinStaleWindow && currentWidth > 50) {
+          // Just opened: update scale/width tracking only; ResizeObserver already drove initial render - avoid second re-render
           const targetScale = calculateTargetScale(currentWidth);
           if (targetScale !== null) {
-            // Update visual scale - don't adjust scroll here
             setVisualScale(targetScale);
             targetScaleRef.current = targetScale;
           }
-          
-          // Always trigger recalculation when positioning changes
-          // Scroll will be preserved after re-render completes
           prevContainerWidthRef.current = currentWidth;
           setContainerWidth(currentWidth);
-          
-          // Trigger immediately - no delay
+          return;
+        }
+        if (currentWidth > 50) {
+          const targetScale = calculateTargetScale(currentWidth);
+          if (targetScale !== null) {
+            setVisualScale(targetScale);
+            targetScaleRef.current = targetScale;
+          }
+          prevContainerWidthRef.current = currentWidth;
+          setContainerWidth(currentWidth);
           setBaseScale(1.0);
           hasRenderedRef.current = false;
         }
       }
-      
-      // No cleanup needed - synchronous updates
     }
   }, [isFilingSidebarOpen, filingSidebarWidth, chatPanelWidth, pdfDocument, totalPages, calculateTargetScale, manualZoom]);
 
@@ -945,23 +1000,6 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
       // Minimal threshold - only skip truly identical widths
       const prev = prevContainerWidthRef.current;
       if (!force && Math.abs(newWidth - prev) < 0.000001) return;
-
-      // If we haven't finished the initial citation jump-to-bbox, avoid triggering a rerender here.
-      // (Rerender changes scrollHeight and can fight highlight centering.)
-      const highlightKey = getHighlightKey();
-      const suppressDuringInitialHighlightJump =
-        !!highlightKey && didAutoScrollToHighlightRef.current !== highlightKey;
-      if (suppressDuringInitialHighlightJump) {
-        prevContainerWidthRef.current = newWidth;
-        setContainerWidth(newWidth);
-        // Still update visual scale immediately even during highlight jump
-        const targetScale = calculateTargetScale(newWidth);
-        if (targetScale !== null) {
-          setVisualScale(targetScale);
-          targetScaleRef.current = targetScale;
-        }
-        return;
-      }
 
       prevContainerWidthRef.current = newWidth;
       setContainerWidth(newWidth);
@@ -1036,7 +1074,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
       document.removeEventListener('mouseup', handleResizeEnd);
       document.removeEventListener('touchend', handleResizeEnd);
     };
-  }, [pdfDocument, totalPages, calculateTargetScale, getHighlightKey, manualZoom]);
+  }, [pdfDocument, totalPages, calculateTargetScale, manualZoom]);
 
   // Render PDF pages with PDF.js native zoom - use manualZoom directly as scale
   useEffect(() => {
@@ -1052,9 +1090,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
             (() => {
               const pageWidth = firstPageCacheRef.current!.viewport.width;
               const containerWidth = pdfWrapperRef.current!.clientWidth;
-              const availableWidth = containerWidth - 128; // Account for padding (64px on each side)
-              const zoomFactor = 0.98;
-              return (availableWidth / pageWidth) * zoomFactor;
+              return containerWidth / pageWidth;
             })() : 1.0));
     
     const shouldSkip = hasRenderedRef.current && 
@@ -1068,20 +1104,11 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
     
     let cancelled = false;
     isRecalculatingRef.current = true;
-    
-    // Save viewport center point before recalculating (to preserve what user is viewing)
-    // This is the single source of truth for scroll preservation
-    const savedScrollTop = pdfWrapperRef.current?.scrollTop || 0;
-    const savedClientHeight = pdfWrapperRef.current?.clientHeight || 0;
-    const savedScrollHeight = pdfWrapperRef.current?.scrollHeight || 0;
-    // Calculate the center point of the current viewport in document coordinates
-    const savedViewportCenter = savedScrollTop + (savedClientHeight / 2);
-    
+
     const renderAllPages = async () => {
       try {
         let scale = baseScale;
-        const oldScale = prevScaleRef.current;
-        
+
         // Always recalculate scale when baseScale is 1.0 (initial load or after width change)
         if (baseScale === 1.0) {
           // If manualZoom is set, use it directly (highest priority)
@@ -1122,9 +1149,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
               if (isFullscreen) {
                 scale = 1.0; // 100% starting zoom for fullscreen mode
               } else {
-                const availableWidth = currentContainerWidth - 128; // Account for padding (64px on each side)
-                const zoomFactor = 0.98;
-                const fitScale = (availableWidth / pageWidth) * zoomFactor;
+                const fitScale = currentContainerWidth / pageWidth;
                 
                 // Only enforce a minimum scale to prevent documents from being too small
                 if (fitScale >= 0.3) {
@@ -1149,11 +1174,8 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
           scale = baseScale;
         }
         
-        // Render pages 1..highlightPage first so scroll-to-highlight can run once with correct layout (no correction when more pages load).
-        // Then render remaining pages.
         const newRenderedPages = new Map<number, { canvas: HTMLCanvasElement; dimensions: { width: number; height: number } }>();
-        const highlightPage = highlight?.bbox?.page || 1;
-        
+
         // Helper function to render a single page
         const renderPage = async (pageNum: number): Promise<{ canvas: HTMLCanvasElement; dimensions: { width: number; height: number } } | null> => {
           try {
@@ -1192,64 +1214,20 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
             return null;
           }
         };
-        
-        // STEP 1: Render pages 1 through highlightPage (in order) so we have full layout for one-time scroll
-        const from = 1;
-        const to = Math.min(Math.max(1, highlightPage), totalPages);
-        for (let pageNum = from; pageNum <= to; pageNum++) {
-          if (cancelled) break;
-          const pageData = await renderPage(pageNum);
-          if (cancelled) break;
-          if (pageData) newRenderedPages.set(pageNum, pageData);
-        }
-        if (!cancelled && newRenderedPages.size > 0) {
-          setRenderedPages(new Map(newRenderedPages));
-        }
-        
-        // STEP 2: Render remaining pages in background
+
         for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
           if (cancelled) break;
-          if (newRenderedPages.has(pageNum)) continue;
           const pageData = await renderPage(pageNum);
           if (cancelled) break;
           if (pageData) newRenderedPages.set(pageNum, pageData);
         }
-        
-        // STEP 3: Final update with all pages
+
         if (!cancelled) {
           setRenderedPages(new Map(newRenderedPages));
           hasRenderedRef.current = true;
           currentDocIdRefForPdf.current = docId;
           prevContainerWidthRef.current = pdfWrapperRef.current?.clientWidth || containerWidth || 0;
           prevScaleRef.current = scale;
-          
-          // Restore viewport center after re-render completes.
-          // IMPORTANT: Never overwrite scroll when we have a citation highlight - the scroll-to-highlight
-          // effect sets the position we want; viewport restore uses savedScrollTop from start of render
-          // (often 0), which would "shoot" the view away from the citation.
-          const highlightKey = getHighlightKey();
-          const shouldSkipViewportRestoreForHighlight = !!highlightKey;
-
-          if (!shouldSkipViewportRestoreForHighlight && oldScale > 0 && oldScale !== scale && savedScrollHeight > 0) {
-            // Minimal delay for faster adjustment - single RAF is enough
-            requestAnimationFrame(() => {
-              if (pdfWrapperRef.current && !cancelled) {
-                const newScrollHeight = pdfWrapperRef.current.scrollHeight;
-                const newClientHeight = pdfWrapperRef.current.clientHeight;
-                
-                if (newScrollHeight > 0 && oldScale > 0 && scale > 0) {
-                  // Calculate scale ratio
-                  const scaleRatio = scale / oldScale;
-                  // The viewport center in document coordinates scales with the scale ratio
-                  const newViewportCenter = savedViewportCenter * scaleRatio;
-                  // Calculate new scroll position to keep the same document position visible
-                  const newScrollTop = newViewportCenter - (newClientHeight / 2);
-                  const maxScroll = Math.max(0, newScrollHeight - newClientHeight);
-                  pdfWrapperRef.current.scrollTop = Math.max(0, Math.min(newScrollTop, maxScroll));
-                }
-              }
-            });
-          }
         }
         isRecalculatingRef.current = false;
       } catch (error) {
@@ -1264,7 +1242,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
       cancelled = true;
       isRecalculatingRef.current = false;
     };
-  }, [pdfDocument, docId, totalPages, baseScale, containerWidth, getCachedRenderedPage, setCachedRenderedPage, getHighlightKey, manualZoom, isFullscreen]);
+  }, [pdfDocument, docId, totalPages, baseScale, containerWidth, getCachedRenderedPage, setCachedRenderedPage, manualZoom, isFullscreen]);
 
 
   // Reset scroll tracking and "initial scroll applied" when document, highlight, or scroll request changes.
@@ -1301,8 +1279,8 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
     // Include top padding so BBOX position matches layout
     const bboxCenterAbsoluteY = PAGES_CONTAINER_PADDING + pageOffset + bboxCenterY;
     const viewportWidth = el.clientWidth;
-    // Position BBOX at 35% from top (keeps more context visible below the citation)
-    const scrollTop = bboxCenterAbsoluteY - viewportHeight * 0.35;
+    // Center the bbox vertically in the viewport
+    const scrollTop = bboxCenterAbsoluteY - viewportHeight * 0.5;
     // Include left padding so BBOX lands on horizontal center of viewport
     const contentCenterX = PAGES_CONTAINER_PADDING + bboxCenterX;
     const scrollLeft = contentCenterX - viewportWidth * 0.5;
@@ -1403,13 +1381,10 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
   const availableWidth = typeof window !== 'undefined' ? window.innerWidth - sidebarWidth - agentSidebarWidth : 0;
   
   // When doc opens 50/50, parent may report stale chatPanelWidth for 1–2 frames. Use expected 50% during a short window so opening width doesn't bug out.
-  const docOpenTimeRef = useRef<number>(0);
-  const docOpenTimeSetForRef = useRef<string | null>(null);
   useEffect(() => {
     if (!isFullscreen) docOpenTimeRef.current = Date.now();
     return () => { docOpenTimeRef.current = 0; };
   }, [docId, isFullscreen]);
-  const CORRECT_STALE_MS = 600; // Use 50% for first 600ms so panel never jumps when opening from "View in document"
 
   const { panelWidth, leftPosition } = (() => {
     // Minimum width for document preview
@@ -1423,7 +1398,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
       docOpenTimeRef.current = Date.now();
       docOpenTimeSetForRef.current = docId;
     }
-    const isWithinStaleWindow = docOpenTimeRef.current > 0 && Date.now() - docOpenTimeRef.current < CORRECT_STALE_MS;
+    const isWithinStaleWindow = docOpenTimeRef.current > 0 && Date.now() - docOpenTimeRef.current < DOC_OPEN_STALE_MS;
     // Snap to 50% when within 2px to avoid 1px rounding jitter and glitchy re-renders at exactly 50/50
     const isNear50 = Math.abs(roundedProp - expected50ChatWidth) <= 2;
     // During open window: always use 50% so the panel never moves when it loads (no jump after load)
@@ -1481,7 +1456,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
       transition={{ duration: 0 }}
       className={isFullscreen ? `fixed inset-0 flex flex-col ${initialFullscreen ? 'z-[100010]' : 'z-[10000]'}` : "flex flex-col z-[9999]"}
       style={{
-        backgroundColor: '#F2F2EF',
+        backgroundColor: '#F9F9F8',
         ...(isFullscreen ? {
           position: 'fixed',
           top: 0,
@@ -1558,30 +1533,25 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
       
       {/* Header - filename bar (close, PDF icon, name, fullscreen) */}
       <div className="pr-4 pl-6 shrink-0" style={{ 
-        background: '#F2F2EF',
-        backgroundColor: '#F2F2EF',
-        border: '4px solid #F2F2EF',
-        paddingTop: '15px',
-        paddingBottom: '19px',
+        background: '#F9F9F8',
+        backgroundColor: '#F9F9F8',
+        border: '4px solid #F9F9F8',
+        paddingTop: '12px',
+        paddingBottom: '8px',
         borderTopLeftRadius: isFullscreen ? 0 : '16px',
         borderTopRightRadius: isFullscreen ? 0 : '16px',
-        margin: '8px',
+        margin: '8px 8px 4px 8px',
         borderRadius: '8px'
       }}>
         <div className="flex items-center justify-between">
-          {/* Left spacer to balance the layout */}
-          <div className="flex items-center" style={{ minWidth: '80px' }}>
-          </div>
-          
-          {/* Center: Close button + PDF icon + Document name */}
+          {/* Left: Close button + PDF icon + Document name */}
           <div 
-            className="flex items-center gap-2 min-w-0"
+            className="flex items-center gap-2 min-w-0 max-w-[43%]"
             style={{
               zIndex: 1,
-              borderBottom: '2px solid rgba(0, 0, 0, 0.8)',
+              borderBottom: '2px solid rgba(0, 0, 0, 0.25)',
               paddingBottom: '4px',
-              width: 'fit-content',
-              margin: '0 auto'
+              width: 'fit-content'
             }}
           >
             <button
@@ -1607,34 +1577,58 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
             </span>
           </div>
           
-          {/* Right: Citations nav (when viewing cited doc) + Download + Fullscreen */}
-          <div className="flex items-center gap-2 justify-end" style={{ minWidth: '80px' }}>
-            {/* Citations: label + counter + prev/next buttons (when we have citations for this doc) */}
-            {sortedCitations.length > 0 && (
-              <div className="flex items-center gap-2 mr-1">
-                <span className="text-slate-600 text-xs font-medium whitespace-nowrap">Citations</span>
-                <span className="text-slate-500 text-xs tabular-nums whitespace-nowrap">
-                  {currentCitationIndex + 1}/{sortedCitations.length}
-                </span>
-                <button
-                  type="button"
-                  onClick={handleReviewPrevCitation}
-                  disabled={sortedCitations.length <= 1}
-                  className="p-1 rounded text-gray-700 hover:bg-black/10 disabled:opacity-40 disabled:pointer-events-none"
-                  aria-label="Previous citation"
+          {/* Right: Citations nav + Download + Fullscreen — always show citations pill so layout is consistent */}
+          <div className="flex items-center gap-0 justify-end min-h-[30px]">
+            {/* Citations: compact pill — show count and prev/next when we have citations, else muted "—" */}
+            {!initialFullscreen && (
+              <>
+                <div
+                  className="flex items-center gap-0 rounded-md border border-slate-200/70"
+                  style={{
+                    padding: '3px 6px 3px 10px',
+                    backgroundColor: '#F9F9F8',
+                  }}
                 >
-                  <ChevronLeft className="w-4 h-4" strokeWidth={2} />
-                </button>
-                <button
-                  type="button"
-                  onClick={handleReviewNextCitation}
-                  disabled={sortedCitations.length <= 1}
-                  className="p-1 rounded text-gray-700 hover:bg-black/10 disabled:opacity-40 disabled:pointer-events-none"
-                  aria-label="Next citation"
-                >
-                  <ChevronRight className="w-4 h-4" strokeWidth={2} />
-                </button>
-              </div>
+                  {panelWidth >= 400 ? (
+                    <span className="text-slate-600 text-xs font-medium whitespace-nowrap mr-1.5">Citations</span>
+                  ) : (
+                    <span className="mr-1.5 flex items-center justify-center text-slate-600" title="Citations">
+                      <TextCursorInput className="w-4 h-4" strokeWidth={2} />
+                    </span>
+                  )}
+                  <span className={`text-xs tabular-nums whitespace-nowrap font-medium ml-2 mr-2 ${sortedCitations.length > 0 ? 'text-slate-500' : 'text-slate-400'}`}>
+                    {sortedCitations.length > 0 ? `${currentCitationIndex + 1}/${sortedCitations.length}` : '—'}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleReviewPrevCitation}
+                    disabled={sortedCitations.length <= 1}
+                    className="p-1 rounded text-gray-700 hover:bg-black/5 disabled:opacity-40 disabled:pointer-events-none"
+                    aria-label="Previous citation"
+                  >
+                    <ChevronLeft className="w-4 h-4" strokeWidth={2} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleReviewNextCitation}
+                    disabled={sortedCitations.length <= 1}
+                    className="p-1 rounded text-gray-700 hover:bg-black/5 disabled:opacity-40 disabled:pointer-events-none"
+                    aria-label="Next citation"
+                  >
+                    <ChevronRight className="w-4 h-4" strokeWidth={2} />
+                  </button>
+                </div>
+                <div
+                  role="presentation"
+                  style={{
+                    width: '1px',
+                    height: '18px',
+                    backgroundColor: 'rgba(0,0,0,0.12)',
+                    marginLeft: '10px',
+                    marginRight: '6px',
+                  }}
+                />
+              </>
             )}
             {/* Quick Zoom dropdown - only show in fullscreen mode */}
             {isFullscreen && (
@@ -1733,9 +1727,10 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
           flex: '1 1 0%', // flex-basis 0 so this column gets correct height at opening width (fixes scroll when narrow)
           minHeight: 0, // Critical: allows flex item to shrink and enable scrolling
           overflow: 'auto',
-          backgroundColor: '#F2F2EF',
+          backgroundColor: '#F9F9F8',
           borderBottomLeftRadius: isFullscreen ? 0 : '16px',
-          borderBottomRightRadius: isFullscreen ? 0 : '16px'
+          borderBottomRightRadius: isFullscreen ? 0 : '16px',
+          position: 'relative'
         }}
       >
         {error && (
@@ -1757,6 +1752,9 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
                   padding: `${PAGES_CONTAINER_PADDING}px`,
                   transformOrigin: 'top center',
                   willChange: isZooming ? 'transform' : 'auto',
+                  boxSizing: 'border-box',
+                  width: '100%',
+                  minWidth: 0,
                   // Pre-position: hide content until scroll is set so first paint shows citation centered (no correction)
                   visibility: highlight && !initialScrollApplied ? 'hidden' : 'visible'
                 }}
@@ -1768,7 +1766,9 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
                       position: 'relative',
                       width: dimensions.width,
                       height: dimensions.height,
-                      marginBottom: '16px',
+                      maxWidth: '100%',
+                      flexShrink: 0,
+                      marginBottom: '12px',
                       backgroundColor: 'white',
                       boxShadow: '0 2px 8px rgba(0,0,0,0.1)'
                     }}
@@ -1832,26 +1832,6 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
                       
                       return (
                         <>
-                          {/* Velora logo - positioned so top-right aligns with BBOX top-left */}
-                          <img
-                            src={veloraLogo}
-                            alt="Velora"
-                            style={{
-                              position: 'absolute',
-                              left: `${logoLeft}px`,
-                              top: `${logoTop}px`,
-                              width: `${logoWidth}px`,
-                              height: `${logoHeight}px`,
-                              objectFit: 'contain',
-                              pointerEvents: 'none',
-                              zIndex: 11,
-                              userSelect: 'none',
-                              border: '2px solid rgba(255, 193, 7, 0.9)',
-                              borderRadius: '2px',
-                              backgroundColor: 'white', // Ensure logo has background for border visibility
-                              boxSizing: 'border-box' // Ensure border is included in width/height for proper overlap
-                            }}
-                          />
                           {/* BBOX highlight */}
                           <div
                             onClick={(e) => {
@@ -1878,22 +1858,21 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
                               top: `${finalBboxTop}px`,
                               width: `${Math.min(dimensions.width, finalBboxWidth)}px`,
                               height: `${Math.min(dimensions.height, finalBboxHeight)}px`,
-                              backgroundColor: 'rgba(255, 235, 59, 0.4)',
-                              border: '2px solid rgba(255, 193, 7, 0.9)',
+                              backgroundColor: 'rgba(188, 212, 235, 0.4)',
+                              border: '2px solid rgba(188, 212, 235, 0.4)',
                               borderRadius: '2px',
                               pointerEvents: 'auto',
                               cursor: 'pointer',
                               zIndex: 10,
-                              boxShadow: '0 2px 8px rgba(255, 193, 7, 0.3)',
                               transition: 'none' // No animation when changing between BBOXs
                             }}
                             onMouseEnter={(e) => {
-                              e.currentTarget.style.backgroundColor = 'rgba(255, 235, 59, 0.6)';
-                              e.currentTarget.style.borderColor = 'rgba(255, 193, 7, 1)';
+                              e.currentTarget.style.backgroundColor = 'rgba(188, 212, 235, 0.6)';
+                              e.currentTarget.style.borderColor = 'rgba(188, 212, 235, 0.6)';
                             }}
                             onMouseLeave={(e) => {
-                              e.currentTarget.style.backgroundColor = 'rgba(255, 235, 59, 0.4)';
-                              e.currentTarget.style.borderColor = 'rgba(255, 193, 7, 0.9)';
+                              e.currentTarget.style.backgroundColor = 'rgba(188, 212, 235, 0.4)';
+                              e.currentTarget.style.borderColor = 'rgba(188, 212, 235, 0.4)';
                             }}
                             title="Click to interact with this citation"
                           />
@@ -1904,7 +1883,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
                 ))}
               </div>
             )}
-            
+
             {/* Show loading only if no pages rendered yet and still loading */}
             {isPDF && renderedPages.size === 0 && loading && (
               <div className="flex items-center justify-center h-full">
@@ -1948,19 +1927,52 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
             });
             window.dispatchEvent(event);
           }}
-          onAddToWriting={(citation) => {
-            const curatedKey = 'curated_writing_citations';
-            const existing = JSON.parse(localStorage.getItem(curatedKey) || '[]');
-            const newEntry = {
-              id: `citation-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-              citation,
-              addedAt: new Date().toISOString(),
-              documentName: citation.original_filename || 'Unknown document',
-              content: citation.block_content || ''
-            };
-            existing.push(newEntry);
-            localStorage.setItem(curatedKey, JSON.stringify(existing));
-            window.dispatchEvent(new CustomEvent('citation-added-to-writing', { detail: newEntry }));
+          onAddToWriting={async (citation) => {
+            if (!citationExport || !lastResponseMessageId || !lastResponseCitations || !renderedPages.size) {
+              setCitationMenuPosition(null);
+              setSelectedCitation(null);
+              return;
+            }
+            const docIdStr = String(citation.fileId || citation.doc_id);
+            const pageNum = citation.bbox?.page ?? 1;
+            const bbox = citation.bbox ?? { left: 0, top: 0, width: 1, height: 1, page: pageNum };
+            const tol = 0.02;
+            const citationNumber = Object.entries(lastResponseCitations).find(([, c]) => {
+              const cDoc = String(c?.doc_id ?? (c as any)?.document_id ?? '');
+              const cPage = c?.page ?? c?.bbox?.page ?? c?.page_number ?? 0;
+              if (cDoc !== docIdStr || cPage !== pageNum) return false;
+              const cb = c?.bbox;
+              if (!cb) return false;
+              return Math.abs((cb.left ?? 0) - (bbox.left ?? 0)) < tol && Math.abs((cb.top ?? 0) - (bbox.top ?? 0)) < tol;
+            })?.[0];
+            if (!citationNumber) {
+              setCitationMenuPosition(null);
+              setSelectedCitation(null);
+              return;
+            }
+            const pageEntry = renderedPages.get(pageNum);
+            if (!pageEntry) {
+              setCitationMenuPosition(null);
+              setSelectedCitation(null);
+              return;
+            }
+            const { canvas, dimensions } = pageEntry;
+            const dataUrl = canvas.toDataURL('image/png');
+            try {
+              const cropped = await cropPageImageToBbox(dataUrl, dimensions.width, dimensions.height, bbox);
+              citationExport.setCitationExportData((prev) => ({
+                ...prev,
+                [lastResponseMessageId]: {
+                  ...(prev[lastResponseMessageId] ?? {}),
+                  [citationNumber]: { type: 'copy', imageDataUrl: cropped },
+                },
+              }));
+              window.dispatchEvent(new CustomEvent('citation-saved-for-docx'));
+            } catch (_) {
+              // ignore
+            }
+            setCitationMenuPosition(null);
+            setSelectedCitation(null);
           }}
         />
       )}

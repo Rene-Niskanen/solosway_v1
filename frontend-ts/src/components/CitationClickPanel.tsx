@@ -1,8 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { FileSearchCorner, MessageCircle } from "lucide-react";
-import veloraLogo from "/Velora Logo.jpg";
+import { ChevronDown, FileSearchCorner, MessageCircle, Save } from "lucide-react";
 
 /** Debug payload from backend: why this bbox was chosen (for citation mapping diagnosis). */
 export interface CitationDebugInfo {
@@ -99,6 +98,7 @@ export interface CitationClickPanelProps {
   cachedPageImage: CachedPageImage | null;
   onViewInDocument: () => void;
   onAskFollowUp: () => void;
+  onSaveCitation?: () => void;
   onClose: () => void;
 }
 
@@ -108,6 +108,7 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
   cachedPageImage,
   onViewInDocument,
   onAskFollowUp,
+  onSaveCitation,
   onClose,
 }) => {
   const maxHeightPx = typeof window !== "undefined" ? (window.innerHeight * PANEL_MAX_HEIGHT_VH) / 100 : 500;
@@ -301,6 +302,38 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
             {displayDocType} · Page {pageNum}
           </div>
         </div>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close citation"
+          style={{
+            flexShrink: 0,
+            width: 28,
+            height: 28,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            border: "none",
+            borderRadius: "6px",
+            background: "transparent",
+            color: "#6b7280",
+            fontSize: "18px",
+            lineHeight: 1,
+            cursor: "pointer",
+            marginTop: -2,
+            marginRight: -4,
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.background = "#f3f4f6";
+            e.currentTarget.style.color = "#374151";
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.background = "transparent";
+            e.currentTarget.style.color = "#6b7280";
+          }}
+        >
+          <ChevronDown size={18} strokeWidth={2} />
+        </button>
       </div>
 
       {/* Citation debug: why this bbox was chosen (for diagnosing wrong highlights) */}
@@ -420,25 +453,6 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
               />
               {hasBbox && (
                 <>
-                  <img
-                    src={veloraLogo}
-                    alt="Velora"
-                    style={{
-                      position: "absolute",
-                      left: `${logoLeft}px`,
-                      top: `${logoTop}px`,
-                      width: `${logoWidth}px`,
-                      height: `${logoHeight}px`,
-                      objectFit: "contain",
-                      pointerEvents: "none",
-                      zIndex: 11,
-                      userSelect: "none",
-                      border: "2px solid rgba(255, 193, 7, 0.9)",
-                      borderRadius: "2px",
-                      backgroundColor: "white",
-                      boxSizing: "border-box",
-                    }}
-                  />
                   <div
                     style={{
                       position: "absolute",
@@ -446,12 +460,11 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
                       top: `${finalBboxTop}px`,
                       width: `${Math.min(cachedPageImage.imageWidth, finalBboxWidth)}px`,
                       height: `${Math.min(cachedPageImage.imageHeight, finalBboxHeight)}px`,
-                      backgroundColor: "rgba(255, 235, 59, 0.4)",
-                      border: "2px solid rgba(255, 193, 7, 0.9)",
+                      backgroundColor: "rgba(188, 212, 235, 0.4)",
+                      border: "2px solid rgba(188, 212, 235, 0.4)",
                       borderRadius: "2px",
                       pointerEvents: "none",
                       zIndex: 10,
-                      boxShadow: "0 2px 8px rgba(255, 193, 7, 0.3)",
                     }}
                   />
                 </>
@@ -501,7 +514,7 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
               fontSize: "12px",
               fontWeight: 400,
               color: "#374151",
-              backgroundColor: "rgba(255, 255, 255, 0.95)",
+              backgroundColor: "#FFFFFF",
               border: "1px solid #d1d5db",
               borderRadius: "20px",
               cursor: "pointer",
@@ -510,7 +523,7 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
               pointerEvents: "auto",
             }}
             onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = "#f9fafb"; }}
-            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = "rgba(255, 255, 255, 0.95)"; }}
+            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = "#FFFFFF"; }}
           >
             <MessageCircle style={{ width: 14, height: 14 }} strokeWidth={2} />
             Ask follow up
@@ -527,7 +540,7 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
               fontSize: "12px",
               fontWeight: 400,
               color: "#374151",
-              backgroundColor: "rgba(255, 255, 255, 0.95)",
+              backgroundColor: "#FFFFFF",
               border: "1px solid #d1d5db",
               borderRadius: "20px",
               cursor: "pointer",
@@ -536,11 +549,39 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
               pointerEvents: "auto",
             }}
             onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = "#f9fafb"; }}
-            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = "rgba(255, 255, 255, 0.95)"; }}
+            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = "#FFFFFF"; }}
           >
             <FileSearchCorner size={14} />
             View in document
           </button>
+          {onSaveCitation && (
+            <button
+              type="button"
+              onClick={onSaveCitation}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: "5px",
+                padding: "6px 12px",
+                fontSize: "12px",
+                fontWeight: 400,
+                color: "#374151",
+                backgroundColor: "#FFFFFF",
+                border: "1px solid #d1d5db",
+                borderRadius: "20px",
+                cursor: "pointer",
+                transition: "background-color 0.15s ease",
+                boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
+                pointerEvents: "auto",
+              }}
+              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = "#f9fafb"; }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = "#FFFFFF"; }}
+            >
+              <Save size={14} strokeWidth={2} />
+              Save
+            </button>
+          )}
         </div>
       </div>
     </div>

@@ -25,9 +25,11 @@ interface DocumentData {
 
 interface RecentDocumentsSectionProps {
   documents?: DocumentData[];
+  /** When true, use smaller card size and gap (e.g. for projects page) */
+  compact?: boolean;
 }
 
-export const RecentDocumentsSection: React.FC<RecentDocumentsSectionProps> = ({ documents = [] }) => {
+export const RecentDocumentsSection: React.FC<RecentDocumentsSectionProps> = ({ documents = [], compact = false }) => {
   const { openExpandedCardView } = usePreview();
   
   // Preload all thumbnails immediately when documents change (before render)
@@ -70,19 +72,20 @@ export const RecentDocumentsSection: React.FC<RecentDocumentsSectionProps> = ({ 
       <div 
         className="recent-docs-scroll flex overflow-x-auto"
         style={{ 
-          gap: '60px',
-          paddingBottom: '8px',
+          gap: compact ? '20px' : '60px',
+          paddingBottom: compact ? '4px' : '8px',
           scrollbarWidth: 'thin',
-          scrollbarColor: 'rgba(0, 0, 0, 0.2) transparent',
+          scrollbarColor: 'rgba(255, 255, 255, 0.25) transparent',
           width: '100%',
           minWidth: '100%',
         }}
       >
         {documents.map(doc => (
-          <div key={doc.id} style={{ flexShrink: 0, width: '180px' }}>
+          <div key={doc.id} style={{ flexShrink: 0, width: compact ? '152px' : '180px' }}>
             <RecentDocumentCard 
               document={doc}
               onClick={() => handleDocumentClick(doc)}
+              compact={compact}
             />
           </div>
         ))}

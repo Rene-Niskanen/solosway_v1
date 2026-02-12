@@ -27,6 +27,8 @@ interface DocumentData {
 interface RecentDocumentCardProps {
   document: DocumentData;
   onClick?: () => void;
+  /** When true, use smaller card size (e.g. projects page files area) */
+  compact?: boolean;
 }
 
 // ==================== UNIFIED THUMBNAIL CACHE ====================
@@ -180,7 +182,14 @@ export const preloadDocumentThumbnails = (documents: DocumentData[]): void => {
 };
 
 // ==================== COMPONENT ====================
-export const RecentDocumentCard: React.FC<RecentDocumentCardProps> = React.memo(({ document, onClick }) => {
+const CARD_WIDTH = 180;
+const CARD_HEIGHT = 240;
+const COMPACT_WIDTH = 152;
+const COMPACT_HEIGHT = 200;
+
+export const RecentDocumentCard: React.FC<RecentDocumentCardProps> = React.memo(({ document, onClick, compact = false }) => {
+  const width = compact ? COMPACT_WIDTH : CARD_WIDTH;
+  const height = compact ? COMPACT_HEIGHT : CARD_HEIGHT;
   // Check if already cached (instant display)
   const cachedThumbnail = getCachedThumbnail(document.id);
   
@@ -259,12 +268,12 @@ export const RecentDocumentCard: React.FC<RecentDocumentCardProps> = React.memo(
       draggable="true"
       onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}
-      style={{ width: '180px', paddingTop: '4px' }}
+      style={{ width: `${width}px`, paddingTop: compact ? '2px' : '4px' }}
     >
     <div 
       className="flex flex-col cursor-pointer"
       style={{ 
-        width: '180px',
+        width: `${width}px`,
         opacity: isDragging ? 0.5 : 1,
       }}
       onClick={handleClick}
@@ -273,9 +282,9 @@ export const RecentDocumentCard: React.FC<RecentDocumentCardProps> = React.memo(
       <motion.div 
         className="bg-white"
         style={{ 
-          width: '180px',
-          height: '240px',
-          borderRadius: '6px',
+          width: `${width}px`,
+          height: `${height}px`,
+          borderRadius: compact ? '4px' : '6px',
           boxShadow: '0 1px 3px rgba(0, 0, 0, 0.05), 0 1px 2px rgba(0, 0, 0, 0.1)',
         }}
         whileHover={!isDragging ? { 
@@ -285,19 +294,19 @@ export const RecentDocumentCard: React.FC<RecentDocumentCardProps> = React.memo(
         whileTap={{ scale: 0.98, y: -2 }}
         transition={{ type: 'spring', stiffness: 400, damping: 25 }}
       >
-        <div className="w-full h-full bg-white flex flex-col" style={{ borderRadius: '6px', overflow: 'hidden' }}>
+        <div className="w-full h-full bg-white flex flex-col" style={{ borderRadius: compact ? '4px' : '6px', overflow: 'hidden' }}>
           {/* Window title bar */}
           <div 
             className="flex items-center gap-1.5 flex-shrink-0"
             style={{
-              padding: '6px 8px',
+              padding: compact ? '4px 6px' : '6px 8px',
               borderBottom: '1px solid #F3F4F6',
               backgroundColor: '#FAFAFA',
             }}
           >
-            <div className="w-1.5 h-1.5 rounded-full bg-gray-300" />
-            <div className="w-1.5 h-1.5 rounded-full bg-gray-300" />
-            <div className="w-1.5 h-1.5 rounded-full bg-gray-300" />
+            <div className={compact ? 'w-1 h-1 rounded-full bg-gray-300' : 'w-1.5 h-1.5 rounded-full bg-gray-300'} />
+            <div className={compact ? 'w-1 h-1 rounded-full bg-gray-300' : 'w-1.5 h-1.5 rounded-full bg-gray-300'} />
+            <div className={compact ? 'w-1 h-1 rounded-full bg-gray-300' : 'w-1.5 h-1.5 rounded-full bg-gray-300'} />
           </div>
           
           {/* Document content area */}
@@ -343,15 +352,15 @@ export const RecentDocumentCard: React.FC<RecentDocumentCardProps> = React.memo(
         </div>
       </motion.div>
       
-      {/* Name and date below card */}
+      {/* Name and date below card - light text for dark projects section background */}
       <p 
         className="truncate"
         style={{
-          fontSize: '13px',
+          fontSize: compact ? '12px' : '13px',
           fontWeight: 500,
-          color: '#1F2937',
-          marginTop: '10px',
-          width: '180px',
+          color: '#FFFFFF',
+          marginTop: compact ? '8px' : '10px',
+          width: `${width}px`,
         }}
         title={document.original_filename}
       >
@@ -359,11 +368,11 @@ export const RecentDocumentCard: React.FC<RecentDocumentCardProps> = React.memo(
       </p>
       <p 
         style={{
-          fontSize: '12px',
-          color: '#6B7280',
+          fontSize: compact ? '11px' : '12px',
+          color: 'rgba(255, 255, 255, 0.75)',
           marginTop: '2px',
           fontWeight: 400,
-          width: '180px',
+          width: `${width}px`,
         }}
       >
         {formatDate(document.created_at)}

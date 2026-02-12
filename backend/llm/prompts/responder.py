@@ -14,15 +14,17 @@ Callables:
 """
 
 from backend.llm.prompts.personality import get_personality_choice_instruction
+from backend.llm.prompts.output_formatting import OUTPUT_FORMATTING_RULES
 
 # Shared closing/follow-up block (used in conversational and block-citation prompts)
 CLOSING_AND_FOLLOWUP_PROMPT = """
 # CLOSING AND FOLLOW-UP
 
 - Put any closing or sign-off on its own line: add a blank line before it so it appears as a separate paragraph (e.g. after the last factual sentence, not on the same line).
-- **Follow-up must be context-aware and intelligent.** Base it on what you actually said and what the user was asking for. Do NOT use the same generic phrase every time (e.g. avoid "If you have any further questions or need more details, feel free to ask!" or "Hope that helps." as a default).
-- Offer a **topic-specific** follow-up when appropriate: reference the subject of the answer and suggest concrete next steps (e.g. after planning info: "Want me to clarify anything about the TPOs or conservation status?"; after valuation: "I can break down any of these figures or assumptions if helpful."; after travel info: "Need anything else for your trip?"). One short line is enough.
-- Be aware of what the user is looking for and structure the follow-up accordingly—invite clarification on specific points you raised, or a natural next question in that domain, rather than a generic "anything else?"
+- **Prefer ending with the last fact.** For factual answers (e.g. valuation figures, dates, planning details), stop after the last fact. Do NOT add a generic closing paragraph like "This valuation reflects..." or "If you need more details or specific insights about the property, let me know!"
+- **Follow-up must be context-aware and intelligent.** Base it on what you actually said and what the user was asking for. Do NOT use the same generic phrase every time.
+- **Banned closings (never use):** "If you need more details...", "If you have any further questions...", "feel free to ask!", "let me know!", "Hope that helps.", "specific insights", "This valuation reflects the property's condition and market conditions."
+- Offer a **topic-specific** follow-up only when it adds value: reference the subject and suggest concrete next steps (e.g. after planning: "Want me to clarify anything about the TPOs?"; after valuation: "I can break down any of these figures if helpful."). One short line max. If in doubt, omit the closing—ending on the last fact is better than generic filler.
 """
 
 
@@ -122,35 +124,7 @@ def get_responder_conversational_tool_citations_system_prompt(main_tagging_rule:
     """System prompt when LLM uses match_citation_to_chunk tool."""
     return f"""You are an expert analytical assistant for professional documents. Your role is to help users understand information clearly, accurately, and neutrally based solely on the content provided.
 
-# FORMATTING RULES
-
-1. **Response Style**: Use clean Markdown. Use bolding for key terms and bullet points for lists to ensure scannability.
-
-2. **List Formatting**: When creating numbered lists (1., 2., 3.) or bullet lists (-, -, -), keep all items on consecutive lines without blank lines between them. Blank lines between list items will break the list into separate lists.
-
-   **CORRECT:**
-   ```
-   1. First item
-   2. Second item
-   3. Third item
-   ```
-
-   **WRONG:**
-   ```
-   1. First item
-
-   2. Second item
-
-   3. Third item
-   ```
-
-3. **Markdown Features**: 
-   - Use `##` for main sections, `###` for subsections
-   - Use `**bold**` for emphasis or labels
-   - Use `-` for bullet points, `1.` for numbered lists
-   - Use a blank line (double newline) before each major section (e.g. **Flood Zone 2:**, **Surface Water Flooding:**) so the answer appears as separate paragraphs, not one long block. Do not put blank lines between list items.
-
-4. **No Hallucination**: If the answer is not contained within the provided excerpts, state: "I cannot find the specific information in the uploaded documents." Do not use outside knowledge.
+**No Hallucination**: If the answer is not contained within the provided excerpts, state: "I cannot find the specific information in the uploaded documents." Do not use outside knowledge.
 
 # CITATION WORKFLOW
 
@@ -212,6 +186,8 @@ When information is NOT in the excerpts:
 - State: "I cannot find the specific information in the uploaded documents."
 - Provide helpful context about what type of information would answer the question
 {CLOSING_AND_FOLLOWUP_PROMPT}
+
+{OUTPUT_FORMATTING_RULES}
 """
 
 
@@ -221,35 +197,7 @@ def get_responder_conversational_pre_citations_system_prompt(main_tagging_rule: 
     """System prompt when citations are pre-created (no tool calls)."""
     return f"""You are an expert analytical assistant for professional documents. Your role is to help users understand information clearly, accurately, and neutrally based solely on the content provided.
 
-# FORMATTING RULES
-
-1. **Response Style**: Use clean Markdown. Use bolding for key terms and bullet points for lists to ensure scannability.
-
-2. **List Formatting**: When creating numbered lists (1., 2., 3.) or bullet lists (-, -, -), keep all items on consecutive lines without blank lines between them. Blank lines between list items will break the list into separate lists.
-
-   **CORRECT:**
-   ```
-   1. First item
-   2. Second item
-   3. Third item
-   ```
-
-   **WRONG:**
-   ```
-   1. First item
-
-   2. Second item
-
-   3. Third item
-   ```
-
-3. **Markdown Features**: 
-   - Use `##` for main sections, `###` for subsections
-   - Use `**bold**` for emphasis or labels
-   - Use `-` for bullet points, `1.` for numbered lists
-   - Use a blank line (double newline) before each major section (e.g. **Flood Zone 2:**, **Surface Water Flooding:**) so the answer appears as separate paragraphs, not one long block. Do not put blank lines between list items.
-
-4. **No Hallucination**: If the answer is not contained within the provided excerpts, state: "I cannot find the specific information in the uploaded documents." Do not use outside knowledge.
+**No Hallucination**: If the answer is not contained within the provided excerpts, state: "I cannot find the specific information in the uploaded documents." Do not use outside knowledge.
 
 # CITATION WORKFLOW
 
@@ -312,6 +260,8 @@ When information is NOT in the excerpts:
 - State: "I cannot find the specific information in the uploaded documents."
 - Provide helpful context about what type of information would answer the question
 {CLOSING_AND_FOLLOWUP_PROMPT}
+
+{OUTPUT_FORMATTING_RULES}
 """
 
 
@@ -321,12 +271,7 @@ BLOCK_CITATION_BASE = """
 You are a helpful expert who explains document content in clear, natural language, like a knowledgeable colleague in a dialogue. Answer based solely on the content provided.
 Answer in this turn; go straight into the answer (no "Great question"); prefer partial answer over asking for clarification. Do not describe your response; state uncertainty when relevant.
 
-# FORMATTING RULES
-
-- Use Markdown (bold for key terms, lists, headings) when it improves readability. Prefer natural paragraphs and full sentences; use lists when listing distinct points.
-- Vary sentence length and use short paragraphs where it helps. You may use brief lead-ins like "In short…" or "So essentially…" when useful.
-- When using lists, keep list items on consecutive lines without blank lines between them.
-- **No Hallucination**: If the answer is not contained within the provided excerpts, state: "I cannot find the specific information in the uploaded documents." Do not use outside knowledge.
+**No Hallucination**: If the answer is not contained within the provided excerpts, state: "I cannot find the specific information in the uploaded documents." Do not use outside knowledge.
 
 # CITATION INSTRUCTIONS (CRITICAL)
 
@@ -350,6 +295,9 @@ For EVERY fact you use from the excerpts, you MUST cite it using BOTH the source
 - **WRONG:** "The bill clarifies that payment stablecoins are not considered securities, amending various acts to reflect this [ID: 1](BLOCK_CITE_ID_5) [ID: 1](BLOCK_CITE_ID_6)." (citations at end of sentence)
 - **CORRECT:** "The bill clarifies that **payment stablecoins are not considered securities** [ID: 1](BLOCK_CITE_ID_5) [ID: 1](BLOCK_CITE_ID_6), amending various acts to reflect this."
 - When a sentence contains multiple facts, put each citation right after the fact it supports: "A moratorium applies to **endogenously collateralized stablecoins** [ID: 1](BLOCK_CITE_ID_8) for two years. The Secretary must **report within 365 days** [ID: 1](BLOCK_CITE_ID_11)."
+- **In bulleted or numbered lists:** Put each citation at the end of the bullet/item it supports. Never put all citations at the end of the last bullet.
+  **WRONG:** "- Incredible Location\n- Set Back from Main Road\n- Water Resources [ID: 1](BLOCK_CITE_ID_1) [ID: 1](BLOCK_CITE_ID_2) [ID: 1](BLOCK_CITE_ID_3)"
+  **CORRECT:** "- Incredible Location [ID: 1](BLOCK_CITE_ID_1)\n- Set Back from Main Road [ID: 1](BLOCK_CITE_ID_2)\n- Water Resources [ID: 1](BLOCK_CITE_ID_3)"
 
 **RULES:**
 1. **ALWAYS** include the block id in parentheses immediately after [ID: X]. The block id must be the id of the <BLOCK> that contains the fact.
@@ -371,6 +319,7 @@ def get_responder_block_citation_system_content(personality_context: str) -> str
     """Full system content for block-citation answer with personality selection (generate_conversational_answer_with_citations)."""
     return (
         BLOCK_CITATION_BASE
+        + OUTPUT_FORMATTING_RULES
         + CLOSING_AND_FOLLOWUP_PROMPT
         + get_personality_choice_instruction()
         + personality_context

@@ -16,7 +16,7 @@
  */
 
 import * as React from "react";
-import { FolderOpen } from "lucide-react";
+import { FolderOpen, ChevronDown, ChevronUp } from "lucide-react";
 import { backendApi } from "@/services/backendApi";
 import { ProjectGlassCard } from "./ProjectGlassCard";
 import { RecentDocumentsSection } from "./RecentDocumentsSection";
@@ -245,6 +245,7 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
   const [properties, setProperties] = React.useState<PropertyData[]>(cachedData?.properties || []);
   const [allDocuments, setAllDocuments] = React.useState<DocumentData[]>([]); // Store all fetched documents
   const [documents, setDocuments] = React.useState<DocumentData[]>(cachedData?.documents || []); // Visible documents
+  const [showAllProjects, setShowAllProjects] = React.useState(false);
   // Only show loading if we have NO cached data
   const [isLoading, setIsLoading] = React.useState(!cachedData);
   const [error, setError] = React.useState<string | null>(null);
@@ -559,6 +560,7 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
         left: sidebarWidth,
         right: 0,
         bottom: 0,
+        background: '#373636',
       }}
     >
       <div className="w-16 h-16 rounded-full bg-gray-100 flex items-center justify-center mb-5">
@@ -615,7 +617,7 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
       className="fixed inset-0 overflow-y-auto"
       style={{
         left: sidebarWidth,
-        background: 'linear-gradient(180deg, #C8C9CE 0%, #CEC4C5 50%, #A1AAB3 100%)',
+        background: '#373636',
       }}
     >
       {/* Create Project Button - Top Right (same style as empty state) */}
@@ -633,34 +635,61 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
       </button>
 
       <div className="w-full max-w-7xl min-h-full flex flex-col" style={{ padding: '48px 40px' }}>
-        {/* Project Cards Section - top portion, compact grid for 4+ cards per row */}
-        <div className="flex flex-wrap justify-start" style={{ gap: '20px', marginLeft: '24px', marginTop: '24px' }}>
-          {properties.map(property => (
-            <ProjectGlassCard 
-              key={property.id} 
-              property={property}
-              onDocumentDrop={handleDocumentDrop}
-              onClick={() => {
-                console.log('🔥 ProjectGlassCard clicked:', property.id);
-                console.log('🔥 onPropertySelect exists:', !!onPropertySelect);
-                if (onPropertySelect) {
-                  console.log('🔥 Calling onPropertySelect...');
-                  onPropertySelect(property);
-                  console.log('🔥 onPropertySelect called');
-                } else {
-                  console.error('❌ onPropertySelect is undefined!');
-                }
-              }}
-            />
-          ))}
+        {/* Project Cards Section - 2 rows when collapsed, "See All Projects" to expand */}
+        <div style={{ marginLeft: '24px', marginTop: '24px' }}>
+          <div 
+            className="flex flex-wrap justify-start"
+            style={{ 
+              gap: '20px',
+              maxHeight: showAllProjects ? '5000px' : '480px',
+              overflow: 'hidden',
+            }}
+          >
+            {properties.map(property => (
+              <ProjectGlassCard 
+                key={property.id} 
+                property={property}
+                onDocumentDrop={handleDocumentDrop}
+                onClick={() => {
+                  console.log('🔥 ProjectGlassCard clicked:', property.id);
+                  console.log('🔥 onPropertySelect exists:', !!onPropertySelect);
+                  if (onPropertySelect) {
+                    console.log('🔥 Calling onPropertySelect...');
+                    onPropertySelect(property);
+                    console.log('🔥 onPropertySelect called');
+                  } else {
+                    console.error('❌ onPropertySelect is undefined!');
+                  }
+                }}
+              />
+            ))}
+          </div>
+          {properties.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setShowAllProjects(prev => !prev)}
+              className="mt-4 flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-white/90 hover:text-white transition-colors"
+              style={{ background: 'transparent', border: '1px solid rgba(255,255,255,0.35)' }}
+            >
+              {showAllProjects ? (
+                <>
+                  <ChevronUp className="w-4 h-4" /> Show less
+                </>
+              ) : (
+                <>
+                  <ChevronDown className="w-4 h-4" /> See All Projects
+                </>
+              )}
+            </button>
+          )}
         </div>
-        
+
         {/* Flexible spacer to push documents toward bottom - ensures visual separation */}
-        <div className="flex-1" style={{ minHeight: '150px' }} />
-        
-        {/* Files Docker - bottom portion, aligned right with project cards above */}
-        <div style={{ paddingBottom: '48px', marginLeft: '48px', width: '100%', maxWidth: '100%' }}>
-          <RecentDocumentsSection documents={documents} />
+        <div className="flex-1" style={{ minHeight: '80px' }} />
+
+        {/* Files area - smaller proportions */}
+        <div style={{ paddingBottom: '32px', marginLeft: '48px', width: '100%', maxWidth: '100%' }}>
+          <RecentDocumentsSection documents={documents} compact />
         </div>
       </div>
     </div>

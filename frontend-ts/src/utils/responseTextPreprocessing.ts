@@ -40,6 +40,11 @@ export function normalizeCircledCitationsToBracket(text: string): string {
   return out;
 }
 
+/** Remove period immediately after bracket citations so we never show "." after a citation. [1]. -> [1], [7]. Next -> [7] Next */
+export function removePeriodAfterBracketCitations(text: string): string {
+  return text.replace(/\[(\d+)\]\./g, '[$1]');
+}
+
 /**
  * Convert list-like blocks to markdown bullets and bold sub-headings.
  * (1) When a line ends with ":" (e.g. "includes:" or "features:") and is followed by plain lines, prefix those with "- ".
@@ -152,13 +157,40 @@ export function mergeOrphanLines(text: string): string {
 /**
  * Run the full preprocessing pipeline on response text (no citation substitution).
  * Use this before passing text to ReactMarkdown so both SideChatPanel and FloatingChatBubble
- * get the same structure (label-value newlines, no orphan lines, normalized circled refs).
+ * get the same structure.
+ *
+ * Deliberately minimal: we balance bold markers, merge orphan fragments, and normalize
+ * circled citations — but we do NOT force paragraph breaks after bold labels, auto-convert
+ * text to bullet lists, or insert section breaks. Those transforms caused a staggered,
+ * over-indented layout. Let the LLM's markdown flow naturally.
  */
 export function prepareResponseTextForDisplay(text: string): string {
   const withBold = ensureBalancedBoldForDisplay(text);
-  const withSections = ensureParagraphBreaksBeforeBoldSections(withBold);
-  const withLabelNewlines = ensureNewlineAfterBoldLabel(withSections);
-  const withBullets = ensureBulletPointsForListLikeBlocks(withLabelNewlines);
-  const withMergedOrphans = mergeOrphanLines(withBullets);
-  return normalizeCircledCitationsToBracket(withMergedOrphans);
+  const withMergedOrphans = mergeOrphanLines(withBold);
+  const withBracketCitations = normalizeCircledCitationsToBracket(withMergedOrphans);
+  return removePeriodAfterBracketCitations(withBracketCitations);
+}
+
+/**
+ * Convert response text to plain text for copy/paste: strip markdown and remove citation markers.
+ * Use when copying response to clipboard so pasted text is readable without ** or [1], [2], etc.
+ */
+export function textForCopy(text: string): string {
+  if (!text || typeof text !== 'string') return '';
+  let out = text;
+  // Remove citation markers [1], [2], [12], etc.
+  out = out.replace(/\s*\[\d+\]\s*/g, ' ');
+  // Strip bold: **text** then __text__
+  out = out.replace(/\*\*([^*]*)\*\*/g, '$1');
+  out = out.replace(/__([^_]*)__/g, '$1');
+  // Strip italic only when space-bound (avoid breaking file_name): *italic* or _italic_
+  out = out.replace(/(^|\s)\*([^*]+)\*($|\s)/g, '$1$2$3');
+  out = out.replace(/(^|\s)_([^_]+)_($|\s)/g, '$1$2$3');
+  // Headers: # ## ### -> remove # and keep text
+  out = out.replace(/^#{1,6}\s+/gm, '');
+  // Inline code: `code` -> code
+  out = out.replace(/`([^`]*)`/g, '$1');
+  // Collapse multiple spaces and trim
+  out = out.replace(/\n{3,}/g, '\n\n').replace(/  +/g, ' ').trim();
+  return out;
 }

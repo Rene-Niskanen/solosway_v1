@@ -253,6 +253,21 @@ class BackendApiService {
   }
 
   /**
+   * Submit chat feedback (thumbs down) - sends to connect@solosway.co via backend
+   */
+  async submitChatFeedback(payload: {
+    category: string;
+    details?: string;
+    messageId?: string;
+    conversationSnippet?: string;
+  }): Promise<ApiResponse<{ success: boolean }>> {
+    return this.fetchApi('/api/chat-feedback', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  /**
    * Query documents using LangGraph RAG system
    * This connects the SideChatPanel to the document Q&A system
    */

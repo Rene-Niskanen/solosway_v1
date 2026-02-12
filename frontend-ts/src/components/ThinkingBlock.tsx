@@ -71,6 +71,31 @@ const injectStyles = () => {
   document.head.appendChild(style);
 };
 
+/** Shared trivial-phrase list and check so ReasoningSteps can hide planning + thought when content is only this */
+const TRIVIAL_PHRASES = [
+  'planning next moves',
+  'planning next steps',
+  'thinking',
+  'processing',
+  'analyzing',
+  'analysing',
+  'considering options',
+  'planning response',
+  'formulating response',
+  'preparing response',
+];
+
+export function isTrivialThinkingContent(content: string): boolean {
+  if (!content || !content.trim()) return false;
+  let normalized = content
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .replace(/[.!?\s]+$/, '');
+  if (normalized.startsWith('- ')) normalized = normalized.slice(2).trim();
+  return TRIVIAL_PHRASES.some((phrase) => normalized === phrase);
+}
+
 interface ThinkingBlockProps {
   content: string;
   isStreaming: boolean;
@@ -349,6 +374,11 @@ export const ThinkingBlock: React.FC<ThinkingBlockProps> = ({
   
   // Don't render if no content and not streaming
   if (!hasContent && !isStreaming) {
+    return null;
+  }
+  
+  // Don't render if the thinking content is just a trivial/generic phrase (streaming or not)
+  if (isTrivialThinkingContent(processedContent)) {
     return null;
   }
   

@@ -7,7 +7,6 @@ import { X, Download, RotateCw, ZoomIn, ZoomOut, ChevronLeft, ChevronRight, File
 import { FileAttachmentData } from './FileAttachment';
 import { usePreview, CitationHighlight } from '../contexts/PreviewContext';
 import { backendApi } from '../services/backendApi';
-import veloraLogo from '/Velora Logo.jpg';
 
 // PDF.js for canvas-based PDF rendering with precise highlight positioning
 import * as pdfjs from 'pdfjs-dist';
@@ -101,123 +100,27 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
     return null;
   }, [highlightCitation, file]);
   
-  // Expand small BBOXes to ensure citations are always visible
-  // The stored BBOX may only cover a single block (e.g., 8% x 3% of page)
-  // We expand it to a minimum readable size while keeping the center position
+  // Use bbox as-is; only validate. Positioning is handled solely by scrolling to center it vertically.
   const expandedBbox = React.useMemo(() => {
     if (!fileHighlight?.bbox) return null;
-    
     const bbox = fileHighlight.bbox;
-    
-    // Validate bbox values
     if (
       typeof bbox.left !== 'number' || bbox.left < 0 || bbox.left > 1 ||
       typeof bbox.top !== 'number' || bbox.top < 0 || bbox.top > 1 ||
       typeof bbox.width !== 'number' || bbox.width <= 0 || bbox.width > 1 ||
       typeof bbox.height !== 'number' || bbox.height <= 0 || bbox.height > 1
     ) {
-      console.warn('⚠️ [BBOX] Invalid bbox values, skipping highlight:', bbox);
       return null;
     }
-    
-    // Check if bbox area is suspiciously large
-    const area = bbox.width * bbox.height;
-    if (area > 0.5) {
-      console.warn('⚠️ [BBOX] Bbox area too large, may be incorrect:', { area, bbox });
-      // Still render, but log warning
-    }
-    
-    // IMPROVED: Use tighter minimum dimensions for precise highlighting
-    // Small BBOXes are often CORRECT (e.g., just "£2,300,000")
-    const MIN_WIDTH = 0.12;   // Minimum 12% of page width (enough for a price)
-    const MIN_HEIGHT = 0.025; // Minimum 2.5% of page height (one line of text)
-    
-    // Only add minimal padding for very small bboxes to prevent overlap issues
-    const MIN_PADDING_X = 0.005;  // 0.5% horizontal padding (minimal)
-    const MIN_PADDING_Y = 0.003;  // 0.3% vertical padding (minimal)
-    
-    let { left, top, width, height, page } = bbox;
-    const original_page = (bbox as any).original_page; // Optional field, may not be in type
-    
-    // Only expand if the BBOX is tiny (likely a rendering issue, not a precise match)
-    const isTooSmall = width < 0.02 || height < 0.005;
-    
-    if (isTooSmall) {
-      console.log('📐 [BBOX] Expanding tiny bbox:', { 
-        original: { left, top, width, height },
-        reason: 'too small to be visible'
-      });
-      
-      // Expand to minimum visible size
-      const centerX = left + width / 2;
-      const centerY = top + height / 2;
-      
-      width = Math.max(width, MIN_WIDTH);
-      height = Math.max(height, MIN_HEIGHT);
-      
-      // Re-center around original position
-      left = Math.max(0, centerX - width / 2);
-      top = Math.max(0, centerY - height / 2);
-      
-      // Ensure within bounds
-      if (left + width > 1) left = 1 - width;
-      if (top + height > 1) top = 1 - height;
-      
-      console.log('📐 [BBOX] Expanded to:', { left, top, width, height });
-    } else {
-      // For precise bboxes, only add minimal padding if they're still quite small
-      // This prevents overlap issues when multiple citations are close together
-      const isSmallButVisible = width < 0.08 || height < 0.02;
-      
-      if (isSmallButVisible) {
-        // Add minimal padding only for small but visible bboxes
-        const paddedLeft = Math.max(0, left - MIN_PADDING_X);
-        const paddedTop = Math.max(0, top - MIN_PADDING_Y);
-        const paddedWidth = Math.min(width + MIN_PADDING_X * 2, 1 - paddedLeft);
-        const paddedHeight = Math.min(height + MIN_PADDING_Y * 2, 1 - paddedTop);
-      
-      left = paddedLeft;
-      top = paddedTop;
-      width = paddedWidth;
-      height = paddedHeight;
-      
-        console.log('📐 [BBOX] Using small bbox with minimal padding:', { left, top, width, height });
-      } else {
-        // For larger precise bboxes, use them as-is to prevent overlap
-        console.log('📐 [BBOX] Using precise bbox without padding (large enough):', { left, top, width, height });
-      }
-    }
-    
-    // Phase 6: Validate bbox coordinates before returning
-    const finalBbox = { 
-      left: Number(left.toFixed(4)), 
-      top: Number(top.toFixed(4)), 
-      width: Number(width.toFixed(4)), 
-      height: Number(height.toFixed(4)), 
-      page, 
-      ...(original_page !== undefined && { original_page }) 
+    const original_page = (bbox as any).original_page;
+    return {
+      left: bbox.left,
+      top: bbox.top,
+      width: bbox.width,
+      height: bbox.height,
+      page: bbox.page,
+      ...(original_page !== undefined && { original_page })
     };
-    
-    // Validate bbox is reasonable
-    if (finalBbox.top > 0.9) {
-      console.warn('⚠️ [BBOX] Suspicious bbox - likely footer area:', finalBbox);
-      console.warn('⚠️ [BBOX] This may indicate incorrect block matching in backend');
-    }
-    
-    if (finalBbox.width * finalBbox.height > 0.5) {
-      console.warn('⚠️ [BBOX] Suspicious bbox - very large area (>50% of page):', finalBbox);
-    }
-    
-    // Log the actual block position for debugging
-    console.log('📋 [BBOX] Highlighting block at:', {
-      page: finalBbox.page,
-      position: `${(finalBbox.top * 100).toFixed(1)}% from top`,
-      left: `${(finalBbox.left * 100).toFixed(1)}% from left`,
-      area: `${(finalBbox.width * finalBbox.height * 100).toFixed(2)}% of page`,
-      dimensions: `${(finalBbox.width * 100).toFixed(1)}% × ${(finalBbox.height * 100).toFixed(1)}%`
-    });
-    
-    return finalBbox;
   }, [fileHighlight?.bbox]);
   
   const [imageNaturalHeight, setImageNaturalHeight] = React.useState<number | null>(null);
@@ -246,7 +149,7 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
   // Width that triggers PDF full re-render; only updated when width changes by >50px to avoid jitter and restarts
   const [containerWidthForPdfRender, setContainerWidthForPdfRender] = React.useState<number | null>(null);
   const lastContainerWidthForPdfRenderRef = React.useRef<number | null>(null);
-  
+  const [scrollResetApplied, setScrollResetApplied] = React.useState(true);
   // Reprocess document state
   const [isReprocessing, setIsReprocessing] = React.useState(false);
   const [reprocessDropdownOpen, setReprocessDropdownOpen] = React.useState(false);
@@ -515,50 +418,6 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
     });
   }, [showAllChunkBboxes, fileHighlight]);
 
-  // Single "open to target" scroll: after dimensions stable, scroll to citation (if any) or to first page.
-  // Uses the same logic whether opening from a citation or not, so behavior is consistent and doesn't bug out.
-  React.useEffect(() => {
-    if (!isOpen || !isPDF || pdfPageRendering || !dimensionsStable || !pdfWrapperRef.current || pageOffsets.size === 0 || renderedPages.size === 0) return;
-
-    const scrollContainer = pdfWrapperRef.current;
-    if (scrollContainer.scrollHeight <= 0) return;
-
-    const viewportHeight = scrollContainer.clientHeight;
-    const viewportWidth = scrollContainer.clientWidth;
-    const maxScrollTop = Math.max(0, scrollContainer.scrollHeight - viewportHeight);
-    const maxScrollLeft = Math.max(0, scrollContainer.scrollWidth - viewportWidth);
-
-    let scrollTop = 0;
-    let scrollLeft = 0;
-
-    if (fileHighlight?.bbox?.page && expandedBbox) {
-      const targetPage = fileHighlight.bbox.page;
-      const pageOffset = pageOffsets.get(targetPage);
-      const pageData = renderedPages.get(targetPage);
-      if (pageOffset !== undefined && pageData) {
-        const bboxTop = expandedBbox.top * pageData.dimensions.height;
-        const bboxHeight = expandedBbox.height * pageData.dimensions.height;
-        const bboxCenterY = bboxTop + (bboxHeight / 2);
-        const bboxLeft = expandedBbox.left * pageData.dimensions.width;
-        const bboxWidth = expandedBbox.width * pageData.dimensions.width;
-        const bboxCenterX = bboxLeft + (bboxWidth / 2);
-        const bboxCenterAbsoluteY = pageOffset + bboxCenterY;
-        scrollTop = bboxCenterAbsoluteY - (viewportHeight / 2);
-        scrollLeft = bboxCenterX - (viewportWidth / 2);
-      }
-    }
-
-    requestAnimationFrame(() => {
-      if (!pdfWrapperRef.current || !isOpen) return;
-      const c = pdfWrapperRef.current;
-      c.scrollTo({
-        top: Math.max(0, Math.min(scrollTop, Math.max(0, c.scrollHeight - c.clientHeight))),
-        left: Math.max(0, Math.min(scrollLeft, Math.max(0, c.scrollWidth - c.clientWidth))),
-        behavior: 'smooth'
-      });
-    });
-  }, [fileHighlight, isPDF, isOpen, pageOffsets, renderedPages, expandedBbox, pdfPageRendering, dimensionsStable]);
-
   // Load PDF with PDF.js for canvas-based rendering (enables precise highlight positioning)
   // OPTIMIZATION: Use cached PDF document if available to avoid reloading when switching
   React.useEffect(() => {
@@ -724,20 +583,9 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
             console.log('📐 Scale calculation - container width:', containerWidth, 'page width:', pageWidth.toFixed(0));
             
             // Only calculate fit scale if container has valid width
-            if (containerWidth > 100) { // Ensure container is actually rendered (not just 0 or very small)
-              // Account for padding (8px * 2 on each side = 16px total) and some margin
-              const availableWidth = containerWidth - 32;
-              
-              // Calculate scale to fit container width - use 98% to leave small margin
-              const fitScale = (availableWidth / pageWidth) * 0.98;
-              
-              console.log('📐 Fit scale calculation:', {
-                containerWidth,
-                availableWidth,
-                pageWidth: pageWidth.toFixed(0),
-                fitScale: fitScale.toFixed(3),
-                zoomLevel
-              });
+            if (containerWidth > 100) {
+              const fitScale = containerWidth / pageWidth;
+              console.log('📐 Fit scale:', fitScale.toFixed(3), '(container:', containerWidth, 'page:', pageWidth.toFixed(0), ')');
               
               // Use the fit scale if it's reasonable (between 0.5 and 2.5 for better fit)
               // Lowered minimum from 0.8 to 0.5 to support smaller container widths
@@ -993,34 +841,6 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
     }
   }, [zoomLevel, isDOCX, docxPublicUrl, docxIframeSrc]);
 
-  // Helper function to validate scroll position and container dimensions
-  const validateScrollBounds = (wrapper: HTMLDivElement, newScrollLeft: number, newScrollTop: number) => {
-    const maxScrollLeft = Math.max(0, wrapper.scrollWidth - wrapper.clientWidth);
-    const maxScrollTop = Math.max(0, wrapper.scrollHeight - wrapper.clientHeight);
-    
-    // Debug logging to identify scroll issues
-    if (zoomLevel > 100) {
-      console.log('📊 Scroll Debug:', {
-        scrollWidth: wrapper.scrollWidth,
-        clientWidth: wrapper.clientWidth,
-        scrollHeight: wrapper.scrollHeight,
-        clientHeight: wrapper.clientHeight,
-        maxScrollLeft,
-        maxScrollTop,
-        currentScrollLeft: wrapper.scrollLeft,
-        currentScrollTop: wrapper.scrollTop,
-        newScrollLeft,
-        newScrollTop,
-        zoomLevel
-      });
-    }
-    
-    return {
-      scrollLeft: Math.max(0, Math.min(newScrollLeft, maxScrollLeft)),
-      scrollTop: Math.max(0, Math.min(newScrollTop, maxScrollTop))
-    };
-  };
-
   // Calculate PDF object dimensions in pixels based on container size and zoom level
   React.useEffect(() => {
     if (isPDF && isOpen && pdfWrapperRef.current) {
@@ -1071,14 +891,62 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
     }
   }, [isPDF, isOpen, zoomLevel, file?.id]);
 
-  // Reset scroll position for PDFs when file or page changes
+  // Only hide PDF when the file changes (not on page nav). Avoids flicker when center-bbox or other effects re-run.
+  const prevOpenFileIdRef = React.useRef<string>('');
   React.useEffect(() => {
-    if (isPDF && isOpen && pdfWrapperRef.current) {
-      // Reset scroll to top-left when PDF file or page changes - use pdfWrapperRef, not previewAreaRef
+    if (!isOpen) {
+      prevOpenFileIdRef.current = '';
+      return;
+    }
+    const fileId = file?.id ?? '';
+    if (fileId !== prevOpenFileIdRef.current) {
+      prevOpenFileIdRef.current = fileId;
+      setScrollResetApplied(false);
+    }
+  }, [isOpen, file?.id]);
+
+  // Reset scroll for PDFs when file changes and there is no highlight. With a highlight, only the center-bbox effect touches scroll.
+  React.useEffect(() => {
+    if (!isPDF || !isOpen) {
+      requestAnimationFrame(() => setScrollResetApplied(true));
+      return;
+    }
+    if (!expandedBbox && pdfWrapperRef.current) {
       pdfWrapperRef.current.scrollLeft = 0;
       pdfWrapperRef.current.scrollTop = 0;
+      requestAnimationFrame(() => setScrollResetApplied(true));
     }
-  }, [isPDF, isOpen, file?.id, currentPage]);
+  }, [isPDF, isOpen, file?.id, expandedBbox]);
+
+  // Single positioning rule: scroll so the bbox is vertically centered. Only apply when bbox position actually changes to avoid spazzing from effect re-runs.
+  const lastCenterBboxRef = React.useRef<{ fileId: string; page: number; top: number; height: number } | null>(null);
+  React.useEffect(() => {
+    if (!isPDF || !isOpen || !expandedBbox || !pdfWrapperRef.current || !file?.id) return;
+    if (!pageOffsets.size) return;
+    const pageNum = expandedBbox.page;
+    const pageData = renderedPages.get(pageNum);
+    const pageOffset = pageOffsets.get(pageNum);
+    if (pageData == null || pageOffset == null) {
+      requestAnimationFrame(() => setScrollResetApplied(true));
+      return;
+    }
+    const bboxKey = { fileId: file.id, page: pageNum, top: expandedBbox.top, height: expandedBbox.height };
+    const prev = lastCenterBboxRef.current;
+    const alreadyApplied = prev && prev.fileId === bboxKey.fileId && prev.page === bboxKey.page &&
+      Math.abs(prev.top - bboxKey.top) < 1e-6 && Math.abs(prev.height - bboxKey.height) < 1e-6;
+    if (alreadyApplied) return;
+    lastCenterBboxRef.current = bboxKey;
+
+    const wrapper = pdfWrapperRef.current;
+    const viewportHeight = wrapper.clientHeight;
+    const pageHeight = pageData.dimensions.height;
+    const bboxCenterY = pageOffset + (expandedBbox.top + expandedBbox.height / 2) * pageHeight;
+    const scrollTop = Math.max(0, bboxCenterY - viewportHeight / 2);
+    const maxScrollTop = Math.max(0, wrapper.scrollHeight - viewportHeight);
+    wrapper.scrollTop = Math.min(scrollTop, maxScrollTop);
+    wrapper.scrollLeft = 0;
+    requestAnimationFrame(() => setScrollResetApplied(true));
+  }, [isPDF, isOpen, file?.id, expandedBbox, pageOffsets, renderedPages]);
 
   // Handle mouse wheel / touchpad zoom for all document types
   React.useEffect(() => {
@@ -1466,17 +1334,13 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
 
     const applySize = (width: number, height: number) => {
       if (width <= 100 || height <= 100) return;
-      const layoutWidthChanged = Math.abs(width - lastWidth) > RESIZE_THRESHOLD_PX;
-      const layoutHeightChanged = Math.abs(height - lastHeight) > RESIZE_THRESHOLD_PX;
       lastWidth = width;
       lastHeight = height;
       const prevPdfWidth = lastContainerWidthForPdfRenderRef.current;
       const pdfWidthSignificant = prevPdfWidth === null || Math.abs(width - prevPdfWidth) > 50;
       queueMicrotask(() => {
-        if (layoutWidthChanged || layoutHeightChanged) {
-          setCalculatedModalWidth(width);
-          setCalculatedModalHeight(height);
-        }
+        // Do NOT set modal width/height from preview area size - that causes the modal to
+        // jump/shrink on open (preview area is smaller than modal). Keep initial 67.5vw/82.5vh.
         if (isPDF && pdfWidthSignificant) {
           lastContainerWidthForPdfRenderRef.current = width;
           setContainerWidthForPdfRender(width);
@@ -2301,18 +2165,20 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
                       ref={pdfWrapperRef}
                       className="w-full h-full"
                       style={{
-                        pointerEvents: 'auto',
-                        padding: '24px', // Padding around document preview for better spacing
+                        pointerEvents: scrollResetApplied ? 'auto' : 'none',
+                        padding: '0',
                         margin: '0',
                         display: 'block',
                         position: 'relative',
                         height: '100%',
                         boxSizing: 'border-box',
-                        overflow: 'auto', // Allow scrolling when zoomed in
-                        WebkitOverflowScrolling: 'touch', // Smooth scrolling on iOS
-                        touchAction: 'pan-x pan-y', // Explicitly allow panning gestures
-                        scrollBehavior: 'auto', // Changed to 'auto' to prevent smooth scrolling during zoom (causes page movement)
-                        overscrollBehavior: 'contain', // Prevent scroll chaining
+                        overflow: 'auto',
+                        WebkitOverflowScrolling: 'touch',
+                        touchAction: 'pan-x pan-y',
+                        scrollBehavior: 'auto',
+                        overscrollBehavior: 'contain',
+                        opacity: scrollResetApplied ? 1 : 0,
+                        visibility: scrollResetApplied ? 'visible' : 'hidden',
                       }}
                     >
                       <div
@@ -2374,93 +2240,23 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
                                 }}
                               />
                               
-                                  {/* Highlight overlay for citations - positioned relative to page */}
-                                  {isHighlightPage && expandedBbox && (() => {
-                                    // Calculate logo size: fixed height = slightly larger to better match small BBOX highlights (2.0% of page height, minus 1px for bottom alignment)
-                                    const logoHeight = 0.02 * pageDimensions.height - 1;
-                                    // Assume logo is roughly square or slightly wider (adjust aspect ratio as needed)
-                                    const logoWidth = logoHeight; // Square logo, adjust if needed
-                                    // Calculate BBOX dimensions with centered padding
-                                    const padding = 4; // Equal padding on all sides
-                                    const originalBboxWidth = expandedBbox.width * pageDimensions.width;
-                                    const originalBboxHeight = expandedBbox.height * pageDimensions.height;
-                                    const originalBboxLeft = expandedBbox.left * pageDimensions.width;
-                                    const originalBboxTop = expandedBbox.top * pageDimensions.height;
-                                    
-                                    // Calculate center of original BBOX
-                                    const centerX = originalBboxLeft + originalBboxWidth / 2;
-                                    const centerY = originalBboxTop + originalBboxHeight / 2;
-                                    
-                                    // Calculate minimum BBOX height to match logo height (prevents staggered appearance)
-                                    const minBboxHeightPx = logoHeight; // Minimum height = logo height
-                                    const baseBboxHeight = Math.max(originalBboxHeight, minBboxHeightPx);
-                                    
-                                    // Calculate final dimensions with equal padding
-                                    // If at minimum height, don't add padding to keep it exactly at logo height
-                                    const finalBboxWidth = originalBboxWidth + padding * 2;
-                                    const finalBboxHeight = baseBboxHeight === minBboxHeightPx 
-                                      ? minBboxHeightPx // Exactly logo height when at minimum (no padding)
-                                      : baseBboxHeight + padding * 2; // Add padding only when BBOX is naturally larger
-                                    
-                                    // Center the BBOX around the original text
-                                    const bboxLeft = Math.max(0, centerX - finalBboxWidth / 2);
-                                    const bboxTop = Math.max(0, centerY - finalBboxHeight / 2);
-                                    
-                                    // Ensure BBOX doesn't go outside page bounds
-                                    const constrainedLeft = Math.min(bboxLeft, pageDimensions.width - finalBboxWidth);
-                                    const constrainedTop = Math.min(bboxTop, pageDimensions.height - finalBboxHeight);
-                                    const finalBboxLeft = Math.max(0, constrainedLeft);
-                                    const finalBboxTop = Math.max(0, constrainedTop);
-                                    
-                                    // Position logo: Logo's top-right corner aligns with BBOX's top-left corner
-                                    // Logo's right border edge overlaps with BBOX's left border edge
-                                    const logoLeft = finalBboxLeft - logoWidth + 2; // Move 2px right so borders overlap
-                                    const logoTop = finalBboxTop; // Logo's top = BBOX's top (perfectly aligned)
-                                    
-                                    return (
-                                      <>
-                                        {/* Velora logo - positioned so top-right aligns with BBOX top-left */}
-                                        <img
-                                          src={veloraLogo}
-                                          alt="Velora"
-                                          style={{
-                                            position: 'absolute',
-                                            left: `${logoLeft}px`,
-                                            top: `${logoTop}px`,
-                                            width: `${logoWidth}px`,
-                                            height: `${logoHeight}px`,
-                                            objectFit: 'contain',
-                                            pointerEvents: 'none',
-                                            zIndex: 11,
-                                            userSelect: 'none',
-                                            border: '2px solid rgba(255, 193, 7, 0.9)',
-                                            borderRadius: '2px',
-                                            backgroundColor: 'white', // Ensure logo has background for border visibility
-                                            boxSizing: 'border-box', // Ensure border is included in width/height for proper overlap
-                                            opacity: 1 // No animation when changing between BBOXs
-                                          }}
-                                        />
-                                        {/* BBOX highlight */}
-                                <div
-                                  style={{
-                                    position: 'absolute',
-                                                left: `${finalBboxLeft}px`,
-                                                top: `${finalBboxTop}px`,
-                                                width: `${Math.min(pageDimensions.width, finalBboxWidth)}px`,
-                                                height: `${Math.min(pageDimensions.height, finalBboxHeight)}px`,
-                                    backgroundColor: 'rgba(255, 235, 59, 0.4)', // Yellow highlight
-                                    border: '2px solid rgba(255, 193, 7, 0.9)', // Darker yellow border
-                                    borderRadius: '2px',
-                                    pointerEvents: 'none',
-                                    zIndex: 10,
-                                    boxShadow: '0 2px 8px rgba(255, 193, 7, 0.3)',
-                                    opacity: 1, // No animation when changing between BBOXs
-                                    transformOrigin: 'top left',
-                                  }}
-                                />
-                                      </>
-                                    );
-                                  })()}
+                                  {/* Highlight overlay - bbox at its actual position on the page */}
+                                  {isHighlightPage && expandedBbox && (
+                                    <div
+                                      style={{
+                                        position: 'absolute',
+                                        left: `${expandedBbox.left * 100}%`,
+                                        top: `${expandedBbox.top * 100}%`,
+                                        width: `${expandedBbox.width * 100}%`,
+                                        height: `${expandedBbox.height * 100}%`,
+                                        backgroundColor: 'rgba(188, 212, 235, 0.4)',
+                                        border: '2px solid rgba(188, 212, 235, 0.4)',
+                                        borderRadius: '2px',
+                                        pointerEvents: 'none',
+                                        zIndex: 10,
+                                      }}
+                                    />
+                                  )}
                             </div>
                               );
                             })}

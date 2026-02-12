@@ -15,6 +15,8 @@ import { FilingSidebarProvider, useFilingSidebar } from '../contexts/FilingSideb
 import { ChatPanelProvider, useChatPanel } from '../contexts/ChatPanelContext';
 import { ProjectsProvider } from '../contexts/ProjectsContext';
 import { BrowserFullscreenProvider } from '../contexts/BrowserFullscreenContext';
+import { FeedbackModalProvider, useFeedbackModal } from '../contexts/FeedbackModalContext';
+import { ShareFeedbackModal } from './ShareFeedbackModal';
 
 export interface DashboardLayoutProps {
   className?: string;
@@ -25,7 +27,8 @@ const DashboardLayoutContent = ({
 }: DashboardLayoutProps) => {
   const navigate = useNavigate();
   const { closeSidebar: closeFilingSidebar, isOpen: isFilingSidebarOpen, width: filingSidebarWidth } = useFilingSidebar();
-  const { togglePanel: toggleChatPanel, closePanel: closeChatPanel, isOpen: isChatPanelOpen } = useChatPanel();
+  const { togglePanel: toggleChatPanel, closePanel: closeChatPanel, isOpen: isChatPanelOpen, width: chatPanelWidth } = useChatPanel();
+  const { isOpen: isFeedbackModalOpen, setIsOpen: setFeedbackModalOpen, messageId: feedbackMessageId, conversationSnippet: feedbackConversationSnippet } = useFeedbackModal();
   const [selectedBackground, setSelectedBackground] = React.useState<string>('default-background');
 
   // Preload @ mention cache (properties + documents) so popover shows results instantly
@@ -622,6 +625,14 @@ const DashboardLayoutContent = ({
           />
         );
       })()}
+      {/* Share feedback modal (thumbs down / report) - driven by context from SideChatPanel feedback bar */}
+      <ShareFeedbackModal
+        open={isFeedbackModalOpen}
+        onClose={() => setFeedbackModalOpen(false)}
+        messageId={feedbackMessageId}
+        conversationSnippet={feedbackConversationSnippet}
+      />
+
       {/* Chat Return Notification */}
       <ChatReturnNotification
         isVisible={showChatNotification}
@@ -630,6 +641,23 @@ const DashboardLayoutContent = ({
         onDismiss={handleDismissNotification}
       />
       
+      {/* Agent sidebar backdrop – click closes only the agent sidebar (no darkening over chat) */}
+      {!isSidebarExpanded && isChatPanelOpen && (
+        <div
+          role="button"
+          tabIndex={0}
+          aria-label="Close agent sidebar"
+          className="fixed inset-0 transition-opacity"
+          style={{
+            background: 'transparent',
+            zIndex: 9999,
+            pointerEvents: 'auto',
+          }}
+          onClick={() => closeChatPanel()}
+          onKeyDown={(e) => e.key === 'Enter' && closeChatPanel()}
+        />
+      )}
+
       {/* Chat Panel - Only show when sidebar is NOT expanded (chat history shown in sidebar when expanded) */}
       {!isSidebarExpanded && (
         <ChatPanel 
@@ -639,6 +667,32 @@ const DashboardLayoutContent = ({
           sidebarWidth={isSidebarCollapsed ? 0 : 224} // 0px when collapsed, 224px when normal
           selectedChatId={currentChatId}
         />
+      )}
+
+      {/* Agent sidebar closing toggle rail - visible strip on left edge of agent sidebar; click closes only agent sidebar */}
+      {!isSidebarExpanded && isChatPanelOpen && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            closeChatPanel();
+          }}
+          aria-label="Close agent sidebar"
+          className="fixed inset-y-0 w-3 group"
+          style={{
+            right: chatPanelWidth,
+            width: 12,
+            zIndex: 10001,
+            background: '#FEFEFC',
+            pointerEvents: 'auto',
+            WebkitTapHighlightColor: 'transparent'
+          }}
+        >
+          <div
+            className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity"
+            style={{ background: 'rgba(0, 0, 0, 0.04)' }}
+          />
+        </button>
       )}
       
       {/* FilingSidebar closing toggle rail - visible strip on right edge of FilingSidebar; click closes only FilingSidebar */}
@@ -750,7 +804,9 @@ export const DashboardLayout = (props: DashboardLayoutProps) => {
         <ChatPanelProvider>
           <ProjectsProvider>
             <BrowserFullscreenProvider>
-              <DashboardLayoutContent {...props} />
+              <FeedbackModalProvider>
+                <DashboardLayoutContent {...props} />
+              </FeedbackModalProvider>
             </BrowserFullscreenProvider>
           </ProjectsProvider>
         </ChatPanelProvider>
