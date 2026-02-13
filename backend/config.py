@@ -32,8 +32,14 @@ class Config:
         'pool_pre_ping': True,  # Check connections before using (validates connection is alive)
     }
     
-    # CORS settings
-    CORS_ORIGINS = ['http://localhost:3000', 'http://localhost:5173', 'http://localhost:8080', 'http://localhost:8081', 'http://localhost:8083', 'http://localhost:5002', 'https://your-frontend-domain.com']
+    # CORS settings (add your deployed frontend origins e.g. https://app.veloraview.com)
+    CORS_ORIGINS = [
+        'http://localhost:3000', 'http://localhost:5173', 'http://localhost:8080',
+        'http://localhost:8081', 'http://localhost:8083', 'http://localhost:5002',
+        'https://veloraview.com', 'https://www.veloraview.com',
+        'https://app.veloraview.com', 'https://dev.veloraview.com',
+        'https://your-frontend-domain.com'
+    ]
     
     # Session configuration
     PERMANENT_SESSION_LIFETIME = timedelta(days=7)
