@@ -259,7 +259,8 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
   const cachedData = React.useMemo(() => getCachedData(), []);
   
   const [properties, setProperties] = React.useState<PropertyData[]>(cachedData?.properties || []);
-  const [allDocuments, setAllDocuments] = React.useState<DocumentData[]>([]); // Store all fetched documents
+  // Initialize allDocuments from cache so Files section shows instantly (same mechanism as projects)
+  const [allDocuments, setAllDocuments] = React.useState<DocumentData[]>(cachedData?.documents || []); // Store all fetched documents
   const [documents, setDocuments] = React.useState<DocumentData[]>(cachedData?.documents || []); // Visible documents
   const [showAllProjects, setShowAllProjects] = React.useState(false);
   const [showAllFiles, setShowAllFiles] = React.useState(false);
@@ -269,7 +270,8 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
   const [isDeleting, setIsDeleting] = React.useState(false);
   // Only show loading if we have NO cached data
   const [isLoading, setIsLoading] = React.useState(!cachedData);
-  const [documentsLoaded, setDocumentsLoaded] = React.useState(false); // Don't show Files section until fetch has completed
+  // Show Files section immediately when we have cache (same as projects); otherwise after fetch completes
+  const [documentsLoaded, setDocumentsLoaded] = React.useState(!!cachedData);
   const [error, setError] = React.useState<string | null>(null);
   const [, setCoversLoaded] = React.useState(0); // Trigger re-render when covers load
 

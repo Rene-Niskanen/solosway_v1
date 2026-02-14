@@ -3938,6 +3938,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   const wasFullscreenWhenClosedRef = React.useRef<boolean>(false);
   // Track if this is the first time the panel is becoming visible (to disable animation on first open)
   const [isFirstOpen, setIsFirstOpen] = React.useState<boolean>(true);
+  // Tick to force message list re-render when reopening with existing messages (so restoredMessageIdsRef is used, no re-animation)
+  const [reopenNoAnimationTick, setReopenNoAnimationTick] = React.useState<number>(0);
   // Track actual rendered width of the panel for responsive design
   const [actualPanelWidth, setActualPanelWidth] = React.useState<number>(CHAT_PANEL_WIDTH.COLLAPSED);
   // Track actual input container width for button responsive design
@@ -5289,6 +5291,18 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   // Track message IDs that existed when panel was last opened (for animation control)
   const restoredMessageIdsRef = React.useRef<Set<string>>(new Set());
   const MAX_FILES = 4;
+
+  // When returning to chat from map (or re-opening): mark all current messages as restored
+  // so they render with no movement (no reveal/swoop/reasoning animations).
+  const prevVisibleForReopenRef = React.useRef<boolean>(isVisible);
+  React.useEffect(() => {
+    const wasVisible = prevVisibleForReopenRef.current;
+    prevVisibleForReopenRef.current = isVisible;
+    if (!wasVisible && isVisible && chatMessages.length > 0) {
+      restoredMessageIdsRef.current = new Set(chatMessages.map((m) => m.id));
+      setReopenNoAnimationTick((t) => t + 1);
+    }
+  }, [isVisible, chatMessages]);
 
   // Sync messages to bubble in real-time
   React.useEffect(() => {
@@ -13138,7 +13152,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         </div>
       );
     }).filter(Boolean);
-  }, [chatMessages, showReasoningTrace, showHighlight, showCitations, expandedThoughtMessageIds, toggleThoughtExpanded, restoredMessageIdsRef, handleUserCitationClick, onOpenProperty, scrollToBottom, expandedCardViewDoc, propertyAttachments, orangeCitationNumbersByMessage, citationClickPanel, citationViewedInDocument, currentChatId, skipSwoopForChatId, revealCompleteTick, savedCitationNumbersForMessageByMessageId, likedResponseIds, dislikedResponseIds, copiedResponseId, shimmerTickMessageId, sourcesDropdownMessageId, showBarForResponseId, handleThumbsUpResponse, handleThumbsDownResponse, handleCopyResponse, handleDownloadResponse, handleDownloadResponseAsDocxForMessage, openCitationInDocumentView, openFeedbackModal, isBotPaused]);
+  }, [chatMessages, showReasoningTrace, showHighlight, showCitations, expandedThoughtMessageIds, toggleThoughtExpanded, restoredMessageIdsRef, reopenNoAnimationTick, handleUserCitationClick, onOpenProperty, scrollToBottom, expandedCardViewDoc, propertyAttachments, orangeCitationNumbersByMessage, citationClickPanel, citationViewedInDocument, currentChatId, skipSwoopForChatId, revealCompleteTick, savedCitationNumbersForMessageByMessageId, likedResponseIds, dislikedResponseIds, copiedResponseId, shimmerTickMessageId, sourcesDropdownMessageId, showBarForResponseId, handleThumbsUpResponse, handleThumbsDownResponse, handleCopyResponse, handleDownloadResponse, handleDownloadResponseAsDocxForMessage, openCitationInDocumentView, openFeedbackModal, isBotPaused]);
 
   return (
     <>
@@ -14357,7 +14371,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               overflowY: 'auto',
                               overflowX: 'hidden',
                               lineHeight: '22px',
-                              paddingTop: '3px',
+                              paddingTop: '0px',
                               paddingBottom: '4px',
                               paddingRight: '12px',
                               paddingLeft: '6px',
@@ -14462,20 +14476,20 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                   />
                                 </>
                               )}
-                              {/* Attach button - second to collapse to icon */}
+                              {/* Attach button - second to collapse to icon (matches ChatBarToolsDropdown) */}
                               <button
                                 type="button"
                                 onClick={() => fileInputRef.current?.click()}
-                                className="flex items-center gap-1.5 px-2 py-1 text-gray-900 focus:outline-none outline-none"
+                                className="flex items-center gap-1.5 text-gray-900 transition-colors focus:outline-none outline-none"
                                 style={{
                                   backgroundColor: '#FFFFFF',
                                   border: '1px solid rgba(229, 231, 235, 0.6)',
                                   borderRadius: '12px',
-                                  transition: 'background-color 0.15s ease',
-                                  height: '26px',
-                                  minHeight: '26px',
+                                  transition: 'background-color 0.2s ease, border-color 0.2s ease',
+                                  height: '24px',
+                                  minHeight: '24px',
                                   paddingLeft: showAttachIconOnly ? '6px' : '8px',
-                                  paddingRight: showAttachIconOnly ? '6px' : '8px'
+                                  paddingRight: showAttachIconOnly ? '6px' : '8px',
                                 }}
                                 onMouseEnter={(e) => {
                                   e.currentTarget.style.backgroundColor = '#F5F5F5';
@@ -15221,7 +15235,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             overflowY: 'auto',
                             overflowX: 'hidden',
                             lineHeight: '20px',
-                            paddingTop: '3px',
+                            paddingTop: '0px',
                             paddingBottom: '3px',
                             paddingRight: '12px',
                             paddingLeft: '6px',
@@ -15527,26 +15541,27 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               )}
                             </div>
                           )}
-                        {/* Attach button - second to collapse to icon */}
+                        {/* Attach button - second to collapse to icon (matches ChatBarToolsDropdown) */}
                         <div className="flex items-center gap-1">
                           <button
                             type="button"
                             onClick={() => fileInputRef.current?.click()}
-                            className="flex items-center gap-1.5 px-2 py-1 rounded-full text-gray-900 focus:outline-none outline-none"
+                            className="flex items-center gap-1.5 text-gray-900 transition-colors focus:outline-none outline-none"
                             style={{
-                              backgroundColor: '#FCFCF9',
+                              backgroundColor: '#FFFFFF',
                               border: '1px solid rgba(229, 231, 235, 0.6)',
-                              transition: 'background-color 0.15s ease, border-color 0.15s ease',
-                              willChange: 'background-color, border-color',
-                              padding: showAttachIconOnly ? '4px 6px' : '4px 8px',
-                              height: '26px',
-                              minHeight: '24px'
+                              borderRadius: '12px',
+                              transition: 'background-color 0.2s ease, border-color 0.2s ease',
+                              height: '24px',
+                              minHeight: '24px',
+                              paddingLeft: showAttachIconOnly ? '6px' : '8px',
+                              paddingRight: showAttachIconOnly ? '6px' : '8px',
                             }}
                             onMouseEnter={(e) => {
                               e.currentTarget.style.backgroundColor = '#F5F5F5';
                             }}
                             onMouseLeave={(e) => {
-                              e.currentTarget.style.backgroundColor = '#FCFCF9';
+                              e.currentTarget.style.backgroundColor = '#FFFFFF';
                             }}
                             title="Attach file"
                           >

@@ -1554,13 +1554,13 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
               >
                 {/* Left group: Mode selector, Model selector, Panel toggle */}
                 <div className="flex items-center flex-shrink-0 gap-1">
-                  {/* Mode Selector Dropdown */}
-                  <ModeSelector compact={isMapVisible} />
-                  {/* Model Selector Dropdown */}
-                  <ModelSelector compact={isMapVisible} />
+                  {/* Mode Selector Dropdown - show labels on dashboard (same as Tools/Attach/Voice) */}
+                  <ModeSelector compact={false} />
+                  {/* Model Selector Dropdown - show labels on dashboard */}
+                  <ModelSelector compact={false} />
                   
-                  {/* Panel Toggle Button - Always show "Expand chat" when onPanelToggle is available, or "Analyse" when property details is open */}
-                  {onPanelToggle && (
+                  {/* Panel Toggle Button - In map view, Chat is in Tools dropdown; otherwise show "Expand chat" or "Analyse" */}
+                  {onPanelToggle && !isMapVisible && (
                     isPropertyDetailsOpen ? (
                     <button
                       type="button"
@@ -1713,6 +1713,16 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                             label: isMapVisible ? 'Back to search' : 'Go to map',
                             onClick: () => onMapToggle?.(),
                           },
+                          ...(isMapVisible && onPanelToggle
+                            ? [
+                                {
+                                  id: 'chat',
+                                  icon: MessageCircle,
+                                  label: 'Chat',
+                                  onClick: () => onPanelToggle(),
+                                },
+                              ]
+                            : []),
                         ]}
                       />
                     </>
@@ -1736,13 +1746,16 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                       <button
                         type="button"
                         onClick={() => fileInputRef.current?.click()}
-                        className="flex items-center gap-1.5 px-2 py-1 rounded-full text-gray-900 transition-colors focus:outline-none outline-none"
+                        className="flex items-center gap-1.5 text-gray-900 transition-colors focus:outline-none outline-none"
                         style={{
                           backgroundColor: '#FFFFFF',
                           border: '1px solid rgba(229, 231, 235, 0.6)',
-                          transition: 'background-color 0.2s ease',
+                          borderRadius: '12px',
+                          transition: 'background-color 0.2s ease, border-color 0.2s ease',
                           height: '24px',
-                          minHeight: '24px'
+                          minHeight: '24px',
+                          paddingLeft: '8px',
+                          paddingRight: '8px',
                         }}
                         onMouseEnter={(e) => {
                           e.currentTarget.style.backgroundColor = '#F5F5F5';
@@ -1750,6 +1763,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                         onMouseLeave={(e) => {
                           e.currentTarget.style.backgroundColor = '#FFFFFF';
                         }}
+                        title="Attach file"
                       >
                         <Paperclip className="w-3.5 h-3.5" strokeWidth={1.5} />
                         <span className="text-xs font-medium">Attach</span>

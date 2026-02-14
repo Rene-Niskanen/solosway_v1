@@ -450,27 +450,38 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
                       label: 'Dashboard',
                       onClick: () => onMapToggle?.(),
                     },
+                    ...(onPanelToggle
+                      ? [
+                          {
+                            id: 'chat',
+                            icon: PanelRightOpen,
+                            label: 'Chat',
+                            onClick: () => onPanelToggle(),
+                          },
+                        ]
+                      : []),
                   ]}
                 />
-                {/* Attach Button */}
+                {/* Attach Button (matches ChatBarToolsDropdown) */}
                 <div className="flex items-center gap-1">
                   <button
                     type="button"
-                    className="flex items-center gap-1.5 px-2 py-1 rounded-full text-gray-900 focus:outline-none outline-none"
+                    className="flex items-center gap-1.5 text-gray-900 transition-colors focus:outline-none outline-none"
                     style={{
-                      backgroundColor: '#FCFCF9',
+                      backgroundColor: '#FFFFFF',
                       border: '1px solid rgba(229, 231, 235, 0.6)',
-                      transition: 'background-color 0.15s ease, border-color 0.15s ease',
-                      willChange: 'background-color, border-color',
-                      padding: '4px 8px',
+                      borderRadius: '12px',
+                      transition: 'background-color 0.2s ease, border-color 0.2s ease',
                       height: '24px',
-                      minHeight: '24px'
+                      minHeight: '24px',
+                      paddingLeft: '8px',
+                      paddingRight: '8px',
                     }}
                     onMouseEnter={(e) => {
                       e.currentTarget.style.backgroundColor = '#F5F5F5';
                     }}
                     onMouseLeave={(e) => {
-                      e.currentTarget.style.backgroundColor = '#FCFCF9';
+                      e.currentTarget.style.backgroundColor = '#FFFFFF';
                     }}
                     title="Attach file"
                   >
