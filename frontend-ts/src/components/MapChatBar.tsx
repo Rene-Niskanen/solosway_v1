@@ -7,6 +7,7 @@ import { usePropertySelection } from '../contexts/PropertySelectionContext';
 import { useDocumentSelection } from '../contexts/DocumentSelectionContext';
 import { ModeSelector } from './ModeSelector';
 import { ModelSelector } from './ModelSelector';
+import { ChatBarToolsDropdown } from './ChatBarToolsDropdown';
 import { WebSearchPill } from './SelectedModePill';
 import { SegmentInput, type SegmentInputHandle } from './SegmentInput';
 import { AtMentionPopover, type AtMentionItem } from './AtMentionPopover';
@@ -422,7 +423,7 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
                 <ModelSelector compact={isCompact} />
               </div>
 
-              {/* Right group: Web search, Dashboard, Attach, Voice, Send */}
+              {/* Right group: Tools (dropdown: Search the web, Dashboard), WebSearchPill when on, Attach, Voice, Send */}
               <motion.div 
                 className="flex items-center gap-1.5 flex-shrink-0" 
                 style={{ marginRight: '4px' }}
@@ -432,65 +433,25 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
                   default: { duration: 0.18, ease: [0.16, 1, 0.3, 1] }
                 }}
               >
-                {/* Web Search Toggle */}
-                {isWebSearchEnabled ? (
-                  <WebSearchPill 
-                    onDismiss={() => setIsWebSearchEnabled(false)}
-                  />
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => setIsWebSearchEnabled(true)}
-                    className="flex items-center justify-center rounded-full text-gray-600 hover:text-gray-700 transition-colors focus:outline-none outline-none"
-                    style={{
-                      backgroundColor: '#FFFFFF',
-                      border: '1px solid rgba(229, 231, 235, 0.6)',
-                      borderRadius: '12px',
-                      transition: 'background-color 0.2s ease',
-                      width: '28px',
-                      height: '24px',
-                      minHeight: '24px'
-                    }}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.backgroundColor = '#F5F5F5';
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.backgroundColor = '#FFFFFF';
-                    }}
-                    title="Enable web search"
-                  >
-                    <Globe className="w-3.5 h-3.5" strokeWidth={2} />
-                  </button>
+                {isWebSearchEnabled && (
+                  <WebSearchPill onDismiss={() => setIsWebSearchEnabled(false)} />
                 )}
-                
-                {/* Dashboard Toggle Button */}
-                <button 
-                  type="button" 
-                  onClick={onMapToggle}
-                  className="flex items-center gap-1.5 px-2 py-1 text-gray-900 focus:outline-none outline-none"
-                  style={{
-                    backgroundColor: '#FCFCF9',
-                    border: '1px solid rgba(229, 231, 235, 0.6)',
-                    borderRadius: '12px',
-                    transition: 'background-color 0.15s ease',
-                    height: '24px',
-                    minHeight: '24px',
-                    paddingLeft: '8px',
-                    paddingRight: '8px'
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.backgroundColor = '#F5F5F5';
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.backgroundColor = '#FCFCF9';
-                  }}
-                  title="Back to dashboard"
-                  aria-label="Dashboard"
-                >
-                  <LibraryBig className="w-3.5 h-3.5" strokeWidth={1.5} />
-                  <span className="text-xs font-medium">Dashboard</span>
-                </button>
-                
+                <ChatBarToolsDropdown
+                  items={[
+                    {
+                      id: 'web-search',
+                      icon: Globe,
+                      label: 'Search the web',
+                      onClick: () => setIsWebSearchEnabled((prev) => !prev),
+                    },
+                    {
+                      id: 'dashboard',
+                      icon: LibraryBig,
+                      label: 'Dashboard',
+                      onClick: () => onMapToggle?.(),
+                    },
+                  ]}
+                />
                 {/* Attach Button */}
                 <div className="flex items-center gap-1">
                   <button

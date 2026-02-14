@@ -33,8 +33,8 @@ interface RecentDocumentsSectionProps {
   showAllMode?: boolean;
 }
 
-const CARD_WIDTH_COMPACT = 140;
-const CARD_GAP = 20;
+const CARD_WIDTH_COMPACT = 128;
+const CARD_GAP = 14;
 /** Spacing when showing all files grid - enough so cards don’t touch each other or edges */
 const ALL_FILES_GRID_GAP = 28;
 const ALL_FILES_GRID_PADDING = 16;

@@ -5,7 +5,7 @@ import { useMemo } from "react";
 import { createPortal, flushSync } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { generateAnimatePresenceKey, generateConditionalKey, generateUniqueKey } from '../utils/keyGenerator';
-import { ChevronRight, ChevronDown, ChevronUp, ArrowUp, Paperclip, Mic, Map, X, SquareDashedMousePointer, Scan, Fullscreen, Plus, PanelLeftOpen, PanelRightClose, PictureInPicture2, Trash2, CreditCard, MoveDiagonal, Square, FileText, Image as ImageIcon, File as FileIcon, FileCheck, Minimize, Minimize2, Workflow, Home, FolderOpen, Brain, AudioLines, MessageCircleDashed, Copy, Search, MessageSquare, Pencil, Check, Highlighter, SlidersHorizontal, BookOpen, Download, ThumbsUp, ThumbsDown } from "lucide-react";
+import { ChevronRight, ChevronDown, ChevronUp, ArrowUp, Paperclip, Mic, Map, Globe, X, SquareDashedMousePointer, Scan, Fullscreen, Plus, PanelLeftOpen, PanelRightClose, PictureInPicture2, Trash2, CreditCard, MoveDiagonal, Square, FileText, Image as ImageIcon, File as FileIcon, FileCheck, Minimize, Minimize2, Workflow, Home, FolderOpen, Brain, AudioLines, MessageCircleDashed, Copy, Search, MessageSquare, Pencil, Check, Highlighter, SlidersHorizontal, BookOpen, Download, ThumbsUp, ThumbsDown } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { FileAttachment, FileAttachmentData } from './FileAttachment';
 import { PropertyAttachmentData } from './PropertyAttachment';
@@ -38,6 +38,7 @@ import { useMode } from '../contexts/ModeContext';
 import { useModel } from '../contexts/ModelContext';
 import { useBrowserFullscreen } from '../contexts/BrowserFullscreenContext';
 import { BotStatusOverlay } from './BotStatusOverlay';
+import { ChatBarToolsDropdown } from './ChatBarToolsDropdown';
 import { WebSearchPill } from './SelectedModePill';
 import { PlanViewer, PlanBuildStatus } from './PlanViewer';
 import { ExpandedPlanViewer } from './ExpandedPlanViewer';
@@ -14405,7 +14406,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               {!isVeryNarrowEmpty && <ModelSelector compact={showModelIconOnly} />}
                             </div>
 
-                            {/* Right side: Web Search, Map, Link, Attach, Voice, Send */}
+                            {/* Right side: Tools (Search the web, Map), WebSearchPill when on, Attach, Voice, Send */}
                             <div className={`flex items-center gap-1.5 ${isVeryNarrowEmpty ? 'flex-wrap justify-end' : ''}`} style={{ flexShrink: 0 }}>
                               <input
                                 ref={fileInputRef}
@@ -14415,72 +14416,32 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                 className="hidden"
                                 accept="image/*,.pdf,.doc,.docx"
                               />
-                              
-                              {/* Web Search Toggle - hide at high collapse levels */}
                               {buttonCollapseLevel < 3 && (
-                                isWebSearchEnabled ? (
-                                  <WebSearchPill 
-                                    onDismiss={() => setIsWebSearchEnabled(false)}
+                                <>
+                                  {isWebSearchEnabled && (
+                                    <WebSearchPill onDismiss={() => setIsWebSearchEnabled(false)} />
+                                  )}
+                                  <ChatBarToolsDropdown
+                                    compact={showMapIconOnly}
+                                    items={[
+                                      {
+                                        id: 'web-search',
+                                        icon: Globe,
+                                        label: 'Search the web',
+                                        onClick: () => setIsWebSearchEnabled((prev) => !prev),
+                                      },
+                                      ...(onMapToggle
+                                        ? [{
+                                            id: 'map',
+                                            icon: Map,
+                                            label: 'Map',
+                                            onClick: () => onMapToggle(),
+                                          }]
+                                        : []),
+                                    ]}
                                   />
-                                ) : (
-                                  <button
-                                    type="button"
-                                    onClick={() => setIsWebSearchEnabled(true)}
-                                    className="flex items-center justify-center rounded-full text-gray-600 hover:text-gray-700 transition-colors focus:outline-none outline-none"
-                                    style={{
-                                      backgroundColor: '#FFFFFF',
-                                      border: '1px solid rgba(229, 231, 235, 0.6)',
-                                      borderRadius: '12px',
-                                      transition: 'background-color 0.2s ease',
-                                      width: '28px',
-                                      height: '26px',
-                                      minHeight: '24px'
-                                    }}
-                                    onMouseEnter={(e) => {
-                                      e.currentTarget.style.backgroundColor = '#F5F5F5';
-                                    }}
-                                    onMouseLeave={(e) => {
-                                      e.currentTarget.style.backgroundColor = '#FFFFFF';
-                                    }}
-                                    title="Enable web search"
-                                  >
-                                    <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                      <path d="M12 22C17.5228 22 22 17.5228 22 12C22 6.47715 17.5228 2 12 2C6.47715 2 2 6.47715 2 12C2 17.5228 6.47715 22 12 22Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                                      <path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                                      <path d="M2 12h20" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                                    </svg>
-                                  </button>
-                                )
+                                </>
                               )}
-                              
-                              {/* Map button - first to collapse to icon */}
-                              {onMapToggle && (
-                                <button
-                                  type="button"
-                                  onClick={onMapToggle}
-                                  className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-gray-900 focus:outline-none outline-none"
-                                  style={{
-                                    backgroundColor: '#FFFFFF',
-                                    border: '1px solid rgba(229, 231, 235, 0.6)',
-                                    transition: 'background-color 0.15s ease',
-                                    height: '22px',
-                                    minHeight: '22px',
-                                    fontSize: '12px',
-                                    padding: showMapIconOnly ? '4px 8px' : undefined
-                                  }}
-                                  onMouseEnter={(e) => {
-                                    e.currentTarget.style.backgroundColor = '#F5F5F5';
-                                  }}
-                                  onMouseLeave={(e) => {
-                                    e.currentTarget.style.backgroundColor = '#FFFFFF';
-                                  }}
-                                  title="Go to map"
-                                >
-                                  <Map className="w-3.5 h-3.5" strokeWidth={1.5} />
-                                  {!showMapIconOnly && <span className="text-xs font-medium">Map</span>}
-                                </button>
-                              )}
-                              
                               {/* Attach button - second to collapse to icon */}
                               <button
                                 type="button"
@@ -15435,96 +15396,56 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           accept="image/*,.pdf,.doc,.docx"
                         />
                         
-                        {/* Web Search Toggle - hide at high collapse levels */}
+                        {/* Tools dropdown: Search the web, Map; WebSearchPill when on */}
                         {buttonCollapseLevel < 3 && (
-                          isWebSearchEnabled ? (
-                            <WebSearchPill 
-                              onDismiss={() => setIsWebSearchEnabled(false)}
+                          <>
+                            {isWebSearchEnabled && (
+                              <WebSearchPill onDismiss={() => setIsWebSearchEnabled(false)} />
+                            )}
+                            <ChatBarToolsDropdown
+                              compact={showMapIconOnly}
+                              items={[
+                                {
+                                  id: 'web-search',
+                                  icon: Globe,
+                                  label: 'Search the web',
+                                  onClick: () => setIsWebSearchEnabled((prev) => !prev),
+                                },
+                                ...(onMapToggle
+                                  ? [{
+                                      id: 'map',
+                                      icon: Map,
+                                      label: 'Map',
+                                      onClick: () => {
+                                        if (currentChatId && expandedCardViewDoc) {
+                                          const bufferedState = getBufferedState(currentChatId);
+                                          bufferedState.documentPreview = {
+                                            docId: expandedCardViewDoc.docId,
+                                            filename: expandedCardViewDoc.filename,
+                                            highlight: expandedCardViewDoc.highlight ? {
+                                              fileId: expandedCardViewDoc.highlight.fileId,
+                                              bbox: expandedCardViewDoc.highlight.bbox,
+                                              doc_id: expandedCardViewDoc.highlight.doc_id,
+                                              block_id: expandedCardViewDoc.highlight.block_id || '',
+                                              block_content: expandedCardViewDoc.highlight.block_content,
+                                              original_filename: expandedCardViewDoc.highlight.original_filename
+                                            } : undefined
+                                          };
+                                        }
+                                        if (onMinimize && chatMessages.length > 0) {
+                                          if (expandedCardViewDoc) closeExpandedCardView();
+                                          onMinimize(chatMessages);
+                                        } else {
+                                          if (expandedCardViewDoc) closeExpandedCardView();
+                                          onMapToggle();
+                                        }
+                                      },
+                                    }]
+                                  : []),
+                              ]}
                             />
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => setIsWebSearchEnabled(true)}
-                              className="flex items-center justify-center rounded-full text-gray-600 hover:text-gray-700 transition-colors focus:outline-none outline-none"
-                              style={{
-                                backgroundColor: '#FFFFFF',
-                                border: '1px solid rgba(229, 231, 235, 0.6)',
-                                borderRadius: '12px',
-                                transition: 'background-color 0.2s ease',
-                                width: '28px',
-                                height: '26px',
-                                minHeight: '24px'
-                              }}
-                              onMouseEnter={(e) => {
-                                e.currentTarget.style.backgroundColor = '#F5F5F5';
-                              }}
-                              onMouseLeave={(e) => {
-                                e.currentTarget.style.backgroundColor = '#FFFFFF';
-                              }}
-                              title="Enable web search"
-                            >
-                              <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                <path d="M12 22C17.5228 22 22 17.5228 22 12C22 6.47715 17.5228 2 12 2C6.47715 2 2 6.47715 2 12C2 17.5228 6.47715 22 12 22Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                                <path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                                <path d="M2 12h20" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                              </svg>
-                            </button>
-                          )
+                          </>
                         )}
-                        
-                        {/* Map button - first to collapse to icon */}
-                        {onMapToggle && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              // Save document preview state before closing if needed
-                              if (currentChatId && expandedCardViewDoc) {
-                                const bufferedState = getBufferedState(currentChatId);
-                                bufferedState.documentPreview = {
-                                  docId: expandedCardViewDoc.docId,
-                                  filename: expandedCardViewDoc.filename,
-                                  highlight: expandedCardViewDoc.highlight ? {
-                                    fileId: expandedCardViewDoc.highlight.fileId,
-                                    bbox: expandedCardViewDoc.highlight.bbox,
-                                    doc_id: expandedCardViewDoc.highlight.doc_id,
-                                    block_id: expandedCardViewDoc.highlight.block_id || '',
-                                    block_content: expandedCardViewDoc.highlight.block_content,
-                                    original_filename: expandedCardViewDoc.highlight.original_filename
-                                  } : undefined
-                                };
-                              }
-                              
-                              if (onMinimize && chatMessages.length > 0) {
-                                if (expandedCardViewDoc) closeExpandedCardView();
-                                onMinimize(chatMessages);
-                              } else {
-                                if (expandedCardViewDoc) closeExpandedCardView();
-                                onMapToggle();
-                              }
-                            }}
-                            className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-gray-900 focus:outline-none outline-none"
-                            style={{
-                              backgroundColor: '#FFFFFF',
-                              border: '1px solid rgba(229, 231, 235, 0.6)',
-                              transition: 'background-color 0.15s ease',
-                              height: '22px',
-                              minHeight: '22px',
-                              fontSize: '12px',
-                              padding: showMapIconOnly ? '4px 8px' : undefined
-                            }}
-                            onMouseEnter={(e) => {
-                              e.currentTarget.style.backgroundColor = '#F5F5F5';
-                            }}
-                            onMouseLeave={(e) => {
-                              e.currentTarget.style.backgroundColor = '#FFFFFF';
-                            }}
-                            title="Go to map"
-                          >
-                            <Map className="w-3.5 h-3.5" strokeWidth={1.5} />
-                            {!showMapIconOnly && <span className="text-xs font-medium">Map</span>}
-                          </button>
-                        )}
-                        
                         {/* Document Selection Button - Only show when property details panel is open */}
                         {isPropertyDetailsOpen && (
                           <div className="relative flex items-center">
@@ -15583,43 +15504,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               )}
                             </div>
                           )}
-                        {/* Link and Attach buttons - use progressive collapse thresholds from outer scope */}
+                        {/* Attach button - second to collapse to icon */}
                         <div className="flex items-center gap-1">
-                          {/* Link button - commented out for now
-                          {onQuickStartToggle && (
-                            <button
-                              type="button"
-                              onClick={onQuickStartToggle}
-                              className="flex items-center gap-1.5 px-2 py-1 rounded-full text-gray-900 focus:outline-none outline-none"
-                              style={{
-                                backgroundColor: isQuickStartBarVisible ? '#ECFDF5' : '#FCFCF9',
-                                border: isQuickStartBarVisible ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid rgba(229, 231, 235, 0.6)',
-                                transition: 'background-color 0.15s ease, border-color 0.15s ease',
-                                willChange: 'background-color, border-color',
-                                padding: showAttachIconOnly ? '4px 6px' : '4px 8px',
-                                height: '26px',
-                                minHeight: '24px'
-                              }}
-                              onMouseEnter={(e) => {
-                                if (!isQuickStartBarVisible) {
-                                  e.currentTarget.style.backgroundColor = '#F5F5F5';
-                                }
-                              }}
-                              onMouseLeave={(e) => {
-                                if (!isQuickStartBarVisible) {
-                                  e.currentTarget.style.backgroundColor = '#FCFCF9';
-                                }
-                              }}
-                              title="Link document to property"
-                            >
-                              <Workflow className={`w-3.5 h-3.5 ${isQuickStartBarVisible ? 'text-green-500' : ''}`} strokeWidth={1.5} />
-                              {!showAttachIconOnly && (
-                              <span className="text-xs font-medium">Link</span>
-                              )}
-                            </button>
-                          )}
-                          */}
-                          {/* Attach button - second to collapse to icon */}
                           <button
                             type="button"
                             onClick={() => fileInputRef.current?.click()}

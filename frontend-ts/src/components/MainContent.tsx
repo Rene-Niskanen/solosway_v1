@@ -1899,6 +1899,8 @@ interface FullscreenPropertyViewProps {
   onOpenChatHistory?: () => void;
 }
 
+const AGENT_SIDEBAR_RAIL_WIDTH = 12;
+
 const FullscreenPropertyView: React.FC<FullscreenPropertyViewProps> = ({
   isVisible,
   property,
@@ -1914,7 +1916,10 @@ const FullscreenPropertyView: React.FC<FullscreenPropertyViewProps> = ({
 }) => {
   // Track the dynamic chat panel width for proper resize behavior
   const [dynamicChatWidth, setDynamicChatWidth] = React.useState<number>(0);
-  
+  // Agent sidebar (right) – reserve space so chat + property details don't extend under it
+  const { isOpen: isAgentSidebarOpen, width: agentSidebarWidth } = useChatPanel();
+  const agentSidebarReserve = isAgentSidebarOpen ? (agentSidebarWidth || 320) + AGENT_SIDEBAR_RAIL_WIDTH : 0;
+
   // Calculate sidebar width for positioning
   const TOGGLE_RAIL_WIDTH = 12;
   let fullscreenSidebarWidth = 0;
@@ -1925,15 +1930,15 @@ const FullscreenPropertyView: React.FC<FullscreenPropertyViewProps> = ({
   } else {
     fullscreenSidebarWidth = 224 + TOGGLE_RAIL_WIDTH;
   }
-  
-  // Calculate initial 50% width
+
+  // Initial 50% split: use space between left sidebar and agent sidebar so property panel doesn't crash
   const initialChatWidth = React.useMemo(() => {
-    const availableWidth = typeof window !== 'undefined' 
-      ? window.innerWidth - fullscreenSidebarWidth 
+    const availableWidth = typeof window !== 'undefined'
+      ? window.innerWidth - fullscreenSidebarWidth - agentSidebarReserve
       : 800;
-    return availableWidth / 2;
-  }, [fullscreenSidebarWidth]);
-  
+    return Math.max(0, availableWidth / 2);
+  }, [fullscreenSidebarWidth, agentSidebarReserve]);
+
   // Use dynamic width if set, otherwise use initial 50%
   const effectiveChatWidth = dynamicChatWidth > 0 ? dynamicChatWidth : initialChatWidth;
   

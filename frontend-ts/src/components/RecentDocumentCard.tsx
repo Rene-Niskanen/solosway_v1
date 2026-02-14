@@ -189,8 +189,8 @@ export const preloadDocumentThumbnails = (documents: DocumentData[]): void => {
 // ==================== COMPONENT ====================
 const CARD_WIDTH = 180;
 const CARD_HEIGHT = 240;
-const COMPACT_WIDTH = 140;
-const COMPACT_HEIGHT = 184;
+const COMPACT_WIDTH = 128;
+const COMPACT_HEIGHT = 168;
 
 export const RecentDocumentCard: React.FC<RecentDocumentCardProps> = React.memo(({ document, onClick, compact = false }) => {
   const width = compact ? COMPACT_WIDTH : CARD_WIDTH;

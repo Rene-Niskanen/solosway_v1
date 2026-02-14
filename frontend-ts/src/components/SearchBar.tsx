@@ -4,7 +4,7 @@ import * as React from "react";
 import { useState, useRef, useEffect, useLayoutEffect, useImperativeHandle, forwardRef, useCallback, useMemo } from "react";
 import { flushSync } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import { ChevronRight, Map, ArrowUp, LibraryBig, Mic, PanelRightOpen, SquareDashedMousePointer, Scan, Fullscreen, X, Brain, MoveDiagonal, Workflow, MapPinHouse, MessageCircle, Upload, Paperclip, AudioLines } from "lucide-react";
+import { ChevronRight, Map, ArrowUp, LibraryBig, Mic, PanelRightOpen, SquareDashedMousePointer, Scan, Fullscreen, X, Brain, MoveDiagonal, MapPinHouse, MessageCircle, Upload, Paperclip, AudioLines, Globe } from "lucide-react";
 import { ImageUploadButton } from './ImageUploadButton';
 import { FileAttachment, FileAttachmentData } from './FileAttachment';
 import { toast } from "@/hooks/use-toast";
@@ -15,6 +15,8 @@ import { backendApi } from '../services/backendApi';
 import { QuickStartBar } from './QuickStartBar';
 import { ModeSelector } from './ModeSelector';
 import { ModelSelector } from './ModelSelector';
+import { ChatBarToolsDropdown } from './ChatBarToolsDropdown';
+import { WebSearchPill } from './SelectedModePill';
 import { AtMentionPopover, type AtMentionItem } from './AtMentionPopover';
 import { SegmentInput, type SegmentInputHandle } from './SegmentInput';
 import { getFilteredAtMentionItems, preloadAtMentionCache } from '@/services/atMentionCache';
@@ -107,6 +109,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
   const [hasStartedTyping, setHasStartedTyping] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
+  const [isWebSearchEnabled, setIsWebSearchEnabled] = useState(false);
   // Initialize attachedFiles from initialAttachedFiles prop if provided
   const [attachedFiles, setAttachedFiles] = useState<FileAttachmentData[]>(() => {
     const initial = initialAttachedFiles || [];
@@ -1549,52 +1552,12 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                   flexShrink: 0 // Prevent shrinking
                 }}
               >
-                {/* Left group: Mode selector, Model selector, Map toggle and Panel toggle */}
+                {/* Left group: Mode selector, Model selector, Panel toggle */}
                 <div className="flex items-center flex-shrink-0 gap-1">
                   {/* Mode Selector Dropdown */}
                   <ModeSelector compact={isMapVisible} />
                   {/* Model Selector Dropdown */}
                   <ModelSelector compact={isMapVisible} />
-                  
-                  {/* Map Toggle Button - Aligned with text start (hidden on dashboard) */}
-                  {contextConfig.showMapToggle && (
-                    <button 
-                      type="button" 
-                      onClick={(e) => {
-                        console.log('🗺️ Map button clicked!', { 
-                          hasOnMapToggle: !!onMapToggle,
-                          currentVisibility: isMapVisible 
-                        });
-                        onMapToggle?.();
-                      }}
-                      className="flex items-center gap-1.5 px-2 py-1 text-gray-900 transition-colors focus:outline-none outline-none"
-                      style={{
-                        backgroundColor: '#FFFFFF',
-                        border: '1px solid rgba(229, 231, 235, 0.6)',
-                        borderRadius: '12px',
-                        transition: 'background-color 0.2s ease, border-color 0.2s ease',
-                        marginLeft: '4px',
-                        height: '24px',
-                        minHeight: '24px'
-                      }}
-                      onMouseEnter={(e) => {
-                        e.currentTarget.style.backgroundColor = '#F5F5F5';
-                      }}
-                      onMouseLeave={(e) => {
-                        e.currentTarget.style.backgroundColor = '#FFFFFF';
-                      }}
-                      title={isMapVisible ? "Back to search mode" : "Go to map mode"}
-                    >
-                      {isMapVisible ? (
-                        <LibraryBig className="w-3.5 h-3.5" strokeWidth={1.5} />
-                      ) : (
-                        <>
-                          <MapPinHouse className="w-3.5 h-3.5" strokeWidth={1.5} />
-                          <span className="text-xs font-medium">Map</span>
-                        </>
-                      )}
-                    </button>
-                  )}
                   
                   {/* Panel Toggle Button - Always show "Expand chat" when onPanelToggle is available, or "Analyse" when property details is open */}
                   {onPanelToggle && (
@@ -1729,37 +1692,31 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                       </div>
                     )}
                 
-                {/* Link, Attach, Voice, Send - single row with even spacing */}
+                {/* Tools, Attach, Voice, Send - right side, Tools always next to Attach; same menu everywhere: Search the web + Map/Back to search */}
                 <div className="flex items-center gap-2">
-                  {onQuickStartToggle && (
-                    <button
-                      type="button"
-                      onClick={onQuickStartToggle}
-                      className="flex items-center gap-1.5 px-2 py-1 rounded-full text-gray-900 transition-colors focus:outline-none outline-none"
-                      style={{
-                        backgroundColor: isQuickStartBarVisible ? '#ECFDF5' : '#FFFFFF',
-                        border: isQuickStartBarVisible ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid rgba(229, 231, 235, 0.6)',
-                        transition: 'background-color 0.2s ease, border-color 0.2s ease',
-                        height: '24px',
-                        minHeight: '24px'
-                      }}
-                      onMouseEnter={(e) => {
-                        if (!isQuickStartBarVisible) {
-                          e.currentTarget.style.backgroundColor = '#F5F5F5';
-                        }
-                      }}
-                      onMouseLeave={(e) => {
-                        if (!isQuickStartBarVisible) {
-                          e.currentTarget.style.backgroundColor = '#FFFFFF';
-                        }
-                      }}
-                      title="Link document to property"
-                    >
-                      <Workflow className={`w-3.5 h-3.5 ${isQuickStartBarVisible ? 'text-green-500' : ''}`} strokeWidth={1.5} />
-                      <span className="text-xs font-medium">Link</span>
-                    </button>
+                  {onMapToggle != null && (
+                    <>
+                      {isWebSearchEnabled && (
+                        <WebSearchPill onDismiss={() => setIsWebSearchEnabled(false)} />
+                      )}
+                      <ChatBarToolsDropdown
+                        items={[
+                          {
+                            id: 'web-search',
+                            icon: Globe,
+                            label: 'Search the web',
+                            onClick: () => setIsWebSearchEnabled((prev) => !prev),
+                          },
+                          {
+                            id: 'map',
+                            icon: isMapVisible ? LibraryBig : MapPinHouse,
+                            label: isMapVisible ? 'Back to search' : 'Go to map',
+                            onClick: () => onMapToggle?.(),
+                          },
+                        ]}
+                      />
+                    </>
                   )}
-                  
                   {contextConfig.showMic && (
                     <>
                       <input

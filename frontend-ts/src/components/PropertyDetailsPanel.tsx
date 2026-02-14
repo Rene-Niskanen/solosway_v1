@@ -1090,7 +1090,16 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
     
     return Math.max(left, 320); // Minimum 320px like old commit
   }, [isChatPanelOpen, isFilingSidebarOpen, filingSidebarWidth, chatPanelWidth, sidebarWidth, isInChatMode]);
-  
+
+  // When chat + agent sidebar are open, cap minWidth so panel doesn't overflow (avoid "crash")
+  const propertyDetailsMinWidth = React.useMemo(() => {
+    if (!isChatPanelOpen) return undefined;
+    const leftPx = typeof propertyDetailsLeft === 'number' ? propertyDetailsLeft : 0;
+    const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1920;
+    const availableWidth = viewportWidth - leftPx - agentSidebarReserve;
+    return Math.min(600, Math.max(320, availableWidth));
+  }, [isChatPanelOpen, propertyDetailsLeft, agentSidebarReserve]);
+
   // Track when chat panel is resizing to disable layout animations
   const [isChatPanelResizing, setIsChatPanelResizing] = React.useState<boolean>(false);
   const prevChatPanelWidthRef = React.useRef<number>(chatPanelWidth);
@@ -2536,10 +2545,8 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
               bottom: isChatPanelOpen ? '0px' : 'auto',
               width: isChatPanelOpen ? 'auto' : '800px',
               height: isChatPanelOpen ? 'auto' : '600px',
-              // Minimum width when chat panel is open: enough for 3 document cards
-              // Each card is 160px, gaps are 24px (gap-6), padding is 24px each side (p-6)
-              // 3 cards: 3 * 160px + 2 * 24px (gaps) + 48px (padding) = 576px, round to 600px
-              minWidth: isChatPanelOpen ? '600px' : 'auto',
+              // Minimum width when chat panel is open; cap by available space when agent sidebar is open to prevent overlap
+              minWidth: isChatPanelOpen ? (propertyDetailsMinWidth != null ? `${propertyDetailsMinWidth}px` : '600px') : 'auto',
               transition: 'none', // No transition for width/position changes - instant like chat
               
               // Normal Mode: Centered with margins (parent container handles sidebar offset via paddingLeft)
@@ -2563,6 +2570,22 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
             <div className="px-10 pt-4 pb-3 bg-[#FCFCF9] relative" style={{ zIndex: 1, borderBottom: 'none' }}>
               <div className="flex items-end justify-between gap-1">
                 <div className="flex items-end gap-1" style={{ maxWidth: 'fit-content' }}>
+                {/* Back button - when in fullscreen from Projects, go back to projects page */}
+                {isInChatMode && (
+                  <button
+                    type="button"
+                    onClick={onClose}
+                    className="flex items-center gap-2 px-3 py-2 text-sm font-medium text-gray-600 hover:text-gray-900 bg-[#FCFCF9] border-t border-l border-r border-gray-200 rounded-t-lg hover:bg-[#F5F5F2] transition-all cursor-pointer flex-shrink-0"
+                    style={{
+                      marginBottom: activeSection ? '-1px' : '0',
+                      zIndex: 1,
+                    }}
+                    title="Back to Projects"
+                  >
+                    <ChevronLeft className="flex-shrink-0 text-gray-500" style={{ width: '12px', height: '12px', minWidth: '12px', minHeight: '12px' }} />
+                    <span className="text-xs">Back</span>
+                  </button>
+                )}
                 {displayOrder.map((section, index) => {
                   const isActive = activeSection === section;
                   const sectionConfig = {
