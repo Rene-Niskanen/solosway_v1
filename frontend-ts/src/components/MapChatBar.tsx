@@ -327,7 +327,7 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
                 minHeight: '24px',
                 width: '100%',
                 marginTop: '4px',
-                marginBottom: '12px',
+                marginBottom: '0px',
                 flexShrink: 0,
               }}
             >

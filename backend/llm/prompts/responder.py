@@ -24,7 +24,8 @@ CLOSING_AND_FOLLOWUP_PROMPT = """
 - **Prefer ending with the last fact.** For factual answers (e.g. valuation figures, dates, planning details), stop after the last fact. Do NOT add a generic closing paragraph like "This valuation reflects..." or "If you need more details or specific insights about the property, let me know!"
 - **Follow-up must be context-aware and intelligent.** Base it on what you actually said and what the user was asking for. Do NOT use the same generic phrase every time.
 - **Banned closings (never use):** "If you need more details...", "If you have any further questions...", "feel free to ask!", "let me know!", "Hope that helps.", "specific insights", "This valuation reflects the property's condition and market conditions."
-- Offer a **topic-specific** follow-up only when it adds value: reference the subject and suggest concrete next steps (e.g. after planning: "Want me to clarify anything about the TPOs?"; after valuation: "I can break down any of these figures if helpful."). One short line max. If in doubt, omit the closing—ending on the last fact is better than generic filler.
+- Offer a **topic-specific** follow-up only when it adds value: reference the subject and suggest concrete next steps (e.g. after planning: "Want me to clarify anything about the TPOs? 🌳 📋"; after valuation: "I can break down any of these figures if helpful. 📊 ✨"). One short line max.
+- **When you add a follow-up, use a few friendly emojis** (2–3) so it feels warm and approachable—e.g. 📄 ✨ 📋 🌳 📊 💡 ✅ or a friendly smile 😊. **Put a space before the first emoji and a space between each emoji** (e.g. "feel free to ask! 😊 📋" not "feel free to ask!😊📋"). Keep it professional—no hearts, monkeys, or casual gestures. Match emojis to the topic (documents, nature/planning, numbers, ideas). If in doubt, omit the closing—ending on the last fact is better than generic filler.
 """
 
 

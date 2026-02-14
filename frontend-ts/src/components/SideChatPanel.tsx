@@ -1356,7 +1356,7 @@ const StreamingResponseText: React.FC<{
     }}>{children}</ol>,
     li: ({ children }: { children?: React.ReactNode }) => {
       return <li style={{ 
-        marginBottom: '6.6px',
+        margin: '4.4px 0 4.4px 0',
         lineHeight: '1.7',
         paddingLeft: '8.8px',
         wordWrap: 'break-word',
@@ -1453,6 +1453,11 @@ const StreamingResponseText: React.FC<{
         }
         .streaming-response-text p + p {
           margin-top: 4.4px !important;
+        }
+        /* Equal spacing above and below each bullet point */
+        .streaming-response-text li {
+          margin-top: 4.4px !important;
+          margin-bottom: 4.4px !important;
         }
       `}</style>
       <div ref={wrapperRef} style={{ position: 'relative' }}>
@@ -2840,7 +2845,7 @@ const CitationBboxPreview: React.FC<CitationBboxPreviewProps> = ({ citationBboxD
           width: `${widthPct}%`,
           height: `${heightPct}%`,
           backgroundColor: 'rgba(188, 212, 235, 0.4)',
-          border: '2px solid rgba(188, 212, 235, 0.4)',
+          border: '2px dotted rgba(163, 173, 189, 0.8)',
           borderRadius: '2px',
           pointerEvents: 'none',
           zIndex: 10
@@ -3079,7 +3084,7 @@ const CitationHoverPreview: React.FC<CitationHoverPreviewProps> = ({
                 width: `${Math.min(imageWidth, finalBboxWidth)}px`,
                 height: `${Math.min(imageHeight, finalBboxHeight)}px`,
                 backgroundColor: 'rgba(188, 212, 235, 0.4)',
-                border: '2px solid rgba(188, 212, 235, 0.4)',
+                border: '2px dotted rgba(163, 173, 189, 0.8)',
                 borderRadius: '2px',
                 pointerEvents: 'none',
                 zIndex: 10
@@ -4818,7 +4823,14 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     setIsBotPaused(newPausedState);
     isBotPausedRef.current = newPausedState;
     
-    if (!newPausedState) {
+    if (newPausedState) {
+      // Pausing: abort the stream so backend stops retrieval/LLM work (same as stop)
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+        abortControllerRef.current = null;
+        resumeProcessingRef.current = null;
+      }
+    } else {
       // Resuming - trigger processing of any buffered tokens
       if (resumeProcessingRef.current) {
         resumeProcessingRef.current();
@@ -7291,6 +7303,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             if (queryChatId) {
               abortControllersRef.current[queryChatId] = queryPropFileAbortController;
             }
+            // So "Stop generating" aborts this stream (same ref used by handleStopQuery)
+            abortControllerRef.current = queryPropFileAbortController;
             
             // Update chat status to 'loading' right before query starts
             if (queryChatId) {
@@ -11402,6 +11416,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           if (queryChatId) {
             abortControllersRef.current[queryChatId] = handleSubmitNoFileAbortController;
           }
+          // So "Stop generating" aborts this stream (same ref used by handleStopQuery)
+          abortControllerRef.current = handleSubmitNoFileAbortController;
           
           // Update chat status to 'loading' right before query starts
           if (queryChatId) {
@@ -12558,11 +12574,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       const isLatestAssistantMessage = latestAssistantMessageKey !== null && finalKey === latestAssistantMessageKey;
       
       if (message.type === 'query') {
-        // Truncate query text if from citation
+        // Only truncate citation-sourced query previews; show full query text for normal (non-citation) messages
         const containerWidth = contentAreaRef.current?.clientWidth || 600;
         const { truncatedText, isTruncated } = message.fromCitation && message.text
           ? truncateQueryText(message.text, 2, 80, containerWidth)
-          : { truncatedText: message.text || '', isTruncated: false };
+          : { truncatedText: message.text ?? '', isTruncated: false };
         
         // Handler to open citation when clicking preview or truncated text
         const handleCitationPreviewClick = () => {
@@ -12602,7 +12618,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 />
               </div>
             )}
-            <div style={{ backgroundColor: '#F3F3F3', borderRadius: '15.4px', padding: '4.4px 6.6px 4.4px 11px', width: 'fit-content', maxWidth: '100%', wordWrap: 'break-word', overflowWrap: 'break-word', display: 'block', boxSizing: 'border-box' }}>
+            <div style={{ backgroundColor: '#F3F3F3', borderRadius: '15.4px', padding: '4.4px 6.6px 4.4px 11px', width: 'fit-content', maxWidth: '100%', maxHeight: 'min(320px, 50vh)', overflowY: 'auto', overflowX: 'hidden', wordWrap: 'break-word', overflowWrap: 'break-word', display: 'block', boxSizing: 'border-box', WebkitOverflowScrolling: 'touch' }}>
               {message.attachments?.length > 0 && (
                 <div style={{ marginBottom: (message.text || message.propertyAttachments?.length > 0) ? '8.8px' : '0', display: 'flex', flexWrap: 'wrap', gap: '4.4px' }}>
                   {message.attachments.map((attachment, i) => (
@@ -12610,13 +12626,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   ))}
                 </div>
               )}
-              <div style={{ display: 'block', lineHeight: '24px', fontSize: '15.2px', width: 'fit-content', maxWidth: '100%', padding: 0, margin: 0 }}>
+              <div style={{ display: 'block', lineHeight: '24px', fontSize: '15.2px', width: 'fit-content', maxWidth: '100%', minWidth: 0, padding: 0, margin: 0 }}>
                 {message.contentSegments && message.contentSegments.length > 0
                   ? message.contentSegments.map((seg, idx) => {
                       if (seg.type === 'text') {
-                        const { truncatedText: segText, isTruncated: segTruncated } = seg.value
+                        // Only truncate citation-sourced query previews; show full text for normal queries
+                        const { truncatedText: segText, isTruncated: segTruncated } = seg.value && message.fromCitation
                           ? truncateQueryText(seg.value, 2, 80, containerWidth)
-                          : { truncatedText: '', isTruncated: false };
+                          : seg.value
+                            ? { truncatedText: seg.value, isTruncated: false }
+                            : { truncatedText: '', isTruncated: false };
                         if (!segText) return null;
                         return (
                           <span
@@ -12649,7 +12668,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               h2: () => null, h3: ({ children }) => <h3 style={{ fontSize: '16px', fontWeight: 600, margin: '10.9px 0 6.6px 0' }}>{children}</h3>,
                               ul: ({ children }) => <ul style={{ margin: '11px 0', paddingLeft: '24.1px' }}>{children}</ul>,
                               ol: ({ children }) => <ol style={{ margin: '11px 0', paddingLeft: '24.1px' }}>{children}</ol>,
-                              li: ({ children }) => <li style={{ marginBottom: '6.6px' }}>{children}</li>,
+                              li: ({ children }) => <li style={{ margin: '4.4px 0 4.4px 0' }}>{children}</li>,
                               strong: ({ children }) => <strong style={{ fontWeight: 600 }}>{children}</strong>,
                               em: ({ children }) => <em style={{ fontStyle: 'italic' }}>{children}</em>,
                               code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2.2px 5.5px', borderRadius: '4.4px', fontSize: '15.2px', fontFamily: 'monospace' }}>{children}</code>,
@@ -12747,7 +12766,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             h2: () => null, h3: ({ children }) => <h3 style={{ fontSize: '16px', fontWeight: 600, margin: '10.9px 0 6.6px 0' }}>{children}</h3>,
                             ul: ({ children }) => <ul style={{ margin: '11px 0', paddingLeft: '24.1px' }}>{children}</ul>,
                             ol: ({ children }) => <ol style={{ margin: '11px 0', paddingLeft: '24.1px' }}>{children}</ol>,
-                            li: ({ children }) => <li style={{ marginBottom: '6.6px' }}>{children}</li>,
+                            li: ({ children }) => <li style={{ margin: '4.4px 0 4.4px 0' }}>{children}</li>,
                             strong: ({ children }) => <strong style={{ fontWeight: 600 }}>{children}</strong>,
                             em: ({ children }) => <em style={{ fontStyle: 'italic' }}>{children}</em>,
                             code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2.2px 5.5px', borderRadius: '4.4px', fontSize: '15.2px', fontFamily: 'monospace' }}>{children}</code>,
@@ -12861,10 +12880,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             position: 'relative',
             minHeight: '1px' // Prevent collapse
           }}>
-          {/* Reasoning Steps: when loading show inline; when finished show under collapsible "Thought Xs" header (collapsed by default) */}
-          {message.reasoningSteps && message.reasoningSteps.length > 0 && (message.isLoading || showReasoningTrace) && (
+          {/* Reasoning Steps: show instantly when loading (Planning next moves) then real steps replace it; when finished show under collapsible "Thought Xs" header (collapsed by default). Hide entirely when query is paused. */}
+          {(message.isLoading || (message.reasoningSteps && message.reasoningSteps.length > 0 && (message.isLoading || showReasoningTrace))) && !isBotPaused && (
             message.isLoading ? (
-              <ReasoningSteps key={`reasoning-${finalKey}`} steps={message.reasoningSteps} isLoading={true} hasResponseText={!!message.text} isAgentMode={isAgentMode} skipAnimations={!!isRestored} />
+              <ReasoningSteps key={`reasoning-${finalKey}`} steps={message.reasoningSteps ?? []} isLoading={true} hasResponseText={!!message.text} isAgentMode={isAgentMode} skipAnimations={!!isRestored} />
             ) : (
               <div key={`thought-${finalKey}`} style={{ marginBottom: '17.6px' }}>
                 <button
@@ -12898,8 +12917,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               </div>
             )
           )}
-            {/* Show bouncing dot only after ALL reading is complete - right before response text arrives */}
-            {message.isLoading && !message.text && 
+            {/* Show bouncing dot only after ALL reading is complete - right before response text arrives (hidden when paused) */}
+            {message.isLoading && !message.text && !isBotPaused &&
              message.reasoningSteps?.some(step => step.action_type === 'reading') &&
              message.reasoningSteps?.filter(step => step.action_type === 'reading').every(step => step.details?.status === 'read') && (
               <ThinkingDot />
@@ -12910,8 +12929,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           {message.text && (
             <div style={{
               position: 'relative',
-              minHeight: '1px', // Prevent collapse
-              contain: 'layout style' // Prevent layout shifts (removed 'paint' to prevent text clipping)
+              minHeight: '1px',
+              maxHeight: 'min(400px, 55vh)',
+              overflowY: 'auto',
+              overflowX: 'hidden',
+              WebkitOverflowScrolling: 'touch',
+              contain: 'layout style'
             }}>
               <StreamingResponseTextMemo
                 text={message.text}
@@ -13120,7 +13143,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         </div>
       );
     }).filter(Boolean);
-  }, [chatMessages, showReasoningTrace, showHighlight, showCitations, expandedThoughtMessageIds, toggleThoughtExpanded, restoredMessageIdsRef, handleUserCitationClick, onOpenProperty, scrollToBottom, expandedCardViewDoc, propertyAttachments, orangeCitationNumbersByMessage, citationClickPanel, citationViewedInDocument, currentChatId, skipSwoopForChatId, revealCompleteTick, savedCitationNumbersForMessageByMessageId, likedResponseIds, dislikedResponseIds, copiedResponseId, shimmerTickMessageId, sourcesDropdownMessageId, showBarForResponseId, handleThumbsUpResponse, handleThumbsDownResponse, handleCopyResponse, handleDownloadResponse, handleDownloadResponseAsDocxForMessage, openCitationInDocumentView, openFeedbackModal]);
+  }, [chatMessages, showReasoningTrace, showHighlight, showCitations, expandedThoughtMessageIds, toggleThoughtExpanded, restoredMessageIdsRef, handleUserCitationClick, onOpenProperty, scrollToBottom, expandedCardViewDoc, propertyAttachments, orangeCitationNumbersByMessage, citationClickPanel, citationViewedInDocument, currentChatId, skipSwoopForChatId, revealCompleteTick, savedCitationNumbersForMessageByMessageId, likedResponseIds, dislikedResponseIds, copiedResponseId, shimmerTickMessageId, sourcesDropdownMessageId, showBarForResponseId, handleThumbsUpResponse, handleThumbsDownResponse, handleCopyResponse, handleDownloadResponse, handleDownloadResponseAsDocxForMessage, openCitationInDocumentView, openFeedbackModal, isBotPaused]);
 
   return (
     <>
@@ -14336,8 +14359,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               width: '100%',
                               minHeight: '100px',
                               maxHeight: '120px',
+                              overflowY: 'auto',
+                              overflowX: 'hidden',
                               lineHeight: '22px',
-                              paddingTop: '0px',
+                              paddingTop: '3px',
                               paddingBottom: '4px',
                               paddingRight: '12px',
                               paddingLeft: '6px',
@@ -14555,17 +14580,17 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   style={{ 
                     backgroundColor: '#FCFCF9',
                     padding: '16px 0', // Simplified padding - content will be centered
-                    // Inset the scroll container slightly so the scrollbar isn't flush against the panel edge
                     marginRight: '6px',
                     scrollbarWidth: 'thin',
                     scrollbarColor: 'rgba(0, 0, 0, 0.02) transparent',
-                    minWidth: 0, // Allow shrinking at narrow widths - content wrapper handles responsive layout
+                    minWidth: 0,
+                    minHeight: 0, // Allow flex child to shrink so overflow-y: auto can show scrollbar
                     flexShrink: 1,
                     display: 'flex',
                     flexDirection: 'column',
-                    alignItems: 'center', // Center content wrapper horizontally
-                    position: 'relative', // For BotStatusOverlay positioning
-                    overflowX: 'hidden' // Prevent horizontal overflow leaks
+                    alignItems: 'center',
+                    position: 'relative',
+                    overflowX: 'hidden'
                   }}
                 >
                   {/* Centered content wrapper - ChatGPT-like centered layout */}
@@ -14898,8 +14923,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               onClick={(e) => e.stopPropagation()} // Prevent clicks from closing agent sidebar
               style={{ 
                 backgroundColor: citationClickPanel ? 'transparent' : '#FCFCF9', 
-                paddingTop: '16px', 
-                paddingBottom: '48px', 
+                paddingTop: '12px', 
+                paddingBottom: '32px', 
                 paddingLeft: '0', // Remove left padding - centering handled by form
                 paddingRight: '0', // Remove right padding - centering handled by form
                 position: 'relative', 
@@ -15084,14 +15109,14 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         ? '0 4px 12px 0 rgba(59, 130, 246, 0.15), 0 2px 4px 0 rgba(59, 130, 246, 0.10)' 
                         : '0 1px 3px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.02)',
                       position: 'relative',
-                      paddingTop: '12px',
-                      paddingBottom: '12px',
+                      paddingTop: '10px',
+                      paddingBottom: '10px',
                       paddingRight: '12px',
                       paddingLeft: '12px',
                       overflow: 'hidden',
                       width: '100%',
                       height: 'auto',
-                      minHeight: '48px',
+                      minHeight: '44px',
                       boxSizing: 'border-box',
                       borderRadius: '14px',
                       transition: 'background-color 0.2s ease-in-out, border-color 0.2s ease-in-out, box-shadow 0.2s ease-in-out',
@@ -15106,7 +15131,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       minHeight: '24px',
                       width: '100%',
                       minWidth: '0',
-                      gap: '12px'
+                      gap: '8px'
                     }}
                   >
                     {/* File Attachments Display - Above textarea */}
@@ -15157,12 +15182,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     {/* SegmentInput + @ context - chips only inline (no row above, matches SearchBar) */}
                     <div
                       className="flex items-start w-full"
-                      style={{ minHeight: '24px', height: 'auto', width: '100%', marginTop: '0px', marginBottom: '0px', flexShrink: 0 }}
+                      style={{ minHeight: '24px', maxHeight: '220px', height: 'auto', width: '100%', marginTop: '0px', marginBottom: '0px', flexShrink: 0, overflow: 'hidden' }}
                     >
                       <div
                         ref={atMentionAnchorRef}
                         className="flex-1 relative flex items-start w-full"
-                        style={{ overflow: 'visible', minHeight: '28px', width: '100%', minWidth: '0', alignSelf: 'flex-start' }}
+                        style={{ overflow: 'visible', minHeight: '24px', maxHeight: '200px', width: '100%', minWidth: '0', alignSelf: 'flex-start' }}
                         onFocus={() => setIsFocused(true)}
                         onBlur={() => setIsFocused(false)}
                         onClick={(e) => e.stopPropagation()}
@@ -15196,16 +15221,19 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           disabled={isSubmitted}
                           style={{
                             width: '100%',
-                            minHeight: '28px',
-                            maxHeight: '220px',
+                            minHeight: '24px',
+                            maxHeight: '200px',
+                            overflowY: 'auto',
+                            overflowX: 'hidden',
                             lineHeight: '20px',
-                            paddingTop: '0px',
-                            paddingBottom: '4px',
+                            paddingTop: '3px',
+                            paddingBottom: '3px',
                             paddingRight: '12px',
                             paddingLeft: '6px',
                             color: segmentInput.getPlainText() ? '#333333' : undefined,
                             boxSizing: 'border-box',
                           }}
+                          scrollWrapperPaddingBottom="14px"
                           onKeyDown={(e) => {
                             if (atMentionOpen && e.key === 'Enter') return;
                             if (e.key === 'Enter' && !e.shiftKey) {

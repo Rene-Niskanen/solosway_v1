@@ -1658,7 +1658,7 @@ Provide a helpful, conversational answer using Markdown formatting:
 - Use `**bold**` for emphasis or labels
 - Use `-` for bullet points when listing items
 - Use line breaks between sections for better readability
-- Put any closing or sign-off on a new line; if you add a follow-up, make it context-aware (tied to what you said and what they asked), not generic.
+- Put any closing or sign-off on a new line; if you add a follow-up, make it context-aware (tied to what you said and what they asked), not generic. When you add a follow-up, use a few friendly emojis (2–3), e.g. 📄 ✨ 📋 🌳 📊 💡 ✅ or a friendly smile 😊. Put a space before the first emoji and between each emoji (e.g. "feel free to ask! 😊 📋"). Keep it professional—no hearts, monkeys, or casual gestures.
 - Extract and present information directly from the excerpts if it is present
 - Only say information is not found if it is genuinely not in the excerpts
 - Include appropriate context based on question type
@@ -1769,7 +1769,7 @@ Provide a helpful, conversational answer using Markdown formatting:
 - Use `**bold**` for emphasis or labels
 - Use `-` for bullet points when listing items
 - Use line breaks between sections for better readability
-- Put any closing or sign-off on a new line; if you add a follow-up, make it context-aware (tied to what you said and what they asked), not generic.
+- Put any closing or sign-off on a new line; if you add a follow-up, make it context-aware (tied to what you said and what they asked), not generic. When you add a follow-up, use a few friendly emojis (2–3), e.g. 📄 ✨ 📋 🌳 📊 💡 ✅ or a friendly smile 😊. Put a space before the first emoji and between each emoji (e.g. "feel free to ask! 😊 📋"). Keep it professional—no hearts, monkeys, or casual gestures.
 - Extract and present information directly from the excerpts if it is present
 - Only say information is not found if it is genuinely not in the excerpts
 - Include appropriate context based on question type
@@ -1873,7 +1873,7 @@ Is this the first message in the conversation? {is_first_message}
 - Answer based on the content above. For each fact you use, cite it as [ID: X](BLOCK_CITE_ID_N) where the block id is from the <BLOCK> whose content actually contains that fact (e.g. the block with "56" and "D" for EPC current rating).
 - **Place each citation immediately after the fact it supports**, not at the end of the sentence (e.g. "...payment stablecoins are not considered securities [ID: 1](BLOCK_CITE_ID_5), amending various acts..." not "...to reflect this [ID: 1](BLOCK_CITE_ID_5).").
 - **In bullet lists:** put each citation at the end of the bullet it supports (e.g. "- Incredible Location [ID: 1](BLOCK_CITE_ID_1)"), never all citations at the end of the last bullet.
-- Put any closing or sign-off on a new line; if you add a follow-up, make it context-aware (tied to what you said and what they asked), not generic.
+- Put any closing or sign-off on a new line; if you add a follow-up, make it context-aware (tied to what you said and what they asked), not generic. When you add a follow-up, use a few friendly emojis (2–3), e.g. 📄 ✨ 📋 🌳 📊 💡 ✅ or a friendly smile 😊. Put a space before the first emoji and between each emoji (e.g. "feel free to ask! 😊 📋"). Keep it professional—no hearts, monkeys, or casual gestures.
 - Explain in a clear, conversational way; use Markdown where it helps readability. Be accurate.
 """)
 

@@ -96,7 +96,7 @@ Provide a helpful, conversational answer using Markdown formatting:
 - Use `**bold**` for emphasis or labels
 - Use `-` for bullet points when listing items
 - Use line breaks between sections for better readability
-- Put any closing or sign-off on a new line; if you add a follow-up, make it context-aware (tied to what you said and what they asked), not generic.
+- Put any closing or sign-off on a new line; if you add a follow-up, make it context-aware (tied to what you said and what they asked), not generic. When you add a follow-up, use a few friendly emojis (2–3), e.g. 📄 ✨ 📋 🌳 📊 💡 ✅ or a friendly smile 😊. Put a space before the first emoji and between each emoji (e.g. "feel free to ask! 😊 📋"). Keep it professional—no hearts, monkeys, or casual gestures.
 - **Extract and present information directly from the excerpts if it is present**
 - Only say information is not found if it is genuinely not in the excerpts
 - Includes appropriate context based on question type

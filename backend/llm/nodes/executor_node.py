@@ -82,21 +82,25 @@ def _choose_search_intro(intent: str) -> str:
     """
     Choose the intro that flows best for this intent: Finding, Searching for, or Locating.
     Returns the full label (e.g. "Locating Koch market appraisal", "Finding value of highlands").
+    Lowercases the first letter of the intent when it is capitalized so the phrase flows
+    (e.g. "Locating who made the offer..." instead of "Locating Who made the offer...").
     """
     if not intent or intent.lower() == "documents":
         return "Searching for documents"
+    # Lowercase first character so "Who/What/Which" flows after the intro (e.g. "Locating who...")
+    phrase = (intent[0].lower() + intent[1:]) if (len(intent) > 0 and intent[0].isupper()) else intent
     lower = intent.lower()
     words = lower.split()
     # Document / report / appraisal by name → "Locating" (we're locating that doc)
     doc_like = any(t in lower for t in ("document", "appraisal", "report", "valuation", "file"))
     if doc_like or (len(words) >= 3 and words[0] not in ("the", "a", "an", "overview", "value", "summary")):
-        return f"Locating {intent}"
+        return f"Locating {phrase}"
     # Short or content-focused (value, overview, summary, EPC, etc.) → "Finding"
     content_like = any(t in lower for t in ("value", "overview", "summary", "rating", "epc", "assumption", "disclaimer"))
     if content_like or len(words) <= 3:
-        return f"Finding {intent}"
+        return f"Finding {phrase}"
     # Longer or query-like → "Searching for"
-    return f"Searching for {intent}"
+    return f"Searching for {phrase}"
 
 
 def resolve_step_references(step: ExecutionStep, execution_results: List[Dict[str, Any]]) -> ExecutionStep:

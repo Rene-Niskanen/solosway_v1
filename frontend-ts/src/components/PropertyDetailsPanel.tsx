@@ -908,8 +908,12 @@ const ExpandedCardView: React.FC<{
                                       width: `${Math.min(pageDimensions.width, finalBboxWidth)}px`,
                                       height: `${Math.min(pageDimensions.height, finalBboxHeight)}px`,
                                       backgroundColor: 'rgba(188, 212, 235, 0.4)',
-                                      border: '2px solid rgba(188, 212, 235, 0.4)',
+                                      border: 'none',
                                       borderRadius: '2px',
+                                      backgroundImage: 'repeating-linear-gradient(90deg, rgba(188, 212, 235, 0.4) 0px, rgba(188, 212, 235, 0.4) 10px, rgba(163, 173, 189, 0.8) 10px, rgba(163, 173, 189, 0.8) 20px), repeating-linear-gradient(0deg, rgba(188, 212, 235, 0.4) 0px, rgba(188, 212, 235, 0.4) 10px, rgba(163, 173, 189, 0.8) 10px, rgba(163, 173, 189, 0.8) 20px), repeating-linear-gradient(90deg, rgba(188, 212, 235, 0.4) 0px, rgba(188, 212, 235, 0.4) 10px, rgba(163, 173, 189, 0.8) 10px, rgba(163, 173, 189, 0.8) 20px), repeating-linear-gradient(0deg, rgba(188, 212, 235, 0.4) 0px, rgba(188, 212, 235, 0.4) 10px, rgba(163, 173, 189, 0.8) 10px, rgba(163, 173, 189, 0.8) 20px)',
+                                      backgroundSize: '20px 2px, 2px 20px, 20px 2px, 2px 20px',
+                                      backgroundPosition: '0 0, 100% 0, 0 100%, 0 0',
+                                      backgroundRepeat: 'repeat-x, repeat-y, repeat-x, repeat-y',
                       pointerEvents: 'auto',
                                       cursor: 'pointer',
                                       zIndex: 10,
@@ -918,11 +922,9 @@ const ExpandedCardView: React.FC<{
                                     }}
                                     onMouseEnter={(e) => {
                                       e.currentTarget.style.backgroundColor = 'rgba(188, 212, 235, 0.6)';
-                                      e.currentTarget.style.borderColor = 'rgba(188, 212, 235, 0.6)';
                                     }}
                                     onMouseLeave={(e) => {
                                       e.currentTarget.style.backgroundColor = 'rgba(188, 212, 235, 0.4)';
-                                      e.currentTarget.style.borderColor = 'rgba(188, 212, 235, 0.4)';
                                     }}
                                     title="Click to interact with this citation"
                                   />

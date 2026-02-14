@@ -6,8 +6,33 @@ Queries are grouped by document. Use for retrieval and chat testing.
 
 ## Favourite queries
 
+- What is the offer value or price for Banda Lane?
 - Summarise the Banda Lane offer in a few sentences
+- What are the lease terms and rent in the Nzohe LR 1160 750 agreement?
+- What did the Koch Sales appraisal value the property at?
+- Compare the Banda Lane and 24 Rudthorpe Road offers
 - When was the 24 Rudthorpe Road inventory dated and who signed it?
+- What is in the inventory for 24 Rudthorpe Road?
+- Who are the parties in the Kenyajui Espindola Mellifera lease?
+- What does the Knight Frank letting agreement say about break clauses?
+- What are the key details or asking price for Mbagathi Ridge No 10 Karen?
+- What did the Highlands Berden Bishops Stortford valuation conclude?
+- What payment schedule or deposit is required in the Banda Lane offer?
+- What are the main terms of the offer on Banda Lane?
+- What did the development property valuation recommend or value at?
+- What documents do we have that mention Banda Lane?
+- What is the purchase price and completion date for 24 Rudthorpe Road?
+- What does the offer letter for 24 Rudthorpe Road say about the sale price?
+- What fixtures and fittings are included at 24 Rudthorpe Road?
+- What is the commission structure in the Knight Frank joint agency agreement?
+- Who pays commission in the Knight Frank sales agreement and when?
+- When does the Nzohe LR 1160 750 lease start and end?
+- What is the rent and payment frequency in the Kenyajui Espindola Mellifera lease?
+- Where is Mbagathi Ridge No 10 Karen located and what size is it?
+- What did the development property valuation say about planning or approvals?
+- What lease documents do we have and what do they cover?
+- What valuation or appraisal documents do we have and what do they value?
+- What documents mention 24 Rudthorpe Road?
 
 ---
 

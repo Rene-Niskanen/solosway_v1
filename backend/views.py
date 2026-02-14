@@ -2784,6 +2784,8 @@ def query_documents_stream():
                 chunk_queue = Queue()
                 error_occurred = threading.Event()
                 error_message = [None]
+                # Signal for stream thread to stop when client disconnects (e.g. pause/stop)
+                client_disconnected = threading.Event()
                 
                 def run_async_gen():
                     """Run the async generator in a separate thread with its own event loop"""
@@ -2808,14 +2810,43 @@ def query_documents_stream():
                                     # Log reasoning step chunks for debugging
                                     chunk_queue.put(chunk)
                                 logger.info(f"🟠 [STREAM] Finished consuming async generator ({chunk_count} chunks)")
+                            except asyncio.CancelledError:
+                                logger.info("🔴 [STREAM] consume_async_gen cancelled (client disconnected)")
+                                raise
                             except Exception as e:
                                 logger.error(f"🟠 [STREAM] Error in consume_async_gen: {e}", exc_info=True)
                                 error_occurred.set()
                                 error_message[0] = str(e)
                                 chunk_queue.put(f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n")
                         
+                        async def watch_client_disconnect():
+                            """Exit when client disconnects so we can cancel the consumer."""
+                            while not client_disconnected.is_set():
+                                await asyncio.sleep(0.3)
+                            logger.info("🔴 [STREAM] Client disconnected - cancelling backend retrieval/stream")
+                        
+                        async def run_with_cancellation():
+                            consume_task = new_loop.create_task(consume_async_gen())
+                            watch_task = new_loop.create_task(watch_client_disconnect())
+                            done, pending = await asyncio.wait(
+                                [consume_task, watch_task],
+                                return_when=asyncio.FIRST_COMPLETED
+                            )
+                            if watch_task in done:
+                                consume_task.cancel()
+                                try:
+                                    await consume_task
+                                except asyncio.CancelledError:
+                                    pass
+                            else:
+                                watch_task.cancel()
+                                try:
+                                    await watch_task
+                                except asyncio.CancelledError:
+                                    pass
+                        
                         try:
-                            new_loop.run_until_complete(consume_async_gen())
+                            new_loop.run_until_complete(run_with_cancellation())
                         finally:
                             # Cleanup: Let pending tasks (e.g. Mem0 memory storage) finish, then cancel any left
                             try:
@@ -2871,8 +2902,9 @@ def query_documents_stream():
                             break
                         yield chunk
                     except (BrokenPipeError, ConnectionResetError):
-                        # Client disconnected (e.g., aborted request, navigated away)
-                        # This is expected behavior - gracefully stop streaming
+                        # Client disconnected (e.g., pause, stop, navigated away)
+                        # Signal stream thread to cancel so backend retrieval/LLM stop
+                        client_disconnected.set()
                         logger.info("🔴 [STREAM] Client disconnected (broken pipe), stopping stream")
                         break
                     except queue.Empty:
@@ -2893,7 +2925,11 @@ def query_documents_stream():
                         continue
                         
             except (BrokenPipeError, ConnectionResetError):
-                # Client disconnected at outer level - this is expected
+                # Client disconnected at outer level - signal stream thread to stop
+                try:
+                    client_disconnected.set()
+                except NameError:
+                    pass  # client_disconnected not in scope (e.g. error before thread setup)
                 logger.info("🔴 [STREAM] Client disconnected (broken pipe), stream ended")
             except Exception as e:
                 # Handle any errors in the main generate_stream logic

@@ -1137,7 +1137,7 @@ const ChatInterface = forwardRef<{ handleFileDrop: (file: File) => void }, ChatI
                   border: '1px solid #E5E7EB',
                   boxShadow: '0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06)',
                   paddingTop: '8px',
-                  paddingBottom: '8px',
+                  paddingBottom: '0px',
                   paddingRight: '24px',
                   willChange: 'border-radius, padding-left',
                   borderRadius: hasContent
@@ -1196,7 +1196,7 @@ const ChatInterface = forwardRef<{ handleFileDrop: (file: File) => void }, ChatI
               
               {/* Input row */}
               <div className={`relative flex ${isMultiLine ? 'items-start' : 'items-end'}`}>
-                <div className={`flex-1 relative flex ${isMultiLine ? 'items-start' : 'items-end'} min-h-[24px]`} style={{ marginBottom: isMultiLine ? '8px' : '0px' }}>
+                <div className={`flex-1 relative flex ${isMultiLine ? 'items-start' : 'items-end'} min-h-[24px]`} style={{ marginBottom: '0px' }}>
                   <motion.textarea 
                     layout={false}
                     ref={inputRef} 

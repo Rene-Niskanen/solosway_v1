@@ -43,6 +43,8 @@ export interface SegmentInputProps {
   "data-testid"?: string;
   /** Ref to receive restoreSelection (call after focus so caret appears in the right place) */
   restoreSelectionRef?: React.MutableRefObject<(() => void) | null>;
+  /** Optional bottom padding for the scroll wrapper (only when maxHeight is used). Set e.g. "14px" for side-panel chat so long messages don't sit right above the buttons; omit for dashboard/map chat. */
+  scrollWrapperPaddingBottom?: string;
 }
 
 export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputProps>(function SegmentInput({
@@ -65,8 +67,10 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
   style,
   onKeyDown: externalOnKeyDown,
   restoreSelectionRef,
+  scrollWrapperPaddingBottom,
 }, ref) {
   const internalRef = React.useRef<HTMLDivElement>(null);
+  const scrollWrapperRef = React.useRef<HTMLDivElement>(null);
   const containerRef = internalRef;
   const segmentRefs = React.useRef<(HTMLSpanElement | null)[]>([]);
 
@@ -212,6 +216,24 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
   React.useLayoutEffect(() => {
     restoreSelectionToCursor();
   }, [segments, cursor, restoreSelectionToCursor]);
+
+  // Keep the caret in view when typing: scroll the scroll wrapper so the cursor stays visible
+  React.useLayoutEffect(() => {
+    if (!scrollWrapperRef.current || !internalRef.current) return;
+    const wrapper = scrollWrapperRef.current;
+    const raf = requestAnimationFrame(() => {
+      const sel = window.getSelection();
+      if (!sel || sel.rangeCount === 0) return;
+      const range = sel.getRangeAt(0);
+      const node = range.startContainer.nodeType === Node.TEXT_NODE
+        ? range.startContainer.parentElement
+        : range.startContainer as Element;
+      if (node && internalRef.current?.contains(node)) {
+        node.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "auto" });
+      }
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [segments, cursor]);
 
   const handleKeyDown = React.useCallback(
     (e: React.KeyboardEvent) => {
@@ -370,6 +392,26 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
   const [spellCheckAfterSpace, setSpellCheckAfterSpace] = React.useState(false);
   const spellCheck = !isFocused || spellCheckAfterSpace;
 
+  // contentEditable ignores maxHeight/overflow in many browsers; use a scroll wrapper so the wrapper scrolls
+  const scrollWrapperStyle = style?.maxHeight != null ? {
+    maxHeight: style.maxHeight,
+    overflowY: style.overflowY ?? "auto",
+    overflowX: style.overflowX ?? "hidden",
+    width: style.width ?? "100%",
+    position: "relative" as const,
+    WebkitOverflowScrolling: "touch" as const,
+    scrollbarWidth: "thin" as const,
+    scrollbarColor: "rgba(0,0,0,0.08) transparent",
+    ...(scrollWrapperPaddingBottom != null && { paddingBottom: scrollWrapperPaddingBottom }),
+  } : undefined;
+  const editableStyle: React.CSSProperties | undefined = scrollWrapperStyle
+    ? (() => {
+        const s = style ?? {};
+        const { maxHeight, overflowY, overflowX, ...rest } = s;
+        return { ...rest, width: rest.width ?? "100%" };
+      })()
+    : style;
+
   return (
     <div style={{ position: "relative", ...(style?.width != null ? { width: style.width } : {}) }}>
       {/* When not focused: placeholder as overlay. Match contentEditable padding, fontSize and lineHeight so placeholder doesn't shift on focus/blur. */}
@@ -401,6 +443,106 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
           {placeholder}
         </div>
       )}
+      {scrollWrapperStyle ? (
+        <>
+          <style>{`.segment-input-scroll::-webkit-scrollbar { width: 6px; }
+.segment-input-scroll::-webkit-scrollbar-track { background: transparent; }
+.segment-input-scroll::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.08); border-radius: 3px; }
+.segment-input-scroll::-webkit-scrollbar-thumb:hover { background: rgba(0,0,0,0.12); }`}</style>
+        <div ref={scrollWrapperRef} className="segment-input-scroll" style={scrollWrapperStyle}>
+          <div
+            ref={internalRef}
+            contentEditable={!disabled}
+            suppressContentEditableWarning
+            role="textbox"
+            aria-multiline
+            tabIndex={0}
+            className={className ? `focus:outline-none focus:ring-0 ${className}` : "focus:outline-none focus:ring-0"}
+            style={{
+              outline: "none",
+              minHeight: "22px",
+              fontSize: "14px",
+              lineHeight: "22px",
+              padding: "0",
+              wordWrap: "break-word",
+              whiteSpace: "pre-wrap",
+              WebkitTapHighlightColor: "transparent",
+              ...editableStyle,
+            }}
+            spellCheck={spellCheck}
+            onFocus={() => {
+              setIsFocused(true);
+              setSpellCheckAfterSpace(false);
+            }}
+            onBlur={() => setIsFocused(false)}
+            onMouseDown={handleMouseDown}
+            onKeyDown={handleKeyDown}
+            onClick={handleClick}
+            onPaste={(e) => {
+              e.preventDefault();
+              const text = e.clipboardData.getData("text/plain");
+              if (text && onInsertText) {
+                const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+                onInsertText(normalized);
+              }
+            }}
+          >
+        {segments.map((seg, i) => {
+        if (isTextSegment(seg)) {
+          const isOnlyEmpty = segments.length === 1 && seg.value === "";
+          const showPlaceholderHere = isOnlyEmpty && showPlaceholderInSpan;
+          return (
+            <span
+              key={`t-${i}`}
+              ref={(el) => {
+                segmentRefs.current[i] = el;
+              }}
+              data-segment-index={i}
+              style={
+                isOnlyEmpty && showPlaceholderOverlay
+                  ? { display: "inline-block", minWidth: "100%", color: "transparent" }
+                  : showPlaceholderHere
+                    ? { display: "inline-block", minWidth: "100%", color: "#BABABA" }
+                    : undefined
+              }
+            >
+              {showPlaceholderHere ? placeholder : seg.value}
+            </span>
+          );
+        }
+        if (isChipSegment(seg)) {
+          return (
+            <span
+              key={`c-${i}`}
+              ref={(el) => {
+                segmentRefs.current[i] = el;
+              }}
+              data-segment-index={i}
+              contentEditable={false}
+              style={{ display: "inline-flex", verticalAlign: "middle" }}
+            >
+              <AtMentionChip
+                type={seg.kind}
+                label={seg.label}
+                onRemove={
+                  removeChipAtSegmentIndex
+                    ? () => removeChipAtSegmentIndex(i)
+                    : seg.kind === "citation_snippet"
+                      ? undefined
+                      : seg.kind === "property"
+                        ? () => onRemovePropertyChip?.(seg.id)
+                        : () => onRemoveDocumentChip?.(seg.id)
+                }
+              />
+            </span>
+          );
+        }
+        return null;
+      })}
+          </div>
+        </div>
+        </>
+      ) : (
       <div
         ref={internalRef}
         contentEditable={!disabled}
@@ -491,6 +633,7 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
         return null;
       })}
       </div>
+      )}
     </div>
   );
 });

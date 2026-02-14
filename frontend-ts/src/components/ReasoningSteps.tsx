@@ -716,7 +716,7 @@ const StepRenderer: React.FC<{
     // Icon based on tool type
     const ToolIcon = () => {
       if (toolName === 'search_documents') {
-        return <Search style={{ width: '14px', height: '14px', color: actionColor, flexShrink: 0, marginTop: '2px' }} />;
+        return <Search style={{ width: '14px', height: '14px', color: actionColor, flexShrink: 0, marginTop: '4px' }} />;
       } else if (toolName === 'read_document' || toolName === 'read_multiple_documents') {
         return <BookOpenCheck style={{ width: '14px', height: '14px', color: actionColor, flexShrink: 0, marginTop: '2px' }} />;
       } else if (toolName === 'planning' || toolName === 'generate_answer') {
@@ -829,7 +829,7 @@ const StepRenderer: React.FC<{
       return (
         <div>
           <div className="found-reveal-text" style={{ display: 'flex', alignItems: 'flex-start', gap: '6px', position: 'relative', zIndex: 1 }}>
-            <SearchCheck style={{ width: '14px', height: '14px', color: foundActionColor, flexShrink: 0, marginTop: '-1px' }} />
+            <SearchCheck style={{ width: '14px', height: '14px', color: foundActionColor, flexShrink: 0, marginTop: '0px' }} />
             <FoundDocumentsText prefix={prefix} actionStyle={foundActionStyle} detailColor={foundDetailColor} />
           </div>
           {!isSectionsStep && !isNoResultsStep && !(step.details?.doc_previews?.length) ? (
@@ -840,22 +840,29 @@ const StepRenderer: React.FC<{
         </div>
       );
     
-    case 'searching':
+    case 'searching': {
+      // Lowercase first letter of query after intro so "Locating Who..." → "Locating who..." for better flow
+      const rawMsg = step.message || '';
+      const introMatch = rawMsg.match(/^(Locating|Finding|Searching for|Preparing)\s+([A-Z])(.*)$/);
+      const searchingDisplayMessage = introMatch
+        ? introMatch[1] + ' ' + introMatch[2].toLowerCase() + introMatch[3]
+        : rawMsg;
       // Entire "Searching for value" (or whatever the message is) gets flowing gradient animation
       // Animation stops when next step (exploring/analyzing/reading) appears OR when loading completes OR when response text starts
       const nextStep = stepIndex < allSteps.length - 1 ? allSteps[stepIndex + 1] : null;
       const isSearchingActive = isLoading && !hasResponseText && (!nextStep || nextStep.action_type === 'searching');
-      
+
       return (
         <span style={{ display: 'inline-flex', alignItems: 'flex-start', gap: '6px' }}>
-          <TextSelect style={{ width: '14px', height: '14px', color: actionColor, flexShrink: 0, marginTop: '2px' }} />
+          <TextSelect style={{ width: '14px', height: '14px', color: actionColor, flexShrink: 0, marginTop: '1px' }} />
               {isSearchingActive ? (
-              <span className="searching-shimmer-active">{step.message}</span>
+              <span className="searching-shimmer-active">{searchingDisplayMessage}</span>
             ) : (
-              <span style={actionStyle}>{step.message}</span>
+              <span style={actionStyle}>{searchingDisplayMessage}</span>
           )}
         </span>
       );
+    }
     
     case 'reading':
       // Each reading step transitions from "Reading" -> "Read" 
@@ -1571,15 +1578,25 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
   if (!filteredSteps || filteredSteps.length === 0) {
     // Show planning indicator when loading but no steps yet
     // This will stop shimmering when first step appears (handled by component unmounting)
+    // Wrapper matches main return (padding, marginLeft, minHeight) to avoid layout jitter when first step arrives
     if (isLoading) {
       return (
-        <div style={{
-          marginBottom: '6px',
-          padding: '6px 10px',
-          backgroundColor: 'transparent',
-          borderRadius: '8px',
-          border: 'none'
-        }}>
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ duration: 0.12, ease: 'easeOut' }}
+          style={{
+            marginBottom: '6px',
+            padding: '6px 10px 6px 0',
+            marginLeft: '4px',
+            backgroundColor: 'transparent',
+            borderRadius: '8px',
+            border: 'none',
+            position: 'relative',
+            contain: 'layout style',
+            minHeight: '20px'
+          }}
+        >
           <PlanningIndicator />
           
           {/* CSS for shimmer animations */}
@@ -1781,7 +1798,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
               }
             }
           `}</style>
-        </div>
+        </motion.div>
       );
     }
     return null;
