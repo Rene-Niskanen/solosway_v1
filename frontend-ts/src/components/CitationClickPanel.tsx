@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { ChevronDown, FileSearchCorner, MessageCircle, Save } from "lucide-react";
+import { ChevronDown, FileSearchCorner, Loader2, MessageCircle, Save } from "lucide-react";
 
 /** Debug payload from backend: why this bbox was chosen (for citation mapping diagnosis). */
 export interface CitationDebugInfo {
@@ -174,7 +174,7 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
     logoWidth = logoHeight;
     const minBboxHeightPx = logoHeight;
     const baseBboxHeight = Math.max(originalBboxHeight, minBboxHeightPx);
-    const bboxPadding = 4;
+    const bboxPadding = 8;
     finalBboxWidth = originalBboxWidth + bboxPadding * 2;
     finalBboxHeight = baseBboxHeight === minBboxHeightPx ? minBboxHeightPx : baseBboxHeight + bboxPadding * 2;
     const bboxLeft = Math.max(0, centerX - finalBboxWidth / 2);
@@ -482,7 +482,23 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
               backgroundColor: "#f3f4f6",
             }}
           >
-            <div style={{ color: "#6b7280", fontSize: "13px" }}>Loading preview…</div>
+            {(() => {
+              const name = (citationData.original_filename || "").toLowerCase();
+              const isWordDoc = name.endsWith(".docx") || name.endsWith(".doc");
+              if (isWordDoc) {
+                return (
+                  <div style={{ color: "#6b7280", fontSize: "13px", textAlign: "center", padding: 16 }}>
+                    Preview not available for Word documents. Use &quot;View in document&quot; to open the file.
+                  </div>
+                );
+              }
+              return (
+                <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 8, color: "#6b7280", fontSize: "13px" }}>
+                  <Loader2 className="w-6 h-6 animate-spin" strokeWidth={2} />
+                  <span>Loading preview…</span>
+                </div>
+              );
+            })()}
           </div>
         )}
 
@@ -518,7 +534,7 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
               border: "1px solid #d1d5db",
               borderRadius: "20px",
               cursor: "pointer",
-              transition: "background-color 0.15s ease",
+              transition: "background-color 0.08s ease",
               boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
               pointerEvents: "auto",
             }}
@@ -544,7 +560,7 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
               border: "1px solid #d1d5db",
               borderRadius: "20px",
               cursor: "pointer",
-              transition: "background-color 0.15s ease",
+              transition: "background-color 0.08s ease",
               boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
               pointerEvents: "auto",
             }}
@@ -571,7 +587,7 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
                 border: "1px solid #d1d5db",
                 borderRadius: "20px",
                 cursor: "pointer",
-                transition: "background-color 0.15s ease",
+                transition: "background-color 0.08s ease",
                 boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
                 pointerEvents: "auto",
               }}

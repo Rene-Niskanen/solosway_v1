@@ -40,9 +40,9 @@ export function normalizeCircledCitationsToBracket(text: string): string {
   return out;
 }
 
-/** Remove period immediately after bracket citations so we never show "." after a citation. [1]. -> [1], [7]. Next -> [7] Next */
+/** Remove period (and optional space before it) after bracket citations so we NEVER show "." after a citation. [1]. -> [1], [1] . -> [1], [7]. Next -> [7] Next */
 export function removePeriodAfterBracketCitations(text: string): string {
-  return text.replace(/\[(\d+)\]\./g, '[$1]');
+  return text.replace(/\[(\d+)\]\s*\./g, '[$1]');
 }
 
 /**
@@ -133,6 +133,46 @@ export function ensureBulletPointsForListLikeBlocks(text: string): string {
   return result.join('\n');
 }
 
+/**
+ * Merge a line that is only bold text (e.g. **Market**) with the next line when the next
+ * line is a short continuation (e.g. "Overview") so that "Market Overview" renders as one
+ * bold heading instead of bold "Market" on one line and plain "Overview" on the next.
+ */
+export function mergeBoldHeadingWithNextLine(text: string): string {
+  const lines = text.split('\n');
+  const result: string[] = [];
+  const maxContinuationLen = 30;
+  // Line is only optional space + **content** + optional space; exclude **Label:** (colon before closing **)
+  const boldOnlyLine = /^\s*\*\*([^*]+)\*\*\s*$/;
+  const boldLabelWithColon = /^\s*\*\*[^*]*:\*\*\s*$/;
+  const listStart = /^\s*([-*+]\s|\d+\.\s)/;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const match = line.match(boldOnlyLine);
+    if (match && !boldLabelWithColon.test(line) && i + 1 < lines.length) {
+      const boldContent = match[1].trim();
+      const nextLine = lines[i + 1];
+      const nextTrimmed = nextLine.trim();
+      const isShortContinuation =
+        nextTrimmed.length >= 1 &&
+        nextTrimmed.length <= maxContinuationLen &&
+        !nextTrimmed.includes('**') &&
+        !listStart.test(nextLine) &&
+        !nextTrimmed.endsWith('.');
+      if (isShortContinuation) {
+        const combined = `${boldContent} ${nextTrimmed}`.trim();
+        const leading = line.match(/^\s*/)?.[0] ?? '';
+        result.push(leading + `**${combined}**`);
+        i++; // skip next line
+        continue;
+      }
+    }
+    result.push(line);
+  }
+  return result.join('\n');
+}
+
 /** Merge very short orphan lines (e.g. "of 2025") with the previous line. */
 export function mergeOrphanLines(text: string): string {
   const maxOrphanLen = 20;
@@ -166,7 +206,8 @@ export function mergeOrphanLines(text: string): string {
  */
 export function prepareResponseTextForDisplay(text: string): string {
   const withBold = ensureBalancedBoldForDisplay(text);
-  const withMergedOrphans = mergeOrphanLines(withBold);
+  const withMergedHeadings = mergeBoldHeadingWithNextLine(withBold);
+  const withMergedOrphans = mergeOrphanLines(withMergedHeadings);
   const withBracketCitations = normalizeCircledCitationsToBracket(withMergedOrphans);
   return removePeriodAfterBracketCitations(withBracketCitations);
 }

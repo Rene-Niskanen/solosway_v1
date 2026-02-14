@@ -115,7 +115,9 @@ const DashboardLayoutContent = ({
   const [shouldRestoreActiveChat, setShouldRestoreActiveChat] = React.useState<boolean>(false); // Signal to restore active chat
   const [shouldRestoreSelectedChat, setShouldRestoreSelectedChat] = React.useState<string | null>(null); // Signal to restore selected chat from agent sidebar
   const [isChatVisible, setIsChatVisible] = React.useState<boolean>(false); // Track if chat panel is visible
+  const [isProjectDetailOpen, setIsProjectDetailOpen] = React.useState<boolean>(false); // True when viewing a project (fullscreen property view) – keeps Projects nav unselected
   const { addChatToHistory, updateChatInHistory, getChatById, updateChatStatus } = useChatHistory();
+  const clearProjectSelectionRef = React.useRef<(() => void) | null>(null);
 
   const handleViewChange = (viewId: string) => {
     // Show notification only if we're currently in chat mode and navigating away from it
@@ -132,6 +134,11 @@ const DashboardLayoutContent = ({
       setIsChatVisible(false); // Also clear chat visibility state
     }
     
+    // When clicking Projects, always show the default projects list (clear any open project view)
+    if (viewId === 'projects') {
+      clearProjectSelectionRef.current?.();
+    }
+
     // Special handling for home - reset everything to default state and close all panels
     if (viewId === 'home') {
       // Clear all map visibility states
@@ -294,6 +301,10 @@ const DashboardLayoutContent = ({
       setPreviousChatData(chatData);
       setIsInChatMode(true);
       setCurrentView('search');
+      // CRITICAL: Mark map as visible when entering a chat so Sidebar gets z-index 10001 and
+      // stays above the map. Without this, the map (inside MainContent, z-index 10000 when
+      // chat panel is open) would paint on top of the Sidebar (z-index 1000 when isMapVisible is false).
+      setIsMapVisibleFromChat(true);
       
       // CRITICAL: Signal MainContent to restore immediately with fullscreen
       // Use a new signal similar to shouldRestoreActiveChat but for specific chat selection
@@ -419,8 +430,9 @@ const DashboardLayoutContent = ({
       // No running query - clear chat context as before
       setCurrentChatId(null);
       currentChatIdRef.current = null;
-      // Only hide chat UI if there's no running query
-      setHasPerformedSearch(false);
+      // Keep hasPerformedSearch true so the agent sidebar stays open and we show the empty new-chat UI
+      // (Do not set to false - that would hide chat and can cause the agent sidebar to close)
+      setHasPerformedSearch(true);
     }
     
     // Always clear UI state (query input, chat data)
@@ -683,7 +695,8 @@ const DashboardLayoutContent = ({
             right: chatPanelWidth,
             width: 12,
             zIndex: 10001,
-            background: '#FDFDFB',
+            background: '#F8F8F5',
+            borderLeft: '1px solid #E5E5E2',
             pointerEvents: 'auto',
             WebkitTapHighlightColor: 'transparent'
           }}
@@ -695,7 +708,7 @@ const DashboardLayoutContent = ({
         </button>
       )}
       
-      {/* FilingSidebar closing toggle rail - visible strip on right edge of FilingSidebar; click closes only FilingSidebar */}
+      {/* FilingSidebar closing toggle rail - separate strip on right edge of FilingSidebar; matches FilingSidebar background (#F2F2EF) */}
       {isFilingSidebarOpen && (
         <button
           type="button"
@@ -708,14 +721,14 @@ const DashboardLayoutContent = ({
           style={{
             left: (isSidebarCollapsed ? 12 : 224) + filingSidebarWidth - 12,
             zIndex: 100002,
-            background: '#F2F2EE',
+            background: '#F2F2EF',
             pointerEvents: 'auto',
             WebkitTapHighlightColor: 'transparent'
           }}
         >
           <div
             className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity"
-            style={{ background: '#F2F2EF' }}
+            style={{ background: 'rgba(0, 0, 0, 0.04)' }}
           />
         </button>
       )}
@@ -725,7 +738,7 @@ const DashboardLayoutContent = ({
         onItemClick={handleViewChange} 
         onChatToggle={handleChatPanelToggle} 
         isChatPanelOpen={isChatPanelOpen} 
-        activeItem={currentView}
+        activeItem={isProjectDetailOpen ? 'project-detail' : currentView}
         isCollapsed={isSidebarCollapsed}
         isExpanded={isSidebarExpanded}
         onToggle={handleSidebarToggle}
@@ -792,6 +805,8 @@ const DashboardLayoutContent = ({
         onMapVisibilityChange={handleMapVisibilityChange}
         onNavigateToDashboard={handleNavigateToDashboard}
         externalIsMapVisible={isMapVisible}
+        onRegisterClearProjectSelection={(clear) => { clearProjectSelectionRef.current = clear; }}
+        onProjectDetailOpen={setIsProjectDetailOpen}
       />
     </div>
   );

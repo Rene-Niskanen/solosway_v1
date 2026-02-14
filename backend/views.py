@@ -41,6 +41,27 @@ def _strip_intent_fragment_from_response(text):
     return stripped
 
 
+def _citation_numbers_in_response(response_text):
+    """Return set of citation numbers (as str) that actually appear in the response text.
+    Only documents cited in the response should be shown as sources.
+    Uses bracket format [1], [2] (and optional superscript ¹²³) to avoid false positives from (1), (2) in prose.
+    """
+    if not response_text or not isinstance(response_text, str):
+        return set()
+    seen = set()
+    # Bracket format: [1], [2], [12] (primary citation format from responder/summary)
+    for m in re.finditer(r"\[(\d+)\]", response_text):
+        seen.add(m.group(1))
+    # Superscript ¹²³ if used in display
+    if "\u00B9" in response_text:
+        seen.add("1")
+    if "\u00B2" in response_text:
+        seen.add("2")
+    if "\u00B3" in response_text:
+        seen.add("3")
+    return seen
+
+
 def _ensure_business_uuid():
     """Ensure the current user has a business UUID and return it as a string."""
     existing = getattr(current_user, "business_id", None)
@@ -761,9 +782,10 @@ def query_documents_stream():
                             title = q
                     return title[:50] if len(title) > 50 else title
                 
+                # Stream title in one chunk so the client gets it immediately (no char-by-char delay)
                 streamed_chat_title = generate_chat_title_from_query(query)
-                for ch in streamed_chat_title:
-                    yield f"data: {json.dumps({'type': 'title_chunk', 'token': ch})}\n\n"
+                if streamed_chat_title:
+                    yield f"data: {json.dumps({'type': 'title_chunk', 'token': streamed_chat_title})}\n\n"
                 
                 # Extract intent from query for contextual reasoning step
                 # Simple heuristic: identify what user is looking for and where
@@ -964,6 +986,32 @@ def query_documents_stream():
                     """Run LangGraph and stream the final summary with reasoning steps"""
                     try:
                         logger.info("🟡 [STREAM] run_and_stream() async function started")
+                        # Yield immediately so the client gets feedback while we build the graph (reduces perceived latency)
+                        if effective_document_ids:
+                            # Include first document's filename so UI shows real name instead of "Document"
+                            reading_details = {}
+                            try:
+                                from backend.services.document_storage_service import DocumentStorageService
+                                doc_storage = DocumentStorageService()
+                                first_id = effective_document_ids[0]
+                                ok, doc, _ = doc_storage.get_document(first_id, business_id)
+                                if ok and doc:
+                                    fn = (doc.get('original_filename') or '').strip()
+                                    if fn:
+                                        display_fn = fn[:32] + '...' if len(fn) > 35 else fn
+                                        reading_details = {
+                                            'filename': fn,
+                                            'doc_metadata': {
+                                                'doc_id': first_id,
+                                                'original_filename': fn,
+                                                'classification_type': doc.get('classification_type') or 'Document',
+                                            },
+                                        }
+                            except Exception as e:
+                                logger.debug(f"Could not resolve filename for reading step: {e}")
+                            yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'reading_documents', 'action_type': 'reading', 'message': 'Reading selected documents...', 'details': reading_details, 'timestamp': time.time()})}\n\n"
+                        else:
+                            yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'preparing', 'action_type': 'planning', 'message': 'Preparing...', 'details': {}, 'timestamp': time.time()})}\n\n"
                         
                         # Create a new checkpointer and graph for current event loop.
                         # This avoids "Lock bound to different event loop" errors.
@@ -1016,13 +1064,16 @@ def query_documents_stream():
                                     "query_preview": query[:100] if query else "",  # First 100 chars for context
                                     "endpoint": "stream"
                                 }
-                            }
+                            },
+                            # Allow planner->executor->evaluator refinement loops (up to 3) without hitting limit
+                            "recursion_limit": 50,
                         }
                         
                         # Check for existing session state (follow-up detection)
                         is_followup = False
                         existing_doc_count = 0
                         loaded_conversation_history = []
+                        existing_state = None
                         try:
                             if checkpointer:
                                 existing_state = await graph.aget_state(config_dict)
@@ -1036,6 +1087,14 @@ def query_documents_stream():
                                         existing_doc_count = len(prev_docs)
                         except Exception as state_err:
                             logger.warning(f"Could not check existing state: {state_err}")
+                        
+                        # Cache-first for follow-ups: reuse execution_results from checkpoint to skip planner+executor
+                        if is_followup and existing_state is not None and getattr(existing_state, "values", None):
+                            cached_results = existing_state.values.get("execution_results") or []
+                            if cached_results and len(cached_results) > 0:
+                                initial_state["use_cached_results"] = True
+                                initial_state["execution_results"] = list(cached_results)  # copy, do not mutate checkpoint
+                                logger.info(f"🟢 [STREAM] Cache-first: reusing {len(cached_results)} execution_results from checkpoint (skipping planner+executor)")
                         
                         # WORKAROUND: If checkpointer unavailable, try to use messageHistory from request
                         # This is a temporary solution until checkpointer is properly configured
@@ -1053,6 +1112,8 @@ def query_documents_stream():
                         processed_nodes = set()
                         # Emit "Found N documents" + "Reading Document" only once (executor on_chain_end fires after each step)
                         executor_found_docs_emitted = False
+                        # Emit only one "Preparing ..." / searching step per request (avoid duplicate from planner + executor)
+                        searching_step_emitted = False
                         
                         # Track reading timestamp - set when documents are first seen (before summarizing)
                         # This ensures reading steps appear before summarizing in the UI
@@ -1133,22 +1194,25 @@ def query_documents_stream():
                                         if label_stripped.startswith('Planning search for') or label_stripped.startswith('Finding the ') or label_stripped.startswith('Finding '):
                                             # Normal retrieval uses "Planning next moves" (step 1) from initial_reasoning; skip duplicate from phase
                                             pass
-                                        elif label and ('Searched' in label or 'search' in label.lower()):
-                                            # Use the label from the executor (already "Searching for {step_query}" or "Scanning selected document")
-                                            if is_chip_query:
-                                                search_message = 'Scanning selected document'
-                                            else:
-                                                search_message = label_stripped or 'Searching for documents'
-                                            reasoning_data = {
-                                                'type': 'reasoning_step',
-                                                'step': 'searching_documents',
-                                                'action_type': 'searching',
-                                                'message': search_message,
-                                                'timestamp': time.time(),
-                                                'details': {}
-                                            }
-                                            yield f"data: {json.dumps(reasoning_data)}\n\n"
-                                            logger.info(f"🟡 [REASONING] Emitted searching step (from executor): {search_message}")
+                                        elif label and ('Searched' in label or 'search' in label.lower() or label_stripped.startswith('Preparing ') or label_stripped.startswith('Finding ') or label_stripped.startswith('Searching for ') or label_stripped.startswith('Locating ')):
+                                            # Emit only one searching step per request to avoid duplicate
+                                            if not searching_step_emitted:
+                                                searching_step_emitted = True
+                                                # Use the label from the executor ("Finding {intent}", "Scanning selected document", or legacy "Searching for ...")
+                                                if is_chip_query:
+                                                    search_message = 'Scanning selected document'
+                                                else:
+                                                    search_message = label_stripped or 'Searching for documents'
+                                                reasoning_data = {
+                                                    'type': 'reasoning_step',
+                                                    'step': 'searching_documents',
+                                                    'action_type': 'searching',
+                                                    'message': search_message,
+                                                    'timestamp': time.time(),
+                                                    'details': {}
+                                                }
+                                                yield f"data: {json.dumps(reasoning_data)}\n\n"
+                                                logger.info(f"🟡 [REASONING] Emitted searching step (from executor): {search_message}")
                                         elif label and ('Reviewed' in label or 'review' in label.lower()):
                                             # Normal retrieval: skip "Reviewed relevant sections" so steps match (1) Planning (2) Searching for query (3) Found x docs (4) Read
                                             pass
@@ -1326,21 +1390,37 @@ def query_documents_stream():
                                                 logger.info(f"📂 [EARLY_PREP] Emitted prepare_document for {first_doc.get('doc_id', '')[:8]}...")
                                     
                                     elif node_name == "executor" and not is_fast_path:
-                                        # Planner/Executor path: emit "Found N relevant document(s):" + "Reading Document" once (steps 4–5)
-                                        # Executor on_chain_end fires after each step; only emit on first (after retrieve_docs only)
+                                        # Planner/Executor path: emit "Found N relevant document(s):" + "Reading" only for
+                                        # documents we actually read (have chunks for). Wait until we have retrieve_chunks
+                                        # result so we don't show docs we never read.
                                         state_data = state_update or output or event_data
                                         execution_results = state_data.get("execution_results", []) or []
                                         docs_result = None
+                                        chunks_result = None
                                         for r in execution_results:
                                             if r.get("action") == "retrieve_docs" and r.get("result"):
                                                 docs_result = r["result"]
-                                                break
-                                        # Emit only once: when we have docs and haven't already (first executor end = 1 result)
-                                        if docs_result and len(docs_result) > 0 and not executor_found_docs_emitted and len(execution_results) == 1:
+                                            if r.get("action") == "retrieve_chunks" and r.get("result"):
+                                                chunks_result = r["result"]
+                                        # Build set of document_ids we actually have chunks for
+                                        doc_ids_with_chunks = set()
+                                        if chunks_result and isinstance(chunks_result, list):
+                                            for item in chunks_result:
+                                                if isinstance(item, dict):
+                                                    did = item.get("document_id") or item.get("doc_id")
+                                                    if did:
+                                                        doc_ids_with_chunks.add(str(did))
+                                        # Only emit once, and only when we have retrieve_chunks so we can filter
+                                        if docs_result and not executor_found_docs_emitted and chunks_result is not None:
+                                            # Restrict to docs we actually read (have chunks for); preserve order from docs_result
+                                            docs_read = [d for d in docs_result if str(d.get("document_id") or d.get("doc_id") or "") in doc_ids_with_chunks]
+                                            if not docs_read and docs_result and len(doc_ids_with_chunks) == 0:
+                                                # Chunks result was empty list - we "read" no docs
+                                                docs_read = []
                                             executor_found_docs_emitted = True
                                             doc_names = []
                                             doc_previews = []
-                                            for doc in docs_result[:10]:
+                                            for doc in docs_read[:10]:
                                                 doc_id = doc.get("document_id") or doc.get("doc_id", "")
                                                 filename = doc.get("filename") or doc.get("original_filename", "") or ""
                                                 classification_type = doc.get("document_type") or doc.get("classification_type", "Document") or "Document"
@@ -1355,56 +1435,59 @@ def query_documents_stream():
                                                     "s3_path": doc.get("s3_path", ""),
                                                     "download_url": f"/api/files/download?document_id={doc_id}" if doc_id else ""
                                                 })
-                                            doc_count = len(docs_result)
-                                            doc_word = "document" if doc_count == 1 else "documents"
-                                            message = f'Found {doc_count} relevant {doc_word}:'
-                                            if reading_timestamp is None:
-                                                reading_timestamp = time.time() + 0.1
-                                            reasoning_data = {
-                                                'type': 'reasoning_step',
-                                                'step': 'found_documents',
-                                                'action_type': 'exploring',
-                                                'message': message,
-                                                'count': doc_count,
-                                                'timestamp': time.time(),
-                                                'details': {
-                                                    'documents_found': doc_count,
-                                                    'document_names': doc_names,
-                                                    'doc_previews': doc_previews
-                                                }
-                                            }
-                                            yield f"data: {json.dumps(reasoning_data)}\n\n"
-                                            # Emit one reading step per document (align with process_documents path for preview cards)
-                                            for i, doc_preview in enumerate(doc_previews):
-                                                display_filename = (doc_preview.get('original_filename') or doc_preview.get('classification_type', 'Document') or 'Document')
-                                                if display_filename and len(display_filename) > 35:
-                                                    display_filename = display_filename[:32] + '...'
-                                                if not display_filename:
-                                                    display_filename = (doc_preview.get('classification_type') or 'Document').replace('_', ' ').title()
-                                                doc_metadata = {
-                                                    'doc_id': doc_preview.get('doc_id', ''),
-                                                    'original_filename': doc_preview.get('original_filename') if doc_preview.get('original_filename') else None,
-                                                    'classification_type': doc_preview.get('classification_type', 'Document') or 'Document',
-                                                    'page_range': doc_preview.get('page_range', ''),
-                                                    'page_numbers': doc_preview.get('page_numbers', []),
-                                                    's3_path': doc_preview.get('s3_path', ''),
-                                                    'download_url': doc_preview.get('download_url', '') or (f"/api/files/download?document_id={doc_preview.get('doc_id')}" if doc_preview.get('doc_id') else '')
-                                                }
-                                                reading_step_timestamp = reading_timestamp + (i * 0.01) if reading_timestamp else time.time()
-                                                reading_data = {
+                                            doc_count = len(docs_read)
+                                            if doc_count == 0:
+                                                logger.debug("🟡 [REASONING] No documents had chunks; skipping found_documents + reading steps")
+                                            else:
+                                                doc_word = "document" if doc_count == 1 else "documents"
+                                                message = f'Found {doc_count} relevant {doc_word}:'
+                                                if reading_timestamp is None:
+                                                    reading_timestamp = time.time() + 0.1
+                                                reasoning_data = {
                                                     'type': 'reasoning_step',
-                                                    'step': f'read_doc_exec_{i}',
-                                                    'action_type': 'reading',
-                                                    'message': f'Read {display_filename}',
-                                                    'timestamp': reading_step_timestamp,
+                                                    'step': 'found_documents',
+                                                    'action_type': 'exploring',
+                                                    'message': message,
+                                                    'count': doc_count,
+                                                    'timestamp': time.time(),
                                                     'details': {
-                                                        'document_index': i,
-                                                        'filename': doc_preview.get('original_filename'),
-                                                        'doc_metadata': doc_metadata
+                                                        'documents_found': doc_count,
+                                                        'document_names': doc_names,
+                                                        'doc_previews': doc_previews
                                                     }
                                                 }
-                                                yield f"data: {json.dumps(reading_data)}\n\n"
-                                            logger.debug(f"🟡 [REASONING] Emitted executor found_documents + {len(doc_previews)} reading steps ({doc_count} docs)")
+                                                yield f"data: {json.dumps(reasoning_data)}\n\n"
+                                                # Emit one reading step per document we actually read
+                                                for i, doc_preview in enumerate(doc_previews):
+                                                    display_filename = (doc_preview.get('original_filename') or doc_preview.get('classification_type', 'Document') or 'Document')
+                                                    if display_filename and len(display_filename) > 35:
+                                                        display_filename = display_filename[:32] + '...'
+                                                    if not display_filename:
+                                                        display_filename = (doc_preview.get('classification_type') or 'Document').replace('_', ' ').title()
+                                                    doc_metadata = {
+                                                        'doc_id': doc_preview.get('doc_id', ''),
+                                                        'original_filename': doc_preview.get('original_filename') if doc_preview.get('original_filename') else None,
+                                                        'classification_type': doc_preview.get('classification_type', 'Document') or 'Document',
+                                                        'page_range': doc_preview.get('page_range', ''),
+                                                        'page_numbers': doc_preview.get('page_numbers', []),
+                                                        's3_path': doc_preview.get('s3_path', ''),
+                                                        'download_url': doc_preview.get('download_url', '') or (f"/api/files/download?document_id={doc_preview.get('doc_id')}" if doc_preview.get('doc_id') else '')
+                                                    }
+                                                    reading_step_timestamp = reading_timestamp + (i * 0.01) if reading_timestamp else time.time()
+                                                    reading_data = {
+                                                        'type': 'reasoning_step',
+                                                        'step': f'read_doc_exec_{i}',
+                                                        'action_type': 'reading',
+                                                        'message': f'Read {display_filename}',
+                                                        'timestamp': reading_step_timestamp,
+                                                        'details': {
+                                                            'document_index': i,
+                                                            'filename': doc_preview.get('original_filename'),
+                                                            'doc_metadata': doc_metadata
+                                                        }
+                                                    }
+                                                    yield f"data: {json.dumps(reading_data)}\n\n"
+                                                logger.debug(f"🟡 [REASONING] Emitted executor found_documents + {len(doc_previews)} reading steps ({doc_count} docs we read)")
                                     
                                     elif node_name == "process_documents" and not is_fast_path:
                                         state_data = state_update if state_update else output
@@ -1772,7 +1855,7 @@ def query_documents_stream():
                                 logger.info("🟡 [STREAM] Retrying without checkpointer (stateless mode)")
                                 # Retry without checkpointer
                                 graph, _ = await build_main_graph(use_checkpointer=False)
-                                config_dict = {}  # No thread_id needed for stateless mode
+                                config_dict = {"recursion_limit": 50}  # No thread_id needed for stateless mode
                                 event_stream = graph.astream_events(initial_state, config_dict, version="v2")
                                 async for event in event_stream:
                                     event_type = event.get('event')
@@ -2361,6 +2444,15 @@ def query_documents_stream():
                             else:
                                 logger.info("🟡 [CITATIONS] No citations found (checked processed_citations, chunk_citations, and citations) - citations will be empty")
                                 
+                        # Only keep citations that actually appear in the response text (sources = documents cited in answer)
+                        cited_nums = _citation_numbers_in_response(full_summary)
+                        if citations_map_for_frontend:
+                            before_count = len(citations_map_for_frontend)
+                            citations_map_for_frontend = {k: v for k, v in citations_map_for_frontend.items() if k in cited_nums}
+                            structured_citations = [c for c in structured_citations if str(c.get("id")) in cited_nums]
+                            if before_count != len(citations_map_for_frontend):
+                                logger.info(f"🟡 [CITATIONS] Filtered to citations used in response: {before_count} -> {len(citations_map_for_frontend)} (cited numbers: {sorted(cited_nums)})")
+                        
                         logger.info(f"🟡 [CITATIONS] Final citation count: {len(structured_citations)} structured, {len(citations_map_for_frontend)} map entries")
                         
                         timing.mark("prepare_complete")
@@ -4904,13 +4996,47 @@ def temp_preview():
     return jsonify({'presigned_url': presigned_url, 'open_in_word_url': open_in_word_url}), 200
 
 
+@views.route('/api/documents/docx-preview-url', methods=['POST'])
+@login_required
+def docx_preview_url():
+    """Get a one-time Office Online viewer URL for an existing document (no download/re-upload). Faster for just-uploaded docs."""
+    try:
+        data = request.get_json() or {}
+        document_id = data.get('document_id')
+        if not document_id:
+            return jsonify({'error': 'document_id required'}), 400
+        from .services.supabase_document_service import SupabaseDocumentService
+        doc_service = SupabaseDocumentService()
+        document = doc_service.get_document_by_id(document_id)
+        if not document:
+            return jsonify({'error': 'Document not found'}), 404
+        business_uuid_str = _ensure_business_uuid()
+        if not business_uuid_str or str(document.get('business_uuid')) != business_uuid_str:
+            return jsonify({'error': 'Unauthorized'}), 403
+        s3_path = document.get('s3_path')
+        if not s3_path:
+            return jsonify({'error': 'Document has no s3_path'}), 404
+        bucket = os.environ.get('S3_UPLOAD_BUCKET')
+        if not bucket:
+            return jsonify({'error': 'Server misconfigured'}), 500
+        token = uuid.uuid4().hex
+        _temp_preview_tokens[token] = (bucket, s3_path, time.time() + _TEMP_PREVIEW_TOKEN_TTL_SEC)
+        base = request.url_root.rstrip('/')
+        open_in_word_url = f"{base}/api/documents/open-in-word?token={token}"
+        return jsonify({'open_in_word_url': open_in_word_url, 'presigned_url': None}), 200
+    except Exception as e:
+        logger.exception("docx_preview_url failed: %s", e)
+        return jsonify({'error': str(e)}), 500
+
+
 @views.route('/api/documents/open-in-word', methods=['GET'])
 def open_in_word():
-    """Stream a temp-preview doc by one-time token so Office Online can open it (no auth; token is the secret)."""
+    """Stream a temp-preview doc by token so Office Online can open it (no auth; token is the secret).
+    Token is reused until expiry so Office's multiple requests (initial load + retries) all succeed."""
     token = request.args.get('token')
     if not token:
         return jsonify({'error': 'Missing token'}), 400
-    entry = _temp_preview_tokens.pop(token, None)
+    entry = _temp_preview_tokens.get(token)
     if not entry:
         return jsonify({'error': 'Invalid or expired token'}), 404
     bucket, key, expiry = entry
@@ -5400,6 +5526,78 @@ def get_document_status(document_id):
     except Exception as e:
         logger.error(f"Error getting document status: {e}")
         return jsonify({'error': str(e)}), 500
+
+
+@views.route('/api/documents/<uuid:document_id>/reprocess', methods=['POST', 'OPTIONS'])
+@login_required
+def reprocess_document(document_id):
+    """Reprocess a document (e.g. after failed or stuck). Fetches from Supabase, downloads from S3, queues full pipeline."""
+    # Handle CORS preflight so browser gets HTTP OK
+    if request.method == 'OPTIONS':
+        response = jsonify({})
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
+        response.headers.add('Access-Control-Max-Age', '3600')
+        return response, 200
+
+    try:
+        doc_service = SupabaseDocumentService()
+        document = doc_service.get_document_by_id(str(document_id))
+        if not document:
+            return jsonify({'success': False, 'error': 'Document not found'}), 404
+
+        doc_business_id = document.get('business_id')
+        doc_business_uuid = document.get('business_uuid')
+        user_business_id = str(current_user.business_id) if current_user.business_id else None
+        user_company_name = current_user.company_name
+        is_authorized = (
+            (doc_business_id and user_company_name and str(doc_business_id) == str(user_company_name))
+            or (doc_business_uuid and user_business_id and str(doc_business_uuid) == user_business_id)
+            or (doc_business_id and user_business_id and str(doc_business_id) == user_business_id)
+        )
+        if not is_authorized:
+            return jsonify({'success': False, 'error': 'Unauthorized'}), 403
+
+        s3_path = document.get('s3_path')
+        if not s3_path:
+            return jsonify({'success': False, 'error': 'Document has no S3 path'}), 400
+
+        bucket = os.environ.get('S3_UPLOAD_BUCKET')
+        if not bucket:
+            return jsonify({'success': False, 'error': 'S3 bucket not configured'}), 500
+
+        s3_client = boto3.client(
+            's3',
+            aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+            aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
+            region_name=os.environ.get('AWS_DEFAULT_REGION', 'us-east-1'),
+        )
+        response = s3_client.get_object(Bucket=bucket, Key=s3_path)
+        file_content = response['Body'].read()
+        original_filename = document.get('original_filename', 'document')
+        business_id = str(doc_business_uuid or doc_business_id or user_business_id or user_company_name)
+
+        doc_service.update_document(str(document_id), {'status': 'processing'})
+
+        task = process_document_task.delay(
+            document_id=str(document_id),
+            file_content=file_content,
+            original_filename=original_filename,
+            business_id=business_id,
+        )
+        logger.info(f"Reprocess queued for document {document_id} (task_id={task.id})")
+        return jsonify({
+            'success': True,
+            'message': 'Reprocessing started',
+            'task_id': task.id,
+            'document_id': str(document_id),
+        }), 200
+    except Exception as e:
+        logger.exception("Reprocess document failed: %s", e)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 
 @views.route('/api/documents/<uuid:document_id>/confirm-upload', methods=['POST'])
 @login_required

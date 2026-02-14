@@ -509,7 +509,7 @@ const ReadingStepWithTransition: React.FC<{
                     padding: '4px 8px',
                     borderRadius: 6,
                     border: '1px solid rgba(0, 0, 0, 0.08)',
-                    backgroundColor: 'transparent',
+                    backgroundColor: '#ffffff',
                     zIndex: 1,
                     isolation: 'isolate',
                   }}
@@ -583,7 +583,7 @@ const ReadingStepWithTransition: React.FC<{
                     padding: '4px 8px',
                     borderRadius: 6,
                     border: '1px solid rgba(0, 0, 0, 0.08)',
-                    backgroundColor: 'transparent',
+                    backgroundColor: '#ffffff',
                     ...detailStyle,
                   }}
                 >
@@ -829,7 +829,7 @@ const StepRenderer: React.FC<{
       return (
         <div>
           <div className="found-reveal-text" style={{ display: 'flex', alignItems: 'flex-start', gap: '6px', position: 'relative', zIndex: 1 }}>
-            <SearchCheck style={{ width: '14px', height: '14px', color: foundActionColor, flexShrink: 0, marginTop: '2px' }} />
+            <SearchCheck style={{ width: '14px', height: '14px', color: foundActionColor, flexShrink: 0, marginTop: '-1px' }} />
             <FoundDocumentsText prefix={prefix} actionStyle={foundActionStyle} detailColor={foundDetailColor} />
           </div>
           {!isSectionsStep && !isNoResultsStep && !(step.details?.doc_previews?.length) ? (
@@ -1018,7 +1018,10 @@ const StepRenderer: React.FC<{
       
       // Extract search term from the searching step to prioritize relevant key facts
       const searchingStep = allSteps.find(s => s.action_type === 'searching');
-      const searchTermMatch = searchingStep?.message?.match(/Searching for\s+(.+)/i);
+      const searchTermMatch = searchingStep?.message?.match(/Searching for\s+(.+)/i)
+        ?? searchingStep?.message?.match(/Finding\s+(.+)/i)
+        ?? searchingStep?.message?.match(/Preparing\s+(.+)/i)
+        ?? searchingStep?.message?.match(/Locating\s+(.+)/i);
       const extractedSearchTerm = searchTermMatch ? searchTermMatch[1].trim() : undefined;
       
       return (
@@ -1335,12 +1338,18 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
       }
       
       // Deduplicate: Create a unique key for this step.
-      // For 'searching': use only action_type + message so duplicate "Searching for X" lines collapse to one (no-results case).
+      // For 'searching': normalize message so "Preparing the value of highlands?" and "Preparing value of highlands" collapse to one.
       // For 'reading': include doc_id so multiple reads of different docs show; for 'exploring' use message + timestamp/index.
+      const searchingKey = step.action_type === 'searching' && step.message
+        ? step.action_type + '-' + (step.message as string)
+            .replace(/\?\.?\s*$/i, '')
+            .replace(/^(Finding|Preparing|Searching for|Locating)\s+the\s+/i, '$1 ')
+            .trim()
+        : '';
       const stepKey = step.action_type === 'reading' && step.details?.doc_metadata?.doc_id
         ? `${step.action_type}-${step.details.doc_metadata.doc_id}-${step.timestamp || originalIdx}`
         : step.action_type === 'searching'
-          ? `${step.action_type}-${step.message}`
+          ? (searchingKey || `${step.action_type}-${step.message}`)
           : step.action_type === 'exploring'
             ? `${step.action_type}-${step.message}-${step.timestamp || originalIdx}`
             : `${step.action_type}-${step.message}-${step.timestamp || originalIdx}`;

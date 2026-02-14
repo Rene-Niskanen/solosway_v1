@@ -32,6 +32,72 @@ from backend.services.supabase_client_factory import get_supabase_client
 
 logger = logging.getLogger(__name__)
 
+# Prefixes to strip from user-style requests so the remainder reads well
+_REASONING_QUERY_STRIP_PREFIXES = (
+    "give me ", "get me ", "can you ", "could you ", "would you ", "will you ",
+    "i need ", "i want ", "i'd like ", "i would like ", "please ", "tell me ",
+    "show me ", "help me ", "i'm looking for ", "find ", "analyse ", "analyze ",
+    "what is ", "what are ", "what's ", "where is ", "how do ", "how does ",
+    "how can ", "when did ", "why does ", "which ",
+)
+
+
+def _rephrase_query_for_reasoning_step(raw_query: str) -> str:
+    """
+    Turn a raw user query into a short phrase that reads naturally in a search-step message,
+    e.g. "overview of the Koch market appraisal" so we can show "Preparing overview of the Koch market appraisal".
+    Strips request phrasing, trailing punctuation, and normalizes for clear English.
+    """
+    if not raw_query or not isinstance(raw_query, str):
+        return "documents"
+    s = raw_query.strip()
+    if not s:
+        return "documents"
+    lower = s.lower()
+    for prefix in _REASONING_QUERY_STRIP_PREFIXES:
+        if lower.startswith(prefix):
+            s = s[len(prefix):].strip()
+            lower = s.lower()
+            break
+    # Strip trailing question marks and periods so it reads as a statement
+    s = s.rstrip("?. ")
+    if not s:
+        return "documents"
+    # Optional: drop leading "the " when followed by "X of Y" so we get "value of Highlands" not "the value of highlands"
+    lower = s.lower()
+    if lower.startswith("the ") and " of " in lower:
+        s = s[4:].strip()
+    if not s:
+        return "documents"
+    # Capitalise first letter only; keep the rest (e.g. "value of highlands" -> "Value of highlands")
+    s = s[0].upper() + s[1:] if len(s) > 1 else s.upper()
+    # Cap length for display
+    max_len = 60
+    if len(s) > max_len:
+        s = s[: max_len - 3].rstrip() + "..."
+    return s if s else "documents"
+
+
+def _choose_search_intro(intent: str) -> str:
+    """
+    Choose the intro that flows best for this intent: Finding, Searching for, or Locating.
+    Returns the full label (e.g. "Locating Koch market appraisal", "Finding value of highlands").
+    """
+    if not intent or intent.lower() == "documents":
+        return "Searching for documents"
+    lower = intent.lower()
+    words = lower.split()
+    # Document / report / appraisal by name → "Locating" (we're locating that doc)
+    doc_like = any(t in lower for t in ("document", "appraisal", "report", "valuation", "file"))
+    if doc_like or (len(words) >= 3 and words[0] not in ("the", "a", "an", "overview", "value", "summary")):
+        return f"Locating {intent}"
+    # Short or content-focused (value, overview, summary, EPC, etc.) → "Finding"
+    content_like = any(t in lower for t in ("value", "overview", "summary", "rating", "epc", "assumption", "disclaimer"))
+    if content_like or len(words) <= 3:
+        return f"Finding {intent}"
+    # Longer or query-like → "Searching for"
+    return f"Searching for {intent}"
+
 
 def resolve_step_references(step: ExecutionStep, execution_results: List[Dict[str, Any]]) -> ExecutionStep:
     """
@@ -205,10 +271,11 @@ async def executor_node(state: MainWorkflowState, runnable_config=None) -> MainW
         reasoning_detail = resolved_step.get("reasoning_detail")
         
         if action == "retrieve_docs":
-            # Emit "Searching for {query}" using the step's query (planner already refined it; no hardcoded cleanup)
+            # Emit a short, natural sentence; choose intro (Finding / Searching for / Locating) by what flows best
             step_query = (resolved_step.get("query") or "").strip()
             if step_query and "execution plan" not in step_query.lower() and "user's query" not in step_query.lower():
-                reasoning_label = f"Searching for {step_query[:80]}{'...' if len(step_query) > 80 else ''}"
+                intent = _rephrase_query_for_reasoning_step(step_query)
+                reasoning_label = _choose_search_intro(intent)
             elif reasoning_label:
                 # Use plan's reasoning_label if step query is empty or meta
                 pass

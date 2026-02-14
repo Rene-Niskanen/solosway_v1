@@ -55,11 +55,23 @@ export type PipelineStageState = {
  * Full pipeline: classification → extraction → normalization → linking → vectorization.
  * Minimal pipeline: classification → minimal_extraction (stages 2-5 show complete when doc completed).
  */
+/** Find stage index (0–4) for a step name from history. */
+function getStageIndexForStepName(stepName: string): number | null {
+  const lower = stepName.toLowerCase();
+  if (lower.includes('classification')) return 0;
+  if (lower.includes('extraction') || lower.includes('minimal_extraction')) return 1;
+  if (lower.includes('normalization')) return 2;
+  if (lower.includes('linking')) return 3;
+  if (lower.includes('vectorization')) return 4;
+  return null;
+}
+
 export function mapPipelineProgressToStages(
   pipelineProgress: PipelineProgressData | null | undefined,
   docStatus?: string
 ): PipelineStageState {
-  const completed = (pipelineProgress?.history ?? [])
+  const history = pipelineProgress?.history ?? [];
+  const completed = history
     .filter((h) => (h.step_status || '').toLowerCase() === 'completed')
     .map((h) => h.step_name.toLowerCase());
 
@@ -76,14 +88,20 @@ export function mapPipelineProgressToStages(
   const steps = pipelineProgress?.steps ?? [];
   const isMinimal = pipelineProgress?.pipeline_type === 'minimal' || steps.length <= 2;
 
+  // Real-time current step: use most recent 'started' entry so UI updates as soon as a step begins
+  const startedEntry = [...history].reverse().find((h) => (h.step_status || '').toLowerCase() === 'started');
+  const currentStageFromStarted = startedEntry ? getStageIndexForStepName(startedEntry.step_name) : null;
+
   if (isMinimal) {
     const stage1Done = has('classification');
     const stage2Done = has('minimal_extraction');
     const completedStages = (stage1Done ? 1 : 0) + (stage2Done ? 1 : 0);
-    let currentStageIndex: number | null = null;
-    if (!stage1Done) currentStageIndex = 0;
-    else if (!stage2Done) currentStageIndex = 1;
-    else currentStageIndex = 2; // show spinner on 3rd until doc completes
+    let currentStageIndex: number | null = currentStageFromStarted;
+    if (currentStageIndex == null) {
+      if (!stage1Done) currentStageIndex = 0;
+      else if (!stage2Done) currentStageIndex = 1;
+      else currentStageIndex = 2; // show spinner on 3rd until doc completes
+    }
     return { completedStages, currentStageIndex };
   }
 
@@ -99,12 +117,14 @@ export function mapPipelineProgressToStages(
     (stage2Done ? 1 : 0) +
     (stage3Done ? 1 : 0) +
     (stage4Done ? 1 : 0);
-  let currentStageIndex: number | null = null;
-  if (!stage0Done) currentStageIndex = 0;
-  else if (!stage1Done) currentStageIndex = 1;
-  else if (!stage2Done) currentStageIndex = 2;
-  else if (!stage3Done) currentStageIndex = 3;
-  else if (!stage4Done) currentStageIndex = 4;
+  let currentStageIndex: number | null = currentStageFromStarted;
+  if (currentStageIndex == null) {
+    if (!stage0Done) currentStageIndex = 0;
+    else if (!stage1Done) currentStageIndex = 1;
+    else if (!stage2Done) currentStageIndex = 2;
+    else if (!stage3Done) currentStageIndex = 3;
+    else if (!stage4Done) currentStageIndex = 4;
+  }
 
   return { completedStages, currentStageIndex };
 }
@@ -238,7 +258,7 @@ export const PipelineStagesDetail: React.FC<PipelineStagesDetailProps> = ({
   style: styleProp,
 }) => {
   const [expandedIndex, setExpandedIndex] = useState<number | null>(null);
-  const [collapsed, setCollapsed] = useState(false);
+  const [stagesDropdownOpen, setStagesDropdownOpen] = useState(false);
   const history = pipelineProgress?.history ?? [];
   const failedCount = getFailedStepCount(history);
   const failedIndices = getFailedStageIndices(history);
@@ -249,23 +269,31 @@ export const PipelineStagesDetail: React.FC<PipelineStagesDetailProps> = ({
     setExpandedIndex((prev) => (prev === index ? null : index));
   }, []);
 
-  // Title: contextual
+  // Treat 5/5 as complete for title so we don't show "Processing..." when progress already shows all done
+  const effectivelyComplete = isComplete || completedStages === 5;
+
+  // Title: contextual (use effectivelyComplete so "Ready" when 5/5 even before status flips to completed)
   const title =
-    isLoading ? 'Loading…' : isComplete
+    isLoading ? 'Loading…' : effectivelyComplete
       ? documentName ? `Ready: ${documentName}` : 'Document ready'
       : documentName ? `Processing ${documentName}…` : 'Processing…';
-  const shortTitle = isLoading ? 'Loading…' : isComplete ? 'Ready' : 'Processing…';
+  const shortTitle = isLoading ? 'Loading…' : effectivelyComplete ? 'Ready' : 'Processing…';
 
   const currentStepLabel =
     currentStageIndex != null ? PIPELINE_STAGE_LABELS[currentStageIndex] : null;
 
   const rootStyle: React.CSSProperties = {
     backgroundColor: 'white',
-    border: '1px solid rgba(0,0,0,0.04)',
+    border: '1px solid #D1D5DB',
     borderRadius: 8,
     boxShadow: '0 2px 6px rgba(0,0,0,0.06)',
     overflow: 'hidden',
-    minHeight: variant === 'modal' ? 120 : CARD_MIN_HEIGHT,
+    minHeight:
+      variant === 'modal'
+        ? 120
+        : variant === 'hover' && !stagesDropdownOpen
+          ? undefined
+          : CARD_MIN_HEIGHT,
     width: variant === 'modal' ? 200 : CARD_WIDTH,
     maxHeight: variant === 'modal' ? '85vh' : undefined,
     display: 'flex',
@@ -285,7 +313,7 @@ export const PipelineStagesDetail: React.FC<PipelineStagesDetailProps> = ({
         aria-live="polite"
         aria-label={`Pipeline status: ${shortTitle}. Step ${completedStages} of 5 complete.`}
       >
-        {/* Header: title + progress on first row, filename on second row so bar never overlaps name */}
+        {/* Header: hover = title then progress on separate rows so "Processing" shows in full; modal = single row */}
         <div
           style={{
             display: 'flex',
@@ -296,75 +324,111 @@ export const PipelineStagesDetail: React.FC<PipelineStagesDetailProps> = ({
             borderBottom: '1px solid #E5E7EB',
           }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
-            <button
-              type="button"
-              onClick={() => setCollapsed((c) => !c)}
-              style={{
-                padding: 0,
-                border: 'none',
-                background: 'transparent',
-                cursor: 'pointer',
-                color: '#6B7280',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                flexShrink: 0,
-              }}
-              aria-expanded={!collapsed}
-              aria-label={collapsed ? 'Expand stages' : 'Collapse stages'}
-            >
-              <span style={{ fontSize: 9, lineHeight: 1, color: 'inherit' }} aria-hidden>
-                {collapsed ? '▾' : '▴'}
+          {variant === 'hover' ? (
+            <>
+              <span style={{ fontSize: 11, fontWeight: 600, color: '#4A4A4A', letterSpacing: '-0.01em' }}>
+                {shortTitle}
               </span>
-            </button>
-            <span style={{ fontSize: 11, fontWeight: 600, color: '#4A4A4A', letterSpacing: '-0.01em', flex: 1, minWidth: 0 }}>
-              {variant === 'hover' ? shortTitle : title.length > 45 ? shortTitle : title}
-            </span>
-            {!isLoading && (
-              <div
-                role="progressbar"
-                aria-valuenow={completedStages}
-                aria-valuemin={0}
-                aria-valuemax={5}
-                aria-label={`Step ${completedStages} of 5 complete`}
-                style={{ display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0 }}
-              >
-                <div style={{ display: 'flex', gap: 1, width: 40, height: 4 }}>
-                  {[0, 1, 2, 3, 4].map((i) => (
-                    <div
-                      key={i}
-                      style={{
-                        flex: 1,
-                        height: '100%',
-                        borderRadius: 0,
-                        backgroundColor: i < completedStages ? '#4CAF50' : '#E0E0E0',
-                        transition: 'background-color 0.2s ease',
-                      }}
-                    />
-                  ))}
+              {!isLoading && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 4, minWidth: 0, width: '100%' }}>
+                  <div
+                    role="progressbar"
+                    aria-valuenow={completedStages}
+                    aria-valuemin={0}
+                    aria-valuemax={5}
+                    aria-label={`Step ${completedStages} of 5 complete`}
+                    style={{ display: 'flex', alignItems: 'center', gap: 5, flex: 1, minWidth: 0 }}
+                  >
+                    <div style={{ display: 'flex', gap: 2, flex: 1, minWidth: 0, height: 6 }}>
+                      {[0, 1, 2, 3, 4].map((i) => (
+                        <div
+                          key={i}
+                          style={{
+                            flex: 1,
+                            height: '100%',
+                            borderRadius: 2,
+                            backgroundColor: i < completedStages ? '#4CAF50' : '#E0E0E0',
+                            transition: 'background-color 0.2s ease',
+                          }}
+                        />
+                      ))}
+                    </div>
+                    <span style={{ fontSize: 10, fontWeight: 500, minWidth: 18, flexShrink: 0 }}>
+                      <span style={{ color: '#4CAF50' }}>{completedStages}</span>
+                      <span style={{ color: '#A0A0A0' }}>/5</span>
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); setStagesDropdownOpen((open) => !open); }}
+                    style={{
+                      padding: 2,
+                      margin: 0,
+                      border: 'none',
+                      background: 'transparent',
+                      cursor: 'pointer',
+                      color: '#6B7280',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      borderRadius: 2,
+                      flexShrink: 0,
+                    }}
+                    aria-expanded={stagesDropdownOpen}
+                    aria-label={stagesDropdownOpen ? 'Hide pipeline stages' : 'Show pipeline stages'}
+                  >
+                    <span style={{ fontSize: 11, lineHeight: 1, fontWeight: 600 }}>{stagesDropdownOpen ? '↑' : '↓'}</span>
+                  </button>
                 </div>
-                <span style={{ fontSize: 10, fontWeight: 500, minWidth: 16 }}>
-                  <span style={{ color: '#4CAF50' }}>{completedStages}</span>
-                  <span style={{ color: '#A0A0A0' }}>/5</span>
-                </span>
-              </div>
-            )}
-          </div>
-          {variant === 'hover' && documentName && (
-            <div
-              style={{
-                fontSize: 9,
-                fontWeight: 400,
-                color: '#6B7280',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-                minWidth: 0,
-              }}
-              title={documentName}
-            >
-              {documentName}
+              )}
+            </>
+          ) : (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+              <span
+                style={{
+                  fontSize: 11,
+                  fontWeight: 600,
+                  color: '#4A4A4A',
+                  letterSpacing: '-0.01em',
+                  flexShrink: 0,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {title.length > 45 ? shortTitle : title}
+              </span>
+              {!isLoading && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 5, flex: 1, minWidth: 0 }}>
+                  <div
+                    role="progressbar"
+                    aria-valuenow={completedStages}
+                    aria-valuemin={0}
+                    aria-valuemax={5}
+                    aria-label={`Step ${completedStages} of 5 complete`}
+                    style={{ display: 'flex', alignItems: 'center', gap: 5, flex: 1, minWidth: 0 }}
+                  >
+                    <div style={{ display: 'flex', gap: 2, flex: 1, minWidth: 0, height: 6 }}>
+                      {[0, 1, 2, 3, 4].map((i) => (
+                        <div
+                          key={i}
+                          style={{
+                            flex: 1,
+                            height: '100%',
+                            borderRadius: 2,
+                            backgroundColor: i < completedStages ? '#4CAF50' : '#E0E0E0',
+                            transition: 'background-color 0.2s ease',
+                          }}
+                        />
+                      ))}
+                    </div>
+                    <span style={{ fontSize: 10, fontWeight: 500, minWidth: 18, flexShrink: 0 }}>
+                      <span style={{ color: '#4CAF50' }}>{completedStages}</span>
+                      <span style={{ color: '#A0A0A0' }}>/5</span>
+                    </span>
+                  </div>
+                </div>
+              )}
             </div>
           )}
           {!isLoading && currentStepLabel && (
@@ -377,9 +441,8 @@ export const PipelineStagesDetail: React.FC<PipelineStagesDetailProps> = ({
           )}
         </div>
 
-        {!collapsed && (
-          <>
-            {/* Error strip */}
+        <>
+          {/* Error strip */}
             {failedCount > 0 && !isLoading && (
               <div
                 style={{
@@ -395,7 +458,8 @@ export const PipelineStagesDetail: React.FC<PipelineStagesDetailProps> = ({
               </div>
             )}
 
-            {/* Body: stages list */}
+            {/* Body: stages list (hover: only when dropdown open) */}
+            {(variant === 'modal' || stagesDropdownOpen) && (
             <div
               style={{
                 display: 'flex',
@@ -431,32 +495,50 @@ export const PipelineStagesDetail: React.FC<PipelineStagesDetailProps> = ({
               const isExpanded = variant === 'modal' && expandedIndex === index;
 
               const stepNumber = index + 1;
-              const showRightChevron = !isDone && (variant === 'modal' ? (summary || entry) : true);
+              const circleSize = 10;
               const row = (
                 <div
                   key={index}
                   style={{
                     display: 'flex',
                     alignItems: 'center',
-                    gap: 5,
+                    gap: 6,
                   }}
                 >
-                  <div style={{ flexShrink: 0, width: 14, height: 14, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <div style={{ flexShrink: 0, width: circleSize, height: circleSize, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                     {isFailed ? (
-                      <span style={{ fontSize: 9, color: '#DC2626', fontWeight: 700 }} aria-label="Failed">!</span>
+                      <div
+                        style={{
+                          width: circleSize,
+                          height: circleSize,
+                          borderRadius: '50%',
+                          backgroundColor: '#DC2626',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          color: 'white',
+                          fontSize: 7,
+                          fontWeight: 700,
+                          lineHeight: 1,
+                        }}
+                        aria-label="Failed"
+                      >
+                        <span style={{ display: 'block', lineHeight: 1, textAlign: 'center' }}>!</span>
+                      </div>
                     ) : isDone ? (
                       <div
                         style={{
-                          width: 14,
-                          height: 14,
+                          width: circleSize,
+                          height: circleSize,
                           borderRadius: '50%',
                           backgroundColor: '#4CAF50',
                           display: 'flex',
                           alignItems: 'center',
                           justifyContent: 'center',
                           color: 'white',
-                          fontSize: 9,
+                          fontSize: 7,
                           fontWeight: 700,
+                          lineHeight: 1,
                         }}
                       >
                         ✓
@@ -464,44 +546,47 @@ export const PipelineStagesDetail: React.FC<PipelineStagesDetailProps> = ({
                     ) : isActive ? (
                       <div
                         style={{
-                          width: 14,
-                          height: 14,
+                          width: circleSize,
+                          height: circleSize,
                           borderRadius: '50%',
                           backgroundColor: '#000000',
                           display: 'flex',
                           alignItems: 'center',
                           justifyContent: 'center',
                           color: 'white',
-                          fontSize: 8,
+                          fontSize: 7,
                           fontWeight: 700,
+                          lineHeight: 1,
                         }}
                       >
-                        {stepNumber}
+                        <span style={{ display: 'block', lineHeight: 1, textAlign: 'center', width: '100%' }}>{stepNumber}</span>
                       </div>
                     ) : (
                       <div
                         style={{
-                          width: 14,
-                          height: 14,
+                          width: circleSize,
+                          height: circleSize,
                           borderRadius: '50%',
                           backgroundColor: '#E0E0E0',
                           display: 'flex',
                           alignItems: 'center',
                           justifyContent: 'center',
                           color: '#6B7280',
-                          fontSize: 8,
+                          fontSize: 7,
                           fontWeight: 700,
+                          lineHeight: 1,
                         }}
                       >
-                        {stepNumber}
+                        <span style={{ display: 'block', lineHeight: 1, textAlign: 'center', width: '100%' }}>{stepNumber}</span>
                       </div>
                     )}
                   </div>
-                  <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center' }}>
                     <span
                       style={{
-                        fontSize: 10,
-                        fontWeight: isActive ? 600 : 400,
+                        fontSize: 12,
+                        lineHeight: 1.2,
+                        fontWeight: isActive ? 600 : 500,
                         color: isPending ? '#6B7280' : isFailed ? '#B91C1C' : '#4A4A4A',
                       }}
                     >
@@ -546,17 +631,6 @@ export const PipelineStagesDetail: React.FC<PipelineStagesDetailProps> = ({
                     >
                       {isExpanded ? '▾' : '›'}
                     </button>
-                  ) : showRightChevron ? (
-                    <span
-                      style={{
-                        fontSize: 9,
-                        color: isActive ? '#4A4A4A' : '#9CA3AF',
-                        flexShrink: 0,
-                        marginLeft: 'auto',
-                      }}
-                    >
-                      ›
-                    </span>
                   ) : null}
                 </div>
               );
@@ -624,8 +698,8 @@ export const PipelineStagesDetail: React.FC<PipelineStagesDetailProps> = ({
             })
               )}
             </div>
-          </>
-        )}
+            )}
+        </>
 
         {/* Footer (modal only) */}
         {variant === 'modal' && (
@@ -703,15 +777,16 @@ export const PipelineStagesHoverPreview: React.FC<PipelineStagesHoverPreviewProp
   const viewportHeight = typeof window !== 'undefined' ? window.innerHeight : 800;
   const minLeft = containerBounds?.left ?? 10;
   const maxRight = containerBounds?.right ?? viewportWidth - 10;
-  const gap = 28;
-  // Estimated full card height (header + 5 stages) so we don't overlap the cursor
+  const gapBelow = 10;  // Small gap so card appears right under the green dot
+  const gapAbove = 10;
+  // Estimated full card height (header + 5 stages)
   const estimatedCardHeight = 180;
-  // Prefer card above cursor so it doesn't cover the cursor; only show below when not enough space above
-  const spaceAbove = minTop != null ? position.y - minTop : position.y - 20;
-  const showAbove = spaceAbove >= estimatedCardHeight + gap;
-  let topPosition = showAbove
-    ? position.y - estimatedCardHeight - gap  // card bottom well above cursor
-    : position.y + gap;                        // card top below cursor (cursor stays above card)
+  // Prefer card below cursor (green dot) so it appears next to the trigger; only show above when not enough space below
+  const spaceBelow = viewportHeight - 20 - position.y;
+  const showBelow = spaceBelow >= estimatedCardHeight + gapBelow;
+  let topPosition = showBelow
+    ? position.y + gapBelow   // card top just below the green dot
+    : position.y - estimatedCardHeight - gapAbove;  // card bottom just above the dot
   // Never overlap the upload zone or other fixed UI at the top
   if (minTop != null && topPosition < minTop) topPosition = minTop;
   // Keep card on screen at bottom

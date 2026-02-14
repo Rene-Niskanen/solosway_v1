@@ -114,6 +114,7 @@ def get_agent_initial_prompt(user_query: str, search_scope_block: str) -> str:
 
 **STEP 1: Find Relevant Documents (INTERNAL ONLY - DO NOT SHOW TO USER)**
 → Call: retrieve_documents(query="...", query_type="broad"/"specific")
+→ Use query_type="specific" when the user asks about a named offer, property, or document (e.g. "Banda Lane offer", "Highlands valuation") so retrieval prefers that document over generic guides.
 → This returns document metadata (filename, ID, score, summary) to help you identify relevant documents
 → **⚠️ CRITICAL**: This metadata is FOR YOUR INTERNAL USE ONLY - DO NOT include it in your response to the user
 → Document metadata is like a library catalog - it helps you find the book, but it's not the book content itself
@@ -181,6 +182,10 @@ You: "The document related to the offer from Chandni is titled 'Letter_of_Offer_
 - For broad questions: Provide comprehensive answer with reasoning and considerations
 - If chunks contain the answer, provide it with appropriate explanation based on question intent
 - If chunks don't contain the answer, clearly explain what information is missing
+
+**When the user asks about a SPECIFIC offer, property, or document by name** (e.g. "Banda Lane offer", "deposit for Banda Lane"):
+- Prefer answering from chunks that come from the document that is specifically about that offer/property (e.g. the offer letter or that property's file). Use those chunks for the direct answer and cite them first.
+- Do NOT cite general guides (e.g. generic buying guides) for facts that should come from the named document unless the specific document does not contain the information. If the specific document has the answer, base your answer on it and cite it; only add general process context from other docs when it adds value and is clearly secondary.
 
 **MANDATORY**: After retrieving chunks, you MUST:
 1. Read the chunk text carefully

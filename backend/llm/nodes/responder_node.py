@@ -1831,7 +1831,7 @@ async def generate_conversational_answer_with_citations(
     llm = ChatOpenAI(
         model=config.openai_model,
         temperature=0.38,
-        max_tokens=2000
+        max_tokens=4096  # Avoid mid-sentence cutoff; 2000 was too low for full answers
     )
 
     metadata_section = _build_metadata_table_section(metadata_lookup_tables or {})
@@ -1895,7 +1895,7 @@ Is this the first message in the conversation? {is_first_message}
     except Exception as e:
         logger.warning(f"[RESPONDER] Structured output failed, using default personality: {e}")
         # Fallback: invoke without structured output and return default personality
-        fallback_llm = ChatOpenAI(model=config.openai_model, temperature=0.38, max_tokens=2000)
+        fallback_llm = ChatOpenAI(model=config.openai_model, temperature=0.38, max_tokens=4096)
         response = await fallback_llm.ainvoke([system_prompt, human_message])
         answer_text = response.content if hasattr(response, 'content') and response.content else ""
         return DEFAULT_PERSONALITY_ID, answer_text

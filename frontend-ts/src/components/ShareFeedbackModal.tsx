@@ -74,7 +74,10 @@ export const ShareFeedbackModal: React.FC<ShareFeedbackModalProps> = ({
 
   return (
     <Dialog open={open} onOpenChange={(isOpen) => !isOpen && handleClose()}>
-      <DialogContent className="max-w-md p-0 overflow-hidden bg-[#1f1f1f] border-0 text-white">
+      <DialogContent
+        overlayClassName="z-[10002]"
+        className="z-[10002] max-w-md p-0 overflow-hidden bg-[#1f1f1f] border-0 text-white"
+      >
         <div className="p-6">
           <DialogHeader>
             <DialogTitle className="text-center text-lg font-semibold text-white">
@@ -83,7 +86,7 @@ export const ShareFeedbackModal: React.FC<ShareFeedbackModalProps> = ({
           </DialogHeader>
           <form onSubmit={handleSubmit} className="mt-4 space-y-4">
             <div>
-              <p className="text-sm text-gray-300 mb-2">What went wrong?</p>
+              <p className="text-sm text-gray-300 mb-2">What went wrong? <span className="text-gray-500">(required)</span></p>
               <div className="grid grid-cols-1 gap-2">
                 {FEEDBACK_CATEGORIES.map((cat) => (
                   <button

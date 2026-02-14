@@ -1136,9 +1136,12 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
               firstPageCacheRef.current = { page: firstPage, viewport: naturalViewport };
             }
             
+            // Use ref first (actual DOM), then latest width from resize (so bbox adapts when preview width changes), then state
             let currentContainerWidth = 0;
             if (pdfWrapperRef.current && pdfWrapperRef.current.clientWidth > 50) {
               currentContainerWidth = pdfWrapperRef.current.clientWidth;
+            } else if (prevContainerWidthRef.current > 50) {
+              currentContainerWidth = prevContainerWidthRef.current;
             } else if (containerWidth > 50) {
               currentContainerWidth = containerWidth;
             }
@@ -1339,10 +1342,10 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
     return () => cancelAnimationFrame(rafId);
   }, [highlight, docId, renderedPages, getHighlightKey, applyScrollToHighlight]);
 
-  // When opening without a highlight (e.g. from "Analyse with AI"), focus the scroll container after layout
-  // so wheel/scroll events target it and don't get lost or applied to the wrong element.
+  // When opening with a highlight (citation click), focus the scroll container so wheel/scroll target it.
+  // When opening without a highlight (e.g. "Analyse with AI"), do not focus so the chat bar keeps focus for typing.
   useEffect(() => {
-    if (highlight || !docId) return;
+    if (!highlight || !docId) return;
     const t = setTimeout(() => {
       pdfWrapperRef.current?.focus({ preventScroll: true });
     }, 200);
@@ -1375,9 +1378,11 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
   }, [chatPanelWidth, isChatPanelOpen]);
   
   // Calculate the width and right position for the document preview
-  // Always anchor the right edge to the screen's right edge (accounting for agent sidebar)
+  // Anchor the right edge with padding from the screen (agent sidebar + 12px toggle rail + right padding)
   // When chat panel resizes, the document preview width adjusts automatically
-  const agentSidebarWidth = isChatHistoryPanelOpen ? chatHistoryPanelWidth : 0;
+  const AGENT_SIDEBAR_RAIL_WIDTH = 12;
+  const DOC_PREVIEW_RIGHT_PADDING = 16; // Gap between document preview right edge and screen/sidebar
+  const agentSidebarWidth = isChatHistoryPanelOpen ? chatHistoryPanelWidth + AGENT_SIDEBAR_RAIL_WIDTH : 0;
   const availableWidth = typeof window !== 'undefined' ? window.innerWidth - sidebarWidth - agentSidebarWidth : 0;
   
   // When doc opens 50/50, parent may report stale chatPanelWidth for 1–2 frames. Use expected 50% during a short window so opening width doesn't bug out.
@@ -1416,12 +1421,12 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
     const naturalDocLeft = sidebarWidth + roundedChatPanelWidth + 12;
     
     // Cap left position to ensure document preview stays on screen with minimum width
-    // maxLeft + minDocWidth + rightGap = viewport - agentSidebar
-    const maxDocLeft = viewportWidth - agentSidebarWidth - 12 - minDocPreviewWidth;
+    // agentSidebarWidth already includes the 12px toggle rail; reserve right padding
+    const maxDocLeft = viewportWidth - agentSidebarWidth - minDocPreviewWidth - DOC_PREVIEW_RIGHT_PADDING;
     const docLeft = Math.min(naturalDocLeft, maxDocLeft);
     
-    // Calculate available width for document preview based on capped left position
-    const availableDocWidth = viewportWidth - docLeft - agentSidebarWidth - 12;
+    // Calculate available width for document preview (leave padding on right edge)
+    const availableDocWidth = viewportWidth - docLeft - agentSidebarWidth - DOC_PREVIEW_RIGHT_PADDING;
     
     // Enforce minimum width for document preview
     const finalWidth = Math.max(availableDocWidth, minDocPreviewWidth);
@@ -1481,7 +1486,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
           height: 'calc(100vh - 24px)',
           // Enforce minimum width as CSS fallback
           minWidth: `${CHAT_PANEL_WIDTH.DOC_PREVIEW_MIN}px`,
-          maxWidth: `calc(100vw - ${sidebarWidth + agentSidebarWidth + 24}px)`, // Never exceed available space
+          maxWidth: `calc(100vw - ${sidebarWidth + agentSidebarWidth + DOC_PREVIEW_RIGHT_PADDING}px)`, // Never exceed available space
           overflow: 'hidden', // Contain content within rounded corners
           margin: 0, // Explicitly remove any margins
           padding: 0, // Explicitly remove any padding
@@ -1555,7 +1560,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
             }}
           >
             <button
-              onClick={onClose}
+              onClick={handleInstantClose}
               className="flex items-center justify-center rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] flex-shrink-0"
               style={{
                 padding: '4px',
@@ -1577,10 +1582,10 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
             </span>
           </div>
           
-          {/* Right: Citations nav + Download + Fullscreen — always show citations pill so layout is consistent */}
+          {/* Right: Citations nav + Download + Fullscreen — only show citations pill when opened from a citation (has highlight), not on default document preview open */}
           <div className="flex items-center gap-0 justify-end min-h-[30px]">
-            {/* Citations: compact pill — show count and prev/next when we have citations, else muted "—" */}
-            {!initialFullscreen && (
+            {/* Citations: compact pill — show only when document was opened from a citation (highlight set), not for default preview */}
+            {!initialFullscreen && highlight != null && (
               <>
                 <div
                   className="flex items-center gap-0 rounded-md border border-slate-200/70"
@@ -1723,6 +1728,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
       <div 
         ref={pdfWrapperRef}
         tabIndex={-1}
+        className="document-preview-scroll"
         style={{
           flex: '1 1 0%', // flex-basis 0 so this column gets correct height at opening width (fixes scroll when narrow)
           minHeight: 0, // Critical: allows flex item to shrink and enable scrolling
@@ -1794,7 +1800,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
                       // For now, using 1:1 ratio (square) - adjust if needed based on actual logo dimensions
                       const logoWidth = logoHeight; // Square logo, adjust if needed
                       // Calculate BBOX dimensions with centered padding
-                      const padding = 4; // Equal padding on all sides
+                      const padding = 8; // Equal padding on all sides
                       const originalBboxWidth = highlight.bbox.width * dimensions.width;
                       const originalBboxHeight = highlight.bbox.height * dimensions.height;
                       const originalBboxLeft = highlight.bbox.left * dimensions.width;

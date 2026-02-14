@@ -10,187 +10,8 @@ import { toast } from "@/hooks/use-toast";
 import { usePreview } from '../contexts/PreviewContext';
 import PropertyResultsDisplay from './PropertyResultsDisplay';
 import { SquareMap } from './SquareMap';
-// Import the same mock data that the map view uses
-// This ensures both interfaces show the same results
-const mockPropertyData = [
-  {
-    id: 1,
-    address: "24 Runthorpe Road, Clifton, Bristol",
-    postcode: "BS8 2AB",
-    property_type: "Semi-Detached",
-    bedrooms: 3,
-    bathrooms: 2,
-    price: 450000,
-    square_feet: 1200,
-    days_on_market: 45,
-    latitude: 51.4600,
-    longitude: -2.6100,
-    summary: "Beautiful 3-bedroom semi-detached house in Clifton",
-    features: "Garden, Parking, Modern Kitchen",
-    condition: 8,
-    similarity: 95,
-    image: "https://images.unsplash.com/photo-1564013799919-ab600027ffc6?w=400&h=300&fit=crop&crop=center&auto=format&q=80",
-    agent: {
-      name: "Jerome Bell",
-      company: "harperjamesproperty36"
-    }
-  },
-  {
-    id: 2,
-    address: "15 Clifton Park, Clifton, Bristol",
-    postcode: "BS8 3CD",
-    property_type: "Detached",
-    bedrooms: 3,
-    bathrooms: 2,
-    price: 550000,
-    square_feet: 1400,
-    days_on_market: 23,
-    latitude: 51.4610,
-    longitude: -2.6120,
-    summary: "Stunning 3-bedroom detached house with garden",
-    features: "Large Garden, Garage, En-suite",
-    condition: 9,
-    similarity: 92,
-    image: "https://images.unsplash.com/photo-1600607687644-c7171b42498b?w=400&h=300&fit=crop&crop=center&auto=format&q=80",
-    agent: {
-      name: "Jerome Bell",
-      company: "harperjamesproperty36"
-    }
-  },
-  {
-    id: 3,
-    address: "8 Clifton Road, Clifton, Bristol",
-    postcode: "BS8 4EF",
-    property_type: "Terraced",
-    bedrooms: 3,
-    bathrooms: 1,
-    price: 380000,
-    square_feet: 1100,
-    days_on_market: 67,
-    latitude: 51.4625,
-    longitude: -2.6129,
-    summary: "Charming 3-bedroom terraced house",
-    features: "Period Features, Close to Station",
-    condition: 7,
-    similarity: 88,
-    image: "https://images.unsplash.com/photo-1600607687939-ce8a6c25118c?w=400&h=300&fit=crop&crop=center&auto=format&q=80",
-    agent: {
-      name: "Jerome Bell",
-      company: "harperjamesproperty36"
-    }
-  },
-  {
-    id: 4,
-    address: "42 Clifton Hill, Clifton, Bristol",
-    postcode: "BS8 4JX",
-    property_type: "Semi-Detached",
-    bedrooms: 2,
-    bathrooms: 1,
-    price: 320000,
-    square_feet: 850,
-    days_on_market: 34,
-    latitude: 51.4685,
-    longitude: -2.6149,
-    summary: "Modern 2-bedroom semi-detached house",
-    features: "Off-street Parking, Garden, Modern Bathroom",
-    condition: 8,
-    similarity: 90,
-    image: "https://images.unsplash.com/photo-1600585154340-be6161a56a0c?w=400&h=300&fit=crop",
-    agent: {
-      name: "Jerome Bell",
-      company: "harperjamesproperty36"
-    }
-  },
-  {
-    id: 16,
-    address: "12 Whiteladies Road, Clifton, Bristol",
-    postcode: "BS8 2BS",
-    property_type: "Apartment",
-    bedrooms: 2,
-    bathrooms: 2,
-    price: 350000,
-    square_feet: 800,
-    days_on_market: 23,
-    latitude: 51.4660,
-    longitude: -2.6120,
-    summary: "Modern 2-bedroom apartment with balcony",
-    features: "Balcony, Parking, Modern Kitchen, En-suite",
-    condition: 9,
-    similarity: 88,
-    image: "https://images.unsplash.com/photo-1600607687920-4e2a09cf159d?w=400&h=300&fit=crop&crop=center&auto=format&q=80",
-    agent: {
-      name: "Jerome Bell",
-      company: "harperjamesproperty36"
-    }
-  },
-  {
-    id: 18,
-    address: "25 Clifton Hill, Clifton, Bristol",
-    postcode: "BS8 1JX",
-    property_type: "Semi-Detached",
-    bedrooms: 2,
-    bathrooms: 1,
-    price: 380000,
-    square_feet: 900,
-    days_on_market: 45,
-    latitude: 51.4660,
-    longitude: -2.6110,
-    summary: "Charming 2-bedroom semi-detached house",
-    features: "Garden, Parking, Period Features",
-    condition: 7,
-    similarity: 85,
-    image: "https://images.unsplash.com/photo-1600566753190-17f63ba4f6fd?w=400&h=300&fit=crop&crop=center&auto=format&q=80",
-    agent: {
-      name: "Jerome Bell",
-      company: "harperjamesproperty36"
-    }
-  },
-  {
-    id: 22,
-    address: "42 Clifton Street, Clifton, Bristol",
-    postcode: "BS8 4EF",
-    property_type: "Terraced",
-    bedrooms: 2,
-    bathrooms: 1,
-    price: 320000,
-    square_feet: 750,
-    days_on_market: 67,
-    latitude: 51.4630,
-    longitude: -2.6100,
-    summary: "Cozy 2-bedroom terraced house",
-    features: "Period Features, Garden",
-    condition: 6,
-    similarity: 82,
-    image: "https://images.unsplash.com/photo-1600607687920-4e2a09cf159d?w=400&h=300&fit=crop&crop=center&auto=format&q=80",
-    agent: {
-      name: "Jerome Bell",
-      company: "harperjamesproperty36"
-    }
-  },
-  {
-    id: 27,
-    address: "22 Clifton Road, Clifton, Bristol",
-    postcode: "BS8 4EF",
-    property_type: "Semi-Detached",
-    bedrooms: 2,
-    bathrooms: 1,
-    price: 360000,
-    square_feet: 850,
-    days_on_market: 38,
-    latitude: 51.4625,
-    longitude: -2.6119,
-    summary: "Charming 2-bedroom semi-detached house",
-    features: "Garden, Parking, Period Features",
-    condition: 7,
-    similarity: 84,
-    image: "https://images.unsplash.com/photo-1600566753190-17f63ba4f6fd?w=400&h=300&fit=crop&crop=center&auto=format&q=80",
-    agent: {
-      name: "Jerome Bell",
-      company: "harperjamesproperty36"
-    }
-  }
-];
 import { analyzeQueryWithLLM, LLMAnalysisResult } from '../llm/llmService';
+import { useBackendApi } from './BackendApi';
 
 // Import property images
 import property1 from "@/assets/property-1.jpg";
@@ -224,6 +45,7 @@ const ChatInterface = forwardRef<{ handleFileDrop: (file: File) => void }, ChatI
   isFromHistory = false
 }, ref) => {
   console.log('🎯 ChatInterface component rendering/mounting');
+  const { getProperties } = useBackendApi();
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState("");
   const [isTyping, setIsTyping] = useState(false);
@@ -450,16 +272,25 @@ const ChatInterface = forwardRef<{ handleFileDrop: (file: File) => void }, ChatI
     return context;
   };
 
-  // Enhanced search function that matches the map view logic exactly
-  const searchProperties = (query: string, context?: any) => {
+  // Normalize property from API shape (property_address, number_bedrooms) to display shape (address, bedrooms)
+  const normalizeProp = (p: any) => ({
+    ...p,
+    address: p.address || p.property_address || '',
+    bedrooms: p.bedrooms ?? p.number_bedrooms,
+    bathrooms: p.bathrooms ?? p.number_bathrooms,
+    price: p.price ?? p.asking_price ?? p.sold_price
+  });
+
+  // Search properties from backend, then filter by query
+  const searchProperties = async (query: string, context?: any): Promise<any[]> => {
     console.log('=== SEARCH FUNCTION CALLED ===');
     console.log('Query:', query);
     console.log('Context:', context);
-    
+    const all = await getProperties(query || undefined);
+    const normalized = all.map(normalizeProp);
+    let filteredProperties = [...normalized];
     const lowerQuery = query.toLowerCase();
-    let filteredProperties = [...mockPropertyData];
     
-    // Extract bedroom count
     const bedroomMatch = lowerQuery.match(/(\d+)\s*(?:bed|bedroom|bedrooms)/);
     if (bedroomMatch) {
       const bedroomCount = parseInt(bedroomMatch[1]);
@@ -467,8 +298,7 @@ const ChatInterface = forwardRef<{ handleFileDrop: (file: File) => void }, ChatI
       filteredProperties = filteredProperties.filter(p => p.bedrooms === bedroomCount);
     }
     
-    // Enhanced location matching (same as map view)
-    const locationKeywords = {
+    const locationKeywords: Record<string, string[]> = {
       'clifton': ['clifton', 'clifton village', 'clifton down', 'clifton hill', 'clifton park'],
       'redland': ['redland', 'redland road', 'redland park'],
       'cotham': ['cotham', 'cotham hill', 'cotham road'],
@@ -486,50 +316,28 @@ const ChatInterface = forwardRef<{ handleFileDrop: (file: File) => void }, ChatI
       'city centre': ['city centre', 'city center', 'centre', 'center', 'broadmead', 'redcliffe', 'temple meads']
     };
     
-    // Check for location match
-    let queryLocation = null;
-    let locationMatch = null;
-    
+    let queryLocation: string | null = null;
     for (const [location, keywords] of Object.entries(locationKeywords)) {
       if (keywords.some(keyword => lowerQuery.includes(keyword))) {
         queryLocation = location;
-        locationMatch = keywords.find(keyword => lowerQuery.includes(keyword));
         break;
       }
     }
     
-    console.log('Detected location:', queryLocation);
-    console.log('Location match:', locationMatch);
-    
-    // Filter by location
     if (queryLocation) {
       if (queryLocation === 'city centre') {
-        console.log('Filtering by location: City Centre (Clifton/Bristol)');
         filteredProperties = filteredProperties.filter(p => 
-          p.address.toLowerCase().includes('clifton') || 
-          p.address.toLowerCase().includes('bristol')
+          (p.address || '').toLowerCase().includes('clifton') || 
+          (p.address || '').toLowerCase().includes('bristol')
         );
       } else {
-        console.log(`Filtering by location: ${queryLocation}`);
         filteredProperties = filteredProperties.filter(p => 
-          p.address.toLowerCase().includes(queryLocation)
+          (p.address || '').toLowerCase().includes(queryLocation!)
         );
       }
     }
     
     console.log('Final filtered properties count:', filteredProperties.length);
-    console.log('Sample results:', filteredProperties.slice(0, 3).map(p => ({ 
-      id: p.id, 
-      address: p.address, 
-      bedrooms: p.bedrooms 
-    })));
-    
-    // Debug: Log all properties that match the criteria
-    console.log('=== ALL MATCHING PROPERTIES ===');
-    filteredProperties.forEach(p => {
-      console.log(`ID: ${p.id}, Address: ${p.address}, Bedrooms: ${p.bedrooms}`);
-    });
-    
     return filteredProperties;
   };
 
@@ -675,7 +483,7 @@ const ChatInterface = forwardRef<{ handleFileDrop: (file: File) => void }, ChatI
             console.log('Search criteria before search:', searchCriteria);
             
             // Search for properties based on the query with context
-            const searchResults = searchProperties(query, searchCriteria);
+            const searchResults = await searchProperties(query, searchCriteria);
             
             if (searchResults.length > 0) {
               responseContent = analysis.suggestedResponse || `Found properties matching your criteria.`;
@@ -701,25 +509,7 @@ const ChatInterface = forwardRef<{ handleFileDrop: (file: File) => void }, ChatI
               }, 10);
               scrollToShowResponse(true);
             } else {
-              // Generate a more helpful "no results" message
-              const totalProperties = mockPropertyData.length;
-              const availableBedrooms = [...new Set(mockPropertyData.map(p => p.bedrooms))].sort();
-              const availableBathrooms = [...new Set(mockPropertyData.map(p => p.bathrooms))].sort();
-              const availableLocations = [...new Set(mockPropertyData.map(p => {
-                const addr = p.address.toLowerCase();
-                if (addr.includes('clifton')) return 'Clifton';
-                if (addr.includes('bristol')) return 'Bristol';
-                if (addr.includes('filton')) return 'Filton';
-                if (addr.includes('redland')) return 'Redland';
-                if (addr.includes('montpelier')) return 'Montpelier';
-                return 'Other areas';
-              }))].filter(Boolean);
-              
-              const sampleProperties = mockPropertyData.slice(0, 3).map(p => 
-                `• ${p.bedrooms} bed ${p.bathrooms} bath in ${p.address.split(',')[1]?.trim() || p.address.split(',')[0]} (£${p.price.toLocaleString()})`
-              ).join('\n');
-              
-              responseContent = `No properties found matching your criteria. Available: ${availableBedrooms.join(', ')} bedrooms, areas: ${availableLocations.join(', ')}. Try "3 bed in Clifton" or "show all properties".`;
+              responseContent = `No properties found matching your criteria. Try broadening your search or check the map for available properties.`;
             }
           }
         } else {
@@ -923,7 +713,7 @@ const ChatInterface = forwardRef<{ handleFileDrop: (file: File) => void }, ChatI
             console.log('Search criteria before search (send message):', searchCriteria);
             
             // Search for properties based on the query with context
-            const searchResults = searchProperties(submittedText, searchCriteria);
+            const searchResults = await searchProperties(submittedText, searchCriteria);
             
             if (searchResults.length > 0) {
               responseContent = analysis.suggestedResponse || `Found properties matching your criteria.`;
@@ -947,25 +737,7 @@ const ChatInterface = forwardRef<{ handleFileDrop: (file: File) => void }, ChatI
               }, 10);
               scrollToShowResponse(true);
             } else {
-              // Generate a more helpful "no results" message
-              const totalProperties = mockPropertyData.length;
-              const availableBedrooms = [...new Set(mockPropertyData.map(p => p.bedrooms))].sort();
-              const availableBathrooms = [...new Set(mockPropertyData.map(p => p.bathrooms))].sort();
-              const availableLocations = [...new Set(mockPropertyData.map(p => {
-                const addr = p.address.toLowerCase();
-                if (addr.includes('clifton')) return 'Clifton';
-                if (addr.includes('bristol')) return 'Bristol';
-                if (addr.includes('filton')) return 'Filton';
-                if (addr.includes('redland')) return 'Redland';
-                if (addr.includes('montpelier')) return 'Montpelier';
-                return 'Other areas';
-              }))].filter(Boolean);
-              
-              const sampleProperties = mockPropertyData.slice(0, 3).map(p => 
-                `• ${p.bedrooms} bed ${p.bathrooms} bath in ${p.address.split(',')[1]?.trim() || p.address.split(',')[0]} (£${p.price.toLocaleString()})`
-              ).join('\n');
-              
-              responseContent = `No properties found matching your criteria. Available: ${availableBedrooms.join(', ')} bedrooms, areas: ${availableLocations.join(', ')}. Try "3 bed in Clifton" or "show all properties".`;
+              responseContent = `No properties found matching your criteria. Try broadening your search or check the map for available properties.`;
             }
           }
         } else {

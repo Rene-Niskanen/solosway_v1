@@ -943,8 +943,8 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
     const bboxCenterY = pageOffset + (expandedBbox.top + expandedBbox.height / 2) * pageHeight;
     const scrollTop = Math.max(0, bboxCenterY - viewportHeight / 2);
     const maxScrollTop = Math.max(0, wrapper.scrollHeight - viewportHeight);
-    wrapper.scrollTop = Math.min(scrollTop, maxScrollTop);
-    wrapper.scrollLeft = 0;
+    // Instant scroll when moving between citations (no animation)
+    wrapper.scrollTo({ top: Math.min(scrollTop, maxScrollTop), left: 0, behavior: 'auto' });
     requestAnimationFrame(() => setScrollResetApplied(true));
   }, [isPDF, isOpen, file?.id, expandedBbox, pageOffsets, renderedPages]);
 
@@ -2163,7 +2163,7 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
                   {isPDF ? (
                     <div 
                       ref={pdfWrapperRef}
-                      className="w-full h-full"
+                      className="w-full h-full document-preview-scroll"
                       style={{
                         pointerEvents: scrollResetApplied ? 'auto' : 'none',
                         padding: '0',
@@ -2240,7 +2240,7 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
                                 }}
                               />
                               
-                                  {/* Highlight overlay - bbox at its actual position on the page */}
+                                  {/* Highlight overlay - bbox at its actual position on the page (no transition when moving between citations) */}
                                   {isHighlightPage && expandedBbox && (
                                     <div
                                       style={{
@@ -2254,6 +2254,7 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
                                         borderRadius: '2px',
                                         pointerEvents: 'none',
                                         zIndex: 10,
+                                        transition: 'none',
                                       }}
                                     />
                                   )}

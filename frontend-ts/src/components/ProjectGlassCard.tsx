@@ -10,7 +10,7 @@
  */
 
 import * as React from "react";
-import { Plus } from "lucide-react";
+import { Plus, Check } from "lucide-react";
 import { motion } from "framer-motion";
 
 // Properties = Projects (same concept)
@@ -42,7 +42,18 @@ interface ProjectGlassCardProps {
   onClick?: () => void;
   /** Callback when a document is dropped onto this card */
   onDocumentDrop?: (documentId: string, propertyId: string) => void;
+  /** When true, card shows selection checkbox and click toggles selection */
+  selectionMode?: boolean;
+  /** Whether this card is selected (used with selectionMode) */
+  selected?: boolean;
+  /** Called when user toggles selection (e.g. clicks card in selection mode) */
+  onToggleSelect?: (e: React.MouseEvent) => void;
+  /** Called when user hovers over the card (e.g. to preload document thumbnails for faster open) */
+  onMouseEnter?: () => void;
 }
+
+// Max length for project name display (based on longest current names in UI)
+const MAX_PROJECT_NAME_LENGTH = 23;
 
 // Extract property name from address (first part before comma)
 const getPropertyName = (address: string): string => {
@@ -60,9 +71,24 @@ const getPropertyName = (address: string): string => {
   return firstPart.substring(0, 30);
 };
 
-export const ProjectGlassCard: React.FC<ProjectGlassCardProps> = React.memo(({ property, onClick, onDocumentDrop }) => {
+const truncateProjectName = (name: string): string => {
+  if (name.length <= MAX_PROJECT_NAME_LENGTH) return name;
+  return name.slice(0, MAX_PROJECT_NAME_LENGTH) + "...";
+};
+
+export const ProjectGlassCard: React.FC<ProjectGlassCardProps> = React.memo(({ property, onClick, onDocumentDrop, selectionMode, selected, onToggleSelect, onMouseEnter }) => {
   // Drag-over state for visual feedback
   const [isDragOver, setIsDragOver] = React.useState(false);
+
+  const handleClick = React.useCallback((e: React.MouseEvent) => {
+    if (selectionMode && onToggleSelect) {
+      e.preventDefault();
+      e.stopPropagation();
+      onToggleSelect(e);
+    } else if (onClick) {
+      onClick();
+    }
+  }, [selectionMode, onToggleSelect, onClick]);
   
   // Format date like reference: "May 9, 2019"
   const formatDate = (dateStr?: string) => {
@@ -135,97 +161,106 @@ export const ProjectGlassCard: React.FC<ProjectGlassCardProps> = React.memo(({ p
 
   return (
     <motion.div 
-      className="cursor-pointer relative select-none overflow-hidden"
+      className="cursor-pointer relative select-none overflow-visible flex flex-col items-center h-full"
       style={{
-        width: '260px',
-        maxWidth: '260px',
-        borderRadius: '10px',
-        padding: '16px 16px 0 16px',
-        background: 'linear-gradient(145deg, #ffffff 0%, #f8f9fa 100%)',
-        boxShadow: isDragOver 
-          ? '0 8px 24px rgba(59, 130, 246, 0.2), 0 4px 8px rgba(0, 0, 0, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.9)'
-          : '0 8px 20px -4px rgba(0, 0, 0, 0.1), 0 4px 8px -2px rgba(0, 0, 0, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.9)',
+        width: '100%',
+        minHeight: 0,
+        padding: '0',
+        background: 'transparent',
+        boxShadow: 'none',
         border: 'none',
         outline: isDragOver ? '2px dashed #3B82F6' : 'none',
         outlineOffset: '4px',
+        // Ensure card receives pointer events and sits above grid so hover/click always register
+        pointerEvents: 'auto',
+        zIndex: 0,
       }}
-      whileHover={{ 
-        y: -4, 
-        boxShadow: '0 16px 32px -8px rgba(0, 0, 0, 0.15), 0 6px 12px -4px rgba(0, 0, 0, 0.08), inset 0 1px 0 rgba(255, 255, 255, 1)',
-      }}
-      whileTap={{ scale: 0.98, y: -2 }}
+      whileHover={{ scale: 1.02, zIndex: 1 }}
+      whileTap={{ scale: 0.98 }}
       transition={{ type: 'spring', stiffness: 400, damping: 25 }}
-      onClick={onClick}
+      onClick={handleClick}
+      onMouseEnter={onMouseEnter}
       onDragOver={handleDragOver}
       onDragEnter={handleDragEnter}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
-      {/* Vertical layout: image bleeds into card padding (infinity pool), content below */}
-      <div className="flex flex-col" style={{ margin: '-16px -16px 0 -16px' }}>
-        {/* Top: Property image - full bleed via negative margin, no inner padding */}
+      {/* Card container: fixed height so all cards match; blue border when selected */}
+      <div
+        className="flex flex-col items-center w-full h-full min-w-0"
+        style={{
+          borderRadius: '12px',
+          border: selected ? '2px solid #3B82F6' : '2px solid transparent',
+          padding: '12px',
+          boxSizing: 'border-box',
+          position: 'relative',
+          height: '100%',
+        }}
+      >
+        {/* Checkmark badge: top-right, slightly overlapping the card border */}
+        {selectionMode && (
+          <div
+            className="absolute flex items-center justify-center pointer-events-none"
+            style={{
+              top: '-2px',
+              right: '-2px',
+              width: '20px',
+              height: '20px',
+              borderRadius: '4px',
+              backgroundColor: selected ? '#3B82F6' : 'rgba(255,255,255,0.95)',
+              border: selected ? 'none' : '1px solid rgba(0,0,0,0.12)',
+              boxShadow: selected ? '0 1px 3px rgba(59, 130, 246, 0.4)' : '0 1px 2px rgba(0,0,0,0.08)',
+            }}
+          >
+            {selected && <Check className="w-3 h-3 text-white" strokeWidth={3} />}
+          </div>
+        )}
+
+        {/* Folder icon - fixed size so every card shows the same dimensions */}
         <div 
-          className="relative w-full overflow-hidden"
-          style={{ height: '120px', borderRadius: '10px 10px 0 0' }}
+          className="relative overflow-hidden flex items-center justify-center flex-shrink-0"
+          style={{ 
+            width: '140px',
+            height: '122px',
+            filter: isDragOver ? 'brightness(0.95)' : 'none',
+          }}
         >
           <img 
-            src={property.primary_image_url || '/defaultproject.png'} 
-            alt={propertyName}
-            className="w-full h-full object-cover pointer-events-none"
+            src="/projectsfolder.png" 
+            alt=""
+            className="w-full h-full object-contain pointer-events-none"
             style={{ display: 'block' }}
             draggable={false}
           />
         </div>
 
-        {/* Bottom: Text Content - restore original spacing (padding lives on card) */}
-        <div className="min-w-0 pt-3 pb-0" style={{ paddingLeft: '16px', paddingRight: '16px', paddingBottom: '16px' }}>
-          {/* Title */}
-          <h2 
-            className="mb-1 truncate"
-            style={{
-              fontSize: '15px',
-              fontWeight: 600,
-              color: '#1F2937',
-              lineHeight: 1.3,
-            }}
-          >
-            {propertyName}
-          </h2>
-          
-          {/* Subtitle - Property type */}
-          <p 
-            className="mb-2 truncate"
-            style={{
-              fontSize: '12px',
-              color: '#6B7280',
-              fontWeight: 500,
-            }}
-          >
-            {propertyType}
-          </p>
-          
-          {/* Description - 2 lines max */}
-          <div 
-            className="text-gray-600 leading-snug"
-            style={{ 
-              fontSize: '11px',
-              display: '-webkit-box',
-              WebkitLineClamp: 2,
-              WebkitBoxOrient: 'vertical',
-              overflow: 'hidden',
-            }}
-          >
-            {property.description || property.notes || property.formatted_address || property.address || 'Property location'}
-          </div>
-        </div>
+        {/* Project name below folder - single line, max length with ellipsis */}
+        <p 
+          className="text-center w-full mt-2 px-1 min-w-0"
+          style={{
+            fontSize: '13px',
+            fontWeight: 500,
+            color: '#1F2937',
+            lineHeight: 1.3,
+            minWidth: 0,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}
+          title={propertyName}
+        >
+          {truncateProjectName(propertyName)}
+        </p>
       </div>
       
-      {/* OpenAI-style Add Button - appears when dragging over */}
+      {/* Add indicator when dragging over */}
       <div 
         className="absolute flex items-center justify-center pointer-events-none"
         style={{
-          bottom: '12px',
-          right: '12px',
+          top: '50%',
+          left: '50%',
+          marginTop: '-16px',
+          marginLeft: '-16px',
           width: '32px',
           height: '32px',
           borderRadius: '50%',

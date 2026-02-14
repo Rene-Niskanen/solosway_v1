@@ -80,8 +80,53 @@ export const UploadProgressBar: React.FC = () => {
   const pollingRef = useRef<NodeJS.Timeout | null>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const pollErrorCountRef = useRef<number>(0);
+  const pollErrorCountByDocRef = useRef<Map<string, number>>(new Map());
   const queueDropdownRef = useRef<HTMLDivElement>(null);
   const MAX_POLL_ERRORS = 5;
+  /** Set of document IDs we are currently polling (supports multiple simultaneous) */
+  const pollingDocumentIdsRef = useRef<Set<string>>(new Set());
+  /** documentId -> fileName for polling */
+  const pollingDocNamesRef = useRef<Map<string, string>>(new Map());
+  /** Per-document state from last poll (so we can show primary when switching) */
+  const documentStatesRef = useRef<Map<string, Partial<UploadState>>>(new Map());
+  /** Latest queue for use inside poll callbacks */
+  const documentQueueRef = useRef<DocumentQueueItem[]>([]);
+  /** Currently displayed document ID (for use in async poll callback) */
+  const displayedDocumentIdRef = useRef<string | undefined>(undefined);
+
+  // Keep refs in sync for use inside poll callbacks
+  useEffect(() => {
+    documentQueueRef.current = documentQueue;
+  }, [documentQueue]);
+  useEffect(() => {
+    displayedDocumentIdRef.current = uploadState?.documentId;
+  }, [uploadState?.documentId]);
+
+  // When displayed doc is cleared but queue still has processing docs, show the next (oldest) one
+  useEffect(() => {
+    if (uploadState !== null) return;
+    const primary = documentQueue.find((d) => d.status === 'processing' && d.documentId);
+    if (!primary?.documentId) return;
+    const stored = documentStatesRef.current.get(primary.documentId);
+    setUploadState({
+      isUploading: false,
+      progress: 100,
+      fileName: primary.fileName,
+      status: 'processing',
+      documentId: primary.documentId,
+      propertyId: primary.propertyId,
+      startTime: primary.startTime,
+      currentStep: stored?.currentStep ?? 'Starting extraction pipeline...',
+      processingSteps: stored?.processingSteps,
+      currentStage: stored?.currentStage,
+      chunkCount: stored?.chunkCount,
+      processingTime: stored?.processingTime,
+      reductoJobId: stored?.reductoJobId,
+      metrics: stored?.metrics,
+      errors: stored?.errors,
+      stageDetails: stored?.stageDetails,
+    });
+  }, [uploadState, documentQueue]);
 
   // Timer effect - updates every second
   useEffect(() => {
@@ -118,9 +163,9 @@ export const UploadProgressBar: React.FC = () => {
     try {
       const response = await backendApi.getDocumentStatus(documentId);
       
-      // Reset error count on successful response
       if (response.success) {
         pollErrorCountRef.current = 0;
+        pollErrorCountByDocRef.current.delete(documentId);
       }
       
       if (response.success && response.data) {
@@ -242,85 +287,90 @@ export const UploadProgressBar: React.FC = () => {
         const metrics = pipeline_progress?.metrics || {};
         const errors = pipeline_progress?.errors || [];
         const stageDetails = pipeline_progress?.stage_details || {};
-        
-        setUploadState(prev => {
-          // Get detailed error message if available
-          let errorMessage = prev?.error;
-          if (isFailed && errors.length > 0) {
-            const latestError = errors[errors.length - 1];
-            errorMessage = `${latestError.stage}: ${latestError.error}`;
-          } else if (isFailed) {
-            errorMessage = 'Processing failed';
-          }
-          
-          return prev ? {
-          ...prev,
+        const errorMessage = isFailed
+          ? (errors.length > 0 ? `${errors[errors.length - 1].stage}: ${errors[errors.length - 1].error}` : 'Processing failed')
+          : undefined;
+        const docState: Partial<UploadState> = {
           status: isComplete ? 'complete' : isFailed ? 'error' : 'processing',
           processingSteps: steps,
           currentStep: currentStep,
           currentStage: pipeline_progress?.current_stage,
-          chunkCount: chunkCount || prev.chunkCount,
-          processingTime: processingTime || prev.processingTime,
+          chunkCount,
+          processingTime,
           error: errorMessage,
-          reductoJobId: reductoJobId || prev.reductoJobId,
-          metrics: metrics,
-          errors: errors,
-          stageDetails: stageDetails
-          } : null;
+          reductoJobId,
+          metrics,
+          errors,
+          stageDetails,
+        };
+        documentStatesRef.current.set(documentId, docState);
+
+        // Only update the displayed upload state if this poll is for the currently displayed document
+        setUploadState(prev => {
+          if (prev?.documentId !== documentId) return prev;
+          return prev ? { ...prev, ...docState } : null;
         });
-        
-        // Stop polling if complete or failed
+
+        // When this document completes or fails, stop polling it and maybe switch display
         if (isComplete || isFailed) {
-          if (pollingRef.current) {
+          pollingDocumentIdsRef.current.delete(documentId);
+          pollingDocNamesRef.current.delete(documentId);
+          if (pollingDocumentIdsRef.current.size === 0 && pollingRef.current) {
             clearInterval(pollingRef.current);
             pollingRef.current = null;
           }
-          
-          // Stop timer
+          documentStatesRef.current.delete(documentId);
           if (timerRef.current) {
             clearInterval(timerRef.current);
             timerRef.current = null;
           }
-          
-          // Auto-hide after delay and remove from queue
+          const wasDisplayed = displayedDocumentIdRef.current === documentId;
+          if (wasDisplayed) setUploadState(null);
+          const noMorePolling = pollingDocumentIdsRef.current.size === 0;
+          if (noMorePolling) {
+            setTimeout(() => {
+              setIsVisible(false);
+              setTimeout(() => {
+                setUploadState(null);
+                setDocumentQueue(prev => prev.filter(doc => doc.documentId !== documentId));
+              }, 300);
+            }, isComplete ? 5000 : 8000);
+          } else {
+            setDocumentQueue(prev => prev.filter(doc => doc.documentId !== documentId));
+          }
+        }
+      }
+    } catch (error) {
+      const docErrors = (pollErrorCountByDocRef.current.get(documentId) ?? 0) + 1;
+      pollErrorCountByDocRef.current.set(documentId, docErrors);
+      pollErrorCountRef.current++;
+      console.error(`Failed to poll document status for ${documentId} (attempt ${docErrors}/${MAX_POLL_ERRORS}):`, error);
+      
+      if (docErrors >= MAX_POLL_ERRORS) {
+        pollingDocumentIdsRef.current.delete(documentId);
+        pollingDocNamesRef.current.delete(documentId);
+        if (pollingDocumentIdsRef.current.size === 0 && pollingRef.current) {
+          clearInterval(pollingRef.current);
+          pollingRef.current = null;
+        }
+        documentStatesRef.current.delete(documentId);
+        setUploadState(prev =>
+          prev?.documentId === documentId
+            ? { ...prev, status: 'complete', currentStep: 'Processing in background' }
+            : prev
+        );
+        setDocumentQueue(prev => prev.map(doc =>
+          doc.documentId === documentId ? { ...doc, status: 'complete' } : doc
+        ));
+        if (pollingDocumentIdsRef.current.size === 0) {
           setTimeout(() => {
             setIsVisible(false);
             setTimeout(() => {
               setUploadState(null);
-              // Remove completed/error documents from queue after a delay
               setDocumentQueue(prev => prev.filter(doc => doc.documentId !== documentId));
             }, 300);
-          }, isComplete ? 5000 : 8000);
+          }, 4000);
         }
-      }
-    } catch (error) {
-      pollErrorCountRef.current++;
-      console.error(`Failed to poll document status (attempt ${pollErrorCountRef.current}/${MAX_POLL_ERRORS}):`, error);
-      
-      // Stop polling after too many errors
-      if (pollErrorCountRef.current >= MAX_POLL_ERRORS) {
-        console.warn('Max poll errors reached, stopping status polling');
-        if (pollingRef.current) {
-          clearInterval(pollingRef.current);
-          pollingRef.current = null;
-        }
-        
-        // Show as complete anyway - document was uploaded successfully
-        setUploadState(prev => prev ? {
-          ...prev,
-          status: 'complete',
-          currentStep: 'Processing in background'
-        } : null);
-        
-        // Auto-hide after delay and remove from queue
-        setTimeout(() => {
-          setIsVisible(false);
-          setTimeout(() => {
-            setUploadState(null);
-            // Remove from queue
-            setDocumentQueue(prev => prev.filter(doc => doc.documentId !== documentId));
-          }, 300);
-        }, 4000);
       }
     }
   };
@@ -361,22 +411,18 @@ export const UploadProgressBar: React.FC = () => {
     return stage.replace(/_/g, ' ').replace(/^\w/, c => c.toUpperCase());
   };
 
-  // Start polling when we have a document ID
+  // Start polling for a document (adds to set; supports multiple simultaneous)
   const startPolling = (documentId: string, fileName: string) => {
-    // Clear any existing polling
-    if (pollingRef.current) {
-      clearInterval(pollingRef.current);
-    }
-    
-    // Reset error count
+    pollingDocumentIdsRef.current.add(documentId);
+    pollingDocNamesRef.current.set(documentId, fileName);
     pollErrorCountRef.current = 0;
-    
-    // Poll immediately
     pollDocumentStatus(documentId, fileName);
-    
-    // Poll every 1 second during active processing for more real-time updates
+    if (pollingRef.current) return;
     pollingRef.current = setInterval(() => {
-      pollDocumentStatus(documentId, fileName);
+      for (const id of pollingDocumentIdsRef.current) {
+        const name = pollingDocNamesRef.current.get(id) ?? '';
+        pollDocumentStatus(id, name);
+      }
     }, 1000);
   };
 
@@ -446,32 +492,46 @@ export const UploadProgressBar: React.FC = () => {
       
       console.log(`📊 [UploadProgressBar] Upload complete event received:`, { fileName, documentId, propertyId });
       
-      // Update queue
-      setDocumentQueue(prev => prev.map(doc => 
-        doc.fileName === fileName 
-          ? { ...doc, documentId, propertyId, status: 'processing', progress: 100 }
-          : doc
-      ));
+      // Update queue and set displayed state to the primary (oldest still processing) so multiple docs are tracked
+      setDocumentQueue(prev => {
+        const next: DocumentQueueItem[] = prev.map(doc =>
+          doc.fileName === fileName
+            ? { ...doc, documentId, propertyId, status: 'processing' as const, progress: 100 }
+            : doc
+        );
+        const primary = next.find(d => d.status === 'processing' && d.documentId);
+        if (primary) {
+          const stored = documentStatesRef.current.get(primary.documentId);
+          setTimeout(() => {
+            setUploadState({
+              isUploading: false,
+              progress: 100,
+              fileName: primary.fileName,
+              status: 'processing',
+              documentId: primary.documentId,
+              propertyId: primary.propertyId,
+              startTime: primary.startTime ?? Date.now(),
+              currentStep: stored?.currentStep ?? 'Starting extraction pipeline...',
+              processingSteps: stored?.processingSteps,
+              currentStage: stored?.currentStage,
+              chunkCount: stored?.chunkCount,
+              processingTime: stored?.processingTime,
+              reductoJobId: stored?.reductoJobId,
+              metrics: stored?.metrics,
+              errors: stored?.errors,
+              stageDetails: stored?.stageDetails,
+            });
+          }, 0);
+        }
+        return next;
+      });
       
-      setUploadState(prev => prev ? {
-        ...prev,
-        progress: 100,
-        status: 'processing',
-        isUploading: false,
-        documentId: documentId,
-        propertyId: propertyId,
-        currentStep: 'Starting extraction pipeline...'
-      } : null);
-      
-      // Auto-expand to show processing details
       setIsExpanded(true);
       
-      // Start polling for processing status if we have a document ID
       if (documentId) {
         console.log(`🔄 [UploadProgressBar] Starting status polling for document: ${documentId}`);
         startPolling(documentId, fileName);
       } else {
-        // No document ID - just show complete after a delay
         setTimeout(() => {
           setUploadState(prev => prev ? { ...prev, status: 'complete' } : null);
           setTimeout(() => {
@@ -569,6 +629,9 @@ export const UploadProgressBar: React.FC = () => {
       clearInterval(pollingRef.current);
       pollingRef.current = null;
     }
+    pollingDocumentIdsRef.current.clear();
+    pollingDocNamesRef.current.clear();
+    documentStatesRef.current.clear();
     if (timerRef.current) {
       clearInterval(timerRef.current);
       timerRef.current = null;
@@ -746,7 +809,7 @@ export const UploadProgressBar: React.FC = () => {
           transition={{ type: 'spring', damping: 25, stiffness: 300 }}
           style={{
             position: 'fixed',
-            top: '20px',
+            top: '88px',
             left: '50%',
             right: 'auto',
             transform: 'translateX(-50%)',
@@ -862,9 +925,9 @@ export const UploadProgressBar: React.FC = () => {
               {/* Right side buttons */}
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
 
-              {/* Queue Dropdown Button */}
+              {/* Queue Dropdown Button - ref wraps trigger + dropdown so click-outside works */}
               {documentQueue.length > 1 && (
-                <div style={{ position: 'relative' }}>
+                <div ref={queueDropdownRef} style={{ position: 'relative' }}>
                   <button
                     onClick={() => setShowQueueDropdown(!showQueueDropdown)}
                     style={{
@@ -899,7 +962,6 @@ export const UploadProgressBar: React.FC = () => {
                   {/* Queue Dropdown - positioned at top of screen */}
                   {showQueueDropdown && (
                     <div
-                      ref={queueDropdownRef}
                       style={{
                         position: 'fixed',
                         top: '60px',

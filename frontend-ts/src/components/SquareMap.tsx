@@ -7,7 +7,6 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Moon, Layers, Loader2, ArrowLeft, Plus } from 'lucide-react';
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
-import { mockPropertyHubData, transformPropertyHubForFrontend } from '../data/mockPropertyHubData';
 import { useBackendApi } from './BackendApi';
 import { backendApi as backendApiService } from '../services/backendApi';
 import { PropertyDetailsPanel } from './PropertyDetailsPanel';

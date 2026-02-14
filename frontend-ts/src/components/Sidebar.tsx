@@ -331,9 +331,9 @@ export const Sidebar = ({
     removeChatFromHistory(chatId);
   };
 
-  // Filter chats based on archived status
-  const activeChats = chatHistory.filter(chat => !chat.archived);
-  const archivedChats = chatHistory.filter(chat => chat.archived);
+  // Filter chats based on archived status; hide property-scoped chats (they restore when re-opening the project)
+  const activeChats = chatHistory.filter(chat => !chat.archived && !chat.id.startsWith('property-'));
+  const archivedChats = chatHistory.filter(chat => chat.archived && !chat.id.startsWith('property-'));
   const displayedChats = showArchived ? archivedChats : activeChats;
 
   // Determine if chat history should be shown
@@ -433,8 +433,9 @@ export const Sidebar = ({
           // Ensure sidebar covers from top to bottom with no gaps
           top: '0',
           bottom: '0',
-          // Higher z-index to ensure it's above map
-          zIndex: className?.includes('z-[150]') ? 150 : 1000,
+          // When map is visible, MainContent uses z-index 10000 (so chat bar stays clickable).
+          // Sidebar must be above that so the map doesn't paint on top of the sidebar.
+          zIndex: className?.includes('z-[150]') ? 150 : (isMapVisible ? 10001 : 1000),
           // Extend slightly beyond to ensure full coverage
           minWidth: `${sidebarWidthValue}px`,
           right: 'auto',

@@ -1334,12 +1334,14 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
                 api_key=config.openai_api_key,
                 model=config.openai_model,
                 temperature=0,
+                max_tokens=4096,  # Avoid mid-sentence cutoff on long answers
             ).bind_tools(agent_tools, tool_choice="auto")
         else:
             answer_llm = ChatOpenAI(
                 api_key=config.openai_api_key,
                 model=config.openai_model,
                 temperature=0,
+                max_tokens=4096,  # Avoid mid-sentence cutoff on long answers
             )
         
         answer_prompt = get_final_answer_prompt(

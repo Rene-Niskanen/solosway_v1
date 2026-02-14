@@ -30,7 +30,7 @@ import { StandaloneExpandedCardView } from './StandaloneExpandedCardView';
 import { AgentTaskOverlay } from './AgentTaskOverlay';
 import { RecentProjectsSection } from './RecentProjectsSection';
 import { NewPropertyPinWorkflow } from './NewPropertyPinWorkflow';
-import { SideChatPanel, SideChatPanelRef } from './SideChatPanel';
+import { SideChatPanel, SideChatPanelRef, CHAT_PANEL_WIDTH } from './SideChatPanel';
 import { FloatingChatBubble } from './FloatingChatBubble';
 import { QuickStartBar } from './QuickStartBar';
 import { FilingSidebarProvider, useFilingSidebar } from '../contexts/FilingSidebarContext';
@@ -39,6 +39,7 @@ import { FilingSidebar } from './FilingSidebar';
 import { FileViewModal, type FileViewDocument } from './FileViewModal';
 import { ProjectsPage } from './ProjectsPage';
 import { PropertyDetailsPanel } from './PropertyDetailsPanel';
+import { preloadDocumentCovers } from '@/utils/preloadDocumentCovers';
 import { useChatHistory } from './ChatHistoryContext';
 import { useBrowserFullscreen } from '../contexts/BrowserFullscreenContext';
 import type { QueryContentSegment } from '@/types/segmentInput';
@@ -1890,6 +1891,7 @@ interface FullscreenPropertyViewProps {
   isSidebarCollapsed?: boolean;
   isSidebarExpanded?: boolean;
   onClose: () => void;
+  restoreChatId?: string | null;
   onMessagesUpdate?: (messages: any[]) => void;
   onNewChat?: () => void;
   onSidebarToggle?: () => void;
@@ -1903,6 +1905,7 @@ const FullscreenPropertyView: React.FC<FullscreenPropertyViewProps> = ({
   isSidebarCollapsed,
   isSidebarExpanded,
   onClose,
+  restoreChatId,
   onMessagesUpdate,
   onNewChat,
   onSidebarToggle,
@@ -1957,7 +1960,7 @@ const FullscreenPropertyView: React.FC<FullscreenPropertyViewProps> = ({
         sidebarWidth={fullscreenSidebarWidth}
         isFilingSidebarClosing={false}
         isSidebarCollapsing={false}
-        restoreChatId={null}
+        restoreChatId={restoreChatId ?? null}
         newAgentTrigger={0}
         isPropertyDetailsOpen={true}
         shouldExpand={true}
@@ -2024,6 +2027,8 @@ export interface MainContentProps {
   externalIsMapVisible?: boolean; // External control of map visibility (from parent)
   onNavigateToDashboard?: () => void; // Callback to navigate to dashboard (direct synchronous navigation)
   onNewChat?: (handler: () => void) => (() => void) | void; // Callback pattern: MainContent provides its handler, DashboardLayout returns its handler
+  onRegisterClearProjectSelection?: (clear: () => void) => void; // Register callback to clear project selection (show projects list when Projects nav is clicked)
+  onProjectDetailOpen?: (open: boolean) => void; // Notify when fullscreen project detail is open so sidebar can unselect Projects button
 }
 export const MainContent = ({
   className,
@@ -2051,12 +2056,14 @@ export const MainContent = ({
   onOpenChatHistory,
   externalIsMapVisible,
   onNavigateToDashboard,
-  onNewChat: onNewChatFromParent
+  onNewChat: onNewChatFromParent,
+  onRegisterClearProjectSelection,
+  onProjectDetailOpen
 }: MainContentProps) => {
   const { addActivity } = useSystem();
   const { isOpen: isFilingSidebarOpen, width: filingSidebarWidth, isResizing: isFilingSidebarResizing, closeSidebar } = useFilingSidebar();
   const { isOpen: isChatHistoryPanelOpen, width: chatHistoryPanelWidth, isResizing: isChatHistoryPanelResizing, closePanel: closeChatPanel } = useChatPanel();
-  const { getChatById } = useChatHistory();
+  const { getChatById, addChatToHistory, updateChatInHistory } = useChatHistory();
   // Track previous states to detect closing transitions for instant updates
   const prevFilingSidebarOpenRef = React.useRef(isFilingSidebarOpen);
   const prevSidebarCollapsedRef = React.useRef(isSidebarCollapsed);
@@ -2106,6 +2113,8 @@ export const MainContent = ({
   const [mapSearchQuery, setMapSearchQuery] = React.useState<string>("");
   const [mapSearchContentSegments, setMapSearchContentSegments] = React.useState<QueryContentSegment[]>([]);
   const [hasPerformedSearch, setHasPerformedSearch] = React.useState<boolean>(false);
+  // When opening chat from "Analyse with AI", prefill the chat bar with this document so the first query uses it
+  const [initialDocumentChipForChat, setInitialDocumentChipForChat] = React.useState<{ id: string; label: string } | null>(null);
   
   // Keep ref in sync with state
   React.useEffect(() => {
@@ -2200,6 +2209,8 @@ export const MainContent = ({
     isSidebarCollapsed: boolean;
     viewportSize: { width: number; height: number };
   } | null>(null);
+  // When true, we navigated to search from "Analyse with AI" - don't reset map/chat in the currentView effect
+  const openingFromAnalyseWithAIRef = React.useRef<boolean>(false);
   
   // Hide QuickStartBar when switching away from map view
   React.useEffect(() => {
@@ -2301,13 +2312,6 @@ export const MainContent = ({
     }
   }, [hasPerformedSearch]);
   
-  // Reset chat panel width when map view is closed or chat is hidden
-  React.useEffect(() => {
-    if (!isMapVisible || !hasPerformedSearch) {
-      // Reset chat panel width when map is hidden or chat is closed
-      setChatPanelWidth(0);
-    }
-  }, [isMapVisible, hasPerformedSearch]);
 
   // Hide bubble when chat panel is opened (hasPerformedSearch becomes true)
   React.useEffect(() => {
@@ -2497,17 +2501,22 @@ export const MainContent = ({
   // Use ChatStateStore document preview if available, fall back to legacy PreviewContext during migration
   // Priority: ChatStateStore > PreviewContext (legacy)
   const expandedCardViewDoc = chatStateDocumentPreview || legacyExpandedCardViewDoc;
+
+  // Reset chat panel width when panel is not visible (including when not on Projects with doc open)
+  const isChatPanelVisibleForAnyReason = (currentView === 'search' || currentView === 'home') && isMapVisible && hasPerformedSearch
+    || (currentView === 'projects' && !!expandedCardViewDoc);
+  React.useEffect(() => {
+    if (!isChatPanelVisibleForAnyReason) setChatPanelWidth(0);
+  }, [isChatPanelVisibleForAnyReason]);
   
   // Close document for the active chat AND legacy state (both must be cleared)
+  // Always close for active chat when user presses X (e.g. previous chat with restored preview)
   const closeExpandedCardView = React.useCallback(() => {
-    if (activeChatId && chatStateDocumentPreview) {
-      // Close in ChatStateStore (per-chat isolation)
+    if (activeChatId) {
       closeDocumentForChat(activeChatId);
     }
-    // ALWAYS clear legacy state to ensure complete cleanup
-    // (documents are opened in both states, so both must be cleared)
     legacyCloseExpandedCardView();
-  }, [activeChatId, chatStateDocumentPreview, closeDocumentForChat, legacyCloseExpandedCardView]);
+  }, [activeChatId, closeDocumentForChat, legacyCloseExpandedCardView]);
 
   // Message whose citations we use for the document preview (nav + highlight). When moving through
   // citations from a previous response, use that message so the selected citation stays highlighted there.
@@ -2533,6 +2542,42 @@ export const MainContent = ({
     });
     return forDoc.length > 0 ? forDoc : undefined;
   }, [expandedCardViewDoc?.docId, messageForDocPreview]);
+
+  // When on Projects with a doc open, use default chat width until panel reports (avoids doc preview jumping)
+  const effectiveChatWidthForDocPreview = React.useMemo(() => {
+    const base = chatPanelWidth || 0;
+    if (currentView === 'projects' && expandedCardViewDoc && base === 0) return CHAT_PANEL_WIDTH.COLLAPSED;
+    return base;
+  }, [currentView, expandedCardViewDoc, chatPanelWidth]);
+
+  // Document preview position/size (must match StandaloneExpandedCardView) for the chat-background layer
+  // so the area behind the document preview shows chat background instead of the map
+  const docPreviewBackdropLayout = React.useMemo(() => {
+    if (!expandedCardViewDoc) return null;
+    const DOC_PREVIEW_MIN = 380;
+    const DOC_PREVIEW_RIGHT_PADDING = 16;
+    const AGENT_RAIL = 12;
+    const SIDEBAR_NORMAL = 224;
+    const TOGGLE_RAIL = 12;
+    const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1920;
+    const sidebarWidth = isFilingSidebarOpen || isFilingSidebarClosing
+      ? (isSidebarCollapsed ? TOGGLE_RAIL : SIDEBAR_NORMAL) + filingSidebarWidth
+      : (isSidebarCollapsed ? 0 : SIDEBAR_NORMAL) + TOGGLE_RAIL;
+    const agentSidebarWidth = isChatHistoryPanelOpen ? (chatHistoryPanelWidth || 320) + AGENT_RAIL : 0;
+    const expected50 = Math.round((viewportWidth - sidebarWidth - agentSidebarWidth) / 2);
+    const roundedChat = Math.round(effectiveChatWidthForDocPreview || 0);
+    const isNear50 = Math.abs(roundedChat - expected50) <= 2;
+    const effectiveChatWidth = isNear50 ? expected50 : roundedChat;
+    const naturalDocLeft = sidebarWidth + effectiveChatWidth + 12;
+    const maxDocLeft = viewportWidth - agentSidebarWidth - DOC_PREVIEW_MIN - DOC_PREVIEW_RIGHT_PADDING;
+    const docLeft = Math.min(naturalDocLeft, maxDocLeft);
+    const availableDocWidth = viewportWidth - docLeft - agentSidebarWidth - DOC_PREVIEW_RIGHT_PADDING;
+    const panelWidth = Math.round(Math.max(availableDocWidth, DOC_PREVIEW_MIN));
+    // Backdrop extends 12px left of panel and all the way to the right edge (covers the 24px padding strip so map doesn't show)
+    const backdropLeft = docLeft - 12;
+    const backdropWidth = viewportWidth - agentSidebarWidth - backdropLeft;
+    return { left: docLeft, width: panelWidth, backdropLeft, backdropWidth };
+  }, [expandedCardViewDoc, effectiveChatWidthForDocPreview, isChatHistoryPanelOpen, chatHistoryPanelWidth, isFilingSidebarOpen, isFilingSidebarClosing, isSidebarCollapsed, filingSidebarWidth]);
   
   // Sync chat panel visibility to PreviewContext for document preview gating
   // Document preview will only open when chat panel is visible; otherwise it queues silently
@@ -2582,19 +2627,20 @@ export const MainContent = ({
 
   // File View modal: close sidebar + open fullscreen chat with document in preview
   const handleFileViewAnalyseWithAI = React.useCallback((docId: string, filename: string) => {
+    if (!docId?.trim()) return; // Some files may have no id – skip so we don't open with invalid state
+    const label = (filename && filename.trim()) ? filename : 'Document';
     setFileViewDocument(null); // Close file view modal
     closeSidebar(); // Close filing sidebar
+    openingFromAnalyseWithAIRef.current = true; // Prevent currentView effect from resetting map/chat
+    // Ensure we're on search view so the chat panel is visible (isVisible requires currentView === 'search' | 'home')
+    onNavigate?.('search');
     setShouldExpandChat(true); // Open chat in fullscreen mode
     setIsMapVisibleFromSearchBar(true);
     setHasPerformedSearch(true);
-    handleNewChatInternal(); // Triggers new chat; SideChatPanel's newAgentTrigger effect will run and call legacyCloseExpandedCardView()
-    // Re-open document after the new-agent effect runs so it stays visible for this new chat session
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        openExpandedCardView(docId, filename);
-      });
-    });
-  }, [openExpandedCardView, handleNewChatInternal, closeSidebar]);
+    // Prefill chat bar and document preview; SideChatPanel will apply chip and open doc after new-agent effect
+    setInitialDocumentChipForChat({ id: docId.trim(), label });
+    handleNewChatInternal(); // Triggers new chat; SideChatPanel applies initial chip and opens doc in its effect
+  }, [handleNewChatInternal, closeSidebar, onNavigate]);
   
   // Expose handler to parent via callback pattern
   // When MainContent mounts/updates, call onNewChatFromParent with our handler
@@ -2611,6 +2657,11 @@ export const MainContent = ({
   React.useEffect(() => {
     if (shouldRestoreActiveChat) {
       console.log('🔄 MainContent: Restoring active chat from sidebar signal - opening in fullscreen');
+      // When opening chat from sidebar while viewing a project (chat + property details), clear that view
+      // so we show the normal fullscreen chat instead of the project split view
+      setFullscreenPropertyView(false);
+      setSelectedPropertyFromProjects(null);
+      setIsPropertyDetailsOpen(false);
       // Mark that we're transitioning to chat (prevents dashboard flash and chat closing)
       // Set this IMMEDIATELY before any state updates to prevent render race conditions
       isTransitioningToChatRef.current = true;
@@ -3611,6 +3662,21 @@ export const MainContent = ({
     console.log('📋 Opening fullscreen property view for:', property.id, property.address);
     console.log('📋 HANDLER CALLED - setting fullscreenPropertyView to true');
     
+    // Start preloading document thumbnails immediately (same tick as click) so they load quicker
+    const docs = property?.propertyHub?.documents;
+    if (docs?.length) preloadDocumentCovers(docs);
+    
+    // Ensure chat history entry exists for this property so SideChatPanel can restore where we left off
+    const propChatId = `property-${property.id}`;
+    if (!getChatById(propChatId)) {
+      addChatToHistory({
+        title: '',
+        timestamp: new Date().toISOString(),
+        preview: '',
+        messages: []
+      }, propChatId);
+    }
+    
     // Set the selected property
     setSelectedPropertyFromProjects(property);
     
@@ -3621,7 +3687,7 @@ export const MainContent = ({
     setIsPropertyDetailsOpen(true);
     
     // DON'T set hasPerformedSearch - that's for the map chat panel, not fullscreen view
-  }, []);
+  }, [getChatById, addChatToHistory]);
 
   // Handler to close fullscreen property view and return to projects page
   const handleCloseFullscreenPropertyView = React.useCallback(() => {
@@ -3648,6 +3714,36 @@ export const MainContent = ({
       setIsPropertyDetailsOpen(false);
     }
   }, [currentView, selectedPropertyFromProjects]);
+
+  // Register clear-project callback so Projects nav button always shows the default projects list
+  React.useEffect(() => {
+    if (onRegisterClearProjectSelection) {
+      onRegisterClearProjectSelection(() => {
+        setFullscreenPropertyView(false);
+        setSelectedPropertyFromProjects(null);
+        setIsPropertyDetailsOpen(false);
+        closeExpandedCardView(); // Also close document preview (e.g. from "Analyse with AI") when showing projects list
+      });
+    }
+  }, [onRegisterClearProjectSelection, closeExpandedCardView]);
+
+  // Notify parent when project detail is open so Sidebar can unselect the Projects button
+  React.useEffect(() => {
+    onProjectDetailOpen?.(fullscreenPropertyView && !!selectedPropertyFromProjects);
+  }, [fullscreenPropertyView, selectedPropertyFromProjects, onProjectDetailOpen]);
+
+  // Ensure a chat history entry exists for the selected property so we can restore when re-opening
+  const propertyChatId = selectedPropertyFromProjects ? `property-${selectedPropertyFromProjects.id}` : null;
+  React.useEffect(() => {
+    if (propertyChatId && !getChatById(propertyChatId)) {
+      addChatToHistory({
+        title: '',
+        timestamp: new Date().toISOString(),
+        preview: '',
+        messages: []
+      }, propertyChatId);
+    }
+  }, [propertyChatId, getChatById, addChatToHistory]);
 
   // Reset chat mode and map visibility when currentView changes (sidebar navigation)
   // IMPORTANT: This should ONLY trigger on actual navigation, NOT on sidebar toggle
@@ -3720,7 +3816,10 @@ export const MainContent = ({
     // This prevents the map from being hidden when just toggling the sidebar
     // CRITICAL: NEVER reset map visibility when shouldRestoreActiveChat is true (chat button clicked)
     // CRITICAL: NEVER reset map visibility when externalIsMapVisible is true (map button clicked from sidebar)
-    if ((currentView === 'search' || currentView === 'home') && isActualNavigation && prevView !== 'search' && prevView !== 'home' && !shouldRestoreActiveChat && !externalIsMapVisible) {
+    // CRITICAL: Skip when opening from "Analyse with AI" (we want map + chat visible)
+    if (openingFromAnalyseWithAIRef.current) {
+      openingFromAnalyseWithAIRef.current = false;
+    } else if ((currentView === 'search' || currentView === 'home') && isActualNavigation && prevView !== 'search' && prevView !== 'home' && !shouldRestoreActiveChat && !externalIsMapVisible) {
       // Only hide map if we're actually navigating FROM a different view TO search/home
       // This prevents hiding the map when just toggling sidebar on map view
       // BUT: Skip this if we're restoring active chat (chat button was clicked)
@@ -5032,6 +5131,12 @@ export const MainContent = ({
   // Calculate left margin based on sidebar state
   // Sidebar is w-56 (224px) when normal, w-0 when collapsed
   const leftMargin = isSidebarCollapsed ? 'ml-0' : 'ml-56';
+
+  // Agent sidebar (right) has a 12px toggle rail on its left edge - reserve it so map/content don't extend under it
+  const AGENT_TOGGLE_RAIL_WIDTH = 12;
+  const effectiveAgentSidebarTotalWidth = isChatHistoryPanelOpen
+    ? (chatPanelWidth || chatHistoryPanelWidth || 320) + AGENT_TOGGLE_RAIL_WIDTH
+    : 0;
   
   return (
     <CitationExportProvider>
@@ -5040,8 +5145,9 @@ export const MainContent = ({
     style={{ 
       backgroundColor: (currentView === 'search' || currentView === 'home') ? 'transparent' : '#ffffff', 
       position: 'relative', 
-      zIndex: 1,
-      transition: 'none' // Instant transition to prevent gaps when sidebar opens/closes
+      zIndex: isChatHistoryPanelOpen ? 10000 : 1, // Above backdrop (9999) when agent sidebar open so clicking the new-chat bar doesn't close it
+      transition: 'none', // Instant transition to prevent gaps when sidebar opens/closes
+      marginRight: effectiveAgentSidebarTotalWidth > 0 ? effectiveAgentSidebarTotalWidth : undefined, // Reserve space for agent sidebar + toggle rail
     }}
     onDragEnter={handleDragEnter}
     onDragOver={handleDragOver}
@@ -5055,9 +5161,9 @@ export const MainContent = ({
           style={{ 
             top: 0,
             left: 0,
-            right: 0,
+            right: effectiveAgentSidebarTotalWidth > 0 ? effectiveAgentSidebarTotalWidth : 0, // Don't extend under agent sidebar + toggle rail
             bottom: 0,
-            width: '100vw',
+            width: effectiveAgentSidebarTotalWidth > 0 ? undefined : '100vw', // When agent sidebar open, width from left/right; else full viewport
             height: '100vh',
             zIndex: (isMapVisible || externalIsMapVisible) ? 2 : -1, // Above content container when visible, below when hidden
             opacity: (isMapVisible || externalIsMapVisible) ? 1 : 0, // Hide visually when not in map view
@@ -5106,6 +5212,24 @@ export const MainContent = ({
           />
         </div>
       )}
+
+      {/* Chat-background layer behind document preview so map doesn't show through (same stacking context as map) */}
+      {docPreviewBackdropLayout && (
+        <div
+          style={{
+            position: 'fixed',
+            // Extend 12px left of panel; extend to viewport right edge so the 24px padding strip shows chat bg, not map
+            left: docPreviewBackdropLayout.backdropLeft,
+            width: docPreviewBackdropLayout.backdropWidth,
+            top: 0,
+            bottom: 0,
+            backgroundColor: '#FCFCF9',
+            zIndex: 9998,
+            pointerEvents: 'none',
+          }}
+          aria-hidden
+        />
+      )}
       
       {/* Map navigation glow overlay - at root level for proper z-index stacking */}
       {isMapNavigating && (
@@ -5114,7 +5238,7 @@ export const MainContent = ({
             position: 'fixed',
             top: 0,
             left: chatPanelWidth + sidebarWidthValue, // Start after chat panel and sidebar
-            right: 0,
+            right: effectiveAgentSidebarTotalWidth > 0 ? effectiveAgentSidebarTotalWidth : 0, // Don't cover agent sidebar + toggle rail
             bottom: 0,
             pointerEvents: 'none',
             zIndex: 900, // Above map but below agent task overlay
@@ -5314,13 +5438,15 @@ export const MainContent = ({
         );
       })()}
 
-      {/* SideChatPanel - Always rendered to allow background processing */}
+      {/* SideChatPanel - Always rendered to allow background processing. Also visible on Projects when a document is open (chat alongside doc preview). */}
       <SideChatPanel
         ref={sideChatPanelRef}
-        isVisible={(currentView === 'search' || currentView === 'home') && isMapVisible && hasPerformedSearch && !showNewPropertyWorkflow}
+        isVisible={((currentView === 'search' || currentView === 'home') && isMapVisible && hasPerformedSearch && !showNewPropertyWorkflow) || (currentView === 'projects' && !!expandedCardViewDoc)}
         query={mapSearchQuery}
         initialContentSegments={mapSearchContentSegments.length > 0 ? mapSearchContentSegments : undefined}
         pendingSearchContentSegmentsRef={pendingSearchContentSegmentsRef}
+        initialDocumentChip={initialDocumentChipForChat}
+        onConsumedInitialDocumentChip={() => setInitialDocumentChipForChat(null)}
         citationContext={citationContext}
         isSidebarCollapsed={isSidebarCollapsed}
         sidebarWidth={(() => {
@@ -5634,7 +5760,7 @@ export const MainContent = ({
               lastResponseMessageId={messageForDocPreview?.id}
               lastResponseCitations={messageForDocPreview?.citations}
               onClose={closeExpandedCardView}
-              chatPanelWidth={chatPanelWidth}
+              chatPanelWidth={effectiveChatWidthForDocPreview}
               sidebarWidth={(() => {
                 // Use EXACT same calculation as SideChatPanel's sidebarWidth prop
                 const SIDEBAR_NORMAL_WIDTH = 224;
@@ -5646,7 +5772,7 @@ export const MainContent = ({
                 const baseSidebarWidth = isSidebarCollapsed ? 0 : SIDEBAR_NORMAL_WIDTH;
                 return baseSidebarWidth + TOGGLE_RAIL_WIDTH;
               })()}
-              onResizeStart={chatPanelWidth > 0 ? (e: React.MouseEvent) => {
+              onResizeStart={effectiveChatWidthForDocPreview > 0 ? (e: React.MouseEvent) => {
                 sideChatPanelRef.current?.handleResizeStart(e);
               } : undefined}
               isResizing={sideChatPanelRef.current?.isResizing ?? false}
@@ -5891,14 +6017,15 @@ export const MainContent = ({
       />
       </div>
 
-      {/* Fullscreen Property View - Chat + Property Details split */}
+      {/* Fullscreen Property View - Chat + Property Details split; restoreChatId restores conversation when re-opening same project */}
       <FullscreenPropertyView
         isVisible={fullscreenPropertyView && !!selectedPropertyFromProjects}
         property={selectedPropertyFromProjects}
         isSidebarCollapsed={isSidebarCollapsed}
         isSidebarExpanded={isSidebarExpanded}
         onClose={handleCloseFullscreenPropertyView}
-        onMessagesUpdate={setChatMessages}
+        restoreChatId={propertyChatId}
+        onMessagesUpdate={propertyChatId ? (messages) => updateChatInHistory(propertyChatId, messages) : undefined}
         onNewChat={handleNewChatInternal}
         onSidebarToggle={onSidebarToggle}
         onActiveChatChange={handleActiveChatChange}

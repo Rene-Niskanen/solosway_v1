@@ -145,6 +145,11 @@ const renderAndCacheThumbnail = async (docId: string, url: string, isPdf: boolea
     
     thumbnailDataUrlCache.set(docId, dataUrl);
     renderingInProgress.delete(docId);
+    if (typeof window !== 'undefined') {
+      if (!(window as any).__preloadedDocumentCovers) (window as any).__preloadedDocumentCovers = {};
+      const c = (window as any).__preloadedDocumentCovers;
+      c[docId] = { ...c[docId], thumbnailUrl: dataUrl, timestamp: Date.now() };
+    }
     console.log('[ThumbnailCache] CACHED:', docId.substring(0, 8), '- total:', thumbnailDataUrlCache.size);
     return dataUrl;
   } catch (error) {
@@ -184,14 +189,16 @@ export const preloadDocumentThumbnails = (documents: DocumentData[]): void => {
 // ==================== COMPONENT ====================
 const CARD_WIDTH = 180;
 const CARD_HEIGHT = 240;
-const COMPACT_WIDTH = 152;
-const COMPACT_HEIGHT = 200;
+const COMPACT_WIDTH = 140;
+const COMPACT_HEIGHT = 184;
 
 export const RecentDocumentCard: React.FC<RecentDocumentCardProps> = React.memo(({ document, onClick, compact = false }) => {
   const width = compact ? COMPACT_WIDTH : CARD_WIDTH;
   const height = compact ? COMPACT_HEIGHT : CARD_HEIGHT;
-  // Check if already cached (instant display)
-  const cachedThumbnail = getCachedThumbnail(document.id);
+  // Check both caches for instant display (local thumbnailDataUrlCache + shared __preloadedDocumentCovers)
+  const localCached = getCachedThumbnail(document.id);
+  const sharedCached = typeof window !== 'undefined' ? (window as any).__preloadedDocumentCovers?.[document.id]?.thumbnailUrl : null;
+  const cachedThumbnail = localCached || sharedCached || null;
   
   const [thumbnailUrl, setThumbnailUrl] = React.useState<string | null>(cachedThumbnail);
   const [isLoading, setIsLoading] = React.useState(!cachedThumbnail);
@@ -223,13 +230,17 @@ export const RecentDocumentCard: React.FC<RecentDocumentCardProps> = React.memo(
     }
   }, [isDragging, onClick]);
   
-  // Log mount status
+  // When shared preload finishes (e.g. from util), show thumbnail immediately
   React.useEffect(() => {
-    console.log('[RecentDocumentCard] Mount:', document.original_filename.substring(0, 20), {
-      cached: !!cachedThumbnail,
-      cacheSize: thumbnailDataUrlCache.size
-    });
-  }, []);
+    const handler = (e: CustomEvent<{ doc_id: string; thumbnailUrl?: string }>) => {
+      if (e.detail?.doc_id === document.id && e.detail?.thumbnailUrl && isLoading) {
+        setThumbnailUrl(e.detail.thumbnailUrl);
+        setIsLoading(false);
+      }
+    };
+    window.addEventListener('documentCoverReady', handler as EventListener);
+    return () => window.removeEventListener('documentCoverReady', handler as EventListener);
+  }, [document.id, isLoading]);
 
   // Render thumbnail if not cached
   React.useEffect(() => {
@@ -285,13 +296,17 @@ export const RecentDocumentCard: React.FC<RecentDocumentCardProps> = React.memo(
           width: `${width}px`,
           height: `${height}px`,
           borderRadius: compact ? '4px' : '6px',
+          border: '1px solid rgba(0, 0, 0, 0.18)',
           boxShadow: '0 1px 3px rgba(0, 0, 0, 0.05), 0 1px 2px rgba(0, 0, 0, 0.1)',
+          pointerEvents: 'auto',
+          zIndex: 0,
         }}
         whileHover={!isDragging ? { 
-          y: -4,
+          scale: 1.02,
+          zIndex: 1,
           boxShadow: '0 12px 24px -8px rgba(0, 0, 0, 0.15), 0 4px 8px -4px rgba(0, 0, 0, 0.1)'
         } : {}}
-        whileTap={{ scale: 0.98, y: -2 }}
+        whileTap={{ scale: 0.98 }}
         transition={{ type: 'spring', stiffness: 400, damping: 25 }}
       >
         <div className="w-full h-full bg-white flex flex-col" style={{ borderRadius: compact ? '4px' : '6px', overflow: 'hidden' }}>
@@ -352,13 +367,13 @@ export const RecentDocumentCard: React.FC<RecentDocumentCardProps> = React.memo(
         </div>
       </motion.div>
       
-      {/* Name and date below card - light text for dark projects section background */}
+      {/* Name and date below card - visible on light (Projects) and dark backgrounds */}
       <p 
         className="truncate"
         style={{
           fontSize: compact ? '12px' : '13px',
           fontWeight: 500,
-          color: '#FFFFFF',
+          color: '#374151',
           marginTop: compact ? '8px' : '10px',
           width: `${width}px`,
         }}
@@ -369,7 +384,7 @@ export const RecentDocumentCard: React.FC<RecentDocumentCardProps> = React.memo(
       <p 
         style={{
           fontSize: compact ? '11px' : '12px',
-          color: 'rgba(255, 255, 255, 0.75)',
+          color: '#6B7280',
           marginTop: '2px',
           fontWeight: 400,
           width: `${width}px`,

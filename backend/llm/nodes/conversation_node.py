@@ -77,7 +77,7 @@ async def conversation_node(state: MainWorkflowState) -> MainWorkflowState:
     llm = ChatOpenAI(
         model=config.openai_model,
         temperature=0.38,
-        max_tokens=1500,
+        max_tokens=4096,  # Avoid mid-sentence cutoff; 1500 was too low for full replies
     )
     structured_llm = llm.with_structured_output(PersonalityResponse)
 
@@ -94,7 +94,7 @@ async def conversation_node(state: MainWorkflowState) -> MainWorkflowState:
     except Exception as e:
         logger.warning(f"[CONVERSATION] Structured output failed: {e}")
         fallback_llm = ChatOpenAI(
-            model=config.openai_model, temperature=0.38, max_tokens=1500
+            model=config.openai_model, temperature=0.38, max_tokens=4096
         )
         response = await fallback_llm.ainvoke(
             [system_msg] + messages[-10:] + [human_msg]

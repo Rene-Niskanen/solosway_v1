@@ -85,6 +85,37 @@ def _plan_dict_to_execution_plan(plan_dict: Any) -> dict:
     }
 
 
+def _normalize_two_step_plan(execution_plan: dict) -> dict:
+    """
+    Ensure a 2-step plan is exactly: (1) retrieve_docs, (2) retrieve_chunks.
+    If the LLM returns two retrieve_docs steps (causing two "Searching for" in the UI),
+    convert the second to retrieve_chunks so we show one search then "Found N docs" / "Reading".
+    """
+    steps = execution_plan.get("steps") or []
+    if len(steps) != 2:
+        return execution_plan
+    first, second = steps[0], steps[1]
+    if (first.get("action") == "retrieve_docs" and second.get("action") == "retrieve_docs"):
+        logger.info(
+            "[PLANNER] Normalizing plan: second step was retrieve_docs (would show two 'Searching for'); converting to retrieve_chunks"
+        )
+        # Use first step's query for chunk retrieval so we have one search intent
+        query = (first.get("query") or second.get("query") or "").strip()
+        first_id = first.get("id") or "search_docs"
+        execution_plan["steps"] = [
+            first,
+            {
+                "id": second.get("id") or "search_chunks",
+                "action": "retrieve_chunks",
+                "query": query,
+                "document_ids": [f"<from_step_{first_id}>"],
+                "reasoning_label": second.get("reasoning_label") or "Reviewed relevant sections",
+                "reasoning_detail": second.get("reasoning_detail"),
+            },
+        ]
+    return execution_plan
+
+
 def _make_fallback_plan(user_query: str) -> dict:
     """Build a minimal 2-step fallback plan when LLM/parsing fails."""
     q = user_query or ""
@@ -262,6 +293,7 @@ async def planner_node(state: MainWorkflowState, runnable_config=None) -> MainWo
         response = await llm.ainvoke(messages_to_use)
         plan_dict = parser.parse(response.content)
         execution_plan = _plan_dict_to_execution_plan(plan_dict)
+        execution_plan = _normalize_two_step_plan(execution_plan)
 
         logger.info("[PLANNER] ✅ Generated plan with %s steps", len(execution_plan["steps"]))
         logger.info("[PLANNER] Objective: %s", execution_plan["objective"])

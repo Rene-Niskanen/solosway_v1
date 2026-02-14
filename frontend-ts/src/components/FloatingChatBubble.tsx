@@ -291,6 +291,7 @@ export const FloatingChatBubble: React.FC<FloatingChatBubbleProps> = ({
 }) => {
   // Ref for messages container to enable auto-scroll
   const messagesContainerRef = React.useRef<HTMLDivElement>(null);
+  const messagesEndRef = React.useRef<HTMLDivElement>(null);
   const { openExpandedCardView } = usePreview();
   
   // Per-message expanded state for "Thought" dropdown (collapsed by default when response is finished)
@@ -362,8 +363,8 @@ export const FloatingChatBubble: React.FC<FloatingChatBubbleProps> = ({
       return match;
     });
     
-    processedText = processedText.replace(/\[(\d+)\]\.\s*(?=\n|$)/g, '[$1]\n');
-    processedText = processedText.replace(/\[(\d+)\]\.\s*$/gm, '[$1]');
+    // Never show "." after citations: remove period (and optional space) after bracket citations
+    processedText = processedText.replace(/\[(\d+)\]\s*\./g, '[$1]');
     
     processedText = processedText.replace(bracketPattern, (match, num) => {
       const citData = citations[num];
@@ -379,6 +380,9 @@ export const FloatingChatBubble: React.FC<FloatingChatBubbleProps> = ({
       }
       return match;
     });
+    
+    // Never show "." after citations: remove period after any run of citation placeholders
+    processedText = processedText.replace(/((?:__CITATION_(?:SUPERSCRIPT|BRACKET)_\d+__\s*)+)\.(?=\s|$)/g, '$1');
     
     const parts = processedText.split(/(__CITATION_(?:SUPERSCRIPT|BRACKET)_\d+__)/g);
     
@@ -449,11 +453,17 @@ export const FloatingChatBubble: React.FC<FloatingChatBubbleProps> = ({
 
   const latestMessages = getLatestMessages();
   
-  // Auto-scroll to bottom when messages change
+  // Auto-scroll so the latest streamed line is always in view (scroll previous content up)
   React.useEffect(() => {
-    if (messagesContainerRef.current) {
-      messagesContainerRef.current.scrollTop = messagesContainerRef.current.scrollHeight;
-    }
+    const run = () => {
+      if (messagesEndRef.current) {
+        messagesEndRef.current.scrollIntoView({ block: 'end', behavior: 'auto' });
+      } else if (messagesContainerRef.current) {
+        messagesContainerRef.current.scrollTop = messagesContainerRef.current.scrollHeight;
+      }
+    };
+    const raf = requestAnimationFrame(() => requestAnimationFrame(run));
+    return () => cancelAnimationFrame(raf);
   }, [latestMessages, chatMessages]);
 
   // Don't render if bubble shouldn't be visible
@@ -940,6 +950,10 @@ export const FloatingChatBubble: React.FC<FloatingChatBubbleProps> = ({
                 </div>
               );
             })
+          )}
+          {/* Scroll anchor so we can keep the latest line in view during streaming */}
+          {latestMessages.length > 0 && (
+            <div ref={messagesEndRef} style={{ height: 1, minHeight: 1, flexShrink: 0 }} aria-hidden />
           )}
         </div>
 

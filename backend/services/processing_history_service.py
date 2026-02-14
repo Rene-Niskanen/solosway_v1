@@ -470,12 +470,29 @@ class ProcessingHistoryService:
             elif hasattr(current_status, 'value'):
                 current_status = current_status.value
             
+            # For real-time UI: current step name (e.g. "classification", "extraction") when processing
+            current_step_name = None
+            if current_status == 'processing' and history:
+                # Prefer the step that is currently 'started'
+                for h in reversed(history):
+                    if h.get('step_status', '').lower() == 'started':
+                        current_step_name = h.get('step_name')
+                        break
+                if not current_step_name and completed_steps:
+                    # No started entry: next step after last completed
+                    last_done = completed_steps[-1].get('step_name', '').lower()
+                    for i, s in enumerate(steps):
+                        if s.lower() in last_done or last_done in s.lower():
+                            if i + 1 < len(steps):
+                                current_step_name = steps[i + 1]
+                            break
+            
             return {
                 'pipeline_type': pipeline_type,
                 'total_steps': len(steps),
                 'completed_steps': len(completed_steps),
                 'failed_steps': len(failed_steps),
-                'current_step': current_status,
+                'current_step': current_step_name or current_status,
                 'steps': steps,
                 'history': history
             }

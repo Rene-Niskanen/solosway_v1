@@ -20,7 +20,76 @@ pdfjs.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
 const POPUP_BG = '#F2F2EF';
 
-const KEY_FACT_VALUE_MAX_LENGTH = 60;
+const KEY_FACT_VALUE_MAX_LENGTH = 80;
+
+/** Match date in text like "REEMENT is made the 28th February 2023 between..." or "28 February 2023" */
+const DATE_IN_VALUE_REGEX =
+  /\d{1,2}(?:st|nd|rd|th)?\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4}|(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s+\d{4}|\d{1,2}\/\d{1,2}\/\d{2,4}/gi;
+
+/** Clean key fact label: strip backend prefixes (e.g. "tenancy_agreement. ") and normalise to title case */
+function formatKeyFactLabel(label: string): string {
+  if (!label || !label.trim()) return '';
+  let s = label.trim();
+  // Strip schema-style prefix: "word_with_underscores. " or "Word. "
+  s = s.replace(/^[a-z][a-z0-9_]*\.\s*/i, '');
+  s = s.replace(/^\s*\.\s*/, '');
+  s = s.trim();
+  if (!s) return '';
+  // Title case for display (e.g. "DOCUMENT TYPE" -> "Document type", "date" -> "Date")
+  return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+/** Extract a clean date from value if it looks like contract boilerplate; otherwise return trimmed value */
+function formatKeyFactValue(value: string): string {
+  if (!value || typeof value !== 'string') return '';
+  let s = value.replace(/\s+/g, ' ').trim();
+  if (!s) return '';
+  // If value looks like a sentence fragment containing a date, show only the date
+  if (/\b(?:is\s+made\s+the|between|dated?|agreement\s+is)\b/i.test(s)) {
+    const dateMatch = s.match(DATE_IN_VALUE_REGEX);
+    if (dateMatch && dateMatch[0]) {
+      return dateMatch[0].trim();
+    }
+  }
+  if (s.length > KEY_FACT_VALUE_MAX_LENGTH) {
+    s = s.slice(0, KEY_FACT_VALUE_MAX_LENGTH).trim();
+    if (!/[\s.,;:)]$/.test(s)) s += '…';
+  }
+  return s;
+}
+
+/** True if summary is a backend placeholder like "tenancy_agreement. Document summary." */
+function isSummaryPlaceholder(summary: string | null | undefined): boolean {
+  if (!summary || !summary.trim()) return true;
+  const t = summary.trim();
+  return /^[a-z][a-z0-9_]*\.\s*Document\s+summary\.?\s*$/i.test(t) || /^Document\s+summary\.?\s*$/i.test(t);
+}
+
+function formatSummaryForDisplay(summary: string | null | undefined): string | null {
+  if (!summary || !summary.trim()) return null;
+  if (isSummaryPlaceholder(summary)) return null;
+  return summary.trim();
+}
+
+/** Filter and format key facts for display: clean labels/values, skip redundant or empty entries */
+function formatKeyFactsForDisplay(facts: KeyFact[] | null): KeyFact[] {
+  if (!Array.isArray(facts) || facts.length === 0) return [];
+  const out: KeyFact[] = [];
+  const seenLabels = new Set<string>();
+  for (const fact of facts) {
+    const value = formatKeyFactValue(fact.value);
+    if (!value) continue;
+    let label = formatKeyFactLabel(fact.label);
+    // Skip entries that are clearly "Document summary" as a fact (redundant with summary block)
+    if (!label || /^Document\s+summary\.?$/i.test(label)) continue;
+    // Dedupe by normalised label
+    const key = label.toLowerCase();
+    if (seenLabels.has(key)) continue;
+    seenLabels.add(key);
+    out.push({ label, value });
+  }
+  return out;
+}
 
 export interface FileViewDocument {
   id: string;
@@ -92,6 +161,9 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
 
   // File size resolved from blob when doc.file_size is missing (e.g. older records)
   const [resolvedFileSize, setResolvedFileSize] = useState<number | null>(null);
+  /** DOCX: Office Online viewer URL (from docx-preview-url or temp-preview) */
+  const [docxViewerUrl, setDocxViewerUrl] = useState<string | null>(null);
+  const [docxLoading, setDocxLoading] = useState(false);
 
   const lastDocIdRef = useRef<string | null>(null);
   const [isExiting, setIsExiting] = useState(false);
@@ -128,7 +200,10 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
   const displayFileSize = formatFileSize(doc?.file_size ?? resolvedFileSize ?? undefined);
   const lastUpdated = doc?.updated_at || doc?.created_at;
 
-  // Fetch file blob (use cache if preloaded) and create object URL
+  // Load document as soon as this screen (modal) is open. We fetch or use cache, then populate
+  // __preloadedDocumentBlobs so "Analyse with AI" opens the preview instantly. If the user closes
+  // the modal without clicking "Analyse with AI", we do not clear the cache – the document stays
+  // cached for the next time they open it or use Analyse with AI.
   useEffect(() => {
     if (!isOpen || !doc) {
       setPreviewUrl(null);
@@ -140,6 +215,8 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
       setKeyFactsLoading(false);
       setError(null);
       setResolvedFileSize(null);
+      setDocxViewerUrl(null);
+      setDocxLoading(false);
       setContainerSize(null);
       lastContainerSizeRef.current = null;
       lastDocIdRef.current = null;
@@ -154,6 +231,16 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
       setPreviewUrl(cachedUrl);
       setLoading(false);
       setError(null);
+      // Populate preview cache so "Analyse with AI" opens document instantly
+      if (!(window as any).__preloadedDocumentBlobs) (window as any).__preloadedDocumentBlobs = {};
+      const filename = doc.original_filename || (doc as { filename?: string }).filename || 'Document';
+      const mimeType = (doc.file_type || '').startsWith('application/') ? doc.file_type : 'application/pdf';
+      (window as any).__preloadedDocumentBlobs[doc.id] = {
+        url: cachedUrl,
+        type: mimeType || 'application/pdf',
+        filename,
+        timestamp: Date.now(),
+      };
       if (doc.file_size == null || doc.file_size === 0) {
         const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
         const headUrl = doc.s3_path
@@ -189,6 +276,15 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
         setPreviewUrl(objectUrl);
         if (doc.file_size == null || doc.file_size === 0) setResolvedFileSize(blob.size);
         setLoading(false);
+        // Populate preview cache so "Analyse with AI" opens document instantly
+        if (!(window as any).__preloadedDocumentBlobs) (window as any).__preloadedDocumentBlobs = {};
+        const filename = doc.original_filename || (doc as { filename?: string }).filename || 'Document';
+        (window as any).__preloadedDocumentBlobs[doc.id] = {
+          url: objectUrl,
+          type: blob.type || 'application/pdf',
+          filename,
+          timestamp: Date.now(),
+        };
       })
       .catch((err) => {
         setError(err.message || 'Failed to load document');
@@ -196,6 +292,8 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
       });
 
     return () => {
+      // Only revoke if we never stored this URL in documentBlobCache (e.g. fetch failed).
+      // We never clear __preloadedDocumentBlobs on close – document stays cached if user exits without "Analyse with AI".
       if (objectUrl && !getDocumentBlobUrl(doc.id)) URL.revokeObjectURL(objectUrl);
     };
   }, [isOpen, doc?.id, doc?.s3_path]);
@@ -237,6 +335,43 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
       cancelAnimationFrame(frameId);
     };
   }, [previewUrl, doc?.id, doc?.file_type, loading]);
+
+  // DOCX: get Office Online viewer URL (no download/re-upload when using docx-preview-url)
+  useEffect(() => {
+    if (!isOpen || !doc?.id) {
+      setDocxViewerUrl(null);
+      setDocxLoading(false);
+      return;
+    }
+    const ft = (doc.file_type || '').toLowerCase();
+    const fn = (doc.original_filename || '').toLowerCase();
+    const isDocx =
+      ft.includes('word') ||
+      ft.includes('document') ||
+      fn.endsWith('.docx') ||
+      fn.endsWith('.doc');
+    if (!isDocx) {
+      setDocxViewerUrl(null);
+      setDocxLoading(false);
+      return;
+    }
+    setDocxLoading(true);
+    const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
+    fetch(`${backendUrl}/api/documents/docx-preview-url`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ document_id: doc.id }),
+    })
+      .then((r) => r.json())
+      .then((data) => {
+        const url = data.open_in_word_url || data.presigned_url;
+        if (url) setDocxViewerUrl(url);
+        else setError('Could not load Word preview');
+      })
+      .catch(() => setError('Could not load Word preview'))
+      .finally(() => setDocxLoading(false));
+  }, [isOpen, doc?.id, doc?.file_type, doc?.original_filename]);
 
   // Fetch key facts from API (used when list didn't provide them or when user clicks Refresh).
   const fetchKeyFacts = useCallback((cancelledRef?: React.MutableRefObject<boolean | null>) => {
@@ -383,13 +518,16 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
 
   const handleViewDocument = () => {
     if (!doc) return;
-    onViewDocument(doc.id, doc.original_filename);
+    const filename = doc.original_filename || (doc as { filename?: string }).filename || 'Document';
+    onViewDocument(doc.id, filename);
     onClose();
   };
 
   const handleAnalyseWithAI = () => {
-    if (!doc) return;
-    onAnalyseWithAI(doc.id, doc.original_filename);
+    if (!doc?.id) return;
+    // Some list APIs return "filename" instead of "original_filename" – support both
+    const filename = doc.original_filename || (doc as { filename?: string }).filename || 'Document';
+    onAnalyseWithAI(doc.id, filename);
     onClose();
   };
 
@@ -533,21 +671,23 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
               </div>
             </div>
           </div>
-          <div className="flex items-end flex-col flex-shrink-0 min-w-0 max-w-[60%] overflow-visible">
-            <div className="text-gray-700 text-xs truncate text-right" style={{ fontFamily: 'system-ui, sans-serif' }}>
+          <div className="flex flex-col items-end gap-1.5 flex-shrink-0 min-w-0 max-w-[60%] overflow-visible">
+            <div className="text-gray-700 text-xs font-medium truncate text-right" style={{ fontFamily: 'system-ui, sans-serif' }}>
               {displayFileType}{displayFileSize !== '—' ? ` · ${displayFileSize}` : ''}
             </div>
-            <div className="text-gray-600 text-[11px] text-right flex items-center justify-end gap-1.5 pl-2.5 overflow-visible" style={{ fontFamily: 'system-ui, sans-serif' }}>
+            <div
+              className="flex items-center justify-end gap-2 rounded-md px-2 py-1 overflow-visible"
+              style={{ fontFamily: 'system-ui, sans-serif', backgroundColor: 'rgba(52, 199, 89, 0.12)' }}
+            >
               <span
-                className="w-2 h-2 rounded-full flex-shrink-0"
+                className="w-1.5 h-1.5 rounded-full flex-shrink-0"
                 style={{
-                  backgroundColor: '#34C759',
-                  boxShadow: '0 0 4px #34C759, 0 0 8px rgba(52, 199, 89, 0.4)',
+                  backgroundColor: '#22c55e',
+                  boxShadow: '0 0 0 1px rgba(34, 197, 94, 0.3)',
                 }}
                 aria-hidden
               />
-              {displayFileSize !== '—' && <span>{displayFileSize} · </span>}
-              <span className="truncate min-w-0">Full Extraction</span>
+              <span className="text-gray-700 text-[11px] font-medium truncate">Full Extraction</span>
             </div>
           </div>
           <button
@@ -569,12 +709,12 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
               className="w-full bg-black/5 rounded-lg flex items-center justify-center overflow-hidden relative flex-1 min-h-0"
               style={{ aspectRatio: '210/297' }}
             >
-              {loading && (
+              {loading && !docxViewerUrl && (
                 <div className="absolute inset-0 flex items-center justify-center">
                   <Loader2 className="w-8 h-8 text-gray-600 animate-spin" />
                 </div>
               )}
-              {error && (
+              {error && !docxViewerUrl && (
                 <div className="text-gray-700 text-xs p-2 text-center">{error}</div>
               )}
               {!loading && !error && pdfDocument && (
@@ -585,7 +725,26 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
                   <Loader2 className="w-8 h-8 text-gray-600 animate-spin" />
                 </div>
               )}
-              {!loading && !error && !pdfDocument && previewUrl && !(doc?.file_type || '').toLowerCase().includes('pdf') && (
+              {docxViewerUrl && (
+                <>
+                  <iframe
+                    src={`https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(docxViewerUrl)}&action=embedview&wdEmbedCode=0&ui=2`}
+                    className="w-full h-full border-0"
+                    title={doc?.original_filename || 'Word document'}
+                  />
+                  {(docxViewerUrl.startsWith('http://localhost') || docxViewerUrl.startsWith('http://127.0.0.1')) && (
+                    <div className="absolute bottom-0 left-0 right-0 py-1.5 px-2 bg-amber-50 border-t border-amber-200 text-amber-800 text-xs text-center">
+                      Word preview may not load when the backend is on localhost (Office must reach your server). Use &quot;View Document&quot; below to open the file.
+                    </div>
+                  )}
+                </>
+              )}
+              {docxLoading && !docxViewerUrl && (
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <Loader2 className="w-8 h-8 text-gray-600 animate-spin" />
+                </div>
+              )}
+              {!loading && !error && !pdfDocument && !docxViewerUrl && !docxLoading && previewUrl && !(doc?.file_type || '').toLowerCase().includes('pdf') && (
                 <div className="text-gray-600 text-xs">Preview not available for this file type.</div>
               )}
             </div>
@@ -637,15 +796,15 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
             style={{ backgroundColor: POPUP_BG }}
           >
             <div className="flex-1 min-h-0 overflow-y-auto py-2 pl-2 pr-2">
-              <div className="flex items-center justify-between gap-1 px-1 pb-2">
-                <span className="text-gray-900 text-xs font-medium" style={{ fontFamily: 'system-ui, sans-serif' }}>
+              <div className="flex items-center justify-between gap-2 px-1 pb-2 border-b border-gray-200/80">
+                <span className="text-gray-900 text-xs font-semibold tracking-tight" style={{ fontFamily: 'system-ui, sans-serif' }}>
                   Key facts
                 </span>
                 <button
                   type="button"
                   onClick={() => fetchKeyFacts()}
                   disabled={keyFactsLoading || !doc}
-                  className="text-xs text-gray-500 hover:text-gray-700 disabled:opacity-50 disabled:cursor-not-allowed underline focus:outline-none"
+                  className="text-[11px] text-gray-500 hover:text-gray-800 hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed rounded px-2 py-1 -mr-1 transition-colors focus:outline-none focus:ring-1 focus:ring-gray-300"
                   style={{ fontFamily: 'system-ui, sans-serif' }}
                   title="Regenerate summary and key facts"
                 >
@@ -657,41 +816,50 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
                   Loading…
                 </div>
               )}
-              {!keyFactsLoading && keyFacts !== null && !keyFactsSummary && keyFacts.length === 0 && (
-                <div className="text-gray-600 text-xs px-2 py-1" style={{ fontFamily: 'system-ui, sans-serif' }}>
-                  No key facts extracted for this document.
-                </div>
-              )}
-              {!keyFactsLoading && keyFactsSummary && (
-                <p
-                  className="text-gray-700 text-xs leading-relaxed px-1 pb-2 break-words"
-                  style={{ fontFamily: 'system-ui, sans-serif' }}
-                >
-                  {keyFactsSummary}
-                </p>
-              )}
-              {!keyFactsLoading && keyFacts && keyFacts.length > 0 && (
-                <ul className="list-none space-y-2 px-1 pb-2 m-0" style={{ fontFamily: 'system-ui, sans-serif' }}>
-                  {keyFacts
-                    .filter((fact) => fact.value && fact.value.trim())
-                    .map((fact, idx) => {
-                    const value =
-                      fact.value.length > KEY_FACT_VALUE_MAX_LENGTH
-                        ? `${fact.value.slice(0, KEY_FACT_VALUE_MAX_LENGTH)}…`
-                        : fact.value;
-                    return (
-                      <li key={idx} className="flex flex-col gap-0.5">
-                        <span className="text-gray-500 text-xs font-medium uppercase tracking-wide">
-                          {fact.label}
-                        </span>
-                        <span className="text-gray-700 text-xs leading-relaxed break-words">
-                          {value}
-                        </span>
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
+              {!keyFactsLoading && keyFacts !== null && (() => {
+                const displaySummary = formatSummaryForDisplay(keyFactsSummary);
+                const displayFacts = formatKeyFactsForDisplay(keyFacts);
+                const hasSummary = !!displaySummary;
+                const hasFacts = displayFacts.length > 0;
+                if (!hasSummary && !hasFacts) {
+                  return (
+                    <div className="text-gray-500 text-xs px-2 py-1" style={{ fontFamily: 'system-ui, sans-serif' }}>
+                      No key facts or summary for this document.
+                    </div>
+                  );
+                }
+                return (
+                  <div className="space-y-3">
+                    {hasSummary && (
+                      <div className="rounded-md border border-gray-200/80 bg-white/60 px-2.5 py-2">
+                        <p
+                          className="text-gray-700 text-xs leading-relaxed break-words m-0"
+                          style={{ fontFamily: 'system-ui, sans-serif' }}
+                        >
+                          {displaySummary}
+                        </p>
+                      </div>
+                    )}
+                    {hasFacts && (
+                      <ul className="list-none space-y-2.5 px-0 pb-1 m-0" style={{ fontFamily: 'system-ui, sans-serif' }}>
+                        {displayFacts.map((fact, idx) => (
+                          <li
+                            key={idx}
+                            className="flex flex-col gap-1 rounded-md border border-gray-200/80 bg-white/60 px-2.5 py-2"
+                          >
+                            <span className="text-gray-500 text-[11px] font-semibold uppercase tracking-wider">
+                              {fact.label}
+                            </span>
+                            <span className="text-gray-800 text-xs leading-relaxed break-words">
+                              {fact.value}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                );
+              })()}
             </div>
           </div>
         </div>

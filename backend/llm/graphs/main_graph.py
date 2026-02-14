@@ -61,7 +61,7 @@ from backend.llm.nodes.no_results_node import no_results_node
 # NEW: Context manager for automatic summarization
 from backend.llm.nodes.context_manager_node import context_manager_node
 # NEW: Planner → Executor → Responder architecture
-from backend.llm.nodes.planner_node import planner_node
+from backend.llm.nodes.planner_node import planner_node, _make_fallback_plan, REFINE_PATTERNS, INCOMPLETE_FOLLOWUP_PATTERNS
 from backend.llm.nodes.executor_node import executor_node
 from backend.llm.nodes.evaluator_node import evaluator_node
 from backend.llm.contracts.node_contracts import RouterContract
@@ -524,22 +524,66 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
     builder.add_node("conversation", conversation_node)
     logger.info("Added conversation node (chat-only path)")
 
-    # Context manager → classify intent → conversation or planner
-    # The classifier is VERY conservative: only obvious chat goes to conversation.
-    # Anything that *might* need documents goes to planner (same as the original branch).
+    # Simple path: rule-based "is this a simple document query?" (no planner LLM)
+    SIMPLE_QUERY_MAX_WORDS = 12
+
+    def _is_simple_document_query(state: MainWorkflowState) -> bool:
+        """True if document query is simple enough to use fixed 2-step plan without planner LLM."""
+        document_ids = state.get("document_ids") or []
+        if document_ids and len(document_ids) > 0:
+            return False  # Chip path: keep going to planner (it uses fixed 1-step without LLM)
+        user_query = (state.get("user_query") or "").strip()
+        query_lower = user_query.lower()
+        if any(p in query_lower for p in REFINE_PATTERNS):
+            return False  # Format/refine intent: use planner
+        if any(p in query_lower for p in INCOMPLETE_FOLLOWUP_PATTERNS):
+            return False  # Incomplete follow-up: use planner
+        word_count = len(user_query.split())
+        return word_count <= SIMPLE_QUERY_MAX_WORDS
+
+    def simple_plan_node(state: MainWorkflowState) -> MainWorkflowState:
+        """Inject fixed 2-step plan (retrieve_docs → retrieve_chunks) without calling planner LLM."""
+        user_query = state.get("user_query", "") or ""
+        execution_plan = _make_fallback_plan(user_query)
+        logger.info("[GRAPH] simple_plan: injected fixed 2-step plan (skip planner LLM) for query '%s...'", (user_query or "")[:60])
+        emitter = state.get("execution_events")
+        if emitter:
+            emitter.emit_reasoning(label="Planning next moves", detail=None)
+        return {
+            "execution_plan": execution_plan,
+            "current_step_index": 0,
+            "execution_results": [],
+        }
+
+    builder.add_node("simple_plan", simple_plan_node)
+
+    # Context manager → classify intent → conversation, document_cached (responder), document_simple (simple_plan), or document (planner)
+    # Cache-first: when use_cached_results and execution_results are set (follow-up), skip planner+executor and go to responder.
+    # Simple path: when document query is "simple" (no chip, no format/refine), use fixed 2-step plan and skip planner LLM.
     async def after_context_manager(state):
         intent = await classify_intent(state)
-        return intent  # "conversation" or "document"
+        if intent == "conversation":
+            return "conversation"
+        # Document intent: check cache-first, then simple path, else full planner
+        if state.get("use_cached_results") and state.get("execution_results"):
+            logger.info("[GRAPH] document_cached: routing to responder (cache-first)")
+            return "document_cached"
+        if _is_simple_document_query(state):
+            logger.info("[GRAPH] document_simple: routing to simple_plan (skip planner LLM)")
+            return "document_simple"
+        return "document"
 
     builder.add_conditional_edges(
         "context_manager",
         after_context_manager,
         {
             "conversation": "conversation",
+            "document_cached": "responder",
+            "document_simple": "simple_plan",
             "document": "planner",
         }
     )
-    logger.debug("Conditional: context_manager -> [conversation|planner] (conservative classifier)")
+    logger.debug("Conditional: context_manager -> [conversation|document_cached|document_simple|document]")
 
     # Conversation → END (single LLM call, no retrieval)
     builder.add_edge("conversation", END)
@@ -759,6 +803,10 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
     
     builder.add_conditional_edges("planner", after_planner, {"executor": "executor", "responder": "responder"})
     logger.debug("Conditional: planner -> [executor|responder] (0 steps → responder)")
+
+    # Simple plan → Executor (fixed 2-step plan, no planner LLM)
+    builder.add_edge("simple_plan", "executor")
+    logger.debug("Edge: simple_plan -> executor")
     
     # Executor → Evaluator (evaluate execution)
     builder.add_edge("executor", "evaluator")

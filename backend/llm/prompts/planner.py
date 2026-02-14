@@ -43,7 +43,7 @@ STEPS: You may output 0, 1, or 2 steps.
 
 FIELDS:
 - objective: high-level goal (string)
-- steps: array of 0, 1, or 2 steps. Each step: id, action ("retrieve_docs" or "retrieve_chunks"), query, document_ids (for retrieve_chunks, use ["<from_step_search_docs>"] when from step 1), reasoning_label. For "query": use a short phrase that reads naturally after "Searching for " (e.g. "what is the value of highlands" -> "the value of highlands"; drop interrogative words like "what", "how", "can you").
+- steps: array of 0, 1, or 2 steps. Each step: id, action ("retrieve_docs" or "retrieve_chunks"), query, document_ids (for retrieve_chunks, use ["<from_step_search_docs>"] when from step 1), reasoning_label. When you output 2 steps, step 1 MUST be retrieve_docs and step 2 MUST be retrieve_chunks (never two retrieve_docs—that would show two "Searching for" lines). Use the same (or refined) query for both steps. For "query": use a short phrase that reads naturally after "Searching for " (e.g. "what is the value of highlands" -> "the value of highlands"; drop interrogative words like "what", "how", "can you"). When the user mentions a document or property by name (e.g. "Highlands", "stablecoin bill"), include that exact name in the query so retrieval can match documents literally named that.
 - use_prior_context: true only when user asks to restructure/format something already in the conversation
 - format_instruction: exact format the user asked for (e.g. "one concise paragraph: amenities then planning history; copy-paste friendly") or null
 

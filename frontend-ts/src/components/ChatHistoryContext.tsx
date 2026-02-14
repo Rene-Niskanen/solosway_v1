@@ -21,7 +21,7 @@ export interface ChatHistoryEntry {
 }
 interface ChatHistoryContextType {
   chatHistory: ChatHistoryEntry[];
-  addChatToHistory: (chat: Omit<ChatHistoryEntry, 'id'>) => string;
+  addChatToHistory: (chat: Omit<ChatHistoryEntry, 'id'>, explicitId?: string) => string;
   updateChatInHistory: (chatId: string, messages: any[]) => void;
   removeChatFromHistory: (chatId: string) => void;
   clearAllChats: () => void;
@@ -242,8 +242,8 @@ export function ChatHistoryProvider({
     saveChatHistory(chatHistory);
   }, [chatHistory]);
 
-  const addChatToHistory = React.useCallback((chat: Omit<ChatHistoryEntry, 'id'>) => {
-    const chatId = `chat-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  const addChatToHistory = React.useCallback((chat: Omit<ChatHistoryEntry, 'id'>, explicitId?: string) => {
+    const chatId = explicitId || `chat-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     // Generate unique sessionId if not provided: session_${chatId}_${Date.now()}
     const sessionId = chat.sessionId || `session_${chatId}_${Date.now()}`;
     const newChat: ChatHistoryEntry = {
@@ -253,7 +253,11 @@ export function ChatHistoryProvider({
       sessionId: sessionId,
       status: chat.status || 'loading', // Default to 'loading' when first query is sent
     };
-    setChatHistory(prev => [newChat, ...prev]);
+    setChatHistory(prev => {
+      // If explicitId provided and a chat with that id already exists, don't add duplicate
+      if (explicitId && prev.some(c => c.id === explicitId)) return prev;
+      return [newChat, ...prev];
+    });
     return newChat.id; // Return the ID for tracking
   }, []);
 

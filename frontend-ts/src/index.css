@@ -354,6 +354,11 @@
   }
 }
 
+/* Remove focus outline from document preview scroll containers (avoids blue ring when clicking/scroll or programmatic focus) */
+.document-preview-scroll:focus {
+  outline: none !important;
+}
+
 /* Remove blue outline from buttons and interactive elements */
 button:focus,
 button:focus-visible,
@@ -378,7 +383,7 @@ button:focus-visible:not(:focus-within) {
   background-color: #E8E8E8 !important;
 }
 .citation-link-btn.citation-link-btn--selected {
-  color: #1E40AF !important;
+  color: #374151 !important;
   background-color: #DBEAFE !important;
 }
 
@@ -404,6 +409,46 @@ button:focus-visible:not(:focus-within) {
   display: none; /* Chrome, Safari, Opera */
   width: 0;
   height: 0;
+}
+
+/* Faint scrollbar for FilingSidebar pending files – doesn’t overlap content */
+.filing-pending-files-scroll {
+  scrollbar-width: thin; /* Firefox */
+  scrollbar-color: rgba(0, 0, 0, 0.14) transparent;
+}
+.filing-pending-files-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+.filing-pending-files-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.filing-pending-files-scroll::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.14);
+  border-radius: 3px;
+}
+.filing-pending-files-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.22);
+}
+
+/* FilingSidebar main file list – scrollable area */
+.filing-sidebar-main-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 0, 0, 0.2) transparent;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.filing-sidebar-main-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+.filing-sidebar-main-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.filing-sidebar-main-scroll::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 3px;
+}
+.filing-sidebar-main-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.3);
 }
 
 /* Translucent scrollbar for DOCX preview */
