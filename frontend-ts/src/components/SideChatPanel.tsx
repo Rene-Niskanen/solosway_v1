@@ -12929,12 +12929,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           {message.text && (
             <div style={{
               position: 'relative',
-              minHeight: '1px',
-              maxHeight: 'min(400px, 55vh)',
-              overflowY: 'auto',
-              overflowX: 'hidden',
-              WebkitOverflowScrolling: 'touch',
-              contain: 'layout style'
+              minHeight: '1px'
             }}>
               <StreamingResponseTextMemo
                 text={message.text}

@@ -33,6 +33,39 @@ Queries are grouped by document. Use for retrieval and chat testing.
 - What lease documents do we have and what do they cover?
 - What valuation or appraisal documents do we have and what do they value?
 - What documents mention 24 Rudthorpe Road?
+- Is the Banda Lane offer subject to any conditions or still subject to contract?
+- When can we expect to exchange or complete on 24 Rudthorpe Road?
+- What’s the guide price or asking price for Mbagathi Ridge No 10 Karen?
+- Are there any defects or condition issues I should flag for 24 Rudthorpe Road?
+- When does the Nzohe lease expire and is the tenant likely to renew?
+- Is the Knight Frank instruction exclusive or joint agency and for how long?
+- What comparables does the Koch Sales appraisal use to support the value?
+- What’s the EPC or energy rating in the valuation reports?
+- What’s included in the sale at 24 Rudthorpe Road—fixtures, fittings, white goods?
+- Does the Knight Frank letting have a break clause so we can remarket?
+- What notice does the tenant need to give in the Kenyajui lease?
+- What yield or investment return does the Koch Sales appraisal suggest?
+- Summarise what we have on file for Banda Lane so I can brief the client
+- What’s the status of the offer on 24 Rudthorpe Road—price, completion, any chain?
+- Who signed the Nzohe lease?
+- Anything about pets in the Knight Frank tenancy?
+- Banda Lane—who’s the buyer?
+- What’s the land reference for Nzohe?
+- Tell me about the Karen property
+- Any penalty for late completion on Banda Lane?
+- Rent review in the Kenyajui lease?
+- What did the valuer say about Highlands Berden?
+- Anything on subletting in the Nzohe agreement?
+- Mbagathi Ridge—freehold or leasehold?
+- Who’s the landlord on the Knight Frank let?
+- Development valuation—what’s the GDV?
+- 24 Rudthorpe Road condition?
+- Banda Lane deposit amount?
+- Kenyajui and Espindola—which one’s the tenant?
+- Koch Sales—what property is it for?
+- Break option in the Nzohe lease?
+- What’s in the Rudthorpe Road offer?
+- Any service charge in the Nzohe lease?
 
 ---
 
