@@ -51,7 +51,7 @@ async def context_manager_node(state: MainWorkflowState) -> MainWorkflowState:
         if not last_is_same:
             logger.debug(f"[CONTEXT_MGR] Injecting user message ({len(user_query)} chars)")
             return {"messages": [HumanMessage(content=user_query)]}
-    
+
     messages = state.get("messages", [])
     
     # Skip if no messages or too few to summarize
@@ -128,7 +128,7 @@ async def context_manager_node(state: MainWorkflowState) -> MainWorkflowState:
         
         # Return new message list: [summary] + recent messages
         return {
-            "messages": [summary_message] + recent_messages
+            "messages": [summary_message] + recent_messages,
         }
         
     except Exception as e:

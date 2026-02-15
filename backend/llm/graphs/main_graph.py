@@ -61,7 +61,7 @@ from backend.llm.nodes.no_results_node import no_results_node
 # NEW: Context manager for automatic summarization
 from backend.llm.nodes.context_manager_node import context_manager_node
 # NEW: Planner → Executor → Responder architecture
-from backend.llm.nodes.planner_node import planner_node, _make_fallback_plan, REFINE_PATTERNS, INCOMPLETE_FOLLOWUP_PATTERNS
+from backend.llm.nodes.planner_node import planner_node, _make_fallback_plan, REFINE_PATTERNS
 from backend.llm.nodes.executor_node import executor_node
 from backend.llm.nodes.evaluator_node import evaluator_node
 from backend.llm.contracts.node_contracts import RouterContract
@@ -328,7 +328,7 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
     - ~5-10x faster than normal pipeline
     """
     
-    # NEW: Context Manager Node (automatic summarization to prevent token overflow)
+    # NEW: Context Manager Node (auto-summarize at 8k tokens)
     builder.add_node("context_manager", context_manager_node)
     logger.info("✅ Added context_manager node (auto-summarize at 8k tokens)")
     
@@ -524,11 +524,13 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
     builder.add_node("conversation", conversation_node)
     logger.info("Added conversation node (chat-only path)")
 
-    # Simple path: rule-based "is this a simple document query?" (no planner LLM)
-    SIMPLE_QUERY_MAX_WORDS = 12
+    # Simple path: only for clearly new, self-contained questions (no planner LLM).
+    # Short queries go to planner so the LLM can decide follow-up vs new; we don't hardcode follow-up patterns.
+    SIMPLE_QUERY_MIN_WORDS = 9
+    SIMPLE_QUERY_MAX_WORDS = 15
 
     def _is_simple_document_query(state: MainWorkflowState) -> bool:
-        """True if document query is simple enough to use fixed 2-step plan without planner LLM."""
+        """True only when query looks like a new, self-contained question (medium length). Short queries → planner so LLM decides follow-up."""
         document_ids = state.get("document_ids") or []
         if document_ids and len(document_ids) > 0:
             return False  # Chip path: keep going to planner (it uses fixed 1-step without LLM)
@@ -536,10 +538,9 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
         query_lower = user_query.lower()
         if any(p in query_lower for p in REFINE_PATTERNS):
             return False  # Format/refine intent: use planner
-        if any(p in query_lower for p in INCOMPLETE_FOLLOWUP_PATTERNS):
-            return False  # Incomplete follow-up: use planner
         word_count = len(user_query.split())
-        return word_count <= SIMPLE_QUERY_MAX_WORDS
+        # Only use fixed 2-step plan when query is medium-length (likely new question). Short → planner (LLM decides follow-up)
+        return SIMPLE_QUERY_MIN_WORDS <= word_count <= SIMPLE_QUERY_MAX_WORDS
 
     def simple_plan_node(state: MainWorkflowState) -> MainWorkflowState:
         """Inject fixed 2-step plan (retrieve_docs → retrieve_chunks) without calling planner LLM."""

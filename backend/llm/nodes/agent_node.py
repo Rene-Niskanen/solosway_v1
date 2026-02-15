@@ -31,6 +31,7 @@ from backend.llm.prompts.agent import (
     get_agent_initial_prompt,
 )
 from backend.llm.utils.system_prompts import get_system_prompt
+from backend.llm.utils.workspace_context import build_workspace_context
 from backend.llm.tools.document_retriever_tool import create_document_retrieval_tool
 from backend.llm.tools.planning_tool import plan_step
 from backend.llm.tools.citation_mapping import create_chunk_citation_tool
@@ -316,6 +317,20 @@ The user has attached a **property** (e.g. a property pin or project). You must 
             scope_text = ""
         search_scope_block = ("\n" + scope_text.strip() + "\n") if scope_text else ""
         initial_prompt = get_agent_initial_prompt(user_query, search_scope_block)
+
+        # Optional workspace context (current project / documents in scope)
+        try:
+            business_id = state.get("business_id")
+            if business_id and (property_id or document_ids):
+                workspace_section = build_workspace_context(
+                    property_id, document_ids if document_ids else None, str(business_id)
+                )
+                if workspace_section:
+                    system_prompt = SystemMessage(
+                        content=system_prompt.content + "\n\n" + workspace_section
+                    )
+        except Exception as e:
+            logger.warning("[AGENT_NODE] build_workspace_context failed: %s", e)
 
         messages = [
             system_prompt,

@@ -13718,34 +13718,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       )}
                     </button>
                   )}
-                  {onBackToProjects && (
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        e.preventDefault();
-                        onBackToProjects();
-                      }}
-                      className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150`}
-                      title="Back to Projects"
-                      type="button"
-                      style={{
-                        padding: actualPanelWidth >= 750 ? '5px 8px' : '5px',
-                        height: '26px',
-                        minHeight: '26px',
-                        border: 'none',
-                        position: 'relative',
-                        zIndex: 10001,
-                        pointerEvents: 'auto',
-                        cursor: 'pointer',
-                        backgroundColor: 'rgba(0, 0, 0, 0.02)'
-                      }}
-                    >
-                      <ChevronLeft className="w-3.5 h-3.5 text-[#666]" strokeWidth={1.75} />
-                      {actualPanelWidth >= 750 && (
-                        <span className="text-[12px] font-normal text-[#666]">Back</span>
-                      )}
-                    </button>
-                  )}
                   <Popover open={viewOptionsOpen} onOpenChange={setViewOptionsOpen}>
                     <PopoverTrigger asChild>
                       <button
@@ -13973,6 +13945,33 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 <div className="flex items-center justify-center px-4 min-w-0" />
                 
                 <div className="flex items-center space-x-2 min-w-0 justify-end">
+                  {/* Back to Projects – shown when in fullscreen property view; on right side with "Back" label */}
+                  {onBackToProjects && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        onBackToProjects();
+                      }}
+                      className="flex items-center gap-1 rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150"
+                      title="Back to Projects"
+                      type="button"
+                      style={{
+                        padding: '5px 8px',
+                        height: '26px',
+                        minHeight: '26px',
+                        border: 'none',
+                        position: 'relative',
+                        zIndex: 10001,
+                        pointerEvents: 'auto',
+                        cursor: 'pointer',
+                        backgroundColor: 'rgba(0, 0, 0, 0.02)'
+                      }}
+                    >
+                      <ChevronLeft className="w-3.5 h-3.5 text-[#666]" strokeWidth={1.75} />
+                      <span className="text-[12px] font-normal text-[#666]">Back</span>
+                    </button>
+                  )}
                   {/* Agents Sidebar Button – shown on opening screen and when chat has messages */}
                   <button
                     onClick={(e) => {

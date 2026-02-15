@@ -52,6 +52,7 @@
     "embla-carousel-react": "^8.6.0",
     "framer-motion": "^12.23.13",
     "gsap": "^3.13.0",
+    "html2canvas": "^1.4.1",
     "input-otp": "^1.4.2",
     "jszip": "^3.10.1",
     "lucide-react": "^0.553.0",

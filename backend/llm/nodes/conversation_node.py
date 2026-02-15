@@ -15,6 +15,7 @@ from backend.llm.prompts.conversation import (
     get_conversation_system_content,
     format_memories_section,
 )
+from backend.llm.utils.workspace_context import build_workspace_context
 from backend.llm.prompts.personality import (
     VALID_PERSONALITY_IDS,
     DEFAULT_PERSONALITY_ID,
@@ -58,6 +59,18 @@ async def conversation_node(state: MainWorkflowState) -> MainWorkflowState:
         except Exception as e:
             logger.warning(f"[CONVERSATION] Memory search failed: {e}")
 
+    # --- Workspace context (current project / documents in scope) ---
+    workspace_section = ""
+    try:
+        property_id = state.get("property_id")
+        document_ids = state.get("document_ids")
+        business_id = state.get("business_id")
+        if business_id and (property_id or document_ids):
+            doc_ids = [str(d) for d in document_ids] if isinstance(document_ids, list) else None
+            workspace_section = build_workspace_context(property_id, doc_ids, str(business_id))
+    except Exception as e:
+        logger.warning("[CONVERSATION] build_workspace_context failed: %s", e)
+
     # --- Build system prompt ---
     personality_context = (
         f"\nPrevious personality for this conversation "
@@ -67,6 +80,7 @@ async def conversation_node(state: MainWorkflowState) -> MainWorkflowState:
     system_content = get_conversation_system_content(
         personality_context=personality_context,
         memories_section=memories_section,
+        workspace_section=workspace_section,
     )
     system_msg = SystemMessage(content=system_content)
 

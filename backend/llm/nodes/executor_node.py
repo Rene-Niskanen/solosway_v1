@@ -309,10 +309,14 @@ async def executor_node(state: MainWorkflowState, runnable_config=None) -> MainW
         action = resolved_step["action"]
         
         if action == "retrieve_docs":
-            # Simple call - let retriever decide parameters
+            # Simple call - let retriever decide parameters; pass scope from state when set
+            _doc_ids = state.get("document_ids")
+            _doc_ids = [str(d) for d in _doc_ids] if isinstance(_doc_ids, list) and _doc_ids else None
             result = retrieve_documents(
                 query=resolved_step.get("query", ""),
-                business_id=business_id
+                business_id=business_id,
+                property_id=state.get("property_id"),
+                document_ids=_doc_ids,
             )
             
         elif action == "retrieve_chunks":

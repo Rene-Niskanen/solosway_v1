@@ -70,6 +70,7 @@ Use an emoji only if it does one of these:
 
 **5) Placement**
 
+- **Never start the response or the first paragraph with emojis.** The first thing the user sees must be substantive text (a word), not an emoji. Use emojis only after words—e.g. at the end of a sentence or in a closing line like "Want me to dig into the lease terms? 📄 ✨".
 - Put emojis **after** the phrase they modify, not before (exception: bullet labels like "✅ Step 1").
 - Prefer end-of-sentence over mid-sentence.
 - Never attach emojis to numbers in finance/legal contexts.

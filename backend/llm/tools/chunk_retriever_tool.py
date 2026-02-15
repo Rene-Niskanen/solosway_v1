@@ -85,7 +85,6 @@ def retrieve_chunks(
         
         # 2. HEURISTIC: Determine query profile (not LLM-driven)
         query_lower = query.lower()
-        
         if any(word in query_lower for word in ['summarize', 'overview', 'all', 'everything', 'complete', 'entire', 'full']):
             query_profile = "summary"
             effective_top_k = 80

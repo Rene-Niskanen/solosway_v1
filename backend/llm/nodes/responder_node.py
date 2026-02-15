@@ -43,6 +43,7 @@ from backend.llm.utils.personality_prompts import (
 )
 from backend.llm.tools.citation_mapping import create_chunk_citation_tool, _narrow_bbox_to_cited_line
 from backend.llm.prompts.conversation import format_memories_section
+from backend.llm.utils.workspace_context import build_workspace_context
 from backend.services.supabase_client_factory import get_supabase_client
 
 # Import from new citation architecture modules
@@ -61,6 +62,60 @@ from backend.llm.citation import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _build_responder_workspace_section(
+    state: Dict[str, Any], execution_results: List[Dict[str, Any]]
+) -> Tuple[str, Optional[List[str]]]:
+    """
+    Build workspace context for the responder: either from state (property_id/document_ids)
+    or from execution_results when no attachment.
+    We prefer document_ids from the retrieve_chunks result (docs we actually used to answer),
+    so follow-ups stay on the same doc(s); fall back to retrieve_docs only if no chunks.
+    Returns (workspace_section, derived_document_ids). derived_document_ids is non-None only when
+    we had no scope in state and we derived doc IDs - so the caller can persist them for the next turn.
+    """
+    try:
+        business_id = state.get("business_id")
+        if not business_id:
+            return "", None
+        property_id = state.get("property_id")
+        document_ids = state.get("document_ids")
+        if property_id or document_ids:
+            doc_ids = [str(d) for d in document_ids] if isinstance(document_ids, list) else None
+            return build_workspace_context(property_id, doc_ids, str(business_id)), None
+        # No attachment: derive document_ids from the chunks we actually used (retrieve_chunks),
+        # so follow-ups stay on the same doc(s) we answered from. Fall back to retrieve_docs only if no chunks.
+        doc_ids_from_chunks = []
+        for item in execution_results or []:
+            if item.get("action") == "retrieve_chunks" and item.get("success"):
+                result = item.get("result") or []
+                if isinstance(result, list):
+                    for chunk in result:
+                        if isinstance(chunk, dict):
+                            did = chunk.get("document_id")
+                            if did and str(did) not in doc_ids_from_chunks:
+                                doc_ids_from_chunks.append(str(did))
+        if doc_ids_from_chunks:
+            return build_workspace_context(None, doc_ids_from_chunks, str(business_id)), doc_ids_from_chunks
+        # Fallback: no chunks or no document_id in chunks – use first retrieve_docs result
+        for item in execution_results or []:
+            if item.get("action") == "retrieve_docs":
+                result = item.get("result") or []
+                if isinstance(result, list) and len(result) > 0:
+                    doc_ids = []
+                    for r in result:
+                        did = r.get("document_id") or r.get("id")
+                        if did:
+                            doc_ids.append(str(did))
+                    if doc_ids:
+                        return build_workspace_context(None, doc_ids, str(business_id)), doc_ids
+                break
+        return "", None
+    except Exception as e:
+        logger.warning("[RESPONDER] _build_responder_workspace_section failed: %s", e)
+        return "", None
+
 
 def _strip_markdown_for_citation(text: str) -> str:
     """Strip common markdown so we can extract values from e.g. **£2,400,000**."""
@@ -1658,7 +1713,7 @@ Provide a helpful, conversational answer using Markdown formatting:
 - Use `**bold**` for emphasis or labels
 - Use `-` for bullet points when listing items
 - Use line breaks between sections for better readability
-- Put any closing or sign-off on a new line; if you add a follow-up, make it context-aware (tied to what you said and what they asked), not generic. When you add a follow-up, use a few friendly emojis (2–3), e.g. 📄 ✨ 📋 🌳 📊 💡 ✅ or a friendly smile 😊. Put a space before the first emoji and between each emoji (e.g. "feel free to ask! 😊 📋"). Keep it professional—no hearts, monkeys, or casual gestures.
+- Put any closing or sign-off on a new line; if you add a follow-up, make it context-aware (tied to what you said and what they asked), not generic. When you add a follow-up, use a few friendly emojis (2–3), e.g. 📄 ✨ 📋 🌳 📊 💡 ✅ or a friendly smile 😊. Put a space before the first emoji and between each emoji (e.g. "feel free to ask! 😊 📋"). Do not start the response or first paragraph with emojis—the first character must be text; use emojis only after words (e.g. in a closing line). Keep it professional—no hearts, monkeys, or casual gestures.
 - Extract and present information directly from the excerpts if it is present
 - Only say information is not found if it is genuinely not in the excerpts
 - Include appropriate context based on question type
@@ -1769,7 +1824,7 @@ Provide a helpful, conversational answer using Markdown formatting:
 - Use `**bold**` for emphasis or labels
 - Use `-` for bullet points when listing items
 - Use line breaks between sections for better readability
-- Put any closing or sign-off on a new line; if you add a follow-up, make it context-aware (tied to what you said and what they asked), not generic. When you add a follow-up, use a few friendly emojis (2–3), e.g. 📄 ✨ 📋 🌳 📊 💡 ✅ or a friendly smile 😊. Put a space before the first emoji and between each emoji (e.g. "feel free to ask! 😊 📋"). Keep it professional—no hearts, monkeys, or casual gestures.
+- Put any closing or sign-off on a new line; if you add a follow-up, make it context-aware (tied to what you said and what they asked), not generic. When you add a follow-up, use a few friendly emojis (2–3), e.g. 📄 ✨ 📋 🌳 📊 💡 ✅ or a friendly smile 😊. Put a space before the first emoji and between each emoji (e.g. "feel free to ask! 😊 📋"). Do not start the response or first paragraph with emojis—the first character must be text; use emojis only after words (e.g. in a closing line). Keep it professional—no hearts, monkeys, or casual gestures.
 - Extract and present information directly from the excerpts if it is present
 - Only say information is not found if it is genuinely not in the excerpts
 - Include appropriate context based on question type
@@ -1821,6 +1876,7 @@ async def generate_conversational_answer_with_citations(
     previous_personality: Optional[str] = None,
     is_first_message: bool = False,
     user_id: Optional[str] = None,
+    workspace_section: str = "",
 ) -> Tuple[str, str]:
     """
     Generate conversational answer with citation instructions (jan28th-style).
@@ -1841,6 +1897,9 @@ Previous personality for this conversation (or None if first message): {previous
 Is this the first message in the conversation? {is_first_message}
 """
     system_content = get_responder_block_citation_system_content(personality_context)
+
+    if workspace_section:
+        system_content = system_content + "\n\n" + workspace_section
 
     # --- Mem0 memory injection (Phase 2) ---
     if getattr(config, "mem0_enabled", False):
@@ -1873,7 +1932,7 @@ Is this the first message in the conversation? {is_first_message}
 - Answer based on the content above. For each fact you use, cite it as [ID: X](BLOCK_CITE_ID_N) where the block id is from the <BLOCK> whose content actually contains that fact (e.g. the block with "56" and "D" for EPC current rating).
 - **Place each citation immediately after the fact it supports**, not at the end of the sentence (e.g. "...payment stablecoins are not considered securities [ID: 1](BLOCK_CITE_ID_5), amending various acts..." not "...to reflect this [ID: 1](BLOCK_CITE_ID_5).").
 - **In bullet lists:** put each citation at the end of the bullet it supports (e.g. "- Incredible Location [ID: 1](BLOCK_CITE_ID_1)"), never all citations at the end of the last bullet.
-- Put any closing or sign-off on a new line; if you add a follow-up, make it context-aware (tied to what you said and what they asked), not generic. When you add a follow-up, use a few friendly emojis (2–3), e.g. 📄 ✨ 📋 🌳 📊 💡 ✅ or a friendly smile 😊. Put a space before the first emoji and between each emoji (e.g. "feel free to ask! 😊 📋"). Keep it professional—no hearts, monkeys, or casual gestures.
+- Put any closing or sign-off on a new line; if you add a follow-up, make it context-aware (tied to what you said and what they asked), not generic. When you add a follow-up, use a few friendly emojis (2–3), e.g. 📄 ✨ 📋 🌳 📊 💡 ✅ or a friendly smile 😊. Put a space before the first emoji and between each emoji (e.g. "feel free to ask! 😊 📋"). Do not start the response or first paragraph with emojis—the first character must be text; use emojis only after words (e.g. in a closing line). Keep it professional—no hearts, monkeys, or casual gestures.
 - Explain in a clear, conversational way; use Markdown where it helps readability. Be accurate.
 """)
 
@@ -1907,6 +1966,7 @@ async def generate_answer_with_direct_citations(
     previous_personality: Optional[str] = None,
     is_first_message: bool = False,
     user_id: Optional[str] = None,
+    workspace_section: str = "",
 ) -> Tuple[str, List[Dict[str, Any]], str]:
     """
     Generate answer using direct citation system with short IDs.
@@ -1951,6 +2011,7 @@ async def generate_answer_with_direct_citations(
             previous_personality=previous_personality,
             is_first_message=is_first_message,
             user_id=user_id,
+            workspace_section=workspace_section,
         )
         logger.info(f"[DIRECT_CITATIONS] LLM response generated ({len(llm_response)} chars), personality_id={personality_id}")
 
@@ -2112,18 +2173,22 @@ async def responder_node(state: MainWorkflowState, runnable_config=None) -> Main
         
         # Generate answer with direct citations (includes personality selection in same LLM call)
         try:
+            workspace_section, derived_document_ids = _build_responder_workspace_section(state, execution_results)
             logger.info(f"[RESPONDER] Generating answer with direct citation system...")
             formatted_answer, citations, personality_id = await generate_answer_with_direct_citations(
                 user_query, execution_results,
                 previous_personality=previous_personality,
                 is_first_message=is_first_message,
                 user_id=state.get("user_id"),
+                workspace_section=workspace_section,
             )
             formatted_answer = ensure_main_tags_when_missing(formatted_answer, user_query)
 
             logger.info(f"[RESPONDER] ✅ Answer generated ({len(formatted_answer)} chars) with {len(citations)} citations, personality_id={personality_id}")
 
-            # Prepare output with citations and persist chosen personality for next turn
+            # Prepare output with citations and persist chosen personality for next turn.
+            # When we had no attachment but derived document_ids from retrieval, persist them so
+            # the next turn (follow-up) reuses the same docs instead of running a new search.
             responder_output = {
                 "final_summary": formatted_answer,
                 "personality_id": personality_id,
@@ -2131,6 +2196,9 @@ async def responder_node(state: MainWorkflowState, runnable_config=None) -> Main
                 "chunk_citations": citations if citations else [],
                 "messages": [AIMessage(content=formatted_answer)],
             }
+            if derived_document_ids and not state.get("document_ids"):
+                responder_output["document_ids"] = derived_document_ids
+                logger.info(f"[RESPONDER] Persisting derived document_ids for follow-up ({len(derived_document_ids)} doc(s))")
             
             # Validate output against contract
             try:

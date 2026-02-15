@@ -260,6 +260,7 @@ class BackendApiService {
     details?: string;
     messageId?: string;
     conversationSnippet?: string;
+    screenshotBase64?: string;
   }): Promise<ApiResponse<{ success: boolean }>> {
     return this.fetchApi('/api/chat-feedback', {
       method: 'POST',

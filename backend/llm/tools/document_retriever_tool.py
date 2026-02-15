@@ -54,7 +54,9 @@ def retrieve_documents(
     top_k: Optional[int] = None,
     min_score: Optional[float] = None,
     business_id: Optional[str] = None,
-    search_goal: Optional[str] = None
+    search_goal: Optional[str] = None,
+    property_id: Optional[str] = None,
+    document_ids: Optional[List[str]] = None,
 ) -> List[Dict]:
     """
     Retrieve the most relevant documents for a query.
@@ -423,6 +425,25 @@ def retrieve_documents(
         
         # Sort by combined score (descending)
         results.sort(key=lambda x: x['score'], reverse=True)
+
+        # 6c. SCOPE FILTER: When user has scope (property_id or document_ids), restrict to in-scope docs only
+        if document_ids and len(document_ids) > 0:
+            allowed_ids = set(str(d) for d in document_ids if d)
+            results = [r for r in results if r.get('document_id') in allowed_ids]
+            if not results:
+                logger.info("   Scope filter (document_ids): no results in scope, returning []")
+                return []
+        elif property_id:
+            try:
+                rel_result = supabase.table('document_relationships').select('document_id').eq('property_id', property_id).execute()
+                allowed_ids = set(str(r['document_id']) for r in (rel_result.data or []) if r.get('document_id'))
+                if allowed_ids:
+                    results = [r for r in results if r.get('document_id') in allowed_ids]
+                if not results:
+                    logger.info("   Scope filter (property_id): no results in scope, returning []")
+                    return []
+            except Exception as e:
+                logger.warning("   Scope filter (property_id) failed: %s", e)
         
         # 7. GUARDRAIL: Adaptive threshold based on query specificity
         # Priority: LLM-provided query_type > Heuristic classification

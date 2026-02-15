@@ -22,12 +22,37 @@ from backend.llm.prompts.planner import (
     get_planner_initial_prompt,
     get_planner_followup_prompt,
     REFINE_HINT,
-    INCOMPLETE_HINT,
-    QUERY_RULE_NEED_INFER,
-    QUERY_RULE_USE_CURRENT,
 )
+from backend.llm.utils.workspace_context import build_workspace_context
 
 logger = logging.getLogger(__name__)
+
+# Prompt for chip-path query rewrite (one short LLM call so retrieval matches document wording)
+CHIP_QUERY_REWRITE_PROMPT = """The user is asking a follow-up question about a document they were just viewing. Output a short keyword phrase (3-8 words) that would appear in the document and help find the right passage. Use terms from legal/lease docs when relevant.
+Examples:
+- "who are the parties involved?" → parties landlord tenant names
+- "key dates?" → key dates commencement expiry term
+- "main terms?" → main terms conditions
+- "renewal options?" → renewal extension options
+Output ONLY the keyword phrase, nothing else."""
+
+async def _rewrite_chip_query_for_retrieval(user_query: str) -> str:
+    """One short LLM call to turn the user message into a retrieval-effective query. Falls back to user_query on failure."""
+    if not (user_query or "").strip():
+        return user_query or ""
+    try:
+        llm = ChatOpenAI(model=config.openai_planner_model, api_key=config.openai_api_key, temperature=0)
+        out = await llm.ainvoke([
+            SystemMessage(content=CHIP_QUERY_REWRITE_PROMPT),
+            HumanMessage(content=(user_query or "").strip()),
+        ])
+        rewritten = (out.content or "").strip()
+        if rewritten and len(rewritten) < 200:
+            logger.info("[PLANNER] Chip query rewritten for retrieval: %r -> %r", (user_query or "")[:50], rewritten[:60])
+            return rewritten
+    except Exception as e:
+        logger.warning("[PLANNER] Chip query rewrite failed (%s), using literal", e)
+    return user_query or ""
 
 # --- Constants (tunable in one place) ---
 SHORT_QUERY_WORD_THRESHOLD = 8
@@ -217,11 +242,12 @@ async def planner_node(state: MainWorkflowState, runnable_config=None) -> MainWo
     if emitter is None:
         logger.warning("[PLANNER] ⚠️  Emitter is None - reasoning events will not be emitted")
 
-    # Chip query: document_ids in state → fixed 1-step plan (retrieve_chunks only), no LLM
+    # Chip path: document_ids in state → fixed 1-step plan (retrieve_chunks only). One short LLM call to rewrite query for retrieval.
     raw_doc_ids = state.get("document_ids")
     if raw_doc_ids and isinstance(raw_doc_ids, list) and len(raw_doc_ids) > 0:
         document_ids = [str(d) for d in raw_doc_ids if d]
         if document_ids:
+            retrieval_query = await _rewrite_chip_query_for_retrieval(user_query)
             logger.info("[PLANNER] Chip query: 1-step plan (retrieve_chunks with %d doc(s))", len(document_ids))
             execution_plan = {
                 "objective": f"Answer: {user_query[:80]}{'...' if len(user_query) > 80 else ''}" if user_query else "Answer using selected document(s)",
@@ -229,7 +255,7 @@ async def planner_node(state: MainWorkflowState, runnable_config=None) -> MainWo
                     {
                         "id": "search_chunks",
                         "action": "retrieve_chunks",
-                        "query": user_query,
+                        "query": retrieval_query,
                         "document_ids": document_ids,
                         "reasoning_label": "Pulling relevant passages",
                         "reasoning_detail": None,
@@ -264,22 +290,30 @@ async def planner_node(state: MainWorkflowState, runnable_config=None) -> MainWo
         logger.info("[PLANNER] Generating initial plan for query: '%s...'", user_query[:80])
 
     parser = PydanticOutputParser(pydantic_object=ExecutionPlanModel)
-    system_prompt = SystemMessage(content=get_planner_system_prompt())
+    planner_base = get_planner_system_prompt()
+    workspace_section = ""
+    try:
+        property_id = state.get("property_id")
+        document_ids = state.get("document_ids")
+        business_id = state.get("business_id")
+        if business_id and (property_id or document_ids):
+            doc_ids = [str(d) for d in document_ids] if isinstance(document_ids, list) else None
+            workspace_section = build_workspace_context(property_id, doc_ids, str(business_id))
+    except Exception as e:
+        logger.warning("[PLANNER] build_workspace_context failed: %s", e)
+    if workspace_section:
+        planner_base = planner_base + "\n\n" + workspace_section
+    system_prompt = SystemMessage(content=planner_base)
 
     is_refine_format = _matches_any(user_query, REFINE_PATTERNS)
-    is_incomplete_followup = _matches_any(user_query, INCOMPLETE_FOLLOWUP_PATTERNS)
     refine_hint = REFINE_HINT if is_refine_format else ""
-    incomplete_hint = INCOMPLETE_HINT if is_incomplete_followup else ""
 
     if not messages:
         prompt = get_planner_initial_prompt(user_query, refine_hint, parser.get_format_instructions())
         messages_to_use = [system_prompt, HumanMessage(content=prompt)]
     else:
-        need_infer = _is_short_query(user_query) or is_incomplete_followup
-        query_rule = QUERY_RULE_NEED_INFER if need_infer else QUERY_RULE_USE_CURRENT
-        prompt = get_planner_followup_prompt(
-            user_query, query_rule, refine_hint, incomplete_hint, parser.get_format_instructions()
-        )
+        # LLM decides follow-up and infers query via FOLLOW_UP_DECISION_PARAGRAPH in the prompt
+        prompt = get_planner_followup_prompt(user_query, refine_hint, parser.get_format_instructions())
         messages_to_use = [system_prompt] + messages + [HumanMessage(content=prompt)]
 
     # Use planner-specific model (default gpt-4o-mini) to keep main-path latency lower.

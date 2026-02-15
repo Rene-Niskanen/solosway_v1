@@ -4,6 +4,11 @@ import * as React from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { backendApi } from "@/services/backendApi";
 import { toast } from "@/hooks/use-toast";
+import html2canvas from "html2canvas";
+import { Camera, X } from "lucide-react";
+
+const SCREENSHOT_DELAY_MS = 900;
+const SCREENSHOT_MAX_BASE64_BYTES = 3 * 1024 * 1024; // 3 MB
 
 const FEEDBACK_CATEGORIES = [
   "Incorrect or incomplete",
@@ -32,10 +37,14 @@ export const ShareFeedbackModal: React.FC<ShareFeedbackModalProps> = ({
   const [selectedCategory, setSelectedCategory] = React.useState<string | null>(null);
   const [details, setDetails] = React.useState("");
   const [isSubmitting, setIsSubmitting] = React.useState(false);
+  const [screenshotDataUrl, setScreenshotDataUrl] = React.useState<string | null>(null);
+  const [isHiddenForScreenshot, setIsHiddenForScreenshot] = React.useState(false);
+  const [isCapturing, setIsCapturing] = React.useState(false);
 
   const resetForm = React.useCallback(() => {
     setSelectedCategory(null);
     setDetails("");
+    setScreenshotDataUrl(null);
   }, []);
 
   const handleClose = React.useCallback(() => {
@@ -47,6 +56,48 @@ export const ShareFeedbackModal: React.FC<ShareFeedbackModalProps> = ({
     if (!open) resetForm();
   }, [open, resetForm]);
 
+  const takeScreenshot = React.useCallback(() => {
+    setIsHiddenForScreenshot(true);
+    setIsCapturing(true);
+    toast({ title: "Taking screenshot…", description: "The feedback window will reappear in a moment." });
+  }, []);
+
+  React.useEffect(() => {
+    if (!isHiddenForScreenshot || !isCapturing) return;
+    const timer = setTimeout(async () => {
+      try {
+        const root = document.getElementById("root") ?? document.body;
+        const canvas = await html2canvas(root, {
+          useCORS: true,
+          allowTaint: true,
+          scale: window.devicePixelRatio ?? 1,
+          logging: false,
+        });
+        const dataUrl = canvas.toDataURL("image/png");
+        setScreenshotDataUrl(dataUrl);
+      } catch (err) {
+        toast({
+          title: "Screenshot failed",
+          description: err instanceof Error ? err.message : "Could not capture the screen.",
+          variant: "destructive",
+        });
+      } finally {
+        setIsHiddenForScreenshot(false);
+        setIsCapturing(false);
+      }
+    }, SCREENSHOT_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [isHiddenForScreenshot, isCapturing]);
+
+  /** Extract base64 from data URL and optionally enforce size limit (backend will also enforce). */
+  const getScreenshotBase64 = React.useCallback((): string | undefined => {
+    if (!screenshotDataUrl) return undefined;
+    const base64 = screenshotDataUrl.replace(/^data:image\/\w+;base64,/, "");
+    const bytes = Math.ceil((base64.length * 3) / 4);
+    if (bytes > SCREENSHOT_MAX_BASE64_BYTES) return undefined; // skip if over limit; backend will not receive
+    return base64;
+  }, [screenshotDataUrl]);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedCategory) return;
@@ -57,6 +108,7 @@ export const ShareFeedbackModal: React.FC<ShareFeedbackModalProps> = ({
         details: details.trim() || undefined,
         messageId: messageId || undefined,
         conversationSnippet: conversationSnippet.slice(-2000) || undefined,
+        screenshotBase64: getScreenshotBase64(),
       });
       if (result.success) {
         toast({ title: "Feedback sent", description: "Thank you for helping us improve." });
@@ -73,7 +125,7 @@ export const ShareFeedbackModal: React.FC<ShareFeedbackModalProps> = ({
   };
 
   return (
-    <Dialog open={open} onOpenChange={(isOpen) => !isOpen && handleClose()}>
+    <Dialog open={open && !isHiddenForScreenshot} onOpenChange={(isOpen) => !isOpen && handleClose()}>
       <DialogContent
         overlayClassName="z-[10002]"
         className="z-[10002] max-w-md p-0 overflow-hidden bg-[#1f1f1f] border-0 text-white"
@@ -116,6 +168,36 @@ export const ShareFeedbackModal: React.FC<ShareFeedbackModalProps> = ({
                 rows={3}
                 className="w-full px-3 py-2 rounded-lg bg-[#2a2a2a] border border-transparent text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-gray-500 text-sm"
               />
+            </div>
+            <div>
+              <p className="text-sm text-gray-300 mb-2">Screenshot (optional)</p>
+              {screenshotDataUrl ? (
+                <div className="flex items-start gap-2 p-2 rounded-lg bg-[#2a2a2a] border border-transparent">
+                  <img
+                    src={screenshotDataUrl}
+                    alt="Screenshot"
+                    className="max-h-24 rounded object-cover border border-[#353535]"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setScreenshotDataUrl(null)}
+                    className="shrink-0 p-1.5 rounded text-gray-400 hover:text-white hover:bg-[#353535] transition-colors"
+                    aria-label="Remove screenshot"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={takeScreenshot}
+                  disabled={isCapturing}
+                  className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[#2a2a2a] text-gray-300 text-sm font-medium border border-transparent hover:bg-[#353535] hover:text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <Camera className="h-4 w-4" />
+                  {isCapturing ? "Capturing…" : "Take screenshot"}
+                </button>
+              )}
             </div>
             <p className="text-xs text-gray-400">
               Your conversation will be included with your feedback to help improve our product.{" "}

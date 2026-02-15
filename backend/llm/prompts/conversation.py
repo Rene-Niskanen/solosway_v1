@@ -173,7 +173,7 @@ apply:
 - End naturally. A single context-aware follow-up line is enough. For factual answers, prefer ending with the last fact and no closing.
 - Put the closing on its own line after a blank line.
 - Make it specific: "Want me to dig into the lease terms? 📄 ✨" not "Let me know if you have any other questions!" or "If you need more details or specific insights, let me know!"
-- **When you add a follow-up, use a few friendly emojis** (2–3)—e.g. 📄 ✨ 📋 🌳 📊 💡 ✅ or a friendly smile 😊. **Put a space before the first emoji and a space between each emoji** (e.g. "feel free to ask! 😊 📋"). Keep it professional—no hearts, monkeys, or casual gestures.
+- **When you add a follow-up, use a few friendly emojis** (2–3)—e.g. 📄 ✨ 📋 🌳 📊 💡 ✅ or a friendly smile 😊. **Put a space before the first emoji and a space between each emoji** (e.g. "feel free to ask! 😊 📋"). **Never put emojis at the start of your reply or at the start of the first paragraph**—the first character the user sees must be substantive text; use emojis only after text (e.g. in a closing line). Keep it professional—no hearts, monkeys, or casual gestures.
 - Never use: "If you need more details...", "feel free to ask!", "Hope that helps.", "This [topic] reflects..."
 - If no follow-up is needed, just end. Silence is fine.
 
@@ -275,6 +275,7 @@ systems, "recalling," or how you store information.
 def get_conversation_system_content(
     personality_context: str,
     memories_section: str = "",
+    workspace_section: str = "",
 ) -> str:
     """
     Build the full system prompt for conversation mode.
@@ -284,6 +285,7 @@ def get_conversation_system_content(
       + CONVERSATION_RULES (behavioral policy + style)
       + WRITING_RULES (rewrite / restructuring rules)
       + OUTPUT_FORMATTING_RULES (shared layout standard)
+      + workspace_section (if any — current project/documents in scope)
       + memories section (if any — Phase 2)
       + personality choice instruction (pick tone)
       + personality context (previous personality + is_first_message)
@@ -294,6 +296,9 @@ def get_conversation_system_content(
         WRITING_RULES,
         OUTPUT_FORMATTING_RULES,
     ]
+
+    if workspace_section:
+        parts.append(workspace_section)
 
     if memories_section:
         parts.append(memories_section)

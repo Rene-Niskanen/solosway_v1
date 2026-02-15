@@ -418,6 +418,19 @@ def submit_chat_feedback():
     details = (data.get('details') or '').strip()
     message_id = data.get('messageId')
     conversation_snippet = (data.get('conversationSnippet') or '')[:2000]
+    screenshot_bytes = None
+    screenshot_base64 = data.get('screenshotBase64')
+    if isinstance(screenshot_base64, str) and screenshot_base64:
+        import base64
+        raw = screenshot_base64
+        if raw.startswith('data:'):
+            raw = raw.split(',', 1)[-1] if ',' in raw else ''
+        try:
+            decoded = base64.b64decode(raw, validate=True)
+            if len(decoded) <= 3 * 1024 * 1024:  # 3 MB
+                screenshot_bytes = decoded
+        except Exception:
+            pass
     user_email = getattr(current_user, 'email', None) or 'unknown'
     from_email = os.environ.get('FEEDBACK_FROM_EMAIL') or os.environ.get('SMTP_USER') or 'feedback@solosway.co'
     to_email = 'connect@solosway.co'
@@ -442,11 +455,16 @@ def submit_chat_feedback():
             import smtplib
             from email.mime.text import MIMEText
             from email.mime.multipart import MIMEMultipart
+            from email.mime.image import MIMEImage
             msg = MIMEMultipart()
             msg['Subject'] = f'Chat feedback: {category[:50]}'
             msg['From'] = from_email
             msg['To'] = to_email
             msg.attach(MIMEText(body, 'plain'))
+            if screenshot_bytes:
+                img = MIMEImage(screenshot_bytes, _subtype='png')
+                img.add_header('Content-Disposition', 'attachment', filename='feedback-screenshot.png')
+                msg.attach(img)
             with smtplib.SMTP(smtp_host, smtp_port) as server:
                 server.starttls()
                 server.login(smtp_user, smtp_password)
@@ -687,7 +705,26 @@ def query_documents_stream():
                 
                 # When request sent no document_ids but we resolved one from property_id, pass it to the graph
                 effective_document_ids = document_ids if document_ids else ([document_id] if document_id else None)
-                
+
+                # Scope resolution: when user sent document_ids but no property_id, resolve property_id from first document
+                resolved_property_id = None
+                if (not property_id) and effective_document_ids and len(effective_document_ids) > 0:
+                    try:
+                        first_doc_id = effective_document_ids[0] if isinstance(effective_document_ids[0], str) else str(effective_document_ids[0])
+                        rel_result = supabase.table('document_relationships')\
+                            .select('property_id')\
+                            .eq('document_id', first_doc_id)\
+                            .limit(1)\
+                            .execute()
+                        if rel_result.data and len(rel_result.data) > 0 and rel_result.data[0].get('property_id'):
+                            resolved_property_id = rel_result.data[0]['property_id']
+                            logger.info(f"Resolved property_id from document(s): {resolved_property_id}")
+                    except Exception as e:
+                        logger.warning("Could not resolve property_id from document_ids: %s", e)
+
+                # Use request property_id or resolved from first document
+                effective_property_id = property_id or resolved_property_id
+
                 # NEW: Create execution event emitter with queue for streaming
                 from queue import Queue
                 from backend.llm.utils.execution_events import ExecutionEventEmitter
@@ -697,14 +734,15 @@ def query_documents_stream():
                 
                 # Build initial state for LangGraph
                 # Note: conversation_history will be loaded from checkpoint if thread_id exists
-                # Only provide minimal required fields - checkpointing will restore previous state
+                # Only provide minimal required fields - checkpointing will restore previous state.
+                # Do NOT pass document_ids when request has none – so checkpoint keeps responder-persisted
+                # document_ids from the previous turn (follow-up stays on same doc(s)).
                 initial_state = {
                     "user_query": query,
                     "user_id": str(current_user.id) if current_user.is_authenticated else "anonymous",
                     "business_id": business_id,
                     "session_id": session_id,
-                    "property_id": property_id,
-                    "document_ids": effective_document_ids,  # Request IDs or property-resolved document_id
+                    "property_id": effective_property_id,
                     "citation_context": citation_context,  # NEW: Pass structured citation metadata (bbox, page, text)
                     "response_mode": response_mode if response_mode else None,  # NEW: Response mode for file attachments (fast/detailed/full) - ensure None not empty string
                     "attachment_context": attachment_context if attachment_context else None,  # NEW: Extracted text from attached files - ensure None not empty dict
@@ -721,6 +759,9 @@ def query_documents_stream():
                     "last_chunk_failure_reason": None,
                     # conversation_history will be loaded from checkpointer or passed via messageHistory workaround
                 }
+                # Only set document_ids when request provided them (attachment or property). Otherwise leave unset so checkpoint keeps previous turn’s document_ids for follow-ups.
+                if effective_document_ids is not None and (not isinstance(effective_document_ids, list) or len(effective_document_ids) > 0):
+                    initial_state["document_ids"] = effective_document_ids
                 # #region agent log
                 try:
                     import json as json_module
@@ -3562,20 +3603,45 @@ def query_documents():
             except Exception as e:
                 logger.warning(f"Could not find document for property {property_id}: {e}")
         
+        # When request sent no document_ids but we resolved one from property_id, pass it to the graph
+        effective_document_ids = document_ids if document_ids else ([document_id] if document_id else None)
+        
+        # Scope resolution: when user sent document_ids but no property_id, resolve property_id from first document
+        resolved_property_id = None
+        if (not property_id) and effective_document_ids and len(effective_document_ids) > 0:
+            try:
+                supabase = get_supabase_client()
+                first_doc_id = effective_document_ids[0] if isinstance(effective_document_ids[0], str) else str(effective_document_ids[0])
+                rel_result = supabase.table('document_relationships')\
+                    .select('property_id')\
+                    .eq('document_id', first_doc_id)\
+                    .limit(1)\
+                    .execute()
+                if rel_result.data and len(rel_result.data) > 0 and rel_result.data[0].get('property_id'):
+                    resolved_property_id = rel_result.data[0]['property_id']
+                    logger.info(f"Resolved property_id from document(s): {resolved_property_id}")
+            except Exception as e:
+                logger.warning("Could not resolve property_id from document_ids: %s", e)
+        
+        effective_property_id = property_id or resolved_property_id
+        
         # Build initial state for LangGraph
-        # Note: conversation_history will be loaded from checkpoint if thread_id exists
-        # Only provide minimal required fields - checkpointing will restore previous state
+        # Note: conversation_history will be loaded from checkpoint if thread_id exists.
+        # Do NOT pass document_ids when request has none – so checkpoint keeps responder-persisted
+        # document_ids from the previous turn (follow-up stays on same doc(s)).
         initial_state = {
             "user_query": query,
             "user_id": str(current_user.id) if current_user.is_authenticated else "anonymous",
             "business_id": business_id,
             "session_id": session_id,
-            "property_id": property_id,
-            "document_ids": document_ids if document_ids else None,  # NEW: Pass document IDs for fast path
-            "citation_context": citation_context,  # NEW: Pass structured citation metadata (bbox, page, text)
-            "response_mode": response_mode if response_mode else None,  # NEW: Response mode for attachments (fast/detailed/full) - ensure None not empty string
-            "attachment_context": attachment_context if attachment_context else None  # NEW: Extracted text from attached files - ensure None not empty dict
+            "property_id": effective_property_id,
+            "citation_context": citation_context,
+            "response_mode": response_mode if response_mode else None,
+            "attachment_context": attachment_context if attachment_context else None,
         }
+        # Only set document_ids when request provided them (attachment or property). Otherwise leave unset so checkpoint keeps previous turn's document_ids for follow-ups.
+        if effective_document_ids is not None and (not isinstance(effective_document_ids, list) or len(effective_document_ids) > 0):
+            initial_state["document_ids"] = effective_document_ids
         
         async def run_query():
             try:
@@ -3679,7 +3745,7 @@ def query_documents():
         logger.info("🟣 [PERF][QUERY] %s", json.dumps({
             "endpoint": "/api/llm/query",
             "session_id": session_id,
-            "doc_ids_count": len(document_ids) if document_ids else 0,
+            "doc_ids_count": len(effective_document_ids) if effective_document_ids and isinstance(effective_document_ids, list) else 0,
             "timing": timing.to_ms()
         }))
         
