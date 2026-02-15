@@ -701,6 +701,32 @@ async def handle_citation_query(state: MainWorkflowState) -> MainWorkflowState:
     logger.info(f"⚡ [CITATION_QUERY] Cited text length: {len(cited_text)} chars")
     logger.info(f"⚡ [CITATION_QUERY] User query: {user_query[:100]}...")
     
+    # Fetch full document chunks for fallback when the answer isn't in the cited snippet (e.g. firm name in another section)
+    full_document_excerpt = ""
+    if doc_id:
+        try:
+            from backend.llm.citation.document_store import fetch_chunks
+            chunks = fetch_chunks([doc_id])
+            if chunks:
+                # Order by chunk_index if present, then join text; cap total size to avoid context overflow
+                max_fallback_chars = 14_000
+                ordered = sorted(chunks, key=lambda c: c.get("chunk_index", 0))
+                parts = []
+                for c in ordered:
+                    text = (c.get("chunk_text") or c.get("chunk_text_clean") or "").strip()
+                    if not text:
+                        continue
+                    if sum(len(p) for p in parts) + len(text) > max_fallback_chars:
+                        remaining = max_fallback_chars - sum(len(p) for p in parts)
+                        if remaining > 200:
+                            parts.append(text[:remaining] + "\n[...]")
+                        break
+                    parts.append(text)
+                full_document_excerpt = "\n\n".join(parts) if parts else ""
+                logger.info(f"⚡ [CITATION_QUERY] Fetched {len(chunks)} chunks for fallback ({len(full_document_excerpt)} chars)")
+        except Exception as e:
+            logger.warning(f"[CITATION_QUERY] Could not fetch full document for fallback: {e}")
+    
     if not cited_text:
         logger.warning("[CITATION_QUERY] No cited text provided, falling back to generic response")
         return {
@@ -726,7 +752,10 @@ async def handle_citation_query(state: MainWorkflowState) -> MainWorkflowState:
     from backend.llm.prompts.routing import get_citation_query_human_prompt
 
     system_msg = get_system_prompt('analyze')
-    human_content = get_citation_query_human_prompt(filename, page_number, cited_text, user_query)
+    human_content = get_citation_query_human_prompt(
+        filename, page_number, cited_text, user_query,
+        full_document_excerpt=full_document_excerpt or None,
+    )
 
     try:
         messages = [system_msg, HumanMessage(content=human_content)]

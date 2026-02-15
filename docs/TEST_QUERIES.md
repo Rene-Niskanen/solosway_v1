@@ -172,6 +172,15 @@ Queries are grouped by document. Use for retrieval and chat testing.
 - What does the Knight Frank letting agreement say about pets or smoking?
 - What check-in and check-out obligations are in the Knight Frank letting agreement?
 - What is the notice period for the landlord to access the property in the Knight Frank letting?
+- What is the security deposit or holding deposit in the Knight Frank residential letting agreement?
+- What does the Knight Frank letting say about damage, repairs and dilapidations?
+- Are utilities and council tax the tenant’s responsibility in the Knight Frank let?
+- What happens if the tenant wants to leave early under the Knight Frank letting?
+- Does the Knight Frank letting agreement require an inventory or schedule of condition?
+- What rent payment frequency and method does the Knight Frank letting specify?
+- What insurance does the Knight Frank letting require from landlord or tenant?
+- Is the Knight Frank residential letting agreement the 2024 updated version or March 24 version?
+- What are the penalties or interest for late rent in the Knight Frank letting?
 
 ---
 
@@ -185,6 +194,14 @@ Queries are grouped by document. Use for retrieval and chat testing.
 - How long is the sole agency or joint agency period in the Knight Frank sales agreement?
 - What happens if the property is sold by another agent in the Knight Frank agreement?
 - List all Knight Frank agreements and what each one is for
+- What is the commission percentage or fee in the Knight Frank joint agency agreement?
+- What is the difference between the Knight Frank non-exclusive and joint agency agreements?
+- Can the vendor withdraw from the Knight Frank agency agreement and on what terms?
+- What marketing materials or advertising does Knight Frank require under the agency agreement?
+- When is commission due in the Knight Frank sales agreement—on exchange or completion?
+- Does the Knight Frank agreement cover sale by the owner or another agent (introduction period)?
+- What property or instruction do the Knight Frank 2024 Mar24 agreements relate to?
+- How do I know if we have sole, joint or non-exclusive agency with Knight Frank?
 
 ---
 

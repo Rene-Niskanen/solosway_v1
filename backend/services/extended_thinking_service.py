@@ -98,7 +98,7 @@ Note: These are already-processed results from documents, not raw document chunk
             
             yield {"type": "thinking_start"}
             
-            async with self.client.messages.stream(
+``            async with self.client.messages.stream(
                 model=self.model,
                 max_tokens=8000,
                 thinking={

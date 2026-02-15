@@ -5,7 +5,7 @@ import { useMemo } from "react";
 import { createPortal, flushSync } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { generateAnimatePresenceKey, generateConditionalKey, generateUniqueKey } from '../utils/keyGenerator';
-import { ChevronRight, ChevronDown, ChevronUp, ArrowUp, Paperclip, Mic, Map, Globe, X, SquareDashedMousePointer, Scan, Fullscreen, Plus, PanelLeftOpen, PanelRightClose, PictureInPicture2, Trash2, CreditCard, MoveDiagonal, Square, FileText, Image as ImageIcon, File as FileIcon, FileCheck, Minimize, Minimize2, Workflow, Home, FolderOpen, Brain, AudioLines, MessageCircleDashed, Copy, Search, MessageSquare, Pencil, Check, Highlighter, SlidersHorizontal, BookOpen, Download, ThumbsUp, ThumbsDown } from "lucide-react";
+import { ChevronLeft, ChevronRight, ChevronDown, ChevronUp, ArrowUp, Paperclip, Mic, Map, Globe, X, SquareDashedMousePointer, Scan, Fullscreen, Plus, PanelLeftOpen, PanelRightClose, PictureInPicture2, Trash2, CreditCard, MoveDiagonal, Square, FileText, Image as ImageIcon, File as FileIcon, FileCheck, Minimize, Minimize2, Workflow, Home, FolderOpen, Brain, AudioLines, MessageCircleDashed, Copy, Search, MessageSquare, Pencil, Check, Highlighter, SlidersHorizontal, BookOpen, Download, ThumbsUp, ThumbsDown } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { FileAttachment, FileAttachmentData } from './FileAttachment';
 import { PropertyAttachmentData } from './PropertyAttachment';
@@ -3172,6 +3172,8 @@ interface SideChatPanelProps {
   isMapVisible?: boolean; // Whether map is currently visible (side-by-side with chat)
   onActiveChatChange?: (isActive: boolean) => void; // Callback when active chat state changes (loading query)
   onOpenChatHistory?: () => void; // Callback to open chat history panel
+  /** When in project chat (fullscreen property view), call this to go back to projects. When set, a Back button is shown next to the View button. */
+  onBackToProjects?: () => void;
   /** Exact segment order for query bubble when query comes from SearchBar/MapChatBar (dashboard/map submit). */
   initialContentSegments?: QueryContentSegment[];
   /** Ref set by MainContent on search submit so panel can use segments before state propagates. */
@@ -3287,6 +3289,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   isMapVisible = false, // Default to false
   onActiveChatChange,
   onOpenChatHistory,
+  onBackToProjects,
   initialContentSegments,
   pendingSearchContentSegmentsRef,
   initialDocumentChip,
@@ -5294,15 +5297,14 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
 
   // When returning to chat from map (or re-opening): mark all current messages as restored
   // so they render with no movement (no reveal/swoop/reasoning animations).
+  // Do this during render (not in useEffect) so the first paint already has isRestored=true
+  // and we never run reveal/swoop animations when re-entering.
   const prevVisibleForReopenRef = React.useRef<boolean>(isVisible);
-  React.useEffect(() => {
-    const wasVisible = prevVisibleForReopenRef.current;
-    prevVisibleForReopenRef.current = isVisible;
-    if (!wasVisible && isVisible && chatMessages.length > 0) {
-      restoredMessageIdsRef.current = new Set(chatMessages.map((m) => m.id));
-      setReopenNoAnimationTick((t) => t + 1);
-    }
-  }, [isVisible, chatMessages]);
+  const wasVisible = prevVisibleForReopenRef.current;
+  if (!wasVisible && isVisible && chatMessages.length > 0) {
+    restoredMessageIdsRef.current = new Set(chatMessages.map((m) => m.id));
+  }
+  prevVisibleForReopenRef.current = isVisible;
 
   // Sync messages to bubble in real-time
   React.useEffect(() => {
@@ -13713,6 +13715,34 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       <MoveDiagonal className="w-3.5 h-3.5 text-[#666]" strokeWidth={1.75} />
                       {actualPanelWidth >= 750 && (
                         <span className="text-[12px] font-normal text-[#666]">Expand</span>
+                      )}
+                    </button>
+                  )}
+                  {onBackToProjects && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        onBackToProjects();
+                      }}
+                      className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150`}
+                      title="Back to Projects"
+                      type="button"
+                      style={{
+                        padding: actualPanelWidth >= 750 ? '5px 8px' : '5px',
+                        height: '26px',
+                        minHeight: '26px',
+                        border: 'none',
+                        position: 'relative',
+                        zIndex: 10001,
+                        pointerEvents: 'auto',
+                        cursor: 'pointer',
+                        backgroundColor: 'rgba(0, 0, 0, 0.02)'
+                      }}
+                    >
+                      <ChevronLeft className="w-3.5 h-3.5 text-[#666]" strokeWidth={1.75} />
+                      {actualPanelWidth >= 750 && (
+                        <span className="text-[12px] font-normal text-[#666]">Back</span>
                       )}
                     </button>
                   )}

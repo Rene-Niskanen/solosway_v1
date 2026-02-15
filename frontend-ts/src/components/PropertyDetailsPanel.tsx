@@ -2572,22 +2572,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
             <div className="px-10 pt-4 pb-3 bg-[#FCFCF9] relative" style={{ zIndex: 1, borderBottom: 'none' }}>
               <div className="flex items-end justify-between gap-1">
                 <div className="flex items-end gap-1" style={{ maxWidth: 'fit-content' }}>
-                {/* Back button - when in fullscreen from Projects, go back to projects page */}
-                {isInChatMode && (
-                  <button
-                    type="button"
-                    onClick={onClose}
-                    className="flex items-center gap-2 px-3 py-2 text-sm font-medium text-gray-600 hover:text-gray-900 bg-[#FCFCF9] border-t border-l border-r border-gray-200 rounded-t-lg hover:bg-[#F5F5F2] transition-all cursor-pointer flex-shrink-0"
-                    style={{
-                      marginBottom: activeSection ? '-1px' : '0',
-                      zIndex: 1,
-                    }}
-                    title="Back to Projects"
-                  >
-                    <ChevronLeft className="flex-shrink-0 text-gray-500" style={{ width: '12px', height: '12px', minWidth: '12px', minHeight: '12px' }} />
-                    <span className="text-xs">Back</span>
-                  </button>
-                )}
+                {/* Back button moved to SideChatPanel (next to View) when in project chat */}
                 {displayOrder.map((section, index) => {
                   const isActive = activeSection === section;
                   const sectionConfig = {

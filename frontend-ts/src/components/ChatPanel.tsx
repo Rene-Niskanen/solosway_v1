@@ -270,7 +270,7 @@ export const ChatPanel = ({
                 whileHover={{ scale: 1.01 }} 
                 whileTap={{ scale: 0.99 }} 
                 className="w-full flex items-center justify-center gap-1.5 px-2.5 py-1.5 border border-slate-300/70 hover:border-slate-400/80 rounded transition-[border-color,background-color] duration-75 ease-out group"
-                style={{ backgroundColor: '#FCFCF9', opacity: 1, backdropFilter: 'none' }}
+                style={{ backgroundColor: 'white', opacity: 1, backdropFilter: 'none' }}
               >
                 <Plus className="w-3 h-3 text-slate-500" />
                 <span className="text-slate-600 text-[11px] font-medium">
@@ -333,7 +333,7 @@ export const ChatPanel = ({
                         className={`group relative px-2.5 py-1.5 rounded-md cursor-pointer w-full mb-0.5 transition-[background-color] duration-75 ease-out ${
                           selectedChatId === chat.id 
                             ? 'bg-white' 
-                            : openMenuId ? '' : 'hover:bg-[#E0E0DC]'
+                            : openMenuId ? '' : 'hover:bg-[#EBEBE8]'
                         }`}
                       >
                         {isEditing ? (
@@ -416,7 +416,7 @@ export const ChatPanel = ({
                                   <div className="h-px bg-gray-200 my-1 mx-1" />
                                   <button
                                     onClick={(e) => handleDeleteChat(e, chat.id)}
-                                    className="w-full px-2 py-1.5 text-center text-[11px] font-medium text-white bg-[#4285F4] hover:bg-[#3367D6] rounded transition-colors duration-75 ease-out"
+                                    className="w-full px-2 py-1 text-left text-[11px] text-gray-800 hover:bg-[#007AFF] hover:text-white rounded transition-colors duration-75 ease-out"
                                   >
                                     Delete
                                   </button>

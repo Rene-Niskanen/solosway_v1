@@ -97,25 +97,25 @@ CitationSaveMenuBar + CitationExportContext: save bbox screenshots or user-selec
 
 ## Citation pop-up
 
-Click a citation → CitationClickPanel (side panel: document, page, cited text/region). CitationActionMenu: copy, insert, related actions to reuse the citation.
+Clicking a citation opens **CitationClickPanel** (side panel with document, page, and cited text/region). **CitationActionMenu** in the panel offers copy, insert, and related actions to reuse the citation elsewhere.
 
 ---
 
 ## Citation buttons and follow-up highlight
 
 **CitationClickPanel** (side panel, bottom):  
-- **Ask follow up** — Adds a citation-snippet chip to the input and sends citation context (doc, page, bbox, cited text) with the next query. Orange highlight (below) shows which part of the previous response the follow-up refers to.  
-- **View in document** — Opens document preview (e.g. 50/50) at cited page with bbox highlight; citation stays highlighted (blue) in chat while open.  
-- **Save** — Save-citation flow (copy as image or choose region for Word).
+- **Ask follow up** — Adds a citation-snippet chip to the input and sends citation context (doc, page, bbox, cited text) with the next query. An orange highlight in the response (see below) shows which part the follow-up refers to.  
+- **View in document** — Opens the document in 50/50 view at the cited page with a bbox highlight; the citation stays highlighted (blue) in the chat while the document is open.  
+- **Save** — Starts the save-citation flow (copy as image for Word export).
 
 **CitationActionMenu** (floating menu on citation click):  
-- **Ask a question** — Inline field “Ask about this citation…”; submit sends query with citation context and can add a citation-snippet chip. Orange highlight then marks the text next to that citation.  
-- **Save citation** — Save-citation flow. **Close** — Close menu.
+- **Ask a question** — Inline field "Ask follow up"; you type a question and submit. The query is sent with citation context and a citation-snippet chip can be added. The orange highlight then marks the text next to that citation.  
+- **Save citation** — Save-citation flow. **Close** — Closes the menu.
 
 **Orange highlight**  
-When you use “Ask follow up” or “Ask a question”, a citation-snippet chip appears in the input. The run of text *immediately before* that citation in the response gets an orange/beige swoop highlight so you see which sentence/paragraph the follow-up is about. Driven by citation-snippet chips: we store message id + citation number; any segment right before that citation number gets the orange background.
+When you use “Ask follow up” or “Ask a question”, a citation-snippet chip appears in the input. The run of text *immediately before* that citation in the response gets an orange/beige swoop highlight so you see which sentence or paragraph the follow-up is about. This is driven by citation-snippet chips: we store message id + citation number; any segment right before that citation number gets the orange background.
 
-**CitationSaveMenuBar** (when saving for Word): **Copy** (FileText) — citation as image (bbox); **Choose** (Scissors) — custom region; **Cancel** (X).
+**CitationSaveMenuBar** (when saving for Word): **Copy** (FileText icon) — copy the citation as an image (bbox region); **Cancel** (X) — close the bar.
 
 ---
 
@@ -139,7 +139,13 @@ Export response (+ optional citations) to .docx. citationExport: crop to bbox, f
 
 ## Chat bar & search UI
 
-SegmentInput (property + document chips, @-mentions) on MapChatBar, SearchBar, SideChatPanel. ChatBarToolsDropdown: Search the web, Dashboard, Chat. ModeSelector, ModelSelector. Attach, Voice, WebSearchPill. ProjectsPage: updated list/layout, projects context, recent projects.
+SegmentInput (property + document chips, @-mentions) on MapChatBar, SearchBar, SideChatPanel. ChatBarToolsDropdown: Search the web, Dashboard, Chat. ModeSelector, ModelSelector. Attach, Voice, WebSearchPill.
+
+---
+
+## Projects section
+
+**ProjectsPage** shows project cards (folders) and a Files bar. Clicking a **project (folder)** opens a 50/50 split: property details on one side and chat on the other, so you can ask about that project’s documents without leaving the view. Clicking a **file** in the Files section does the same: it opens the document in 50/50 view with chat alongside, so you can start a conversation about that file immediately. Both flows use the same split layout and chat context (projects context, recent projects).
 
 ---
 

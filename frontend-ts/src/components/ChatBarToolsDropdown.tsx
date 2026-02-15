@@ -62,13 +62,14 @@ export function ChatBarToolsDropdown({
         align="end"
         side="top"
         sideOffset={5}
-        className="p-0.5"
+        className="p-0.5 z-[10002]"
         style={{
           backgroundColor: "#FFFFFF",
           border: "1px solid rgba(229, 231, 235, 0.8)",
           borderRadius: "10px",
           boxShadow: "0 3px 10px rgba(0, 0, 0, 0.1)",
           minWidth: "153px",
+          zIndex: 10002, // Above agent sidebar backdrop (9999) and panel (10001) so Tools works when sidebar is open
         }}
       >
         {items.map((item) => {

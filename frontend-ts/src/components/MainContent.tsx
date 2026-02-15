@@ -1946,17 +1946,7 @@ const FullscreenPropertyView: React.FC<FullscreenPropertyViewProps> = ({
   
   return (
     <>
-      {/* Back button - positioned above everything */}
-      <button
-        onClick={onClose}
-        className="fixed top-4 z-[10000] flex items-center gap-1.5 px-3 py-1.5 bg-white border border-gray-200 rounded-lg shadow-sm hover:bg-gray-50 transition-colors"
-        style={{ left: fullscreenSidebarWidth + 16 }}
-      >
-        <ArrowLeft className="w-4 h-4 text-gray-600" strokeWidth={1.5} />
-        <span className="text-sm text-gray-600">Back to Projects</span>
-      </button>
-
-      {/* Chat Panel - SideChatPanel handles its own positioning */}
+      {/* Chat Panel - Back button is in chat bar next to View (onBackToProjects) */}
       <SideChatPanel
         isVisible={true}
         query=""
@@ -1978,6 +1968,7 @@ const FullscreenPropertyView: React.FC<FullscreenPropertyViewProps> = ({
         onMapToggle={onClose}
         onNewChat={onNewChat}
         onSidebarToggle={onSidebarToggle}
+        onBackToProjects={onClose}
         onChatWidthChange={(width) => {
           // Update dynamic width when chat is resized
           setDynamicChatWidth(width);
