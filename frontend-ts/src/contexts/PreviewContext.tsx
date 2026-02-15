@@ -64,9 +64,9 @@ interface PreviewContextType {
   // Use ChatStateStore.openDocumentForChat() and ChatStateStore.closeDocumentForChat() instead.
   // =========================================================
   /** @deprecated Use ChatStateStore.getChatState(chatId).documentPreview instead */
-  expandedCardViewDoc: { docId: string; filename: string; highlight?: CitationHighlight } | null;
+  expandedCardViewDoc: { docId: string; filename: string; highlight?: CitationHighlight; scrollRequestId?: number; isAgentTriggered?: boolean } | null;
   /** @deprecated Use ChatStateStore directly */
-  setExpandedCardViewDoc: React.Dispatch<React.SetStateAction<{ docId: string; filename: string; highlight?: CitationHighlight } | null>>;
+  setExpandedCardViewDoc: React.Dispatch<React.SetStateAction<{ docId: string; filename: string; highlight?: CitationHighlight; scrollRequestId?: number; isAgentTriggered?: boolean } | null>>;
   /** @deprecated Use ChatStateStore.openDocumentForChat() instead */
   openExpandedCardView: (docId: string, filename: string, highlight?: CitationHighlight, isAgentTriggered?: boolean) => void;
   /** @deprecated Use ChatStateStore.closeDocumentForChat() instead */
@@ -113,7 +113,7 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
   // DEPRECATED: Document preview state - being replaced by ChatStateStore
   // This global state causes cross-contamination between chats.
   // ChatStateStore provides per-chat document preview isolation.
-  const [expandedCardViewDoc, setExpandedCardViewDoc] = React.useState<{ docId: string; filename: string; highlight?: CitationHighlight } | null>(null);
+  const [expandedCardViewDoc, setExpandedCardViewDoc] = React.useState<{ docId: string; filename: string; highlight?: CitationHighlight; scrollRequestId?: number; isAgentTriggered?: boolean } | null>(null);
   
   // Agent UI state (not chat-specific)
   const [isAgentOpening, setIsAgentOpening] = React.useState<boolean>(false);
@@ -134,6 +134,8 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const [renderedPageCache, setRenderedPageCache] = React.useState<DocumentPageCache>(new Map());
   // NEW: Track pages currently being pre-rendered to prevent duplicate concurrent renders
   const preRenderingInProgressRef = React.useRef<Set<string>>(new Set()); // Format: "fileId:pageNumber"
+  // When agent opens a doc we record timestamp; glow on "chat visible" only if this was recent (avoid glow on re-enter)
+  const agentOpenedDocAtRef = React.useRef<number>(0);
 
   const clearHighlightCitation = React.useCallback(() => {
     setHighlightCitation(null);
@@ -178,31 +180,26 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
         hasHighlight: !!highlight,
         currentExpandedDoc: expandedCardViewDoc?.docId
       });
+      agentOpenedDocAtRef.current = Date.now(); // So we only show glow when chat becomes visible if this was recent
       setIsAgentOpening(true);
       // Always set expandedCardViewDoc immediately for agent actions (silent opening)
       // It won't render until chat becomes visible, but it's already loaded in state
-      setExpandedCardViewDoc({ docId, filename, highlight });
+      setExpandedCardViewDoc({ docId, filename, highlight, isAgentTriggered: true });
       console.log('✅ [PREVIEW] expandedCardViewDoc set for agent action - document ready in background');
       return;
     }
     
-    // Skip state update if the same document with same highlight is already open
-    // This prevents the button animation glitch when clicking the same citation twice
-    if (isSameDocument()) {
-      console.log('📂 [PREVIEW] Same document already open - skipping state update:', { docId, filename });
-      return;
-    }
-    
-    // For user-triggered opens, always set the document directly (don't queue)
-    // The document preview will render regardless of chat panel visibility
-    // This allows users to click documents from the dashboard and see them immediately
-    // The StandaloneExpandedCardView handles positioning for both cases (chat open and closed)
+    // For user-triggered opens, always update state so that re-clicking the same citation
+    // triggers a new scrollRequestId and StandaloneExpandedCardView re-scrolls to the citation.
+    // (If we skipped when isSameDocument(), re-click would do nothing.)
+    const scrollRequestId = Date.now();
     console.log('📂 [PREVIEW] User-triggered document open - setting directly:', { 
       docId, 
       filename,
-      chatVisible: isChatPanelVisible
+      chatVisible: isChatPanelVisible,
+      scrollRequestId
     });
-    setExpandedCardViewDoc({ docId, filename, highlight });
+    setExpandedCardViewDoc({ docId, filename, highlight, scrollRequestId });
   }, [isChatPanelVisible, expandedCardViewDoc]);
 
   // NEW: Close standalone ExpandedCardView
@@ -231,34 +228,42 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
   }, [isChatPanelVisible, pendingExpandedCardViewDoc]);
   
   // NEW: Effect to restore agent opening state when chat becomes visible with document already open
-  // This ensures the glow effect appears when user returns to chat with a silently-opened document
-  // Use ref to track which document we've already shown glow for (prevents infinite loop)
+  // Only show glow when the document was *recently* opened by the agent (e.g. agent opened while chat was hidden).
+  // When re-entering a chat that had a document open from before, do NOT show the glow (no opening animation).
   const glowShownForDocRef = React.useRef<string | null>(null);
   const prevChatVisibleRef = React.useRef<boolean>(isChatPanelVisible);
-  
+
+  // Depend only on docId (and visibility) so we don't re-run when object reference changes (e.g. new scrollRequestId)
+  const expandedDocId = expandedCardViewDoc?.docId ?? null;
   React.useEffect(() => {
     const chatJustBecameVisible = !prevChatVisibleRef.current && isChatPanelVisible;
     prevChatVisibleRef.current = isChatPanelVisible;
-    
-    // Only trigger glow when chat JUST became visible (transition from hidden to visible)
-    // and we haven't already shown glow for this document
-    if (chatJustBecameVisible && expandedCardViewDoc && expandedCardViewDoc.docId !== glowShownForDocRef.current) {
-      // Check if this document was opened silently in the background (likely agent-triggered)
-      // Restore agent opening state to show glow effect
-      console.log('📋 [PREVIEW] Chat panel visible with document already open - restoring agent opening state');
-      glowShownForDocRef.current = expandedCardViewDoc.docId; // Mark that we've shown glow for this doc
+
+    // Only trigger glow when chat JUST became visible and this document was *recently* opened by the agent
+    // (within last 3s). When re-entering a chat that had the doc open from before, agentOpenedDocAtRef is old → no glow.
+    const recentlyOpenedByAgent = agentOpenedDocAtRef.current > 0 && (Date.now() - agentOpenedDocAtRef.current) < 3000;
+    if (
+      chatJustBecameVisible &&
+      expandedCardViewDoc &&
+      expandedCardViewDoc.isAgentTriggered === true &&
+      expandedCardViewDoc.docId !== glowShownForDocRef.current &&
+      recentlyOpenedByAgent
+    ) {
+      console.log('📋 [PREVIEW] Chat panel visible with recently agent-opened document - restoring agent opening state');
+      glowShownForDocRef.current = expandedCardViewDoc.docId;
       setIsAgentOpening(true);
-      // Clear after a brief moment (glow effect duration)
-      setTimeout(() => {
+      const timer = setTimeout(() => {
         setIsAgentOpening(false);
       }, 2000);
+      return () => clearTimeout(timer);
     }
-    
-    // Reset glow tracking when document changes
-    if (expandedCardViewDoc?.docId !== glowShownForDocRef.current && expandedCardViewDoc) {
+
+    // Reset glow tracking when document ID actually changes (different doc)
+    if (expandedCardViewDoc && expandedCardViewDoc.docId !== glowShownForDocRef.current) {
       glowShownForDocRef.current = null;
     }
-  }, [isChatPanelVisible, expandedCardViewDoc]);
+  // expandedCardViewDoc in deps for isAgentTriggered; expandedDocId keeps runs minimal when only scrollRequestId changes
+  }, [isChatPanelVisible, expandedDocId, expandedCardViewDoc]);
 
   // NEW: Effect to open pending preview files when chat becomes visible
   React.useEffect(() => {

@@ -1,10 +1,9 @@
 """
-Citation Mapping Tool - LLM provides block IDs directly from document extracts.
+Citation Mapping Tool - resolve citations to bbox using cited text as source of truth.
 
-This tool allows the LLM to cite specific blocks from document extracts by their block ID.
-The LLM looks up the block ID in the Metadata Look-Up Table to get bbox coordinates.
-
-Uses CitationTool class to store citations with bbox lookup and state management.
+The LLM provides block_id and cited_text. We resolve to the block whose content best
+matches cited_text (block_id is a hint); that block's bbox is used for highlighting.
+Uses CitationTool and resolve_citation_to_block for a single resolution path.
 """
 
 import logging
@@ -38,7 +37,7 @@ def verify_citation_match(cited_text: str, block_content: str) -> Dict[str, Any]
     Verify that cited_text matches block_content.
     
     Args:
-        cited_text: Text the LLM is citing
+        cited_text: Text the LLM is citing (e.g., "90-day value: £1,950,000")
         block_content: Actual content of the block being cited
     
     Returns:
@@ -54,48 +53,6 @@ def verify_citation_match(cited_text: str, block_content: str) -> Dict[str, Any]
         return {'match': False, 'confidence': 'low', 'matched_terms': [], 'missing_terms': ['block_content_missing'], 'numeric_matches': []}
     
     import re
-    
-    # CRITICAL: Check for exact phrase match FIRST (highest priority for all citations)
-    # This ensures citations match the exact fact being stated, not just similar words
-    cited_lower = cited_text.lower().strip()
-    block_lower = block_content.lower()
-    
-    # Try exact phrase match first
-    if cited_lower in block_lower:
-        # Exact phrase found - highest confidence
-        _debug_log({
-            "location": "citation_mapping.verify_citation_match:exact_phrase_match",
-            "data": {
-                "cited_text": cited_text,
-                "exact_match": True,
-            },
-        })
-        return {
-            'match': True,
-            'confidence': 'high',
-            'matched_terms': ['exact_phrase_match'],
-            'missing_terms': [],
-            'numeric_matches': []
-        }
-    
-    # Try phrase match with normalized whitespace (multiple spaces -> single space)
-    cited_normalized = re.sub(r'\s+', ' ', cited_lower)
-    block_normalized = re.sub(r'\s+', ' ', block_lower)
-    if cited_normalized in block_normalized:
-        _debug_log({
-            "location": "citation_mapping.verify_citation_match:exact_phrase_match_normalized",
-            "data": {
-                "cited_text": cited_text,
-                "exact_match": True,
-            },
-        })
-        return {
-            'match': True,
-            'confidence': 'high',
-            'matched_terms': ['exact_phrase_match'],
-            'missing_terms': [],
-            'numeric_matches': []
-        }
     
     # Extract numeric values from cited_text (normalize formats: £1,950,000, 1950000, 1,950,000)
     numeric_pattern = r'£?([\d,]+\.?\d*)'
@@ -128,129 +85,6 @@ def verify_citation_match(cited_text: str, block_content: str) -> Dict[str, Any]
     # Check for term matches
     term_matches = [term for term in cited_terms if term in block_terms]
     missing_terms = [term for term in cited_terms if term not in block_terms]
-    
-    # CRITICAL: For negative statements (e.g., "no recent planning history"), require key phrase matching
-    # Check if cited_text contains negative indicators
-    negative_indicators = ['no ', 'not ', 'none', 'without', 'lack of', 'absence of']
-    is_negative_statement = any(indicator in cited_text.lower() for indicator in negative_indicators)
-    
-    if is_negative_statement:
-        # For negative statements, extract core semantic concept (remove negative indicators to get the concept)
-        # Then verify the block contains both the negative indicator AND the core concept
-        core_concept = cited_lower
-        for indicator in negative_indicators:
-            core_concept = core_concept.replace(indicator, '').strip()
-        
-        # Extract significant terms from core concept (4+ chars)
-        core_terms = [word.lower() for word in re.findall(r'\b\w{4,}\b', core_concept)]
-        
-        # The block must contain ALL core concept terms
-        # This ensures "no recent planning history" matches blocks that contain "planning history" concept
-        if core_terms:
-            core_terms_in_block = all(term in block_terms for term in core_terms)
-            
-            if not core_terms_in_block:
-                # The block doesn't contain the core concept - this is a mismatch
-                _debug_log({
-                    "location": "citation_mapping.verify_citation_match:negative_statement_fail",
-                    "data": {
-                        "cited_text": cited_text,
-                        "core_concept": core_concept,
-                        "core_terms": core_terms,
-                        "core_terms_in_block": core_terms_in_block,
-                        "block_content_preview": block_content[:150],
-                    },
-                })
-                return {
-                    'match': False,
-                    'confidence': 'low',
-                    'matched_terms': term_matches,
-                    'missing_terms': missing_terms + core_terms,
-                    'numeric_matches': []
-                }
-            
-            # If core terms match, check if the block also contains a negative indicator
-            # This ensures we're matching the right semantic meaning
-            block_has_negative = any(indicator in block_lower for indicator in negative_indicators)
-            if block_has_negative and core_terms_in_block:
-                # High confidence: block contains both negative indicator and core concept
-                return {
-                    'match': True,
-                    'confidence': 'high',
-                    'matched_terms': term_matches + ['negative_semantic_match'],
-                    'missing_terms': [],
-                    'numeric_matches': numeric_matches
-                }
-    
-    # Determine confidence
-    has_numeric_match = len(numeric_matches) > 0
-    has_term_match = len(term_matches) > 0
-    
-    # CRITICAL: For ALL descriptive citations (no numbers), require strict term matching
-    # This prevents "well-maintained gardens with defined boundaries" from matching blocks that only have "gardens"
-    # Short descriptive (2-4 terms): require ALL terms
-    # Longer descriptive (5+ terms): require 80%+ of key terms (excluding common words)
-    is_descriptive = len(cited_numbers_normalized) == 0 and len(cited_terms) >= 2
-    if is_descriptive:
-        # Filter out common/stop words that don't add semantic meaning
-        common_words = {'the', 'and', 'or', 'but', 'with', 'for', 'from', 'that', 'this', 'are', 'was', 'were', 'been', 'have', 'has', 'had', 'will', 'would', 'could', 'should', 'may', 'might', 'can', 'must', 'shall'}
-        key_terms = [term for term in cited_terms if term not in common_words]
-        
-        if len(key_terms) == 0:
-            # All terms were common words - use all terms
-            key_terms = cited_terms
-        
-        matched_key_terms = [term for term in key_terms if term in block_terms]
-        missing_key_terms = [term for term in key_terms if term not in block_terms]
-        
-        # For short descriptive (2-4 terms): require ALL key terms
-        # For longer descriptive (5+ terms): require 80%+ of key terms
-        if len(key_terms) <= 4:
-            # Short descriptive: ALL key terms must match
-            all_key_terms_match = len(missing_key_terms) == 0
-            if not all_key_terms_match:
-                _debug_log({
-                    "location": "citation_mapping.verify_citation_match:short_descriptive_fail",
-                    "data": {
-                        "cited_text": cited_text,
-                        "cited_terms": cited_terms,
-                        "key_terms": key_terms,
-                        "missing_key_terms": missing_key_terms,
-                        "matched_key_terms": matched_key_terms,
-                        "block_content_preview": block_content[:150],
-                    },
-                })
-                return {
-                    'match': False,
-                    'confidence': 'low',
-                    'matched_terms': term_matches,
-                    'missing_terms': missing_terms + missing_key_terms,
-                    'numeric_matches': []
-                }
-        else:
-            # Longer descriptive: require 80%+ of key terms
-            match_ratio = len(matched_key_terms) / len(key_terms) if len(key_terms) > 0 else 0
-            if match_ratio < 0.8:
-                _debug_log({
-                    "location": "citation_mapping.verify_citation_match:long_descriptive_fail",
-                    "data": {
-                        "cited_text": cited_text,
-                        "cited_terms": cited_terms,
-                        "key_terms": key_terms,
-                        "matched_key_terms": matched_key_terms,
-                        "missing_key_terms": missing_key_terms,
-                        "match_ratio": match_ratio,
-                        "required_ratio": 0.8,
-                        "block_content_preview": block_content[:150],
-                    },
-                })
-                return {
-                    'match': False,
-                    'confidence': 'low',
-                    'matched_terms': term_matches,
-                    'missing_terms': missing_terms + missing_key_terms,
-                    'numeric_matches': []
-                }
     
     # CRITICAL: For valuation figures, require EXACT numeric match
     # If cited_text contains a specific amount (e.g., "£1,950,000"), the block MUST contain that exact amount
@@ -297,6 +131,10 @@ def verify_citation_match(cited_text: str, block_content: str) -> Dict[str, Any]
                 'numeric_matches': []
             }
     
+    # Determine confidence
+    has_numeric_match = len(numeric_matches) > 0
+    has_term_match = len(term_matches) > 0
+    
     if has_numeric_match and has_term_match:
         confidence = 'high'
         match = True
@@ -314,6 +152,71 @@ def verify_citation_match(cited_text: str, block_content: str) -> Dict[str, Any]
         'missing_terms': missing_terms,
         'numeric_matches': numeric_matches
     }
+
+
+def resolve_citation_to_block(
+    cited_text: str,
+    block_id_hint: Optional[str],
+    metadata_lookup_tables: Dict[str, Dict[str, Dict[str, Any]]],
+) -> Optional[Tuple[str, str, Dict[str, Any]]]:
+    """
+    Resolve a citation to the block that best matches cited_text. Cited text is the source of truth;
+    block_id_hint (from the LLM) is used to narrow scope or as fallback.
+
+    Returns (doc_id, block_id, block_metadata) for the best-matching block, or None.
+    """
+    if not cited_text or not metadata_lookup_tables:
+        return None
+
+    # Determine scope: if hint exists in tables, prefer searching that doc first
+    docs_to_search: List[Tuple[str, Dict[str, Dict[str, Any]]]] = []
+    hint_doc_id: Optional[str] = None
+    if block_id_hint:
+        for doc_id, meta_table in metadata_lookup_tables.items():
+            if block_id_hint in (meta_table or {}):
+                hint_doc_id = doc_id
+                docs_to_search.append((doc_id, meta_table))
+                break
+    if not docs_to_search:
+        docs_to_search = list((metadata_lookup_tables or {}).items())
+
+    best: Optional[Tuple[str, str, Dict[str, Any], float, str]] = None
+    min_confidence_ok = ('high', 'medium')
+
+    for doc_id, meta_table in docs_to_search:
+        for bid, block_meta in (meta_table or {}).items():
+            content = (block_meta or {}).get('content', '') or ''
+            if not content:
+                continue
+            verification = verify_citation_match(cited_text, content)
+            score = 100 if verification.get('confidence') == 'high' else 50 if verification.get('confidence') == 'medium' else 10
+            score += len(verification.get('numeric_matches', [])) * 30
+            if len(verification.get('matched_terms', [])) > 2:
+                score += len(verification['matched_terms']) * 5
+            conf = verification.get('confidence', 'low')
+            if conf in min_confidence_ok and (best is None or score > best[3]):
+                best = (doc_id, bid, block_meta, score, conf)
+
+    if best:
+        doc_id, block_id, block_metadata, score, conf = best
+        logger.info(
+            "[CITATION_DEBUG] resolve_citation_to_block chose doc_id=%s block_id=%s confidence=%s score=%s",
+            (doc_id or "")[:12], block_id, conf, score,
+        )
+        return (doc_id, block_id, block_metadata)
+
+    # Fallback: use hint block if present in tables
+    if block_id_hint and hint_doc_id:
+        meta_table = metadata_lookup_tables.get(hint_doc_id, {})
+        block_metadata = (meta_table or {}).get(block_id_hint)
+        if block_metadata:
+            logger.info(
+                "[CITATION_DEBUG] resolve_citation_to_block fallback to hint block_id=%s doc_id=%s",
+                block_id_hint, (hint_doc_id or "")[:12],
+            )
+            return (hint_doc_id, block_id_hint, block_metadata)
+
+    return None
 
 
 def build_searchable_blocks_from_metadata_lookup_tables(
@@ -653,11 +556,15 @@ class CitationTool:
         Returns:
             Confirmation string
         """
-        # Check for duplicate citations before processing
+        # Cited text is source of truth; resolve to the block that best matches it (block_id is a hint).
+        logger.info(
+            "[CITATION_DEBUG] add_citation entry citation_number=%s block_id=%s cited_text=%s",
+            citation_number, block_id, (cited_text or "")[:200],
+        )
         if self._is_duplicate_citation(cited_text, block_id):
             existing_citation = next(
                 (c for c in self.citations if c.get('block_id') == block_id),
-                None
+                None,
             )
             if existing_citation:
                 logger.info(
@@ -667,293 +574,44 @@ class CitationTool:
                     f"New: '{cited_text[:50]}...'"
                 )
                 return f"⚠️ Citation {citation_number} skipped - duplicate of citation {existing_citation.get('citation_number')} for same fact"
-        
-        # Find block in metadata tables
-        block_metadata = None
-        doc_id = None
-        
-        for doc_id_candidate, metadata_table in self.metadata_lookup_tables.items():
-            if block_id in metadata_table:
-                block_metadata = metadata_table[block_id]
-                doc_id = doc_id_candidate
-                break
-        
-        if not block_metadata:
-            logger.warning(
-                f"[CITATION_TOOL] Block ID {block_id} (citation {citation_number}) "
-                f"not found in metadata tables"
-            )
-            return f"⚠️ Citation {citation_number} recorded but block {block_id} not found"
-        
-        # Prefer the LLM-provided block_id when it exists in the metadata table.
-        # Only fall back to semantic "best match" when the direct block content doesn't verify.
-        # The previous behavior (always overriding block_id) can cause citation # -> bbox mismatches,
-        # where clicking a citation opens an unrelated location.
-        direct_block_content = (block_metadata or {}).get('content', '') or ''
-        direct_verification = verify_citation_match(cited_text, direct_block_content) if direct_block_content else {'confidence': 'low'}
-        if direct_verification.get('confidence') in ('high', 'medium'):
-            logger.info(
-                f"[CITATION_TOOL] ✅ Using direct block_id for citation {citation_number}: {block_id} "
-                f"(confidence: {direct_verification.get('confidence')})"
-            )
-        else:
-            logger.info(
-                f"[CITATION_TOOL] 🔍 Direct block_id verification low for citation {citation_number}; "
-                f"falling back to semantic search. block_id={block_id}, confidence={direct_verification.get('confidence')}"
-            )
-        
-        # Key semantic terms that indicate professional valuation vs market activity
-        valuation_terms = ['market value', 'assessed', 'valuation', 'valued at', 'professional', 'valuer', 'mrics', '90-day', '180-day', 'marketing period']
-        market_activity_terms = ['offer', 'rejected', 'marketing', 'guide price', 'under offer', 'viewing', 'savills']
-        
-        # Check if cited_text contains valuation terms
-        cited_lower = cited_text.lower()
-        is_valuation_query = any(term in cited_lower for term in valuation_terms)
-        is_market_activity_query = any(term in cited_lower for term in market_activity_terms)
-        
-        # Search all blocks using Phase 2 semantic matching logic (only used as fallback)
-        best_match = None
-        best_score = -1
-        best_confidence = 'low'
-        
-        if direct_verification.get('confidence') not in ('high', 'medium'):
-            for search_doc_id, search_metadata_table in self.metadata_lookup_tables.items():
-                for search_block_id, search_block_meta in search_metadata_table.items():
-                    search_block_content = search_block_meta.get('content', '')
-                    if not search_block_content:
-                        continue
-                
-                block_lower = search_block_content.lower()
-                
-                # Verify match using same logic as Phase 2
-                verification = verify_citation_match(cited_text, search_block_content)
-                score = 0
-                
-                # Base score from verification (same as Phase 2)
-                if verification['confidence'] == 'high':
-                    score += 100
-                elif verification['confidence'] == 'medium':
-                    score += 50
-                else:
-                    score += 10
-                
-                # Semantic context bonus: prioritize blocks that match the semantic type (same as Phase 2)
-                if is_valuation_query:
-                    # Boost blocks that contain valuation terms
-                    if any(term in block_lower for term in valuation_terms):
-                        score += 50
-                    # Penalize blocks that contain market activity terms (unless also in query)
-                    if not is_market_activity_query and any(term in block_lower for term in market_activity_terms):
-                        score -= 30
-                
-                if is_market_activity_query:
-                    # Boost blocks that contain market activity terms
-                    if any(term in block_lower for term in market_activity_terms):
-                        score += 50
-                
-                # Bonus for matching key terms from cited_text (same as Phase 2)
-                matched_terms = verification.get('matched_terms', [])
-                if len(matched_terms) > 2:  # Multiple term matches = better semantic match
-                    score += len(matched_terms) * 5
-                
-                # Penalty for missing important terms (same as Phase 2)
-                missing_terms = verification.get('missing_terms', [])
-                if len(missing_terms) > 3:  # Many missing terms = likely wrong match
-                    score -= len(missing_terms) * 3
-                
-                # CRITICAL: Extra bonus for exact numeric matches (prioritize blocks with same numbers)
-                numeric_matches = verification.get('numeric_matches', [])
-                if numeric_matches:
-                    score += len(numeric_matches) * 30  # Strong bonus for numeric matches
-                
-                # Update best match if this score is higher
-                    if score > best_score:
-                        best_score = score
-                        best_match = {
-                            'block_id': search_block_id,
-                            'block_metadata': search_block_meta,
-                            'doc_id': search_doc_id,
-                            'verification': verification,
-                            'score': score,
-                            'content': search_block_content
-                        }
-                        # Update confidence based on score (same as Phase 2)
-                        if score >= 100:
-                            best_confidence = 'high'
-                        elif score >= 50:
-                            best_confidence = 'medium'
-                        else:
-                            best_confidence = 'low'
-        
-        # Use best match found (same logic as Phase 2) - only when direct verification failed.
-        if direct_verification.get('confidence') not in ('high', 'medium') and best_match and best_confidence in ['high', 'medium']:
-            if best_match['block_id'] != block_id:
-                logger.warning(
-                    f"[CITATION_TOOL] ✅ Phase 1: Found better block match for citation {citation_number}:\n"
-                    f"  - LLM suggested: {block_id}\n"
-                    f"  - Best match: {best_match['block_id']} (score: {best_score}, confidence: {best_confidence})\n"
-                    f"  - cited_text: '{cited_text[:80]}...'\n"
-                    f"  - Best block content: '{best_match['content'][:80]}...'\n"
-                    f"  - Numeric matches: {best_match['verification']['numeric_matches']}\n"
-                    f"  - Matched terms: {best_match['verification']['matched_terms']}"
-                )
-            else:
-                logger.info(
-                    f"[CITATION_TOOL] ✅ Phase 1: LLM's block_id {block_id} matches best semantic match "
-                    f"(score: {best_score}, confidence: {best_confidence})"
-                )
-            
-            # Use the best match found
-            # CRITICAL: Update all three together to ensure they're in sync
-            corrected_block_id = best_match['block_id']
-            corrected_block_metadata = best_match['block_metadata']
-            corrected_doc_id = best_match['doc_id']
-            
-            # Verify the corrected block_id exists in the metadata table for the corrected doc_id
-            if corrected_block_id not in self.metadata_lookup_tables.get(corrected_doc_id, {}):
-                logger.error(
-                    f"[CITATION_TOOL] ❌ CRITICAL: Corrected block_id {corrected_block_id} not found in "
-                    f"doc {corrected_doc_id[:8]} metadata table! This indicates a mismatch."
-                )
-                # Try to find it in any doc
-                found_in_other_doc = False
-                for fallback_doc_id, fallback_metadata_table in self.metadata_lookup_tables.items():
-                    if corrected_block_id in fallback_metadata_table:
-                        corrected_block_metadata = fallback_metadata_table[corrected_block_id]
-                        corrected_doc_id = fallback_doc_id
-                        found_in_other_doc = True
-                        logger.warning(
-                            f"[CITATION_TOOL] ✅ Recovered: Found block_id {corrected_block_id} in doc {fallback_doc_id[:8]}"
-                        )
-                        break
-                if not found_in_other_doc:
-                    logger.error(
-                        f"[CITATION_TOOL] ❌❌❌ Could not recover - block_id {corrected_block_id} not found in any metadata table!"
-                    )
-                    # Fallback to original (shouldn't happen, but safety)
-                    corrected_block_id = block_id
-                    corrected_block_metadata = block_metadata
-                    corrected_doc_id = doc_id
-            
-            # Update variables with corrected values (all in sync)
-            block_id = corrected_block_id
-            block_metadata = corrected_block_metadata
-            doc_id = corrected_doc_id
-            
-            _debug_log({
-                "location": "citation_mapping.add_citation:verified_block_sync",
-                "data": {
-                    "citation_number": citation_number,
-                    "block_id": block_id,
-                    "doc_id": (doc_id[:8] if doc_id else "UNKNOWN"),
-                    "block_id_in_metadata": block_id in self.metadata_lookup_tables.get(doc_id, {}),
-                    "block_content_preview": best_match['content'][:100] if best_match else None,
-                    "numeric_matches": best_match['verification']['numeric_matches'] if best_match else None,
-                    "matched_terms": best_match['verification']['matched_terms'] if best_match else None,
-                    "score": best_score,
-                    "confidence": best_confidence
-                }
-            })
-        elif best_match:
-            logger.error(
-                f"[CITATION_TOOL] ❌ Phase 1: Low confidence match for citation {citation_number} "
-                f"(score: {best_score}, confidence: {best_confidence})\n"
-                f"  - cited_text: '{cited_text}'\n"
-                f"  - Best match block: {best_match['block_id']}\n"
-                f"  - Will use best match anyway (no better option)"
-            )
-            # Still use best match even if low confidence (better than nothing)
-            # CRITICAL: Update all three together to ensure they're in sync
-            corrected_block_id = best_match['block_id']
-            corrected_block_metadata = best_match['block_metadata']
-            corrected_doc_id = best_match['doc_id']
-            
-            # Verify sync
-            if corrected_block_id not in self.metadata_lookup_tables.get(corrected_doc_id, {}):
-                logger.error(
-                    f"[CITATION_TOOL] ❌ CRITICAL: Low confidence block_id {corrected_block_id} not found in "
-                    f"doc {corrected_doc_id[:8]} metadata table!"
-                )
-                # Try to find it in any doc
-                for fallback_doc_id, fallback_metadata_table in self.metadata_lookup_tables.items():
-                    if corrected_block_id in fallback_metadata_table:
-                        corrected_block_metadata = fallback_metadata_table[corrected_block_id]
-                        corrected_doc_id = fallback_doc_id
-                        break
-            
-            block_id = corrected_block_id
-            block_metadata = corrected_block_metadata
-            doc_id = corrected_doc_id
-        else:
-            logger.error(
-                f"[CITATION_TOOL] ❌❌❌ Phase 1: NO MATCH FOUND for citation {citation_number}!\n"
-                f"  - cited_text: '{cited_text}'\n"
-                f"  - Will use LLM's original block_id {block_id} (may be WRONG!)"
-            )
-            # Fallback to original (shouldn't happen, but safety)
-        
-        # CRITICAL: Use single source of truth for bbox extraction
-        # Use map_block_id_to_bbox() to ensure consistent bbox extraction across codebase
-        # Import from citation_mapping module (same package, different file)
-        from backend.llm.citation_mapping import map_block_id_to_bbox
-        
-        # CRITICAL: Verify block_id and block_metadata are in sync after semantic search correction
-        # After semantic search, block_id may have been corrected, so we must use the metadata
-        # from the corrected block, not the original block
-        # Verify: block_metadata should be from the same block as block_id
-        if block_id not in self.metadata_lookup_tables.get(doc_id, {}):
-            logger.error(
-                f"[CITATION_TOOL] ❌ CRITICAL MISMATCH: block_id {block_id} not found in doc {doc_id[:8]} metadata table! "
-                f"This indicates block_id and block_metadata are out of sync after semantic search."
-            )
-            # Fallback: try to find block_metadata from the corrected block_id
-            for fallback_doc_id, fallback_metadata_table in self.metadata_lookup_tables.items():
-                if block_id in fallback_metadata_table:
-                    block_metadata = fallback_metadata_table[block_id]
-                    doc_id = fallback_doc_id
-                    logger.warning(
-                        f"[CITATION_TOOL] ✅ Recovered: Found block_id {block_id} in doc {fallback_doc_id[:8]}"
+
+        resolved = resolve_citation_to_block(cited_text, block_id, self.metadata_lookup_tables)
+        if resolved is None and block_id:
+            # Fallback: use hint block if it exists in any table
+            for doc_id_fb, meta_table in self.metadata_lookup_tables.items():
+                if block_id in (meta_table or {}):
+                    resolved = (doc_id_fb, block_id, meta_table[block_id])
+                    logger.info(
+                        "[CITATION_DEBUG] add_citation fallback to hint block_id=%s doc_id=%s",
+                        block_id, (doc_id_fb or "")[:12],
                     )
                     break
-            else:
-                logger.error(
-                    f"[CITATION_TOOL] ❌❌❌ Could not recover - block_id {block_id} not found in any metadata table!"
-                )
-                return f"⚠️ Citation {citation_number} recorded but block {block_id} not found in metadata tables"
-        
-        # CRITICAL: Double-check that block_metadata is actually for this block_id
-        # Get the canonical metadata from the lookup table to ensure we're using the right one
+        if resolved is None:
+            logger.warning(
+                f"[CITATION_TOOL] Citation {citation_number}: no block found for cited_text; recording without bbox"
+            )
+            citation_no_bbox: Citation = {
+                'citation_number': citation_number,
+                'block_id': block_id or '',
+                'cited_text': cited_text,
+                'bbox': {'left': 0.0, 'top': 0.0, 'width': 1.0, 'height': 1.0, 'page': 0},
+                'page_number': 0,
+                'doc_id': '',
+                'confidence': 'low',
+                'method': 'block-id-lookup',
+            }
+            self.citations.append(citation_no_bbox)
+            return f"⚠️ Citation {citation_number} recorded but no matching block found"
+
+        doc_id, block_id_resolved, block_metadata = resolved
+        block_id = block_id_resolved
         canonical_metadata = self.metadata_lookup_tables.get(doc_id, {}).get(block_id)
         if canonical_metadata:
-            # Use canonical metadata to ensure 100% accuracy
             block_metadata = canonical_metadata
-            logger.debug(
-                f"[CITATION_TOOL] ✅ Using canonical metadata for block_id {block_id} from doc {doc_id[:8]}"
-            )
-        else:
-            logger.warning(
-                f"[CITATION_TOOL] ⚠️ Could not get canonical metadata for block_id {block_id} from doc {doc_id[:8]}, "
-                f"using block_metadata from semantic search (may be correct but not verified)"
-            )
-        
-        # Create lookup table with just this block for the mapping function
-        # CRITICAL: Ensure block_id and block_metadata are from the same block
+
+        from backend.llm.citation_mapping import map_block_id_to_bbox
+
         single_block_table = {block_id: block_metadata}
-        
-        _debug_log({
-            "location": "citation_mapping.add_citation:pre_bbox_mapping_sync_check",
-            "data": {
-                "citation_number": citation_number,
-                "block_id": block_id,
-                "doc_id": (doc_id[:8] if doc_id else "UNKNOWN"),
-                "block_id_in_metadata_table": block_id in self.metadata_lookup_tables.get(doc_id, {}),
-                "using_canonical_metadata": canonical_metadata is not None,
-                "block_metadata_keys": list(block_metadata.keys()) if block_metadata else [],
-                "has_bbox_left": ("bbox_left" in block_metadata) if block_metadata else False,
-                "has_bbox_top": ("bbox_top" in block_metadata) if block_metadata else False,
-            },
-        })
-        
         bbox_data = map_block_id_to_bbox(block_id, single_block_table)
         
         if not bbox_data:
@@ -1008,6 +666,10 @@ class CitationTool:
             'method': 'block-id-lookup'
         }
         
+        logger.info(
+            "[CITATION_DEBUG] final citation_number=%s block_id=%s doc_id=%s page=%s block_preview=%s",
+            citation_number, block_id, (doc_id or "")[:12], page_number, (block_content or "")[:120]
+        )
         self.citations.append(citation)
         
         _debug_log({

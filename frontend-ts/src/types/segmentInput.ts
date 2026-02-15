@@ -4,13 +4,28 @@
 
 import type { PropertyAttachmentData } from '../components/PropertyAttachment';
 
-export type SegmentKind = "property" | "document";
+export type SegmentKind = "property" | "document" | "citation_snippet";
+
+/** Citation payload shape for citation_snippet chips (stored in payload.citationData). */
+export interface CitationBboxShape {
+  document_id?: string;
+  doc_id?: string;
+  page_number?: number;
+  page?: number;
+  bbox?: { left: number; top: number; width: number; height: number; page?: number };
+  original_filename?: string;
+  block_id?: string;
+  cited_text?: string;
+  block_content?: string;
+  source_message_text?: string;
+}
 
 /** Ordered content for query bubble (exact chip + text order as in input). Shared by SearchBar, MapChatBar, MainContent, SideChatPanel. */
 export type QueryContentSegment =
   | { type: 'text'; value: string }
   | { type: 'property'; attachment: PropertyAttachmentData }
-  | { type: 'document'; id: string; name: string };
+  | { type: 'document'; id: string; name: string }
+  | { type: 'citation_snippet'; snippet: string; citationData?: CitationBboxShape };
 
 export interface TextSegment {
   type: "text";
@@ -85,6 +100,7 @@ export function contentSegmentsToLinkedQuery(segments: QueryContentSegment[]): s
         );
       }
       if (seg.type === 'document') return seg.name ?? '';
+      if (seg.type === 'citation_snippet') return seg.snippet ?? '';
       return '';
     })
     .join('')

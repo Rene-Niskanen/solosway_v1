@@ -61,17 +61,12 @@ class DocumentContextService:
         Returns:
             {
                 "summary": "2-3 sentence document summary",
-                "top_entities": ["address", "price", "date"],
-                "document_tags": ["valuation", "inspection"],
-                "subject_property_address": "...",
-                "key_dates": ["2024-01-15"],
-                "key_values": {"price": "£450,000", "size": "250 sqm"},
-                "party_names": {
-                    "valuer": "John Smith MRICS" or null,
-                    "seller": "Jane Doe" or null,
-                    "buyer": "Bob Johnson" or null,
-                    "estate_agent": "Savills" or null
-                }
+                "top_entities": list of key entities,
+                "document_tags": list of categories,
+                "subject_address": optional address/location,
+                "key_dates": list of important dates,
+                "key_values": dict of key-value pairs,
+                "party_names": dict of role -> name (flexible roles per document type)
             }
         """
         # Try local service first (fast, cheap)
@@ -103,7 +98,7 @@ class DocumentContextService:
         if len(document_text) > max_chars:
             truncated_text += "\n\n[... document truncated ...]"
         
-        prompt = f"""Analyze this real estate document and extract structured context.
+        prompt = f"""Analyze this document and extract structured context. The document can be any type (contract, report, letter, form, valuation, etc.).
 
 <document>
 {truncated_text}
@@ -115,19 +110,13 @@ Filename: {metadata.get('original_filename', 'Unknown')}
 </metadata>
 
 Return JSON with:
-1. summary: 2-3 sentences situating the document (type, subject property, time period)
-2. top_entities: List of key entities (addresses, parcel IDs, owner names, prices)
-3. document_tags: List of document categories (valuation, inspection, sale, lease, etc.)
-4. subject_property_address: Primary property address if found
-5. key_dates: List of important dates (valuation date, sale date, etc.)
-6. key_values: Object with key-value pairs (price, size, bedrooms, etc.)
-7. party_names: Object with party names if found:
-   - valuer: Name of the valuer/appraiser/surveyor who conducted the valuation/inspection (look for "MRICS", "FRICS", "inspected by", "valued by", "conducted by")
-   - seller: Name of the seller/vendor if mentioned
-   - buyer: Name of the buyer/purchaser if mentioned
-   - estate_agent: Name of the estate agent/letting agent/marketing agent or agency (e.g., "Savills", "Knight Frank", etc.)
-
-For party_names, extract the full name including any professional qualifications (MRICS, FRICS). If a name is not found, set the value to null.
+1. summary: 2-3 sentences describing what the document is, its purpose, and main points (suitable for any document type)
+2. top_entities: List of key entities mentioned (names, places, IDs, amounts — whatever is relevant)
+3. document_tags: List of categories that fit the document (e.g. contract, report, letter, invoice, valuation, etc.)
+4. subject_address: Primary address or location if relevant (optional; use null if not applicable)
+5. key_dates: List of important dates
+6. key_values: Object with key-value pairs (amounts, quantities, etc.)
+7. party_names: Object mapping role names to person/entity names. Use whatever roles fit the document (e.g. author, signatory, client, vendor, valuer, buyer, seller, etc.). If a role is not found, set the value to null. Use snake_case for keys (e.g. author, signatory, valuer).
 
 Return ONLY valid JSON, no markdown formatting:"""
 
@@ -184,17 +173,14 @@ Return ONLY valid JSON, no markdown formatting:"""
         date_pattern = r'\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b'
         dates = re.findall(date_pattern, text)
         
+        doc_type = metadata.get('classification_type', 'Document')
         return {
-            "summary": f"{metadata.get('classification_type', 'Document')} for property analysis",
+            "summary": f"{doc_type}. Document summary." if doc_type else "Document summary.",
             "top_entities": [e for e in [address, price] if e],
-            "document_tags": [metadata.get('classification_type', 'document')],
+            "document_tags": [doc_type or 'document'] if doc_type else ['document'],
             "subject_property_address": address,
+            "subject_address": address,
             "key_dates": dates[:5],  # Limit to 5 dates
             "key_values": {"price": price} if price else {},
-            "party_names": {
-                "valuer": None,
-                "seller": None,
-                "buyer": None,
-                "estate_agent": None
-            }
+            "party_names": {}
         }

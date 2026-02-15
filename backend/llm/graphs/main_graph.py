@@ -50,7 +50,8 @@ except ImportError:
     logger.warning("langgraph.checkpoint.postgres not available - checkpointer features disabled")
 
 from backend.llm.types import MainWorkflowState
-from backend.llm.nodes.routing_nodes import fetch_direct_document_chunks, handle_citation_query, handle_attachment_fast, handle_navigation_action
+from backend.llm.nodes.routing_nodes import fetch_direct_document_chunks, handle_citation_query, handle_attachment_fast, handle_navigation_action, classify_intent
+from backend.llm.nodes.conversation_node import conversation_node
 from backend.llm.nodes.processing_nodes import process_documents
 from backend.llm.nodes.summary_nodes import summarize_results
 from backend.llm.nodes.formatting_nodes import format_response
@@ -60,7 +61,7 @@ from backend.llm.nodes.no_results_node import no_results_node
 # NEW: Context manager for automatic summarization
 from backend.llm.nodes.context_manager_node import context_manager_node
 # NEW: Planner → Executor → Responder architecture
-from backend.llm.nodes.planner_node import planner_node
+from backend.llm.nodes.planner_node import planner_node, _make_fallback_plan, REFINE_PATTERNS, INCOMPLETE_FOLLOWUP_PATTERNS
 from backend.llm.nodes.executor_node import executor_node
 from backend.llm.nodes.evaluator_node import evaluator_node
 from backend.llm.contracts.node_contracts import RouterContract
@@ -232,19 +233,13 @@ def create_middleware_config() -> list:
     
     # 1. Summarization Middleware (prevent token overflow)
     try:
+        from backend.llm.prompts.graph import get_middleware_summary_prompt
+
         summarization = SummarizationMiddleware(
             model="gpt-4o-mini",  # Cheap model for summaries
             trigger=("tokens", 8000),  # FIXED: Use tuple not dict
             keep=("messages", 6),  # FIXED: Use tuple not dict
-            summary_prompt="""Summarize the conversation history concisely.
-
-Focus on:
-1. User's primary questions and goals
-2. Key facts discovered (property addresses, valuations, dates)
-3. Documents referenced and their relevance
-4. Open questions or unresolved issues
-
-Keep the summary under 300 words. Be specific and factual."""
+            summary_prompt=get_middleware_summary_prompt(),
         )
         middleware.append(summarization)
         logger.info("✅ Added SummarizationMiddleware (trigger: 8k tokens, keep: 6 msgs)")
@@ -471,17 +466,17 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
 
     # BUILD GRAPH EDGES - SIMPLIFIED ROUTING
     # START → simple router (only handles fast paths, everything else → context_manager → agent)
-    def simple_route(state: MainWorkflowState) -> Literal["handle_navigation_action", "handle_citation_query", "handle_attachment_fast", "fetch_direct_chunks", "context_manager"]:
+    def simple_route(state: MainWorkflowState) -> Literal["handle_navigation_action", "handle_citation_query", "handle_attachment_fast", "context_manager"]:
         """
         Simplified routing from START.
         
-        Fast paths (skip agent):
+        Fast paths (skip main agent):
         - Navigation actions
         - Citation queries
         - Attachment fast mode
-        - Direct document access (document_ids provided)
         
-        Everything else → agent (agent decides its own strategy)
+        Everything else (including chip/@ document or property selection) → context_manager → planner → executor → responder,
+        so response formatting is the same whether or not the user used @.
         """
         # Check for fast paths
         query_type = state.get("query_type")
@@ -498,19 +493,18 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
         # Citation query (citation click)
         if citation_context or query_type == "citation_query":
             logger.info("[GRAPH] Fast path: citation_query")
-            return "handle_citation_query"
+            return "citation_query"
         
         # Attachment fast mode
         if attached_document and fast_mode:
             logger.info("[GRAPH] Fast path: attachment_fast")
             return "handle_attachment_fast"
         
-        # Chip (document_ids) and everything else: main path (context_manager → planner → executor → responder)
-        # Chip queries no longer use fetch_direct_chunks; they use the same pipeline as normal search
-        if document_ids:
-            logger.info(f"[GRAPH] Chip query (doc_ids present): routing to context_manager (main path)")
-        else:
-            logger.info("[GRAPH] Routing to context_manager (check tokens before agent)")
+        # Chip selection (@ property/document): use same route as regular queries so response formatting
+        # is identical (planner → executor → responder). Planner already creates 1-step retrieve_chunks
+        # when document_ids are in state, so we do not use fetch_direct_chunks → summarize_results here.
+        # Everything (including when document_ids present) → context_manager → planner → executor → responder
+        logger.info("[GRAPH] Routing to context_manager (check tokens before agent)%s", f" (doc_ids={len(document_ids)})" if document_ids and len(document_ids) > 0 else "")
         return "context_manager"
     
     builder.add_conditional_edges(
@@ -526,22 +520,86 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
     )
     logger.debug("START -> [navigation_action|citation_query|attachment_fast|direct_chunks|context_manager]")
     
-    # Context manager → planner (NEW: Planner → Executor → Responder architecture)
-    # OLD: builder.add_edge("context_manager", "agent") - replaced with planner flow
-    builder.add_edge("context_manager", "planner")
-    logger.debug("Edge: context_manager -> planner (after token check/summarization)")
+    # Conversation node (chat without document retrieval — greetings, small talk, personal)
+    builder.add_node("conversation", conversation_node)
+    logger.info("Added conversation node (chat-only path)")
+
+    # Simple path: rule-based "is this a simple document query?" (no planner LLM)
+    SIMPLE_QUERY_MAX_WORDS = 12
+
+    def _is_simple_document_query(state: MainWorkflowState) -> bool:
+        """True if document query is simple enough to use fixed 2-step plan without planner LLM."""
+        document_ids = state.get("document_ids") or []
+        if document_ids and len(document_ids) > 0:
+            return False  # Chip path: keep going to planner (it uses fixed 1-step without LLM)
+        user_query = (state.get("user_query") or "").strip()
+        query_lower = user_query.lower()
+        if any(p in query_lower for p in REFINE_PATTERNS):
+            return False  # Format/refine intent: use planner
+        if any(p in query_lower for p in INCOMPLETE_FOLLOWUP_PATTERNS):
+            return False  # Incomplete follow-up: use planner
+        word_count = len(user_query.split())
+        return word_count <= SIMPLE_QUERY_MAX_WORDS
+
+    def simple_plan_node(state: MainWorkflowState) -> MainWorkflowState:
+        """Inject fixed 2-step plan (retrieve_docs → retrieve_chunks) without calling planner LLM."""
+        user_query = state.get("user_query", "") or ""
+        execution_plan = _make_fallback_plan(user_query)
+        logger.info("[GRAPH] simple_plan: injected fixed 2-step plan (skip planner LLM) for query '%s...'", (user_query or "")[:60])
+        emitter = state.get("execution_events")
+        if emitter:
+            emitter.emit_reasoning(label="Planning next moves", detail=None)
+        return {
+            "execution_plan": execution_plan,
+            "current_step_index": 0,
+            "execution_results": [],
+        }
+
+    builder.add_node("simple_plan", simple_plan_node)
+
+    # Context manager → classify intent → conversation, document_cached (responder), document_simple (simple_plan), or document (planner)
+    # Cache-first: when use_cached_results and execution_results are set (follow-up), skip planner+executor and go to responder.
+    # Simple path: when document query is "simple" (no chip, no format/refine), use fixed 2-step plan and skip planner LLM.
+    async def after_context_manager(state):
+        intent = await classify_intent(state)
+        if intent == "conversation":
+            return "conversation"
+        # Document intent: check cache-first, then simple path, else full planner
+        if state.get("use_cached_results") and state.get("execution_results"):
+            logger.info("[GRAPH] document_cached: routing to responder (cache-first)")
+            return "document_cached"
+        if _is_simple_document_query(state):
+            logger.info("[GRAPH] document_simple: routing to simple_plan (skip planner LLM)")
+            return "document_simple"
+        return "document"
+
+    builder.add_conditional_edges(
+        "context_manager",
+        after_context_manager,
+        {
+            "conversation": "conversation",
+            "document_cached": "responder",
+            "document_simple": "simple_plan",
+            "document": "planner",
+        }
+    )
+    logger.debug("Conditional: context_manager -> [conversation|document_cached|document_simple|document]")
+
+    # Conversation → END (single LLM call, no retrieval)
+    builder.add_edge("conversation", END)
+    logger.debug("Edge: conversation -> END")
     
     # NAVIGATION PATH: handle → format (INSTANT, skips ALL retrieval - just emits agent actions)
     builder.add_edge("handle_navigation_action", "format_response")
     logger.debug("Edge: handle_navigation_action -> format_response (INSTANT)")
     
-    # ATTACHMENT FAST PATH: handle → format (ULTRA-FAST ~2s, skips ALL retrieval + processing)
-    builder.add_edge("handle_attachment_fast", "format_response")
-    logger.debug("Edge: handle_attachment_fast -> format_response (ULTRA-FAST)")
+    # Chip-query paths go directly to END so response formatting matches main path (summarize_results → END).
+    # Skipping format_response keeps the same response text structure as normal (no extra LLM formatting pass).
+    builder.add_edge("handle_attachment_fast", END)
+    logger.debug("Edge: handle_attachment_fast -> END (same formatting as normal response)")
     
-    # CITATION PATH: handle → format (ULTRA-FAST ~2s, skips ALL retrieval + processing)
-    builder.add_edge("handle_citation_query", "format_response")
-    logger.debug("Edge: handle_citation_query -> format_response (ULTRA-FAST)")
+    builder.add_edge("handle_citation_query", END)
+    logger.debug("Edge: handle_citation_query -> END (same formatting as normal response)")
 
     # DIRECT PATH: fetch → process → summarize (FASTEST ~2s)
     builder.add_edge("fetch_direct_chunks", "process_documents")
@@ -651,35 +709,18 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
                     except (json.JSONDecodeError, AttributeError, TypeError):
                         pass
         
+        from backend.llm.prompts.graph import (
+            get_force_chunk_message_with_doc_ids,
+            get_force_chunk_message_fallback,
+        )
+
         # Create system message forcing chunk retrieval
         if document_ids:
-            doc_ids_str = str(document_ids[:3])  # Show first 3 IDs
-            force_message = SystemMessage(content=f"""🚨 CRITICAL VIOLATION DETECTED:
-
-You have identified {len(document_ids)} relevant document(s) but you have NOT retrieved any document text.
-
-**YOU ARE NOT ALLOWED TO ANSWER DOCUMENT-BASED QUESTIONS WITHOUT RETRIEVING CHUNKS.**
-
-**YOU MUST IMMEDIATELY:**
-1. Call retrieve_chunks(document_ids={doc_ids_str}, query="...") with the document IDs you found
-2. Wait for the chunk text to be returned
-3. THEN answer based on the chunk content
-
-**REMEMBER:**
-- Document metadata (filenames, IDs, scores) is NOT sufficient evidence
-- Chunk text is the ONLY source of truth for answering questions
-- You cannot answer without chunk content
-
-Proceed immediately with chunk retrieval.""")
+            force_message = SystemMessage(
+                content=get_force_chunk_message_with_doc_ids(document_ids)
+            )
         else:
-            # Fallback if we can't find document IDs
-            force_message = SystemMessage(content="""🚨 CRITICAL: You have identified documents but NOT retrieved chunks.
-
-You MUST call retrieve_chunks() before answering any document-based question.
-
-Document metadata is NOT sufficient. You need actual chunk text to answer.
-
-Proceed immediately with chunk retrieval.""")
+            force_message = SystemMessage(content=get_force_chunk_message_fallback())
         
         logger.warning(f"[GRAPH] ⚠️ FORCING chunk retrieval - {len(document_ids)} documents found but no chunks retrieved")
         
@@ -747,10 +788,8 @@ Proceed immediately with chunk retrieval.""")
     builder.add_edge("force_chunks", "agent")
     logger.debug("Edge: force_chunks -> agent (loop back for chunk retrieval)")
     
-    # NEW: Planner → Executor → Evaluator → Responder flow
-    # Context manager → Planner (start planning flow)
-    builder.add_edge("context_manager", "planner")
-    logger.debug("Edge: context_manager -> planner")
+    # Planner → Executor → Evaluator → Responder flow
+    # (context_manager → planner edge is set above via conditional edges)
     
     # Planner → Executor or Responder (0 steps = skip executor, go straight to responder for refine/format)
     def after_planner(state: MainWorkflowState) -> Literal["executor", "responder"]:
@@ -764,6 +803,10 @@ Proceed immediately with chunk retrieval.""")
     
     builder.add_conditional_edges("planner", after_planner, {"executor": "executor", "responder": "responder"})
     logger.debug("Conditional: planner -> [executor|responder] (0 steps → responder)")
+
+    # Simple plan → Executor (fixed 2-step plan, no planner LLM)
+    builder.add_edge("simple_plan", "executor")
+    logger.debug("Edge: simple_plan -> executor")
     
     # Executor → Evaluator (evaluate execution)
     builder.add_edge("executor", "evaluator")

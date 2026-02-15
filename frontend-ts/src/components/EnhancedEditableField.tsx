@@ -164,7 +164,7 @@ export const EnhancedEditableField: React.FC<EnhancedEditableFieldProps> = ({
       <div style={{ width: '100%' }}>
         <div style={{ display: 'flex', alignItems: multiline ? 'flex-start' : 'center', gap: '10px', width: '100%', flexWrap: 'wrap' }}>
           {icon && (
-            <div style={{ marginTop: multiline ? '10px' : '0', flexShrink: 0, color: '#6b7280' }}>
+            <div style={{ display: 'flex', alignItems: 'center', marginTop: multiline ? '10px' : 0, flexShrink: 0, color: '#6b7280' }}>
               {icon}
             </div>
           )}
@@ -337,7 +337,7 @@ export const EnhancedEditableField: React.FC<EnhancedEditableFieldProps> = ({
       }}
     >
       {icon && (
-        <div style={{ flexShrink: 0, color: '#9ca3af' }}>
+        <div style={{ display: 'flex', alignItems: 'center', flexShrink: 0, color: '#9ca3af' }}>
           {icon}
         </div>
       )}

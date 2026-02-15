@@ -114,6 +114,15 @@ class DocumentStorageService:
                 result = self.supabase.table(self.documents_table).select('*').eq('id', document_id).eq('business_id', business_id).execute()
                 logger.debug(f"Querying document by business_id: {business_id}")
             
+            # If not found, try the other business field (resilience: doc may have been created with different identifier)
+            if not result.data or len(result.data) == 0:
+                if _is_uuid(business_id):
+                    result = self.supabase.table(self.documents_table).select('*').eq('id', document_id).eq('business_id', business_id).execute()
+                    logger.debug(f"Retry: querying document by business_id: {business_id}")
+                else:
+                    result = self.supabase.table(self.documents_table).select('*').eq('id', document_id).eq('business_uuid', business_id).execute()
+                    logger.debug(f"Retry: querying document by business_uuid: {business_id}")
+            
             if result.data and len(result.data) > 0:
                 document_data = result.data[0]
                 logger.info(f"✅ Retrieved document {document_id}")
@@ -150,7 +159,7 @@ class DocumentStorageService:
         try:
             # Validate status
             # All statuses must be lowercase for Supabase constraint compatibility
-            valid_statuses = ['started', 'processing', 'completed', 'failed']
+            valid_statuses = ['uploaded', 'started', 'processing', 'completed', 'failed']
             if status not in valid_statuses:
                 return False, f"Invalid status: {status}. Must be one of {valid_statuses}"
             

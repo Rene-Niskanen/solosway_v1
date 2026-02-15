@@ -9,6 +9,10 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_openai import ChatOpenAI
 from backend.llm.config import config
 from backend.llm.types import MainWorkflowState
+from backend.llm.prompts.context_manager import (
+    get_context_summary_prompt,
+    get_context_summary_message_content,
+)
 import logging
 
 logger = logging.getLogger(__name__)
@@ -92,26 +96,7 @@ async def context_manager_node(state: MainWorkflowState) -> MainWorkflowState:
         # Call cheap LLM to create summary
         llm = ChatOpenAI(model="gpt-4o-mini", api_key=config.openai_api_key, temperature=0)
         
-        summary_prompt = f"""Summarize this conversation history concisely and accurately.
-
-<conversation_history>
-{messages_text}
-</conversation_history>
-
-<instructions>
-Focus on:
-1. User's primary questions and goals
-2. Key facts discovered (property details, valuations, addresses, dates, names)
-3. Documents referenced and their content/relevance
-4. Tool calls made and their results
-5. Open questions or unresolved issues
-
-Keep the summary under 300 words but capture ALL important context.
-Be specific and factual - this summary will replace the old messages,
-so include enough detail that the agent can continue the conversation naturally.
-</instructions>
-
-Respond ONLY with the summary. Do not include any preamble or commentary."""
+        summary_prompt = get_context_summary_prompt(messages_text)
         
         # Generate summary
         summary_response = await llm.ainvoke([HumanMessage(content=summary_prompt)])
@@ -138,10 +123,7 @@ Respond ONLY with the summary. Do not include any preamble or commentary."""
         
         # Create summary message
         summary_message = SystemMessage(
-            content=(
-                f"[CONVERSATION SUMMARY - Condensed from {len(old_messages)} earlier messages]\n\n"
-                f"{summary_text}"
-            )
+            content=get_context_summary_message_content(summary_text, len(old_messages))
         )
         
         # Return new message list: [summary] + recent messages

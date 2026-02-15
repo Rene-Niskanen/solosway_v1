@@ -34,8 +34,8 @@ class DocumentRetrievalInput(BaseModel):
         description="[DEPRECATED] Document type filtering has been removed. This parameter is ignored. All documents found by the retrieval system are included."
     )
     top_k: int = Field(
-        20, 
-        description="Number of documents to return (default: 20)"
+        8,
+        description="Number of documents to return (default: 8)"
     )
     min_score: float = Field(
         0.7, 
@@ -75,7 +75,7 @@ def retrieve_documents(
             "specific" for detailed queries (uses higher threshold 0.3 or min_score). 
             If None, uses heuristic classification.
         document_types: [DEPRECATED] Document type filtering removed - parameter ignored
-        top_k: Number of documents to return (default: 20)
+        top_k: Number of documents to return (default: 8)
         min_score: Minimum similarity score threshold (default: 0.7)
         business_id: Optional business UUID to filter results (for multi-tenancy)
     
@@ -99,7 +99,7 @@ def retrieve_documents(
     try:
         # Handle None defaults
         if top_k is None:
-            top_k = 20
+            top_k = 8
         if min_score is None:
             min_score = 0.7
         
@@ -168,16 +168,14 @@ def retrieve_documents(
                 search_threshold = 0.1
                 logger.debug(f"   Summarize query detected - using very lenient threshold: {search_threshold}")
             elif query_type == "broad":
-                # Broad queries: lenient threshold (0.15)
-                search_threshold = 0.15
-                logger.debug(f"   Broad query - using lenient threshold: {search_threshold}")
+                # Broad queries: raised from 0.15 to 0.22 to avoid tangentially related docs
+                search_threshold = 0.22
+                logger.debug(f"   Broad query - using threshold: {search_threshold}")
             else:
-                # Specific queries: more lenient than default (0.2 instead of 0.3)
-                # This helps catch documents that might have lower similarity but are still relevant
-                # Handle None min_score
+                # Specific queries: raised from 0.2 to 0.32 so only more similar docs pass (reduces irrelevant retrieval)
                 if min_score is None:
                     min_score = 0.7  # Default
-                search_threshold = min(min_score, 0.2)  # Use lower of min_score or 0.2
+                search_threshold = min(min_score, 0.32)
                 logger.debug(f"   Specific query - using threshold: {search_threshold}")
             
             vector_response = supabase.rpc(
@@ -404,6 +402,25 @@ def retrieve_documents(
                 # Summary removed - LLM must retrieve chunks to get content
             })
         
+        # 6b. ENTITY-MATCH BOOST: When the query names a specific offer/property (e.g. "Banda Lane offer"),
+        # boost documents whose filename contains that entity so they rank above generic guides.
+        # This prevents generic docs (e.g. kenya-buying-guide) from outranking the actual offer letter.
+        _query_lower = query.lower().strip()
+        _words = [w for w in _query_lower.split() if w]
+        _phrases = set()
+        for i in range(len(_words)):
+            for n in (2, 3):
+                if i + n <= len(_words):
+                    _phrases.add(' '.join(_words[i:i + n]))
+        _stopwords = {'what', 'how', 'when', 'where', 'which', 'who', 'the', 'a', 'an', 'is', 'are', 'in', 'on', 'at', 'to', 'for', 'of', 'or', 'and', 'required', 'deposit', 'upfront', 'payment'}
+        _entity_phrases = [p for p in _phrases if not p.split()[0] in _stopwords and len(p) >= 5]
+        ENTITY_BOOST = 0.28
+        for r in results:
+            _fn = (r.get('filename') or '').lower().replace('_', ' ').replace('-', ' ')
+            if any(_phrase in _fn for _phrase in _entity_phrases):
+                r['score'] = round(r['score'] + ENTITY_BOOST, 4)
+                logger.debug(f"   Entity boost +{ENTITY_BOOST} for {r.get('filename', '')[:40]} (query phrase in filename)")
+        
         # Sort by combined score (descending)
         results.sort(key=lambda x: x['score'], reverse=True)
         
@@ -443,19 +460,37 @@ def retrieve_documents(
             )
             logger.debug(f"   Using heuristic classification (LLM query_type not provided)")
         
-        # REMOVED: Redundant guardrail threshold filtering
-        # The vector search threshold already filters at the database level (0.15 for broad, 0.2 for specific)
-        # The final fused scores are already filtered by the vector search, so no need for another filter layer
-        # Use all results from fusion - the vector search threshold is sufficient
-        filtered_results = results
-        
+        # 7b. Minimum combined score and minimum vector score (reduce irrelevant docs)
+        MIN_COMBINED_SCORE_SPECIFIC = 0.30  # Slightly relaxed so queries like "value of highlands" still return a doc
+        MIN_COMBINED_SCORE_BROAD = 0.28
+        FALLBACK_MIN_SCORE = 0.22  # If nothing passes main threshold, allow single best doc above this
+        MIN_VECTOR_SCORE = 0.12  # Exclude pure keyword-only matches; 0.12 allows borderline semantic matches
+        # Strong filename match (e.g. query "highlands" vs doc "Highlands.pdf") - allow even if vector is low
+        MIN_KEYWORD_SCORE_FILENAME_PASSTHROUGH = 0.5
+
+        min_combined = MIN_COMBINED_SCORE_BROAD if is_broad_query else MIN_COMBINED_SCORE_SPECIFIC
+        filtered_results = [
+            r for r in results
+            if r["score"] >= min_combined
+            and (r["vector_score"] >= MIN_VECTOR_SCORE or r["keyword_score"] >= MIN_KEYWORD_SCORE_FILENAME_PASSTHROUGH)
+        ]
+
+        if not filtered_results and results:
+            best = results[0]
+            passes_vector = best["vector_score"] >= MIN_VECTOR_SCORE
+            passes_filename = best["keyword_score"] >= MIN_KEYWORD_SCORE_FILENAME_PASSTHROUGH
+            if best["score"] >= FALLBACK_MIN_SCORE and (passes_vector or passes_filename):
+                filtered_results = [best]
+                logger.info(
+                    f"   No docs above threshold {min_combined}; using single best (score={best['score']:.3f})"
+                )
+
         if not filtered_results:
             logger.warning(
                 f"⚠️ No documents found. "
                 f"Top score was {results[0]['score'] if results else 'N/A'}. "
                 f"Returning empty list to trigger retry/fallback."
             )
-            # Return empty to trigger retry/fallback in agent
             return []
         
         # 8. Filter out documents with 0 chunks (unprocessed documents)
@@ -588,7 +623,7 @@ This is Level 1 retrieval - finds documents, not chunks. Use this FIRST before s
 - User wants precise information, not exploration
 - Query mentions specific details or constraints
 
-### top_k (OPTIONAL, default: 20)
+### top_k (OPTIONAL, default: 8)
 - Number of documents to return
 - Range: 1-50 recommended
 - Higher values = more documents but slower

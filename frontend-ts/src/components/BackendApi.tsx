@@ -129,16 +129,12 @@ export const BackendApiProvider: React.FC<BackendApiProviderProps> = ({ children
         console.log(`🏠 Fetched ${actualData.length || 0} properties from backend`);
         return actualData;
       } else {
-        console.warn('⚠️ Backend not connected, using fallback data');
-        // Return fallback data from centralized database
-        const { mockPropertyData } = await import('../data/mockPropertyData');
-        return mockPropertyData;
+        console.warn('⚠️ Backend not connected');
+        return [];
       }
     } catch (error) {
       console.error('Error fetching properties:', error);
-      // Return fallback data
-      const { mockPropertyData } = await import('../data/mockPropertyData');
-      return mockPropertyData;
+      return [];
     }
   };
 
@@ -148,9 +144,8 @@ export const BackendApiProvider: React.FC<BackendApiProviderProps> = ({ children
         const response = await backendApi.getPropertyNodeDetails(id.toString());
         return response.data;
       } else {
-        console.warn('⚠️ Backend not connected, using fallback data');
-        const { mockPropertyData } = await import('../data/mockPropertyData');
-        return mockPropertyData.find(prop => prop.id === id) || null;
+        console.warn('⚠️ Backend not connected');
+        return null;
       }
     } catch (error) {
       console.error('Error fetching property by ID:', error);
@@ -164,13 +159,8 @@ export const BackendApiProvider: React.FC<BackendApiProviderProps> = ({ children
         const response = await backendApi.searchProperties(query, filters);
         return response.data || [];
       } else {
-        console.warn('⚠️ Backend not connected, using local search');
-        const { mockPropertyData } = await import('../data/mockPropertyData');
-        // Simple local search
-        return mockPropertyData.filter(prop => 
-          prop.address.toLowerCase().includes(query.toLowerCase()) ||
-          prop.postcode.toLowerCase().includes(query.toLowerCase())
-        );
+        console.warn('⚠️ Backend not connected');
+        return [];
       }
     } catch (error) {
       console.error('Error searching properties:', error);

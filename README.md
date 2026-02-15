@@ -171,17 +171,55 @@ docker-compose logs -f
 #### Option B: Hybrid Development
 
 ```bash
-# Terminal 1: Start backend services
-docker-compose up redis db -d
+# Terminal 1: Start Redis (required for upload processing)
+docker compose up redis -d
+# Or: docker-compose up redis -d
+
+# Terminal 2: Start Flask API
 python main.py
 
-# Terminal 2: Start Celery worker
-celery -A backend.celery_utils worker --loglevel=info
+# Terminal 3: Start Celery worker (processes uploads in the background)
+python run_celery_worker.py
 
-# Terminal 3: Start frontend
+# Terminal 4: Start frontend
 cd frontend-ts
 npm run dev
 ```
+
+#### Document uploads: Redis + Flask + Celery
+
+For **document uploads and processing** to work, three things must be running:
+
+| Service    | Purpose |
+|-----------|---------|
+| **Redis** | Celery broker – tasks are queued here |
+| **Flask** | API – accepts uploads and enqueues processing |
+| **Celery worker** | Runs the processing pipeline (classification, extraction, etc.) |
+
+**Quick start (script):**
+
+```bash
+./scripts/start-for-uploads.sh
+```
+
+Then in **two separate terminals** run:
+
+```bash
+# Terminal 1 – Flask (API on port 5001)
+python main.py
+
+# Terminal 2 – Celery worker (must be running for upload processing)
+python run_celery_worker.py
+```
+
+**Or run everything with Docker:**
+
+```bash
+docker compose up redis web worker -d
+```
+
+- API: http://localhost:5002 (Flask in Docker maps 5002→5000)
+- Ensure frontend `VITE_BACKEND_URL` matches (e.g. `http://localhost:5001` for local Flask or `http://localhost:5002` for Docker).
 
 ### 7. Access the Application
 

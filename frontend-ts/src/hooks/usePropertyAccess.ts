@@ -35,10 +35,15 @@ export const usePropertyAccess = (propertyId: string | null | undefined) => {
   }, []);
 
   // Get access level for property
+  // Keep loading true when propertyId is set until we've resolved access (same pattern as files: show UI immediately, loading state until ready).
+  // Only set loading false when there is no propertyId; when userEmail is still null we keep loading true so the upload card can show a spinner.
   useEffect(() => {
-    if (!propertyId || !userEmail) {
+    if (!propertyId) {
       setIsLoading(false);
       return;
+    }
+    if (!userEmail) {
+      return; // Still loading user email; keep isLoading true so upload card renders with spinner
     }
 
     const fetchAccessLevel = async () => {

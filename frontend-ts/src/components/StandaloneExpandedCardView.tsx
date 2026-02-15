@@ -3,16 +3,17 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Maximize, Maximize2, Minimize2, ZoomIn, ZoomOut, ChevronDown, Download } from 'lucide-react';
+import { X, Maximize, Maximize2, Minimize2, ZoomIn, ZoomOut, ChevronDown, ChevronLeft, ChevronRight, Download, TextCursorInput } from 'lucide-react';
 import { usePreview } from '../contexts/PreviewContext';
 import { backendApi } from '../services/backendApi';
 import { useFilingSidebar } from '../contexts/FilingSidebarContext';
 import { useChatPanel } from '../contexts/ChatPanelContext';
 import { CitationActionMenu } from './CitationActionMenu';
-import { useActiveChatState } from '../contexts/ChatStateStore';
-import type { CitationData } from '../contexts/ChatStateStore';
+import { useActiveChatState, useChatStateStore } from '../contexts/ChatStateStore';
+import type { CitationData, ChatMessage } from '../contexts/ChatStateStore';
+import { useCitationExportOptional } from '../contexts/CitationExportContext';
+import { cropPageImageToBbox } from '../utils/citationExport';
 import { CHAT_PANEL_WIDTH } from './SideChatPanel';
-import veloraLogo from '/Velora Logo.jpg';
 
 // PDF.js for canvas-based PDF rendering
 import * as pdfjs from 'pdfjs-dist';
@@ -20,6 +21,51 @@ import type { PDFDocumentProxy } from 'pdfjs-dist';
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 
 pdfjs.GlobalWorkerOptions.workerSrc = pdfjsWorker;
+
+/** Padding of the pages container (top/left/right/bottom) - must match the scroll content layout for BBOX centering. */
+const PAGES_CONTAINER_PADDING = 2;
+
+/** Match two citations by doc_id and bbox (page, left, top). */
+function citationBboxMatch(a: CitationData, b: CitationData): boolean {
+  if ((a.doc_id || '') !== (b.doc_id || '')) return false;
+  const pageA = a.page ?? a.bbox?.page ?? (a as { page_number?: number }).page_number ?? 0;
+  const pageB = b.page ?? b.bbox?.page ?? (b as { page_number?: number }).page_number ?? 0;
+  if (pageA !== pageB) return false;
+  const tol = 0.001;
+  return (
+    Math.abs((a.bbox?.left ?? 0) - (b.bbox?.left ?? 0)) < tol &&
+    Math.abs((a.bbox?.top ?? 0) - (b.bbox?.top ?? 0)) < tol
+  );
+}
+
+/** Find messageId and citationNumber for a citation by searching messages and streaming citations. */
+function findViewedCitationForCitation(
+  citation: CitationData,
+  messages: ChatMessage[],
+  streamingCitations: Record<string, CitationData>,
+  lastResponseMessageId?: string,
+  lastResponseCitations?: Record<string, CitationData>
+): { messageId: string; citationNumber: string } | null {
+  for (const msg of messages) {
+    if (!msg.citations) continue;
+    for (const [num, c] of Object.entries(msg.citations)) {
+      if (citationBboxMatch(c, citation)) return { messageId: msg.id, citationNumber: num };
+    }
+  }
+  for (const [num, c] of Object.entries(streamingCitations)) {
+    if (citationBboxMatch(c, citation)) {
+      const lastResponse = [...messages].reverse().find((m) => m.type === 'response');
+      if (lastResponse) return { messageId: lastResponse.id, citationNumber: num };
+    }
+  }
+  // Fallback: match against last response citations by bbox (e.g. when messages use different refs)
+  if (lastResponseMessageId && lastResponseCitations) {
+    for (const [num, c] of Object.entries(lastResponseCitations)) {
+      if (citationBboxMatch(c, citation)) return { messageId: lastResponseMessageId, citationNumber: num };
+    }
+  }
+  return null;
+}
 
 interface StandaloneExpandedCardViewProps {
   docId: string;
@@ -33,22 +79,37 @@ interface StandaloneExpandedCardViewProps {
     block_content?: string;
     original_filename?: string;
   };
+  /** When this changes, we reset scroll-to-highlight so re-clicking the same citation re-scrolls. */
+  scrollRequestId?: number;
   onClose: () => void;
   chatPanelWidth?: number; // Width of the chat panel (0 when closed)
   sidebarWidth?: number; // Width of the sidebar
   onResizeStart?: (e: React.MouseEvent) => void; // Callback when left edge drag starts
   isResizing?: boolean; // Whether resize is in progress (for cursor styling)
+  /** When true, open in fullscreen overlay (e.g. from file pop-up "View Document") and use higher z-index */
+  initialFullscreen?: boolean;
+  /** Citations from the last response for this document (from chat panel). When provided, used for citation nav so buttons appear. */
+  citationsFromLastResponse?: CitationData[];
+  /** Last response message id (for saving citation from document view to docx). */
+  lastResponseMessageId?: string;
+  /** Last response citations keyed by number (for matching clicked citation to citation number). */
+  lastResponseCitations?: Record<string, CitationData>;
 }
 
 export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProps> = ({
   docId,
   filename,
   highlight,
+  scrollRequestId,
   onClose,
+  citationsFromLastResponse,
+  lastResponseMessageId,
+  lastResponseCitations,
   chatPanelWidth = 0,
   sidebarWidth = 56,
   onResizeStart,
-  isResizing = false
+  isResizing = false,
+  initialFullscreen = false,
 }) => {
   // Local state for instant close - hides component immediately before parent state updates
   const [isLocallyHidden, setIsLocallyHidden] = useState(false);
@@ -81,7 +142,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
   const [blobType, setBlobType] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(initialFullscreen);
   // Start with filename prop, but always fetch the real name from backend
   // If the filename is a generic fallback like "document.pdf", don't use it - wait for the real name
   const [displayFilename, setDisplayFilename] = useState<string>(
@@ -109,13 +170,19 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
   const targetScaleRef = useRef<number>(1.0); // Track target scale for smooth transitions
   const firstPageCacheRef = useRef<{ page: any; viewport: any } | null>(null); // Cache first page for instant scale calculation
   const wasFullscreenRef = useRef<boolean>(false); // Track previous fullscreen state for zoom reset
+  // When doc opens 50/50, avoid forcing PDF re-render when chatPanelWidth propagates (causes visible resize)
+  const docOpenTimeRef = useRef<number>(0);
+  const docOpenTimeSetForRef = useRef<string | null>(null);
+  const DOC_OPEN_STALE_MS = 600;
   
   // Citation action menu state
   const [citationMenuPosition, setCitationMenuPosition] = useState<{ x: number; y: number } | null>(null);
   const [selectedCitation, setSelectedCitation] = useState<any>(null);
 
-  // Build a stable key for the current highlight target (doc + page + bbox coords).
-  // Used to coordinate one-time "jump to bbox" with resize scroll-preservation logic.
+  // Citation export: screenshot mode (Choose) - drag to capture region
+  const citationExport = useCitationExportOptional();
+
+  // Stable key for the current highlight (doc + page + bbox) so we only apply center-scroll once per citation.
   const getHighlightKey = useCallback(() => {
     if (!highlight || highlight.fileId !== docId || !highlight.bbox) return null;
     const b = highlight.bbox;
@@ -125,47 +192,63 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
   const { previewFiles, getCachedPdfDocument, setCachedPdfDocument, getCachedRenderedPage, setCachedRenderedPage, isAgentOpening, setIsAgentOpening, openExpandedCardView } = usePreview();
   const { isOpen: isFilingSidebarOpen, width: filingSidebarWidth, isResizing: isFilingSidebarResizing } = useFilingSidebar();
   const { isOpen: isChatHistoryPanelOpen, width: chatHistoryPanelWidth } = useChatPanel();
-  
+  const { activeChatId, setDocumentViewedCitation, openDocumentForChat } = useChatStateStore();
+
   // Get active chat state to access citations
   const activeChatState = useActiveChatState();
   
-  // Collect and sort citations for the current document
+  // Collect and sort citations for the current document — always scoped to a single response.
+  // When we have message context (lastResponseMessageId + lastResponseCitations), use only that message's citations
+  // so 1/X does not merge with citations from other responses (same document in another message = separate 1/X).
   const { sortedCitations, currentCitationIndex, hasMultipleCitations } = useMemo(() => {
-    if (!activeChatState || !highlight) {
-      return { sortedCitations: [], currentCitationIndex: -1, hasMultipleCitations: false };
+    let documentCitations: CitationData[];
+    const docIdStr = String(docId);
+    const fileIdStr = highlight ? String(highlight.fileId) : docIdStr;
+    const matchDoc = (c: CitationData) => {
+      const cid = String(c.doc_id ?? (c as any).document_id ?? '');
+      return cid === docIdStr || cid === fileIdStr;
+    };
+
+    const useLastResponseOrder = !!(lastResponseMessageId && lastResponseCitations && Object.keys(lastResponseCitations).length > 0);
+    if (useLastResponseOrder) {
+      // Use message citations in number order (1,2,3,4) so pill count matches response; no bbox dedup
+      const entries = Object.entries(lastResponseCitations!).filter(([, c]) => matchDoc(c));
+      documentCitations = entries
+        .sort(([a], [b]) => parseInt(a, 10) - parseInt(b, 10))
+        .map(([, c]) => c);
+    } else if (citationsFromLastResponse && citationsFromLastResponse.length > 0) {
+      documentCitations = citationsFromLastResponse;
+    } else if (activeChatState) {
+      const streamingCitations = Object.values(activeChatState.streaming.citations || {});
+      const messageCitations: CitationData[] = [];
+      activeChatState.messages.forEach(msg => {
+        if (msg.citations) {
+          messageCitations.push(...Object.values(msg.citations));
+        }
+      });
+      const allCitations = [...streamingCitations, ...messageCitations];
+      documentCitations = allCitations.filter(matchDoc);
+    } else {
+      documentCitations = [];
     }
     
-    // Collect citations from streaming state
-    const streamingCitations = Object.values(activeChatState.streaming.citations || {});
+    // When using lastResponseCitations we keep citation order (1,2,3,4) — no bbox dedup so count matches response.
+    // Otherwise remove duplicates by bbox and sort by page/position.
+    const uniqueCitations = useLastResponseOrder
+      ? documentCitations
+      : documentCitations.filter((citation, index, self) =>
+          index === self.findIndex(c =>
+            String(c.doc_id ?? (c as any).document_id ?? '') === String(citation.doc_id ?? (citation as any).document_id ?? '') &&
+            (c.bbox?.page ?? c.page ?? c.page_number) === (citation.bbox?.page ?? citation.page ?? citation.page_number) &&
+            Math.abs((c.bbox?.left ?? 0) - (citation.bbox?.left ?? 0)) < 0.001 &&
+            Math.abs((c.bbox?.top ?? 0) - (citation.bbox?.top ?? 0)) < 0.001
+          )
+        );
     
-    // Collect citations from messages
-    const messageCitations: CitationData[] = [];
-    activeChatState.messages.forEach(msg => {
-      if (msg.citations) {
-        messageCitations.push(...Object.values(msg.citations));
-      }
-    });
-    
-    // Combine all citations
-    const allCitations = [...streamingCitations, ...messageCitations];
-    
-    // Filter citations for the current document
-    const documentCitations = allCitations.filter(citation => 
-      citation.doc_id === docId || citation.doc_id === highlight.fileId
-    );
-    
-    // Remove duplicates based on bbox coordinates
-    const uniqueCitations = documentCitations.filter((citation, index, self) => 
-      index === self.findIndex(c => 
-        c.doc_id === citation.doc_id &&
-        c.bbox?.page === citation.bbox?.page &&
-        Math.abs((c.bbox?.left || 0) - (citation.bbox?.left || 0)) < 0.001 &&
-        Math.abs((c.bbox?.top || 0) - (citation.bbox?.top || 0)) < 0.001
-      )
-    );
-    
-    // Sort citations by page number, then by position (top to bottom, left to right)
-    const sorted = uniqueCitations.sort((a, b) => {
+    // Sort: when using lastResponseCitations order is already 1,2,3,4; else by page then position
+    const sorted = useLastResponseOrder
+      ? uniqueCitations
+      : [...uniqueCitations].sort((a, b) => {
       const pageA = a.page || a.bbox?.page || a.page_number || 0;
       const pageB = b.page || b.bbox?.page || b.page_number || 0;
       
@@ -185,40 +268,39 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
       return leftA - leftB;
     });
     
-    // Find current citation index
-    let currentIndex = -1;
-    if (highlight && highlight.bbox) {
+    // Find current citation index (when we have a highlight from clicking a citation)
+    let currentIndex = 0;
+    if (highlight?.bbox && sorted.length > 0) {
       currentIndex = sorted.findIndex(citation => {
         const citationPage = citation.page || citation.bbox?.page || citation.page_number || 0;
-        const citationTop = citation.bbox?.top || 0;
-        const citationLeft = citation.bbox?.left || 0;
-        
+        const citationTop = citation.bbox?.top ?? 0;
+        const citationLeft = citation.bbox?.left ?? 0;
         return (
           citationPage === highlight.bbox.page &&
           Math.abs(citationTop - highlight.bbox.top) < 0.001 &&
           Math.abs(citationLeft - highlight.bbox.left) < 0.001
         );
       });
-    }
-    
-    // If current citation not found, try to match by page only (in case bbox coordinates differ slightly)
-    if (currentIndex === -1 && highlight && highlight.bbox) {
-      currentIndex = sorted.findIndex(citation => {
-        const citationPage = citation.page || citation.bbox?.page || citation.page_number || 0;
-        return citationPage === highlight.bbox.page;
-      });
+      // If no exact bbox match, try matching by page only
+      if (currentIndex === -1) {
+        currentIndex = sorted.findIndex(citation => {
+          const citationPage = citation.page || citation.bbox?.page || citation.page_number || 0;
+          return citationPage === highlight.bbox.page;
+        });
+      }
+      if (currentIndex === -1) currentIndex = 0;
     }
     
     return {
       sortedCitations: sorted,
-      currentCitationIndex: currentIndex >= 0 ? currentIndex : 0,
+      currentCitationIndex: currentIndex,
       hasMultipleCitations: sorted.length > 1
     };
-  }, [activeChatState, docId, highlight]);
-  
+  }, [activeChatState, docId, highlight, citationsFromLastResponse, lastResponseMessageId, lastResponseCitations]);
+
   // Navigate to next citation
   const handleReviewNextCitation = useCallback(() => {
-    if (!hasMultipleCitations || sortedCitations.length === 0) return;
+    if (sortedCitations.length === 0) return;
     
     // Calculate next citation index (wrap around if at end)
     const nextIndex = (currentCitationIndex + 1) % sortedCitations.length;
@@ -243,14 +325,78 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
       original_filename: nextCitation.original_filename || filename
     };
     
-    // Navigate to next citation
-    openExpandedCardView(
-      nextCitation.doc_id || docId,
-      nextCitation.original_filename || filename,
-      highlightData,
-      false // Not agent-triggered
-    );
-  }, [hasMultipleCitations, sortedCitations, currentCitationIndex, docId, filename, openExpandedCardView]);
+    // Resolve which citation in the response this is (so the blue citation button in chat updates)
+    const viewed = activeChatState
+      ? findViewedCitationForCitation(
+          nextCitation,
+          activeChatState.messages,
+          activeChatState.streaming?.citations ?? {},
+          lastResponseMessageId,
+          lastResponseCitations
+        )
+      : null;
+
+    // Update document preview so we navigate to the next citation (MainContent reads ChatStateStore first)
+    const nextDocId = nextCitation.doc_id || docId;
+    const nextFilename = nextCitation.original_filename || filename;
+    if (activeChatId) {
+      openDocumentForChat(activeChatId, {
+        docId: nextDocId,
+        filename: nextFilename,
+        highlight: highlightData,
+        viewedCitation: viewed ?? null,
+      });
+    }
+    openExpandedCardView(nextDocId, nextFilename, highlightData, false);
+    if (activeChatId && viewed) setDocumentViewedCitation(activeChatId, viewed);
+  }, [sortedCitations, currentCitationIndex, docId, filename, openExpandedCardView, openDocumentForChat, activeChatId, activeChatState, setDocumentViewedCitation, lastResponseMessageId, lastResponseCitations]);
+
+  // Navigate to previous citation
+  const handleReviewPrevCitation = useCallback(() => {
+    if (sortedCitations.length === 0) return;
+    const prevIndex = currentCitationIndex <= 0 ? sortedCitations.length - 1 : currentCitationIndex - 1;
+    const prevCitation = sortedCitations[prevIndex];
+    if (!prevCitation || !prevCitation.bbox) return;
+    const pageNumber = prevCitation.page || prevCitation.bbox?.page || prevCitation.page_number || 1;
+    const highlightData = {
+      fileId: prevCitation.doc_id || docId,
+      bbox: {
+        left: prevCitation.bbox.left,
+        top: prevCitation.bbox.top,
+        width: prevCitation.bbox.width,
+        height: prevCitation.bbox.height,
+        page: pageNumber
+      },
+      doc_id: prevCitation.doc_id,
+      block_id: prevCitation.block_id,
+      block_content: prevCitation.matched_chunk_metadata?.content || '',
+      original_filename: prevCitation.original_filename || filename
+    };
+    // Resolve which citation in the response this is (so the blue citation button in chat updates)
+    const viewed = activeChatState
+      ? findViewedCitationForCitation(
+          prevCitation,
+          activeChatState.messages,
+          activeChatState.streaming?.citations ?? {},
+          lastResponseMessageId,
+          lastResponseCitations
+        )
+      : null;
+
+    // Update document preview so we navigate to the previous citation (MainContent reads ChatStateStore first)
+    const prevDocId = prevCitation.doc_id || docId;
+    const prevFilename = prevCitation.original_filename || filename;
+    if (activeChatId) {
+      openDocumentForChat(activeChatId, {
+        docId: prevDocId,
+        filename: prevFilename,
+        highlight: highlightData,
+        viewedCitation: viewed ?? null,
+      });
+    }
+    openExpandedCardView(prevDocId, prevFilename, highlightData, false);
+    if (activeChatId && viewed) setDocumentViewedCitation(activeChatId, viewed);
+  }, [sortedCitations, currentCitationIndex, docId, filename, openExpandedCardView, openDocumentForChat, activeChatId, activeChatState, setDocumentViewedCitation, lastResponseMessageId, lastResponseCitations]);
 
   // Fetch document metadata to get the real filename
   useEffect(() => {
@@ -479,14 +625,15 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
         return null;
       }
       
-      const availableWidth = containerWidth - 128; // Account for padding (64px on each side)
+      // Use full container width so the document fills the preview (no reserved side padding)
+      const availableWidth = containerWidth;
       
       // In fullscreen mode, use fixed 100% (1.0x) zoom as starting level
       if (isFullscreen) {
         return 1.0; // 100% starting zoom for fullscreen mode
       } else {
-        // Normal mode: scale to fit available width (no cap - allow zooming beyond 100%)
-        const fitScale = (availableWidth / pageWidth) * 0.98;
+        // Normal mode: scale to fit width
+        const fitScale = availableWidth / pageWidth;
         // Only enforce a minimum scale to prevent documents from being too small
         if (fitScale >= 0.3) {
           return fitScale;
@@ -787,33 +934,35 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
   // Force recalculation when positioning changes (filing sidebar, chat panel)
   // This ensures zoom updates even when container width doesn't change but available space does
   // BUT: Skip recalculation if user has set manual zoom (don't override user's choice)
+  // When doc just opened ("View in document"), skip the heavy recalc so we don't re-render size when chatPanelWidth propagates
   useEffect(() => {
     if (pdfDocument && totalPages > 0 && manualZoom === null) {
-      // Only recalculate if manual zoom is not set
-      // Immediate synchronous update - no RAF delay
       if (pdfWrapperRef.current) {
         const currentWidth = pdfWrapperRef.current.clientWidth;
-        if (currentWidth > 50) {
-          // Calculate and apply visual scale immediately (synchronous)
+        const withinStaleWindow = docOpenTimeRef.current > 0 && Date.now() - docOpenTimeRef.current < DOC_OPEN_STALE_MS;
+        if (withinStaleWindow && currentWidth > 50) {
+          // Just opened: update scale/width tracking only; ResizeObserver already drove initial render - avoid second re-render
           const targetScale = calculateTargetScale(currentWidth);
           if (targetScale !== null) {
-            // Update visual scale - don't adjust scroll here
             setVisualScale(targetScale);
             targetScaleRef.current = targetScale;
           }
-          
-          // Always trigger recalculation when positioning changes
-          // Scroll will be preserved after re-render completes
           prevContainerWidthRef.current = currentWidth;
           setContainerWidth(currentWidth);
-          
-          // Trigger immediately - no delay
+          return;
+        }
+        if (currentWidth > 50) {
+          const targetScale = calculateTargetScale(currentWidth);
+          if (targetScale !== null) {
+            setVisualScale(targetScale);
+            targetScaleRef.current = targetScale;
+          }
+          prevContainerWidthRef.current = currentWidth;
+          setContainerWidth(currentWidth);
           setBaseScale(1.0);
           hasRenderedRef.current = false;
         }
       }
-      
-      // No cleanup needed - synchronous updates
     }
   }, [isFilingSidebarOpen, filingSidebarWidth, chatPanelWidth, pdfDocument, totalPages, calculateTargetScale, manualZoom]);
 
@@ -851,23 +1000,6 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
       // Minimal threshold - only skip truly identical widths
       const prev = prevContainerWidthRef.current;
       if (!force && Math.abs(newWidth - prev) < 0.000001) return;
-
-      // If we haven't finished the initial citation jump-to-bbox, avoid triggering a rerender here.
-      // (Rerender changes scrollHeight and can fight highlight centering.)
-      const highlightKey = getHighlightKey();
-      const suppressDuringInitialHighlightJump =
-        !!highlightKey && didAutoScrollToHighlightRef.current !== highlightKey;
-      if (suppressDuringInitialHighlightJump) {
-        prevContainerWidthRef.current = newWidth;
-        setContainerWidth(newWidth);
-        // Still update visual scale immediately even during highlight jump
-        const targetScale = calculateTargetScale(newWidth);
-        if (targetScale !== null) {
-          setVisualScale(targetScale);
-          targetScaleRef.current = targetScale;
-        }
-        return;
-      }
 
       prevContainerWidthRef.current = newWidth;
       setContainerWidth(newWidth);
@@ -942,7 +1074,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
       document.removeEventListener('mouseup', handleResizeEnd);
       document.removeEventListener('touchend', handleResizeEnd);
     };
-  }, [pdfDocument, totalPages, calculateTargetScale, getHighlightKey, manualZoom]);
+  }, [pdfDocument, totalPages, calculateTargetScale, manualZoom]);
 
   // Render PDF pages with PDF.js native zoom - use manualZoom directly as scale
   useEffect(() => {
@@ -958,9 +1090,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
             (() => {
               const pageWidth = firstPageCacheRef.current!.viewport.width;
               const containerWidth = pdfWrapperRef.current!.clientWidth;
-              const availableWidth = containerWidth - 128; // Account for padding (64px on each side)
-              const zoomFactor = 0.98;
-              return (availableWidth / pageWidth) * zoomFactor;
+              return containerWidth / pageWidth;
             })() : 1.0));
     
     const shouldSkip = hasRenderedRef.current && 
@@ -974,20 +1104,11 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
     
     let cancelled = false;
     isRecalculatingRef.current = true;
-    
-    // Save viewport center point before recalculating (to preserve what user is viewing)
-    // This is the single source of truth for scroll preservation
-    const savedScrollTop = pdfWrapperRef.current?.scrollTop || 0;
-    const savedClientHeight = pdfWrapperRef.current?.clientHeight || 0;
-    const savedScrollHeight = pdfWrapperRef.current?.scrollHeight || 0;
-    // Calculate the center point of the current viewport in document coordinates
-    const savedViewportCenter = savedScrollTop + (savedClientHeight / 2);
-    
+
     const renderAllPages = async () => {
       try {
         let scale = baseScale;
-        const oldScale = prevScaleRef.current;
-        
+
         // Always recalculate scale when baseScale is 1.0 (initial load or after width change)
         if (baseScale === 1.0) {
           // If manualZoom is set, use it directly (highest priority)
@@ -1015,9 +1136,12 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
               firstPageCacheRef.current = { page: firstPage, viewport: naturalViewport };
             }
             
+            // Use ref first (actual DOM), then latest width from resize (so bbox adapts when preview width changes), then state
             let currentContainerWidth = 0;
             if (pdfWrapperRef.current && pdfWrapperRef.current.clientWidth > 50) {
               currentContainerWidth = pdfWrapperRef.current.clientWidth;
+            } else if (prevContainerWidthRef.current > 50) {
+              currentContainerWidth = prevContainerWidthRef.current;
             } else if (containerWidth > 50) {
               currentContainerWidth = containerWidth;
             }
@@ -1028,9 +1152,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
               if (isFullscreen) {
                 scale = 1.0; // 100% starting zoom for fullscreen mode
               } else {
-                const availableWidth = currentContainerWidth - 128; // Account for padding (64px on each side)
-                const zoomFactor = 0.98;
-                const fitScale = (availableWidth / pageWidth) * zoomFactor;
+                const fitScale = currentContainerWidth / pageWidth;
                 
                 // Only enforce a minimum scale to prevent documents from being too small
                 if (fitScale >= 0.3) {
@@ -1055,11 +1177,8 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
           scale = baseScale;
         }
         
-        // OPTIMIZATION: Render citation/highlight page FIRST for instant display
-        // Then render remaining pages in background
         const newRenderedPages = new Map<number, { canvas: HTMLCanvasElement; dimensions: { width: number; height: number } }>();
-        const highlightPage = highlight?.bbox?.page || 1;
-        
+
         // Helper function to render a single page
         const renderPage = async (pageNum: number): Promise<{ canvas: HTMLCanvasElement; dimensions: { width: number; height: number } } | null> => {
           try {
@@ -1098,68 +1217,20 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
             return null;
           }
         };
-        
-        // STEP 1: Render highlight page FIRST and display immediately
-        // Scroll positioning is handled by useLayoutEffect (runs before paint)
-        if (highlightPage >= 1 && highlightPage <= totalPages) {
-          const highlightPageData = await renderPage(highlightPage);
-          if (cancelled) return;
-          
-          if (highlightPageData) {
-            newRenderedPages.set(highlightPage, highlightPageData);
-            // Show highlight page immediately - useLayoutEffect will position scroll before paint
-            setRenderedPages(new Map(newRenderedPages));
-          }
-        }
-        
-        // STEP 2: Render remaining pages in background
+
         for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
           if (cancelled) break;
-          if (pageNum === highlightPage) continue; // Already rendered
-          
           const pageData = await renderPage(pageNum);
           if (cancelled) break;
-          
-          if (pageData) {
-            newRenderedPages.set(pageNum, pageData);
-          }
+          if (pageData) newRenderedPages.set(pageNum, pageData);
         }
-        
-        // STEP 3: Final update with all pages
+
         if (!cancelled) {
           setRenderedPages(new Map(newRenderedPages));
           hasRenderedRef.current = true;
           currentDocIdRefForPdf.current = docId;
           prevContainerWidthRef.current = pdfWrapperRef.current?.clientWidth || containerWidth || 0;
           prevScaleRef.current = scale;
-          
-          // Restore viewport center after re-render completes.
-          // IMPORTANT: Don't fight the INITIAL citation jump-to-bbox.
-          // Once we've already jumped to the bbox, resume normal resize preservation.
-          const highlightKey = getHighlightKey();
-          const shouldSkipViewportRestoreForInitialHighlightJump =
-            !!highlightKey && didAutoScrollToHighlightRef.current !== highlightKey;
-
-          if (!shouldSkipViewportRestoreForInitialHighlightJump && oldScale > 0 && oldScale !== scale && savedScrollHeight > 0) {
-            // Minimal delay for faster adjustment - single RAF is enough
-            requestAnimationFrame(() => {
-              if (pdfWrapperRef.current && !cancelled) {
-                const newScrollHeight = pdfWrapperRef.current.scrollHeight;
-                const newClientHeight = pdfWrapperRef.current.clientHeight;
-                
-                if (newScrollHeight > 0 && oldScale > 0 && scale > 0) {
-                  // Calculate scale ratio
-                  const scaleRatio = scale / oldScale;
-                  // The viewport center in document coordinates scales with the scale ratio
-                  const newViewportCenter = savedViewportCenter * scaleRatio;
-                  // Calculate new scroll position to keep the same document position visible
-                  const newScrollTop = newViewportCenter - (newClientHeight / 2);
-                  const maxScroll = Math.max(0, newScrollHeight - newClientHeight);
-                  pdfWrapperRef.current.scrollTop = Math.max(0, Math.min(newScrollTop, maxScroll));
-                }
-              }
-            });
-          }
         }
         isRecalculatingRef.current = false;
       } catch (error) {
@@ -1174,72 +1245,112 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
       cancelled = true;
       isRecalculatingRef.current = false;
     };
-  }, [pdfDocument, docId, totalPages, baseScale, containerWidth, getCachedRenderedPage, setCachedRenderedPage, getHighlightKey, manualZoom, isFullscreen]);
+  }, [pdfDocument, docId, totalPages, baseScale, containerWidth, getCachedRenderedPage, setCachedRenderedPage, manualZoom, isFullscreen]);
 
 
-  // Reset scroll tracking when document changes
-  useEffect(() => {
-    didAutoScrollToHighlightRef.current = null;
-  }, [docId]);
-
-  // Auto-scroll to highlight when pages before it are added - position BBOX at ~35% from top
-  // Uses useLayoutEffect to run BEFORE browser paint, preventing visible twitch when pages are added
-  const didAutoScrollToHighlightRef = useRef<string | null>(null);
+  // Reset scroll tracking and "initial scroll applied" when document, highlight, or scroll request changes.
+  // scrollRequestId changes when user re-clicks a citation so we re-apply scroll-to-highlight.
+  // Must run in useLayoutEffect so it runs before the scroll effect below (same commit).
   React.useLayoutEffect(() => {
-    if (highlight && highlight.fileId === docId && highlight.bbox && renderedPages.size > 0 && pdfWrapperRef.current) {
-      const pageNum = highlight.bbox.page;
-      const pageData = renderedPages.get(pageNum);
-      
-      if (pageData) {
-        // Include page count in key so we re-scroll when pages before highlight are added
-        // This ensures proper positioning after progressive page loading
-        const pagesBeforeHighlight = Array.from(renderedPages.keys()).filter(n => n < pageNum).length;
-        const baseKey = getHighlightKey() || `${docId}:${pageNum}`;
-        const key = `${baseKey}:${pagesBeforeHighlight}`;
-        if (didAutoScrollToHighlightRef.current === key) return; // prevent repeated jittery scrolls
-        const expandedBbox = highlight.bbox;
-        
-        // Calculate the vertical position of the BBOX center on the page
-        const bboxTop = expandedBbox.top * pageData.dimensions.height;
-        const bboxHeight = expandedBbox.height * pageData.dimensions.height;
-        const bboxCenterY = bboxTop + (bboxHeight / 2);
-        
-        // Calculate the horizontal position of the BBOX center on the page
-        const bboxLeft = expandedBbox.left * pageData.dimensions.width;
-        const bboxWidth = expandedBbox.width * pageData.dimensions.width;
-        const bboxCenterX = bboxLeft + (bboxWidth / 2);
-        
-        // Calculate the offset from the top of the document to the target page
-        const pageOffset = Array.from(renderedPages.entries())
-          .filter(([num]) => num < pageNum)
-          .reduce((sum, [, data]) => sum + data.dimensions.height + 16, 0); // +16 for margin-bottom
-        
-        // Calculate the absolute position of the BBOX center in the document
-        const bboxCenterAbsoluteY = pageOffset + bboxCenterY;
-        
-        // Get viewport dimensions
-        const viewportHeight = pdfWrapperRef.current.clientHeight;
-        const viewportWidth = pdfWrapperRef.current.clientWidth;
-        
-        // Position BBOX at 35% from top (65% up the page) instead of center
-        // This keeps more context visible below the citation
-        const scrollTop = bboxCenterAbsoluteY - (viewportHeight * 0.35);
-        
-        // Center horizontally
-        const scrollLeft = bboxCenterX - (viewportWidth / 2);
-        
-        // SYNCHRONOUS scroll adjustment - no RAF needed since useLayoutEffect runs before paint
-        // This prevents the visible "twitch" when pages are added before the highlight
-        const maxScrollTop = Math.max(0, pdfWrapperRef.current.scrollHeight - pdfWrapperRef.current.clientHeight);
-        const maxScrollLeft = Math.max(0, pdfWrapperRef.current.scrollWidth - pdfWrapperRef.current.clientWidth);
-        
-        pdfWrapperRef.current.scrollTop = Math.max(0, Math.min(scrollTop, maxScrollTop));
-        pdfWrapperRef.current.scrollLeft = Math.max(0, Math.min(scrollLeft, maxScrollLeft));
-        
-        didAutoScrollToHighlightRef.current = key;
-      }
+    didAutoScrollToHighlightRef.current = null;
+    setInitialScrollApplied(false);
+  }, [docId, highlight?.fileId, highlight?.bbox?.page, scrollRequestId]);
+
+  // Pre-position scroll so the citation is centered the moment the preview opens (no visible correction).
+  const didAutoScrollToHighlightRef = useRef<string | null>(null);
+  const [initialScrollApplied, setInitialScrollApplied] = useState(false);
+
+  const applyScrollToHighlight = useCallback((el: HTMLDivElement) => {
+    if (!highlight || highlight.fileId !== docId || !highlight.bbox) return false;
+    const pageNum = highlight.bbox.page;
+    const pageData = renderedPages.get(pageNum);
+    if (!pageData) return false;
+    const viewportHeight = el.clientHeight;
+    const scrollHeight = el.scrollHeight;
+    if (viewportHeight <= 0 || scrollHeight <= 0) return false;
+
+    const expandedBbox = highlight.bbox;
+    const bboxTop = expandedBbox.top * pageData.dimensions.height;
+    const bboxHeight = expandedBbox.height * pageData.dimensions.height;
+    const bboxCenterY = bboxTop + (bboxHeight / 2);
+    const bboxLeft = expandedBbox.left * pageData.dimensions.width;
+    const bboxWidth = expandedBbox.width * pageData.dimensions.width;
+    const bboxCenterX = bboxLeft + (bboxWidth / 2);
+    const pageOffset = Array.from(renderedPages.entries())
+      .filter(([num]) => num < pageNum)
+      .reduce((sum, [, data]) => sum + data.dimensions.height + 16, 0);
+    // Include top padding so BBOX position matches layout
+    const bboxCenterAbsoluteY = PAGES_CONTAINER_PADDING + pageOffset + bboxCenterY;
+    const viewportWidth = el.clientWidth;
+    // Center the bbox vertically in the viewport
+    const scrollTop = bboxCenterAbsoluteY - viewportHeight * 0.5;
+    // Include left padding so BBOX lands on horizontal center of viewport
+    const contentCenterX = PAGES_CONTAINER_PADDING + bboxCenterX;
+    const scrollLeft = contentCenterX - viewportWidth * 0.5;
+    const maxScrollTop = Math.max(0, scrollHeight - viewportHeight);
+    const maxScrollLeft = Math.max(0, el.scrollWidth - viewportWidth);
+    el.scrollTop = Math.max(0, Math.min(scrollTop, maxScrollTop));
+    el.scrollLeft = Math.max(0, Math.min(scrollLeft, maxScrollLeft));
+    return true;
+  }, [highlight, docId, renderedPages]);
+
+  React.useLayoutEffect(() => {
+    if (!highlight || highlight.fileId !== docId || !highlight.bbox || !pdfWrapperRef.current) return;
+    const pageNum = highlight.bbox.page;
+    const pageData = renderedPages.get(pageNum);
+    if (!pageData) return;
+
+    const highlightKey = getHighlightKey();
+    if (didAutoScrollToHighlightRef.current === highlightKey) return;
+
+    for (let i = 1; i <= pageNum; i++) {
+      if (!renderedPages.has(i)) return;
     }
-  }, [highlight, docId, renderedPages, getHighlightKey]);
+
+    const tryApply = (): boolean => {
+      const wrapper = pdfWrapperRef.current;
+      if (!wrapper) return false;
+      void wrapper.offsetHeight; // force layout
+      return applyScrollToHighlight(wrapper);
+    };
+
+    if (tryApply()) {
+      didAutoScrollToHighlightRef.current = highlightKey;
+      setInitialScrollApplied(true);
+      return;
+    }
+    // Container had no dimensions yet: retry a few frames so we apply scroll before first paint
+    const maxRetries = 3;
+    let attempt = 0;
+    let rafId: number;
+    const retry = () => {
+      attempt++;
+      if (didAutoScrollToHighlightRef.current === highlightKey) return;
+      const ok = tryApply();
+      if (ok) {
+        didAutoScrollToHighlightRef.current = highlightKey;
+        setInitialScrollApplied(true);
+        return;
+      }
+      if (attempt < maxRetries) {
+        rafId = requestAnimationFrame(retry);
+      } else {
+        setInitialScrollApplied(true); // show content even if scroll failed so we don't stay hidden
+      }
+    };
+    rafId = requestAnimationFrame(retry);
+    return () => cancelAnimationFrame(rafId);
+  }, [highlight, docId, renderedPages, getHighlightKey, applyScrollToHighlight]);
+
+  // When opening with a highlight (citation click), focus the scroll container so wheel/scroll target it.
+  // When opening without a highlight (e.g. "Analyse with AI"), do not focus so the chat bar keeps focus for typing.
+  useEffect(() => {
+    if (!highlight || !docId) return;
+    const t = setTimeout(() => {
+      pdfWrapperRef.current?.focus({ preventScroll: true });
+    }, 200);
+    return () => clearTimeout(t);
+  }, [docId, highlight]);
 
   const isPDF = blobType === 'application/pdf';
   const isImage = blobType?.startsWith('image/');
@@ -1267,17 +1378,42 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
   }, [chatPanelWidth, isChatPanelOpen]);
   
   // Calculate the width and right position for the document preview
-  // Always anchor the right edge to the screen's right edge (accounting for agent sidebar)
+  // Anchor the right edge with padding from the screen (agent sidebar + 12px toggle rail + right padding)
   // When chat panel resizes, the document preview width adjusts automatically
-  const agentSidebarWidth = isChatHistoryPanelOpen ? chatHistoryPanelWidth : 0;
+  const AGENT_SIDEBAR_RAIL_WIDTH = 12;
+  const DOC_PREVIEW_RIGHT_PADDING = 16; // Gap between document preview right edge and screen/sidebar
+  const agentSidebarWidth = isChatHistoryPanelOpen ? chatHistoryPanelWidth + AGENT_SIDEBAR_RAIL_WIDTH : 0;
   const availableWidth = typeof window !== 'undefined' ? window.innerWidth - sidebarWidth - agentSidebarWidth : 0;
   
+  // When doc opens 50/50, parent may report stale chatPanelWidth for 1–2 frames. Use expected 50% during a short window so opening width doesn't bug out.
+  useEffect(() => {
+    if (!isFullscreen) docOpenTimeRef.current = Date.now();
+    return () => { docOpenTimeRef.current = 0; };
+  }, [docId, isFullscreen]);
+
   const { panelWidth, leftPosition } = (() => {
     // Minimum width for document preview
     const minDocPreviewWidth = CHAT_PANEL_WIDTH.DOC_PREVIEW_MIN;
-    // Round chatPanelWidth for consistent positioning
-    const roundedChatPanelWidth = Math.round(chatPanelWidth);
     const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1920;
+    // Expected chat width in 50/50 split (matches SideChatPanel's calculateChatPanelWidth when doc preview is open)
+    const expected50ChatWidth = Math.round((viewportWidth - sidebarWidth - agentSidebarWidth) / 2);
+    const roundedProp = Math.round(chatPanelWidth);
+    // Set open time synchronously on first render for this doc so position is correct immediately (no jump when loading)
+    if (docId && !isFullscreen && docOpenTimeSetForRef.current !== docId) {
+      docOpenTimeRef.current = Date.now();
+      docOpenTimeSetForRef.current = docId;
+    }
+    const isWithinStaleWindow = docOpenTimeRef.current > 0 && Date.now() - docOpenTimeRef.current < DOC_OPEN_STALE_MS;
+    // Snap to 50% when within 2px to avoid 1px rounding jitter and glitchy re-renders at exactly 50/50
+    const isNear50 = Math.abs(roundedProp - expected50ChatWidth) <= 2;
+    // During open window: always use 50% so the panel never moves when it loads (no jump after load)
+    const effectiveChatWidth =
+      isWithinStaleWindow
+        ? expected50ChatWidth
+        : isNear50
+          ? expected50ChatWidth
+          : roundedProp;
+    const roundedChatPanelWidth = effectiveChatWidth;
     
     // CORRECT LAYOUT: Sidebar (far left) | Chat Panel (left) | Document Preview (RIGHT)
     // Document preview is positioned AFTER sidebar AND chat panel
@@ -1285,15 +1421,15 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
     const naturalDocLeft = sidebarWidth + roundedChatPanelWidth + 12;
     
     // Cap left position to ensure document preview stays on screen with minimum width
-    // maxLeft + minDocWidth + rightGap = viewport - agentSidebar
-    const maxDocLeft = viewportWidth - agentSidebarWidth - 12 - minDocPreviewWidth;
+    // agentSidebarWidth already includes the 12px toggle rail; reserve right padding
+    const maxDocLeft = viewportWidth - agentSidebarWidth - minDocPreviewWidth - DOC_PREVIEW_RIGHT_PADDING;
     const docLeft = Math.min(naturalDocLeft, maxDocLeft);
     
-    // Calculate available width for document preview based on capped left position
-    const availableWidth = viewportWidth - docLeft - agentSidebarWidth - 12;
+    // Calculate available width for document preview (leave padding on right edge)
+    const availableDocWidth = viewportWidth - docLeft - agentSidebarWidth - DOC_PREVIEW_RIGHT_PADDING;
     
     // Enforce minimum width for document preview
-    const finalWidth = Math.max(availableWidth, minDocPreviewWidth);
+    const finalWidth = Math.max(availableDocWidth, minDocPreviewWidth);
     
     return {
       panelWidth: Math.round(finalWidth),
@@ -1319,12 +1455,13 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
       data-document-preview="true"
       data-sidebar-width={sidebarWidth}
       data-agent-sidebar-width={agentSidebarWidth}
-      initial={{ opacity: 0, scale: 0.98 }}
+      initial={false}
       animate={{ opacity: 1, scale: 1 }}
-      exit={{ opacity: 0 }}
-      transition={{ duration: 0 }} // Instant close for responsive feel
-      className={isFullscreen ? "fixed inset-0 bg-white flex flex-col z-[10000]" : "bg-white flex flex-col z-[9999]"}
+      exit={{ opacity: 0, transition: { duration: 0.12 } }}
+      transition={{ duration: 0 }}
+      className={isFullscreen ? `fixed inset-0 flex flex-col ${initialFullscreen ? 'z-[100010]' : 'z-[10000]'}` : "flex flex-col z-[9999]"}
       style={{
+        backgroundColor: '#F9F9F8',
         ...(isFullscreen ? {
           position: 'fixed',
           top: 0,
@@ -1345,9 +1482,11 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
           // Top and bottom margins for rounded corner effect
           top: '12px',
           bottom: '12px',
+          // Explicit height so flex child (scroll area) gets correct height at opening width (fixes scroll at narrow width)
+          height: 'calc(100vh - 24px)',
           // Enforce minimum width as CSS fallback
           minWidth: `${CHAT_PANEL_WIDTH.DOC_PREVIEW_MIN}px`,
-          maxWidth: `calc(100vw - ${sidebarWidth + agentSidebarWidth + 24}px)`, // Never exceed available space
+          maxWidth: `calc(100vw - ${sidebarWidth + agentSidebarWidth + DOC_PREVIEW_RIGHT_PADDING}px)`, // Never exceed available space
           overflow: 'hidden', // Contain content within rounded corners
           margin: 0, // Explicitly remove any margins
           padding: 0, // Explicitly remove any padding
@@ -1397,139 +1536,31 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
         />
       )}
       
-      {/* Agent Glow Border Effect - Pulsing gradient when agent opens document */}
-      {isAgentOpening && (
-        <div 
-          className="agent-glow-overlay"
-          style={{
-            position: 'absolute',
-            inset: 0,
-            pointerEvents: 'none',
-            zIndex: 10000,
-            borderRadius: isFullscreen ? 0 : '16px', // Match container - all corners rounded
-            overflow: 'hidden',
-          }}
-        >
-          {/* Top edge glow */}
-          <div style={{
-            position: 'absolute',
-            top: 0,
-            left: 0,
-            right: 0,
-            height: '20px',
-            background: 'linear-gradient(to bottom, rgba(217, 119, 8, 0.6), rgba(217, 119, 8, 0))',
-            animation: 'agentGlowPulse 1.5s ease-in-out infinite',
-          }} />
-          {/* Bottom edge glow */}
-          <div style={{
-            position: 'absolute',
-            bottom: 0,
-            left: 0,
-            right: 0,
-            height: '20px',
-            background: 'linear-gradient(to top, rgba(217, 119, 8, 0.6), rgba(217, 119, 8, 0))',
-            animation: 'agentGlowPulse 1.5s ease-in-out infinite',
-          }} />
-          {/* Left edge glow */}
-          <div style={{
-            position: 'absolute',
-            top: 0,
-            bottom: 0,
-            left: 0,
-            width: '20px',
-            background: 'linear-gradient(to right, rgba(217, 119, 8, 0.6), rgba(217, 119, 8, 0))',
-            animation: 'agentGlowPulse 1.5s ease-in-out infinite',
-          }} />
-          {/* Right edge glow */}
-          <div style={{
-            position: 'absolute',
-            top: 0,
-            bottom: 0,
-            right: 0,
-            width: '20px',
-            background: 'linear-gradient(to left, rgba(217, 119, 8, 0.6), rgba(217, 119, 8, 0))',
-            animation: 'agentGlowPulse 1.5s ease-in-out infinite',
-          }} />
-          {/* Corner glow overlays for smoother corners */}
-          <div style={{
-            position: 'absolute',
-            top: 0,
-            left: 0,
-            width: '40px',
-            height: '40px',
-            background: 'radial-gradient(ellipse at top left, rgba(217, 119, 8, 0.5), rgba(217, 119, 8, 0) 70%)',
-            animation: 'agentGlowPulse 1.5s ease-in-out infinite',
-          }} />
-          <div style={{
-            position: 'absolute',
-            top: 0,
-            right: 0,
-            width: '40px',
-            height: '40px',
-            background: 'radial-gradient(ellipse at top right, rgba(217, 119, 8, 0.5), rgba(217, 119, 8, 0) 70%)',
-            animation: 'agentGlowPulse 1.5s ease-in-out infinite',
-          }} />
-          <div style={{
-            position: 'absolute',
-            bottom: 0,
-            left: 0,
-            width: '40px',
-            height: '40px',
-            background: 'radial-gradient(ellipse at bottom left, rgba(217, 119, 8, 0.5), rgba(217, 119, 8, 0) 70%)',
-            animation: 'agentGlowPulse 1.5s ease-in-out infinite',
-          }} />
-          <div style={{
-            position: 'absolute',
-            bottom: 0,
-            right: 0,
-            width: '40px',
-            height: '40px',
-            background: 'radial-gradient(ellipse at bottom right, rgba(217, 119, 8, 0.5), rgba(217, 119, 8, 0) 70%)',
-            animation: 'agentGlowPulse 1.5s ease-in-out infinite',
-          }} />
-          {/* CSS Keyframes injected via style tag */}
-          <style>{`
-            @keyframes agentGlowPulse {
-              0%, 100% {
-                opacity: 1;
-              }
-              50% {
-                opacity: 0.4;
-              }
-            }
-          `}</style>
-        </div>
-      )}
-
-      {/* Header */}
+      {/* Header - filename bar (close, PDF icon, name, fullscreen) */}
       <div className="pr-4 pl-6 shrink-0" style={{ 
-        backgroundColor: 'white',
-        border: '4px solid white',
-        paddingTop: '15px',
-        paddingBottom: '19px',
+        background: '#F9F9F8',
+        backgroundColor: '#F9F9F8',
+        border: '4px solid #F9F9F8',
+        paddingTop: '12px',
+        paddingBottom: '8px',
         borderTopLeftRadius: isFullscreen ? 0 : '16px',
         borderTopRightRadius: isFullscreen ? 0 : '16px',
-        margin: '8px',
+        margin: '8px 8px 4px 8px',
         borderRadius: '8px'
       }}>
         <div className="flex items-center justify-between">
-          {/* Left spacer to balance the layout */}
-          <div className="flex items-center" style={{ minWidth: '80px' }}>
-          </div>
-          
-          {/* Center: Close button + PDF icon + Document name */}
+          {/* Left: Close button + PDF icon + Document name */}
           <div 
-            className="flex items-center gap-2 min-w-0"
+            className="flex items-center gap-2 min-w-0 max-w-[43%]"
             style={{
               zIndex: 1,
-              borderBottom: '2px solid rgba(0, 0, 0, 0.8)',
+              borderBottom: '2px solid rgba(0, 0, 0, 0.25)',
               paddingBottom: '4px',
-              width: 'fit-content',
-              margin: '0 auto'
+              width: 'fit-content'
             }}
           >
             <button
-              onClick={onClose}
+              onClick={handleInstantClose}
               className="flex items-center justify-center rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] flex-shrink-0"
               style={{
                 padding: '4px',
@@ -1551,8 +1582,59 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
             </span>
           </div>
           
-          {/* Right: Fullscreen button and zoom controls */}
-          <div className="flex items-center gap-2 justify-end" style={{ minWidth: '80px' }}>
+          {/* Right: Citations nav + Download + Fullscreen — only show citations pill when opened from a citation (has highlight), not on default document preview open */}
+          <div className="flex items-center gap-0 justify-end min-h-[30px]">
+            {/* Citations: compact pill — show only when document was opened from a citation (highlight set), not for default preview */}
+            {!initialFullscreen && highlight != null && (
+              <>
+                <div
+                  className="flex items-center gap-0 rounded-md border border-slate-200/70"
+                  style={{
+                    padding: '3px 6px 3px 10px',
+                    backgroundColor: '#F9F9F8',
+                  }}
+                >
+                  {panelWidth >= 400 ? (
+                    <span className="text-slate-600 text-xs font-medium whitespace-nowrap mr-1.5">Citations</span>
+                  ) : (
+                    <span className="mr-1.5 flex items-center justify-center text-slate-600" title="Citations">
+                      <TextCursorInput className="w-4 h-4" strokeWidth={2} />
+                    </span>
+                  )}
+                  <span className={`text-xs tabular-nums whitespace-nowrap font-medium ml-2 mr-2 ${sortedCitations.length > 0 ? 'text-slate-500' : 'text-slate-400'}`}>
+                    {sortedCitations.length > 0 ? `${currentCitationIndex + 1}/${sortedCitations.length}` : '—'}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleReviewPrevCitation}
+                    disabled={sortedCitations.length === 0}
+                    className="p-1 rounded text-gray-700 hover:bg-black/5 disabled:opacity-40 disabled:pointer-events-none"
+                    aria-label="Previous citation"
+                  >
+                    <ChevronLeft className="w-4 h-4" strokeWidth={2} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleReviewNextCitation}
+                    disabled={sortedCitations.length === 0}
+                    className="p-1 rounded text-gray-700 hover:bg-black/5 disabled:opacity-40 disabled:pointer-events-none"
+                    aria-label="Next citation"
+                  >
+                    <ChevronRight className="w-4 h-4" strokeWidth={2} />
+                  </button>
+                </div>
+                <div
+                  role="presentation"
+                  style={{
+                    width: '1px',
+                    height: '18px',
+                    backgroundColor: 'rgba(0,0,0,0.12)',
+                    marginLeft: '10px',
+                    marginRight: '6px',
+                  }}
+                />
+              </>
+            )}
             {/* Quick Zoom dropdown - only show in fullscreen mode */}
             {isFullscreen && (
               <div className="relative">
@@ -1601,7 +1683,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
               }}
               whileHover={{ backgroundColor: '#f0f0f0' }}
               whileTap={{ backgroundColor: '#e8e8e8' }}
-              className="flex items-center justify-center rounded-sm transition-all duration-150"
+              className="flex items-center justify-center rounded-sm transition-all duration-150 mr-1.5"
               style={{
                 padding: '5px',
                 height: '26px',
@@ -1640,55 +1722,21 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
             </motion.button>
           </div>
         </div>
-        
-        {/* Review Next Citation button */}
-        {hasMultipleCitations && (
-          <div className="flex justify-center w-full mt-3">
-            <button
-              onClick={handleReviewNextCitation}
-              style={{
-                backgroundColor: '#f5f5f5',
-                color: '#333',
-                border: 'none',
-                borderRadius: '8px',
-                padding: '8px 16px',
-                fontSize: '14px',
-                fontFamily: 'system-ui, -apple-system, sans-serif',
-                fontWeight: 400,
-                cursor: 'pointer',
-                boxShadow: '0 1px 2px rgba(0, 0, 0, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.5)',
-                transition: 'background-color 0.2s ease',
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.backgroundColor = '#e8e8e8';
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.backgroundColor = '#f5f5f5';
-              }}
-              onMouseDown={(e) => {
-                e.currentTarget.style.backgroundColor = '#dcdcdc';
-              }}
-              onMouseUp={(e) => {
-                e.currentTarget.style.backgroundColor = '#e8e8e8';
-              }}
-              title={`Review next citation (${currentCitationIndex + 1} of ${sortedCitations.length})`}
-            >
-              Review Next Citation
-            </button>
-          </div>
-        )}
       </div>
 
-      {/* Content */}
+      {/* Content - tabIndex allows programmatic focus so scroll/wheel targets this container after opening from e.g. Analyse with AI */}
       <div 
-        className="bg-gray-50" 
         ref={pdfWrapperRef}
+        tabIndex={-1}
+        className="document-preview-scroll"
         style={{
-          flex: 1,
+          flex: '1 1 0%', // flex-basis 0 so this column gets correct height at opening width (fixes scroll when narrow)
           minHeight: 0, // Critical: allows flex item to shrink and enable scrolling
           overflow: 'auto',
+          backgroundColor: '#F9F9F8',
           borderBottomLeftRadius: isFullscreen ? 0 : '16px',
-          borderBottomRightRadius: isFullscreen ? 0 : '16px'
+          borderBottomRightRadius: isFullscreen ? 0 : '16px',
+          position: 'relative'
         }}
       >
         {error && (
@@ -1707,11 +1755,14 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
                   display: 'flex',
                   flexDirection: 'column',
                   alignItems: 'center',
-                  padding: '64px',
-                  // Transform is applied directly via DOM manipulation during pinch gestures
-                  // This avoids React re-renders for smooth 60fps performance
+                  padding: `${PAGES_CONTAINER_PADDING}px`,
                   transformOrigin: 'top center',
-                  willChange: isZooming ? 'transform' : 'auto'
+                  willChange: isZooming ? 'transform' : 'auto',
+                  boxSizing: 'border-box',
+                  width: '100%',
+                  minWidth: 0,
+                  // Pre-position: hide content until scroll is set so first paint shows citation centered (no correction)
+                  visibility: highlight && !initialScrollApplied ? 'hidden' : 'visible'
                 }}
               >
                 {Array.from(renderedPages.entries()).sort(([a], [b]) => a - b).map(([pageNum, { canvas, dimensions }]) => (
@@ -1721,7 +1772,9 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
                       position: 'relative',
                       width: dimensions.width,
                       height: dimensions.height,
-                      marginBottom: '16px',
+                      maxWidth: '100%',
+                      flexShrink: 0,
+                      marginBottom: '12px',
                       backgroundColor: 'white',
                       boxShadow: '0 2px 8px rgba(0,0,0,0.1)'
                     }}
@@ -1747,7 +1800,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
                       // For now, using 1:1 ratio (square) - adjust if needed based on actual logo dimensions
                       const logoWidth = logoHeight; // Square logo, adjust if needed
                       // Calculate BBOX dimensions with centered padding
-                      const padding = 4; // Equal padding on all sides
+                      const padding = 8; // Equal padding on all sides
                       const originalBboxWidth = highlight.bbox.width * dimensions.width;
                       const originalBboxHeight = highlight.bbox.height * dimensions.height;
                       const originalBboxLeft = highlight.bbox.left * dimensions.width;
@@ -1785,26 +1838,6 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
                       
                       return (
                         <>
-                          {/* Velora logo - positioned so top-right aligns with BBOX top-left */}
-                          <img
-                            src={veloraLogo}
-                            alt="Velora"
-                            style={{
-                              position: 'absolute',
-                              left: `${logoLeft}px`,
-                              top: `${logoTop}px`,
-                              width: `${logoWidth}px`,
-                              height: `${logoHeight}px`,
-                              objectFit: 'contain',
-                              pointerEvents: 'none',
-                              zIndex: 11,
-                              userSelect: 'none',
-                              border: '2px solid rgba(255, 193, 7, 0.9)',
-                              borderRadius: '2px',
-                              backgroundColor: 'white', // Ensure logo has background for border visibility
-                              boxSizing: 'border-box' // Ensure border is included in width/height for proper overlap
-                            }}
-                          />
                           {/* BBOX highlight */}
                           <div
                             onClick={(e) => {
@@ -1831,22 +1864,23 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
                               top: `${finalBboxTop}px`,
                               width: `${Math.min(dimensions.width, finalBboxWidth)}px`,
                               height: `${Math.min(dimensions.height, finalBboxHeight)}px`,
-                              backgroundColor: 'rgba(255, 235, 59, 0.4)',
-                              border: '2px solid rgba(255, 193, 7, 0.9)',
+                              backgroundColor: 'rgba(188, 212, 235, 0.4)',
+                              border: 'none',
                               borderRadius: '2px',
+                              backgroundImage: 'repeating-linear-gradient(90deg, rgba(188, 212, 235, 0.4) 0px, rgba(188, 212, 235, 0.4) 10px, rgba(163, 173, 189, 0.8) 10px, rgba(163, 173, 189, 0.8) 20px), repeating-linear-gradient(0deg, rgba(188, 212, 235, 0.4) 0px, rgba(188, 212, 235, 0.4) 10px, rgba(163, 173, 189, 0.8) 10px, rgba(163, 173, 189, 0.8) 20px), repeating-linear-gradient(90deg, rgba(188, 212, 235, 0.4) 0px, rgba(188, 212, 235, 0.4) 10px, rgba(163, 173, 189, 0.8) 10px, rgba(163, 173, 189, 0.8) 20px), repeating-linear-gradient(0deg, rgba(188, 212, 235, 0.4) 0px, rgba(188, 212, 235, 0.4) 10px, rgba(163, 173, 189, 0.8) 10px, rgba(163, 173, 189, 0.8) 20px)',
+                              backgroundSize: '20px 2px, 2px 20px, 20px 2px, 2px 20px',
+                              backgroundPosition: '0 0, 100% 0, 0 100%, 0 0',
+                              backgroundRepeat: 'repeat-x, repeat-y, repeat-x, repeat-y',
                               pointerEvents: 'auto',
                               cursor: 'pointer',
                               zIndex: 10,
-                              boxShadow: '0 2px 8px rgba(255, 193, 7, 0.3)',
                               transition: 'none' // No animation when changing between BBOXs
                             }}
                             onMouseEnter={(e) => {
-                              e.currentTarget.style.backgroundColor = 'rgba(255, 235, 59, 0.6)';
-                              e.currentTarget.style.borderColor = 'rgba(255, 193, 7, 1)';
+                              e.currentTarget.style.backgroundColor = 'rgba(188, 212, 235, 0.6)';
                             }}
                             onMouseLeave={(e) => {
-                              e.currentTarget.style.backgroundColor = 'rgba(255, 235, 59, 0.4)';
-                              e.currentTarget.style.borderColor = 'rgba(255, 193, 7, 0.9)';
+                              e.currentTarget.style.backgroundColor = 'rgba(188, 212, 235, 0.4)';
                             }}
                             title="Click to interact with this citation"
                           />
@@ -1857,7 +1891,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
                 ))}
               </div>
             )}
-            
+
             {/* Show loading only if no pages rendered yet and still loading */}
             {isPDF && renderedPages.size === 0 && loading && (
               <div className="flex items-center justify-center h-full">
@@ -1901,19 +1935,52 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
             });
             window.dispatchEvent(event);
           }}
-          onAddToWriting={(citation) => {
-            const curatedKey = 'curated_writing_citations';
-            const existing = JSON.parse(localStorage.getItem(curatedKey) || '[]');
-            const newEntry = {
-              id: `citation-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-              citation,
-              addedAt: new Date().toISOString(),
-              documentName: citation.original_filename || 'Unknown document',
-              content: citation.block_content || ''
-            };
-            existing.push(newEntry);
-            localStorage.setItem(curatedKey, JSON.stringify(existing));
-            window.dispatchEvent(new CustomEvent('citation-added-to-writing', { detail: newEntry }));
+          onAddToWriting={async (citation) => {
+            if (!citationExport || !lastResponseMessageId || !lastResponseCitations || !renderedPages.size) {
+              setCitationMenuPosition(null);
+              setSelectedCitation(null);
+              return;
+            }
+            const docIdStr = String(citation.fileId || citation.doc_id);
+            const pageNum = citation.bbox?.page ?? 1;
+            const bbox = citation.bbox ?? { left: 0, top: 0, width: 1, height: 1, page: pageNum };
+            const tol = 0.02;
+            const citationNumber = Object.entries(lastResponseCitations).find(([, c]) => {
+              const cDoc = String(c?.doc_id ?? (c as any)?.document_id ?? '');
+              const cPage = c?.page ?? c?.bbox?.page ?? c?.page_number ?? 0;
+              if (cDoc !== docIdStr || cPage !== pageNum) return false;
+              const cb = c?.bbox;
+              if (!cb) return false;
+              return Math.abs((cb.left ?? 0) - (bbox.left ?? 0)) < tol && Math.abs((cb.top ?? 0) - (bbox.top ?? 0)) < tol;
+            })?.[0];
+            if (!citationNumber) {
+              setCitationMenuPosition(null);
+              setSelectedCitation(null);
+              return;
+            }
+            const pageEntry = renderedPages.get(pageNum);
+            if (!pageEntry) {
+              setCitationMenuPosition(null);
+              setSelectedCitation(null);
+              return;
+            }
+            const { canvas, dimensions } = pageEntry;
+            const dataUrl = canvas.toDataURL('image/png');
+            try {
+              const cropped = await cropPageImageToBbox(dataUrl, dimensions.width, dimensions.height, bbox);
+              citationExport.setCitationExportData((prev) => ({
+                ...prev,
+                [lastResponseMessageId]: {
+                  ...(prev[lastResponseMessageId] ?? {}),
+                  [citationNumber]: { type: 'copy', imageDataUrl: cropped },
+                },
+              }));
+              window.dispatchEvent(new CustomEvent('citation-saved-for-docx'));
+            } catch (_) {
+              // ignore
+            }
+            setCitationMenuPosition(null);
+            setSelectedCitation(null);
           }}
         />
       )}
@@ -1931,7 +1998,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
   }
 
   // Background layer that fills the entire document preview area (without rounded corners)
-  // This prevents seeing through to the map behind the rounded corners
+  // This prevents seeing through to the map behind the rounded corners - match chat panel colour
   const backgroundLayer = (
     <div
       style={{
@@ -1941,7 +2008,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
         width: `${panelWidth + 24}px`, // Extend to cover rounded corner area
         top: 0,
         bottom: 0,
-        backgroundColor: '#FCFCF9', // Match the chat panel background
+        backgroundColor: '#FCFCF9', // Same as chat panel
         zIndex: 9998, // Below the document preview (9999)
         pointerEvents: 'none',
         transition: 'none',

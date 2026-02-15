@@ -15,6 +15,8 @@ import { FilingSidebarProvider, useFilingSidebar } from '../contexts/FilingSideb
 import { ChatPanelProvider, useChatPanel } from '../contexts/ChatPanelContext';
 import { ProjectsProvider } from '../contexts/ProjectsContext';
 import { BrowserFullscreenProvider } from '../contexts/BrowserFullscreenContext';
+import { FeedbackModalProvider, useFeedbackModal } from '../contexts/FeedbackModalContext';
+import { ShareFeedbackModal } from './ShareFeedbackModal';
 
 export interface DashboardLayoutProps {
   className?: string;
@@ -24,8 +26,9 @@ const DashboardLayoutContent = ({
   className
 }: DashboardLayoutProps) => {
   const navigate = useNavigate();
-  const { closeSidebar: closeFilingSidebar } = useFilingSidebar();
-  const { togglePanel: toggleChatPanel, closePanel: closeChatPanel, isOpen: isChatPanelOpen } = useChatPanel();
+  const { closeSidebar: closeFilingSidebar, isOpen: isFilingSidebarOpen, width: filingSidebarWidth } = useFilingSidebar();
+  const { togglePanel: toggleChatPanel, closePanel: closeChatPanel, isOpen: isChatPanelOpen, width: chatPanelWidth } = useChatPanel();
+  const { isOpen: isFeedbackModalOpen, setIsOpen: setFeedbackModalOpen, messageId: feedbackMessageId, conversationSnippet: feedbackConversationSnippet } = useFeedbackModal();
   const [selectedBackground, setSelectedBackground] = React.useState<string>('default-background');
 
   // Preload @ mention cache (properties + documents) so popover shows results instantly
@@ -112,7 +115,9 @@ const DashboardLayoutContent = ({
   const [shouldRestoreActiveChat, setShouldRestoreActiveChat] = React.useState<boolean>(false); // Signal to restore active chat
   const [shouldRestoreSelectedChat, setShouldRestoreSelectedChat] = React.useState<string | null>(null); // Signal to restore selected chat from agent sidebar
   const [isChatVisible, setIsChatVisible] = React.useState<boolean>(false); // Track if chat panel is visible
+  const [isProjectDetailOpen, setIsProjectDetailOpen] = React.useState<boolean>(false); // True when viewing a project (fullscreen property view) – keeps Projects nav unselected
   const { addChatToHistory, updateChatInHistory, getChatById, updateChatStatus } = useChatHistory();
+  const clearProjectSelectionRef = React.useRef<(() => void) | null>(null);
 
   const handleViewChange = (viewId: string) => {
     // Show notification only if we're currently in chat mode and navigating away from it
@@ -129,6 +134,11 @@ const DashboardLayoutContent = ({
       setIsChatVisible(false); // Also clear chat visibility state
     }
     
+    // When clicking Projects, always show the default projects list (clear any open project view)
+    if (viewId === 'projects') {
+      clearProjectSelectionRef.current?.();
+    }
+
     // Special handling for home - reset everything to default state and close all panels
     if (viewId === 'home') {
       // Clear all map visibility states
@@ -161,9 +171,9 @@ const DashboardLayoutContent = ({
     // Map should only be visible when explicitly opened via Map button or in search view
     // Views like 'projects', 'analytics', 'settings', etc. should hide the map
     if (viewId !== 'search') {
-      // #region agent log
-      fetch('http://127.0.0.1:7243/ingest/1d8b42de-af74-4269-8506-255a4dc9510b',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'DashboardLayout.tsx:150',message:'Non-search view - clearing sidebar map visibility',data:{viewId,isMapVisibleFromSidebar},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-      // #endregion
+      if (import.meta.env.VITE_LOCAL_DEBUG_INGEST === '1') {
+        fetch('http://127.0.0.1:7243/ingest/1d8b42de-af74-4269-8506-255a4dc9510b',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'DashboardLayout.tsx:150',message:'Non-search view - clearing sidebar map visibility',data:{viewId,isMapVisibleFromSidebar},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+      }
       setIsMapVisibleFromSidebar(false);
       // Don't clear chat map visibility - chat might still be active
     }
@@ -291,6 +301,10 @@ const DashboardLayoutContent = ({
       setPreviousChatData(chatData);
       setIsInChatMode(true);
       setCurrentView('search');
+      // CRITICAL: Mark map as visible when entering a chat so Sidebar gets z-index 10001 and
+      // stays above the map. Without this, the map (inside MainContent, z-index 10000 when
+      // chat panel is open) would paint on top of the Sidebar (z-index 1000 when isMapVisible is false).
+      setIsMapVisibleFromChat(true);
       
       // CRITICAL: Signal MainContent to restore immediately with fullscreen
       // Use a new signal similar to shouldRestoreActiveChat but for specific chat selection
@@ -416,8 +430,9 @@ const DashboardLayoutContent = ({
       // No running query - clear chat context as before
       setCurrentChatId(null);
       currentChatIdRef.current = null;
-      // Only hide chat UI if there's no running query
-      setHasPerformedSearch(false);
+      // Keep hasPerformedSearch true so the agent sidebar stays open and we show the empty new-chat UI
+      // (Do not set to false - that would hide chat and can cause the agent sidebar to close)
+      setHasPerformedSearch(true);
     }
     
     // Always clear UI state (query input, chat data)
@@ -622,6 +637,14 @@ const DashboardLayoutContent = ({
           />
         );
       })()}
+      {/* Share feedback modal (thumbs down / report) - driven by context from SideChatPanel feedback bar */}
+      <ShareFeedbackModal
+        open={isFeedbackModalOpen}
+        onClose={() => setFeedbackModalOpen(false)}
+        messageId={feedbackMessageId}
+        conversationSnippet={feedbackConversationSnippet}
+      />
+
       {/* Chat Return Notification */}
       <ChatReturnNotification
         isVisible={showChatNotification}
@@ -630,6 +653,23 @@ const DashboardLayoutContent = ({
         onDismiss={handleDismissNotification}
       />
       
+      {/* Agent sidebar backdrop – click closes only the agent sidebar (no darkening over chat) */}
+      {!isSidebarExpanded && isChatPanelOpen && (
+        <div
+          role="button"
+          tabIndex={0}
+          aria-label="Close agent sidebar"
+          className="fixed inset-0 transition-opacity"
+          style={{
+            background: 'transparent',
+            zIndex: 9999,
+            pointerEvents: 'auto',
+          }}
+          onClick={() => closeChatPanel()}
+          onKeyDown={(e) => e.key === 'Enter' && closeChatPanel()}
+        />
+      )}
+
       {/* Chat Panel - Only show when sidebar is NOT expanded (chat history shown in sidebar when expanded) */}
       {!isSidebarExpanded && (
         <ChatPanel 
@@ -640,13 +680,65 @@ const DashboardLayoutContent = ({
           selectedChatId={currentChatId}
         />
       )}
+
+      {/* Agent sidebar closing toggle rail - visible strip on left edge of agent sidebar; click closes only agent sidebar */}
+      {!isSidebarExpanded && isChatPanelOpen && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            closeChatPanel();
+          }}
+          aria-label="Close agent sidebar"
+          className="fixed inset-y-0 w-3 group"
+          style={{
+            right: chatPanelWidth,
+            width: 12,
+            zIndex: 10001,
+            background: '#F8F8F5',
+            borderLeft: '1px solid #E5E5E2',
+            pointerEvents: 'auto',
+            WebkitTapHighlightColor: 'transparent'
+          }}
+        >
+          <div
+            className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity"
+            style={{ background: 'rgba(0, 0, 0, 0.06)' }}
+          />
+        </button>
+      )}
       
+      {/* FilingSidebar closing toggle rail - separate strip on right edge of FilingSidebar; matches FilingSidebar background (#F2F2EF) */}
+      {isFilingSidebarOpen && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            closeFilingSidebar();
+          }}
+          aria-label="Close filing sidebar"
+          className="fixed inset-y-0 w-3 group"
+          style={{
+            left: (isSidebarCollapsed ? 12 : 224) + filingSidebarWidth - 12,
+            zIndex: 100002,
+            background: '#F2F2EF',
+            pointerEvents: 'auto',
+            WebkitTapHighlightColor: 'transparent'
+          }}
+        >
+          <div
+            className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity"
+            style={{ background: 'rgba(0, 0, 0, 0.04)' }}
+          />
+        </button>
+      )}
+
       {/* Sidebar - with higher z-index when map is visible */}
       <Sidebar 
         onItemClick={handleViewChange} 
         onChatToggle={handleChatPanelToggle} 
         isChatPanelOpen={isChatPanelOpen} 
-        activeItem={currentView}
+        activeItem={isProjectDetailOpen ? 'project-detail' : currentView}
         isCollapsed={isSidebarCollapsed}
         isExpanded={isSidebarExpanded}
         onToggle={handleSidebarToggle}
@@ -713,6 +805,8 @@ const DashboardLayoutContent = ({
         onMapVisibilityChange={handleMapVisibilityChange}
         onNavigateToDashboard={handleNavigateToDashboard}
         externalIsMapVisible={isMapVisible}
+        onRegisterClearProjectSelection={(clear) => { clearProjectSelectionRef.current = clear; }}
+        onProjectDetailOpen={setIsProjectDetailOpen}
       />
     </div>
   );
@@ -725,7 +819,9 @@ export const DashboardLayout = (props: DashboardLayoutProps) => {
         <ChatPanelProvider>
           <ProjectsProvider>
             <BrowserFullscreenProvider>
-              <DashboardLayoutContent {...props} />
+              <FeedbackModalProvider>
+                <DashboardLayoutContent {...props} />
+              </FeedbackModalProvider>
             </BrowserFullscreenProvider>
           </ProjectsProvider>
         </ChatPanelProvider>

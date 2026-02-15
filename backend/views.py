@@ -41,6 +41,27 @@ def _strip_intent_fragment_from_response(text):
     return stripped
 
 
+def _citation_numbers_in_response(response_text):
+    """Return set of citation numbers (as str) that actually appear in the response text.
+    Only documents cited in the response should be shown as sources.
+    Uses bracket format [1], [2] (and optional superscript ¹²³) to avoid false positives from (1), (2) in prose.
+    """
+    if not response_text or not isinstance(response_text, str):
+        return set()
+    seen = set()
+    # Bracket format: [1], [2], [12] (primary citation format from responder/summary)
+    for m in re.finditer(r"\[(\d+)\]", response_text):
+        seen.add(m.group(1))
+    # Superscript ¹²³ if used in display
+    if "\u00B9" in response_text:
+        seen.add("1")
+    if "\u00B2" in response_text:
+        seen.add("2")
+    if "\u00B3" in response_text:
+        seen.add("3")
+    return seen
+
+
 def _ensure_business_uuid():
     """Ensure the current user has a business UUID and return it as a string."""
     existing = getattr(current_user, "business_id", None)
@@ -89,6 +110,10 @@ views = Blueprint('views', __name__)
 
 # Set up logging
 logger = logging.getLogger(__name__)
+
+# Stream response pacing: delay in ms between chunks (0 = no delay); chunk size in characters
+STREAM_CHUNK_DELAY_MS = int(os.environ.get("STREAM_CHUNK_DELAY_MS", "18"))
+STREAM_CHUNK_SIZE = int(os.environ.get("STREAM_CHUNK_SIZE", "8"))
 
 # ---------------------------------------------------------------------------
 # Performance timing helpers (lightweight, server-side only)
@@ -374,6 +399,66 @@ def chat_completion():
             'success': False,
             'error': str(e)
         }), 500
+
+
+@views.route('/api/chat-feedback', methods=['POST', 'OPTIONS'])
+@login_required
+def submit_chat_feedback():
+    """
+    Accept chat feedback (thumbs down) and send email to connect@solosway.co.
+    Body: category (required), details (optional), messageId (optional), conversationSnippet (optional).
+    If SMTP env vars are not set, payload is logged and 200 is returned so the UI still works.
+    """
+    if request.method == 'OPTIONS':
+        return jsonify({}), 200
+    data = request.get_json() or {}
+    category = (data.get('category') or '').strip()
+    if not category:
+        return jsonify({'success': False, 'error': 'category is required'}), 400
+    details = (data.get('details') or '').strip()
+    message_id = data.get('messageId')
+    conversation_snippet = (data.get('conversationSnippet') or '')[:2000]
+    user_email = getattr(current_user, 'email', None) or 'unknown'
+    from_email = os.environ.get('FEEDBACK_FROM_EMAIL') or os.environ.get('SMTP_USER') or 'feedback@solosway.co'
+    to_email = 'connect@solosway.co'
+    body_lines = [
+        f'Chat feedback from {user_email}',
+        f'Category: {category}',
+        f'Message ID: {message_id or "(none)"}',
+        '',
+        'Details:',
+        details or '(none)',
+        '',
+        'Conversation snippet:',
+        conversation_snippet or '(none)',
+    ]
+    body = '\n'.join(body_lines)
+    smtp_host = os.environ.get('SMTP_HOST')
+    smtp_port = int(os.environ.get('SMTP_PORT', '587'))
+    smtp_user = os.environ.get('SMTP_USER')
+    smtp_password = os.environ.get('SMTP_PASSWORD')
+    if smtp_host and smtp_user and smtp_password:
+        try:
+            import smtplib
+            from email.mime.text import MIMEText
+            from email.mime.multipart import MIMEMultipart
+            msg = MIMEMultipart()
+            msg['Subject'] = f'Chat feedback: {category[:50]}'
+            msg['From'] = from_email
+            msg['To'] = to_email
+            msg.attach(MIMEText(body, 'plain'))
+            with smtplib.SMTP(smtp_host, smtp_port) as server:
+                server.starttls()
+                server.login(smtp_user, smtp_password)
+                server.sendmail(from_email, [to_email], msg.as_string())
+            logger.info(f'Chat feedback email sent to {to_email} from {user_email}')
+        except Exception as e:
+            logger.exception('Failed to send chat feedback email')
+            return jsonify({'success': False, 'error': str(e)}), 500
+    else:
+        logger.info('Chat feedback (SMTP not configured): category=%s user=%s messageId=%s', category, user_email, message_id)
+    return jsonify({'success': True}), 200
+
 
 # Add before_request handler to respond to OPTIONS (CORS preflight) with 200 so browser gets HTTP OK
 @views.before_request
@@ -668,6 +753,40 @@ def query_documents_stream():
                 logger.info("🟢 [STREAM] Yielding initial status message")
                 yield f"data: {json.dumps({'type': 'status', 'message': 'Searching documents...'})}\n\n"
                 
+                # Generate and stream chat title from query (so everything shown to user is streamed)
+                def generate_chat_title_from_query(q: str) -> str:
+                    """Generate a short chat title from the user query (mirrors frontend logic)."""
+                    if not q or not (q := q.strip()):
+                        return "New chat"
+                    # Extract topic: look for "of X" / "for X" or capitalized words
+                    q_lower = q.lower()
+                    title = None
+                    for sep in (" of ", " for "):
+                        if sep in q_lower:
+                            parts = q_lower.split(sep, 1)
+                            if len(parts) == 2 and parts[1].strip():
+                                # Take 1-2 words from the part after of/for
+                                words = parts[1].strip().split()[:2]
+                                title = " ".join(w.title() for w in words)
+                                break
+                    if not title:
+                        words = q.split()
+                        caps = [w for w in words if len(w) > 2 and w[0].isupper() and w.lower() not in {"the", "a", "an", "of", "in", "for", "to", "and", "or", "please", "find", "me", "what", "is", "are", "show", "get", "tell", "who", "how", "why", "when", "where"}]
+                        if caps:
+                            title = " ".join(caps[:2])
+                    if not title:
+                        if len(q) > 50:
+                            last_space = q[:47].rfind(" ")
+                            title = (q[:last_space] + "...") if last_space > 20 else q[:47] + "..."
+                        else:
+                            title = q
+                    return title[:50] if len(title) > 50 else title
+                
+                # Stream title in one chunk so the client gets it immediately (no char-by-char delay)
+                streamed_chat_title = generate_chat_title_from_query(query)
+                if streamed_chat_title:
+                    yield f"data: {json.dumps({'type': 'title_chunk', 'token': streamed_chat_title})}\n\n"
+                
                 # Extract intent from query for contextual reasoning step
                 # Simple heuristic: identify what user is looking for and where
                 def extract_query_intent(q: str) -> str:
@@ -816,12 +935,10 @@ def query_documents_stream():
                 # Follow-up queries should still show reasoning steps for an agentic experience
                 # The keywords were too broad ('why', 'how', 'can you') and matched most questions
                 
-                # Skip reasoning steps ONLY for citation queries (user clicked on citation text)
+                # Citation queries still show reasoning steps (Planning next moves, then Summarising content)
                 is_fast_path = is_citation_query
                 
                 if is_fast_path:
-                    # Skip initial reasoning step - go straight to LLM (citation queries only)
-                    logger.info("⚡ [CITATION_QUERY] Skipping initial reasoning step - ultra-fast path")
                     timing.mark("intent_extracted")
                 else:
                     # Detect if this is a navigation query (similar to should_route logic)
@@ -848,17 +965,17 @@ def query_documents_stream():
                             is_navigation_query = has_navigation_intent or has_pin_intent
                     
                     timing.mark("intent_extracted")
-                    
-                    # Step (1): Planning next moves (normal retrieval reasoning flow)
-                    initial_reasoning = {
-                        'type': 'reasoning_step',
-                        'step': 'planning_next_moves',
-                        'action_type': 'planning',
-                        'message': 'Planning next moves',
-                        'details': {}
-                    }
-                    yield f"data: {json.dumps(initial_reasoning)}\n\n"
-                    logger.debug("🟡 [REASONING] Emitted step (1): Planning next moves")
+                
+                # Step (1): Planning next moves (all queries including citation - immediate feedback)
+                initial_reasoning = {
+                    'type': 'reasoning_step',
+                    'step': 'planning_next_moves',
+                    'action_type': 'planning',
+                    'message': 'Planning next moves',
+                    'details': {}
+                }
+                yield f"data: {json.dumps(initial_reasoning)}\n\n"
+                logger.debug("🟡 [REASONING] Emitted step (1): Planning next moves")
                 
                 # Detect if user wants agent to perform UI actions (show me, save, navigate)
                 action_intent = detect_action_intent(query)
@@ -869,6 +986,32 @@ def query_documents_stream():
                     """Run LangGraph and stream the final summary with reasoning steps"""
                     try:
                         logger.info("🟡 [STREAM] run_and_stream() async function started")
+                        # Yield immediately so the client gets feedback while we build the graph (reduces perceived latency)
+                        if effective_document_ids:
+                            # Include first document's filename so UI shows real name instead of "Document"
+                            reading_details = {}
+                            try:
+                                from backend.services.document_storage_service import DocumentStorageService
+                                doc_storage = DocumentStorageService()
+                                first_id = effective_document_ids[0]
+                                ok, doc, _ = doc_storage.get_document(first_id, business_id)
+                                if ok and doc:
+                                    fn = (doc.get('original_filename') or '').strip()
+                                    if fn:
+                                        display_fn = fn[:32] + '...' if len(fn) > 35 else fn
+                                        reading_details = {
+                                            'filename': fn,
+                                            'doc_metadata': {
+                                                'doc_id': first_id,
+                                                'original_filename': fn,
+                                                'classification_type': doc.get('classification_type') or 'Document',
+                                            },
+                                        }
+                            except Exception as e:
+                                logger.debug(f"Could not resolve filename for reading step: {e}")
+                            yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'reading_documents', 'action_type': 'reading', 'message': 'Reading selected documents...', 'details': reading_details, 'timestamp': time.time()})}\n\n"
+                        else:
+                            yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'preparing', 'action_type': 'planning', 'message': 'Preparing...', 'details': {}, 'timestamp': time.time()})}\n\n"
                         
                         # Create a new checkpointer and graph for current event loop.
                         # This avoids "Lock bound to different event loop" errors.
@@ -921,13 +1064,16 @@ def query_documents_stream():
                                     "query_preview": query[:100] if query else "",  # First 100 chars for context
                                     "endpoint": "stream"
                                 }
-                            }
+                            },
+                            # Allow planner->executor->evaluator refinement loops (up to 3) without hitting limit
+                            "recursion_limit": 50,
                         }
                         
                         # Check for existing session state (follow-up detection)
                         is_followup = False
                         existing_doc_count = 0
                         loaded_conversation_history = []
+                        existing_state = None
                         try:
                             if checkpointer:
                                 existing_state = await graph.aget_state(config_dict)
@@ -941,6 +1087,14 @@ def query_documents_stream():
                                         existing_doc_count = len(prev_docs)
                         except Exception as state_err:
                             logger.warning(f"Could not check existing state: {state_err}")
+                        
+                        # Cache-first for follow-ups: reuse execution_results from checkpoint to skip planner+executor
+                        if is_followup and existing_state is not None and getattr(existing_state, "values", None):
+                            cached_results = existing_state.values.get("execution_results") or []
+                            if cached_results and len(cached_results) > 0:
+                                initial_state["use_cached_results"] = True
+                                initial_state["execution_results"] = list(cached_results)  # copy, do not mutate checkpoint
+                                logger.info(f"🟢 [STREAM] Cache-first: reusing {len(cached_results)} execution_results from checkpoint (skipping planner+executor)")
                         
                         # WORKAROUND: If checkpointer unavailable, try to use messageHistory from request
                         # This is a temporary solution until checkpointer is properly configured
@@ -958,6 +1112,8 @@ def query_documents_stream():
                         processed_nodes = set()
                         # Emit "Found N documents" + "Reading Document" only once (executor on_chain_end fires after each step)
                         executor_found_docs_emitted = False
+                        # Emit only one "Preparing ..." / searching step per request (avoid duplicate from planner + executor)
+                        searching_step_emitted = False
                         
                         # Track reading timestamp - set when documents are first seen (before summarizing)
                         # This ensures reading steps appear before summarizing in the UI
@@ -982,14 +1138,14 @@ def query_documents_stream():
                             },
                             'summarize_results': {
                                 'action_type': 'planning',
-                                'message': 'Preparing response',
+                                'message': 'Summarising content',
                                 'details': {}
                             },
                             # Main retrieval path: step (1) "Planning next moves" from initial_reasoning; (2) from phase "Searching for {query}"
                             # planner/executor not in node_messages to avoid duplicates
                             'responder': {
                                 'action_type': 'analysing',
-                                'message': 'Preparing response',
+                                'message': 'Summarising content',
                                 'details': {}
                             },
                         }
@@ -997,14 +1153,14 @@ def query_documents_stream():
                         # Stream events from graph execution and track state
                         # IMPORTANT: astream_events executes the graph and emits events as nodes run
                         # We MUST emit reasoning steps immediately when nodes start
-                        # EXCEPTION: Citation queries skip reasoning steps for ultra-fast response
                         if is_fast_path:
-                            logger.info("⚡ [CITATION_QUERY] Skipping reasoning step emissions - ultra-fast path")
+                            logger.info("🟡 [REASONING] Citation path - emitting Planning next moves + Summarising content")
                         else:
                             logger.info("🟡 [REASONING] Starting to stream events and emit reasoning steps...")
                         final_result = None
                         summary_already_streamed = False  # Track if we've already streamed the summary
                         streamed_summary = None  # Store the exact summary that was streamed to ensure consistency
+                        memory_storage_scheduled = False  # Track if Mem0 memory storage has been scheduled for this request
                         
                         # Execute graph with error handling for connection timeouts during execution
                         # Since we create a new graph for the current loop, we can use astream_events directly
@@ -1038,22 +1194,25 @@ def query_documents_stream():
                                         if label_stripped.startswith('Planning search for') or label_stripped.startswith('Finding the ') or label_stripped.startswith('Finding '):
                                             # Normal retrieval uses "Planning next moves" (step 1) from initial_reasoning; skip duplicate from phase
                                             pass
-                                        elif label and ('Searched' in label or 'search' in label.lower()):
-                                            # Use the label from the executor (already "Searching for {step_query}" or "Scanning selected document")
-                                            if is_chip_query:
-                                                search_message = 'Scanning selected document'
-                                            else:
-                                                search_message = label_stripped or 'Searching for documents'
-                                            reasoning_data = {
-                                                'type': 'reasoning_step',
-                                                'step': 'searching_documents',
-                                                'action_type': 'searching',
-                                                'message': search_message,
-                                                'timestamp': time.time(),
-                                                'details': {}
-                                            }
-                                            yield f"data: {json.dumps(reasoning_data)}\n\n"
-                                            logger.info(f"🟡 [REASONING] Emitted searching step (from executor): {search_message}")
+                                        elif label and ('Searched' in label or 'search' in label.lower() or label_stripped.startswith('Preparing ') or label_stripped.startswith('Finding ') or label_stripped.startswith('Searching for ') or label_stripped.startswith('Locating ')):
+                                            # Emit only one searching step per request to avoid duplicate
+                                            if not searching_step_emitted:
+                                                searching_step_emitted = True
+                                                # Use the label from the executor ("Finding {intent}", "Scanning selected document", or legacy "Searching for ...")
+                                                if is_chip_query:
+                                                    search_message = 'Scanning selected document'
+                                                else:
+                                                    search_message = label_stripped or 'Searching for documents'
+                                                reasoning_data = {
+                                                    'type': 'reasoning_step',
+                                                    'step': 'searching_documents',
+                                                    'action_type': 'searching',
+                                                    'message': search_message,
+                                                    'timestamp': time.time(),
+                                                    'details': {}
+                                                }
+                                                yield f"data: {json.dumps(reasoning_data)}\n\n"
+                                                logger.info(f"🟡 [REASONING] Emitted searching step (from executor): {search_message}")
                                         elif label and ('Reviewed' in label or 'review' in label.lower()):
                                             # Normal retrieval: skip "Reviewed relevant sections" so steps match (1) Planning (2) Searching for query (3) Found x docs (4) Read
                                             pass
@@ -1071,21 +1230,37 @@ def query_documents_stream():
                                     timing.mark(f"node_{node_name}_start")
                                 
                                 # Capture node start events for reasoning steps - EMIT IMMEDIATELY
-                                # SKIP for citation queries - ultra-fast path, no reasoning steps
-                                if event_type == "on_chain_start" and not is_fast_path:
-                                    if node_name in node_messages and node_name not in processed_nodes:
-                                        processed_nodes.add(node_name)
+                                # Only emit steps for phases that are actually happening (searching, reading, etc.)
+                                # Do NOT emit "Summarising content" when responder starts - emit it when we actually start streaming
+                                if event_type == "on_chain_start":
+                                    if is_fast_path and node_name == "handle_citation_query":
+                                        # Citation path: replace "Planning next moves" with "Summarising content"
                                         reasoning_data = {
                                             'type': 'reasoning_step',
-                                            'step': node_name,
-                                            'action_type': node_messages[node_name].get('action_type', 'analysing'),
-                                            'message': node_messages[node_name]['message'],
-                                            'details': node_messages[node_name]['details']
+                                            'step': 'handle_citation_query',
+                                            'action_type': 'analysing',
+                                            'message': 'Summarising content',
+                                            'details': {}
                                         }
-                                        reasoning_json = json.dumps(reasoning_data)
-                                        yield f"data: {reasoning_json}\n\n"
-                                        logger.info(f"🟡 [REASONING] ✅ Emitted step: {node_name} - {node_messages[node_name]['message']}")
-                                        logger.debug(f"🟡 [REASONING] JSON: {reasoning_json}")
+                                        yield f"data: {json.dumps(reasoning_data)}\n\n"
+                                        logger.info("🟡 [REASONING] ✅ Emitted citation step: Summarising content")
+                                    elif not is_fast_path and node_name in node_messages and node_name not in processed_nodes:
+                                        # Skip responder: "Summarising content" is emitted when we actually start streaming (first token), not when node starts
+                                        if node_name == "responder":
+                                            pass
+                                        else:
+                                            processed_nodes.add(node_name)
+                                            reasoning_data = {
+                                                'type': 'reasoning_step',
+                                                'step': node_name,
+                                                'action_type': node_messages[node_name].get('action_type', 'analysing'),
+                                                'message': node_messages[node_name]['message'],
+                                                'details': node_messages[node_name]['details']
+                                            }
+                                            reasoning_json = json.dumps(reasoning_data)
+                                            yield f"data: {reasoning_json}\n\n"
+                                            logger.info(f"🟡 [REASONING] ✅ Emitted step: {node_name} - {node_messages[node_name]['message']}")
+                                            logger.debug(f"🟡 [REASONING] JSON: {reasoning_json}")
                                 
                                 # Capture node end events to update details and track state
                                 elif event.get("event") == "on_chain_end":
@@ -1215,21 +1390,37 @@ def query_documents_stream():
                                                 logger.info(f"📂 [EARLY_PREP] Emitted prepare_document for {first_doc.get('doc_id', '')[:8]}...")
                                     
                                     elif node_name == "executor" and not is_fast_path:
-                                        # Planner/Executor path: emit "Found N relevant document(s):" + "Reading Document" once (steps 4–5)
-                                        # Executor on_chain_end fires after each step; only emit on first (after retrieve_docs only)
+                                        # Planner/Executor path: emit "Found N relevant document(s):" + "Reading" only for
+                                        # documents we actually read (have chunks for). Wait until we have retrieve_chunks
+                                        # result so we don't show docs we never read.
                                         state_data = state_update or output or event_data
                                         execution_results = state_data.get("execution_results", []) or []
                                         docs_result = None
+                                        chunks_result = None
                                         for r in execution_results:
                                             if r.get("action") == "retrieve_docs" and r.get("result"):
                                                 docs_result = r["result"]
-                                                break
-                                        # Emit only once: when we have docs and haven't already (first executor end = 1 result)
-                                        if docs_result and len(docs_result) > 0 and not executor_found_docs_emitted and len(execution_results) == 1:
+                                            if r.get("action") == "retrieve_chunks" and r.get("result"):
+                                                chunks_result = r["result"]
+                                        # Build set of document_ids we actually have chunks for
+                                        doc_ids_with_chunks = set()
+                                        if chunks_result and isinstance(chunks_result, list):
+                                            for item in chunks_result:
+                                                if isinstance(item, dict):
+                                                    did = item.get("document_id") or item.get("doc_id")
+                                                    if did:
+                                                        doc_ids_with_chunks.add(str(did))
+                                        # Only emit once, and only when we have retrieve_chunks so we can filter
+                                        if docs_result and not executor_found_docs_emitted and chunks_result is not None:
+                                            # Restrict to docs we actually read (have chunks for); preserve order from docs_result
+                                            docs_read = [d for d in docs_result if str(d.get("document_id") or d.get("doc_id") or "") in doc_ids_with_chunks]
+                                            if not docs_read and docs_result and len(doc_ids_with_chunks) == 0:
+                                                # Chunks result was empty list - we "read" no docs
+                                                docs_read = []
                                             executor_found_docs_emitted = True
                                             doc_names = []
                                             doc_previews = []
-                                            for doc in docs_result[:10]:
+                                            for doc in docs_read[:10]:
                                                 doc_id = doc.get("document_id") or doc.get("doc_id", "")
                                                 filename = doc.get("filename") or doc.get("original_filename", "") or ""
                                                 classification_type = doc.get("document_type") or doc.get("classification_type", "Document") or "Document"
@@ -1244,56 +1435,59 @@ def query_documents_stream():
                                                     "s3_path": doc.get("s3_path", ""),
                                                     "download_url": f"/api/files/download?document_id={doc_id}" if doc_id else ""
                                                 })
-                                            doc_count = len(docs_result)
-                                            doc_word = "document" if doc_count == 1 else "documents"
-                                            message = f'Found {doc_count} relevant {doc_word}:'
-                                            if reading_timestamp is None:
-                                                reading_timestamp = time.time() + 0.1
-                                            reasoning_data = {
-                                                'type': 'reasoning_step',
-                                                'step': 'found_documents',
-                                                'action_type': 'exploring',
-                                                'message': message,
-                                                'count': doc_count,
-                                                'timestamp': time.time(),
-                                                'details': {
-                                                    'documents_found': doc_count,
-                                                    'document_names': doc_names,
-                                                    'doc_previews': doc_previews
-                                                }
-                                            }
-                                            yield f"data: {json.dumps(reasoning_data)}\n\n"
-                                            # Emit one reading step per document (align with process_documents path for preview cards)
-                                            for i, doc_preview in enumerate(doc_previews):
-                                                display_filename = (doc_preview.get('original_filename') or doc_preview.get('classification_type', 'Document') or 'Document')
-                                                if display_filename and len(display_filename) > 35:
-                                                    display_filename = display_filename[:32] + '...'
-                                                if not display_filename:
-                                                    display_filename = (doc_preview.get('classification_type') or 'Document').replace('_', ' ').title()
-                                                doc_metadata = {
-                                                    'doc_id': doc_preview.get('doc_id', ''),
-                                                    'original_filename': doc_preview.get('original_filename') if doc_preview.get('original_filename') else None,
-                                                    'classification_type': doc_preview.get('classification_type', 'Document') or 'Document',
-                                                    'page_range': doc_preview.get('page_range', ''),
-                                                    'page_numbers': doc_preview.get('page_numbers', []),
-                                                    's3_path': doc_preview.get('s3_path', ''),
-                                                    'download_url': doc_preview.get('download_url', '') or (f"/api/files/download?document_id={doc_preview.get('doc_id')}" if doc_preview.get('doc_id') else '')
-                                                }
-                                                reading_step_timestamp = reading_timestamp + (i * 0.01) if reading_timestamp else time.time()
-                                                reading_data = {
+                                            doc_count = len(docs_read)
+                                            if doc_count == 0:
+                                                logger.debug("🟡 [REASONING] No documents had chunks; skipping found_documents + reading steps")
+                                            else:
+                                                doc_word = "document" if doc_count == 1 else "documents"
+                                                message = f'Found {doc_count} relevant {doc_word}:'
+                                                if reading_timestamp is None:
+                                                    reading_timestamp = time.time() + 0.1
+                                                reasoning_data = {
                                                     'type': 'reasoning_step',
-                                                    'step': f'read_doc_exec_{i}',
-                                                    'action_type': 'reading',
-                                                    'message': f'Read {display_filename}',
-                                                    'timestamp': reading_step_timestamp,
+                                                    'step': 'found_documents',
+                                                    'action_type': 'exploring',
+                                                    'message': message,
+                                                    'count': doc_count,
+                                                    'timestamp': time.time(),
                                                     'details': {
-                                                        'document_index': i,
-                                                        'filename': doc_preview.get('original_filename'),
-                                                        'doc_metadata': doc_metadata
+                                                        'documents_found': doc_count,
+                                                        'document_names': doc_names,
+                                                        'doc_previews': doc_previews
                                                     }
                                                 }
-                                                yield f"data: {json.dumps(reading_data)}\n\n"
-                                            logger.debug(f"🟡 [REASONING] Emitted executor found_documents + {len(doc_previews)} reading steps ({doc_count} docs)")
+                                                yield f"data: {json.dumps(reasoning_data)}\n\n"
+                                                # Emit one reading step per document we actually read
+                                                for i, doc_preview in enumerate(doc_previews):
+                                                    display_filename = (doc_preview.get('original_filename') or doc_preview.get('classification_type', 'Document') or 'Document')
+                                                    if display_filename and len(display_filename) > 35:
+                                                        display_filename = display_filename[:32] + '...'
+                                                    if not display_filename:
+                                                        display_filename = (doc_preview.get('classification_type') or 'Document').replace('_', ' ').title()
+                                                    doc_metadata = {
+                                                        'doc_id': doc_preview.get('doc_id', ''),
+                                                        'original_filename': doc_preview.get('original_filename') if doc_preview.get('original_filename') else None,
+                                                        'classification_type': doc_preview.get('classification_type', 'Document') or 'Document',
+                                                        'page_range': doc_preview.get('page_range', ''),
+                                                        'page_numbers': doc_preview.get('page_numbers', []),
+                                                        's3_path': doc_preview.get('s3_path', ''),
+                                                        'download_url': doc_preview.get('download_url', '') or (f"/api/files/download?document_id={doc_preview.get('doc_id')}" if doc_preview.get('doc_id') else '')
+                                                    }
+                                                    reading_step_timestamp = reading_timestamp + (i * 0.01) if reading_timestamp else time.time()
+                                                    reading_data = {
+                                                        'type': 'reasoning_step',
+                                                        'step': f'read_doc_exec_{i}',
+                                                        'action_type': 'reading',
+                                                        'message': f'Read {display_filename}',
+                                                        'timestamp': reading_step_timestamp,
+                                                        'details': {
+                                                            'document_index': i,
+                                                            'filename': doc_preview.get('original_filename'),
+                                                            'doc_metadata': doc_metadata
+                                                        }
+                                                    }
+                                                    yield f"data: {json.dumps(reading_data)}\n\n"
+                                                logger.debug(f"🟡 [REASONING] Emitted executor found_documents + {len(doc_previews)} reading steps ({doc_count} docs we read)")
                                     
                                     elif node_name == "process_documents" and not is_fast_path:
                                         state_data = state_update if state_update else output
@@ -1387,6 +1581,60 @@ def query_documents_stream():
                                             final_result['citations'] = citations_from_citation
                                             logger.info(f"⚡ [CITATION_QUERY] Captured {len(citations_from_citation)} citations")
                                     
+                                    # Handle responder node completion (main path: planner → executor → responder, including chip/@ queries)
+                                    # Use same citation mapping as summarize path: capture chunk_citations with bbox, block_id, doc_id
+                                    elif node_name == "responder":
+                                        state_data = state_update if state_update else output
+                                        if final_result is None:
+                                            final_result = {}
+                                        final_summary_from_responder = state_data.get('final_summary', '')
+                                        if final_summary_from_responder:
+                                            final_result['final_summary'] = final_summary_from_responder
+                                            logger.info(f"🟢 [STREAM] Captured final_summary from responder ({len(final_summary_from_responder)} chars)")
+                                        chunk_citations_from_responder = state_data.get('chunk_citations', []) or state_data.get('citations', [])
+                                        if chunk_citations_from_responder:
+                                            final_result['chunk_citations'] = chunk_citations_from_responder
+                                            final_result['citations'] = chunk_citations_from_responder
+                                            logger.info(
+                                                f"🟢 [CITATION_STREAM] Captured {len(chunk_citations_from_responder)} citations from responder "
+                                                "(same citation mapping as regular queries)"
+                                            )
+                                            # Stream citation events so frontend gets same real-time citation handling
+                                            try:
+                                                for citation in chunk_citations_from_responder:
+                                                    citation_num_str = str(citation.get('citation_number', ''))
+                                                    citation_bbox = citation.get('bbox')
+                                                    citation_page = citation.get('page_number', 0)
+                                                    if citation_bbox and isinstance(citation_bbox, dict):
+                                                        citation_bbox = citation_bbox.copy()
+                                                        citation_bbox['page'] = citation_bbox.get('page', citation_page)
+                                                    citation_data = {
+                                                        'doc_id': citation.get('doc_id', ''),
+                                                        'document_id': citation.get('doc_id', ''),
+                                                        'page': citation_page,
+                                                        'bbox': citation_bbox,
+                                                        'method': citation.get('method', 'block-id-lookup'),
+                                                        'block_id': citation.get('block_id'),
+                                                        'cited_text': citation.get('cited_text', ''),
+                                                        'original_filename': citation.get('original_filename', '')
+                                                    }
+                                                    citation_event = {'type': 'citation', 'citation_number': citation.get('citation_number'), 'data': citation_data}
+                                                    yield f"data: {json.dumps(citation_event)}\n\n"
+                                            except Exception as cit_err:
+                                                logger.warning(f"🟡 [CITATION_STREAM] Error streaming responder citations: {cit_err}")
+                                    
+                                    # Handle conversation node completion (chat-only path, no doc retrieval)
+                                    elif node_name == "conversation":
+                                        state_data = state_update if state_update else output
+                                        if final_result is None:
+                                            final_result = {}
+                                        final_summary_from_conversation = state_data.get('final_summary', '')
+                                        if final_summary_from_conversation:
+                                            final_result['final_summary'] = final_summary_from_conversation
+                                            logger.info(f"🟢 [STREAM] Captured final_summary from conversation ({len(final_summary_from_conversation)} chars)")
+                                        if state_data.get('personality_id'):
+                                            final_result['personality_id'] = state_data['personality_id']
+
                                     # Handle summarize_results node completion - citations already have bbox coordinates
                                     elif node_name == "summarize_results":
                                         state_data = state_update if state_update else output
@@ -1452,6 +1700,7 @@ def query_documents_stream():
                                                     citation_filename = doc_filename_map.get(citation_doc_id, '')
                                                     citation_data = {
                                                         'doc_id': citation_doc_id,
+                                                        'document_id': citation_doc_id,  # Frontend download/panel may expect document_id
                                                         'page': citation_page,
                                                         'bbox': citation_bbox,  # Bbox now has correct page number
                                                         'method': citation.get('method', 'block-id-lookup'),
@@ -1471,6 +1720,12 @@ def query_documents_stream():
                                                     )
                                                     
                                                     processed_citations[citation_num_str] = citation_data
+                                                    if citation_num_str == '1':
+                                                        logger.info(
+                                                            "[CITATION_DEBUG] views: citation 1 -> block_id=%s doc_id=%s page=%s cited_text=%s",
+                                                            citation.get('block_id'), (citation_doc_id or '')[:12], citation_page,
+                                                            (citation.get('cited_text') or '')[:100]
+                                                        )
                                                     
                                                     # #region agent log
                                                     try:
@@ -1563,12 +1818,13 @@ def query_documents_stream():
                                             logger.info("🚀 [STREAM] Streaming final response directly (preserving formatting)")
                                             
                                             # Stream in chunks to maintain formatting while still providing smooth streaming
-                                            chunk_size = 10  # Stream 10 characters at a time for smooth UX
-                                            for i in range(0, len(final_summary_from_state), chunk_size):
+                                            for i in range(0, len(final_summary_from_state), STREAM_CHUNK_SIZE):
                                                 if i == 0:
                                                     logger.info("🚀 [STREAM] First chunk streamed IMMEDIATELY from summarize_results")
-                                                chunk = final_summary_from_state[i:i + chunk_size]
+                                                chunk = final_summary_from_state[i:i + STREAM_CHUNK_SIZE]
                                                 yield f"data: {json.dumps({'type': 'token', 'token': chunk})}\n\n"
+                                                if STREAM_CHUNK_DELAY_MS > 0:
+                                                    time.sleep(STREAM_CHUNK_DELAY_MS / 1000.0)
                                             
                                             summary_already_streamed = True
                                             logger.info(f"🚀 [STREAM] Summary fully streamed ({len(final_summary_from_state)} chars) - continuing event loop for cleanup")
@@ -1599,7 +1855,7 @@ def query_documents_stream():
                                 logger.info("🟡 [STREAM] Retrying without checkpointer (stateless mode)")
                                 # Retry without checkpointer
                                 graph, _ = await build_main_graph(use_checkpointer=False)
-                                config_dict = {}  # No thread_id needed for stateless mode
+                                config_dict = {"recursion_limit": 50}  # No thread_id needed for stateless mode
                                 event_stream = graph.astream_events(initial_state, config_dict, version="v2")
                                 async for event in event_stream:
                                     event_type = event.get('event')
@@ -1845,6 +2101,28 @@ def query_documents_stream():
                         full_summary = streamed_summary if streamed_summary else final_result.get('final_summary', '')
                         # Strip leading "of [property]" leakage (intent phrase fragment) before streaming/complete
                         full_summary = _strip_intent_fragment_from_response(full_summary or "")
+
+                        # --- Mem0: Schedule memory storage (fire-and-forget) ---
+                        if not memory_storage_scheduled and full_summary:
+                            try:
+                                from backend.llm.config import config as llm_config
+                                if getattr(llm_config, "mem0_enabled", False):
+                                    from backend.services.memory_service import velora_memory
+                                    user_id_for_mem = initial_state.get("user_id", "anonymous")
+                                    asyncio.create_task(
+                                        velora_memory.add(
+                                            messages=[
+                                                {"role": "user", "content": query},
+                                                {"role": "assistant", "content": full_summary},
+                                            ],
+                                            user_id=str(user_id_for_mem),
+                                            metadata={"thread_id": str(session_id)},
+                                        )
+                                    )
+                                    memory_storage_scheduled = True
+                                    logger.info(f"[MEMORY] Scheduled memory storage for user={str(user_id_for_mem)[:8]}...")
+                            except Exception as mem_err:
+                                logger.warning(f"[MEMORY] Failed to schedule memory storage: {mem_err}")
                         
                         # Check if we have a summary (even if doc_outputs is empty, summary means we processed documents)
                         if not full_summary:
@@ -1874,6 +2152,17 @@ def query_documents_stream():
                         else:
                             # Stream the existing summary token by token (simulate streaming for UX)
                             logger.info("🟡 [STREAM] Streaming existing summary (no redundant LLM call)")
+                            # Emit "Summarising content" only when we actually start streaming (so UI shows it as the step happening now, not for the whole LLM call)
+                            summarizing_data = {
+                                'type': 'reasoning_step',
+                                'step': 'summarizing_content',
+                                'action_type': 'analysing',
+                                'message': 'Summarising content',
+                                'timestamp': time.time(),
+                                'details': {}
+                            }
+                            yield f"data: {json.dumps(summarizing_data)}\n\n"
+                            logger.info("✨ [STREAM] Emitted 'Summarising content' reasoning step (at stream start)")
                             yield f"data: {json.dumps({'type': 'status', 'message': 'Streaming response...'})}\n\n"
                             
                             # Stream the final response text directly - preserve all formatting
@@ -1881,12 +2170,13 @@ def query_documents_stream():
                             logger.info("🟡 [STREAM] Streaming final response directly (preserving formatting)")
                             
                             # Stream in chunks to maintain formatting while still providing smooth streaming
-                            chunk_size = 10  # Stream 10 characters at a time for smooth UX
-                            for i in range(0, len(full_summary), chunk_size):
+                            for i in range(0, len(full_summary), STREAM_CHUNK_SIZE):
                                 if i == 0:
                                     logger.info("🟡 [STREAM] First chunk streamed from existing summary")
-                                chunk = full_summary[i:i + chunk_size]
+                                chunk = full_summary[i:i + STREAM_CHUNK_SIZE]
                                 yield f"data: {json.dumps({'type': 'token', 'token': chunk})}\n\n"
+                                if STREAM_CHUNK_DELAY_MS > 0:
+                                    time.sleep(STREAM_CHUNK_DELAY_MS / 1000.0)
                         
                         # Build citations_map_for_frontend to match the SOURCE of the displayed answer.
                         # Conflict fix: citation numbers (¹²³) in the text must map to the same pipeline
@@ -1958,6 +2248,7 @@ def query_documents_stream():
                                 # Build citation map entry for frontend
                                 citations_map_for_frontend[citation_num] = {
                                     'doc_id': doc_id,
+                                    'document_id': doc_id,  # Frontend download/panel may expect document_id
                                     'page': page,
                                     'bbox': bbox,
                                     'method': citation_data.get('method', 'block-id-lookup'),
@@ -2072,6 +2363,7 @@ def query_documents_stream():
                                 # Build citation map entry for frontend
                                 citations_map_for_frontend[citation_num] = {
                                     'doc_id': doc_id,
+                                    'document_id': doc_id,  # Frontend download/panel may expect document_id
                                     'original_filename': original_filename,  # NEW: Include filename for frontend
                                     'page': page,
                                     'bbox': bbox,
@@ -2133,6 +2425,7 @@ def query_documents_stream():
                                     
                                     citations_map_for_frontend[citation_num] = {
                                         'doc_id': doc_id,
+                                        'document_id': doc_id,  # Frontend download/panel may expect document_id
                                         'original_filename': original_filename,  # Include filename for frontend
                                         'page': page,
                                         'bbox': bbox,
@@ -2151,6 +2444,15 @@ def query_documents_stream():
                             else:
                                 logger.info("🟡 [CITATIONS] No citations found (checked processed_citations, chunk_citations, and citations) - citations will be empty")
                                 
+                        # Only keep citations that actually appear in the response text (sources = documents cited in answer)
+                        cited_nums = _citation_numbers_in_response(full_summary)
+                        if citations_map_for_frontend:
+                            before_count = len(citations_map_for_frontend)
+                            citations_map_for_frontend = {k: v for k, v in citations_map_for_frontend.items() if k in cited_nums}
+                            structured_citations = [c for c in structured_citations if str(c.get("id")) in cited_nums]
+                            if before_count != len(citations_map_for_frontend):
+                                logger.info(f"🟡 [CITATIONS] Filtered to citations used in response: {before_count} -> {len(citations_map_for_frontend)} (cited numbers: {sorted(cited_nums)})")
+                        
                         logger.info(f"🟡 [CITATIONS] Final citation count: {len(structured_citations)} structured, {len(citations_map_for_frontend)} map entries")
                         
                         timing.mark("prepare_complete")
@@ -2443,7 +2745,7 @@ def query_documents_stream():
                         #     logger.info(f"🎯 [AUTO_OPEN] Citations present but no open_document action - automatically opening")
                         #     ... (auto-open logic disabled - citations are clickable instead)
                         
-                        # Send complete message with metadata
+                        # Send complete message with metadata (include streamed title for persistence)
                         complete_data = {
                             'type': 'complete',
                             'data': {
@@ -2452,7 +2754,8 @@ def query_documents_stream():
                                 'document_outputs': doc_outputs,
                                 'citations': citations_map_for_frontend,  # Frontend expects Record<string, CitationDataType>
                                 'citations_array': structured_citations,  # NEW: Structured array format (for future use)
-                                'session_id': session_id
+                                'session_id': session_id,
+                                'title': streamed_chat_title  # Streamed earlier as title_chunk; include for persistence
                             }
                         }
                         yield f"data: {json.dumps(complete_data)}\n\n"
@@ -2481,6 +2784,8 @@ def query_documents_stream():
                 chunk_queue = Queue()
                 error_occurred = threading.Event()
                 error_message = [None]
+                # Signal for stream thread to stop when client disconnects (e.g. pause/stop)
+                client_disconnected = threading.Event()
                 
                 def run_async_gen():
                     """Run the async generator in a separate thread with its own event loop"""
@@ -2505,39 +2810,67 @@ def query_documents_stream():
                                     # Log reasoning step chunks for debugging
                                     chunk_queue.put(chunk)
                                 logger.info(f"🟠 [STREAM] Finished consuming async generator ({chunk_count} chunks)")
+                            except asyncio.CancelledError:
+                                logger.info("🔴 [STREAM] consume_async_gen cancelled (client disconnected)")
+                                raise
                             except Exception as e:
                                 logger.error(f"🟠 [STREAM] Error in consume_async_gen: {e}", exc_info=True)
                                 error_occurred.set()
                                 error_message[0] = str(e)
                                 chunk_queue.put(f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n")
                         
+                        async def watch_client_disconnect():
+                            """Exit when client disconnects so we can cancel the consumer."""
+                            while not client_disconnected.is_set():
+                                await asyncio.sleep(0.3)
+                            logger.info("🔴 [STREAM] Client disconnected - cancelling backend retrieval/stream")
+                        
+                        async def run_with_cancellation():
+                            consume_task = new_loop.create_task(consume_async_gen())
+                            watch_task = new_loop.create_task(watch_client_disconnect())
+                            done, pending = await asyncio.wait(
+                                [consume_task, watch_task],
+                                return_when=asyncio.FIRST_COMPLETED
+                            )
+                            if watch_task in done:
+                                consume_task.cancel()
+                                try:
+                                    await consume_task
+                                except asyncio.CancelledError:
+                                    pass
+                            else:
+                                watch_task.cancel()
+                                try:
+                                    await watch_task
+                                except asyncio.CancelledError:
+                                    pass
+                        
                         try:
-                            new_loop.run_until_complete(consume_async_gen())
+                            new_loop.run_until_complete(run_with_cancellation())
                         finally:
-                            # Cleanup: Cancel pending tasks before closing event loop
-                            # This reduces "Task was destroyed but it is pending" warnings
+                            # Cleanup: Let pending tasks (e.g. Mem0 memory storage) finish, then cancel any left
                             try:
-                                # Get all pending tasks
                                 pending = [t for t in asyncio.all_tasks(new_loop) if not t.done()]
                                 if pending:
-                                    # Cancel all pending tasks (e.g., connection pool workers)
-                                    for task in pending:
-                                        if not task.done():
-                                            task.cancel()
-                                    # Give tasks a brief moment to handle cancellation
-                                    # Use a short timeout to avoid blocking
+                                    # Give tasks time to complete (e.g. Mem0 add runs as create_task)
                                     try:
                                         new_loop.run_until_complete(
                                             asyncio.wait_for(
                                                 asyncio.gather(*pending, return_exceptions=True),
-                                                timeout=0.3
+                                                timeout=3.0
                                             )
                                         )
-                                    except (asyncio.TimeoutError, Exception):
-                                        # Tasks didn't complete in time - this is OK, they'll be cleaned up
+                                    except asyncio.TimeoutError:
+                                        # After 3s, cancel any still pending
+                                        for task in pending:
+                                            if not task.done():
+                                                task.cancel()
+                                        new_loop.run_until_complete(
+                                            asyncio.gather(*pending, return_exceptions=True)
+                                        )
+                                    except Exception:
                                         pass
                             except Exception:
-                                # Ignore cleanup errors - event loop is closing anyway
                                 pass
                             
                             # Close the event loop
@@ -2569,8 +2902,9 @@ def query_documents_stream():
                             break
                         yield chunk
                     except (BrokenPipeError, ConnectionResetError):
-                        # Client disconnected (e.g., aborted request, navigated away)
-                        # This is expected behavior - gracefully stop streaming
+                        # Client disconnected (e.g., pause, stop, navigated away)
+                        # Signal stream thread to cancel so backend retrieval/LLM stop
+                        client_disconnected.set()
                         logger.info("🔴 [STREAM] Client disconnected (broken pipe), stopping stream")
                         break
                     except queue.Empty:
@@ -2591,7 +2925,11 @@ def query_documents_stream():
                         continue
                         
             except (BrokenPipeError, ConnectionResetError):
-                # Client disconnected at outer level - this is expected
+                # Client disconnected at outer level - signal stream thread to stop
+                try:
+                    client_disconnected.set()
+                except NameError:
+                    pass  # client_disconnected not in scope (e.g. error before thread setup)
                 logger.info("🔴 [STREAM] Client disconnected (broken pipe), stream ended")
             except Exception as e:
                 # Handle any errors in the main generate_stream logic
@@ -3302,6 +3640,28 @@ def query_documents():
         
         # Format response for frontend
         final_summary = result.get("final_summary", "")
+        
+        # --- Mem0: Schedule memory storage (non-streaming path) ---
+        if final_summary:
+            try:
+                from backend.llm.config import config as llm_config
+                if getattr(llm_config, "mem0_enabled", False):
+                    from backend.services.memory_service import velora_memory
+                    _ns_user_id = str(current_user.id) if current_user.is_authenticated else "anonymous"
+                    import asyncio as _aio
+                    _aio.run(
+                        velora_memory.add(
+                            messages=[
+                                {"role": "user", "content": query},
+                                {"role": "assistant", "content": final_summary},
+                            ],
+                            user_id=_ns_user_id,
+                            metadata={"thread_id": str(session_id)},
+                        )
+                    )
+                    logger.info(f"[MEMORY] Stored memories (non-streaming) for user={_ns_user_id[:8]}...")
+            except Exception as mem_err:
+                logger.warning(f"[MEMORY] Failed to store memories (non-streaming): {mem_err}")
         
         # Let agent handle empty responses naturally - no hard-coded fallbacks
         
@@ -4639,24 +4999,97 @@ def upload_document():
         response.headers.add('Access-Control-Allow-Credentials', 'true')
         return response, 500
 
+# One-time tokens for "open in Word Online" - token -> (bucket, key, expiry_ts). Office Online needs a URL it can fetch; presigned S3 URLs often fail.
+_temp_preview_tokens = {}
+_TEMP_PREVIEW_TOKEN_TTL_SEC = 3600
+
+
 @views.route('/api/documents/temp-preview', methods=['POST'])
 @login_required
 def temp_preview():
-    """Simple temp upload for preview - no DB save"""
+    """Simple temp upload for preview - no DB save. Returns presigned_url and open_in_word_url (proxy URL so Office Online can open the doc)."""
     file = request.files.get('file')
     if not file:
         return jsonify({'error': 'No file'}), 400
-    
+
+    bucket = os.environ['S3_UPLOAD_BUCKET']
     s3_key = f"temp-preview/{uuid.uuid4()}/{secure_filename(file.filename)}"
-    s3_client = boto3.client('s3', 
+    s3_client = boto3.client('s3',
         aws_access_key_id=os.environ['AWS_ACCESS_KEY_ID'],
         aws_secret_access_key=os.environ['AWS_SECRET_ACCESS_KEY'],
         region_name=os.environ.get('AWS_DEFAULT_REGION', 'us-east-1'))
-    
+
     file.seek(0)
-    s3_client.put_object(Bucket=os.environ['S3_UPLOAD_BUCKET'], Key=s3_key, Body=file.read(), ContentType=file.content_type)
-    url = s3_client.generate_presigned_url('get_object', Params={'Bucket': os.environ['S3_UPLOAD_BUCKET'], 'Key': s3_key}, ExpiresIn=3600)
-    return jsonify({'presigned_url': url}), 200
+    content_type = file.content_type or 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    s3_client.put_object(Bucket=bucket, Key=s3_key, Body=file.read(), ContentType=content_type)
+    presigned_url = s3_client.generate_presigned_url('get_object', Params={'Bucket': bucket, 'Key': s3_key}, ExpiresIn=3600)
+
+    token = uuid.uuid4().hex
+    _temp_preview_tokens[token] = (bucket, s3_key, time.time() + _TEMP_PREVIEW_TOKEN_TTL_SEC)
+    base = request.url_root.rstrip('/')
+    open_in_word_url = f"{base}/api/documents/open-in-word?token={token}"
+
+    return jsonify({'presigned_url': presigned_url, 'open_in_word_url': open_in_word_url}), 200
+
+
+@views.route('/api/documents/docx-preview-url', methods=['POST'])
+@login_required
+def docx_preview_url():
+    """Get a one-time Office Online viewer URL for an existing document (no download/re-upload). Faster for just-uploaded docs."""
+    try:
+        data = request.get_json() or {}
+        document_id = data.get('document_id')
+        if not document_id:
+            return jsonify({'error': 'document_id required'}), 400
+        from .services.supabase_document_service import SupabaseDocumentService
+        doc_service = SupabaseDocumentService()
+        document = doc_service.get_document_by_id(document_id)
+        if not document:
+            return jsonify({'error': 'Document not found'}), 404
+        business_uuid_str = _ensure_business_uuid()
+        if not business_uuid_str or str(document.get('business_uuid')) != business_uuid_str:
+            return jsonify({'error': 'Unauthorized'}), 403
+        s3_path = document.get('s3_path')
+        if not s3_path:
+            return jsonify({'error': 'Document has no s3_path'}), 404
+        bucket = os.environ.get('S3_UPLOAD_BUCKET')
+        if not bucket:
+            return jsonify({'error': 'Server misconfigured'}), 500
+        token = uuid.uuid4().hex
+        _temp_preview_tokens[token] = (bucket, s3_path, time.time() + _TEMP_PREVIEW_TOKEN_TTL_SEC)
+        base = request.url_root.rstrip('/')
+        open_in_word_url = f"{base}/api/documents/open-in-word?token={token}"
+        return jsonify({'open_in_word_url': open_in_word_url, 'presigned_url': None}), 200
+    except Exception as e:
+        logger.exception("docx_preview_url failed: %s", e)
+        return jsonify({'error': str(e)}), 500
+
+
+@views.route('/api/documents/open-in-word', methods=['GET'])
+def open_in_word():
+    """Stream a temp-preview doc by token so Office Online can open it (no auth; token is the secret).
+    Token is reused until expiry so Office's multiple requests (initial load + retries) all succeed."""
+    token = request.args.get('token')
+    if not token:
+        return jsonify({'error': 'Missing token'}), 400
+    entry = _temp_preview_tokens.get(token)
+    if not entry:
+        return jsonify({'error': 'Invalid or expired token'}), 404
+    bucket, key, expiry = entry
+    if time.time() > expiry:
+        return jsonify({'error': 'Link expired'}), 410
+    try:
+        s3_client = boto3.client('s3',
+            aws_access_key_id=os.environ['AWS_ACCESS_KEY_ID'],
+            aws_secret_access_key=os.environ['AWS_SECRET_ACCESS_KEY'],
+            region_name=os.environ.get('AWS_DEFAULT_REGION', 'us-east-1'))
+        resp = s3_client.get_object(Bucket=bucket, Key=key)
+        body = resp['Body']
+        content_type = resp.get('ContentType') or 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        return Response(body.read(), mimetype=content_type, headers={'Content-Disposition': 'inline'})
+    except Exception as e:
+        logging.exception("open_in_word get_object failed: %s", e)
+        return jsonify({'error': 'Failed to load document'}), 500
 
 @views.route('/api/documents/test-s3', methods=['POST'])
 @login_required
@@ -5010,6 +5443,68 @@ def get_document_processing_history(document_id):
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@views.route('/api/documents/<uuid:document_id>/key-facts', methods=['GET'])
+@login_required
+def get_document_key_facts(document_id):
+    """Get key facts for a document. Returns stored key facts when present (no re-generation on refresh)."""
+    try:
+        doc_service = SupabaseDocumentService()
+        document = doc_service.get_document_by_id(str(document_id))
+        if not document:
+            return jsonify({'success': False, 'error': 'Document not found'}), 404
+        doc_business_id = document.get('business_id')
+        doc_business_uuid = document.get('business_uuid')
+        user_business_id = str(current_user.business_id) if current_user.business_id else None
+        user_company_name = current_user.company_name
+        is_authorized = (
+            (doc_business_id and user_company_name and str(doc_business_id) == str(user_company_name)) or
+            (doc_business_uuid and user_business_id and str(doc_business_uuid) == user_business_id) or
+            (doc_business_id and user_business_id and str(doc_business_id) == user_business_id)
+        )
+        if not is_authorized:
+            return jsonify({'success': False, 'error': 'Unauthorized'}), 403
+
+        doc_summary = document.get('document_summary') or {}
+        if isinstance(doc_summary, str):
+            try:
+                doc_summary = json.loads(doc_summary)
+            except Exception:
+                doc_summary = {}
+        if doc_summary is None:
+            doc_summary = {}
+
+        from .services.key_facts_service import build_key_facts_from_document, sanitise_key_facts_list
+
+        # Return stored key facts when present (generated once at processing time)
+        if 'stored_key_facts' in doc_summary and isinstance(doc_summary.get('stored_key_facts'), list):
+            key_facts = sanitise_key_facts_list(doc_summary['stored_key_facts'])
+            summary = doc_summary.get('summary') or None
+            return jsonify({'success': True, 'data': {'key_facts': key_facts, 'summary': summary}}), 200
+
+        # Fallback: build on the fly (e.g. legacy docs) and optionally persist for next time
+        key_facts, llm_summary = build_key_facts_from_document(document, document_id=str(document_id))
+        key_facts = sanitise_key_facts_list(key_facts)
+        summary = doc_summary.get('summary') or llm_summary or None
+        # Lazy write-back so future loads use stored key facts
+        try:
+            business_id = doc_business_uuid or doc_business_id
+            if business_id:
+                from .services.document_storage_service import DocumentStorageService
+                doc_storage = DocumentStorageService()
+                doc_storage.update_document_summary(
+                    document_id=str(document_id),
+                    business_id=str(business_id),
+                    updates={'stored_key_facts': key_facts, 'summary': summary or ''},
+                    merge=True,
+                )
+        except Exception as write_err:
+            logger.debug("Key facts write-back failed (non-fatal): %s", write_err)
+        return jsonify({'success': True, 'data': {'key_facts': key_facts, 'summary': summary}}), 200
+    except Exception as e:
+        logger.error(f"Error getting document key facts: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 @views.route('/api/documents/<uuid:document_id>/status', methods=['GET'])
 @login_required
 def get_document_status(document_id):
@@ -5067,6 +5562,78 @@ def get_document_status(document_id):
     except Exception as e:
         logger.error(f"Error getting document status: {e}")
         return jsonify({'error': str(e)}), 500
+
+
+@views.route('/api/documents/<uuid:document_id>/reprocess', methods=['POST', 'OPTIONS'])
+@login_required
+def reprocess_document(document_id):
+    """Reprocess a document (e.g. after failed or stuck). Fetches from Supabase, downloads from S3, queues full pipeline."""
+    # Handle CORS preflight so browser gets HTTP OK
+    if request.method == 'OPTIONS':
+        response = jsonify({})
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
+        response.headers.add('Access-Control-Max-Age', '3600')
+        return response, 200
+
+    try:
+        doc_service = SupabaseDocumentService()
+        document = doc_service.get_document_by_id(str(document_id))
+        if not document:
+            return jsonify({'success': False, 'error': 'Document not found'}), 404
+
+        doc_business_id = document.get('business_id')
+        doc_business_uuid = document.get('business_uuid')
+        user_business_id = str(current_user.business_id) if current_user.business_id else None
+        user_company_name = current_user.company_name
+        is_authorized = (
+            (doc_business_id and user_company_name and str(doc_business_id) == str(user_company_name))
+            or (doc_business_uuid and user_business_id and str(doc_business_uuid) == user_business_id)
+            or (doc_business_id and user_business_id and str(doc_business_id) == user_business_id)
+        )
+        if not is_authorized:
+            return jsonify({'success': False, 'error': 'Unauthorized'}), 403
+
+        s3_path = document.get('s3_path')
+        if not s3_path:
+            return jsonify({'success': False, 'error': 'Document has no S3 path'}), 400
+
+        bucket = os.environ.get('S3_UPLOAD_BUCKET')
+        if not bucket:
+            return jsonify({'success': False, 'error': 'S3 bucket not configured'}), 500
+
+        s3_client = boto3.client(
+            's3',
+            aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+            aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
+            region_name=os.environ.get('AWS_DEFAULT_REGION', 'us-east-1'),
+        )
+        response = s3_client.get_object(Bucket=bucket, Key=s3_path)
+        file_content = response['Body'].read()
+        original_filename = document.get('original_filename', 'document')
+        business_id = str(doc_business_uuid or doc_business_id or user_business_id or user_company_name)
+
+        doc_service.update_document(str(document_id), {'status': 'processing'})
+
+        task = process_document_task.delay(
+            document_id=str(document_id),
+            file_content=file_content,
+            original_filename=original_filename,
+            business_id=business_id,
+        )
+        logger.info(f"Reprocess queued for document {document_id} (task_id={task.id})")
+        return jsonify({
+            'success': True,
+            'message': 'Reprocessing started',
+            'task_id': task.id,
+            'document_id': str(document_id),
+        }), 200
+    except Exception as e:
+        logger.exception("Reprocess document failed: %s", e)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 
 @views.route('/api/documents/<uuid:document_id>/confirm-upload', methods=['POST'])
 @login_required
@@ -5362,7 +5929,21 @@ def api_dashboard():
                 'document_count': len(prop.documents) if prop.documents else 0
             })
     
-        # User data
+        # User data (include profile picture and title from Supabase if available)
+        profile_picture_url = None
+        title = None
+        try:
+            from .services.supabase_auth_service import SupabaseAuthService
+            auth_service = SupabaseAuthService()
+            supabase_user = auth_service.get_user_by_id(current_user.id)
+            if supabase_user:
+                s3_key = supabase_user.get('profile_picture_url')
+                title = supabase_user.get('title')
+                # Return profile picture as API URL so frontend can use it in <img src>
+                if s3_key and s3_key.strip():
+                    profile_picture_url = request.host_url.rstrip('/') + 'api/user/profile-picture'
+        except Exception:
+            pass
         user_data = {
             'id': current_user.id,
             'email': current_user.email,
@@ -5370,7 +5951,9 @@ def api_dashboard():
             'company_name': current_user.company_name,
             'business_id': str(current_user.business_id) if current_user.business_id else None,
             'company_website': current_user.company_website,
-            'role': current_user.role.name
+            'role': current_user.role.name,
+            'profile_picture_url': profile_picture_url,
+            'title': title
         }
         
         return jsonify({
@@ -5387,6 +5970,99 @@ def api_dashboard():
     except Exception as e:
         current_app.logger.exception("Dashboard error")
         return jsonify({'error': str(e)}), 500
+
+
+@views.route('/api/user/profile-picture', methods=['GET'])
+@login_required
+def serve_profile_picture():
+    """Serve the current user's profile picture from S3 (for img src)."""
+    try:
+        from .services.supabase_auth_service import SupabaseAuthService
+        from botocore.exceptions import ClientError
+        auth_service = SupabaseAuthService()
+        supabase_user = auth_service.get_user_by_id(current_user.id)
+        if not supabase_user:
+            return jsonify({'error': 'User not found'}), 404
+        s3_key = supabase_user.get('profile_picture_url')
+        if not s3_key or not s3_key.strip():
+            return jsonify({'error': 'No profile picture'}), 404
+        s3_client = boto3.client(
+            's3',
+            aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+            aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
+            region_name=os.environ.get('AWS_DEFAULT_REGION', 'us-east-1')
+        )
+        obj = s3_client.get_object(Bucket=os.environ['S3_UPLOAD_BUCKET'], Key=s3_key)
+        return Response(
+            obj['Body'].read(),
+            mimetype=obj.get('ContentType', 'image/jpeg'),
+            headers={'Cache-Control': 'private, max-age=300'}
+        )
+    except ClientError as e:
+        if e.response.get('Error', {}).get('Code') == 'NoSuchKey':
+            return jsonify({'error': 'Profile picture not found'}), 404
+        raise
+    except Exception as e:
+        current_app.logger.exception("Error serving profile picture")
+        return jsonify({'error': str(e)}), 500
+
+
+@views.route('/api/user/profile-picture', methods=['POST', 'OPTIONS'])
+@login_required
+def upload_profile_picture():
+    """Upload and set the current user's profile picture (S3 + Supabase)."""
+    if request.method == 'OPTIONS':
+        response = jsonify({})
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
+        response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
+        return response, 200
+    file = request.files.get('image')
+    if not file or file.filename == '':
+        return jsonify({'error': 'No image file provided'}), 400
+    ext = os.path.splitext(secure_filename(file.filename))[1].lower() or '.jpg'
+    if ext not in ('.jpg', '.jpeg', '.png', '.webp'):
+        return jsonify({'error': 'Invalid image type. Use JPEG, PNG, or WebP.'}), 400
+    s3_key = f"profile_pictures/{current_user.id}/{uuid.uuid4()}{ext}"
+    try:
+        s3_client = boto3.client(
+            's3',
+            aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+            aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
+            region_name=os.environ.get('AWS_DEFAULT_REGION', 'us-east-1')
+        )
+        file.seek(0)
+        s3_client.put_object(
+            Bucket=os.environ['S3_UPLOAD_BUCKET'],
+            Key=s3_key,
+            Body=file.read(),
+            ContentType=file.content_type or 'image/jpeg'
+        )
+        from .services.supabase_auth_service import SupabaseAuthService
+        auth_service = SupabaseAuthService()
+        auth_service.update_user(current_user.id, {'profile_picture_url': s3_key})
+        base_url = request.host_url.rstrip('/')
+        profile_url = f"{base_url}api/user/profile-picture"
+        return jsonify({'profile_image_url': profile_url, 'avatar_url': profile_url})
+    except Exception as e:
+        current_app.logger.exception("Error uploading profile picture")
+        return jsonify({'error': str(e)}), 500
+
+
+@views.route('/api/user/profile-picture', methods=['DELETE'])
+@login_required
+def delete_profile_picture():
+    """Remove the current user's profile picture."""
+    try:
+        from .services.supabase_auth_service import SupabaseAuthService
+        auth_service = SupabaseAuthService()
+        auth_service.update_user(current_user.id, {'profile_picture_url': None})
+        return jsonify({'success': True})
+    except Exception as e:
+        current_app.logger.exception("Error removing profile picture")
+        return jsonify({'error': str(e)}), 500
+
 
 @views.route('/dashboard')
 @login_required
@@ -5415,8 +6091,22 @@ def get_files():
     try:
         # Use Supabase document service
         doc_service = SupabaseDocumentService()
-        documents = doc_service.get_documents_for_business(business_uuid_str)
-        
+        raw_documents = doc_service.get_documents_for_business(business_uuid_str)
+        # Expose key_facts and summary at top level so frontend can show them without a separate request
+        documents = []
+        for doc in raw_documents or []:
+            d = dict(doc) if isinstance(doc, dict) else {}
+            doc_summary = d.get('document_summary')
+            if isinstance(doc_summary, str):
+                try:
+                    doc_summary = json.loads(doc_summary)
+                except Exception:
+                    doc_summary = {}
+            if doc_summary is None:
+                doc_summary = {}
+            d['key_facts'] = doc_summary.get('stored_key_facts') if isinstance(doc_summary.get('stored_key_facts'), list) else []
+            d['summary'] = doc_summary.get('summary') or None
+            documents.append(d)
         return jsonify({
             'success': True,
             'data': documents
@@ -6923,9 +7613,22 @@ def get_property_hub_documents(property_id):
                 'error': 'Property hub not found'
             }), 404
         
-        # Extract documents from property hub
-        documents = property_hub.get('documents', [])
-        
+        # Extract documents from property hub; add key_facts and summary at top level for instant modal display
+        raw_docs = property_hub.get('documents', [])
+        documents = []
+        for doc in raw_docs:
+            d = dict(doc) if isinstance(doc, dict) else {}
+            doc_summary = d.get('document_summary')
+            if isinstance(doc_summary, str):
+                try:
+                    doc_summary = json.loads(doc_summary)
+                except Exception:
+                    doc_summary = {}
+            if doc_summary is None:
+                doc_summary = {}
+            d['key_facts'] = doc_summary.get('stored_key_facts') if isinstance(doc_summary.get('stored_key_facts'), list) else []
+            d['summary'] = doc_summary.get('summary') or None
+            documents.append(d)
         return jsonify({
             'success': True,
             'data': {

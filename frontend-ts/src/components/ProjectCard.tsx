@@ -154,9 +154,11 @@ export const ProjectCard: React.FC<ProjectCardProps> = ({
             className="w-full h-full object-cover"
           />
         ) : (
-          <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-gray-50 to-gray-100">
-            <span className="text-4xl opacity-30">📁</span>
-          </div>
+          <img
+            src="/defaultproject.png"
+            alt={project.title}
+            className="w-full h-full object-cover"
+          />
         )}
       </div>
 

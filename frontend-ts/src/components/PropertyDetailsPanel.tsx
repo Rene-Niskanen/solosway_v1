@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { File, X, Upload, FileText, Image as ImageIcon, ArrowUp, CheckSquare, Square, Trash2, Search, SquareMousePointer, Maximize2, Minimize2, Building2, ChevronLeft, ChevronRight, Plus, RefreshCw, Loader2, ChevronDown, FolderOpen } from 'lucide-react';
+import { File, X, Upload, FileText, Image as ImageIcon, ArrowUp, CheckSquare, Square, Trash2, Search, Maximize2, Minimize2, Building2, ChevronLeft, ChevronRight, Plus, RefreshCw, Loader2, ChevronDown, FolderOpen } from 'lucide-react';
 import { useBackendApi } from './BackendApi';
 import { backendApi } from '../services/backendApi';
 import { usePreview } from '../contexts/PreviewContext';
@@ -16,7 +16,7 @@ import { useFilingSidebar } from '../contexts/FilingSidebarContext';
 import { useChatPanel } from '../contexts/ChatPanelContext';
 import { CitationActionMenu } from './CitationActionMenu';
 import { usePropertyAccess } from '../hooks/usePropertyAccess';
-import veloraLogo from '/Velora Logo.jpg';
+import { preloadDocumentCovers as preloadDocumentCoversUtil } from '../utils/preloadDocumentCovers';
 
 // PDF.js for canvas-based PDF rendering with precise highlight positioning
 import * as pdfjs from 'pdfjs-dist';
@@ -174,6 +174,8 @@ const ExpandedCardView: React.FC<{
   const isLoadingRef = useRef(false); // Prevent race conditions
   const currentDocIdRef = useRef<string | null>(null); // Track current document ID
   const previewUrlRef = useRef<string | null>(null); // Track preview URL to prevent unnecessary state updates
+  const docxPreviewUrlTriedRef = useRef<string | null>(null); // doc id we already tried docx-preview-url for (skip retry, use fallback)
+  const docxUrlForDocIdRef = useRef<string | null>(null); // doc id that current docxPublicUrl belongs to (clear URL when switching docs)
   
   // Citation action menu state
   const [citationMenuPosition, setCitationMenuPosition] = useState<{ x: number; y: number } | null>(null);
@@ -307,18 +309,18 @@ const ExpandedCardView: React.FC<{
     };
   }, [selectedDoc?.id]); // Only depend on document ID, not the entire object
   
-  // Upload DOCX for Office Online Viewer
+  // DOCX preview: try direct document URL first (no download/re-upload), then fall back to temp-preview
   useEffect(() => {
     if (!selectedDoc) {
       setDocxPublicUrl(null);
       setIsUploadingDocx(false);
+      docxPreviewUrlTriedRef.current = null;
       return;
     }
     
-    // Calculate if this is a DOCX file
     const fileType = (selectedDoc as any).file_type || '';
     const fileName = selectedDoc.original_filename.toLowerCase();
-    const isDOCX = 
+    const isDOCX =
       fileType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
       fileType === 'application/msword' ||
       fileType.includes('word') ||
@@ -329,49 +331,79 @@ const ExpandedCardView: React.FC<{
     if (!isDOCX) {
       setDocxPublicUrl(null);
       setIsUploadingDocx(false);
+      docxPreviewUrlTriedRef.current = null;
       return;
     }
     
-    // If we already have a public URL for this document, don't re-upload
-    if (docxPublicUrl) {
-      return;
+    const docId = selectedDoc.id;
+    if (docxUrlForDocIdRef.current != null && docxUrlForDocIdRef.current !== docId) {
+      setDocxPublicUrl(null);
+      docxUrlForDocIdRef.current = null;
+      docxPreviewUrlTriedRef.current = null;
     }
+    if (docxPublicUrl) return;
     
-    // Upload DOCX file to get presigned URL for Office Online Viewer
-    if (!isUploadingDocx && previewUrl) {
+    const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
+    const alreadyTriedForThisDoc = docxPreviewUrlTriedRef.current === docId;
+    
+    // 2) Fallback only: we already tried docx-preview-url and have blob (e.g. previewUrl just arrived)
+    if (alreadyTriedForThisDoc && previewUrl) {
+      if (isUploadingDocx) return;
       setIsUploadingDocx(true);
-      
-      // Fetch the file blob and upload it
       fetch(previewUrl)
-        .then(response => response.blob())
-        .then(blob => {
+        .then((response) => response.blob())
+        .then((blob) => {
           const formData = new FormData();
           formData.append('file', blob, selectedDoc.original_filename);
-          
-          const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
           return fetch(`${backendUrl}/api/documents/temp-preview`, {
             method: 'POST',
             body: formData,
             credentials: 'include',
           });
         })
-        .then(r => r.json())
-        .then(data => {
-          if (data.presigned_url) {
-            setDocxPublicUrl(data.presigned_url);
-          } else {
-            throw new Error('No presigned URL received');
-          }
+        .then((r) => r.json())
+        .then((data) => {
+          const url = data.open_in_word_url || data.presigned_url;
+          if (url) {
+            setDocxPublicUrl(url);
+            docxUrlForDocIdRef.current = docId;
+          } else setError('Failed to load DOCX preview');
         })
-        .catch(e => {
+        .catch((e) => {
           console.error('DOCX preview error:', e);
           setError('Failed to load DOCX preview');
         })
-        .finally(() => {
+        .finally(() => setIsUploadingDocx(false));
+      return;
+    }
+    
+    // 1) Try docx-preview-url by document_id (no download, no re-upload – fast for just-uploaded docs)
+    if (!isUploadingDocx && !alreadyTriedForThisDoc) {
+      docxPreviewUrlTriedRef.current = docId;
+      setIsUploadingDocx(true);
+      fetch(`${backendUrl}/api/documents/docx-preview-url`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ document_id: docId }),
+      })
+        .then((r) => r.json())
+        .then((data) => {
+          const url = data.open_in_word_url || data.presigned_url;
+          if (url) {
+            setDocxPublicUrl(url);
+            docxUrlForDocIdRef.current = docId;
+            setIsUploadingDocx(false);
+            return;
+          }
+          throw new Error('No preview URL');
+        })
+        .catch(() => {
           setIsUploadingDocx(false);
+          // Keep docxPreviewUrlTriedRef.current = docId so when previewUrl arrives we do fallback only
         });
     }
-  }, [selectedDoc?.id, previewUrl, docxPublicUrl, isUploadingDocx, selectedDoc]);
+  }, [selectedDoc?.id, selectedDoc, previewUrl, docxPublicUrl, isUploadingDocx]);
   
   // Cleanup cache only on full page reload or specific memory management
   // We removed the aggressive cleanup effect to keep blobs alive for cache
@@ -500,8 +532,7 @@ const ExpandedCardView: React.FC<{
             }
             
             if (containerWidth > 100) {
-              const availableWidth = containerWidth - 32; // Account for padding
-              const fitScale = (availableWidth / pageWidth) * 0.98;
+              const fitScale = containerWidth / pageWidth;
               
               if (fitScale >= 0.8 && fitScale <= 2.5) {
                 scale = fitScale;
@@ -682,7 +713,7 @@ const ExpandedCardView: React.FC<{
       }}
     >
         {/* Preview Header */}
-        <div className="h-14 px-4 border-b border-gray-100 flex items-center justify-between bg-white shrink-0">
+        <div className="h-14 px-4 border-b border-gray-100 flex items-center justify-between shrink-0" style={{ backgroundColor: '#F2F2EF' }}>
           <div className="flex items-center gap-3 overflow-hidden">
             <div className="w-8 h-8 rounded-lg bg-gray-50 flex items-center justify-center shrink-0">
               {isPDF ? <FileText size={16} className="text-slate-700" /> : 
@@ -762,7 +793,7 @@ const ExpandedCardView: React.FC<{
               {isPDF ? (
                 <div 
                   ref={pdfWrapperRef}
-                  className="w-full h-full overflow-auto bg-gray-100"
+                  className="w-full h-full overflow-auto bg-gray-100 document-preview-scroll"
                   style={{ scrollBehavior: 'smooth' }}
                 >
                   {renderedPages.size > 0 ? (
@@ -817,7 +848,7 @@ const ExpandedCardView: React.FC<{
                               // Assume logo is roughly square or slightly wider (adjust aspect ratio as needed)
                               const logoWidth = logoHeight; // Square logo, adjust if needed
                               // Calculate BBOX dimensions with centered padding
-                              const padding = 4; // Equal padding on all sides
+                              const padding = 8; // Equal padding on all sides
                               const originalBboxWidth = highlightCitation.bbox.width * pageDimensions.width;
                               const originalBboxHeight = highlightCitation.bbox.height * pageDimensions.height;
                               const originalBboxLeft = highlightCitation.bbox.left * pageDimensions.width;
@@ -855,26 +886,6 @@ const ExpandedCardView: React.FC<{
                               
                               return (
                                 <>
-                                  {/* Velora logo - positioned so top-right aligns with BBOX top-left */}
-                                  <img
-                                    src={veloraLogo}
-                                    alt="Velora"
-                                    style={{
-                                      position: 'absolute',
-                                      left: `${logoLeft}px`,
-                                      top: `${logoTop}px`,
-                                      width: `${logoWidth}px`,
-                                      height: `${logoHeight}px`,
-                                      objectFit: 'contain',
-                                      pointerEvents: 'none',
-                                      zIndex: 11,
-                                      userSelect: 'none',
-                                      border: '2px solid rgba(255, 193, 7, 0.9)',
-                                      borderRadius: '2px',
-                                      backgroundColor: 'white', // Ensure logo has background for border visibility
-                                      boxSizing: 'border-box' // Ensure border is included in width/height for proper overlap
-                                    }}
-                                  />
                                   {/* BBOX highlight */}
                                   <div
                                     onClick={(e) => {
@@ -896,23 +907,24 @@ const ExpandedCardView: React.FC<{
                                       top: `${finalBboxTop}px`,
                                       width: `${Math.min(pageDimensions.width, finalBboxWidth)}px`,
                                       height: `${Math.min(pageDimensions.height, finalBboxHeight)}px`,
-                                      backgroundColor: 'rgba(255, 235, 59, 0.4)',
-                                      border: '2px solid rgba(255, 193, 7, 0.9)',
+                                      backgroundColor: 'rgba(188, 212, 235, 0.4)',
+                                      border: 'none',
                                       borderRadius: '2px',
+                                      backgroundImage: 'repeating-linear-gradient(90deg, rgba(188, 212, 235, 0.4) 0px, rgba(188, 212, 235, 0.4) 10px, rgba(163, 173, 189, 0.8) 10px, rgba(163, 173, 189, 0.8) 20px), repeating-linear-gradient(0deg, rgba(188, 212, 235, 0.4) 0px, rgba(188, 212, 235, 0.4) 10px, rgba(163, 173, 189, 0.8) 10px, rgba(163, 173, 189, 0.8) 20px), repeating-linear-gradient(90deg, rgba(188, 212, 235, 0.4) 0px, rgba(188, 212, 235, 0.4) 10px, rgba(163, 173, 189, 0.8) 10px, rgba(163, 173, 189, 0.8) 20px), repeating-linear-gradient(0deg, rgba(188, 212, 235, 0.4) 0px, rgba(188, 212, 235, 0.4) 10px, rgba(163, 173, 189, 0.8) 10px, rgba(163, 173, 189, 0.8) 20px)',
+                                      backgroundSize: '20px 2px, 2px 20px, 20px 2px, 2px 20px',
+                                      backgroundPosition: '0 0, 100% 0, 0 100%, 0 0',
+                                      backgroundRepeat: 'repeat-x, repeat-y, repeat-x, repeat-y',
                       pointerEvents: 'auto',
                                       cursor: 'pointer',
                                       zIndex: 10,
-                                      boxShadow: '0 2px 8px rgba(255, 193, 7, 0.3)',
                                       transformOrigin: 'top left',
-                                      transition: 'none' // No animation when changing between BBOXs
+                                      transition: 'none'
                                     }}
                                     onMouseEnter={(e) => {
-                                      e.currentTarget.style.backgroundColor = 'rgba(255, 235, 59, 0.6)';
-                                      e.currentTarget.style.borderColor = 'rgba(255, 193, 7, 1)';
+                                      e.currentTarget.style.backgroundColor = 'rgba(188, 212, 235, 0.6)';
                                     }}
                                     onMouseLeave={(e) => {
-                                      e.currentTarget.style.backgroundColor = 'rgba(255, 235, 59, 0.4)';
-                                      e.currentTarget.style.borderColor = 'rgba(255, 193, 7, 0.9)';
+                                      e.currentTarget.style.backgroundColor = 'rgba(188, 212, 235, 0.4)';
                                     }}
                                     title="Click to interact with this citation"
                                   />
@@ -1046,8 +1058,10 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
   
   // FilingSidebar integration
   const { openSidebar: openFilingSidebar, setSelectedProperty, setViewMode, width: filingSidebarWidth, isOpen: isFilingSidebarOpen } = useFilingSidebar();
-  // ChatPanel integration
+  // ChatPanel (agent sidebar) integration – reserve panel width + 12px toggle rail when open
   const { isOpen: isChatPanelOpenContext, width: chatPanelWidthContext } = useChatPanel();
+  const AGENT_SIDEBAR_RAIL_WIDTH = 12;
+  const agentSidebarReserve = isChatPanelOpenContext ? chatPanelWidthContext + AGENT_SIDEBAR_RAIL_WIDTH : 0;
   
   // Property access control
   const { accessLevel, canUpload, canDelete, isLoading: isLoadingAccess } = usePropertyAccess(property?.id);
@@ -1078,7 +1092,16 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
     
     return Math.max(left, 320); // Minimum 320px like old commit
   }, [isChatPanelOpen, isFilingSidebarOpen, filingSidebarWidth, chatPanelWidth, sidebarWidth, isInChatMode]);
-  
+
+  // When chat + agent sidebar are open, cap minWidth so panel doesn't overflow (avoid "crash")
+  const propertyDetailsMinWidth = React.useMemo(() => {
+    if (!isChatPanelOpen) return undefined;
+    const leftPx = typeof propertyDetailsLeft === 'number' ? propertyDetailsLeft : 0;
+    const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1920;
+    const availableWidth = viewportWidth - leftPx - agentSidebarReserve;
+    return Math.min(600, Math.max(320, availableWidth));
+  }, [isChatPanelOpen, propertyDetailsLeft, agentSidebarReserve]);
+
   // Track when chat panel is resizing to disable layout animations
   const [isChatPanelResizing, setIsChatPanelResizing] = React.useState<boolean>(false);
   const prevChatPanelWidthRef = React.useRef<number>(chatPanelWidth);
@@ -1731,8 +1754,21 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
   useEffect(() => {
     if (property && property.id) {
       console.log('📄 PropertyDetailsPanel: Property changed, loading files for Documents view:', property.id);
-      
-      // INSTANT RENDERING: Check for documents in propertyHub first (from onPropertyCreated callback)
+
+      // INSTANT: Check cache first (no loading state - show files immediately)
+      const cachedDocs = (window as any).__preloadedPropertyFiles?.[property.id];
+      if (cachedDocs && cachedDocs.length > 0) {
+        console.log('⚡ INSTANT: Using cached documents:', cachedDocs.length, 'documents');
+        setDocuments(cachedDocs);
+        setHasFilesFetched(true);
+        setIsLoadingDocuments(false);
+        setShowEmptyState(false);
+        preloadDocumentCovers(cachedDocs);
+        loadPropertyDocuments(); // Refresh in background
+        return;
+      }
+
+      // INSTANT RENDERING: Check for documents in propertyHub (e.g. from ProjectsPage)
       if (property.propertyHub?.documents && property.propertyHub.documents.length > 0) {
         console.log('⚡ INSTANT: Using documents from propertyHub:', property.propertyHub.documents.length, 'documents');
         setDocuments(property.propertyHub.documents);
@@ -1740,17 +1776,15 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
         setIsLoadingDocuments(false);
         setShowEmptyState(false);
         preloadDocumentCovers(property.propertyHub.documents);
-        // Cache for future use
         if (!(window as any).__preloadedPropertyFiles) {
           (window as any).__preloadedPropertyFiles = {};
         }
         (window as any).__preloadedPropertyFiles[property.id] = property.propertyHub.documents;
-        // Still fetch fresh data in background to get updated status
-        loadPropertyDocuments();
-        return; // Exit early - documents already displayed
+        loadPropertyDocuments(); // Still fetch fresh data in background
+        return;
       }
-      
-      // Reset states when property changes
+
+      // No cache or propertyHub - show loading and fetch
       setIsLoadingDocuments(true);
       setShowEmptyState(false);
       setHasFilesFetched(false);
@@ -1781,23 +1815,21 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
       console.log('⚠️ loadPropertyDocuments: No property or property.id');
       return 0;
     }
-    
-    // Set loading state and hide empty state immediately
-    setIsLoadingDocuments(true);
+
     setShowEmptyState(false);
     setError(null);
-    
-    // OPTIMIZATION: Use cached documents immediately if available
+
+    // Use cache immediately without ever showing loading (caller may have already set documents)
     const cachedDocs = (window as any).__preloadedPropertyFiles?.[property.id];
     if (cachedDocs && cachedDocs.length > 0) {
-      console.log('⚡ Using cached documents:', cachedDocs.length, 'documents');
       setDocuments(cachedDocs);
       setHasFilesFetched(true);
       setIsLoadingDocuments(false);
       preloadDocumentCovers(cachedDocs);
-      // Still fetch fresh data in background
+    } else {
+      setIsLoadingDocuments(true);
     }
-    
+
     try {
       console.log('📄 Loading documents for property:', property.id);
       const response = await backendApi.getPropertyHubDocuments(property.id);
@@ -2151,153 +2183,9 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
     }
   };
 
-  // Preload document covers (thumbnails) for faster rendering
-  const preloadDocumentCovers = useCallback(async (docs: Document[]) => {
-    if (!docs || docs.length === 0) return;
-    
-    // Initialize cache if it doesn't exist
-    if (!(window as any).__preloadedDocumentCovers) {
-      (window as any).__preloadedDocumentCovers = {};
-    }
-    
-    const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
-    
-    // Separate docs by type for optimized loading order
-    const imageDocs: Document[] = [];
-    const pdfDocs: Document[] = [];
-    const docxDocs: Document[] = [];
-    
-    docs.forEach(doc => {
-      if ((window as any).__preloadedDocumentCovers[doc.id]) return; // Skip cached
-      
-      const fileType = (doc as any).file_type || '';
-      const fileName = doc.original_filename.toLowerCase();
-      const isImage = fileType.includes('image') || fileName.match(/\.(jpg|jpeg|png|gif|webp)$/i);
-      const isPDF = fileType.includes('pdf') || fileName.endsWith('.pdf');
-      const isDOCX = 
-        fileType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
-        fileType === 'application/msword' ||
-        fileType.includes('word') ||
-        fileType.includes('document') ||
-        fileName.endsWith('.docx') ||
-        fileName.endsWith('.doc');
-      
-      if (isImage) imageDocs.push(doc);
-      else if (isPDF) pdfDocs.push(doc);
-      else if (isDOCX) docxDocs.push(doc);
-    });
-    
-    // Track if we've triggered first re-render
-    let hasTriggeredFirstRender = false;
-    
-    // Helper to preload a single document - triggers re-render on each success
-    const preloadSingleDoc = async (doc: Document, priority: 'high' | 'auto' = 'auto', triggerRender = true) => {
-      const docId = doc.id;
-      if ((window as any).__preloadedDocumentCovers[docId]) return;
-      
-      try {
-        let downloadUrl: string | null = null;
-        if ((doc as any).url || (doc as any).download_url || (doc as any).file_url || (doc as any).s3_url) {
-          downloadUrl = (doc as any).url || (doc as any).download_url || (doc as any).file_url || (doc as any).s3_url || null;
-        } else if ((doc as any).s3_path) {
-          downloadUrl = `${backendUrl}/api/files/download?s3_path=${encodeURIComponent((doc as any).s3_path)}`;
-        } else {
-          downloadUrl = `${backendUrl}/api/files/download?document_id=${doc.id}`;
-        }
-        
-        if (!downloadUrl) return;
-        
-        const response = await fetch(downloadUrl, {
-          credentials: 'include',
-          // @ts-ignore
-          priority: priority
-        });
-        
-        if (!response.ok) return;
-        
-        const blob = await response.blob();
-        const url = URL.createObjectURL(blob);
-        
-        (window as any).__preloadedDocumentCovers[docId] = {
-          url: url,
-          type: blob.type,
-          timestamp: Date.now()
-        };
-        
-        // Trigger re-render immediately for first few, then batch for rest
-        if (triggerRender && !hasTriggeredFirstRender) {
-          hasTriggeredFirstRender = true;
-          setCachedCoversVersion(v => v + 1);
-        }
-      } catch (error) {
-        // Silently fail
-      }
-    };
-    
-    // Helper to preload DOCX (requires upload to S3)
-    const preloadDocx = async (doc: Document) => {
-      const docId = doc.id;
-      if ((window as any).__preloadedDocumentCovers[docId]) return;
-      
-      try {
-        let downloadUrl: string | null = null;
-        if ((doc as any).url || (doc as any).download_url || (doc as any).file_url || (doc as any).s3_url) {
-          downloadUrl = (doc as any).url || (doc as any).download_url || (doc as any).file_url || (doc as any).s3_url || null;
-        } else if ((doc as any).s3_path) {
-          downloadUrl = `${backendUrl}/api/files/download?s3_path=${encodeURIComponent((doc as any).s3_path)}`;
-        } else {
-          downloadUrl = `${backendUrl}/api/files/download?document_id=${doc.id}`;
-        }
-        
-        if (!downloadUrl) return;
-        
-        const response = await fetch(downloadUrl, { credentials: 'include' });
-        if (!response.ok) return;
-        
-        const blob = await response.blob();
-        const formData = new FormData();
-        formData.append('file', blob, doc.original_filename);
-        
-        const uploadResponse = await fetch(`${backendUrl}/api/documents/temp-preview`, {
-          method: 'POST',
-          credentials: 'include',
-          body: formData
-        });
-        
-        if (uploadResponse.ok) {
-          const data = await uploadResponse.json();
-          if (data.presigned_url) {
-            (window as any).__preloadedDocumentCovers[docId] = {
-              url: data.presigned_url,
-              type: 'docx',
-              isDocx: true,
-              timestamp: Date.now()
-            };
-            setCachedCoversVersion(v => v + 1);
-          }
-        }
-      } catch (error) {
-        // Silently fail
-      }
-    };
-    
-    // FAST LOADING STRATEGY: Load ALL in parallel immediately
-    // Images, PDFs, and DOCX all start loading at the same time
-    const imagePromises = imageDocs.map((doc, i) => 
-      preloadSingleDoc(doc, i < 6 ? 'high' : 'auto', i < 3)
-    );
-    
-    const pdfPromises = pdfDocs.map((doc, i) => 
-      preloadSingleDoc(doc, i < 4 ? 'high' : 'auto', false)
-    );
-    
-    // DOCX files load in parallel immediately (no delay)
-    const docxPromises = docxDocs.map(doc => preloadDocx(doc));
-    
-    // Execute ALL in parallel - images, PDFs, and DOCX
-    Promise.allSettled([...imagePromises, ...pdfPromises, ...docxPromises]).then(() => {
-      setCachedCoversVersion(v => v + 1);
-    });
+  // Preload document covers (thumbnails) for faster rendering; uses shared util so hover preload can warm cache
+  const preloadDocumentCovers = useCallback((docs: Document[]) => {
+    preloadDocumentCoversUtil(docs as any, () => setCachedCoversVersion(v => v + 1));
   }, []);
   
   // Filter documents based on search query, active filter, and sort by created_at
@@ -2614,7 +2502,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
     <AnimatePresence>
       {isVisible && (
         <div 
-          className="fixed inset-0 z-[9999] flex items-center justify-center font-sans pointer-events-none transition-all duration-300 ease-out" 
+          className={`fixed inset-0 z-[9999] flex items-center justify-center font-sans pointer-events-none ${isChatPanelOpen ? '' : 'transition-all duration-300 ease-out'}`}
           style={{ 
             pointerEvents: 'none',
             // Offset for sidebar so content centers in available space (same as MapChatBar)
@@ -2625,8 +2513,8 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
 
           {/* Main Window - Compact Grid Layout (Artboard Style) */}
           <motion.div
-            layout={selectedCardIndex === null && !isChatPanelResizing} // Disable layout animations when chat panel is resizing
-            initial={{ opacity: 1, scale: 1, y: 0 }}
+            layout={false}
+            initial={false}
             animate={{ 
               opacity: 1, 
               scale: 1, 
@@ -2634,9 +2522,9 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
             }}
             exit={{ opacity: 0, scale: 0.99, y: 5 }}
             transition={{ 
-              duration: 0, // Instant appearance - no opening transition
-              ease: [0.12, 0, 0.39, 0], // Very smooth easing curve for buttery smooth handover
-              layout: isChatPanelResizing ? { duration: 0 } : { duration: 0.3 } // Disable layout transitions during resize
+              duration: 0, // No opening animation (e.g. when opening from project click)
+              ease: [0.12, 0, 0.39, 0],
+              layout: isChatPanelOpen ? { duration: 0 } : (isChatPanelResizing ? { duration: 0 } : { duration: 0.3 })
             }}
             className={`bg-[#FCFCF9] flex overflow-hidden pointer-events-auto ${
               // In split-view (chat + property details), remove heavy shadows so there's no "divider shadow"
@@ -2654,15 +2542,13 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
               left: isChatPanelOpen 
                 ? (typeof propertyDetailsLeft === 'string' ? propertyDetailsLeft : `${propertyDetailsLeft}px`)
                 : 'auto',
-              right: isChatPanelOpen ? (isChatPanelOpenContext ? `${chatPanelWidthContext}px` : '0px') : 'auto',
+              right: isChatPanelOpen ? (agentSidebarReserve > 0 ? `${agentSidebarReserve}px` : '0px') : 'auto',
               top: isChatPanelOpen ? '0px' : 'auto',
               bottom: isChatPanelOpen ? '0px' : 'auto',
               width: isChatPanelOpen ? 'auto' : '800px',
               height: isChatPanelOpen ? 'auto' : '600px',
-              // Minimum width when chat panel is open: enough for 3 document cards
-              // Each card is 160px, gaps are 24px (gap-6), padding is 24px each side (p-6)
-              // 3 cards: 3 * 160px + 2 * 24px (gaps) + 48px (padding) = 576px, round to 600px
-              minWidth: isChatPanelOpen ? '600px' : 'auto',
+              // Minimum width when chat panel is open; cap by available space when agent sidebar is open to prevent overlap
+              minWidth: isChatPanelOpen ? (propertyDetailsMinWidth != null ? `${propertyDetailsMinWidth}px` : '600px') : 'auto',
               transition: 'none', // No transition for width/position changes - instant like chat
               
               // Normal Mode: Centered with margins (parent container handles sidebar offset via paddingLeft)
@@ -2675,8 +2561,8 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
               display: 'flex',
               flexDirection: 'column',
               zIndex: 9999,
-              // Add left border in chat mode to create visible divider line
-              borderLeft: isChatPanelOpen ? '1px solid rgba(156, 163, 175, 0.3)' : 'none',
+              // Add left border in chat mode to create visible divider line (faint)
+              borderLeft: isChatPanelOpen ? '1px solid rgba(156, 163, 175, 0.08)' : 'none',
               // Optimize rendering during layout changes
               willChange: selectedCardIndex !== null ? 'auto' : 'transform'
             }}
@@ -2686,6 +2572,22 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
             <div className="px-10 pt-4 pb-3 bg-[#FCFCF9] relative" style={{ zIndex: 1, borderBottom: 'none' }}>
               <div className="flex items-end justify-between gap-1">
                 <div className="flex items-end gap-1" style={{ maxWidth: 'fit-content' }}>
+                {/* Back button - when in fullscreen from Projects, go back to projects page */}
+                {isInChatMode && (
+                  <button
+                    type="button"
+                    onClick={onClose}
+                    className="flex items-center gap-2 px-3 py-2 text-sm font-medium text-gray-600 hover:text-gray-900 bg-[#FCFCF9] border-t border-l border-r border-gray-200 rounded-t-lg hover:bg-[#F5F5F2] transition-all cursor-pointer flex-shrink-0"
+                    style={{
+                      marginBottom: activeSection ? '-1px' : '0',
+                      zIndex: 1,
+                    }}
+                    title="Back to Projects"
+                  >
+                    <ChevronLeft className="flex-shrink-0 text-gray-500" style={{ width: '12px', height: '12px', minWidth: '12px', minHeight: '12px' }} />
+                    <span className="text-xs">Back</span>
+                  </button>
+                )}
                 {displayOrder.map((section, index) => {
                   const isActive = activeSection === section;
                   const sectionConfig = {
@@ -2814,8 +2716,8 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                       className={`
                         flex items-center gap-2 px-3 py-2 text-sm font-medium cursor-pointer transition-all relative
                         ${isActive 
-                          ? 'bg-white text-gray-900 border-t border-l border-r border-gray-200 rounded-t-lg shadow-sm' 
-                          : 'text-gray-500 hover:text-gray-700 bg-gray-50 border-t border-l border-r border-gray-200 rounded-t-lg hover:bg-gray-100'
+                          ? 'bg-[#FCFCF9] text-gray-900 border-t border-l border-r border-gray-200 rounded-t-lg shadow-sm' 
+                          : 'text-gray-500 hover:text-gray-700 bg-[#FCFCF9] border-t border-l border-r border-gray-200 rounded-t-lg hover:bg-[#F5F5F2]'
                         }
                         ${dragOverSection === section ? 'border-blue-400 border-2' : ''}
                         flex-shrink-0
@@ -2857,7 +2759,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                         {sectionConfig.label}
                       </span>
                       {isActive && (
-                        <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-white" />
+                        <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#FCFCF9]" />
                       )}
                     </button>
                   );
@@ -2904,21 +2806,23 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                 
                     <div className="flex items-center gap-2 border-l border-gray-200 pl-3">
                     <button
-                            onClick={() => {
-                          setIsLocalSelectionMode(!isLocalSelectionMode);
-                          // Clear local selection when toggling off
-                          if (isLocalSelectionMode) {
-                            setLocalSelectedDocumentIds(new Set());
-                          }
-                        }}
-                        className={`p-2 rounded-lg border transition-all ${
-                          isLocalSelectionMode 
-                            ? 'bg-blue-50 border-blue-200 text-blue-600' 
-                            : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50 hover:text-gray-700'
-                        }`}
-                        title="Select documents to delete"
-                      >
-                        <SquareMousePointer size={18} />
+                      onClick={() => {
+                        setIsLocalSelectionMode(!isLocalSelectionMode);
+                        if (isLocalSelectionMode) {
+                          setLocalSelectedDocumentIds(new Set());
+                        }
+                      }}
+                      className="flex items-center gap-1 rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150 cursor-pointer border-none"
+                      title="Select documents to delete"
+                      type="button"
+                      style={{
+                        padding: '5px 8px',
+                        height: '26px',
+                        minHeight: '26px',
+                        backgroundColor: isLocalSelectionMode ? 'rgba(0, 0, 0, 0.04)' : 'rgba(0, 0, 0, 0.02)',
+                      }}
+                    >
+                      <span className="text-[12px] font-normal text-[#666]">Select</span>
                     </button>
                     <button
                       onClick={() => {
@@ -2929,10 +2833,18 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                           openFilingSidebar();
                         }
                       }}
-                      className="p-2 rounded-lg border bg-white border-gray-200 text-gray-500 hover:bg-gray-50 hover:text-gray-700 transition-all"
+                      className="flex items-center gap-1 rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150 cursor-pointer border-none"
                       title="Open in Filing Sidebar"
+                      type="button"
+                      style={{
+                        padding: '5px 8px',
+                        height: '26px',
+                        minHeight: '26px',
+                        backgroundColor: 'rgba(0, 0, 0, 0.02)',
+                      }}
                     >
-                      <FolderOpen size={18} />
+                      <FolderOpen className="w-3.5 h-3.5 flex-shrink-0 text-[#666]" size={14} strokeWidth={1.75} />
+                      <span className="text-[12px] font-normal text-[#666]">Files</span>
                     </button>
                   </div>
                   </>
@@ -2960,37 +2872,46 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
               {/* Filter Pills - Only show in documents section */}
               {activeSection === 'documents' && (
                 <div className="flex items-center gap-2 overflow-x-auto pb-2 pt-3 scrollbar-hide">
-                    <button
+                  <button
                     onClick={() => setActiveFilter('all')}
-                    className={`px-3 py-1 text-xs font-medium rounded-full transition-colors ${
-                      activeFilter === 'all' 
-                        ? 'bg-[#F3F4F6] text-gray-900' 
-                        : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100 bg-transparent'
-                    }`}
+                    className="flex items-center gap-1 rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150 cursor-pointer border-none"
+                    type="button"
+                    style={{
+                      padding: '5px 8px',
+                      height: '26px',
+                      minHeight: '26px',
+                      backgroundColor: activeFilter === 'all' ? 'rgba(0, 0, 0, 0.04)' : 'rgba(0, 0, 0, 0.02)',
+                    }}
                   >
-                    All
+                    <span className="text-[12px] font-normal text-[#666]">All</span>
                   </button>
-                  <button 
+                  <button
                     onClick={() => setActiveFilter('images')}
-                    className={`px-3 py-1 text-xs font-medium rounded-full transition-colors ${
-                      activeFilter === 'images' 
-                        ? 'bg-[#F3F4F6] text-gray-900' 
-                        : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100 bg-transparent'
-                  }`}
+                    className="flex items-center gap-1 rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150 cursor-pointer border-none"
+                    type="button"
+                    style={{
+                      padding: '5px 8px',
+                      height: '26px',
+                      minHeight: '26px',
+                      backgroundColor: activeFilter === 'images' ? 'rgba(0, 0, 0, 0.04)' : 'rgba(0, 0, 0, 0.02)',
+                    }}
                   >
-                    Images
+                    <span className="text-[12px] font-normal text-[#666]">Images</span>
                   </button>
-                  <button 
+                  <button
                     onClick={() => setActiveFilter('pdfs')}
-                    className={`px-3 py-1 text-xs font-medium rounded-full transition-colors ${
-                      activeFilter === 'pdfs' 
-                        ? 'bg-[#F3F4F6] text-gray-900' 
-                        : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100 bg-transparent'
-                    }`}
+                    className="flex items-center gap-1 rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150 cursor-pointer border-none"
+                    type="button"
+                    style={{
+                      padding: '5px 8px',
+                      height: '26px',
+                      minHeight: '26px',
+                      backgroundColor: activeFilter === 'pdfs' ? 'rgba(0, 0, 0, 0.04)' : 'rgba(0, 0, 0, 0.02)',
+                    }}
                   >
-                    PDFs
-                    </button>
-                  </div>
+                    <span className="text-[12px] font-normal text-[#666]">PDFs</span>
+                  </button>
+                </div>
                 )}
               </div>
                   
@@ -3024,23 +2945,25 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                             justifyContent: 'flex-start'
                           }}
                         >
-                        {/* Add New Document Card */}
-                        {canUpload() && (
+                        {/* Add New Document Card - show immediately (like file cards); spinner only when actually uploading */}
+                        {(isLoadingAccess || canUpload()) && (
                         <motion.div
-                          className="group relative bg-white border border-gray-200 cursor-pointer flex flex-col overflow-hidden"
+                          initial={false}
+                          className={`group relative bg-white border border-gray-200 flex flex-col overflow-hidden ${isLoadingAccess ? 'cursor-wait' : 'cursor-pointer'}`}
                           style={{
                             width: '160px',
                             height: '213px', // 3:4 aspect ratio (160 * 4/3)
                             aspectRatio: '3/4',
                           }}
-                          whileHover={{ 
+                          whileHover={!isLoadingAccess && canUpload() ? { 
                             y: -4, 
                             boxShadow: '0 12px 24px -8px rgba(0, 0, 0, 0.15), 0 4px 8px -4px rgba(0, 0, 0, 0.1)',
                             borderColor: 'rgb(209, 213, 219)'
-                          }}
-                          whileTap={{ scale: 0.98, y: -2 }}
+                          } : {}}
+                          whileTap={!isLoadingAccess && canUpload() ? { scale: 0.98, y: -2 } : {}}
                           transition={{ type: 'spring', stiffness: 400, damping: 25 }}
                           onClick={() => {
+                            if (isLoadingAccess) return;
                             if (!canUpload()) {
                               alert('You do not have permission to upload files. Only editors and owners can upload files to this property.');
                               return;
@@ -3048,17 +2971,29 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                             fileInputRef.current?.click();
                           }}
                 >
-                          {/* Upper Section - Light grey with plus icon (2/3 of card height) */}
-                          <div className="flex items-center justify-center flex-[2] border-b border-gray-100 bg-gray-50">
+                          {/* Top Preview Area - Plus icon from first paint; spinner only when uploading */}
+                          <div className="flex-1 bg-gray-50 relative flex items-center justify-center overflow-hidden group-hover:bg-gray-100/50">
                             {uploading ? (
                               <div className="w-6 h-6 border-2 border-gray-300 border-t-gray-900 rounded-full animate-spin" />
                             ) : (
                               <Plus className="w-8 h-8 text-gray-400 group-hover:text-gray-600 transition-colors" strokeWidth={2} />
                             )}
                           </div>
-                          {/* Lower Section - White with text (1/3 of card height) */}
-                          <div className="flex items-center justify-center flex-1 bg-white px-2">
-                            <span className="text-xs font-semibold text-gray-600 text-center">Add Document</span>
+                          {/* Bottom Metadata Area - same as document cards (h-[72px], layout, typography) */}
+                          <div className="h-[72px] px-3 py-2.5 bg-white border-t border-gray-100 flex flex-col justify-center gap-0.5">
+                            <div className="flex items-start justify-between gap-2">
+                              <span className="text-xs font-semibold text-gray-700 truncate leading-tight" title="Add Document">
+                                Add Document
+                              </span>
+                            </div>
+                            <div className="flex items-center justify-between mt-1">
+                              <span className="text-[10px] text-gray-400 font-medium uppercase tracking-wide">
+                                Upload
+                              </span>
+                              <span className="text-[10px] text-gray-400">
+                                {/* No date for add card */}
+                              </span>
+                            </div>
                           </div>
                         </motion.div>
                         )}
@@ -3231,24 +3166,39 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                                 />
                               );
                             } else if (isPDF) {
-                              // Use stable src - once rendered, never change
-                              // CRITICAL: Use the stored src to prevent reloading
-                              const pdfSrc = `${coverUrl}#toolbar=0&navpanes=0&scrollbar=0&view=FitH`;
-                              
-                              // Stable key ensures React reuses the same iframe
-                              const pdfIframeKey = `pdf-iframe-${doc.id}`;
-                              
-                              // Once rendered, use stable props - never change loading
+                              // Pre-rendered thumbnail (from preloadDocumentCovers) = instant display
+                              const pdfThumbnailUrl = cachedCover?.thumbnailUrl;
                               const wasCached = !!cachedCover || !!previouslyRenderedSrc;
+                              
+                              if (pdfThumbnailUrl) {
+                                return (
+                                  <img
+                                    key={`pdf-img-${doc.id}`}
+                                    src={pdfThumbnailUrl}
+                                    alt=""
+                                    className="w-full h-full object-cover object-top opacity-90 group-hover:opacity-100"
+                                    loading="eager"
+                                    decoding="async"
+                                    style={{
+                                      contain: 'layout style paint',
+                                      pointerEvents: 'auto',
+                                      imageRendering: 'auto'
+                                    }}
+                                  />
+                                );
+                              }
+                              
+                              // Fallback: iframe when thumbnail not yet preloaded
+                              const pdfSrc = `${coverUrl}#toolbar=0&navpanes=0&scrollbar=0&view=FitH`;
+                              const pdfIframeKey = `pdf-iframe-${doc.id}`;
                               
                               return (
                                 <div key={`pdf-${doc.id}`} className="w-full h-full relative bg-gray-50">
-                                  {/* Placeholder shown while PDF loads - only if not cached */}
                                   {!wasCached && (
                                     <div className="absolute inset-0 flex items-center justify-center bg-gray-50 z-0">
                                       <FileText className="w-8 h-8 text-gray-300" />
-                 </div>
-                                )}
+                                    </div>
+                                  )}
                                   <iframe
                                     key={pdfIframeKey}
                                     src={pdfSrc}
@@ -3256,15 +3206,11 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                                     title="preview"
                                     loading={wasCached ? "lazy" : "eager"}
                                     scrolling="no"
-                                    // Prevent iframe from reloading when parent re-renders
-                                    style={{
-                                      contain: 'layout style paint'
-                                    }}
+                                    style={{ contain: 'layout style paint' }}
                                   />
-                                  {/* Transparent overlay to allow clicking the card */}
                                   <div className="absolute inset-0 bg-transparent z-10" />
-              </div>
-        );
+                                </div>
+                              );
                             } else if (isDOC && hasDocxPreview) {
                               // DOCX with cached presigned URL - use Office Online Viewer
                               // Check both ref and cache for loaded state (cache persists across re-renders)
@@ -3329,7 +3275,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                                     doc.parsed_text
                                   ) : (
                                     /* High-fidelity text simulation */
-                                    Array(30).fill("The property valuation report indicates a substantial increase in market value over the last fiscal quarter. Comparable sales in the immediate vicinity support this assessment, with three recent transactions involving similar square footage and amenities. Environmental factors and zoning regulations remain favorable for continued appreciation. The structure appears sound with no immediate repairs required. Rental yield projections suggest a stable income stream for investors.").join(" ")
+                                    "Document content will appear here when available."
                                   )}
               </div>
                                 {/* Realistic Page Fade */}
@@ -3381,8 +3327,23 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
             {/* Property Details Section - hidden when not active */}
                 <div className={`flex-1 overflow-hidden bg-[#FCFCF9] ${activeSection !== 'propertyDetails' ? 'hidden' : ''}`}>
                   {(() => {
-                    // Use local property details if available (for optimistic updates), otherwise use prop
-                    const propertyDetails = localPropertyDetails || property?.propertyHub?.property_details || {};
+                    // Use local property details if available (for optimistic updates), then propertyHub.property_details, then fallback to top-level property fields (e.g. from /api/properties flat response)
+                    const hubDetails = property?.propertyHub?.property_details;
+                    const flatFallback = property && !hubDetails ? {
+                      number_bedrooms: property.number_bedrooms ?? property.bedrooms,
+                      number_bathrooms: property.number_bathrooms ?? property.bathrooms,
+                      size_sqft: property.size_sqft,
+                      asking_price: property.asking_price,
+                      sold_price: property.sold_price,
+                      rent_pcm: property.rent_pcm,
+                      tenure: property.tenure,
+                      epc_rating: property.epc_rating,
+                      condition: property.condition,
+                      other_amenities: property.other_amenities,
+                      notes: property.notes,
+                      property_type: property.property_type,
+                    } : {};
+                    const propertyDetails = localPropertyDetails || hubDetails || flatFallback || {};
                     const propertyImages = property?.propertyHub?.property_details?.property_images || 
                                          property?.property_images || [];
                     const primaryImage = property?.propertyHub?.property_details?.primary_image_url || 

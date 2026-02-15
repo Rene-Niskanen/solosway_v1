@@ -25,6 +25,7 @@ import {
 } from "lucide-react";
 import { useChatHistory } from "./ChatHistoryContext";
 import { useFilingSidebar } from "../contexts/FilingSidebarContext";
+import { useFeedbackModal } from "../contexts/FeedbackModalContext";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { backendApi } from "@/services/backendApi";
 
@@ -86,8 +87,10 @@ export const Sidebar = ({
   const [showArchived, setShowArchived] = React.useState<boolean>(false);
   const [isBrandDropdownOpen, setIsBrandDropdownOpen] = React.useState<boolean>(false);
   const [userData, setUserData] = React.useState<any>(null);
+  const [profilePicCacheBust, setProfilePicCacheBust] = React.useState<number | null>(null);
   const brandButtonRef = React.useRef<HTMLButtonElement>(null);
   const brandDropdownRef = React.useRef<HTMLDivElement>(null);
+  const { isOpen: isFeedbackModalOpen } = useFeedbackModal();
 
   // Chat history state
   const {
@@ -116,6 +119,21 @@ export const Sidebar = ({
       }
     };
     fetchUserData();
+  }, []);
+
+  // Sync profile picture when updated from Profile page (and bust cache so new image shows)
+  React.useEffect(() => {
+    const handler = (e: CustomEvent<{ profileImageUrl?: string; avatarUrl?: string; removed?: boolean; cacheBust: number }>) => {
+      const { detail } = e;
+      setProfilePicCacheBust(detail.cacheBust);
+      if (detail.removed) {
+        setUserData((prev) => prev ? { ...prev, profile_image: undefined, avatar_url: undefined, profile_picture_url: undefined } : null);
+      } else if (detail.profileImageUrl) {
+        setUserData((prev) => prev ? { ...prev, profile_image: detail.profileImageUrl, avatar_url: detail.avatarUrl ?? detail.profileImageUrl, profile_picture_url: detail.profileImageUrl } : null);
+      }
+    };
+    window.addEventListener('profilePictureUpdated', handler as EventListener);
+    return () => window.removeEventListener('profilePictureUpdated', handler as EventListener);
   }, []);
 
   // Debug: Log when userData changes
@@ -313,9 +331,9 @@ export const Sidebar = ({
     removeChatFromHistory(chatId);
   };
 
-  // Filter chats based on archived status
-  const activeChats = chatHistory.filter(chat => !chat.archived);
-  const archivedChats = chatHistory.filter(chat => chat.archived);
+  // Filter chats based on archived status; hide property-scoped chats (they restore when re-opening the project)
+  const activeChats = chatHistory.filter(chat => !chat.archived && !chat.id.startsWith('property-'));
+  const archivedChats = chatHistory.filter(chat => chat.archived && !chat.id.startsWith('property-'));
   const displayedChats = showArchived ? archivedChats : activeChats;
 
   // Determine if chat history should be shown
@@ -391,8 +409,8 @@ export const Sidebar = ({
       <div
         className={`flex flex-col fixed top-0 h-full ${className?.includes('z-[150]') ? 'z-[150]' : 'z-[1000]'} ${className || ''}`}
         style={{
-          // Match sidebar grey background for seamless look - always solid
-          background: '#F1F1F1',
+          // Match agentsidebar background
+          background: '#F2F2EF',
           // When collapsed OR (map visible AND collapsed), move off-screen to the left
           // When open (even in map view if user toggled it), position at left: 0
           left: shouldHideSidebar ? '-1000px' : '0px',
@@ -415,8 +433,9 @@ export const Sidebar = ({
           // Ensure sidebar covers from top to bottom with no gaps
           top: '0',
           bottom: '0',
-          // Higher z-index to ensure it's above map
-          zIndex: className?.includes('z-[150]') ? 150 : 1000,
+          // When map is visible, MainContent uses z-index 10000 (so chat bar stays clickable).
+          // Sidebar must be above that so the map doesn't paint on top of the sidebar.
+          zIndex: className?.includes('z-[150]') ? 150 : (isMapVisible ? 10001 : 1000),
           // Extend slightly beyond to ensure full coverage
           minWidth: `${sidebarWidthValue}px`,
           right: 'auto',
@@ -433,10 +452,10 @@ export const Sidebar = ({
                 <button
                   ref={brandButtonRef}
                   onClick={() => setIsBrandDropdownOpen(!isBrandDropdownOpen)}
-                  className={`w-full flex items-center gap-3 px-3 py-2.5 transition-colors duration-75 text-left ${
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded border transition-colors duration-75 text-left ${
                     isBrandDropdownOpen 
-                      ? 'bg-white' 
-                      : 'hover:bg-white/60'
+                      ? 'bg-white border-gray-300' 
+                      : 'hover:bg-white/60 border-transparent'
                   }`}
                   style={{
                     boxShadow: isBrandDropdownOpen ? '0 1px 2px rgba(0, 0, 0, 0.04)' : 'none',
@@ -446,7 +465,10 @@ export const Sidebar = ({
                 >
                   <Avatar className="h-8 w-8 flex-shrink-0 border border-gray-300/50">
                     <AvatarImage 
-                      src={userData?.profile_image || userData?.avatar_url || "/default profile icon.png"} 
+                      src={(() => {
+                        const base = userData?.profile_image || userData?.avatar_url || "/default profile icon.png";
+                        return base.startsWith('http') && profilePicCacheBust ? `${base}?t=${profilePicCacheBust}` : base;
+                      })()} 
                       alt={userName}
                       className="object-cover"
                     />
@@ -481,23 +503,29 @@ export const Sidebar = ({
                       transition={{ duration: 0.2, ease: [0.4, 0, 0.2, 1] }}
                       className="overflow-hidden"
                     >
-                      <div className="mt-1 bg-white border border-gray-200/60 shadow-sm">
-                        {/* Menu Items */}
-                        <div className="py-0.5">
+                      <div className="mt-3">
+                        {/* Menu Items — same size and style as nav items (px-3 py-1.5, gap-3, text-[13px], icon 18px) */}
+                        <div className="pt-2 pb-0.5">
                           {/* Profile */}
                           <button
                             onClick={() => {
-                              setIsBrandDropdownOpen(false);
+                              closeFilingSidebar();
                               onNavigate?.('profile');
                             }}
-                            className="w-full px-2 py-1.5 flex items-center gap-2 hover:bg-gray-50 transition-colors text-left group"
+                            className={`w-full flex items-center gap-3 px-3 py-1.5 rounded transition-colors text-left group border ${
+                              activeItem === 'profile'
+                                ? 'bg-white text-gray-900 border-gray-300'
+                                : 'text-gray-600 hover:bg-white/60 hover:text-gray-900 border-transparent'
+                            }`}
+                            style={
+                              activeItem === 'profile'
+                                ? { boxShadow: '0 1px 2px rgba(0, 0, 0, 0.04)' }
+                                : undefined
+                            }
                           >
-                            <User className="w-3.5 h-3.5 text-gray-600 group-hover:text-gray-900 transition-colors" strokeWidth={1.75} />
-                            <span className="text-[12px] text-gray-900 font-normal">Profile</span>
+                            <User className="w-[18px] h-[18px] flex-shrink-0" strokeWidth={1.75} />
+                            <span className="text-[13px] font-normal">Profile</span>
                           </button>
-
-                          {/* Divider */}
-                          <div className="border-t border-gray-200/60 my-0.5" />
 
                           {/* Sign Out */}
                           <button
@@ -505,10 +533,10 @@ export const Sidebar = ({
                               setIsBrandDropdownOpen(false);
                               onSignOut?.();
                             }}
-                            className="w-full px-2 py-1.5 flex items-center gap-2 hover:bg-gray-50 transition-colors text-left group"
+                            className="w-full flex items-center gap-3 px-3 py-1.5 rounded text-gray-600 hover:bg-white/60 hover:text-gray-900 transition-colors text-left group"
                           >
-                            <LogOut className="w-3.5 h-3.5 text-gray-600 group-hover:text-gray-900 transition-colors" strokeWidth={1.75} />
-                            <span className="text-[12px] text-gray-900 font-normal">Sign out</span>
+                            <LogOut className="w-[18px] h-[18px] flex-shrink-0" strokeWidth={1.75} />
+                            <span className="text-[13px] font-normal">Sign out</span>
                           </button>
                         </div>
                       </div>
@@ -549,7 +577,7 @@ export const Sidebar = ({
 
         {/* Expanded Sidebar Content (Chat History) - OpenAI/Claude style */}
         {isExpanded && !shouldHideSidebar && (
-          <div className="absolute inset-0 flex flex-col" style={{ background: '#F1F1F1' }}>
+          <div className="absolute inset-0 flex flex-col" style={{ background: '#F2F2EF' }}>
             {/* Header with New Chat button */}
             <div className="px-3 pt-4 pb-2">
               <div className="flex items-center justify-between mb-4">
@@ -694,7 +722,7 @@ export const Sidebar = ({
       </div>
 
       {/* Sidebar Toggle Rail - seamless with sidebar and adjacent panels */}
-      {/* Always show toggle rail, even in map view */}
+      {/* Hidden when Share feedback modal is open so it's not visible behind the overlay */}
       <button
         type="button"
         onClick={(e) => {
@@ -709,9 +737,10 @@ export const Sidebar = ({
           // When sidebar is collapsed, position at left: 0
           // Otherwise, position at the right edge of the sidebar
           left: isCollapsed ? '0px' : (isExpanded ? '320px' : '224px'),
-          // Match sidebar background for seamless look
-          background: '#F1F1F1',
-          pointerEvents: 'auto',
+          // Match agentsidebar background
+          background: '#F2F2EF',
+          pointerEvents: isFeedbackModalOpen ? 'none' : 'auto',
+          visibility: isFeedbackModalOpen ? 'hidden' : 'visible',
           transition: 'left 0s ease-out' // Instant transition to prevent gaps
         }}
       >
@@ -720,19 +749,6 @@ export const Sidebar = ({
           className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity"
           style={{ background: 'rgba(0, 0, 0, 0.04)' }}
         />
-        {/* Arrow indicator - only show on hover */}
-        <div
-          className="absolute top-1/2 left-1/2 opacity-0 group-hover:opacity-100 transition-opacity"
-          style={{
-            transform: `translate(-50%, -50%) rotate(${isCollapsed ? 0 : 180}deg)`,
-            transition: 'transform 0.2s ease-out, opacity 0.15s ease-out'
-          }}
-        >
-          <div 
-            className="w-0 h-0 border-l-[5px] border-t-[3px] border-t-transparent border-b-[3px] border-b-transparent" 
-            style={{ borderLeftColor: '#9CA3AF' }} 
-          />
-        </div>
       </button>
     </>
   );

@@ -17,6 +17,8 @@ class LLMConfig(BaseSettings):
     # OpenAI 
     openai_api_key: str = os.environ.get('OPENAI_API_KEY')
     openai_model: str = os.environ.get('OPENAI_MODEL', 'gpt-4o-mini')
+    # Planner uses a fast model by default to reduce main-path latency (two sequential LLM calls).
+    openai_planner_model: str = os.environ.get('OPENAI_PLANNER_MODEL', 'gpt-4o-mini')
     # Using text-embedding-3-small for speed + HNSW compatibility (1536 dimensions)
     openai_embedding_model: str = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
     
@@ -55,6 +57,11 @@ class LLMConfig(BaseSettings):
     
     # Developer/testing helpers
     simple_mode: bool = os.getenv("LLM_SIMPLE_MODE", "false").lower() == "true"
+
+    # Mem0 Memory Settings (persistent user memory across sessions/chats)
+    mem0_enabled: bool = os.getenv("MEM0_ENABLED", "true").lower() == "true"
+    mem0_search_limit: int = int(os.getenv("MEM0_SEARCH_LIMIT", "5"))
+    mem0_search_timeout: float = float(os.getenv("MEM0_SEARCH_TIMEOUT", "2.0"))
 
 
 config = LLMConfig()

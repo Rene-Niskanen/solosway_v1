@@ -17,6 +17,15 @@ from langchain_core.output_parsers import PydanticOutputParser
 from backend.llm.config import config
 from backend.llm.types import MainWorkflowState, ExecutionPlan
 from backend.llm.contracts.validators import validate_planner_output
+from backend.llm.prompts.planner import (
+    get_planner_system_prompt,
+    get_planner_initial_prompt,
+    get_planner_followup_prompt,
+    REFINE_HINT,
+    INCOMPLETE_HINT,
+    QUERY_RULE_NEED_INFER,
+    QUERY_RULE_USE_CURRENT,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -34,60 +43,6 @@ INCOMPLETE_FOLLOWUP_PATTERNS = (
     "that's not all", "not all of them", "that not all", "add the rest",
     "what else", "missing some", "incomplete", "and the others", "need more",
 )
-
-QUERY_RULE_NEED_INFER = (
-    "⚠️ The current user message is SHORT or indicates the previous answer was INCOMPLETE. "
-    "You MUST set the \"query\" field in each step to a KEYWORD-RICH query INFERRED from the conversation "
-    "(previous user question + topic of last answer, e.g. \"all valuation figures Highlands property\"). "
-    "Do NOT use the literal current message as the query."
-)
-QUERY_RULE_USE_CURRENT = (
-    "When generating the \"query\" field for each step, use keywords from the CURRENT user query below "
-    "(or a refined version). Conversation history is for context only when the query is self-contained."
-)
-REFINE_HINT = (
-    "\n\nThe user is asking to REFORMAT or REFINE prior information. "
-    "Prefer use_prior_context=true and set format_instruction from their wording."
-)
-INCOMPLETE_HINT = (
-    "\n\nThe user is indicating the previous answer was incomplete. "
-    "Infer a search query from the previous user question and the topic "
-    '(e.g. "all valuation figures for [property]") and use that as the query for both steps.'
-)
-
-PLANNER_SYSTEM_PROMPT = """You are a planning assistant that creates an execution plan. Output ONLY valid JSON (no explanations).
-
-STEPS: You may output 0, 1, or 2 steps.
-
-1. **0 steps** – When the user asks to RESTRUCTURE or FORMAT something already answered (e.g. "make that into a paragraph", "turn that into a bullet list", "format as a short summary"). Set use_prior_context: true and set format_instruction to their exact wording (e.g. "one concise paragraph; copy-paste friendly").
-
-2. **1 step** – When the user wants to REFINE/FORMAT prior answer AND add NEW information (e.g. "make that into a paragraph that also explains the amenities"). Set use_prior_context: true, format_instruction from their wording, and add ONE step to retrieve only the new part (e.g. retrieve_chunks with query "amenities" and document_ids from context if known, or retrieve_docs then retrieve_chunks for that topic only).
-
-3. **2 steps (new question)** – For a brand-new, self-contained question: Step 1 retrieve_docs, Step 2 retrieve_chunks with document_ids from step 1. Use the user's current query as the "query" field for both steps (or a refined keyword version of it).
-
-4. **2 steps (short or context-dependent follow-up)** – When the user sends a SHORT message (e.g. fewer than ~8 words) or a message that implies the previous answer was INCOMPLETE or they want MORE (e.g. "that's not all of them", "that not all of them", "add the rest", "what else", "missing some", "incomplete", "and the others?"). You MUST output 2 steps (retrieve_docs then retrieve_chunks). Set the "query" field in BOTH steps to a KEYWORD-RICH query INFERRED from the conversation: use the PREVIOUS user question and the TOPIC of the last assistant answer (e.g. "all valuation figures Highlands property", "complete valuation figures for Highlands"). Do NOT use the literal current message as the query—it would return no documents.
-
-FIELDS:
-- objective: high-level goal (string)
-- steps: array of 0, 1, or 2 steps. Each step: id, action ("retrieve_docs" or "retrieve_chunks"), query, document_ids (for retrieve_chunks, use ["<from_step_search_docs>"] when from step 1), reasoning_label. For "query": use a short phrase that reads naturally after "Searching for " (e.g. "what is the value of highlands" -> "the value of highlands"; drop interrogative words like "what", "how", "can you").
-- use_prior_context: true only when user asks to restructure/format something already in the conversation
-- format_instruction: exact format the user asked for (e.g. "one concise paragraph: amenities then planning history; copy-paste friendly") or null
-
-EXAMPLES:
-
-0 steps (format only):
-{"objective": "Restructure prior answer as requested", "steps": [], "use_prior_context": true, "format_instruction": "one short paragraph; copy-paste friendly"}
-
-1 step (format + new info):
-{"objective": "One paragraph: amenities then planning history", "steps": [{"id": "search_chunks", "action": "retrieve_chunks", "query": "amenities of the property", "document_ids": ["<from_step_search_docs>"], "reasoning_label": "Finding amenities"}], "use_prior_context": true, "format_instruction": "one concise paragraph: amenities then planning history; copy-paste friendly"}
-
-2 steps (new question):
-{"objective": "Answer: [USER_QUERY]", "steps": [{"id": "search_docs", "action": "retrieve_docs", "query": "[USER_QUERY]", "reasoning_label": "Searched documents"}, {"id": "search_chunks", "action": "retrieve_chunks", "query": "[USER_QUERY]", "document_ids": ["<from_step_search_docs>"], "reasoning_label": "Reviewed relevant sections"}], "use_prior_context": false, "format_instruction": null}
-
-2 steps (short follow-up – user said "that not all of them" after asking for valuation summary for Highlands):
-{"objective": "Find all valuation figures for Highlands property", "steps": [{"id": "search_docs", "action": "retrieve_docs", "query": "all valuation figures Highlands property", "reasoning_label": "Searched documents"}, {"id": "search_chunks", "action": "retrieve_chunks", "query": "valuation figures Highlands complete list", "document_ids": ["<from_step_search_docs>"], "reasoning_label": "Reviewed relevant sections"}], "use_prior_context": false, "format_instruction": null}
-
-Now generate a plan for the user's query."""
 
 
 def _matches_any(text: str, patterns: tuple) -> bool:
@@ -128,6 +83,37 @@ def _plan_dict_to_execution_plan(plan_dict: Any) -> dict:
         "use_prior_context": getattr(plan_dict, "use_prior_context", False),
         "format_instruction": getattr(plan_dict, "format_instruction", None),
     }
+
+
+def _normalize_two_step_plan(execution_plan: dict) -> dict:
+    """
+    Ensure a 2-step plan is exactly: (1) retrieve_docs, (2) retrieve_chunks.
+    If the LLM returns two retrieve_docs steps (causing two "Searching for" in the UI),
+    convert the second to retrieve_chunks so we show one search then "Found N docs" / "Reading".
+    """
+    steps = execution_plan.get("steps") or []
+    if len(steps) != 2:
+        return execution_plan
+    first, second = steps[0], steps[1]
+    if (first.get("action") == "retrieve_docs" and second.get("action") == "retrieve_docs"):
+        logger.info(
+            "[PLANNER] Normalizing plan: second step was retrieve_docs (would show two 'Searching for'); converting to retrieve_chunks"
+        )
+        # Use first step's query for chunk retrieval so we have one search intent
+        query = (first.get("query") or second.get("query") or "").strip()
+        first_id = first.get("id") or "search_docs"
+        execution_plan["steps"] = [
+            first,
+            {
+                "id": second.get("id") or "search_chunks",
+                "action": "retrieve_chunks",
+                "query": query,
+                "document_ids": [f"<from_step_{first_id}>"],
+                "reasoning_label": second.get("reasoning_label") or "Reviewed relevant sections",
+                "reasoning_detail": second.get("reasoning_detail"),
+            },
+        ]
+    return execution_plan
 
 
 def _make_fallback_plan(user_query: str) -> dict:
@@ -278,7 +264,7 @@ async def planner_node(state: MainWorkflowState, runnable_config=None) -> MainWo
         logger.info("[PLANNER] Generating initial plan for query: '%s...'", user_query[:80])
 
     parser = PydanticOutputParser(pydantic_object=ExecutionPlanModel)
-    system_prompt = SystemMessage(content=PLANNER_SYSTEM_PROMPT)
+    system_prompt = SystemMessage(content=get_planner_system_prompt())
 
     is_refine_format = _matches_any(user_query, REFINE_PATTERNS)
     is_incomplete_followup = _matches_any(user_query, INCOMPLETE_FOLLOWUP_PATTERNS)
@@ -286,20 +272,28 @@ async def planner_node(state: MainWorkflowState, runnable_config=None) -> MainWo
     incomplete_hint = INCOMPLETE_HINT if is_incomplete_followup else ""
 
     if not messages:
-        prompt = f"User Query: {user_query}\n\nGenerate a structured execution plan to answer this query.{refine_hint}\n\n{parser.get_format_instructions()}"
+        prompt = get_planner_initial_prompt(user_query, refine_hint, parser.get_format_instructions())
         messages_to_use = [system_prompt, HumanMessage(content=prompt)]
     else:
         need_infer = _is_short_query(user_query) or is_incomplete_followup
         query_rule = QUERY_RULE_NEED_INFER if need_infer else QUERY_RULE_USE_CURRENT
-        prompt = f"Based on the conversation history, generate a structured execution plan for the latest query.\n\n{query_rule}\n\nCurrent User Query: {user_query}{refine_hint}{incomplete_hint}\n\n{parser.get_format_instructions()}"
+        prompt = get_planner_followup_prompt(
+            user_query, query_rule, refine_hint, incomplete_hint, parser.get_format_instructions()
+        )
         messages_to_use = [system_prompt] + messages + [HumanMessage(content=prompt)]
 
-    llm = ChatOpenAI(api_key=config.openai_api_key, model=config.openai_model, temperature=0)
+    # Use planner-specific model (default gpt-4o-mini) to keep main-path latency lower.
+    llm = ChatOpenAI(
+        api_key=config.openai_api_key,
+        model=config.openai_planner_model,
+        temperature=0,
+    )
 
     try:
         response = await llm.ainvoke(messages_to_use)
         plan_dict = parser.parse(response.content)
         execution_plan = _plan_dict_to_execution_plan(plan_dict)
+        execution_plan = _normalize_two_step_plan(execution_plan)
 
         logger.info("[PLANNER] ✅ Generated plan with %s steps", len(execution_plan["steps"]))
         logger.info("[PLANNER] Objective: %s", execution_plan["objective"])

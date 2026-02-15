@@ -26,21 +26,34 @@ interface DocumentPreviewCardProps {
   autoCollapse?: boolean; // Auto-collapse after loading completes
 }
 
+// PDF icon from public assets (replaces lucide FileText for PDFs)
+const PDF_ICON_SRC = '/PDF.png';
+
 // Get file icon based on extension or classification type - refined minimal icons
 const getFileIcon = (filename: string | null | undefined, size: number = 14, classificationType?: string) => {
   const ext = filename?.split('.').pop()?.toLowerCase() || '';
   const style = { color: '#9CA3AF', strokeWidth: 1.75 };
-  
+
+  const pdfIcon = (
+    <img
+      src={PDF_ICON_SRC}
+      alt="PDF"
+      width={size}
+      height={size}
+      style={{ objectFit: 'contain', display: 'block' }}
+    />
+  );
+
   // Check classification type for common document types
   if (classificationType) {
     const classLower = classificationType.toLowerCase();
     if (classLower.includes('valuation') || classLower.includes('report') || classLower.includes('pdf')) {
-      return <FileText size={size} style={style} />;
+      return pdfIcon;
     }
   }
-  
+
   if (['pdf'].includes(ext)) {
-    return <FileText size={size} style={style} />;
+    return pdfIcon;
   }
   if (['doc', 'docx'].includes(ext)) {
     return <FileText size={size} style={style} />;
@@ -114,16 +127,24 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({
     return ext ? `${truncatedName}.${ext}` : truncatedName;
   };
   
-  const [isExpanded, setIsExpanded] = useState(defaultExpanded);
-  const [isHovered, setIsHovered] = useState(false);
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [pdfThumbnail, setPdfThumbnail] = useState<string | null>(null);
-  
   // Determine file type - use download_url as fallback for type detection
   const fileToCheck = original_filename || download_url || '';
   const isImage = fileToCheck?.toLowerCase().match(/\.(jpg|jpeg|png|gif|webp)$/i);
   const isPDF = fileToCheck?.toLowerCase().endsWith('.pdf') || classification_type === 'valuation_report' || classification_type?.includes('pdf');
+  
+  // Synchronous cache read so first paint shows thumbnail when cache is already populated (e.g. by ReasoningSteps preload)
+  const initialCache = typeof window !== 'undefined' && doc_id ? (window as any).__preloadedDocumentCovers?.[doc_id] : null;
+  const hasCachedThumbnail = !!(initialCache?.thumbnailUrl || (isImage && initialCache?.url));
+  
+  const [isExpanded, setIsExpanded] = useState(defaultExpanded);
+  const [isHovered, setIsHovered] = useState(false);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(() =>
+    isImage && initialCache?.url ? initialCache.url : null
+  );
+  const [loading, setLoading] = useState(() => !hasCachedThumbnail);
+  const [pdfThumbnail, setPdfThumbnail] = useState<string | null>(() =>
+    initialCache?.thumbnailUrl ?? null
+  );
   
   // Auto-collapse after loading completes
   useEffect(() => {
@@ -134,32 +155,50 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({
       return () => clearTimeout(timer);
     }
   }, [autoCollapse, loading, isExpanded]);
+
+  // When preload completes in the background (e.g. from ReasoningSteps), show thumbnail immediately
+  useEffect(() => {
+    if (!doc_id) return;
+    const onCoverReady = (e: CustomEvent<{ doc_id: string }>) => {
+      if (e.detail?.doc_id !== doc_id) return;
+      const cached = (window as any).__preloadedDocumentCovers?.[doc_id];
+      if (!cached) return;
+      if (cached.thumbnailUrl) {
+        setPdfThumbnail(cached.thumbnailUrl);
+        setLoading(false);
+      } else if (cached.url && isImage) {
+        setPreviewUrl(cached.url);
+        setLoading(false);
+      }
+    };
+    window.addEventListener('documentCoverReady', onCoverReady as EventListener);
+    return () => window.removeEventListener('documentCoverReady', onCoverReady as EventListener);
+  }, [doc_id, isImage]);
   
-  // Fetch document and generate preview - optimized to use cache immediately
+  // Fetch document and generate preview - use cache if present, otherwise fetch
   useEffect(() => {
     if (!doc_id) {
       setLoading(false);
       return;
     }
     
-    // Check cache first - this is the critical optimization for instant thumbnail display
+    // Re-check cache (may have been populated after our initial render, e.g. by another card's preload)
     const cached = (window as any).__preloadedDocumentCovers?.[doc_id];
     if (cached) {
-      // PDF with pre-generated thumbnail - instant display!
+      // PDF with pre-generated thumbnail - already shown via initial state, ensure sync
       if (cached.thumbnailUrl) {
         setPdfThumbnail(cached.thumbnailUrl);
         setLoading(false);
         return;
       }
-      // Image with cached blob URL - instant display!
+      // Image with cached blob URL - already shown via initial state
       if (cached.url && isImage) {
         setPreviewUrl(cached.url);
         setLoading(false);
         return;
       }
-      // PDF without thumbnail but with blob URL - use it while generating thumbnail
+      // PDF without thumbnail but with blob URL - generate thumbnail from cache
       if (cached.url && isPDF) {
-        // Use cached blob to generate thumbnail faster
         fetch(cached.url)
           .then(res => res.blob())
           .then(blob => blob.arrayBuffer())
@@ -167,7 +206,6 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({
           .then(thumbnailUrl => {
             if (thumbnailUrl) {
               setPdfThumbnail(thumbnailUrl);
-              // Update cache with thumbnail for next time
               (window as any).__preloadedDocumentCovers[doc_id].thumbnailUrl = thumbnailUrl;
             }
             setLoading(false);
@@ -180,7 +218,7 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({
       }
     }
     
-    // Fetch the document
+    // No cache - fetch the document
     const fetchPreview = async () => {
       try {
         const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
@@ -283,13 +321,14 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({
           flexDirection: 'column',
           marginTop: '6px',
           width: '100%',
-          maxWidth: '240px',
+          maxWidth: '320px',
           borderRadius: '6px',
           border: `1px solid ${isHovered || isExpanded ? 'rgba(0, 0, 0, 0.12)' : 'rgba(0, 0, 0, 0.08)'}`,
           backgroundColor: 'transparent',
           transition: 'border-color 0.1s ease, box-shadow 0.1s ease',
           overflow: 'hidden',
-          boxShadow: isHovered || isExpanded ? '0 2px 8px rgba(0, 0, 0, 0.04)' : 'none'
+          boxShadow: isHovered || isExpanded ? '0 2px 8px rgba(0, 0, 0, 0.04)' : 'none',
+          boxSizing: 'border-box'
         }}
       >
         {/* Collapsible Header Row */}
@@ -335,7 +374,7 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({
           <span
             style={{
               fontSize: '11px',
-              fontWeight: 450,
+              fontWeight: 500,
               color: '#374151',
               whiteSpace: 'nowrap',
               overflow: 'hidden',
@@ -373,28 +412,31 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({
               animate={{ height: 'auto', opacity: 1 }}
               exit={{ height: 0, opacity: 0 }}
               transition={{ duration: 0.2, ease: [0.25, 0.1, 0.25, 1] }}
-              style={{ overflow: 'hidden' }}
+              style={{ overflow: 'hidden', padding: '0 8px 8px 8px', boxSizing: 'border-box' }}
             >
               <div
                 onClick={handleOpenDocument}
                 style={{
-                  margin: '0 6px 6px 6px',
+                  width: '100%',
+                  padding: 0,
                   borderRadius: '4px',
                   overflow: 'auto',
                   backgroundColor: '#FAFAFA',
                   cursor: onClick ? 'pointer' : 'default',
                   boxShadow: 'inset 0 1px 2px rgba(0, 0, 0, 0.04)',
                   border: '1px solid rgba(0, 0, 0, 0.04)',
-                  width: '100%',
                   maxHeight: '120px',
                   display: 'flex',
                   alignItems: 'flex-start',
-                  justifyContent: 'center'
+                  justifyContent: 'stretch',
+                  boxSizing: 'border-box'
                 }}
               >
         <div
           style={{
             width: '100%',
+            minWidth: 0,
+            flex: 1,
             flexShrink: 0,
             aspectRatio: '1 / 1.414',
             display: 'flex',
@@ -444,7 +486,7 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({
               <span style={{
                 fontSize: '10px',
                 color: '#9CA3AF',
-                fontWeight: 450,
+                fontWeight: 500,
                 letterSpacing: '-0.01em'
               }}>
                 Click to open
@@ -518,7 +560,7 @@ export const StackedDocumentPreviews: React.FC<{
         flexDirection: 'column',
         marginTop: '4px',
         width: '100%',
-        maxWidth: '240px',
+        maxWidth: '380px',
         gap: '4px' // Subtle space between stacked cards
       }}
     >
@@ -588,7 +630,7 @@ export const StackedDocumentPreviews: React.FC<{
             <span
               style={{
                 fontSize: '13px',
-                fontWeight: 450,
+                fontWeight: 500,
                 color: '#374151',
                 whiteSpace: 'nowrap',
                 overflow: 'hidden',

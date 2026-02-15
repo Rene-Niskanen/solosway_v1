@@ -18,6 +18,7 @@ export const ProfileDropdown: React.FC<ProfileDropdownProps> = ({
 }) => {
   const [isOpen, setIsOpen] = React.useState(false);
   const [userData, setUserData] = React.useState<any>(null);
+  const [profilePicCacheBust, setProfilePicCacheBust] = React.useState<number | null>(null);
   const dropdownRef = React.useRef<HTMLDivElement>(null);
   const buttonRef = React.useRef<HTMLButtonElement>(null);
   const [dropdownPosition, setDropdownPosition] = React.useState({ left: 0, bottom: 0 });
@@ -35,6 +36,21 @@ export const ProfileDropdown: React.FC<ProfileDropdownProps> = ({
       }
     };
     fetchUserData();
+  }, []);
+
+  // Sync profile picture when updated from Profile page (and bust cache so new image shows)
+  React.useEffect(() => {
+    const handler = (e: CustomEvent<{ profileImageUrl?: string; avatarUrl?: string; removed?: boolean; cacheBust: number }>) => {
+      const { detail } = e;
+      setProfilePicCacheBust(detail.cacheBust);
+      if (detail.removed) {
+        setUserData((prev) => prev ? { ...prev, profile_image: undefined, avatar_url: undefined, profile_picture_url: undefined } : null);
+      } else if (detail.profileImageUrl) {
+        setUserData((prev) => prev ? { ...prev, profile_image: detail.profileImageUrl, avatar_url: detail.avatarUrl ?? detail.profileImageUrl, profile_picture_url: detail.profileImageUrl } : null);
+      }
+    };
+    window.addEventListener('profilePictureUpdated', handler as EventListener);
+    return () => window.removeEventListener('profilePictureUpdated', handler as EventListener);
   }, []);
 
   // Calculate dropdown position based on button position
@@ -122,7 +138,10 @@ export const ProfileDropdown: React.FC<ProfileDropdownProps> = ({
       >
         <Avatar className="w-full h-full">
           <AvatarImage 
-            src={userData?.profile_image || userData?.avatar_url} 
+            src={(() => {
+              const base = userData?.profile_image || userData?.avatar_url;
+              return base && profilePicCacheBust ? `${base}?t=${profilePicCacheBust}` : base;
+            })()} 
             alt={userName}
             className="object-cover"
           />
@@ -172,7 +191,10 @@ export const ProfileDropdown: React.FC<ProfileDropdownProps> = ({
                 <div className="flex items-center gap-2">
                   <Avatar className="w-5 h-5 flex-shrink-0 border border-gray-300/50">
                     <AvatarImage 
-                      src={userData?.profile_image || userData?.avatar_url} 
+                      src={(() => {
+                        const base = userData?.profile_image || userData?.avatar_url;
+                        return base && profilePicCacheBust ? `${base}?t=${profilePicCacheBust}` : base;
+                      })()} 
                       alt={userName}
                       className="object-cover"
                     />

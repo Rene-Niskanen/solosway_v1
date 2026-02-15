@@ -25,7 +25,24 @@ from backend.llm.nodes.agent_node import generate_conversational_answer, extract
 from backend.llm.contracts.validators import validate_responder_output
 from backend.llm.config import config
 from backend.llm.prompts import _get_main_answer_tagging_rule, ensure_main_tags_when_missing
+from backend.llm.prompts.responder import (
+    get_responder_fact_mapping_system_prompt,
+    get_responder_fact_mapping_human_prompt,
+    get_responder_natural_language_system_prompt,
+    get_responder_natural_language_human_prompt,
+    get_responder_conversational_tool_citations_system_prompt,
+    get_responder_conversational_pre_citations_system_prompt,
+    get_responder_block_citation_system_content,
+    get_responder_formatted_answer_system_prompt,
+    get_responder_formatted_answer_human_prompt,
+)
+from backend.llm.utils.personality_prompts import (
+    PERSONALITY_CHOICE_INSTRUCTION,
+    VALID_PERSONALITY_IDS,
+    DEFAULT_PERSONALITY_ID,
+)
 from backend.llm.tools.citation_mapping import create_chunk_citation_tool, _narrow_bbox_to_cited_line
+from backend.llm.prompts.conversation import format_memories_section
 from backend.services.supabase_client_factory import get_supabase_client
 
 # Import from new citation architecture modules
@@ -45,6 +62,12 @@ from backend.llm.citation import (
 
 logger = logging.getLogger(__name__)
 
+def _strip_markdown_for_citation(text: str) -> str:
+    """Strip common markdown so we can extract values from e.g. **£2,400,000**."""
+    if not text:
+        return text
+    return re.sub(r'\*+', '', text).strip()
+
 
 def _distinctive_values_from_cited_text(cited_text: str) -> List[str]:
     """
@@ -55,26 +78,55 @@ def _distinctive_values_from_cited_text(cited_text: str) -> List[str]:
     """
     if not cited_text or not cited_text.strip():
         return []
+    # Strip markdown so **£2,400,000** is matched as £2,400,000
+    text = _strip_markdown_for_citation(cited_text)
     values = []
     # Currency amounts: £2,300,000 or £6,000 (keep as-is for substring match)
-    for m in re.finditer(r"£[\d,]+(?:\.[\d]+)?", cited_text):
+    for m in re.finditer(r"£[\d,]+(?:\.[\d]+)?", text):
         values.append(m.group(0))
     # Large numbers with commas (often valuations): 2,300,000
-    for m in re.finditer(r"\b[\d]{1,3}(?:,[\d]{3})+\b", cited_text):
+    for m in re.finditer(r"\b[\d]{1,3}(?:,[\d]{3})+\b", text):
         val = m.group(0)
         if val not in values:
             values.append(val)
+        # Also add digits-only form so we match blocks that have "2400000" or "2 400 000"
+        digits_only = val.replace(",", "")
+        if digits_only not in values:
+            values.append(digits_only)
     # Date-like: "12th February 2024" or "February 12, 2024"
-    for m in re.finditer(r"\d{1,2}(?:st|nd|rd|th)?\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4}", cited_text, re.IGNORECASE):
+    for m in re.finditer(r"\d{1,2}(?:st|nd|rd|th)?\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4}", text, re.IGNORECASE):
         values.append(m.group(0))
-    for m in re.finditer(r"(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s+\d{4}", cited_text, re.IGNORECASE):
+    for m in re.finditer(r"(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s+\d{4}", text, re.IGNORECASE):
         if m.group(0) not in values:
             values.append(m.group(0))
     return values
 
 
+def _block_looks_like_footer_or_url(block_content: str) -> bool:
+    """True if block is likely footer/header/URL, not the cited factual content."""
+    if not block_content or len(block_content.strip()) < 20:
+        return True
+    s = block_content.lower().strip()
+    if "www." in s or ".com" in s or ".co.uk" in s:
+        return True
+    # Short boilerplate line like "United Kingdom - Spain - Portugal - Gibraltar"
+    if len(block_content) < 100 and "united kingdom" in s and ("spain" in s or "portugal" in s or "gibraltar" in s):
+        return True
+    return False
+
+
 # Evidence-First Citation Architecture Types
 EvidenceType = Literal["atomic", "clause"]
+
+
+class PersonalityResponse(BaseModel):
+    """Structured output: chosen personality and the answer text (same-call personality selection)."""
+    personality_id: str = Field(
+        description="One of: default, friendly, efficient, professional, nerdy, candid, cynical, listener, robot, quirky"
+    )
+    response: str = Field(
+        description="The full answer to the user in Markdown, with citations as [ID: X](BLOCK_CITE_ID_N)"
+    )
 
 
 class EvidenceAnswerOutput(BaseModel):
@@ -268,35 +320,69 @@ def format_chunks_with_short_ids(chunks_metadata: List[Dict[str, Any]]) -> Tuple
     return formatted_text, short_id_lookup
 
 
+# Regex for optional (BLOCK_CITE_ID_N) after a citation - used for jan28th-style block-id lookup
+_BLOCK_ID_IN_RESPONSE = re.compile(r'\s*\(\s*(BLOCK_CITE_ID_\d+)\s*\)')
+# Fallback: block id without parentheses (e.g. [ID: 1] BLOCK_CITE_ID_42)
+_BLOCK_ID_NO_PARENS = re.compile(r'\s+(BLOCK_CITE_ID_\d+)\b')
+
+# Max blocks per doc in the prompt metadata table (avoids token overflow; resolution still uses full table)
+MAX_BLOCKS_PER_DOC_IN_PROMPT = 500
+
+
+def _resolve_block_id_to_metadata(
+    block_id: str,
+    metadata_lookup_tables: Dict[str, Dict[str, Dict[str, Any]]],
+) -> Optional[Dict[str, Any]]:
+    """Resolve BLOCK_CITE_ID_N to bbox, doc_id, page (jan28th-style). Returns None if not found."""
+    for doc_id, table in metadata_lookup_tables.items():
+        if block_id in table:
+            meta = table[block_id].copy()
+            meta['doc_id'] = doc_id
+            meta['original_filename'] = meta.get('original_filename', '')
+            meta['bbox'] = {
+                'left': meta.get('bbox_left', 0),
+                'top': meta.get('bbox_top', 0),
+                'width': meta.get('bbox_width', 0),
+                'height': meta.get('bbox_height', 0),
+                'page': meta.get('page', 0),
+            }
+            return meta
+    return None
+
+
 def extract_citations_with_positions(
-    llm_response: str, 
-    short_id_lookup: Dict[str, Dict[str, Any]]
+    llm_response: str,
+    short_id_lookup: Dict[str, Dict[str, Any]],
+    metadata_lookup_tables: Optional[Dict[str, Dict[str, Dict[str, Any]]]] = None,
 ) -> List[Dict[str, Any]]:
     """
-    Extract citations from LLM response using regex pattern matching.
-    
-    The LLM should include citations in the format [ID: X] where X is a short ID (1, 2, 3, etc.).
-    This function extracts these citations and maps them to full chunk metadata.
-    It also matches each citation to the best block within the chunk based on context.
-    
-    Args:
-        llm_response: The LLM's response text containing [ID: X] citations
-        short_id_lookup: Dictionary mapping short_id -> full chunk metadata
-    
-    Returns:
-        List of citation dictionaries with position, metadata, and citation number
+    Extract citations from LLM response. Prefers jan28th-style [ID: X](BLOCK_CITE_ID_N):
+    when (BLOCK_CITE_ID_N) is present, resolve bbox from metadata_lookup_tables. Otherwise
+    use short_id_lookup and select best block within the chunk.
     """
     citations = []
-    # Robust regex pattern: matches [ID: 1], [ID:1], [ID: 12], etc.
     pattern = r'\[ID:\s*([^\]]+)\]'
     matches = list(re.finditer(pattern, llm_response))
-    
+
     logger.info(f"[CITATION_DEBUG] Extracting citations from LLM response ({len(matches)} matches found)")
-    
+
     for idx, match in enumerate(matches, start=1):
         short_id = match.group(1).strip()
         start_position = match.start()
         end_position = match.end()
+
+        # Jan28th-style: look for (BLOCK_CITE_ID_N) or BLOCK_CITE_ID_N immediately after [ID: X]
+        block_id_from_response = None
+        search_span = llm_response[end_position:end_position + 60]
+        block_id_match = _BLOCK_ID_IN_RESPONSE.match(search_span)
+        if block_id_match:
+            block_id_from_response = block_id_match.group(1)
+            end_position = end_position + block_id_match.end()
+        else:
+            block_id_match = _BLOCK_ID_NO_PARENS.match(search_span)
+            if block_id_match:
+                block_id_from_response = block_id_match.group(1)
+                end_position = end_position + block_id_match.end()
         
         # Extract context around the citation to help match to the right block
         # Use a smaller context window to get more specific context
@@ -324,8 +410,52 @@ def extract_citations_with_positions(
         cited_text_for_bbox = sentence_context if sentence_context else llm_response[max(0, start_position - 80):start_position].strip()
         if len(cited_text_for_bbox) > 200:
             cited_text_for_bbox = cited_text_for_bbox[-200:]
-        
-        # Look up full metadata for this short ID
+
+        # Jan28th-style: resolve by block_id when present (exact bbox, no heuristic)
+        # Citation number = order of appearance (1, 2, 3...) so UI shows [1], [2], [3], not block id.
+        if block_id_from_response and metadata_lookup_tables:
+            resolved = _resolve_block_id_to_metadata(block_id_from_response, metadata_lookup_tables)
+            if resolved:
+                citation_number = idx  # Sequential by appearance in response
+                bbox = resolved.get('bbox')
+                page_number = int(resolved.get('page', 0))
+                citation = {
+                    'citation_number': citation_number,
+                    'short_id': short_id,
+                    'chunk_id': '',
+                    'position': start_position,
+                    'end_position': end_position,
+                    'bbox': bbox,
+                    'page_number': page_number,
+                    'doc_id': resolved.get('doc_id', ''),
+                    'original_filename': resolved.get('original_filename', ''),
+                    'block_id': block_id_from_response,
+                    'method': 'block-id-lookup',
+                    'block_info': None,
+                    'cited_text': cited_text_for_bbox,
+                    'citation_debug': {
+                        'short_id': short_id,
+                        'citation_number': citation_number,
+                        'cited_text_for_bbox': cited_text_for_bbox,
+                        'distinctive_values': [],
+                        'chosen_bbox': dict(bbox) if isinstance(bbox, dict) else None,
+                        'block_id': block_id_from_response,
+                        'block_index': None,
+                        'block_type': None,
+                        'block_content_preview': None,
+                        'match_score': None,
+                        'source': 'block-id-lookup',
+                        'num_blocks_considered': 0,
+                    },
+                }
+                citations.append(citation)
+                logger.info(
+                    f"[CITATION_DEBUG] Citation {idx} resolved by block_id {block_id_from_response} "
+                    f"(page={page_number}, doc_id={resolved.get('doc_id', '')[:8]})"
+                )
+                continue
+
+        # Look up full metadata for this short ID (fallback when no block_id in response)
         metadata = short_id_lookup.get(short_id)
         if metadata:
             # Find the best matching block for this citation
@@ -333,10 +463,10 @@ def extract_citations_with_positions(
             best_block_info = None
             
             blocks = metadata.get('blocks', [])
+            distinctive = _distinctive_values_from_cited_text(cited_text_for_bbox) if cited_text_for_bbox else []
             if blocks and isinstance(blocks, list) and len(blocks) > 0:
                 # Distinctive values (e.g. £2,300,000, 12th February 2024) so we pick the block
                 # that actually contains the cited figure, not a similar block (e.g. "180 days").
-                distinctive = _distinctive_values_from_cited_text(cited_text_for_bbox)
                 best_match_score = 0
 
                 for block_idx, block in enumerate(blocks):
@@ -354,6 +484,14 @@ def extract_citations_with_positions(
                     # Skip headings/titles (they're usually not what we want to highlight)
                     if block_type in ['title', 'heading']:
                         continue
+
+                    # When we have cited figures, skip blocks that look like footer/URL
+                    # (e.g. "www.mjgroupint.com" or "United Kingdom - Spain - Portugal")
+                    if distinctive and _block_looks_like_footer_or_url(block_content_raw):
+                        continue
+
+                    # Normalize block content for value check (remove spaces in numbers: "2 400 000" -> "2400000")
+                    block_normalized = re.sub(r'(\d)\s+(\d)', r'\1\2', block_content_raw) if block_content_raw else ''
 
                     # Calculate match score based on keyword overlap
                     context_words = set(word for word in citation_context.split() if len(word) > 3)
@@ -374,9 +512,12 @@ def extract_citations_with_positions(
 
                     # When the citation contains distinctive values (e.g. £2,300,000, 12th February 2024),
                     # only consider blocks that contain at least one of them. Otherwise we can highlight
-                    # the wrong block (e.g. "Market Value... 180 days" instead of "£2,300,000").
+                    # the wrong block (e.g. "Market Value... 180 days" or footer "www.mjgroupint.com").
                     if distinctive:
-                        block_has_value = any(val in block_content_raw for val in distinctive)
+                        block_has_value = any(
+                            val in block_content_raw or val in block_normalized
+                            for val in distinctive
+                        )
                         if not block_has_value:
                             continue  # skip this block
                         match_score += 100  # strong bonus for containing the cited value
@@ -427,27 +568,59 @@ def extract_citations_with_positions(
             if not isinstance(best_bbox, dict):
                 logger.warning(f"Citation {idx}: bbox is not a dict (got {type(best_bbox)}), using fallback")
                 best_bbox = None
+
+            # Use page from the selected block's bbox when available (not chunk-level default).
+            page_number = metadata.get('page_number', 0)
+            if isinstance(best_bbox, dict) and best_bbox.get('page') is not None:
+                try:
+                    page_number = int(best_bbox.get('page', page_number))
+                except (TypeError, ValueError):
+                    pass
+
+            # Citation number = order of appearance (1, 2, 3...) so UI shows [1], [2], [3].
+            citation_number = idx
+
+            chunk_id = metadata.get('chunk_id', '')
+            block_index = best_block_info.get('block_index') if best_block_info else None
+            block_id = f"chunk_{chunk_id or 'unknown'}_block_{block_index if block_index is not None else 0}" if (chunk_id or block_index is not None) else None
+
+            # Debug payload: exact data used to choose this bbox (for citation mapping diagnosis)
+            citation_debug = {
+                'short_id': short_id,
+                'citation_number': citation_number,
+                'cited_text_for_bbox': cited_text_for_bbox,  # Exact sentence/markdown used for matching
+                'distinctive_values': list(distinctive),
+                'chosen_bbox': dict(best_bbox) if isinstance(best_bbox, dict) else None,
+                'block_id': block_id,
+                'block_index': block_index,
+                'block_type': best_block_info.get('block_type') if best_block_info else None,
+                'block_content_preview': (best_block_info.get('content', '') or best_block_info.get('content_preview', ''))[:300] if best_block_info else None,
+                'match_score': best_block_info.get('match_score') if best_block_info else None,
+                'source': 'block' if best_block_info else 'chunk',
+                'num_blocks_considered': len(blocks) if blocks else 0,
+            }
             
             citation = {
-                'citation_number': idx,  # Sequential citation number [1], [2], [3]
+                'citation_number': citation_number,
                 'short_id': short_id,
-                'chunk_id': metadata.get('chunk_id'),
+                'chunk_id': chunk_id,
                 'position': start_position,
                 'end_position': end_position,
                 'bbox': best_bbox,  # Best matching block bbox or chunk-level bbox
-                'page_number': metadata.get('page_number', 0),
+                'page_number': page_number,  # From selected block when available
                 'doc_id': metadata.get('doc_id'),
                 'original_filename': metadata.get('original_filename', ''),
                 'method': 'direct-id-extraction',
                 'block_info': best_block_info,  # For debugging
                 'cited_text': cited_text_for_bbox,  # For sub-level bbox: match exact line in block
+                'citation_debug': citation_debug,
             }
             citations.append(citation)
             
             logger.info(
                 f"[CITATION_DEBUG] Citation {idx} extracted: "
                 f"doc_id={metadata.get('doc_id', '')[:8]}, "
-                f"page={metadata.get('page_number', 0)}, "
+                f"page={page_number}, "
                 f"bbox_valid={isinstance(best_bbox, dict)}, "
                 f"bbox_left={best_bbox.get('left', 'N/A') if isinstance(best_bbox, dict) else 'N/A'}, "
                 f"bbox_top={best_bbox.get('top', 'N/A') if isinstance(best_bbox, dict) else 'N/A'}"
@@ -460,6 +633,112 @@ def extract_citations_with_positions(
     
     logger.info(f"[CITATION_DEBUG] Extracted {len(citations)} citations total")
     return citations
+
+
+def format_chunks_with_block_ids(
+    chunks_metadata: List[Dict[str, Any]]
+) -> Tuple[str, Dict[str, Dict[str, Any]], Dict[str, Dict[str, Dict[str, Any]]]]:
+    """
+    Format chunks with block-level BLOCK_CITE_ID tags (jan28th-style) and build metadata lookup.
+    The LLM sees each block with an id and must cite using [ID: X](BLOCK_CITE_ID_N).
+    Returns:
+        - formatted_text: [SOURCE_ID: 1] followed by <BLOCK id="BLOCK_CITE_ID_N">Content: ...</BLOCK> per block
+        - short_id_lookup: short_id -> chunk metadata (for fallback when block_id missing)
+        - metadata_lookup_tables: doc_id -> block_id -> { page, bbox_left, bbox_top, bbox_width, bbox_height, doc_id, original_filename }
+    """
+    formatted_parts = []
+    short_id_lookup = {}
+    metadata_lookup_tables = {}  # doc_id -> block_id -> metadata
+    block_id_counter = 1
+
+    for idx, chunk in enumerate(chunks_metadata, start=1):
+        short_id = str(idx)
+        chunk_id = chunk.get('chunk_id', '')
+        chunk_text = chunk.get('chunk_text', '')
+        doc_id = chunk.get('document_id', '')
+        original_filename = chunk.get('document_filename', '') or ''
+        page_number = chunk.get('page_number', 0)
+        chunk_bbox = chunk.get('bbox')
+        blocks = chunk.get('blocks', [])
+
+        if not chunk_id or not chunk_text:
+            continue
+
+        # Ensure we have a metadata table for this doc
+        if doc_id not in metadata_lookup_tables:
+            metadata_lookup_tables[doc_id] = {}
+
+        block_parts = []
+        if blocks and isinstance(blocks, list):
+            for block in blocks:
+                if not isinstance(block, dict):
+                    continue
+                block_content = (block.get('content') or '').strip()
+                if not block_content:
+                    continue
+                block_id = f"BLOCK_CITE_ID_{block_id_counter}"
+                block_id_counter += 1
+                block_parts.append(
+                    f'<BLOCK id="{block_id}">\nContent: {block_content}\n</BLOCK>'
+                )
+                bbox = block.get('bbox') or {}
+                bbox_left = float(bbox.get('left', 0)) if isinstance(bbox, dict) else 0.0
+                bbox_top = float(bbox.get('top', 0)) if isinstance(bbox, dict) else 0.0
+                bbox_width = float(bbox.get('width', 0)) if isinstance(bbox, dict) else 0.0
+                bbox_height = float(bbox.get('height', 0)) if isinstance(bbox, dict) else 0.0
+                block_page = bbox.get('page') if isinstance(bbox, dict) else page_number
+                if block_page is None:
+                    block_page = page_number
+                metadata_lookup_tables[doc_id][block_id] = {
+                    'page': int(block_page) if block_page is not None else 0,
+                    'bbox_left': round(bbox_left, 4),
+                    'bbox_top': round(bbox_top, 4),
+                    'bbox_width': round(bbox_width, 4),
+                    'bbox_height': round(bbox_height, 4),
+                    'doc_id': doc_id,
+                    'original_filename': original_filename,
+                }
+        if not block_parts:
+            # No blocks: one block per chunk
+            block_id = f"BLOCK_CITE_ID_{block_id_counter}"
+            block_id_counter += 1
+            block_parts.append(
+                f'<BLOCK id="{block_id}">\nContent: {chunk_text}\n</BLOCK>'
+            )
+            bbox_left = bbox_top = bbox_width = bbox_height = 0.0
+            if isinstance(chunk_bbox, dict):
+                bbox_left = float(chunk_bbox.get('left', 0))
+                bbox_top = float(chunk_bbox.get('top', 0))
+                bbox_width = float(chunk_bbox.get('width', 0))
+                bbox_height = float(chunk_bbox.get('height', 0))
+            metadata_lookup_tables[doc_id][block_id] = {
+                'page': int(page_number) if page_number is not None else 0,
+                'bbox_left': round(bbox_left, 4),
+                'bbox_top': round(bbox_top, 4),
+                'bbox_width': round(bbox_width, 4),
+                'bbox_height': round(bbox_height, 4),
+                'doc_id': doc_id,
+                'original_filename': original_filename,
+            }
+
+        formatted_parts.append(f"[SOURCE_ID: {short_id}]\n" + "\n".join(block_parts))
+        short_id_lookup[short_id] = {
+            'chunk_id': chunk_id,
+            'short_id': short_id,
+            'page_number': page_number,
+            'bbox': chunk_bbox,
+            'blocks': blocks,
+            'doc_id': doc_id,
+            'original_filename': original_filename,
+            'chunk_text': chunk_text,
+        }
+
+    formatted_text = "\n\n---\n\n".join(formatted_parts)
+    logger.info(
+        f"[CITATION_DEBUG] Formatted chunks with block IDs: {block_id_counter - 1} blocks, "
+        f"{len(metadata_lookup_tables)} docs"
+    )
+    return formatted_text, short_id_lookup, metadata_lookup_tables
 
 
 def replace_ids_with_citation_numbers(
@@ -513,16 +792,20 @@ def format_citations_for_frontend(
     Format citations for frontend consumption.
     
     Converts internal citation dictionaries to Citation TypedDict format expected by the frontend.
+    Keeps every citation (one payload per in-text [1], [2], [3]) so numbers match the response.
     
     Args:
-        citations: List of citation dictionaries from extract_citations_with_positions()
+        citations: List of citation dictionaries (already with sequential citation_number 1,2,3...)
     
     Returns:
         List of Citation dictionaries for frontend
     """
     frontend_citations = []
-    
-    for citation in citations:
+    # Sort by position so order matches the response text
+    sorted_citations = sorted(citations, key=lambda c: c.get('position', 0))
+
+    for citation in sorted_citations:
+        citation_number = citation.get('citation_number', 0)
         # Extract bbox data - only include if valid
         bbox_data = citation.get('bbox')
         bbox = None
@@ -564,7 +847,7 @@ def format_citations_for_frontend(
         # Create Citation TypedDict-compatible dictionary
         # Note: bbox can be None - frontend will handle opening document on correct page without highlighting
         frontend_citation: Dict[str, Any] = {
-            'citation_number': citation.get('citation_number', 0),
+            'citation_number': citation_number,
             'chunk_id': chunk_id,
             'block_id': block_id,  # For citation mapping (frontend) - synthetic from chunk_id + block_index when needed
             'block_index': block_index,  # Pass through for views.py synthetic block_id when block_id missing
@@ -577,7 +860,8 @@ def format_citations_for_frontend(
             'method': citation.get('method', 'direct-id-extraction'),
             'block_content': None,  # Not used in direct citation system
             'verification': None,  # Not used in direct citation system
-            'matched_block_content': None  # Not used in direct citation system
+            'matched_block_content': None,  # Not used in direct citation system
+            'debug': citation.get('citation_debug'),  # For UI: bbox choice, cited text, block id, etc.
         }
         frontend_citations.append(frontend_citation)
     
@@ -643,13 +927,17 @@ def extract_key_facts_from_text(text: str) -> List[Dict[str, Any]]:
                 continue
             
             seen_matches.add(match_key)
-            # Get context
-            start = max(0, match.start() - context_size)
-            end = min(len(text), match.end() + context_size)
-            context = text[start:end].strip()
-            
+            # Use capturing group as value when present to avoid context-window leakage (e.g. markdown)
+            if match.lastindex and match.lastindex >= 1:
+                value_text = (match.group(1) or '').strip()
+            else:
+                start = max(0, match.start() - context_size)
+                end = min(len(text), match.end() + context_size)
+                value_text = text[start:end].strip()
+            if not value_text:
+                continue
             facts.append({
-                'text': context,
+                'text': value_text,
                 'confidence': 'high',
                 'type': 'value',
                 'label': label,
@@ -673,12 +961,16 @@ def extract_key_facts_from_text(text: str) -> List[Dict[str, Any]]:
                 continue
             
             seen_matches.add(match_key)
-            start = max(0, match.start() - context_size)
-            end = min(len(text), match.end() + context_size)
-            context = text[start:end].strip()
-            
+            if match.lastindex and match.lastindex >= 1:
+                value_text = (match.group(1) or '').strip()
+            else:
+                start = max(0, match.start() - context_size)
+                end = min(len(text), match.end() + context_size)
+                value_text = text[start:end].strip()
+            if not value_text:
+                continue
             facts.append({
-                'text': context,
+                'text': value_text,
                 'confidence': 'high',
                 'type': 'date',
                 'label': label,
@@ -702,18 +994,109 @@ def extract_key_facts_from_text(text: str) -> List[Dict[str, Any]]:
                 continue
             
             seen_matches.add(match_key)
-            start = max(0, match.start() - context_size)
-            end = min(len(text), match.end() + context_size)
-            context = text[start:end].strip()
-            
+            if match.lastindex and match.lastindex >= 1:
+                value_text = (match.group(1) or '').strip()
+            else:
+                start = max(0, match.start() - context_size)
+                end = min(len(text), match.end() + context_size)
+                value_text = text[start:end].strip()
+            if not value_text:
+                continue
             facts.append({
-                'text': context,
+                'text': value_text,
                 'confidence': 'high',
                 'type': 'name',
                 'label': label,
                 'match_start': match.start(),
                 'match_end': match.end()
             })
+    
+    # Month YYYY dates (e.g. "February 2024") - common in reports
+    month_year_patterns = [
+        (r'(\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4})\b', 'Date', 15),
+    ]
+    for pattern, label, context_size in month_year_patterns:
+        matches = list(re.finditer(pattern, text, re.IGNORECASE))
+        for match in matches:
+            match_key = (match.start(), match.end())
+            if any(start <= match.start() < end or start < match.end() <= end for start, end in seen_matches):
+                continue
+            seen_matches.add(match_key)
+            if match.lastindex and match.lastindex >= 1:
+                value_text = (match.group(1) or '').strip()
+            else:
+                start = max(0, match.start() - context_size)
+                end = min(len(text), match.end() + context_size)
+                value_text = text[start:end].strip()
+            if not value_text:
+                continue
+            facts.append({
+                'text': value_text,
+                'confidence': 'high',
+                'type': 'date',
+                'label': label,
+                'match_start': match.start(),
+                'match_end': match.end()
+            })
+    
+    # UK address / postcode (e.g. "..., Town, POSTCODE" or standalone postcode)
+    uk_postcode = r'[A-Z]{1,2}\d{1,2}[A-Z]?\s*\d[A-Z]{2}'
+    address_patterns = [
+        (rf'(Address[:\s]+(.{{10,80}}?{uk_postcode}))', 'Address', 0),  # "Address: ... CM23 1AB"
+        (rf'((?:[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*,?\s+){{1,4}},?\s*{uk_postcode})', 'Location', 0),  # "..., Town, CM23 1AB"
+        (rf'(\b{uk_postcode}\b)', 'Postcode', 20),
+    ]
+    for pattern, label, context_size in address_patterns:
+        matches = list(re.finditer(pattern, text, re.IGNORECASE))
+        for match in matches:
+            match_key = (match.start(), match.end())
+            if any(start <= match.start() < end or start < match.end() <= end for start, end in seen_matches):
+                continue
+            seen_matches.add(match_key)
+            if match.lastindex and match.lastindex >= 1:
+                value_text = (match.group(1) or '').strip()
+            else:
+                start = max(0, match.start() - context_size)
+                end = min(len(text), match.end() + context_size)
+                value_text = text[start:end].strip()
+            # Normalise whitespace and cap length for display
+            if len(value_text) > 80:
+                value_text = value_text[:77].rstrip() + '…'
+            if not value_text:
+                continue
+            facts.append({
+                'text': value_text,
+                'confidence': 'high',
+                'type': 'address',
+                'label': label,
+                'match_start': match.start(),
+                'match_end': match.end()
+            })
+    
+    # Fallback: if we have substantial text but no structured facts, add first meaningful line as "Summary"
+    if not facts and len(text.strip()) > 100:
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        for line in lines[:3]:
+            if len(line) >= 20 and len(line) <= 120 and not line.startswith(('•', '-', '*', '1.', '2.')):
+                facts.append({
+                    'text': line,
+                    'confidence': 'low',
+                    'type': 'summary',
+                    'label': 'Summary',
+                    'match_start': 0,
+                    'match_end': len(line)
+                })
+                break
+            if 20 <= len(line) <= 120:
+                facts.append({
+                    'text': line[:100] + ('…' if len(line) > 100 else ''),
+                    'confidence': 'low',
+                    'type': 'summary',
+                    'label': 'Summary',
+                    'match_start': 0,
+                    'match_end': min(100, len(line))
+                })
+                break
     
     # Sort by match position to maintain order
     facts.sort(key=lambda x: x.get('match_start', 0))
@@ -770,43 +1153,9 @@ async def generate_evidence_selection(
     
     NO prose. NO Markdown. NO creativity.
     """
-    # Concise system prompt (~200 tokens)
-    system_prompt_content = """You are a fact-mapping system. Match user questions to evidence.
+    system_prompt_content = get_responder_fact_mapping_system_prompt()
+    human_message_content = get_responder_fact_mapping_human_prompt(user_query, evidence_table)
 
-**INPUT:**
-- User question
-- Evidence table with citations [1], [2], [3]...
-
-**OUTPUT:**
-- Structured JSON: claims + citations
-- NO prose, NO Markdown
-
-**RULES:**
-1. For each question part, identify supporting evidence
-2. Create one claim per fact
-3. List citation numbers for each claim
-4. If question asks about something NOT in evidence, add to unsupported_claims
-5. Do NOT write prose - only structured claims
-
-**EXAMPLE:**
-Question: "What is the rent and when is it due?"
-Output: {
-  "facts": [
-    {"claim": "Monthly rent amount", "citations": [1]},
-    {"claim": "Rent due date", "citations": [2]}
-  ],
-  "unsupported_claims": []
-}"""
-
-    # Concise human message (~300 tokens)
-    human_message_content = f"""Question: {user_query}
-
-Evidence:
-{evidence_table}
-
-Map question to evidence. Return structured claims with citations."""
-
-    # Create LLM with structured output
     llm = ChatOpenAI(
         api_key=config.openai_api_key,
         model=config.openai_model,
@@ -815,7 +1164,6 @@ Map question to evidence. Return structured claims with citations."""
     
     structured_llm = llm.with_structured_output(EvidenceSelectionOutput)
     
-    # Invoke
     response = await structured_llm.ainvoke([
         SystemMessage(content=system_prompt_content),
         HumanMessage(content=human_message_content)
@@ -871,43 +1219,9 @@ async def generate_evidence_selection(
     
     NO prose. NO Markdown. NO creativity.
     """
-    # Concise system prompt (~200 tokens)
-    system_prompt_content = """You are a fact-mapping system. Match user questions to evidence.
+    system_prompt_content = get_responder_fact_mapping_system_prompt()
+    human_message_content = get_responder_fact_mapping_human_prompt(user_query, evidence_table)
 
-**INPUT:**
-- User question
-- Evidence table with citations [1], [2], [3]...
-
-**OUTPUT:**
-- Structured JSON: claims + citations
-- NO prose, NO Markdown
-
-**RULES:**
-1. For each question part, identify supporting evidence
-2. Create one claim per fact
-3. List citation numbers for each claim
-4. If question asks about something NOT in evidence, add to unsupported_claims
-5. Do NOT write prose - only structured claims
-
-**EXAMPLE:**
-Question: "What is the rent and when is it due?"
-Output: {
-  "facts": [
-    {"claim": "Monthly rent amount", "citations": [1]},
-    {"claim": "Rent due date", "citations": [2]}
-  ],
-  "unsupported_claims": []
-}"""
-
-    # Concise human message (~300 tokens)
-    human_message_content = f"""Question: {user_query}
-
-Evidence:
-{evidence_table}
-
-Map question to evidence. Return structured claims with citations."""
-
-    # Create LLM with structured output
     llm = ChatOpenAI(
         api_key=config.openai_api_key,
         model=config.openai_model,
@@ -916,7 +1230,6 @@ Map question to evidence. Return structured claims with citations."""
     
     structured_llm = llm.with_structured_output(EvidenceSelectionOutput)
     
-    # Invoke
     response = await structured_llm.ainvoke([
         SystemMessage(content=system_prompt_content),
         HumanMessage(content=human_message_content)
@@ -950,45 +1263,11 @@ async def generate_natural_language_answer(
         for claim in evidence_selection.facts
     ])
     
-    # System prompt (~300 tokens)
-    system_prompt_content = """You are a natural language renderer. Convert structured claims into conversational prose.
+    system_prompt_content = get_responder_natural_language_system_prompt()
+    human_message_content = get_responder_natural_language_human_prompt(
+        user_query, claims_text, evidence_table
+    )
 
-**INPUT:**
-- User question
-- Structured claims with citations (from Pass 1)
-- Evidence table (for reference only)
-
-**OUTPUT:**
-- Conversational answer with citations embedded
-- Markdown formatting
-- Professional tone
-
-**CRITICAL RULES:**
-1. Use EXACTLY the claims provided - do NOT add facts
-2. Do NOT remove any claims
-3. Embed citations naturally: [1], [2], [3]
-4. Use Markdown for structure
-5. Minimum 2-3 sentences with context
-
-**EXAMPLE:**
-Claims:
-- Monthly rent amount [citations: 1]
-- Rent due date [citations: 2]
-
-Answer: '**[AMOUNT]** [1] is the monthly rent, which is payable monthly in advance before the 5th day of each month [2].'"""
-
-    # Human message (~800 tokens)
-    human_message_content = f"""Question: {user_query}
-
-Claims to render:
-{claims_text}
-
-Evidence reference:
-{evidence_table}
-
-Convert claims into conversational answer. Use Markdown. Do NOT add or remove facts."""
-
-    # Create LLM with structured output
     llm = ChatOpenAI(
         api_key=config.openai_api_key,
         model=config.openai_model,
@@ -1344,104 +1623,8 @@ async def generate_conversational_answer_with_citations(
         Tuple of (answer_text, citations_list)
     """
     # NOTE: This is a fallback function using tool-based citations
-    # Raw chunk text removed - LLM will use citation tool based on question
-    # This function is used when evidence extraction fails
-    # System prompt - reuse existing prompt but add citation instructions
     main_tagging_rule = _get_main_answer_tagging_rule()
-    system_prompt_content = f"""
-You are an expert analytical assistant for professional documents. Your role is to help users understand information clearly, accurately, and neutrally based solely on the content provided.
-
-# FORMATTING RULES
-
-1. **Response Style**: Use clean Markdown. Use bolding for key terms and bullet points for lists to ensure scannability.
-
-2. **List Formatting**: When creating numbered lists (1., 2., 3.) or bullet lists (-, -, -), keep all items on consecutive lines without blank lines between them. Blank lines between list items will break the list into separate lists.
-
-   **CORRECT:**
-   ```
-   1. First item
-   2. Second item
-   3. Third item
-   ```
-
-   **WRONG:**
-   ```
-   1. First item
-
-   2. Second item
-
-   3. Third item
-   ```
-
-3. **Markdown Features**: 
-   - Use `##` for main sections, `###` for subsections
-   - Use `**bold**` for emphasis or labels
-   - Use `-` for bullet points, `1.` for numbered lists
-   - Use a blank line (double newline) before each major section (e.g. **Flood Zone 2:**, **Surface Water Flooding:**) so the answer appears as separate paragraphs, not one long block. Do not put blank lines between list items.
-
-4. **No Hallucination**: If the answer is not contained within the provided excerpts, state: "I cannot find the specific information in the uploaded documents." Do not use outside knowledge.
-
-# CITATION WORKFLOW
-
-**SIMPLE RULE: Any information you use from chunks MUST be cited.**
-
-Whether it's a fact, explanation, definition, or any other type of information - if it comes from a chunk, it needs a citation.
-
-When you use information from chunks in your answer:
-1. Use the EXACT text from the chunk (shown in [CHUNK_ID: ...] blocks)
-2. For ANY information you use from a chunk, call match_citation_to_chunk with:
-   - chunk_id: The CHUNK_ID from the chunk you're citing
-   - cited_text: The EXACT text from that chunk (not a paraphrase)
-3. Call this tool for EVERY piece of information you mention that comes from chunks
-4. **CRITICAL**: After calling match_citation_to_chunk, include citation numbers in your answer text using [1], [2], [3] format
-   - Example: "<<<MAIN>>>[AMOUNT]<<<END_MAIN>>> is the offer value [1]. This represents the purchase price [1]. <<<MAIN>>>[AMOUNT]<<<END_MAIN>>> is the deposit [2]."
-   - Each citation number corresponds to a match_citation_to_chunk tool call you made
-   - Number them sequentially: [1], [2], [3], etc.
-
-**IMPORTANT:**
-- Use the original text from chunks, not your paraphrased version
-- Call match_citation_to_chunk BEFORE finishing your answer
-- **Include citation numbers immediately after each piece of information from chunks** - place [1], [2], [3] right after the information within the same sentence or paragraph
-- Example: "<<<MAIN>>>[AMOUNT]<<<END_MAIN>>> is the property value [1]. The lease term is one year [2]. <<<MAIN>>>[AMOUNT]<<<END_MAIN>>> is the monthly rent [3]."
-- **DO NOT** wait until the end of your answer to include citations - they must appear inline with the information
-
-# TONE & STYLE
-
-- Be direct and professional.
-- Avoid phrases like "Based on the documents provided..." or "According to chunk 1...". Just provide the answer.
-- Do not mention document names, filenames, IDs, or retrieval steps.
-- Do not reference "documents", "files", "chunks", "tools", or "searches".
-- Speak as if the information is simply *known*, not retrieved.
-- **Do NOT start your response** with a fragment like "of [property name]" or "of [X]". Start directly with the figure, category, or fact (amount/number/date/category name). Do not start with a topic sentence or heading.
-
-**CRITICAL – HIGHLIGHTING THE USER'S ANSWER IS EXTREMELY IMPORTANT**
-You MUST wrap the exact thing the user is looking for in <<<MAIN>>>...<<<END_MAIN>>>. This is mandatory for every response. Never skip this.
-
-{main_tagging_rule}
-
-# EXTRACTING INFORMATION
-
-The excerpts provided ARE the source of truth. When the user asks a question:
-1. Carefully read through ALL the excerpts provided
-2. If the answer IS present, extract and present it directly – put the key fact/number/answer in the opening words
-3. If the answer is NOT present, only then say it's not found
-
-**DO NOT say "the excerpts do not contain" if the information IS actually in the excerpts.**
-**DO NOT be overly cautious - if you see the information, extract and present it.**
-
-When information IS in the excerpts:
-- Put the key figure or fact first (number, date, name), then add what it refers to
-- Extract specific details (names, values, dates, etc.)
-- Present them clearly and directly
-- Use the exact information from the excerpts
-- Format it in a scannable way
-- **Call match_citation_to_chunk for ANY information you use from chunks** - facts, explanations, definitions, everything
-
-When information is NOT in the excerpts:
-- State: "I cannot find the specific information in the uploaded documents."
-- Provide helpful context about what type of information would answer the question
-"""
-    
+    system_prompt_content = get_responder_conversational_tool_citations_system_prompt(main_tagging_rule)
     system_prompt = SystemMessage(content=system_prompt_content)
     
     # Create citation tool
@@ -1475,6 +1658,7 @@ Provide a helpful, conversational answer using Markdown formatting:
 - Use `**bold**` for emphasis or labels
 - Use `-` for bullet points when listing items
 - Use line breaks between sections for better readability
+- Put any closing or sign-off on a new line; if you add a follow-up, make it context-aware (tied to what you said and what they asked), not generic. When you add a follow-up, use a few friendly emojis (2–3), e.g. 📄 ✨ 📋 🌳 📊 💡 ✅ or a friendly smile 😊. Put a space before the first emoji and between each emoji (e.g. "feel free to ask! 😊 📋"). Keep it professional—no hearts, monkeys, or casual gestures.
 - Extract and present information directly from the excerpts if it is present
 - Only say information is not found if it is genuinely not in the excerpts
 - Include appropriate context based on question type
@@ -1555,107 +1739,9 @@ async def generate_conversational_answer_with_pre_citations(
     Returns:
         Tuple of (answer_text, citations_list)
     """
-    # NOTE: Raw chunk text removed - using pre-created citations only
-    # This fallback function is used when evidence extraction fails
-    # Format pre-created citations
     citations_display = format_pre_created_citations(pre_created_citations)
-    
     main_tagging_rule = _get_main_answer_tagging_rule()
-    system_prompt_content = f"""
-You are an expert analytical assistant for professional documents. Your role is to help users understand information clearly, accurately, and neutrally based solely on the content provided.
-
-# FORMATTING RULES
-
-1. **Response Style**: Use clean Markdown. Use bolding for key terms and bullet points for lists to ensure scannability.
-
-2. **List Formatting**: When creating numbered lists (1., 2., 3.) or bullet lists (-, -, -), keep all items on consecutive lines without blank lines between them. Blank lines between list items will break the list into separate lists.
-
-   **CORRECT:**
-   ```
-   1. First item
-   2. Second item
-   3. Third item
-   ```
-
-   **WRONG:**
-   ```
-   1. First item
-
-   2. Second item
-
-   3. Third item
-   ```
-
-3. **Markdown Features**: 
-   - Use `##` for main sections, `###` for subsections
-   - Use `**bold**` for emphasis or labels
-   - Use `-` for bullet points, `1.` for numbered lists
-   - Use a blank line (double newline) before each major section (e.g. **Flood Zone 2:**, **Surface Water Flooding:**) so the answer appears as separate paragraphs, not one long block. Do not put blank lines between list items.
-
-4. **No Hallucination**: If the answer is not contained within the provided excerpts, state: "I cannot find the specific information in the uploaded documents." Do not use outside knowledge.
-
-# CITATION WORKFLOW
-
-**SIMPLE RULE: Any information you use from chunks MUST be cited.**
-
-Whether it's a fact, explanation, definition, or any other type of information - if it comes from a chunk, it needs a citation.
-
-You have been provided with pre-created citations below. These citations are already mapped to exact locations in the documents.
-
-**HOW TO USE CITATIONS:**
-1. When you use ANY information that matches a citation, use the citation number: [1], [2], [3], etc.
-2. The citation numbers correspond to the pre-created citations shown below
-3. **DO NOT** call any citation tools - citations are already created
-4. Simply include citation numbers in your answer where you reference information from chunks
-5. Place citation numbers immediately after the information you're citing
-
-**EXAMPLE:** (figure first; MAIN wraps only the figure)
-If citation [1] supports the Market Value and [2] the date, your answer might be:
-"<<<MAIN>>>[AMOUNT]<<<END_MAIN>>> is the Market Value [1]. This represents the purchase price [1] as of [DATE] [2]."
-
-**IMPORTANT:**
-- Use citation numbers [1], [2], [3] when you reference ANY information from chunks - facts, explanations, definitions, everything
-- Do NOT call any tools - citations are pre-created
-- Include citation numbers immediately after the information you're citing
-- Each citation number corresponds to a pre-created citation shown below
-
-# TONE & STYLE
-
-- Be direct and professional.
-- Avoid phrases like "Based on the documents provided..." or "According to chunk 1...". Just provide the answer.
-- Do not mention document names, filenames, IDs, or retrieval steps.
-- Do not reference "documents", "files", "chunks", "tools", or "searches".
-- Speak as if the information is simply *known*, not retrieved.
-- **Do NOT start your response** with a fragment like "of [property name]" or "of [X]". Start directly with the figure, category, or fact (amount/number/date/category name). Do not start with a topic sentence or heading.
-
-**CRITICAL – HIGHLIGHTING THE USER'S ANSWER IS EXTREMELY IMPORTANT**
-You MUST wrap the exact thing the user is looking for in <<<MAIN>>>...<<<END_MAIN>>>. This is mandatory for every response. Never skip this.
-
-{main_tagging_rule}
-
-# EXTRACTING INFORMATION
-
-The excerpts provided ARE the source of truth. When the user asks a question:
-1. Carefully read through ALL the excerpts provided
-2. If the answer IS present, extract and present it directly – put the key fact/number/answer in the opening words
-3. If the answer is NOT present, only then say it's not found
-
-**DO NOT say "the excerpts do not contain" if the information IS actually in the excerpts.**
-**DO NOT be overly cautious - if you see the information, extract and present it.**
-
-When information IS in the excerpts:
-- Put the key figure or fact first (number, date, name), then add what it refers to
-- Extract specific details (names, values, dates, etc.)
-- Present them clearly and directly
-- Use the exact information from the excerpts
-- Format it in a scannable way
-- **Use citation numbers [1], [2], [3] when referencing ANY information from chunks** - facts, explanations, definitions, everything
-
-When information is NOT in the excerpts:
-- State: "I cannot find the specific information in the uploaded documents."
-- Provide helpful context about what type of information would answer the question
-"""
-    
+    system_prompt_content = get_responder_conversational_pre_citations_system_prompt(main_tagging_rule)
     system_prompt = SystemMessage(content=system_prompt_content)
     
     # Create LLM WITHOUT citation tool (not needed - citations are pre-created)
@@ -1683,6 +1769,7 @@ Provide a helpful, conversational answer using Markdown formatting:
 - Use `**bold**` for emphasis or labels
 - Use `-` for bullet points when listing items
 - Use line breaks between sections for better readability
+- Put any closing or sign-off on a new line; if you add a follow-up, make it context-aware (tied to what you said and what they asked), not generic. When you add a follow-up, use a few friendly emojis (2–3), e.g. 📄 ✨ 📋 🌳 📊 💡 ✅ or a friendly smile 😊. Put a space before the first emoji and between each emoji (e.g. "feel free to ask! 😊 📋"). Keep it professional—no hearts, monkeys, or casual gestures.
 - Extract and present information directly from the excerpts if it is present
 - Only say information is not found if it is genuinely not in the excerpts
 - Include appropriate context based on question type
@@ -1702,176 +1789,182 @@ Answer (use Markdown formatting for structure and clarity):""")
     return answer_text, pre_created_citations
 
 
+def _build_metadata_table_section(metadata_lookup_tables: Dict[str, Dict[str, Dict[str, Any]]]) -> str:
+    """Build the Metadata Look-Up Table section for the prompt (jan28th-style)."""
+    if not metadata_lookup_tables:
+        return ""
+    lines = [
+        "",
+        "--- Metadata Look-Up Table ---",
+        "Block IDs below map to bbox coordinates. When you cite a fact, use the block id from the <BLOCK> tag that contains that fact.",
+        ""
+    ]
+    for doc_id, table in metadata_lookup_tables.items():
+        doc_short = (doc_id[:12] + "...") if len(doc_id) > 12 else doc_id
+        lines.append(f"Document {doc_short}:")
+        limited = list(sorted(table.items()))[:MAX_BLOCKS_PER_DOC_IN_PROMPT]
+        for block_id, meta in limited:
+            p = meta.get("page", 0)
+            l_ = meta.get("bbox_left", 0)
+            t = meta.get("bbox_top", 0)
+            w = meta.get("bbox_width", 0)
+            h = meta.get("bbox_height", 0)
+            lines.append(f"  {block_id}: page={p}, bbox=({l_:.4f},{t:.4f},{w:.4f},{h:.4f})")
+        lines.append("")
+    return "\n".join(lines)
+
+
 async def generate_conversational_answer_with_citations(
     user_query: str,
-    formatted_chunks: str
-) -> str:
+    formatted_chunks: str,
+    metadata_lookup_tables: Optional[Dict[str, Dict[str, Dict[str, Any]]]] = None,
+    previous_personality: Optional[str] = None,
+    is_first_message: bool = False,
+    user_id: Optional[str] = None,
+) -> Tuple[str, str]:
     """
-    Generate conversational answer with citation instructions.
-    
-    This version includes instructions for the LLM to use [ID: X] format for citations.
-    The LLM should cite sources using short IDs (1, 2, 3) that correspond to the [SOURCE_ID: X] labels.
-    
-    Args:
-        user_query: User's question
-        formatted_chunks: Chunks formatted with [SOURCE_ID: X] labels
-    
-    Returns:
-        LLM response with [ID: X] citations embedded
+    Generate conversational answer with citation instructions (jan28th-style).
+    The LLM sees content with <BLOCK id="BLOCK_CITE_ID_N"> and must cite as [ID: X](BLOCK_CITE_ID_N).
+    Also chooses personality for this turn and returns (personality_id, answer_text).
     """
+    # Temperature 0.38: slight increase for more natural variation; revert if responses become inconsistent or repetitive (see plan: conversational responses).
     llm = ChatOpenAI(
         model=config.openai_model,
-        temperature=0.3,
-        max_tokens=2000
+        temperature=0.38,
+        max_tokens=4096  # Avoid mid-sentence cutoff; 2000 was too low for full answers
     )
-    
-    system_prompt = SystemMessage(content="""
-You are an expert analytical assistant for professional documents. Your role is to help users understand information clearly, accurately, and neutrally based solely on the content provided.
 
-# FORMATTING RULES
+    metadata_section = _build_metadata_table_section(metadata_lookup_tables or {})
 
-1. **Response Style**: Use clean Markdown. Use bolding for key terms and bullet points for lists to ensure scannability.
+    personality_context = f"""
+Previous personality for this conversation (or None if first message): {previous_personality or 'None'}
+Is this the first message in the conversation? {is_first_message}
+"""
+    system_content = get_responder_block_citation_system_content(personality_context)
 
-2. **List Formatting**: When creating numbered lists (1., 2., 3.) or bullet lists (-, -, -), keep all items on consecutive lines without blank lines between them. Blank lines between list items will break the list into separate lists.
+    # --- Mem0 memory injection (Phase 2) ---
+    if getattr(config, "mem0_enabled", False):
+        try:
+            from backend.services.memory_service import velora_memory
+            _mem_results = await velora_memory.search(
+                query=user_query,
+                user_id=user_id or "anonymous",
+                limit=getattr(config, "mem0_search_limit", 5),
+            )
+            _mem_text = format_memories_section(_mem_results)
+            if _mem_text:
+                system_content = system_content + "\n" + _mem_text
+                logger.info(f"[RESPONDER] Injected {len(_mem_results)} memories")
+        except Exception as _mem_err:
+            logger.warning(f"[RESPONDER] Memory search failed: {_mem_err}")
 
-   **CORRECT:**
-   ```
-   1. First item
-   2. Second item
-   3. Third item
-   ```
+    system_prompt = SystemMessage(content=system_content)
 
-   **WRONG:**
-   ```
-   1. First item
-
-   2. Second item
-
-   3. Third item
-   ```
-
-3. **Markdown Features**: 
-   - Use `##` for main sections, `###` for subsections
-   - Use `**bold**` for emphasis or labels
-   - Use `-` for bullet points, `1.` for numbered lists
-   - Use a blank line (double newline) before each major section (e.g. **Flood Zone 2:**, **Surface Water Flooding:**) so the answer appears as separate paragraphs, not one long block. Do not put blank lines between list items.
-
-4. **No Hallucination**: If the answer is not contained within the provided excerpts, state: "I cannot find the specific information in the uploaded documents." Do not use outside knowledge.
-
-# CITATION INSTRUCTIONS (CRITICAL)
-
-**SIMPLE RULE: Any information you use from excerpts MUST be cited.**
-
-Whether it's a fact, explanation, definition, or any other type of information - if it comes from an excerpt, it needs a citation.
-
-You have been provided with document excerpts labeled with source IDs:
-- [SOURCE_ID: 1] - First excerpt
-- [SOURCE_ID: 2] - Second excerpt
-- [SOURCE_ID: 3] - Third excerpt
-- etc.
-
-**HOW TO CITE SOURCES:**
-
-When you use ANY information from a specific excerpt, you MUST include a citation using the format:
-[ID: X]
-
-Where X is the SOURCE_ID number (1, 2, 3, etc.) that corresponds to the excerpt you're referencing.
-
-**EXAMPLES:** (figure first; MAIN wraps only the figure)
-- "£500,000 [ID: 1] is the Market Value. This represents the purchase price [ID: 1]."
-- "£2,000 per month [ID: 2] is the rent. This is payable in advance [ID: 2]."
-- "15th March 2024 [ID: 1] is the valuation date, and 123 Main Street [ID: 3] is the property address."
-
-**RULES:**
-1. **ALWAYS cite when using ANY information from excerpts** - facts, explanations, definitions, everything
-2. **Place citations immediately after the information you're citing** (e.g., "£500,000 [ID: 1]")
-3. **Use the exact SOURCE_ID number** from the [SOURCE_ID: X] label
-4. **You can cite the same source multiple times** if you reference different information from it
-5. **If you're synthesizing information from multiple sources, cite all relevant sources**
-
-**IMPORTANT:**
-- Do NOT use [1], [2], [3] - use [ID: 1], [ID: 2], [ID: 3]
-- Do NOT invent citations - only cite sources that were actually provided
-- Do NOT cite sources for general knowledge or your own analysis
-
-# TONE & STYLE
-
-- Be direct and professional.
-- Avoid phrases like "Based on the documents provided..." or "According to chunk 1...". Just provide the answer.
-- Do not mention document names, filenames, IDs, or retrieval steps.
-- Do not reference "documents", "files", "chunks", "tools", or "searches".
-- Speak as if the information is simply *known*, but cite sources for transparency.
-
-Answer (use Markdown formatting for structure and clarity, and include [ID: X] citations where appropriate):""")
-    
     human_message = HumanMessage(content=f"""
 **User Question:**
 {user_query}
 
-**Relevant Excerpts from Documents:**
+**Document content (each fact is inside a <BLOCK id="..."> tag):**
 
 {formatted_chunks}
+{metadata_section}
 
 **Instructions:**
-- Answer the user's question based on the excerpts provided above
-- Include [ID: X] citations when referencing specific facts from the excerpts
-- Use Markdown formatting for clarity
-- Be concise, accurate, and helpful
+- Answer based on the content above. For each fact you use, cite it as [ID: X](BLOCK_CITE_ID_N) where the block id is from the <BLOCK> whose content actually contains that fact (e.g. the block with "56" and "D" for EPC current rating).
+- **Place each citation immediately after the fact it supports**, not at the end of the sentence (e.g. "...payment stablecoins are not considered securities [ID: 1](BLOCK_CITE_ID_5), amending various acts..." not "...to reflect this [ID: 1](BLOCK_CITE_ID_5).").
+- **In bullet lists:** put each citation at the end of the bullet it supports (e.g. "- Incredible Location [ID: 1](BLOCK_CITE_ID_1)"), never all citations at the end of the last bullet.
+- Put any closing or sign-off on a new line; if you add a follow-up, make it context-aware (tied to what you said and what they asked), not generic. When you add a follow-up, use a few friendly emojis (2–3), e.g. 📄 ✨ 📋 🌳 📊 💡 ✅ or a friendly smile 😊. Put a space before the first emoji and between each emoji (e.g. "feel free to ask! 😊 📋"). Keep it professional—no hearts, monkeys, or casual gestures.
+- Explain in a clear, conversational way; use Markdown where it helps readability. Be accurate.
 """)
-    
-    logger.info(f"[RESPONDER] Invoking LLM with citation instructions for {len(formatted_chunks.split('[SOURCE_ID:')) - 1} chunks")
-    response = await llm.ainvoke([system_prompt, human_message])
-    
-    answer_text = response.content if hasattr(response, 'content') and response.content else ""
-    return answer_text
+
+    logger.info(
+        f"[RESPONDER] Invoking LLM with block-id citation instructions "
+        f"({len(formatted_chunks.split('[SOURCE_ID:')) - 1} source groups)"
+    )
+    structured_llm = llm.with_structured_output(PersonalityResponse)
+    try:
+        parsed = await structured_llm.ainvoke([system_prompt, human_message])
+        personality_id = (
+            parsed.personality_id
+            if parsed.personality_id in VALID_PERSONALITY_IDS
+            else DEFAULT_PERSONALITY_ID
+        )
+        answer_text = (parsed.response or "").strip()
+        logger.info(f"[RESPONDER] Chose personality_id={personality_id}")
+        return personality_id, answer_text
+    except Exception as e:
+        logger.warning(f"[RESPONDER] Structured output failed, using default personality: {e}")
+        # Fallback: invoke without structured output and return default personality
+        fallback_llm = ChatOpenAI(model=config.openai_model, temperature=0.38, max_tokens=4096)
+        response = await fallback_llm.ainvoke([system_prompt, human_message])
+        answer_text = response.content if hasattr(response, 'content') and response.content else ""
+        return DEFAULT_PERSONALITY_ID, answer_text
 
 
 async def generate_answer_with_direct_citations(
     user_query: str,
-    execution_results: list[Dict[str, Any]]
-) -> Tuple[str, List[Dict[str, Any]]]:
+    execution_results: list[Dict[str, Any]],
+    previous_personality: Optional[str] = None,
+    is_first_message: bool = False,
+    user_id: Optional[str] = None,
+) -> Tuple[str, List[Dict[str, Any]], str]:
     """
     Generate answer using direct citation system with short IDs.
-    
+
     Flow:
     1. Extract chunks with metadata
-    2. Format chunks with short IDs (1, 2, 3) and create lookup dictionary
-    3. Generate LLM response (LLM includes [ID: 1] in text)
-    4. Extract short IDs from response with positions
-    5. Map short IDs to full chunk metadata (UUID, bbox, page_number)
-    6. Replace [ID: 1] with [1], [ID: 2] with [2], etc. (safe position-based replacement)
-    7. Format citations for frontend
-    8. Return formatted answer and citations
-    
+    2. Format chunks with block-level BLOCK_CITE_ID tags
+    3. Generate LLM response (with personality selection); get (personality_id, raw response)
+    4. Extract citations, replace IDs, format for frontend
+    5. Return (formatted_answer, citations_list, personality_id)
+
     Args:
         user_query: User's question
         execution_results: Execution results from executor node
-    
+        previous_personality: Personality from previous turn (or None)
+        is_first_message: True if this is the first message in the conversation
+
     Returns:
-        Tuple of (formatted_answer, citations_list)
+        Tuple of (formatted_answer, citations_list, personality_id)
     """
     try:
         # Step 1: Extract chunks with metadata
         chunks_metadata = extract_chunks_with_metadata(execution_results)
-        
+
         if not chunks_metadata:
             logger.warning("[DIRECT_CITATIONS] No chunks found in execution results")
-            return "No relevant information found.", []
-        
+            return "No relevant information found.", [], DEFAULT_PERSONALITY_ID
+
         logger.info(f"[DIRECT_CITATIONS] Extracted {len(chunks_metadata)} chunks with metadata")
-        
-        # Step 2: Format chunks with short IDs and create lookup
-        formatted_chunks, short_id_lookup = format_chunks_with_short_ids(chunks_metadata)
-        logger.info(f"[DIRECT_CITATIONS] Formatted chunks with short IDs: {list(short_id_lookup.keys())}")
-        
-        # Step 3: Generate LLM response (LLM will include [ID: 1], [ID: 2], etc.)
-        logger.info(f"[DIRECT_CITATIONS] Generating LLM response with citation instructions...")
-        llm_response = await generate_conversational_answer_with_citations(user_query, formatted_chunks)
-        logger.info(f"[DIRECT_CITATIONS] LLM response generated ({len(llm_response)} chars)")
-        
-        # Step 4: Extract citations from response (maps short IDs to full metadata)
-        citations = extract_citations_with_positions(llm_response, short_id_lookup)
+
+        # Step 2: Format chunks with block-level BLOCK_CITE_ID tags and metadata table (jan28th-style)
+        formatted_chunks, short_id_lookup, metadata_lookup_tables = format_chunks_with_block_ids(chunks_metadata)
+        logger.info(
+            f"[DIRECT_CITATIONS] Formatted chunks with block IDs: "
+            f"{list(short_id_lookup.keys())}, {sum(len(t) for t in metadata_lookup_tables.values())} blocks"
+        )
+
+        # Step 3: Generate LLM response (with personality selection)
+        logger.info(f"[DIRECT_CITATIONS] Generating LLM response with block-id citation instructions...")
+        personality_id, llm_response = await generate_conversational_answer_with_citations(
+            user_query, formatted_chunks, metadata_lookup_tables,
+            previous_personality=previous_personality,
+            is_first_message=is_first_message,
+            user_id=user_id,
+        )
+        logger.info(f"[DIRECT_CITATIONS] LLM response generated ({len(llm_response)} chars), personality_id={personality_id}")
+
+        # Step 4: Extract citations (prefer block_id lookup when (BLOCK_CITE_ID_N) present)
+        citations = extract_citations_with_positions(
+            llm_response, short_id_lookup, metadata_lookup_tables
+        )
         logger.info(f"[DIRECT_CITATIONS] Extracted {len(citations)} citations from response")
+
+        # Step 4b: Assign sequential citation numbers 1, 2, 3... by order of appearance (position).
+        # This ensures UI shows [1], [2], [3] and we never collapse two in-text citations into one.
+        citations.sort(key=lambda c: c.get('position', 0))
+        for seq, citation in enumerate(citations, start=1):
+            citation['citation_number'] = seq
         
         # Step 5: Validate citations
         if not validate_citations(citations, short_id_lookup):
@@ -1884,9 +1977,9 @@ async def generate_answer_with_direct_citations(
         # Step 7: Format citations for frontend
         frontend_citations = format_citations_for_frontend(citations)
         logger.info(f"[DIRECT_CITATIONS] Formatted {len(frontend_citations)} citations for frontend")
-        
-        return formatted_response, frontend_citations
-        
+
+        return formatted_response, frontend_citations, personality_id
+
     except Exception as e:
         logger.error(f"[DIRECT_CITATIONS] Error in citation generation: {e}", exc_info=True)
         # Fallback: return answer without citations
@@ -1895,8 +1988,8 @@ async def generate_answer_with_direct_citations(
             chunk_texts = [chunk.get('chunk_text', '') for chunk in chunks_metadata if chunk.get('chunk_text')]
             formatted_chunk_text = "\n\n---\n\n".join(chunk_texts)
             fallback_answer = await generate_conversational_answer(user_query, formatted_chunk_text)
-            return fallback_answer, []
-        return "I encountered an error while generating the answer. Please try again.", []
+            return fallback_answer, [], DEFAULT_PERSONALITY_ID
+        return "I encountered an error while generating the answer. Please try again.", [], DEFAULT_PERSONALITY_ID
 
 
 async def generate_formatted_answer(
@@ -1922,17 +2015,10 @@ async def generate_formatted_answer(
         if chunk_texts:
             new_block = "<new_retrieval>\n" + "\n\n---\n\n".join(chunk_texts) + "\n</new_retrieval>\n\n"
 
-    system_content = """You combine prior conversation and/or new retrieval into a single response.
-Output exactly what the user asked for. Follow the format instruction precisely.
-Output one block of text, copy-paste friendly (no meta-commentary, no "Here is...")."""
-
-    user_content = f"""User request: {user_query}
-
-Format instruction: {format_instruction}
-
-{prior_block}{new_block}
-
-Produce one block of text that satisfies the format instruction. Use prior answer and new retrieval as needed. Output only the formatted text."""
+    system_content = get_responder_formatted_answer_system_prompt()
+    user_content = get_responder_formatted_answer_human_prompt(
+        user_query, format_instruction, prior_block, new_block
+    )
 
     llm = ChatOpenAI(api_key=config.openai_api_key, model=config.openai_model, temperature=0)
     response = await llm.ainvoke([SystemMessage(content=system_content), HumanMessage(content=user_content)])
@@ -1961,6 +2047,8 @@ async def responder_node(state: MainWorkflowState, runnable_config=None) -> Main
     prior_turn_content = state.get("prior_turn_content")
     format_instruction = (state.get("format_instruction") or "").strip()
     emitter = state.get("execution_events")
+    previous_personality = state.get("personality_id")
+    is_first_message = previous_personality is None
     if emitter is None:
         logger.warning("[RESPONDER] ⚠️  Emitter is None - reasoning events will not be emitted")
     plan_refinement_count = state.get("plan_refinement_count", 0)
@@ -1980,6 +2068,7 @@ async def responder_node(state: MainWorkflowState, runnable_config=None) -> Main
             formatted_answer = ensure_main_tags_when_missing(formatted_answer, user_query)
             responder_output = {
                 "final_summary": formatted_answer,
+                "personality_id": previous_personality or DEFAULT_PERSONALITY_ID,
                 "citations": [],
                 "chunk_citations": [],
                 "messages": [AIMessage(content=formatted_answer)],
@@ -1991,6 +2080,7 @@ async def responder_node(state: MainWorkflowState, runnable_config=None) -> Main
             fallback_msg = "I couldn't reformat that. Please try again."
             return {
                 "final_summary": fallback_msg,
+                "personality_id": previous_personality or DEFAULT_PERSONALITY_ID,
                 "citations": [],
                 "chunk_citations": [],
                 "messages": [AIMessage(content=fallback_msg)],
@@ -2020,21 +2110,25 @@ async def responder_node(state: MainWorkflowState, runnable_config=None) -> Main
                 detail=None
             )
         
-        # Generate answer with direct citations
+        # Generate answer with direct citations (includes personality selection in same LLM call)
         try:
             logger.info(f"[RESPONDER] Generating answer with direct citation system...")
-            formatted_answer, citations = await generate_answer_with_direct_citations(user_query, execution_results)
+            formatted_answer, citations, personality_id = await generate_answer_with_direct_citations(
+                user_query, execution_results,
+                previous_personality=previous_personality,
+                is_first_message=is_first_message,
+                user_id=state.get("user_id"),
+            )
             formatted_answer = ensure_main_tags_when_missing(formatted_answer, user_query)
-            
-            logger.info(f"[RESPONDER] ✅ Answer generated ({len(formatted_answer)} chars) with {len(citations)} citations")
-            
-            # Prepare output with citations
-            # Set both 'citations' and 'chunk_citations' for compatibility with views.py
-            # Append AIMessage so checkpoint has full thread (refine/format + follow-up)
+
+            logger.info(f"[RESPONDER] ✅ Answer generated ({len(formatted_answer)} chars) with {len(citations)} citations, personality_id={personality_id}")
+
+            # Prepare output with citations and persist chosen personality for next turn
             responder_output = {
                 "final_summary": formatted_answer,
+                "personality_id": personality_id,
                 "citations": citations if citations else [],
-                "chunk_citations": citations if citations else [],  # Also set chunk_citations for views.py processing
+                "chunk_citations": citations if citations else [],
                 "messages": [AIMessage(content=formatted_answer)],
             }
             
@@ -2059,9 +2153,10 @@ async def responder_node(state: MainWorkflowState, runnable_config=None) -> Main
                 logger.error(f"[RESPONDER] ❌ Fallback also failed: {fallback_error}", exc_info=True)
                 error_answer = "I encountered an error while generating the answer. Please try again."
             
-            # Prepare error output
+            # Prepare error output (keep previous personality)
             error_output = {
                 "final_summary": error_answer,
+                "personality_id": previous_personality or DEFAULT_PERSONALITY_ID,
                 "messages": [AIMessage(content=error_answer)],
             }
             
@@ -2072,7 +2167,11 @@ async def responder_node(state: MainWorkflowState, runnable_config=None) -> Main
                 logger.error(f"[RESPONDER] ❌ Error output contract violation: {e}")
                 # Fallback to minimal valid output
                 fallback_msg = "I encountered an error. Please try again."
-                error_output = {"final_summary": fallback_msg, "messages": [AIMessage(content=fallback_msg)]}
+                error_output = {
+                    "final_summary": fallback_msg,
+                    "personality_id": previous_personality or DEFAULT_PERSONALITY_ID,
+                    "messages": [AIMessage(content=fallback_msg)],
+                }
             
             if emitter:
                 emitter.emit_reasoning(
@@ -2097,9 +2196,10 @@ async def responder_node(state: MainWorkflowState, runnable_config=None) -> Main
         else:
             answer = "I couldn't find relevant information. Try rephrasing or adding more context."
         
-        # Prepare no-results output
+        # Prepare no-results output (keep previous personality)
         no_results_output = {
             "final_summary": answer,
+            "personality_id": previous_personality or DEFAULT_PERSONALITY_ID,
             "messages": [AIMessage(content=answer)],
         }
         

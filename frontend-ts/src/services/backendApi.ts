@@ -253,6 +253,21 @@ class BackendApiService {
   }
 
   /**
+   * Submit chat feedback (thumbs down) - sends to connect@solosway.co via backend
+   */
+  async submitChatFeedback(payload: {
+    category: string;
+    details?: string;
+    messageId?: string;
+    conversationSnippet?: string;
+  }): Promise<ApiResponse<{ success: boolean }>> {
+    return this.fetchApi('/api/chat-feedback', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  /**
    * Query documents using LangGraph RAG system
    * This connects the SideChatPanel to the document Q&A system
    */
@@ -326,6 +341,8 @@ class BackendApiService {
       bbox: { left: number; top: number; width: number; height: number };
       cited_text: string;
       original_filename: string;
+      block_id?: string;
+      source_message_text?: string;
     } | null,
     responseMode?: 'fast' | 'detailed' | 'full', // NEW: Response mode for file attachments
     attachmentContext?: { // NEW: Context from attached files (extracted text)
@@ -349,7 +366,9 @@ class BackendApiService {
     // PLAN MODE: Whether to generate a plan before execution
     planMode?: boolean,
     // PLAN UPDATE: Existing plan content for updates (when user provides follow-up)
-    existingPlan?: string
+    existingPlan?: string,
+    // STREAMED TITLE: Chat title streamed from backend (so everything shown to user is streamed)
+    onTitleChunk?: (token: string) => void
   ): Promise<void> {
     const baseUrl = this.baseUrl || BACKEND_URL;
     const url = `${baseUrl}/api/llm/query/stream`;
@@ -473,6 +492,11 @@ class BackendApiService {
                       citation_number: String(data.citation_number),
                       data: data.data
                     });
+                  }
+                  break;
+                case 'title_chunk':
+                  if (onTitleChunk) {
+                    onTitleChunk(data.token ?? '');
                   }
                   break;
                 case 'token':
@@ -1155,6 +1179,39 @@ class BackendApiService {
         };
     }
   }
+
+  /**
+   * Get key facts and summary for a document for FileViewModal.
+   */
+  async getDocumentKeyFacts(documentId: string): Promise<{
+    success: boolean;
+    data?: { key_facts: Array<{ label: string; value: string }>; summary?: string | null };
+    error?: string;
+  }> {
+    try {
+      const response = await this.fetchApi<{
+        success?: boolean;
+        data?: { key_facts?: Array<{ label: string; value: string }>; summary?: string | null };
+      }>(`/api/documents/${documentId}/key-facts`);
+      if (response?.success && response?.data) {
+        // Backend returns { success, data: { key_facts, summary } }; fetchApi puts that whole body in response.data
+        const inner = (response.data as { data?: { key_facts?: Array<{ label: string; value: string }>; summary?: string | null } }).data;
+        const key_facts = inner?.key_facts ?? [];
+        const summary = inner?.summary ?? null;
+        return {
+          success: true,
+          data: { key_facts, summary },
+        };
+      }
+      return { success: false, error: 'No data' };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error occurred',
+      };
+    }
+  }
+
   /**
    * New upload method using presigned URLs (recommended for large files)
    */

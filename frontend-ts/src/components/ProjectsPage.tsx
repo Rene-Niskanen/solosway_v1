@@ -16,11 +16,12 @@
  */
 
 import * as React from "react";
-import { FolderOpen } from "lucide-react";
+import { FolderOpen, ChevronDown, ChevronUp, Trash2, Plus } from "lucide-react";
 import { backendApi } from "@/services/backendApi";
 import { ProjectGlassCard } from "./ProjectGlassCard";
 import { RecentDocumentsSection } from "./RecentDocumentsSection";
 import { preloadDocumentThumbnails } from "./RecentDocumentCard";
+import { preloadDocumentCovers as preloadDocumentCoversUtil } from "@/utils/preloadDocumentCovers";
 
 // Properties = Projects (same concept, different naming)
 // Backend uses "Property", UI displays as "Project"
@@ -43,6 +44,8 @@ interface PropertyData {
   year_built?: number;
   description?: string;
   notes?: string;
+  /** When set, PropertyDetailsPanel can show documents instantly without loading */
+  propertyHub?: { documents: DocumentData[] };
 }
 
 // Document data extracted from property hubs
@@ -126,8 +129,24 @@ function transformHubsToData(hubs: any[]): { properties: PropertyData[]; documen
     const property = hub.property || hub;
     const propertyDetails = hub.property_details || {};
     const hubDocuments = hub.documents || [];
-    
-    // Collect documents from this hub
+    const propertyId = property.id || hub.id;
+
+    // Transform hub documents to DocumentData for this property (for instant load in PropertyDetailsPanel)
+    const hubDocsFormatted: DocumentData[] = hubDocuments
+      .filter((doc: any) => doc.id && doc.original_filename)
+      .map((doc: any) => ({
+        id: doc.id,
+        original_filename: doc.original_filename,
+        created_at: doc.created_at || doc.uploaded_at || new Date().toISOString(),
+        file_type: doc.file_type || doc.mime_type,
+        property_id: propertyId,
+        cover_image_url: doc.cover_image_url || doc.thumbnail_url,
+        first_page_image_url: doc.first_page_image_url,
+        s3_path: doc.s3_path,
+        updated_at: doc.updated_at || doc.last_updated || doc.created_at || doc.uploaded_at,
+      }));
+
+    // Collect documents from this hub (for merged allDocuments list)
     hubDocuments.forEach((doc: any) => {
       if (doc.id && doc.original_filename && !documentIdsSeen.has(doc.id)) {
         documentIdsSeen.add(doc.id);
@@ -136,7 +155,7 @@ function transformHubsToData(hubs: any[]): { properties: PropertyData[]; documen
           original_filename: doc.original_filename,
           created_at: doc.created_at || doc.uploaded_at || new Date().toISOString(),
           file_type: doc.file_type || doc.mime_type,
-          property_id: property.id || hub.id,
+          property_id: propertyId,
           cover_image_url: doc.cover_image_url || doc.thumbnail_url,
           first_page_image_url: doc.first_page_image_url,
           s3_path: doc.s3_path,
@@ -144,9 +163,9 @@ function transformHubsToData(hubs: any[]): { properties: PropertyData[]; documen
         });
       }
     });
-    
+
     return {
-      id: property.id || hub.id,
+      id: propertyId,
       address: property.formatted_address || property.normalized_address || property.address || '',
       formatted_address: property.formatted_address || property.normalized_address || '',
       property_type: propertyDetails.property_type || property.property_type,
@@ -163,6 +182,11 @@ function transformHubsToData(hubs: any[]): { properties: PropertyData[]; documen
       year_built: propertyDetails.year_built,
       description: propertyDetails.description || propertyDetails.summary,
       notes: propertyDetails.notes,
+      // Include property_details in propertyHub so PropertyDetailsPanel can display them (panel reads property.propertyHub.property_details)
+      propertyHub: {
+        documents: hubDocsFormatted,
+        property_details: propertyDetails,
+      },
     };
   });
   
@@ -221,16 +245,8 @@ function transformAllDocumentsToData(allDocs: any[]): DocumentData[] {
   return transformed;
 }
 
-// Calculate maximum visible documents based on viewport width
-function calculateMaxVisibleDocuments(sidebarWidth: number): number {
-  const cardWidth = 180;
-  const gap = 20;
-  const containerPadding = 48 * 2; // Both sides
-  const marginLeft = 20;
-  const availableWidth = window.innerWidth - sidebarWidth - containerPadding - marginLeft;
-  const maxVisible = Math.floor(availableWidth / (cardWidth + gap));
-  return Math.max(1, maxVisible); // At least show 1
-}
+// Fixed number of files shown in the project section file bar (no scroll)
+const FILES_BAR_COUNT = 8;
 
 interface ProjectsPageProps {
   onCreateProject: () => void;
@@ -243,98 +259,35 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
   const cachedData = React.useMemo(() => getCachedData(), []);
   
   const [properties, setProperties] = React.useState<PropertyData[]>(cachedData?.properties || []);
-  const [allDocuments, setAllDocuments] = React.useState<DocumentData[]>([]); // Store all fetched documents
+  // Initialize allDocuments from cache so Files section shows instantly (same mechanism as projects)
+  const [allDocuments, setAllDocuments] = React.useState<DocumentData[]>(cachedData?.documents || []); // Store all fetched documents
   const [documents, setDocuments] = React.useState<DocumentData[]>(cachedData?.documents || []); // Visible documents
+  const [showAllProjects, setShowAllProjects] = React.useState(false);
+  const [showAllFiles, setShowAllFiles] = React.useState(false);
+  // Selection mode for delete: toggle with button, select cards, then delete selected
+  const [isSelectionMode, setIsSelectionMode] = React.useState(false);
+  const [selectedProjectIds, setSelectedProjectIds] = React.useState<Set<string>>(new Set());
+  const [isDeleting, setIsDeleting] = React.useState(false);
   // Only show loading if we have NO cached data
   const [isLoading, setIsLoading] = React.useState(!cachedData);
+  // Show Files section immediately when we have cache (same as projects); otherwise after fetch completes
+  const [documentsLoaded, setDocumentsLoaded] = React.useState(!!cachedData);
   const [error, setError] = React.useState<string | null>(null);
   const [, setCoversLoaded] = React.useState(0); // Trigger re-render when covers load
 
-  // Preload document covers (similar to PropertyDetailsPanel) - run in background, don't block
+  // Preload document covers (images + PDF thumbnails) via shared util so cards render instantly
   const preloadDocumentCovers = React.useCallback((docs: DocumentData[]) => {
-    if (!docs || docs.length === 0) return;
-    
-    // Initialize cache if it doesn't exist
-    if (!(window as any).__preloadedDocumentCovers) {
-      (window as any).__preloadedDocumentCovers = {};
-    }
-    
-    const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5001';
-    
-    // Process in background without blocking - use requestIdleCallback if available
-    const processDoc = async (doc: DocumentData) => {
-      // Skip if already cached
-      if ((window as any).__preloadedDocumentCovers[doc.id]) return;
-      
-      const fileType = doc.file_type?.toLowerCase() || '';
-      const fileName = doc.original_filename?.toLowerCase() || '';
-      const isImage = fileType.includes('image') || /\.(jpg|jpeg|png|gif|webp)$/i.test(fileName);
-      
-      // Only preload images for now (PDFs need more complex handling)
-      if (!isImage) return;
-      
-      try {
-        let downloadUrl: string;
-        if (doc.s3_path) {
-          downloadUrl = `${backendUrl}/api/files/download?s3_path=${encodeURIComponent(doc.s3_path)}`;
-        } else {
-          downloadUrl = `${backendUrl}/api/files/download?document_id=${doc.id}`;
-        }
-        
-        const response = await fetch(downloadUrl, { credentials: 'include' });
-        if (!response.ok) return;
-        
-        const blob = await response.blob();
-        const url = URL.createObjectURL(blob);
-        
-        (window as any).__preloadedDocumentCovers[doc.id] = {
-          url: url,
-          type: blob.type,
-          timestamp: Date.now()
-        };
-        
-        setCoversLoaded(v => v + 1);
-      } catch (err) {
-        // Silent fail - preloading is non-critical
-      }
-    };
-    
-    // Process docs in parallel batches without blocking UI
-    docs.slice(0, 10).forEach(doc => {
-      if ('requestIdleCallback' in window) {
-        (window as any).requestIdleCallback(() => processDoc(doc), { timeout: 5000 });
-      } else {
-        setTimeout(() => processDoc(doc), 100);
-      }
-    });
+    preloadDocumentCoversUtil(docs as any, () => setCoversLoaded(v => v + 1));
   }, []);
 
-  // Calculate max visible documents (responsive to window resize)
-  const [maxVisibleDocuments, setMaxVisibleDocuments] = React.useState(() => 
-    calculateMaxVisibleDocuments(sidebarWidth)
-  );
-
-  // Update max visible on window resize
-  React.useEffect(() => {
-    const updateMaxVisible = () => {
-      setMaxVisibleDocuments(calculateMaxVisibleDocuments(sidebarWidth));
-    };
-    
-    window.addEventListener('resize', updateMaxVisible);
-    updateMaxVisible(); // Initial calculation
-    
-    return () => window.removeEventListener('resize', updateMaxVisible);
-  }, [sidebarWidth]);
-
-  // Recalculate visible documents when maxVisibleDocuments changes
+  // Files bar shows first FILES_BAR_COUNT; cache for initial load
   React.useEffect(() => {
     if (allDocuments.length > 0) {
-      const docsToShow = allDocuments.slice(0, maxVisibleDocuments);
+      const docsToShow = allDocuments.slice(0, FILES_BAR_COUNT);
       setDocuments(docsToShow);
-      // Update cache with limited documents
       setCachedData(properties, docsToShow);
     }
-  }, [maxVisibleDocuments, allDocuments, properties]);
+  }, [allDocuments, properties]);
 
   // Fetch properties on mount - stale-while-revalidate pattern
   React.useEffect(() => {
@@ -425,7 +378,7 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
           
           // Store all documents and limit visible ones
           setAllDocuments(sortedDocs);
-          const docsToShow = sortedDocs.slice(0, maxVisibleDocuments);
+          const docsToShow = sortedDocs.slice(0, FILES_BAR_COUNT);
           
           console.log('[ProjectsPage] Loaded:', props.length, 'properties,', mergedDocuments.length, 'total documents,', docsToShow.length, 'visible');
           console.log('[ProjectsPage] Visible document filenames:', docsToShow.map(d => d.original_filename));
@@ -450,11 +403,12 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
         }
       } finally {
         setIsLoading(false);
+        setDocumentsLoaded(true); // Allow Files section to show (even if empty) once fetch has completed
       }
     };
 
     fetchProperties();
-  }, []); // Only run on mount - maxVisibleDocuments updates will trigger re-render via state
+  }, []); // Only run on mount - documents state updated via effect when allDocuments changes
 
   const refreshProperties = async () => {
     try {
@@ -496,7 +450,7 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
         
         // Store all documents and limit visible ones
         setAllDocuments(sortedDocs);
-        const docsToShow = sortedDocs.slice(0, maxVisibleDocuments);
+        const docsToShow = sortedDocs.slice(0, FILES_BAR_COUNT);
         
         setProperties(props);
         setDocuments(docsToShow);
@@ -506,6 +460,44 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
       console.error('Failed to refresh properties:', err);
     }
   };
+
+  // Toggle selection of a project (by id)
+  const handleToggleSelect = React.useCallback((propertyId: string) => {
+    setSelectedProjectIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(propertyId)) next.delete(propertyId);
+      else next.add(propertyId);
+      return next;
+    });
+  }, []);
+
+  // Delete selected projects and exit selection mode
+  const handleDeleteSelected = React.useCallback(async () => {
+    if (selectedProjectIds.size === 0) return;
+    const msg = selectedProjectIds.size === 1
+      ? 'Delete this project? This cannot be undone.'
+      : `Delete ${selectedProjectIds.size} projects? This cannot be undone.`;
+    if (!window.confirm(msg)) return;
+    setIsDeleting(true);
+    try {
+      const ids = Array.from(selectedProjectIds);
+      for (const id of ids) {
+        const res = await backendApi.deleteProperty(id);
+        if (!res.success) {
+          console.error('[ProjectsPage] Failed to delete property:', id, res.error);
+          setError(res.error || `Failed to delete project`);
+        }
+      }
+      setSelectedProjectIds(new Set());
+      setIsSelectionMode(false);
+      await refreshProperties();
+    } catch (err) {
+      console.error('[ProjectsPage] Error deleting projects:', err);
+      setError(err instanceof Error ? err.message : 'Failed to delete projects');
+    } finally {
+      setIsDeleting(false);
+    }
+  }, [selectedProjectIds, refreshProperties]);
 
   // Handle document drop on a project card - links document to property
   const handleDocumentDrop = React.useCallback(async (documentId: string, propertyId: string) => {
@@ -559,6 +551,8 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
         left: sidebarWidth,
         right: 0,
         bottom: 0,
+        background: '#FCFCF9',
+        pointerEvents: 'auto',
       }}
     >
       <div className="w-16 h-16 rounded-full bg-gray-100 flex items-center justify-center mb-5">
@@ -569,11 +563,14 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
         No project? Let's change that. Create one now.
       </p>
       <button
+        type="button"
         onClick={onCreateProject}
-        className="px-3 py-1.5 bg-white text-gray-800 text-sm font-medium rounded-none transition-all duration-150 hover:bg-gray-50"
+        className="px-3 py-1.5 bg-white text-gray-800 text-sm font-medium rounded-none transition-all duration-150 hover:bg-gray-100 hover:shadow-md active:bg-gray-200 active:shadow-sm"
         style={{
           border: '1px solid rgba(0, 0, 0, 0.15)',
           boxShadow: '0 1px 2px rgba(0, 0, 0, 0.04)',
+          cursor: 'pointer',
+          pointerEvents: 'auto',
         }}
       >
         Create Project
@@ -591,15 +588,42 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
         className="w-full h-full flex flex-col items-center justify-center min-h-[60vh]"
         style={{
           paddingLeft: `${sidebarWidth}px`,
+          pointerEvents: 'auto',
         }}
       >
         <p className="text-red-500 mb-4">{error}</p>
         <button
+          type="button"
           onClick={() => refreshProperties()}
           className="px-4 py-2 bg-gray-100 text-gray-900 rounded-lg hover:bg-gray-200 transition-colors"
+          style={{ cursor: 'pointer', pointerEvents: 'auto' }}
         >
           Try Again
         </button>
+      </div>
+    );
+  }
+
+  // Show loading state when we have no data yet — avoids rendering main layout with
+  // empty grid (0 height), which would push the Files section to the bottom and
+  // then make it "click into place" when data loads.
+  if (isLoading && !hasAnyProperties) {
+    return (
+      <div
+        className="fixed flex flex-col items-center justify-center"
+        style={{
+          top: 0,
+          left: sidebarWidth,
+          right: 0,
+          bottom: 0,
+          background: '#FCFCF9',
+          pointerEvents: 'auto',
+        }}
+      >
+        <div className="w-16 h-16 rounded-full bg-gray-100 flex items-center justify-center mb-5 animate-pulse">
+          <FolderOpen className="w-8 h-8 text-gray-400" strokeWidth={1.5} />
+        </div>
+        <p style={{ fontSize: '13px', color: '#71717A' }}>Loading projects…</p>
       </div>
     );
   }
@@ -609,59 +633,213 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
     return <InitialEmptyState />;
   }
 
-  // Show full page with gradient background - instant snap loading
+  // Show full page with cream background - instant snap loading
   return (
     <div 
       className="fixed inset-0 overflow-y-auto"
       style={{
         left: sidebarWidth,
-        background: 'linear-gradient(180deg, #C8C9CE 0%, #CEC4C5 50%, #A1AAB3 100%)',
+        background: '#FCFCF9',
+        pointerEvents: 'auto',
       }}
     >
-      {/* Create Project Button - Top Right (same style as empty state) */}
-      <button
-        onClick={onCreateProject}
-        className="fixed z-50 px-3 py-1.5 bg-white text-gray-800 text-sm font-medium rounded-none transition-all duration-150 hover:bg-gray-50"
+      {/* Top right: Select, View less/See All Files, Delete, Create Project */}
+      <div
+        className="fixed z-50 flex items-center gap-2"
         style={{
           top: '24px',
           right: '24px',
-          border: '1px solid rgba(0, 0, 0, 0.15)',
-          boxShadow: '0 1px 2px rgba(0, 0, 0, 0.04)',
+          pointerEvents: 'auto',
         }}
       >
-        Create Project
-      </button>
+        <button
+          type="button"
+          onClick={() => {
+            setIsSelectionMode((prev) => !prev);
+            if (isSelectionMode) setSelectedProjectIds(new Set());
+          }}
+          className="flex items-center gap-1 rounded-sm border border-transparent bg-black/[0.04] transition-all duration-150 hover:bg-[#d4d4d4] hover:shadow-md hover:border-gray-300 active:bg-[#cacaca] active:shadow-none"
+          title={isSelectionMode ? 'Cancel selection' : 'Select projects to delete'}
+          style={{
+            padding: '5px 8px',
+            height: '26px',
+            minHeight: '26px',
+            cursor: 'pointer',
+            pointerEvents: 'auto',
+          }}
+        >
+          <span className="text-[12px] font-normal text-[#666]" style={isSelectionMode ? { color: '#3B82F6' } : undefined}>Select</span>
+        </button>
+        {allDocuments.length > 0 && (
+          <button
+            type="button"
+            onClick={() => setShowAllFiles((prev) => !prev)}
+            className="flex items-center gap-1 rounded-sm border border-transparent bg-black/[0.04] transition-all duration-150 hover:bg-[#d4d4d4] hover:shadow-md hover:border-gray-300 active:bg-[#cacaca] active:shadow-none"
+            title={showAllFiles ? 'View less' : 'See all files'}
+            style={{
+              padding: '5px 8px',
+              height: '26px',
+              minHeight: '26px',
+              cursor: 'pointer',
+              pointerEvents: 'auto',
+            }}
+          >
+            {showAllFiles ? (
+              <>
+                <ChevronUp className="w-3.5 h-3.5 text-[#666]" strokeWidth={1.75} />
+                <span className="text-[12px] font-normal text-[#666]">View less</span>
+              </>
+            ) : (
+              <>
+                <ChevronDown className="w-3.5 h-3.5 text-[#666]" strokeWidth={1.75} />
+                <span className="text-[12px] font-normal text-[#666]">See All Files</span>
+              </>
+            )}
+          </button>
+        )}
+        {isSelectionMode && selectedProjectIds.size > 0 && (
+          <button
+            type="button"
+            onClick={handleDeleteSelected}
+            disabled={isDeleting}
+            className="flex items-center gap-1 rounded-sm hover:bg-[#fef2f2] active:bg-[#fee2e2] transition-all duration-150 disabled:opacity-50"
+            title="Delete selected projects"
+            style={{
+              padding: '5px 8px',
+              height: '26px',
+              minHeight: '26px',
+              border: 'none',
+              cursor: 'pointer',
+              backgroundColor: 'rgba(239, 68, 68, 0.08)',
+              pointerEvents: 'auto',
+            }}
+          >
+            <Trash2 className="w-3.5 h-3.5 text-red-600" strokeWidth={1.75} />
+            <span className="text-[12px] font-normal text-red-600">Delete ({selectedProjectIds.size})</span>
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={onCreateProject}
+          className="flex items-center gap-1 rounded-sm border border-transparent bg-black/[0.04] transition-all duration-150 hover:bg-[#d4d4d4] hover:shadow-md hover:border-gray-300 active:bg-[#cacaca] active:shadow-none"
+          style={{
+            padding: '5px 8px',
+            height: '26px',
+            minHeight: '26px',
+            cursor: 'pointer',
+            pointerEvents: 'auto',
+          }}
+        >
+          <Plus className="w-3.5 h-3.5 text-[#666]" strokeWidth={1.75} />
+          <span className="text-[12px] font-normal text-[#666]">Create Project</span>
+        </button>
+      </div>
 
-      <div className="w-full max-w-7xl min-h-full flex flex-col" style={{ padding: '48px 40px' }}>
-        {/* Project Cards Section - top portion, compact grid for 4+ cards per row */}
-        <div className="flex flex-wrap justify-start" style={{ gap: '20px', marginLeft: '24px', marginTop: '24px' }}>
-          {properties.map(property => (
-            <ProjectGlassCard 
-              key={property.id} 
-              property={property}
-              onDocumentDrop={handleDocumentDrop}
-              onClick={() => {
-                console.log('🔥 ProjectGlassCard clicked:', property.id);
-                console.log('🔥 onPropertySelect exists:', !!onPropertySelect);
-                if (onPropertySelect) {
-                  console.log('🔥 Calling onPropertySelect...');
-                  onPropertySelect(property);
-                  console.log('🔥 onPropertySelect called');
-                } else {
-                  console.error('❌ onPropertySelect is undefined!');
-                }
+      <div 
+        className="w-full min-h-full flex flex-col box-border"
+        style={{ 
+          padding: showAllFiles ? '48px 32px 48px 32px' : '48px 40px 48px 40px',
+          paddingRight: showAllFiles ? '120px' : '220px',
+          maxWidth: '100%',
+        }}
+      >
+        {/* Project Cards Section - hidden when "See All Files" is active */}
+        {!showAllFiles && (
+          <div style={{ marginLeft: '24px', marginTop: '24px', width: '100%', maxWidth: '100%', minWidth: 0 }}>
+            <div 
+              className="grid justify-start w-full"
+              style={{ 
+                gridTemplateColumns: 'repeat(6, 1fr)',
+                gridAutoRows: '200px',
+                gap: '28px 32px',
+                maxWidth: '100%',
+                maxHeight: showAllProjects ? '5000px' : '480px',
+                minHeight: '200px',
+                overflow: 'visible',
+                minWidth: 0,
+                pointerEvents: 'auto',
               }}
+            >
+              {properties.map(property => (
+                <ProjectGlassCard 
+                  key={property.id} 
+                  property={property}
+                  onDocumentDrop={handleDocumentDrop}
+                  onClick={() => {
+                    if (onPropertySelect) onPropertySelect(property);
+                  }}
+                  onMouseEnter={() => {
+                    const docs = property.propertyHub?.documents;
+                    if (docs?.length) preloadDocumentCovers(docs);
+                  }}
+                  selectionMode={isSelectionMode}
+                  selected={selectedProjectIds.has(property.id)}
+                  onToggleSelect={() => handleToggleSelect(property.id)}
+                />
+              ))}
+            </div>
+            {properties.length > 12 && (
+              <button
+                type="button"
+                onClick={() => setShowAllProjects(prev => !prev)}
+                className="mt-4 flex items-center gap-1 rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150"
+                style={{
+                  padding: '5px 8px',
+                  height: '26px',
+                  minHeight: '26px',
+                  border: 'none',
+                  cursor: 'pointer',
+                  backgroundColor: 'rgba(0, 0, 0, 0.04)',
+                  marginLeft: '40px',
+                  pointerEvents: 'auto',
+                }}
+              >
+                {showAllProjects ? (
+                  <>
+                    <ChevronUp className="w-3.5 h-3.5 text-[#666]" strokeWidth={1.75} />
+                    <span className="text-[12px] font-normal text-[#666]">Show less</span>
+                  </>
+                ) : (
+                  <>
+                    <ChevronDown className="w-3.5 h-3.5 text-[#666]" strokeWidth={1.75} />
+                    <span className="text-[12px] font-normal text-[#666]">See All Projects</span>
+                  </>
+                )}
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Flexible spacer - no growth when "See All Files" so files take all remaining space */}
+        <div className={showAllFiles ? '' : 'flex-1'} style={{ minHeight: showAllFiles ? 0 : '80px', flex: showAllFiles ? 'none' : undefined }} />
+
+        {/* Files area - only show once documents have loaded */}
+        {documentsLoaded && (
+          <div
+            className={showAllFiles ? 'flex-1 flex flex-col min-h-0' : ''}
+            style={{
+              paddingBottom: showAllFiles ? 0 : '32px',
+              marginLeft: showAllFiles ? 0 : '48px',
+              marginTop: showAllFiles ? 8 : 0,
+              width: '100%',
+              maxWidth: '100%',
+              minWidth: 0,
+              ...(showAllFiles && { overflow: 'auto' }),
+            }}
+          >
+            {!showAllFiles && (
+              <div className="flex items-center justify-between gap-2 mb-2" style={{ marginLeft: '0' }}>
+                <span className="text-[12px] font-normal text-[#666]" style={{ opacity: allDocuments.length ? 1 : 0.6 }}>Files</span>
+              </div>
+            )}
+            <RecentDocumentsSection
+              documents={showAllFiles ? allDocuments : allDocuments.slice(0, FILES_BAR_COUNT)}
+              compact
+              scrollable={true}
+              showAllMode={showAllFiles}
             />
-          ))}
-        </div>
-        
-        {/* Flexible spacer to push documents toward bottom - ensures visual separation */}
-        <div className="flex-1" style={{ minHeight: '150px' }} />
-        
-        {/* Files Docker - bottom portion, aligned right with project cards above */}
-        <div style={{ paddingBottom: '48px', marginLeft: '48px', width: '100%', maxWidth: '100%' }}>
-          <RecentDocumentsSection documents={documents} />
-        </div>
+          </div>
+        )}
       </div>
     </div>
   );

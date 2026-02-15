@@ -154,6 +154,7 @@ class ResponderInput(TypedDict, total=False):
 class ResponderOutput(TypedDict, total=False):
     """Output contract for responder_node"""
     final_summary: str  # REQUIRED: Must produce answer
+    personality_id: str  # Chosen tone for this turn (e.g. default, friendly, efficient); persisted for next turn
     messages: List[Any]  # Optional: AIMessage list for checkpoint thread (refine/format)
 
 

@@ -44,11 +44,7 @@ export const ChatPanelProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   }, []);
 
   const triggerGlow = useCallback(() => {
-    setShowGlow(true);
-    // Remove glow after animation completes (800ms)
-    setTimeout(() => {
-      setShowGlow(false);
-    }, 800);
+    // Gold glow animation disabled
   }, []);
 
   // No keyboard shortcuts - panel can only be closed via the close button

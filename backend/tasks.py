@@ -682,6 +682,14 @@ def process_document_classification(self, document_id, file_content, original_fi
         
         if not success or not document_dict:
             logger.error(f"Document with id {document_id} not found in Supabase. Error: {error}")
+            try:
+                doc_storage.update_document_status(
+                    document_id=str(document_id),
+                    status='failed',
+                    business_id=business_id
+                )
+            except Exception as status_err:
+                logger.warning(f"Could not set document status to failed: {status_err}")
             return {"error": f"Document not found: {error}"}
         
         logger.info(f"✅ Retrieved document {document_id} from Supabase")
@@ -1066,6 +1074,31 @@ def process_document_classification(self, document_id, file_content, original_fi
                         merge=True
                 )
                 
+                # Generate and store key facts once (so key-facts API returns instantly on refresh)
+                try:
+                    from .services.key_facts_service import build_key_facts_from_document
+                    doc_for_facts = {
+                        **document,
+                        'document_summary': document_summary,
+                        'parsed_text': document_text,
+                    }
+                    key_facts, llm_summary = build_key_facts_from_document(
+                        doc_for_facts, document_id=str(document_id)
+                    )
+                    summary_for_storage = llm_summary or document_summary.get('summary') or ''
+                    doc_storage.update_document_summary(
+                        document_id=str(document_id),
+                        business_id=business_id,
+                        updates={
+                            'stored_key_facts': key_facts,
+                            'summary': summary_for_storage,
+                        },
+                        merge=True,
+                    )
+                    logger.info(f"✅ Stored key facts for document {document_id} ({len(key_facts)} facts)")
+                except Exception as kf_err:
+                    logger.warning("Key facts generation during pipeline failed (non-fatal): %s", kf_err)
+                
                 # Log text extraction success (non-fatal if history_id is None)
                 if history_id:
                     history_service.log_step_completion(
@@ -1118,16 +1151,19 @@ def process_document_classification(self, document_id, file_content, original_fi
                 business_id=business_id
             )
             
-            # Update status to completed
+            # Keep status as 'processing' — we are about to chain extraction. Only the final
+            # task (process_document_with_dual_stores or process_document_minimal_extraction)
+            # should set 'completed' or 'failed'. Setting 'completed' here caused the UI to
+            # show green, then turn red when extraction later failed.
             doc_storage.update_document_status(
                 document_id=str(document_id),
-                status='completed',
+                status='processing',
                 business_id=business_id,
                 additional_data={
                     'classification_timestamp': datetime.utcnow().isoformat()
                 }
             )
-            logger.info(f"✅ Updated classification and status in Supabase: {document_id}")
+            logger.info(f"✅ Updated classification in Supabase (status remains processing until extraction completes): {document_id}")
             
             # Log classification completion (non-fatal if history_id is None)
             if history_id:
@@ -1264,12 +1300,20 @@ def process_document_minimal_extraction(self, document_id, file_content, origina
         
         if not success or not document_dict:
             logger.error(f"Document with id {document_id} not found in Supabase. Error: {error}")
+            try:
+                doc_storage.update_document_status(
+                    document_id=str(document_id),
+                    status='failed',
+                    business_id=business_id
+                )
+            except Exception as status_err:
+                logger.warning(f"Could not set document status to failed: {status_err}")
             return {'error': f'Document not found: {error}'}
         
         logger.info(f"✅ Retrieved document {document_id} from Supabase")
         document = document_dict  # document is now a dict from Supabase
 
-        # Initialise processing history service 
+        # Initialise processing history service
         history_service = ProcessingHistoryService()
 
         try:
@@ -1830,6 +1874,14 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
         
         if not success or not document_dict:
             print(f"❌ Document with id {document_id} not found in Supabase. Error: {error}")
+            try:
+                doc_storage.update_document_status(
+                    document_id=str(document_id),
+                    status='failed',
+                    business_id=business_id
+                )
+            except Exception as status_err:
+                logger.warning(f"Could not set document status to failed: {status_err}")
             return
         
         print(f"✅ Retrieved document {document_id} from Supabase")
@@ -2914,6 +2966,14 @@ def process_document_simple(self, document_id, file_content, original_filename, 
         
         if not success or not document_dict:
             print(f"Document with id {document_id} not found in Supabase. Error: {error}")
+            try:
+                doc_storage.update_document_status(
+                    document_id=str(document_id),
+                    status='failed',
+                    business_id=business_id
+                )
+            except Exception as status_err:
+                logger.warning(f"Could not set document status to failed: {status_err}")
             return f"Error: Document not found: {error}"
 
         try:

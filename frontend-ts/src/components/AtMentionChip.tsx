@@ -3,7 +3,7 @@
 import * as React from "react";
 import { MousePointerClick, X } from "lucide-react";
 
-export type AtMentionChipType = "property" | "document";
+export type AtMentionChipType = "property" | "document" | "citation_snippet";
 
 export interface AtMentionChipProps {
   type: AtMentionChipType;
@@ -17,8 +17,9 @@ export interface AtMentionChipProps {
   style?: React.CSSProperties;
 }
 
-/** Selected chip: light blue #D6E7FF, dark text #3B3B3B; compact proportions reduced by 15%. */
+/** Property/document chip: light blue. Citation snippet chip: orange highlight (distinct from file/property). */
 const CHIP_BG = "#D6E7FF";
+const CITATION_CHIP_BG = "#F7F1E5";
 const CHIP_TEXT = "#3B3B3B";
 const CHIP_ICON_SIZE = 12;       /* 14 * 0.85 */
 const CHIP_PADDING = "1.5px 4px"; /* vertical room for descenders; 4px horizontal to reduce gap next to text */
@@ -71,7 +72,7 @@ export function AtMentionChip({
         gap: CHIP_GAP,
         padding: CHIP_PADDING,
         borderRadius: CHIP_RADIUS,
-        backgroundColor: CHIP_BG,
+        backgroundColor: type === "citation_snippet" ? CITATION_CHIP_BG : CHIP_BG,
         border: "none",
         fontSize: CHIP_FONT_SIZE,
         fontWeight: 400,
