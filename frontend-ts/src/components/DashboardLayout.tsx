@@ -516,6 +516,8 @@ const DashboardLayoutContent = ({
   const handleOpenChatsView = React.useCallback(() => {
     setCurrentView('search');
     clearProjectSelectionRef.current?.();
+    // Clear map visibility so SideChatPanel shows chat-only layout (centered bar), not map+chat (bottom bar)
+    setIsMapVisibleFromSidebar(false);
     setIsMapVisibleFromChat(false);
     setIsInChatMode(true);
     setOpenChatsViewTrigger((t) => t + 1);

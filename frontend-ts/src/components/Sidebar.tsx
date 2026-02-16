@@ -492,7 +492,7 @@ export const Sidebar = ({
           <div className="flex flex-col h-full pb-3 pt-12">
             {/* Top-right (expanded) / same column as icons (icons-only): Show only icons / Expand sidebar toggle */}
             {onIconsOnlyToggle && (
-              <div className={`absolute top-0 pt-3 z-10 ${isIconsOnly ? 'left-0 right-0 flex justify-center pl-[14px] pr-0' : 'right-0 flex items-center justify-end pr-2'}`}>
+              <div className={`absolute top-0.5 pt-3 z-10 ${isIconsOnly ? 'left-0 right-0 flex justify-center pl-[14px] pr-0' : 'right-0 flex items-center justify-end pr-2'}`}>
                 <button
                   type="button"
                   onClick={(e) => { e.stopPropagation(); onIconsOnlyToggle(); }}
@@ -512,7 +512,7 @@ export const Sidebar = ({
                   onRestoreActiveChat?.();
                   onNewChat?.();
                 }}
-                className={`flex items-center rounded border border-transparent text-[#635A4F] hover:bg-white/60 hover:text-[#635A4F] active:bg-white active:text-[#635A4F] transition-colors ${isIconsOnly ? 'justify-center p-2 w-10' : 'w-full gap-3 pl-2 pr-3 py-1.5'}`}
+                className={`flex items-center rounded border border-transparent text-[#635A4F] hover:bg-white/60 hover:text-[#635A4F] active:bg-white active:text-[#635A4F] transition-colors ${isIconsOnly ? 'justify-center p-2 w-10 mt-6' : 'w-full gap-3 pl-2 pr-3 py-1.5 mt-6'}`}
                 aria-label="New chat"
               >
                 <img src="/newchat1.png" alt="" className="h-6 w-6 flex-shrink-0 object-contain" />

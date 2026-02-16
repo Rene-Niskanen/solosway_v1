@@ -2161,8 +2161,16 @@ export const MainContent = ({
   React.useEffect(() => {
     if (openChatsViewTrigger > 0) {
       setHasPerformedSearch(true);
+      setShouldExpandChat(false); // Ensure centered welcome layout, not expanded bottom bar
     }
   }, [openChatsViewTrigger]);
+
+  // When parent hides map (e.g. Chats clicked), clear search-bar map state so isMapVisible becomes false and chat shows centered bar
+  React.useEffect(() => {
+    if (externalIsMapVisible === false && isMapVisibleFromSearchBar) {
+      setIsMapVisibleFromSearchBar(false);
+    }
+  }, [externalIsMapVisible, isMapVisibleFromSearchBar]);
 
   // Compute final map visibility from all sources
   React.useEffect(() => {

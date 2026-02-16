@@ -12617,6 +12617,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   // When opened via "New chat" (fullscreen), show input at bottom even when empty; centered layout only when not fullscreen
   const useCenteredEmptyState = isEmptyChat && !isFullscreenMode && !shouldExpand;
 
+  // Chats section with no map: show centered welcome + bar. Clear fullscreen when returning to Chats so we don't show bottom bar.
+  const isChatOnlyViewHere = isVisible && !isMapVisible;
+  React.useEffect(() => {
+    if (isChatOnlyViewHere && isEmptyChat && isFullscreenMode && !shouldExpand) {
+      setIsFullscreenMode(false);
+      isFullscreenFromDashboardRef.current = false;
+      wasFullscreenWhenClosedRef.current = false;
+    }
+  }, [isChatOnlyViewHere, isEmptyChat, isFullscreenMode, shouldExpand]);
+
   // One random title per empty-state session (stable while isEmptyChat is true)
   const emptyStateTitleMessage = useMemo(
     () =>
