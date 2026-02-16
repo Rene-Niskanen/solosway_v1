@@ -91,20 +91,20 @@ class SupabaseVectorService:
             if self.use_voyage:
                 # Use Voyage AI
                 # Voyage AI can handle larger batches, but we'll use 100 to be safe
-                # For free accounts: 3 RPM limit, so we need to space out batches
+                # Tier 1 (payment method added): 2000 RPM - default 0.1s between batches
+                # Free trial (3 RPM): set VOYAGE_EMBEDDING_BATCH_DELAY_SECONDS=20
                 batch_size = 100
                 all_embeddings = []
                 import time
+                batch_delay = float(os.environ.get('VOYAGE_EMBEDDING_BATCH_DELAY_SECONDS', '0.1'))
                 
                 for i in range(0, len(text_chunks), batch_size):
                     batch = text_chunks[i:i + batch_size]
                     
-                    # Rate limiting: Wait 20 seconds between batches to stay under 3 RPM limit
-                    # (3 requests per minute = 1 request every 20 seconds)
-                    if i > 0:  # Don't delay first batch
-                        wait_time = 20
-                        logger.info(f"⏳ Rate limiting: waiting {wait_time}s before batch {i//batch_size + 1} ({len(batch)} chunks)")
-                        time.sleep(wait_time)
+                    # Optional delay between batches (0 = no delay, 20 = free-tier 3 RPM)
+                    if i > 0 and batch_delay > 0:
+                        logger.info(f"⏳ Rate limiting: waiting {batch_delay}s before batch {i//batch_size + 1} ({len(batch)} chunks)")
+                        time.sleep(batch_delay)
                     
                     max_retries = 2
                     retry_delay = 60  # Wait 1 minute on rate limit error

@@ -1974,7 +1974,7 @@ const FullscreenPropertyView: React.FC<FullscreenPropertyViewProps> = ({
   
   return (
     <>
-      {/* Chat Panel - Back button is in chat bar next to View (onBackToProjects) */}
+      {/* Chat Panel - Back button is inside PropertyDetailsPanel, not in chat bar */}
       <SideChatPanel
         isVisible={true}
         query=""
@@ -1996,7 +1996,6 @@ const FullscreenPropertyView: React.FC<FullscreenPropertyViewProps> = ({
         onMapToggle={onClose}
         onNewChat={onNewChat}
         onSidebarToggle={onSidebarToggle}
-        onBackToProjects={onClose}
         onChatWidthChange={(width) => {
           // Update dynamic width when chat is resized
           setDynamicChatWidth(width);
@@ -3597,14 +3596,22 @@ export const MainContent = ({
     
     // Dashboard view: Route query to SideChatPanel
     // Open map view and show SideChatPanel
-    // CRITICAL: Set isMapVisibleFromSearchBar to true to ensure map stays visible
-    // even if externalIsMapVisible becomes false (prevents chat from closing when document opens)
+    // CRITICAL: Hide dashboard immediately (same frame) so user always sees chat after submit
+    isTransitioningToChatRef.current = true;
     setIsMapVisibleFromSearchBar(true);
     setIsMapVisible(true);
     setHasPerformedSearch(true);
     
+    // CRITICAL: Tell parent we're in chat mode so the dashboard stays hidden (condition is isInChatMode && hasPerformedSearch)
+    onChatModeChange?.(true);
+    
     // Track when chat was opened to prevent premature closing
     chatOpenedTimestampRef.current = Date.now();
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        isTransitioningToChatRef.current = false;
+      });
+    });
     
     // Query from dashboard - expand to fullscreen view
     setShouldExpandChat(true);
@@ -3860,6 +3867,33 @@ export const MainContent = ({
     window.addEventListener('searchModalOpenFile', handler);
     return () => window.removeEventListener('searchModalOpenFile', handler);
   }, [onNavigate, openExpandedCardView]);
+
+  // When user submits a query from the dashboard search modal: navigate to chat and run the query.
+  // Set hasPerformedSearch and transition ref immediately so the dashboard hides on the next paint;
+  // then defer handleSearch so it runs after handleNewChat's clear has committed.
+  React.useEffect(() => {
+    const handler = (e: Event) => {
+      const { query } = (e as CustomEvent<{ query: string }>).detail ?? {};
+      if (!query || typeof query !== 'string') return;
+      const q = query.trim();
+      // Ensure we navigate to chat view immediately (hide dashboard) even if parent/effect order lags
+      isTransitioningToChatRef.current = true;
+      setHasPerformedSearch(true);
+      setShouldExpandChat(true);
+      setTimeout(() => {
+        handleSearch(q);
+        // Force fullscreen chat when opening from modal (handleSearch may set shouldExpandChat false when map is visible)
+        setShouldExpandChat(true);
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            isTransitioningToChatRef.current = false;
+          });
+        });
+      }, 0);
+    };
+    window.addEventListener('searchModalNewChatQuery', handler);
+    return () => window.removeEventListener('searchModalNewChatQuery', handler);
+  }, [handleSearch]);
 
   // Ensure a chat history entry exists for the selected property so we can restore when re-opening
   const propertyChatId = selectedPropertyFromProjects ? `property-${selectedPropertyFromProjects.id}` : null;
@@ -4124,8 +4158,8 @@ export const MainContent = ({
       case 'home':
       case 'search':
         // Hide dashboard when: restoring active chat (New chat button), transitioning to chat, or Chats view (in chat mode with search performed)
-        // Chats = centered new-chat UI; New chat = fullscreen with map
-        if ((shouldRestoreActiveChat || isTransitioningToChatRef.current || (isInChatMode && hasPerformedSearch)) && !externalIsMapVisible) {
+        // Chats = centered new-chat UI; New chat = fullscreen with map. Always hide when in chat so user is taken to chat view (e.g. after submitting from modal).
+        if (shouldRestoreActiveChat || isTransitioningToChatRef.current || (isInChatMode && hasPerformedSearch)) {
           return null;
         }
         // Use a single rendering path to prevent position shifts when transitioning

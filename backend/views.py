@@ -4544,10 +4544,9 @@ def proxy_upload():
             if property_id:
                 try:
                     logger.info(f"⚡ [PROXY-UPLOAD] Property ID provided ({property_id}), queuing fast processing task...")
-                    # Queue fast processing task (property_id already known - no extraction needed)
+                    # Queue fast processing task (file loaded from S3 in worker - avoids blocking upload with large Celery payload)
                     task = process_document_fast_task.delay(
                         document_id=doc_id,
-                        file_content=file_content,
                         original_filename=filename,
                         business_id=str(business_uuid_str),
                         property_id=str(property_id)
@@ -4846,9 +4845,8 @@ def process_temp_files():
                     # Queue full processing
                     process_document_fast_task.delay(
                         document_id=document_id,
-                        s3_key=s3_key,
                         original_filename=filename,
-                        business_uuid=business_uuid_str,
+                        business_id=business_uuid_str,
                         property_id=property_id
                     )
                     
@@ -5023,10 +5021,9 @@ def upload_document():
             
             # ALWAYS trigger full processing pipeline (classification → extraction → embedding)
             try:
-                # Queue full processing task (process_document_task → process_document_classification → full extraction)
+                # Queue full processing task (file loaded from S3 in worker - avoids blocking upload with large Celery payload)
                 task = process_document_task.delay(
                     document_id=doc_id,
-                    file_content=file_content,
                     original_filename=filename,
                     business_id=str(business_uuid_str)
                 )
@@ -5667,18 +5664,6 @@ def reprocess_document(document_id):
         if not s3_path:
             return jsonify({'success': False, 'error': 'Document has no S3 path'}), 400
 
-        bucket = os.environ.get('S3_UPLOAD_BUCKET')
-        if not bucket:
-            return jsonify({'success': False, 'error': 'S3 bucket not configured'}), 500
-
-        s3_client = boto3.client(
-            's3',
-            aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
-            aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
-            region_name=os.environ.get('AWS_DEFAULT_REGION', 'us-east-1'),
-        )
-        response = s3_client.get_object(Bucket=bucket, Key=s3_path)
-        file_content = response['Body'].read()
         original_filename = document.get('original_filename', 'document')
         business_id = str(doc_business_uuid or doc_business_id or user_business_id or user_company_name)
 
@@ -5686,7 +5671,6 @@ def reprocess_document(document_id):
 
         task = process_document_task.delay(
             document_id=str(document_id),
-            file_content=file_content,
             original_filename=original_filename,
             business_id=business_id,
         )
@@ -5720,28 +5704,12 @@ def confirm_upload(document_id):
         document.status = DocumentStatus.UPLOADED
         db.session.commit()
         
-        # Get file content from S3 for processing
+        # Trigger processing task (worker will download file from S3)
         try:
-            s3_client = boto3.client(
-                's3',
-                aws_access_key_id=os.environ['AWS_ACCESS_KEY_ID'],
-                aws_secret_access_key=os.environ['AWS_SECRET_ACCESS_KEY'],
-                region_name=os.environ.get('AWS_DEFAULT_REGION', 'us-east-1')
-            )
-            
-            # Download file from S3
-            response = s3_client.get_object(
-                Bucket=os.environ['S3_UPLOAD_BUCKET'],
-                Key=document.s3_path
-            )
-            file_content = response['Body'].read()
-            
-            # Trigger processing task
             task = process_document_task.delay(
-                document_id=document.id,
-                file_content=file_content,
+                document_id=str(document.id),
                 original_filename=document.original_filename,
-                business_id=document.business_id
+                business_id=str(document.business_id)
             )
             
             return jsonify({
@@ -6402,13 +6370,11 @@ def upload_file_to_gateway():
         return jsonify({'error': 'Failed to upload file.'}), 502
 
     # 5. On successful upload, trigger the background processing task.
-    # We now pass the file content directly to the task to ensure it is not
-    # corrupted, while the file remains stored in S3.
+    # Worker loads file from S3 to avoid passing large payload through Celery.
     process_document_task.delay(
-        document_id=new_document.id,
-        file_content=file_content, 
-        original_filename=filename, 
-        business_id=business_uuid_str
+        document_id=str(new_document.id),
+        original_filename=filename,
+        business_id=str(business_uuid_str)
     )
 
     # 6. Return the data of the newly created document to the client
@@ -6421,7 +6387,11 @@ def test_celery():
     # This is a placeholder task, you might want to create a simpler task for testing
     # For now, we can try to trigger the document processing with a fake ID
     # In a real scenario, you'd have a test task that doesn't depend on a database object
-    task = process_document_task.delay(1) # Using a fake document ID
+    task = process_document_task.delay(
+        document_id='00000000-0000-0000-0000-000000000001',
+        original_filename='test.pdf',
+        business_id='test'
+    )
     return jsonify({"message": "Test task sent to Celery!", "task_id": task.id})
 
 @views.route('/api/process-document/<uuid:document_id>', methods=['POST'])
@@ -6440,31 +6410,12 @@ def process_document(document_id):
     if document.status == 'COMPLETED':
         return jsonify({'error': 'Document already processed'}), 400
     
-    # Get file content from S3
-    try:
-        aws_access_key = os.environ['AWS_ACCESS_KEY_ID']
-        aws_secret_key = os.environ['AWS_SECRET_ACCESS_KEY']
-        aws_region = os.environ.get('AWS_REGION') or os.environ.get('AWS_DEFAULT_REGION', 'us-east-1')
-        invoke_url = os.environ['API_GATEWAY_INVOKE_URL']
-        bucket_name = os.environ['S3_UPLOAD_BUCKET']
-        
-        # Download file from S3
-        final_url = f"{invoke_url.rstrip('/')}/{bucket_name}/{document.s3_path}"
-        auth = AWS4Auth(aws_access_key, aws_secret_key, aws_region, 's3')
-        response = requests.get(final_url, auth=auth)
-        response.raise_for_status()
-        file_content = response.content
-        
-    except Exception as e:
-        return jsonify({'error': f'Failed to download file: {str(e)}'}), 500
-    
-    # Trigger processing task
+    # Trigger processing task (worker will download file from S3)
     try:
         task = process_document_task.delay(
-            document_id=document.id,
-            file_content=file_content,
+            document_id=str(document.id),
             original_filename=document.original_filename,
-            business_id=document.business_id
+            business_id=str(document.business_id)
         )
         
         return jsonify({

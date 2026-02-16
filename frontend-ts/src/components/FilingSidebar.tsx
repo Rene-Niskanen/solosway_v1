@@ -2717,7 +2717,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                             const progressForThisDoc = isHoveredDoc ? pipelineProgress : null;
                             const { completedStages: completedStagesForDoc } = mapPipelineProgressToStages(progressForThisDoc, doc.status);
                             const isRecentlyCreated = doc.created_at && (Date.now() - new Date(doc.created_at).getTime() <= 60000);
-                            const showAsComplete = (doc.status === 'completed' && !isRecentlyCreated) || reprocessedDocs.has(doc.id) || (doc.status === 'processing' && isHoveredDoc && completedStagesForDoc === 5);
+                            const showAsComplete = (doc.status === 'completed' && !isRecentlyCreated) || reprocessedDocs.has(doc.id);
                             const isRecentlyUploaded = doc.status === 'uploaded' && doc.created_at && (Date.now() - new Date(doc.created_at).getTime() <= 60000);
                             const showLoadingIndicator = doc.status === 'processing' || isRecentlyUploaded || (doc.status === 'completed' && isRecentlyCreated);
 
@@ -2937,7 +2937,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                   const progressForThisDocFlat = isHoveredDocFlat ? pipelineProgress : null;
                   const { completedStages: completedStagesForDocFlat } = mapPipelineProgressToStages(progressForThisDocFlat, doc.status);
                   const isRecentlyCreatedFlat = doc.created_at && (Date.now() - new Date(doc.created_at).getTime() <= 60000);
-                  const showAsCompleteFlat = (doc.status === 'completed' && !isRecentlyCreatedFlat) || reprocessedDocs.has(doc.id) || (doc.status === 'processing' && isHoveredDocFlat && completedStagesForDocFlat === 5);
+                  const showAsCompleteFlat = (doc.status === 'completed' && !isRecentlyCreatedFlat) || reprocessedDocs.has(doc.id);
                   const isRecentlyUploadedFlat = doc.status === 'uploaded' && doc.created_at && (Date.now() - new Date(doc.created_at).getTime() <= 60000);
                   const showLoadingIndicatorFlat = doc.status === 'processing' || isRecentlyUploadedFlat || (doc.status === 'completed' && isRecentlyCreatedFlat);
 

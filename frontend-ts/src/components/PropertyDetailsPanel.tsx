@@ -2571,8 +2571,33 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
             }}
             onClick={(e) => e.stopPropagation()}
           >
-            {/* Panel header with 50/50 snap (when in split) and close button */}
-            <div className="px-10 pt-4 pb-3 bg-[#FCFCF9] relative flex items-center justify-end gap-2" style={{ zIndex: 1, borderBottom: 'none' }}>
+            {/* Panel header with Back (chat mode), 50/50 snap (when in split), and close button */}
+            <div className="px-10 pt-4 pb-3 bg-[#FCFCF9] relative flex items-center justify-between gap-2" style={{ zIndex: 1, borderBottom: 'none' }}>
+              <div className="flex items-center gap-2">
+                {isInChatMode && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onClose();
+                    }}
+                    className="flex items-center gap-1 rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150"
+                    title="Back to Projects"
+                    type="button"
+                    style={{
+                      padding: '5px 8px',
+                      height: '26px',
+                      minHeight: '26px',
+                      border: 'none',
+                      cursor: 'pointer',
+                      backgroundColor: 'rgba(0, 0, 0, 0.02)'
+                    }}
+                  >
+                    <ChevronLeft className="w-3.5 h-3.5 text-[#666]" strokeWidth={1.75} />
+                    <span className="text-[12px] font-normal text-[#666]">Back</span>
+                  </button>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
               {chatPanelWidth > 0 && onSnapTo50 && (
                 <button
                   onClick={onSnapTo50}
@@ -2598,6 +2623,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
               >
                 <X size={16} />
               </button>
+              </div>
             </div>
 
             {/* Header Area - Clean & Minimal (documents only) */}

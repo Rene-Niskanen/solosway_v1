@@ -35,6 +35,35 @@ def convert_confidence_to_numeric(confidence_str: str) -> float:
     confidence_map = {'high': 0.9, 'medium': 0.7, 'low': 0.5}
     return confidence_map.get(confidence_str, 0.7)
 
+
+def _download_document_bytes_from_s3(document_id: str, business_id: str):
+    """
+    Download document file from S3. Uses DocumentStorageService to get s3_path.
+    Returns (file_content_bytes, original_filename). Raises on failure.
+    Used by processing tasks so we do not pass large file content through Celery (which can block uploads).
+    """
+    from .services.document_storage_service import DocumentStorageService
+    doc_storage = DocumentStorageService()
+    success, document_dict, error = doc_storage.get_document(str(document_id), str(business_id))
+    if not success or not document_dict:
+        raise ValueError(f"Document not found: {error}")
+    s3_path = document_dict.get('s3_path')
+    if not s3_path:
+        raise ValueError("Document has no s3_path")
+    bucket = os.environ.get('S3_UPLOAD_BUCKET')
+    if not bucket:
+        raise ValueError("S3_UPLOAD_BUCKET not set")
+    s3_client = boto3.client(
+        's3',
+        aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+        aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
+        region_name=os.environ.get('AWS_DEFAULT_REGION', 'us-east-1')
+    )
+    response = s3_client.get_object(Bucket=bucket, Key=s3_path)
+    body = response['Body'].read()
+    original_filename = document_dict.get('original_filename', 'document')
+    return (body, original_filename)
+
 # Helper function to sync document status to Supabase
 def sync_document_to_supabase(document_id, status=None, additional_data=None):
     """
@@ -661,9 +690,10 @@ def clean_extracted_property(property_data):
 
 
 @shared_task(bind=True)
-def process_document_classification(self, document_id, file_content, original_filename, business_id):
+def process_document_classification(self, document_id, original_filename, business_id):
     """
-    Step 1: Document Classification with Event Logging
+    Step 1: Document Classification with Event Logging.
+    Downloads file from S3 so we do not pass large file content through Celery (avoids uploads getting stuck).
     """
     from . import create_app
     from .models import db, Document, DocumentStatus
@@ -693,6 +723,21 @@ def process_document_classification(self, document_id, file_content, original_fi
             return {"error": f"Document not found: {error}"}
         
         logger.info(f"✅ Retrieved document {document_id} from Supabase")
+        
+        # Download file from S3 (avoids passing large payload through Celery from upload request)
+        try:
+            file_content, _ = _download_document_bytes_from_s3(str(document_id), business_id)
+        except Exception as e:
+            logger.error(f"Failed to download document from S3: {e}")
+            try:
+                doc_storage.update_document_status(
+                    document_id=str(document_id),
+                    status='failed',
+                    business_id=business_id
+                )
+            except Exception as status_err:
+                pass
+            return {"error": f"Failed to download from S3: {str(e)}"}
         
         # Store document_dict for later use (will replace document.attribute with document_dict['attribute'] in Phase 2)
         document = document_dict
@@ -3018,31 +3063,33 @@ def process_document_simple(self, document_id, file_content, original_filename, 
             return f"Error: {e}"
 
 @shared_task(bind=True)
-def process_document_task(self, document_id, file_content, original_filename, business_id):
+def process_document_task(self, document_id, original_filename, business_id):
     """
-    Main document processing task that starts with classification
+    Main document processing task that starts with classification.
+    File content is loaded from S3 inside the worker to avoid passing large payloads through Celery (which can block uploads).
     """
-    return process_document_classification.delay(document_id, file_content, original_filename, business_id)
+    return process_document_classification.delay(document_id, original_filename, business_id)
 
 
 @shared_task(bind=True, name="process_document_fast")
 def process_document_fast_task(
     self,
     document_id: str,
-    file_content: bytes,
     original_filename: str,
     business_id: str,
     property_id: str = None
 ):
     """
     Fast pipeline for property card uploads - optimized for speed (<30s target).
+    Downloads file from S3 so we do not pass large file content through Celery (avoids uploads getting stuck).
     
     Steps:
-    1. Parse with Reducto (section-based, fast settings) - 5-15s
-    2. Extract chunks with bbox - <1s
-    3. Generate document-level context - 2-5s (automatic via store_document_vectors)
-    4. Embed chunks (batch) - 5-10s (automatic via store_document_vectors)
-    5. Store vectors in Supabase - 2-3s
+    1. Download file from S3
+    2. Parse with Reducto (section-based, fast settings) - 5-15s
+    3. Extract chunks with bbox - <1s
+    4. Generate document-level context - 2-5s (automatic via store_document_vectors)
+    5. Embed chunks (batch) - 5-10s (automatic via store_document_vectors)
+    6. Store vectors in Supabase - 2-3s
     
     Total: ~14-34s (target: <30s typical)
     
@@ -3054,7 +3101,6 @@ def process_document_fast_task(
     
     Args:
         document_id: UUID of the document
-        file_content: Raw file bytes
         original_filename: Original filename
         business_id: Business UUID
         property_id: Property UUID (already linked, no extraction needed)
@@ -3072,6 +3118,19 @@ def process_document_fast_task(
             
             logger.info(f"⚡ FAST PIPELINE: Starting for document {document_id}")
             logger.info(f"   Property ID: {property_id}")
+            
+            # Download file from S3 (avoids passing large payload through Celery from upload request)
+            try:
+                file_content, original_filename = _download_document_bytes_from_s3(document_id, business_id)
+            except Exception as e:
+                logger.error(f"Failed to download document from S3: {e}")
+                try:
+                    doc_storage = DocumentStorageService()
+                    doc_storage.supabase.table('documents').update({'status': 'failed'}).eq('id', document_id).execute()
+                except Exception:
+                    pass
+                raise
+            
             logger.info(f"   File: {original_filename} ({len(file_content)} bytes)")
             
             # Initialize services

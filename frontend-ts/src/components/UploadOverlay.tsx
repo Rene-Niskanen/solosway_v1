@@ -73,8 +73,8 @@ export function UploadOverlay() {
         onPointerDownOutside={() => setUploadOverlayOpen(false)}
         onEscapeKeyDown={() => setUploadOverlayOpen(false)}
       >
-        <div className="flex shrink-0 items-center px-4 py-3 border-b border-gray-200">
-          <h2 className="text-sm font-medium text-gray-900">Upload file</h2>
+        <div className="flex shrink-0 items-center pl-6 pt-5 pr-4 pb-3">
+          <h2 className="text-sm font-medium text-[#635A4F]">Upload file</h2>
         </div>
 
         <div className="p-6">

@@ -23,15 +23,22 @@ export interface DashboardLayoutProps {
   className?: string;
 }
 
+const UPLOAD_ACCEPT = ".xlsx,.xls,.csv,.pdf,.doc,.docx";
+const isAcceptedUploadFile = (file: File) => {
+  const name = (file.name || "").toLowerCase();
+  return [".pdf", ".doc", ".docx", ".xlsx", ".xls", ".csv"].some((ext) => name.endsWith(ext));
+};
+
 const DashboardLayoutContent = ({
   className
 }: DashboardLayoutProps) => {
   const navigate = useNavigate();
-  const { closeSidebar: closeFilingSidebar, openSidebar: openFilingSidebar, isOpen: isFilingSidebarOpen, width: filingSidebarWidth, setUploadOverlayOpen } = useFilingSidebar();
+  const { closeSidebar: closeFilingSidebar, openSidebar: openFilingSidebar, isOpen: isFilingSidebarOpen, width: filingSidebarWidth, setUploadOverlayOpen, setInitialPendingFiles } = useFilingSidebar();
   const { togglePanel: toggleChatPanel, closePanel: closeChatPanel, isOpen: isChatPanelOpen } = useChatPanel();
   const { isOpen: isFeedbackModalOpen, setIsOpen: setFeedbackModalOpen, messageId: feedbackMessageId, conversationSnippet: feedbackConversationSnippet } = useFeedbackModal();
   const [selectedBackground, setSelectedBackground] = React.useState<string>('default-background');
   const [searchModalOpen, setSearchModalOpen] = React.useState(false);
+  const uploadFileInputRef = React.useRef<HTMLInputElement>(null);
 
   // Preload @ mention cache (properties + documents) so popover shows results instantly
   React.useEffect(() => {
@@ -795,7 +802,11 @@ const DashboardLayoutContent = ({
         onChatSelect={handleChatSelect}
         onNavigate={handleViewChange}
         onOpenFiles={openFilingSidebar}
-        onUploadFile={() => setUploadOverlayOpen(true)}
+        onUploadFile={() => {
+          setSearchModalOpen(false);
+          // Small delay so the modal closes before the file picker opens
+          setTimeout(() => uploadFileInputRef.current?.click(), 100);
+        }}
         onOpenFile={(fileId, filename) => {
           window.dispatchEvent(new CustomEvent('searchModalOpenFile', { detail: { fileId, filename: filename ?? 'Document' } }));
         }}
@@ -807,6 +818,21 @@ const DashboardLayoutContent = ({
       />
 
       <UploadOverlay />
+      <input
+        ref={uploadFileInputRef}
+        type="file"
+        multiple
+        accept={UPLOAD_ACCEPT}
+        className="hidden"
+        onChange={(e) => {
+          const files = Array.from(e.target.files || []).filter(isAcceptedUploadFile);
+          if (files.length > 0) {
+            setInitialPendingFiles(files);
+            openFilingSidebar();
+          }
+          e.target.value = "";
+        }}
+      />
 
       {/* Main Content - with higher z-index when map is visible */}
       <MainContent 

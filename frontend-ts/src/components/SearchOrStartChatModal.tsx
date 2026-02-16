@@ -12,7 +12,6 @@ import {
   CornerDownLeft,
   ChevronRight,
   ChevronLeft,
-  Search,
 } from "lucide-react";
 import { useChatHistory } from "./ChatHistoryContext";
 import { cn } from "@/lib/utils";
@@ -23,7 +22,8 @@ export type SearchModalItem =
   | { type: "new-chat-query"; id: string; label: string; query: string }
   | { type: "recent-chat"; id: string; chatId: string; label: string; meta?: string }
   | { type: "action"; id: string; action: "projects" | "files" | "upload"; label: string }
-  | { type: "file"; id: string; fileId: string; label: string };
+  | { type: "file"; id: string; fileId: string; label: string }
+  | { type: "project"; id: string; projectId: string; label: string; imageUrl?: string };
 
 export interface SearchOrStartChatModalProps {
   open: boolean;
@@ -40,6 +40,7 @@ export interface SearchOrStartChatModalProps {
 
 const RECENTS_MAX = 5;
 const FILES_MAX = 5;
+const PROJECTS_MAX = 5;
 const QUERY_MATCH_UPLOAD = /upload/i;
 const QUERY_MATCH_PROJECT = /project|projects|p\b/i;
 const QUERY_MATCH_FILE = /file|files/i;
@@ -159,6 +160,14 @@ export function SearchOrStartChatModal({
       .slice(0, FILES_MAX);
   }, [documents, query]);
 
+  const filteredProjects = React.useMemo(() => {
+    if (!query.trim()) return [];
+    const q = query.trim().toLowerCase();
+    return projects
+      .filter((p) => p.label.toLowerCase().includes(q))
+      .slice(0, PROJECTS_MAX);
+  }, [projects, query]);
+
   // When in files view: show all documents, or filter by search query (no limit)
   const filesViewList = React.useMemo(() => {
     if (!query.trim()) return documents;
@@ -212,13 +221,10 @@ export function SearchOrStartChatModal({
         if (QUERY_MATCH_UPLOAD.test(query) && onUploadFile) {
           list.push({ type: "action", id: "action-upload", action: "upload", label: "Upload file" });
         }
-        if (QUERY_MATCH_FILE.test(query)) {
-          list.push({ type: "action", id: "action-files", action: "files", label: "Files" });
-        }
       }
-      if (QUERY_MATCH_PROJECT.test(query) || chatsOnly) {
-        list.push({ type: "action", id: "action-projects", action: "projects", label: "Projects" });
-      }
+      // When searching, always show Files and Projects actions so user can open those views with the query
+      list.push({ type: "action", id: "action-files", action: "files", label: "Files" });
+      list.push({ type: "action", id: "action-projects", action: "projects", label: "Projects" });
       filteredRecents.forEach((c) => {
         list.push({
           type: "recent-chat",
@@ -228,15 +234,17 @@ export function SearchOrStartChatModal({
           meta: formatRecentMeta(c.timestamp),
         });
       });
-      if (!chatsOnly) {
-        filteredFiles.forEach((d) => {
-          const label = d.original_filename || d.filename || d.name || "Document";
-          list.push({ type: "file", id: `file-${d.id}`, fileId: d.id, label });
-        });
-      }
+      // When there's a search query, always show matching files and projects (search across everything)
+      filteredProjects.forEach((p) => {
+        list.push({ type: "project", id: `project-${p.id}`, projectId: p.id, label: p.label, imageUrl: p.imageUrl });
+      });
+      filteredFiles.forEach((d) => {
+        const label = d.original_filename || d.filename || d.name || "Document";
+        list.push({ type: "file", id: `file-${d.id}`, fileId: d.id, label });
+      });
     }
     return list;
-  }, [query, filteredRecents, filteredFiles, onUploadFile, chatsAndProjectsOnly]);
+  }, [query, filteredRecents, filteredProjects, filteredFiles, onUploadFile, chatsAndProjectsOnly]);
 
   const clampedIndex = Math.min(Math.max(0, selectedIndex), Math.max(0, flatList.length - 1));
 
@@ -308,7 +316,7 @@ export function SearchOrStartChatModal({
     };
     window.addEventListener("keydown", handleKeyDown, true);
     return () => window.removeEventListener("keydown", handleKeyDown, true);
-  }, [open, query, flatList, clampedIndex, onOpenChange, onNewChat, onNewChatWithQuery, onChatSelect, onNavigate, onOpenFiles, onUploadFile, onOpenFile]);
+  }, [open, query, flatList, clampedIndex, onOpenChange, onNewChat, onNewChatWithQuery, onChatSelect, onNavigate, onOpenFiles, onUploadFile, onOpenFile, onProjectSelect]);
 
   function handleSelectItem(item: SearchModalItem) {
     switch (item.type) {
@@ -332,10 +340,16 @@ export function SearchOrStartChatModal({
           setSelectedIndex(0);
           return; // keep modal open, show files inside
         }
-        if (item.action === "upload") onUploadFile?.();
+        if (item.action === "upload") {
+          onUploadFile?.();
+          return; // keep search modal open; only the upload overlay closes when user clicks X
+        }
         break;
       case "file":
         onOpenFile?.(item.fileId, item.label);
+        break;
+      case "project":
+        onProjectSelect?.(item.projectId);
         break;
     }
     onOpenChange(false);
@@ -361,12 +375,9 @@ export function SearchOrStartChatModal({
       >
         {/* Search bar — pr-12 leaves space for the dialog's close (X) button */}
         <div
-          className="flex shrink-0 items-center gap-3 px-4 pr-12 py-6 rounded-t-xl"
+          className="flex shrink-0 items-center gap-3 pl-10 pr-12 py-6 rounded-t-xl"
           style={{ backgroundColor: "#F5F5F5" }}
         >
-          <span className="flex h-7 w-7 shrink-0 items-center justify-center text-neutral-400" aria-hidden>
-            <Search className="h-7 w-7" strokeWidth={2} />
-          </span>
           <input
             ref={inputRef}
             type="text"
@@ -499,6 +510,9 @@ export function SearchOrStartChatModal({
               const isFirstFile =
                 item.type === "file" &&
                 !flatList.slice(0, index).some((i) => i.type === "file");
+              const isFirstProject =
+                item.type === "project" &&
+                !flatList.slice(0, index).some((i) => i.type === "project");
               const isSelected = index === clampedIndex;
               const isNewChat =
                 item.type === "new-chat" || item.type === "new-chat-query";
@@ -520,6 +534,11 @@ export function SearchOrStartChatModal({
                   {isFirstAction && (
                     <p className="px-4 pt-3 pb-2 text-[11px] text-gray-500 font-medium">
                       Actions &gt;
+                    </p>
+                  )}
+                  {isFirstProject && (
+                    <p className="px-4 pt-3 pb-2 text-[11px] text-gray-500 font-medium">
+                      Projects &gt;
                     </p>
                   )}
                   {isFirstFile && (
@@ -603,6 +622,29 @@ export function SearchOrStartChatModal({
                         <Upload className="h-[22px] w-[22px] shrink-0 text-gray-600" strokeWidth={1.5} />
                       )}
                       <span className="flex-1 min-w-0 text-[13px] font-normal text-gray-900">
+                        {item.label}
+                      </span>
+                      <ChevronRight className="h-4 w-4 shrink-0 text-gray-400" />
+                    </>
+                  )}
+                  {item.type === "project" && (
+                    <>
+                      {item.imageUrl ? (
+                        <span className="flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded overflow-hidden bg-gray-100">
+                          <img src={item.imageUrl} alt="" className="h-full w-full object-cover" />
+                        </span>
+                      ) : (
+                        <span className="flex h-[22px] w-[22px] shrink-0 items-center justify-center">
+                          <img
+                            src="/projectsfolder.png"
+                            alt=""
+                            className="w-full h-full object-contain"
+                            style={{ display: "block" }}
+                            draggable={false}
+                          />
+                        </span>
+                      )}
+                      <span className="flex-1 min-w-0 text-[13px] font-normal text-gray-900 truncate">
                         {item.label}
                       </span>
                       <ChevronRight className="h-4 w-4 shrink-0 text-gray-400" />

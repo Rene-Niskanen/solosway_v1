@@ -354,13 +354,14 @@ export const UploadProgressBar: React.FC = () => {
           pollingRef.current = null;
         }
         documentStatesRef.current.delete(documentId);
+        // Don't show green — we didn't get a completed status from backend. Keep as processing.
         setUploadState(prev =>
           prev?.documentId === documentId
-            ? { ...prev, status: 'complete', currentStep: 'Processing in background' }
+            ? { ...prev, status: 'processing', currentStep: 'Processing in background' }
             : prev
         );
         setDocumentQueue(prev => prev.map(doc =>
-          doc.documentId === documentId ? { ...doc, status: 'complete' } : doc
+          doc.documentId === documentId ? { ...doc, status: 'processing' } : doc
         ));
         if (pollingDocumentIdsRef.current.size === 0) {
           setTimeout(() => {
@@ -532,8 +533,9 @@ export const UploadProgressBar: React.FC = () => {
         console.log(`🔄 [UploadProgressBar] Starting status polling for document: ${documentId}`);
         startPolling(documentId, fileName);
       } else {
+        // No documentId: don't show green — we don't know if parsing is done. Keep as processing then hide.
         setTimeout(() => {
-          setUploadState(prev => prev ? { ...prev, status: 'complete' } : null);
+          setUploadState(prev => prev ? { ...prev, currentStep: 'Processing in background' } : null);
           setTimeout(() => {
             setIsVisible(false);
             setTimeout(() => setUploadState(null), 300);
