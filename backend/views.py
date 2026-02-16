@@ -5611,33 +5611,58 @@ def get_document_key_facts(document_id):
         if doc_summary is None:
             doc_summary = {}
 
-        from .services.key_facts_service import build_key_facts_from_document, sanitise_key_facts_list
+        from .services.key_facts_service import (
+            build_key_facts_and_text,
+            sanitise_key_facts_list,
+            sanitise_summary_for_display,
+        )
 
-        # Return stored key facts when present (generated once at processing time)
-        if 'stored_key_facts' in doc_summary and isinstance(doc_summary.get('stored_key_facts'), list):
-            key_facts = sanitise_key_facts_list(doc_summary['stored_key_facts'])
+        # Prefer stored key_facts_text when present (paragraph form for Key facts panel)
+        key_facts_text = doc_summary.get('key_facts_text') or None
+        if isinstance(key_facts_text, str) and key_facts_text.strip():
+            key_facts_text = key_facts_text.strip()
+            key_facts = sanitise_key_facts_list(doc_summary.get('stored_key_facts') or [])
             summary = doc_summary.get('summary') or None
-            return jsonify({'success': True, 'data': {'key_facts': key_facts, 'summary': summary}}), 200
+            if summary is not None:
+                summary = sanitise_summary_for_display(summary) or None
+            return jsonify({
+                'success': True,
+                'data': {'key_facts': key_facts, 'summary': summary, 'key_facts_text': key_facts_text},
+            }), 200
 
-        # Fallback: build on the fly (e.g. legacy docs) and optionally persist for next time
-        key_facts, llm_summary = build_key_facts_from_document(document, document_id=str(document_id))
+        # Fallback: build on the fly (e.g. legacy docs or no key_facts_text) and optionally persist
+        key_facts, llm_summary, key_facts_text = build_key_facts_and_text(
+            document, document_id=str(document_id)
+        )
         key_facts = sanitise_key_facts_list(key_facts)
         summary = doc_summary.get('summary') or llm_summary or None
-        # Lazy write-back so future loads use stored key facts
+        if summary is not None:
+            summary = sanitise_summary_for_display(summary) or None
+        # Lazy write-back so future loads use stored key facts and key_facts_text
         try:
             business_id = doc_business_uuid or doc_business_id
             if business_id:
                 from .services.document_storage_service import DocumentStorageService
                 doc_storage = DocumentStorageService()
+                updates = {'stored_key_facts': key_facts, 'summary': summary or ''}
+                if key_facts_text:
+                    updates['key_facts_text'] = key_facts_text
                 doc_storage.update_document_summary(
                     document_id=str(document_id),
                     business_id=str(business_id),
-                    updates={'stored_key_facts': key_facts, 'summary': summary or ''},
+                    updates=updates,
                     merge=True,
                 )
         except Exception as write_err:
             logger.debug("Key facts write-back failed (non-fatal): %s", write_err)
-        return jsonify({'success': True, 'data': {'key_facts': key_facts, 'summary': summary}}), 200
+        return jsonify({
+            'success': True,
+            'data': {
+                'key_facts': key_facts,
+                'summary': summary,
+                'key_facts_text': key_facts_text,
+            },
+        }), 200
     except Exception as e:
         logger.error(f"Error getting document key facts: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -6248,6 +6273,7 @@ def get_files():
                 doc_summary = {}
             d['key_facts'] = doc_summary.get('stored_key_facts') if isinstance(doc_summary.get('stored_key_facts'), list) else []
             d['summary'] = doc_summary.get('summary') or None
+            d['key_facts_text'] = doc_summary.get('key_facts_text') or None
             documents.append(d)
         return jsonify({
             'success': True,
@@ -7767,6 +7793,7 @@ def get_property_hub_documents(property_id):
                 doc_summary = {}
             d['key_facts'] = doc_summary.get('stored_key_facts') if isinstance(doc_summary.get('stored_key_facts'), list) else []
             d['summary'] = doc_summary.get('summary') or None
+            d['key_facts_text'] = doc_summary.get('key_facts_text') or None
             documents.append(d)
         return jsonify({
             'success': True,

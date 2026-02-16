@@ -1186,22 +1186,30 @@ class BackendApiService {
    */
   async getDocumentKeyFacts(documentId: string): Promise<{
     success: boolean;
-    data?: { key_facts: Array<{ label: string; value: string }>; summary?: string | null };
+    data?: {
+      key_facts: Array<{ label: string; value: string }>;
+      summary?: string | null;
+      key_facts_text?: string | null;
+    };
     error?: string;
   }> {
     try {
       const response = await this.fetchApi<{
         success?: boolean;
-        data?: { key_facts?: Array<{ label: string; value: string }>; summary?: string | null };
+        data?: {
+          key_facts?: Array<{ label: string; value: string }>;
+          summary?: string | null;
+          key_facts_text?: string | null;
+        };
       }>(`/api/documents/${documentId}/key-facts`);
       if (response?.success && response?.data) {
-        // Backend returns { success, data: { key_facts, summary } }; fetchApi puts that whole body in response.data
-        const inner = (response.data as { data?: { key_facts?: Array<{ label: string; value: string }>; summary?: string | null } }).data;
+        const inner = (response.data as { data?: { key_facts?: Array<{ label: string; value: string }>; summary?: string | null; key_facts_text?: string | null } }).data;
         const key_facts = inner?.key_facts ?? [];
         const summary = inner?.summary ?? null;
+        const key_facts_text = inner?.key_facts_text ?? null;
         return {
           success: true,
-          data: { key_facts, summary },
+          data: { key_facts, summary, key_facts_text },
         };
       }
       return { success: false, error: 'No data' };

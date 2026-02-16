@@ -127,13 +127,6 @@ export const CHAT_PANEL_WIDTH = {
 /** Width of the toggle + resize rail on the left edge of the agent sidebar (ChatPanel). Must match MainContent AGENT_TOGGLE_RAIL_WIDTH. */
 const AGENT_SIDEBAR_RAIL_WIDTH = 12;
 
-/** Rotating titles for new-chat empty state (ChatGPT-style); one shown per session */
-const EMPTY_CHAT_TITLE_MESSAGES = [
-  'What are you working on?',
-  'What can I help you with today?',
-  'What would you like to accomplish?',
-] as const;
-
 // ============================================================================
 // UNIFIED WIDTH CALCULATION
 // Single function used by both useEffect (parent notification) and inline styles
@@ -3216,6 +3209,7 @@ interface SideChatPanelProps {
   isSidebarCollapsed?: boolean; // Main navigation sidebar collapsed state (true when "closed" / icon-only)
   isSidebarIconsOnly?: boolean; // When true, sidebar is in icons-only (small) mode; Close button shown only when false (big sidebar)
   isFilingSidebarClosing?: boolean; // Whether FilingSidebar is currently closing (for instant updates)
+  isFilingSidebarOpening?: boolean; // Whether FilingSidebar is currently opening (for instant updates, no animation)
   isSidebarCollapsing?: boolean; // Whether main sidebar is currently collapsing (for instant updates)
   onQuerySubmit?: (query: string) => void; // Callback for submitting new queries from panel
   onMapToggle?: () => void; // Callback for toggling map view
@@ -3249,6 +3243,8 @@ interface SideChatPanelProps {
   onConsumedInitialDocumentChip?: () => void;
   /** When this value changes, clear dragged width and expand so layout snaps to 50/50 (e.g. when opening file from search modal). */
   resetWidthTrigger?: number;
+  /** User's first name for personalized empty-state greeting (e.g. "Hey Tom, What can I help you with today?"). */
+  userFirstName?: string;
 }
 
 export interface SideChatPanelRef {
@@ -3338,6 +3334,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   isSidebarCollapsed = false,
   isSidebarIconsOnly = false, // Default to false
   isFilingSidebarClosing = false, // Default to false
+  isFilingSidebarOpening = false, // Default to false
   isSidebarCollapsing = false, // Default to false
   onQuerySubmit,
   onMapToggle,
@@ -3364,6 +3361,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   initialDocumentChip,
   onConsumedInitialDocumentChip,
   resetWidthTrigger,
+  userFirstName,
 }, ref) => {
   // Main navigation state:
   // - collapsed: icon-only sidebar (treat as "closed" for the purposes of showing open controls)
@@ -12630,13 +12628,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     }
   }, [isChatOnlyViewHere, isEmptyChat, isFullscreenMode, shouldExpand]);
 
-  // One random title per empty-state session (stable while isEmptyChat is true)
+  // Personalized empty-state title: "Hey {name}, What can I help you with today?" only when name is known (avoids flashing "Hey there" then "Hey Admin" when userData loads late)
   const emptyStateTitleMessage = useMemo(
     () =>
       isEmptyChat
-        ? EMPTY_CHAT_TITLE_MESSAGES[Math.floor(Math.random() * EMPTY_CHAT_TITLE_MESSAGES.length)]
+        ? (userFirstName?.trim()
+            ? `Hey ${userFirstName.trim()}, What can I help you with today?`
+            : 'What can I help you with today?')
         : '',
-    [isEmptyChat]
+    [isEmptyChat, userFirstName]
   );
 
   // Which citations should show orange highlight in response text (when user added citation_snippet chip from that message/citation)
@@ -13402,9 +13402,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             // Use local tracking (isSidebarJustCollapsed) for immediate detection, plus props for MainContent tracking
             // This ensures chat panel adjusts immediately with no animation delay
             // Also disable transitions when ChatPanel (agent sidebar) opens/closes for instant width adjustment
-            transition: (isResizing || isFilingSidebarResizing || isChatPanelResizing || isChatPanelJustToggled || isFilingSidebarClosing || isSidebarCollapsing || isSidebarJustCollapsed || !isFilingSidebarOpen || justEnteredFullscreen || shouldExpand || isRestoringFullscreen || (isFullscreenMode && !isRestoringFullscreen) || isFirstOpen || isPropertyDetailsOpen) ? 'none' : 'width 0.4s cubic-bezier(0.4, 0, 0.2, 1)',
-            transitionProperty: (isResizing || isFilingSidebarResizing || isChatPanelResizing || isChatPanelJustToggled || isFilingSidebarClosing || isSidebarCollapsing || isSidebarJustCollapsed || !isFilingSidebarOpen || isFirstOpen || isPropertyDetailsOpen) ? 'none' : 'width',
-            willChange: (isResizing || isFilingSidebarResizing || isChatPanelResizing || isChatPanelJustToggled || isFilingSidebarClosing || isSidebarCollapsing || isSidebarJustCollapsed) ? 'left, width' : 'width', // Optimize for instant changes when closing or ChatPanel toggle
+            transition: (isResizing || isFilingSidebarResizing || isChatPanelResizing || isChatPanelJustToggled || isFilingSidebarClosing || isFilingSidebarOpening || isSidebarCollapsing || isSidebarJustCollapsed || !isFilingSidebarOpen || justEnteredFullscreen || shouldExpand || isRestoringFullscreen || (isFullscreenMode && !isRestoringFullscreen) || isFirstOpen || isPropertyDetailsOpen) ? 'none' : 'width 0.4s cubic-bezier(0.4, 0, 0.2, 1)',
+            transitionProperty: (isResizing || isFilingSidebarResizing || isChatPanelResizing || isChatPanelJustToggled || isFilingSidebarClosing || isFilingSidebarOpening || isSidebarCollapsing || isSidebarJustCollapsed || !isFilingSidebarOpen || isFirstOpen || isPropertyDetailsOpen) ? 'none' : 'width',
+            willChange: (isResizing || isFilingSidebarResizing || isChatPanelResizing || isChatPanelJustToggled || isFilingSidebarClosing || isFilingSidebarOpening || isSidebarCollapsing || isSidebarJustCollapsed) ? 'left, width' : 'width', // Optimize for instant changes when closing/opening or ChatPanel toggle
             backfaceVisibility: 'hidden', // Prevent flickering
             transform: 'translateZ(0)' // Force GPU acceleration
           }}
@@ -14391,7 +14391,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     className="w-full text-center text-[#111]"
                     style={{
                       fontWeight: 400,
-                      fontSize: 'clamp(1.125rem, 3vw, 1.375rem)',
+                      fontSize: 'clamp(1.25rem, 3.5vw, 1.5rem)',
                       lineHeight: 1.3,
                       marginBottom: '56px',
                     }}

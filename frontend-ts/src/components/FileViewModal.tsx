@@ -106,6 +106,8 @@ export interface FileViewDocument {
   key_facts?: KeyFact[];
   /** When present (from list API), summary shows immediately */
   summary?: string | null;
+  /** When present (from list API), paragraph form of key facts for the Key facts panel */
+  key_facts_text?: string | null;
 }
 
 export interface KeyFact {
@@ -148,6 +150,7 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
   const [currentPage, setCurrentPage] = useState(1);
   /** Key facts from backend (address, type, parties); null = not loaded, [] = loaded but empty */
   const [keyFacts, setKeyFacts] = useState<KeyFact[] | null>(null);
+  const [keyFactsText, setKeyFactsText] = useState<string | null>(null);
   /** Narrative summary paragraph from backend; null = not loaded or not available */
   const [keyFactsSummary, setKeyFactsSummary] = useState<string | null>(null);
   const [keyFactsLoading, setKeyFactsLoading] = useState(false);
@@ -379,6 +382,7 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
     setKeyFactsLoading(true);
     setKeyFacts(null);
     setKeyFactsSummary(null);
+    setKeyFactsText(null);
     backendApi
       .getDocumentKeyFacts(doc.id)
       .then((res) => {
@@ -387,9 +391,11 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
         if (res.success && res.data) {
           setKeyFacts(res.data.key_facts);
           setKeyFactsSummary(res.data.summary ?? null);
+          setKeyFactsText(res.data.key_facts_text ?? null);
         } else {
           setKeyFacts([]);
           setKeyFactsSummary(null);
+          setKeyFactsText(null);
         }
       })
       .catch(() => {
@@ -397,6 +403,7 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
         setKeyFactsLoading(false);
         setKeyFacts([]);
         setKeyFactsSummary(null);
+        setKeyFactsText(null);
       });
   }, [doc?.id]);
 
@@ -404,10 +411,11 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
   useEffect(() => {
     if (!isOpen || !doc) return;
     keyFactsCancelledRef.current = false;
-    // Use list-embedded key_facts/summary when present (same pattern as document blob cache).
-    if (Array.isArray(doc.key_facts)) {
-      setKeyFacts(doc.key_facts);
+    // Use list-embedded key_facts/summary/key_facts_text when present (same pattern as document blob cache).
+    if (Array.isArray(doc.key_facts) || doc.key_facts_text != null) {
+      setKeyFacts(Array.isArray(doc.key_facts) ? doc.key_facts : []);
       setKeyFactsSummary(doc.summary ?? null);
+      setKeyFactsText(doc.key_facts_text ?? null);
       setKeyFactsLoading(false);
       return;
     }
@@ -415,7 +423,7 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
     return () => {
       keyFactsCancelledRef.current = true;
     };
-  }, [isOpen, doc?.id, doc?.key_facts, doc?.summary, fetchKeyFacts]);
+  }, [isOpen, doc?.id, doc?.key_facts, doc?.summary, doc?.key_facts_text, fetchKeyFacts]);
 
   // Observe preview container size and update state only when it changes by more than 2px.
   // This avoids render loops from subpixel/fractional sizes (e.g. 299.5 vs 300) and defers
@@ -671,12 +679,12 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
               </div>
             </div>
           </div>
-          <div className="flex flex-col items-end gap-1.5 flex-shrink-0 min-w-0 max-w-[60%] overflow-visible">
+          <div className="flex flex-row items-center gap-2 flex-shrink-0 min-w-0 max-w-[60%] overflow-visible">
             <div className="text-gray-700 text-xs font-medium truncate text-right" style={{ fontFamily: 'system-ui, sans-serif' }}>
               {displayFileType}{displayFileSize !== '—' ? ` · ${displayFileSize}` : ''}
             </div>
             <div
-              className="flex items-center justify-end gap-2 rounded-md px-2 py-1 overflow-visible"
+              className="flex items-center gap-2 rounded-md px-2 py-1 flex-shrink-0 overflow-visible"
               style={{ fontFamily: 'system-ui, sans-serif', backgroundColor: 'rgba(52, 199, 89, 0.12)' }}
             >
               <span
@@ -817,6 +825,19 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
                 </div>
               )}
               {!keyFactsLoading && keyFacts !== null && (() => {
+                const hasParagraph = keyFactsText != null && keyFactsText.trim() !== '';
+                if (hasParagraph) {
+                  return (
+                    <div className="px-2 py-1">
+                      <div
+                        className="text-gray-700 text-xs leading-relaxed break-words whitespace-pre-wrap"
+                        style={{ fontFamily: 'system-ui, sans-serif' }}
+                      >
+                        {keyFactsText.trim()}
+                      </div>
+                    </div>
+                  );
+                }
                 const displaySummary = formatSummaryForDisplay(keyFactsSummary);
                 const displayFacts = formatKeyFactsForDisplay(keyFacts);
                 const hasSummary = !!displaySummary;

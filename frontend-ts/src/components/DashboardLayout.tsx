@@ -492,9 +492,10 @@ const DashboardLayoutContent = ({
     // Clear project selection when opening new chat so we don't stay in project-detail mode
     clearProjectSelectionRef.current?.();
     
-    // CRITICAL: Set these so MainContent shows fullscreen new-chat UI
+    // CRITICAL: Set these so MainContent shows fullscreen new-chat UI (chat only, no map)
     setShouldRestoreActiveChat(true);
-    setIsMapVisibleFromChat(true);
+    setIsMapVisibleFromChat(false);
+    setIsMapVisibleFromSidebar(false);
     setIsInChatMode(true);
     
     if (hasActiveChat) {

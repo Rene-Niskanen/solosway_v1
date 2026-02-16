@@ -1928,6 +1928,7 @@ interface FullscreenPropertyViewProps {
   onSidebarToggle?: () => void;
   onActiveChatChange?: (isActive: boolean) => void;
   onOpenChatHistory?: () => void;
+  userFirstName?: string;
 }
 
 const AGENT_SIDEBAR_RAIL_WIDTH = 12;
@@ -1944,7 +1945,8 @@ const FullscreenPropertyView: React.FC<FullscreenPropertyViewProps> = ({
   onNewChat,
   onSidebarToggle,
   onActiveChatChange,
-  onOpenChatHistory
+  onOpenChatHistory,
+  userFirstName,
 }) => {
   // Track the dynamic chat panel width for proper resize behavior
   const [dynamicChatWidth, setDynamicChatWidth] = React.useState<number>(0);
@@ -1988,6 +1990,7 @@ const FullscreenPropertyView: React.FC<FullscreenPropertyViewProps> = ({
         isPropertyDetailsOpen={true}
         shouldExpand={true}
         isMapVisible={false}
+        userFirstName={userFirstName}
         onQuerySubmit={(newQuery) => {
           console.log('Query from fullscreen property view:', newQuery);
         }}
@@ -2099,26 +2102,19 @@ export const MainContent = ({
   const { isOpen: isFilingSidebarOpen, width: filingSidebarWidth, isResizing: isFilingSidebarResizing, closeSidebar } = useFilingSidebar();
   const { isOpen: isChatHistoryPanelOpen, width: chatHistoryPanelWidth, isResizing: isChatHistoryPanelResizing, closePanel: closeChatPanel } = useChatPanel();
   const { getChatById, addChatToHistory, updateChatInHistory } = useChatHistory();
-  // Track previous states to detect closing transitions for instant updates
+  // Track previous states to detect closing/opening for instant transition disable (no animation bounce)
   const prevFilingSidebarOpenRef = React.useRef(isFilingSidebarOpen);
   const prevSidebarCollapsedRef = React.useRef(isSidebarCollapsed);
-  const [isFilingSidebarClosing, setIsFilingSidebarClosing] = React.useState(false);
   const [isSidebarCollapsing, setIsSidebarCollapsing] = React.useState(false);
-  
-  // Track closing states for instant transition disable (no delays - update immediately)
-  React.useEffect(() => {
-    const wasOpen = prevFilingSidebarOpenRef.current;
-    const isClosing = wasOpen && !isFilingSidebarOpen;
-    setIsFilingSidebarClosing(isClosing);
-    // Clear flag after one frame to allow transition disable during closing
-    if (isClosing) {
-      requestAnimationFrame(() => {
-        setIsFilingSidebarClosing(false);
-      });
-    }
+  // Derive during render so flags are true on the SAME frame as open/close - avoids one frame with transition enabled (bounce)
+  const wasFilingSidebarOpen = prevFilingSidebarOpenRef.current;
+  const isFilingSidebarClosing = wasFilingSidebarOpen && !isFilingSidebarOpen;
+  const isFilingSidebarOpening = !wasFilingSidebarOpen && isFilingSidebarOpen;
+  React.useLayoutEffect(() => {
     prevFilingSidebarOpenRef.current = isFilingSidebarOpen;
   }, [isFilingSidebarOpen]);
   
+  // Track collapsing for instant transition disable
   React.useEffect(() => {
     const wasExpanded = !prevSidebarCollapsedRef.current;
     const isCollapsing = wasExpanded && isSidebarCollapsed;
@@ -2721,19 +2717,18 @@ export const MainContent = ({
       // Set this IMMEDIATELY before any state updates to prevent render race conditions
       isTransitioningToChatRef.current = true;
       
-      // CRITICAL: Ensure map is visible immediately for fullscreen chat
-      // The computed effect should have already updated isMapVisible from externalIsMapVisible,
-      // but we need to ensure it's true before setting shouldExpandChat
-      // Update ref immediately for synchronous access
-      if (externalIsMapVisible && !isMapVisible) {
-        // External wants map visible but computed effect hasn't run yet - update immediately
+      const isNewChatNoRestore = !preservedChatStateRef.current;
+      // New chat: fullscreen chat only (no map). Restored chat: map visible if external wants it.
+      if (isNewChatNoRestore) {
+        isMapVisibleRef.current = false;
+        setIsMapVisible(false);
+      } else if (externalIsMapVisible && !isMapVisible) {
         isMapVisibleRef.current = true;
         setIsMapVisible(true);
       }
       
-      // CRITICAL: Set shouldExpandChat IMMEDIATELY (synchronously) to prevent flash
-      // This ensures the chat panel renders at fullscreen width from the start
-      setShouldExpandChat(true);
+      // New chat: centered welcome + chat bar in middle. Restored chat: fullscreen with bar at bottom.
+      setShouldExpandChat(!isNewChatNoRestore);
       // Track when chat was opened to prevent premature closing
       chatOpenedTimestampRef.current = Date.now();
       
@@ -5600,6 +5595,7 @@ export const MainContent = ({
         ref={sideChatPanelRef}
         isVisible={((currentView === 'search' || currentView === 'home') && hasPerformedSearch && (isMapVisible || isInChatMode) && !showNewPropertyWorkflow) || (currentView === 'projects' && !!expandedCardViewDoc)}
         query={mapSearchQuery}
+        userFirstName={userData == null ? undefined : (userData.first_name?.trim() || 'there')}
         initialContentSegments={mapSearchContentSegments.length > 0 ? mapSearchContentSegments : undefined}
         pendingSearchContentSegmentsRef={pendingSearchContentSegmentsRef}
         initialDocumentChip={initialDocumentChipForChat}
@@ -5621,6 +5617,7 @@ export const MainContent = ({
           }
         })()}
         isFilingSidebarClosing={isFilingSidebarClosing}
+        isFilingSidebarOpening={isFilingSidebarOpening}
         isSidebarCollapsing={isSidebarCollapsing}
         restoreChatId={restoreChatId}
         newAgentTrigger={newAgentTrigger}
@@ -6150,6 +6147,7 @@ export const MainContent = ({
         onSidebarToggle={onSidebarToggle}
         onActiveChatChange={handleActiveChatChange}
         onOpenChatHistory={onOpenChatHistory}
+        userFirstName={userData == null ? undefined : (userData.first_name?.trim() || 'there')}
       />
     </div>
     </CitationExportProvider>

@@ -1121,23 +1121,26 @@ def process_document_classification(self, document_id, original_filename, busine
                 
                 # Generate and store key facts once (so key-facts API returns instantly on refresh)
                 try:
-                    from .services.key_facts_service import build_key_facts_from_document
+                    from .services.key_facts_service import build_key_facts_and_text
                     doc_for_facts = {
                         **document,
                         'document_summary': document_summary,
                         'parsed_text': document_text,
                     }
-                    key_facts, llm_summary = build_key_facts_from_document(
+                    key_facts, llm_summary, key_facts_text = build_key_facts_and_text(
                         doc_for_facts, document_id=str(document_id)
                     )
                     summary_for_storage = llm_summary or document_summary.get('summary') or ''
+                    updates = {
+                        'stored_key_facts': key_facts,
+                        'summary': summary_for_storage,
+                    }
+                    if key_facts_text:
+                        updates['key_facts_text'] = key_facts_text
                     doc_storage.update_document_summary(
                         document_id=str(document_id),
                         business_id=business_id,
-                        updates={
-                            'stored_key_facts': key_facts,
-                            'summary': summary_for_storage,
-                        },
+                        updates=updates,
                         merge=True,
                     )
                     logger.info(f"✅ Stored key facts for document {document_id} ({len(key_facts)} facts)")

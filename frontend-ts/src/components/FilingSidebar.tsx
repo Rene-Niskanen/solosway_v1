@@ -2141,6 +2141,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                 className="absolute top-2 left-2 z-10"
                 onClick={(e) => e.stopPropagation()}
                 onMouseEnter={() => setShowSecureInfo(true)}
+                onMouseLeave={() => setShowSecureInfo(false)}
               >
                 <button
                   type="button"

@@ -111,6 +111,24 @@ def _sanitise_key_fact_value(value: str) -> str:
     return s
 
 
+def sanitise_summary_for_display(s: str) -> str:
+    """
+    Sanitise a summary string for display: strip HTML, markdown, collapse whitespace.
+    No truncation or gibberish checks; keeps full sentences. Use for summary and key_facts_text.
+    """
+    if not s or not isinstance(s, str):
+        return ''
+    s = _strip_html_and_markdown(s)
+    if not s:
+        return ''
+    s = re.sub(r'\s+', ' ', s).strip()
+    s = re.sub(r'\*\*', '', s)
+    s = re.sub(r'^[\s\-*•]+\s*', '', s)
+    s = re.sub(r'\s*\|\s*', ' ', s)
+    s = re.sub(r'\s+', ' ', s).strip()
+    return s
+
+
 def sanitise_key_facts_list(facts: List[Dict[str, Any]]) -> List[Dict[str, str]]:
     """Run each fact's value through _sanitise_key_fact_value; drop facts with empty value. Use when returning key facts (e.g. stored) so old data gets current formatting rules."""
     out = []
@@ -201,6 +219,8 @@ Respond with valid JSON only, no markdown or extra text, in this exact shape:
             content = re.sub(r"\s*```$", "", content)
         data = json.loads(content)
         summary = (data.get("summary") or "").strip() or None
+        if summary is not None:
+            summary = sanitise_summary_for_display(summary) or None
         raw_facts = data.get("key_facts") or []
         facts = []
         for item in raw_facts:
@@ -305,3 +325,66 @@ def build_key_facts_from_document(
                     facts.append({'label': label, 'value': value})
 
     return facts, llm_summary
+
+
+_KEY_FACTS_TEXT_MAX_LENGTH = 1500
+
+
+def format_key_facts_as_paragraph(
+    facts: List[Dict[str, Any]],
+    summary: Optional[str],
+) -> str:
+    """
+    Format key facts and optional summary into 1-2 plain-text paragraphs.
+    Generic: iterates over whatever labels/values exist. No markdown. Result is sanitised.
+    """
+    parts = []
+    if summary and isinstance(summary, str):
+        cleaned = sanitise_summary_for_display(summary)
+        if cleaned:
+            parts.append(cleaned)
+    if facts:
+        sentences = []
+        for item in facts:
+            if not isinstance(item, dict):
+                continue
+            label = (item.get('label') or '').strip()
+            value = (item.get('value') or '').strip()
+            if not label or not value:
+                continue
+            value = _sanitise_key_fact_value(value)
+            if not value:
+                continue
+            sentences.append(f"{label} is {value}.")
+        if sentences:
+            parts.append(' '.join(sentences))
+    if not parts:
+        return ''
+    text = '\n\n'.join(parts)
+    if len(text) > _KEY_FACTS_TEXT_MAX_LENGTH:
+        text = text[:_KEY_FACTS_TEXT_MAX_LENGTH - 1].rstrip()
+        if not text.endswith('.'):
+            text += '…'
+    return text
+
+
+def build_key_facts_and_text(
+    document: dict,
+    document_id: Optional[str] = None,
+) -> Tuple[List[Dict[str, str]], Optional[str], Optional[str]]:
+    """
+    Build key_facts list and a single paragraph form (key_facts_text) from document.
+    Returns (facts, llm_summary, key_facts_text).
+    """
+    facts, llm_summary = build_key_facts_from_document(document, document_id=document_id)
+    doc_summary = document.get('document_summary') or {}
+    if isinstance(doc_summary, str):
+        try:
+            doc_summary = json.loads(doc_summary)
+        except Exception:
+            doc_summary = {}
+    if doc_summary is None:
+        doc_summary = {}
+    summary_for_para = llm_summary or doc_summary.get('summary') or None
+    key_facts_text = format_key_facts_as_paragraph(facts, summary_for_para)
+    return facts, llm_summary, key_facts_text if key_facts_text else None
