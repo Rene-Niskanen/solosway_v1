@@ -8,7 +8,6 @@ import {
   MessageSquare, 
   ListEnd, 
   PanelLeftClose,
-  Plus,
   MoreHorizontal,
   Edit,
   Archive,
@@ -20,7 +19,6 @@ import {
   LogOut,
   MessageCircle,
   MessagesSquare,
-  User,
   Map,
   Search
 } from "lucide-react";
@@ -53,7 +51,11 @@ export interface SidebarProps {
   onMapToggle?: () => void; // Callback to toggle/open map view
   onOpenSearch?: () => void; // Callback to open Search modal (command palette)
   isSearchOpen?: boolean; // When true, hide the toggle rail so it never appears while searching
+  isIconsOnly?: boolean; // When true, sidebar shows only icons (narrow width)
+  onIconsOnlyToggle?: () => void; // Toggle between full sidebar and icons-only
 }
+
+export const SIDEBAR_ICONS_ONLY_WIDTH = 56;
 
 type NavItem = {
   id: string;
@@ -85,7 +87,9 @@ export const Sidebar = ({
   isChatVisible = false,
   onMapToggle,
   onOpenSearch,
-  isSearchOpen = false
+  isSearchOpen = false,
+  isIconsOnly = false,
+  onIconsOnlyToggle
 }: SidebarProps) => {
   const [hoveredChat, setHoveredChat] = React.useState<string | null>(null);
   const [openMenuId, setOpenMenuId] = React.useState<string | null>(null);
@@ -96,6 +100,7 @@ export const Sidebar = ({
   const [userData, setUserData] = React.useState<any>(null);
   const [profilePicCacheBust, setProfilePicCacheBust] = React.useState<number | null>(null);
   const brandButtonRef = React.useRef<HTMLButtonElement>(null);
+  const brandButtonRefExpanded = React.useRef<HTMLButtonElement>(null);
   const brandDropdownRef = React.useRef<HTMLDivElement>(null);
   const { isOpen: isFeedbackModalOpen } = useFeedbackModal();
 
@@ -151,15 +156,14 @@ export const Sidebar = ({
     }
   }, [userData]);
 
-  // Close brand dropdown when clicking outside
+  // Close brand dropdown when clicking outside (main or expanded strip)
   React.useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
-      if (
-        brandDropdownRef.current && 
-        !brandDropdownRef.current.contains(event.target as Node) &&
-        brandButtonRef.current &&
-        !brandButtonRef.current.contains(event.target as Node)
-      ) {
+      const target = event.target as Node;
+      const inDropdown = brandDropdownRef.current?.contains(target);
+      const inMainStrip = brandButtonRef.current?.contains(target);
+      const inExpandedStrip = brandButtonRefExpanded.current?.contains(target);
+      if (isBrandDropdownOpen && !inDropdown && !inMainStrip && !inExpandedStrip) {
         setIsBrandDropdownOpen(false);
       }
     };
@@ -218,10 +222,8 @@ export const Sidebar = ({
     { id: 'chat', label: 'Chats', icon: MessagesSquare, action: 'openChat' },
   ];
 
-  // Secondary navigation items
-  const secondaryNav: NavItem[] = [
-    { id: 'settings', label: 'Settings', icon: Settings, action: 'navigate' },
-  ];
+  // Settings removed from sidebar; reachable only via account pop-up (bottom strip) → Settings
+  const secondaryNav: NavItem[] = [];
 
   const handleItemClick = React.useCallback((itemId: string) => {
     onItemClick?.(itemId);
@@ -238,8 +240,14 @@ export const Sidebar = ({
     } else if (item.action === 'toggleFiling') {
       toggleFilingSidebar();
     } else if (item.action === 'openChat') {
-      // Chats = new-chat UI (centered, taller bar, "What are you working on?" above, no map)
-      if (onOpenChatsView) {
+      // When in map section: go to full-screen new chat (same as "New chat" button).
+      // When not in map: open new-chat UI (centered, "What are you working on?", no map).
+      // Tools → Chat on the map bar stays as-is (onPanelToggle), handled in MapChatBar.
+      const isInMapSection = activeItem === 'search' && isMapVisible;
+      if (isInMapSection && (onRestoreActiveChat || onNewChat)) {
+        onRestoreActiveChat?.();
+        onNewChat?.();
+      } else if (onOpenChatsView) {
         onOpenChatsView();
       } else {
         onChatToggle?.();
@@ -260,7 +268,7 @@ export const Sidebar = ({
     } else {
       handleItemClick(item.id);
     }
-  }, [isFilingSidebarOpen, closeFilingSidebar, onExpand, toggleFilingSidebar, onOpenChatsView, onChatToggle, onRestoreActiveChat, onMapToggle, onNavigate, handleItemClick]);
+  }, [isFilingSidebarOpen, closeFilingSidebar, onExpand, toggleFilingSidebar, onOpenChatsView, onChatToggle, onRestoreActiveChat, onNewChat, onMapToggle, onNavigate, handleItemClick, activeItem, isMapVisible]);
 
   const isItemActive = (item: NavItem) => {
     // While Search modal is open, only Search is highlighted — no section (Dashboard, Projects, etc.)
@@ -350,27 +358,52 @@ export const Sidebar = ({
   // Determine if chat history should be shown
   const showChatHistoryInSidebar = isExpanded && isChatPanelOpen;
 
-  // Render a nav item with icon and label
+  // Render a nav item with icon and label (or icon only when isIconsOnly)
   const renderNavItem = (item: NavItem) => {
     const Icon = item.icon;
     const active = isItemActive(item);
     const isChat = item.action === 'openChat';
     const showChatIndicator = isChat && hasActiveChat;
-    const isSettings = item.id === 'settings';
+
+    if (isIconsOnly) {
+      return (
+        <button
+          key={item.id}
+          onClick={() => handleNavClick(item)}
+            className={`w-10 flex items-center justify-center p-2 rounded border ${
+              active
+              ? 'bg-white text-[#635A4F] border-gray-300'
+              : 'text-[#635A4F] hover:bg-white/60 hover:text-[#635A4F] border-transparent active:bg-white active:text-[#635A4F]'
+          }`}
+          style={{
+            boxShadow: active ? '0 1px 2px rgba(0, 0, 0, 0.04)' : 'none',
+            transition: 'none',
+            boxSizing: 'border-box',
+            WebkitTapHighlightColor: 'transparent'
+          }}
+          aria-label={item.label}
+        >
+          <div className="relative">
+            <Icon className="w-5 h-5 flex-shrink-0 text-[#635A4F]" strokeWidth={1.75} />
+            {showChatIndicator && (
+              <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-amber-500 rounded-full animate-pulse" />
+            )}
+          </div>
+        </button>
+      );
+    }
 
     return (
       <button
         key={item.id}
         onClick={() => handleNavClick(item)}
         className={`w-full flex items-center gap-3 px-3 py-1.5 rounded group relative border ${
-          active && !isSettings
-            ? 'bg-white text-gray-900 border-gray-300' 
-            : active && isSettings
-            ? 'text-gray-900 border-transparent'
-            : 'text-gray-600 hover:bg-white/60 hover:text-gray-900 border-transparent active:bg-white active:text-gray-900'
+          active
+            ? 'bg-white text-[#635A4F] border-gray-300' 
+            : 'text-[#635A4F] hover:bg-white/60 hover:text-[#635A4F] border-transparent active:bg-white active:text-[#635A4F]'
         }`}
         style={{
-          boxShadow: active && !isSettings ? '0 1px 2px rgba(0, 0, 0, 0.04)' : 'none',
+          boxShadow: active ? '0 1px 2px rgba(0, 0, 0, 0.04)' : 'none',
           transition: 'none',
           boxSizing: 'border-box',
           willChange: 'background-color, color, border-color',
@@ -381,15 +414,14 @@ export const Sidebar = ({
       >
         <div className="relative">
           <Icon
-            className="w-[18px] h-[18px] flex-shrink-0"
+            className="w-5 h-5 flex-shrink-0 text-[#635A4F]"
             strokeWidth={1.75}
           />
-          {/* Pulsing indicator for active chat query */}
           {showChatIndicator && (
             <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-amber-500 rounded-full animate-pulse" />
           )}
         </div>
-        <span className="text-[14px] font-normal flex-1 text-left">
+        <span className="text-[14px] font-normal flex-1 text-left text-[#635A4F]">
           {item.label}
         </span>
         {item.badge && (
@@ -404,6 +436,7 @@ export const Sidebar = ({
   // Calculate actual width values
   const getSidebarWidthValue = () => {
     if (isCollapsed) return 0;
+    if (isIconsOnly) return SIDEBAR_ICONS_ONLY_WIDTH;
     if (isExpanded) return 320;
     return 224; // w-56 = 224px
   };
@@ -456,172 +489,145 @@ export const Sidebar = ({
         }}
       >
         {!shouldHideSidebar && (
-          <div className="flex flex-col h-full pt-4 pb-3">
-            {/* User Profile Block - OpenAI style integrated dropdown */}
-            <div className="px-3 mb-1">
-              <div className="relative">
+          <div className="flex flex-col h-full pb-3 pt-12">
+            {/* Top-right (expanded) / same column as icons (icons-only): Show only icons / Expand sidebar toggle */}
+            {onIconsOnlyToggle && (
+              <div className={`absolute top-0 pt-3 z-10 ${isIconsOnly ? 'left-0 right-0 flex justify-center pl-[14px] pr-0' : 'right-0 flex items-center justify-end pr-2'}`}>
                 <button
-                  ref={brandButtonRef}
-                  onClick={() => setIsBrandDropdownOpen(!isBrandDropdownOpen)}
-                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded border transition-colors duration-75 text-left ${
-                    isBrandDropdownOpen 
-                      ? 'bg-white border-gray-300' 
-                      : 'hover:bg-white/60 border-transparent'
-                  }`}
-                  style={{
-                    boxShadow: isBrandDropdownOpen ? '0 1px 2px rgba(0, 0, 0, 0.04)' : 'none',
-                    transition: 'background-color 75ms'
-                  }}
-                  aria-label="Account menu"
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); onIconsOnlyToggle(); }}
+                  className="rounded border border-transparent text-[#635A4F] hover:bg-white/60 hover:text-[#554D42] active:bg-white active:text-[#554D42] transition-colors flex items-center justify-center shrink-0 p-1.5"
+                  aria-label={isIconsOnly ? 'Expand sidebar' : 'Show only icons'}
+                  title={isIconsOnly ? 'Expand sidebar' : 'Show only icons'}
                 >
-                  <Avatar className="h-8 w-8 flex-shrink-0 border border-gray-300/50">
-                    <AvatarImage 
-                      src={(() => {
-                        const base = userData?.profile_image || userData?.avatar_url || "/default profile icon.png";
-                        return base.startsWith('http') && profilePicCacheBust ? `${base}?t=${profilePicCacheBust}` : base;
-                      })()} 
-                      alt={userName}
-                      className="object-cover"
-                    />
-                    <AvatarFallback className="bg-white">
-                      <img 
-                        src="/default profile icon.png" 
-                        alt="Default profile" 
-                        className="w-full h-full object-cover rounded-full"
-                      />
-                    </AvatarFallback>
-                  </Avatar>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-[14px] font-normal text-gray-900 leading-tight">{userName}</p>
-                    <p className="text-[11px] font-normal text-gray-500 leading-tight">{userData?.email || userHandle}</p>
-                  </div>
-                  <ChevronDown 
-                    className={`w-4 h-4 text-gray-400 flex-shrink-0 transition-transform duration-200 ${
-                      isBrandDropdownOpen ? 'rotate-180' : ''
-                    }`} 
-                    strokeWidth={1.5} 
-                  />
+                  <img src="/sidebar.png" alt="" className="h-5 w-5 object-contain" />
                 </button>
-
-                {/* Integrated Dropdown Menu - OpenAI style */}
-                <AnimatePresence>
-                  {isBrandDropdownOpen && (
-                    <motion.div
-                      ref={brandDropdownRef}
-                      initial={{ opacity: 0, height: 0 }}
-                      animate={{ opacity: 1, height: 'auto' }}
-                      exit={{ opacity: 0, height: 0 }}
-                      transition={{ duration: 0.2, ease: [0.4, 0, 0.2, 1] }}
-                      className="overflow-hidden"
-                    >
-                      <div className="mt-3">
-                        {/* Menu Items — same size and style as nav items (px-3 py-1.5, gap-3, text-[14px], icon 18px) */}
-                        <div className="pt-2 pb-0.5">
-                          {/* Profile */}
-                          <button
-                            onClick={() => {
-                              closeFilingSidebar();
-                              onNavigate?.('profile');
-                            }}
-                            className={`w-full flex items-center gap-3 px-3 py-1.5 rounded transition-colors text-left group border ${
-                              activeItem === 'profile'
-                                ? 'bg-white text-gray-900 border-gray-300'
-                                : 'text-gray-600 hover:bg-white/60 hover:text-gray-900 border-transparent'
-                            }`}
-                            style={
-                              activeItem === 'profile'
-                                ? { boxShadow: '0 1px 2px rgba(0, 0, 0, 0.04)' }
-                                : undefined
-                            }
-                          >
-                            <User className="w-[18px] h-[18px] flex-shrink-0" strokeWidth={1.75} />
-                            <span className="text-[14px] font-normal">Profile</span>
-                          </button>
-
-                          {/* Sign Out */}
-                          <button
-                            onClick={() => {
-                              setIsBrandDropdownOpen(false);
-                              onSignOut?.();
-                            }}
-                            className="w-full flex items-center gap-3 px-3 py-1.5 rounded text-gray-600 hover:bg-white/60 hover:text-gray-900 transition-colors text-left group"
-                          >
-                            <LogOut className="w-[18px] h-[18px] flex-shrink-0" strokeWidth={1.75} />
-                            <span className="text-[14px] font-normal">Sign out</span>
-                          </button>
-                        </div>
-                      </div>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
               </div>
-            </div>
+            )}
 
-            {/* Navigation — ⌘E toggles sidebar open/closed (handler in DashboardLayout) */}
-            <div className="px-4 mt-[80px] mb-0.5" title="Toggle sidebar (⌘E)">
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] font-normal text-gray-400 uppercase tracking-wider">Navigation</span>
-                <span className="text-[10px] text-gray-400 font-normal px-1.5 py-0.5 rounded bg-white/80">⌘E</span>
-              </div>
-            </div>
-
-            {/* New chat — fullscreen chat with input at bottom (as if query already submitted) */}
-            <div className="pl-2.5 pr-3 mt-4 mb-0.5">
+            {/* New chat + Search — same spacing in both modes; icons-only shifted right to center in sidebar+rail */}
+            <div className={isIconsOnly ? 'flex flex-col items-center pl-[14px] pr-0 space-y-px mt-8 mb-5' : 'px-3 mt-8 space-y-px mb-5'}>
               <button
                 onClick={() => {
                   onRestoreActiveChat?.();
                   onNewChat?.();
                 }}
-                className="w-full flex items-center gap-3 pl-2 pr-3 py-1.5 rounded border border-transparent text-gray-600 hover:bg-white/60 hover:text-gray-900 active:bg-white active:text-gray-900 transition-colors"
+                className={`flex items-center rounded border border-transparent text-[#635A4F] hover:bg-white/60 hover:text-[#635A4F] active:bg-white active:text-[#635A4F] transition-colors ${isIconsOnly ? 'justify-center p-2 w-10' : 'w-full gap-3 pl-2 pr-3 py-1.5'}`}
                 aria-label="New chat"
               >
-                <span className="flex h-[22px] w-[22px] flex-shrink-0 items-center justify-center rounded-full ml-0.5 border-[0.5px] border-gray-400 bg-transparent">
-                  <Plus className="h-[12px] w-[12px] text-gray-800" strokeWidth={2} />
-                </span>
-                <span className="text-[14px] font-normal text-left">New chat</span>
+                <img src="/newchat1.png" alt="" className="h-6 w-6 flex-shrink-0 object-contain" />
+                {!isIconsOnly && <span className="text-[14px] font-normal flex-1 text-left text-[#635A4F]" style={{ marginLeft: '-2px' }}>New chat</span>}
               </button>
-            </div>
-
-            {/* Search — open command palette modal */}
-            {onOpenSearch && (
-              <div className="pl-2.5 pr-3 mt-0.5 mb-4">
+              {onOpenSearch && (
                 <button
                   onClick={onOpenSearch}
-                  className={`w-full flex items-center gap-3 pl-2 pr-3 py-1.5 rounded border transition-colors ${
+                  className={`w-full flex items-center rounded border transition-colors ${
                     isSearchButtonActive
-                      ? 'bg-white text-gray-900 border-gray-300'
-                      : 'border-transparent text-gray-600 hover:bg-white/60 hover:text-gray-900 active:bg-white active:text-gray-900'
-                  }`}
+                      ? 'bg-white text-[#635A4F] border-gray-300'
+                      : 'border-transparent text-[#635A4F] hover:bg-white/60 hover:text-[#635A4F] active:bg-white active:text-[#635A4F]'
+                  } ${isIconsOnly ? 'justify-center p-2 w-10' : 'gap-3 px-3 py-1.5 w-full'}`}
                   style={{
                     boxShadow: isSearchButtonActive ? '0 1px 2px rgba(0, 0, 0, 0.04)' : 'none',
                   }}
                   aria-label="Search"
                 >
-                  <span className="flex h-[22px] w-[22px] flex-shrink-0 items-center justify-center ml-0.5">
-                    <Search className={`h-4 w-4 ${isSearchButtonActive ? 'text-gray-900' : 'text-gray-700'}`} strokeWidth={2} />
-                  </span>
-                  <span className="text-[14px] font-normal text-left">Search</span>
+                  <Search className={`h-5 w-5 flex-shrink-0 text-[#635A4F]`} strokeWidth={2} />
+                  {!isIconsOnly && <span className="text-[14px] font-normal text-left text-[#635A4F]">Search</span>}
                 </button>
-              </div>
-            )}
+              )}
+            </div>
 
-            {/* Primary Navigation */}
-            <div className="px-3 space-y-px">
+            {/* Primary Navigation; icons-only: narrow column shifted right to center in sidebar+rail */}
+            <div className={isIconsOnly ? 'flex flex-col items-center pl-[14px] pr-0 space-y-px' : 'px-3 space-y-px'}>
               {primaryNav.map(renderNavItem)}
             </div>
 
             {/* Spacer */}
             <div className="flex-1" />
 
-            {/* Secondary Navigation */}
-            <div className="px-3 space-y-px">
-              {secondaryNav.map(renderNavItem)}
+            {/* Profile strip at bottom — Claude style; icons-only shifted right to center in sidebar+rail */}
+            <div className={`relative flex-shrink-0 border-t border-gray-200/80 py-2 mt-auto ${isIconsOnly ? 'flex justify-center pl-[14px] pr-0' : 'px-3'}`}>
+              <AnimatePresence>
+                {!isExpanded && isBrandDropdownOpen && (
+                  <motion.div
+                    ref={brandDropdownRef}
+                    initial={{ opacity: 0, y: 4 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: 4 }}
+                    transition={{ duration: 0.15, ease: [0.4, 0, 0.2, 1] }}
+                    className={`absolute bottom-full mb-1 rounded-lg border border-gray-200 bg-white py-2 shadow-lg z-[10002] ${isIconsOnly ? 'left-0 right-0' : 'left-3 right-3'}`}
+                    style={{ boxShadow: '0 4px 12px rgba(0, 0, 0, 0.1)' }}
+                  >
+                    <div className="p-3 border-b border-gray-100 flex items-center justify-center">
+                      <p className="text-[13px] font-normal text-gray-900 text-center truncate w-full">{userData?.email || userHandle}</p>
+                    </div>
+                    <div className="pt-1 pb-0.5">
+                      <button
+                        onClick={() => {
+                          closeFilingSidebar();
+                          setIsBrandDropdownOpen(false);
+                          onNavigate?.('settings');
+                        }}
+                        className="w-full flex items-center gap-3 px-3 py-2 rounded text-[#635A4F] hover:bg-gray-50 transition-colors text-left"
+                      >
+                        <Settings className="w-5 h-5 flex-shrink-0 text-[#635A4F]" strokeWidth={1.75} />
+                        <span className="text-[14px] font-normal text-[#635A4F]">Settings</span>
+                      </button>
+                      <button
+                        onClick={() => {
+                          setIsBrandDropdownOpen(false);
+                          onSignOut?.();
+                        }}
+                        className="w-full flex items-center gap-3 px-3 py-2 rounded text-[#635A4F] hover:bg-gray-50 transition-colors text-left"
+                      >
+                        <LogOut className="w-5 h-5 flex-shrink-0 text-[#635A4F]" strokeWidth={1.75} />
+                        <span className="text-[14px] font-normal text-[#635A4F]">Log out</span>
+                      </button>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+              <button
+                ref={brandButtonRef}
+                onClick={() => setIsBrandDropdownOpen(!isBrandDropdownOpen)}
+                className={`w-full flex items-center rounded border transition-colors duration-75 text-left ${
+                  isBrandDropdownOpen ? 'bg-white border-gray-300' : 'hover:bg-white/60 border-transparent'
+                } ${isIconsOnly ? 'justify-center p-2 w-10' : 'gap-3 px-2 py-1.5 w-full'}`}
+                style={{ boxShadow: isBrandDropdownOpen ? '0 1px 2px rgba(0, 0, 0, 0.04)' : 'none' }}
+                aria-label="Account menu"
+              >
+                <Avatar className="flex-shrink-0 border border-gray-300/50 h-9 w-9">
+                  <AvatarImage
+                    src={(() => {
+                      const base = userData?.profile_image || userData?.avatar_url || "/default profile icon.png";
+                      return base.startsWith('http') && profilePicCacheBust ? `${base}?t=${profilePicCacheBust}` : base;
+                    })()}
+                    alt={userName}
+                    className="object-cover"
+                  />
+                  <AvatarFallback className="bg-white">
+                    <img src="/default profile icon.png" alt="" className="w-full h-full object-cover rounded-full" />
+                  </AvatarFallback>
+                </Avatar>
+                {!isIconsOnly && (
+                  <>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-[12px] font-normal text-[#635A4F] leading-tight truncate">{userName}</p>
+                      <p className="text-[11px] font-normal text-[#635A4F] leading-tight truncate">Free plan</p>
+                    </div>
+                    <ChevronDown
+                      className={`w-4 h-4 text-[#7A7166] flex-shrink-0 transition-transform duration-200 ${isBrandDropdownOpen ? 'rotate-180' : ''}`}
+                      strokeWidth={1.5}
+                    />
+                  </>
+                )}
+              </button>
             </div>
           </div>
         )}
 
-        {/* Expanded Sidebar Content (Chat History) - OpenAI/Claude style */}
-        {isExpanded && !shouldHideSidebar && (
+        {/* Expanded Sidebar Content (Chat History) - not shown when icons-only */}
+        {isExpanded && !shouldHideSidebar && !isIconsOnly && (
           <div className="absolute inset-0 flex flex-col" style={{ background: '#F2F2EF' }}>
             {/* Header with New Chat button */}
             <div className="px-3 pt-4 pb-2">
@@ -632,45 +638,41 @@ export const Sidebar = ({
                     // It should NEVER affect the agent sidebar (chat panel) - they are independent
                     onExpand?.();
                   }}
-                  className="p-1.5 rounded-md text-gray-900 hover:text-gray-700 hover:bg-white/60 transition-colors"
+                  className="p-1.5 rounded-md text-[#635A4F] hover:text-[#635A4F] hover:bg-white/60 transition-colors"
                   aria-label="Close"
                 >
-                  <ListEnd className="w-4 h-4 text-gray-900" strokeWidth={1.75} />
+                  <ListEnd className="w-3.5 h-3.5 text-[#635A4F]" strokeWidth={1.75} />
                 </button>
               </div>
               
-              {/* New Chat Button - prominent like OpenAI */}
-              <button
-                onClick={onNewChat}
-                className="w-full flex items-center gap-2.5 px-3 py-2.5 bg-white hover:bg-gray-50 rounded-lg transition-colors border border-gray-200/60"
-                style={{ boxShadow: '0 1px 2px rgba(0, 0, 0, 0.04)' }}
-              >
-                <span className="flex h-[22px] w-[22px] flex-shrink-0 items-center justify-center rounded-full border-[0.5px] border-gray-400 bg-transparent">
-                  <Plus className="h-[12px] w-[12px] text-gray-800" strokeWidth={2} />
-                </span>
-                <span className="text-gray-800 font-normal text-[14px]">New chat</span>
-              </button>
-
-              {/* Search Button - same highlight as collapsed sidebar and nav items */}
-              {onOpenSearch && (
+              {/* New chat + Search — same spacing as nav (space-y-px) */}
+              <div className="space-y-px mb-4">
                 <button
-                  onClick={onOpenSearch}
-                  className={`w-full flex items-center gap-3 pl-2 pr-3 py-1.5 mt-2 mb-4 rounded border transition-colors ${
-                    isSearchButtonActive
-                      ? 'bg-white text-gray-900 border-gray-300'
-                      : 'border-transparent text-gray-600 hover:bg-white/60 hover:text-gray-900 active:bg-white active:text-gray-900'
-                  }`}
-                  style={{
-                    boxShadow: isSearchButtonActive ? '0 1px 2px rgba(0, 0, 0, 0.04)' : 'none',
-                  }}
-                  aria-label="Search"
+                  onClick={onNewChat}
+                  className="w-full flex items-center gap-3 px-3 py-1.5 bg-white hover:bg-gray-50 rounded-lg transition-colors border border-gray-200/60"
+                  style={{ boxShadow: '0 1px 2px rgba(0, 0, 0, 0.04)' }}
                 >
-                  <span className="flex h-[22px] w-[22px] flex-shrink-0 items-center justify-center ml-0.5">
-                    <Search className={`h-4 w-4 ${isSearchButtonActive ? 'text-gray-900' : 'text-gray-700'}`} strokeWidth={2} />
-                  </span>
-                  <span className="text-[14px] font-normal text-left">Search</span>
+                  <img src="/newchat1.png" alt="" className="h-6 w-6 flex-shrink-0 object-contain" />
+                  <span className="text-[#635A4F] font-normal text-[14px] flex-1 text-left" style={{ marginLeft: '-2px' }}>New chat</span>
                 </button>
-              )}
+                {onOpenSearch && (
+                  <button
+                    onClick={onOpenSearch}
+                    className={`w-full flex items-center gap-3 px-3 py-1.5 rounded border transition-colors ${
+                      isSearchButtonActive
+                        ? 'bg-white text-[#635A4F] border-gray-300'
+                        : 'border-transparent text-[#635A4F] hover:bg-white/60 hover:text-[#635A4F] active:bg-white active:text-[#635A4F]'
+                    }`}
+                    style={{
+                      boxShadow: isSearchButtonActive ? '0 1px 2px rgba(0, 0, 0, 0.04)' : 'none',
+                    }}
+                    aria-label="Search"
+                  >
+                    <Search className="h-5 w-5 flex-shrink-0 text-[#635A4F]" strokeWidth={2} />
+                    <span className="text-[14px] font-normal text-left text-[#635A4F]">Search</span>
+                  </button>
+                )}
+              </div>
             </div>
 
             {/* Chat List - scrollable */}
@@ -697,7 +699,7 @@ export const Sidebar = ({
               {/* Chat List */}
               {displayedChats.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-16 px-4">
-                  <MessageSquare className="w-8 h-8 text-gray-300 mb-3" strokeWidth={1.5} />
+                  <MessageSquare className="w-6 h-6 text-gray-300 mb-3" strokeWidth={1.5} />
                   <p className="text-gray-400 text-[14px] text-center">
                     {showArchived ? 'No archived chats' : 'Start a new conversation'}
                   </p>
@@ -737,7 +739,7 @@ export const Sidebar = ({
                               onClick={(e) => handleMenuToggle(e, chat.id)}
                               className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-gray-100 transition-all flex-shrink-0"
                             >
-                              <MoreHorizontal className="w-4 h-4 text-gray-400" />
+                              <MoreHorizontal className="w-3.5 h-3.5 text-gray-400" />
                             </button>
                           </div>
                         )}
@@ -785,6 +787,80 @@ export const Sidebar = ({
               )}
             </div>
 
+            {/* Profile strip at bottom — same as main sidebar */}
+            <div className="relative flex-shrink-0 border-t border-gray-200/80 px-3 py-2">
+              <AnimatePresence>
+                {isExpanded && isBrandDropdownOpen && (
+                  <motion.div
+                    ref={brandDropdownRef}
+                    initial={{ opacity: 0, y: 4 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: 4 }}
+                    transition={{ duration: 0.15, ease: [0.4, 0, 0.2, 1] }}
+                    className="absolute bottom-full left-3 right-3 mb-1 rounded-lg border border-gray-200 bg-white py-2 shadow-lg z-[10002]"
+                    style={{ boxShadow: '0 4px 12px rgba(0, 0, 0, 0.1)' }}
+                  >
+                    <div className="p-3 border-b border-gray-100 flex items-center justify-center">
+                      <p className="text-[13px] font-normal text-gray-900 text-center truncate w-full">{userData?.email || userHandle}</p>
+                    </div>
+                    <div className="pt-1 pb-0.5">
+                      <button
+                        onClick={() => {
+                          closeFilingSidebar();
+                          setIsBrandDropdownOpen(false);
+                          onNavigate?.('settings');
+                        }}
+                        className="w-full flex items-center gap-3 px-3 py-2 rounded text-[#635A4F] hover:bg-gray-50 transition-colors text-left"
+                      >
+                        <Settings className="w-5 h-5 flex-shrink-0 text-[#635A4F]" strokeWidth={1.75} />
+                        <span className="text-[14px] font-normal text-[#635A4F]">Settings</span>
+                      </button>
+                      <button
+                        onClick={() => {
+                          setIsBrandDropdownOpen(false);
+                          onSignOut?.();
+                        }}
+                        className="w-full flex items-center gap-3 px-3 py-2 rounded text-[#635A4F] hover:bg-gray-50 transition-colors text-left"
+                      >
+                        <LogOut className="w-5 h-5 flex-shrink-0 text-[#635A4F]" strokeWidth={1.75} />
+                        <span className="text-[14px] font-normal text-[#635A4F]">Log out</span>
+                      </button>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+              <button
+                ref={brandButtonRefExpanded}
+                onClick={() => setIsBrandDropdownOpen(!isBrandDropdownOpen)}
+                className={`w-full flex items-center gap-3 px-2 py-1.5 rounded border transition-colors duration-75 text-left ${
+                  isBrandDropdownOpen ? 'bg-white border-gray-300' : 'hover:bg-white/60 border-transparent'
+                }`}
+                style={{ boxShadow: isBrandDropdownOpen ? '0 1px 2px rgba(0, 0, 0, 0.04)' : 'none' }}
+                aria-label="Account menu"
+              >
+                <Avatar className="h-8 w-8 flex-shrink-0 border border-gray-300/50">
+                  <AvatarImage
+                    src={(() => {
+                      const base = userData?.profile_image || userData?.avatar_url || "/default profile icon.png";
+                      return base.startsWith('http') && profilePicCacheBust ? `${base}?t=${profilePicCacheBust}` : base;
+                    })()}
+                    alt={userName}
+                    className="object-cover"
+                  />
+                  <AvatarFallback className="bg-white">
+                    <img src="/default profile icon.png" alt="" className="w-full h-full object-cover rounded-full" />
+                  </AvatarFallback>
+                </Avatar>
+                <div className="flex-1 min-w-0">
+                  <p className="text-[12px] font-normal text-[#635A4F] leading-tight truncate">{userName}</p>
+                  <p className="text-[11px] font-normal text-[#635A4F] leading-tight truncate">Free plan</p>
+                </div>
+                <ChevronDown
+                  className={`w-4 h-4 text-[#7A7166] flex-shrink-0 transition-transform duration-200 ${isBrandDropdownOpen ? 'rotate-180' : ''}`}
+                  strokeWidth={1.5}
+                />
+              </button>
+            </div>
           </div>
         )}
       </div>
@@ -793,6 +869,7 @@ export const Sidebar = ({
       {/* Hidden only when Share feedback modal is open (search modal does not hide the rail) */}
       <button
         type="button"
+        data-view-dropdown-ignore
         onClick={(e) => {
           e.stopPropagation();
           onToggle?.();
@@ -804,7 +881,7 @@ export const Sidebar = ({
           zIndex: 100003, // Higher than dropdown backdrop (100001) and dropdown (100002) to ensure it's always clickable
           // When sidebar is collapsed, position at left: 0
           // Otherwise, position at the right edge of the sidebar
-          left: isCollapsed ? '0px' : (isExpanded ? '320px' : '224px'),
+          left: isCollapsed ? '0px' : `${sidebarWidthValue}px`,
           // Match agentsidebar background
           background: '#F2F2EF',
           pointerEvents: isFeedbackModalOpen ? 'none' : 'auto',

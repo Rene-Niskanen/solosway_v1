@@ -6,13 +6,13 @@ import {
   DialogContent,
 } from "@/components/ui/dialog";
 import {
-  Plus,
   MessageSquare,
   Files,
   Upload,
   CornerDownLeft,
   ChevronRight,
   ChevronLeft,
+  Search,
 } from "lucide-react";
 import { useChatHistory } from "./ChatHistoryContext";
 import { cn } from "@/lib/utils";
@@ -361,16 +361,19 @@ export function SearchOrStartChatModal({
       >
         {/* Search bar — pr-12 leaves space for the dialog's close (X) button */}
         <div
-          className="flex shrink-0 items-center gap-2 px-3 pr-12 py-6 rounded-t-xl"
+          className="flex shrink-0 items-center gap-3 px-4 pr-12 py-6 rounded-t-xl"
           style={{ backgroundColor: "#F5F5F5" }}
         >
+          <span className="flex h-7 w-7 shrink-0 items-center justify-center text-neutral-400" aria-hidden>
+            <Search className="h-7 w-7" strokeWidth={2} />
+          </span>
           <input
             ref={inputRef}
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder={showProjectsView ? "Search projects" : showFilesView ? "Search files" : chatsAndProjectsOnly ? "Search chats and projects" : "Search or start a chat"}
-            className="flex-1 min-w-0 h-full bg-transparent text-sm pl-4 text-neutral-600 placeholder:text-neutral-300 font-medium outline-none"
+            className="flex-1 min-w-0 h-full bg-transparent text-sm pl-0 text-neutral-600 placeholder:text-neutral-400 placeholder:font-normal font-medium outline-none"
             aria-label="Search or start a chat"
           />
         </div>
@@ -545,9 +548,7 @@ export function SearchOrStartChatModal({
                 >
                   {item.type === "new-chat" && (
                     <>
-                      <span className="flex h-[22px] w-[22px] flex-shrink-0 items-center justify-center rounded-full border-[0.5px] border-gray-400 bg-transparent">
-                        <Plus className="h-3 w-3 text-gray-700" strokeWidth={2} />
-                      </span>
+                      <img src="/newchat1.png" alt="" className="h-[22px] w-[22px] flex-shrink-0 object-contain" />
                       <span className="flex-1 min-w-0 text-[13px] font-normal text-gray-900 truncate">
                         {item.label}
                       </span>
@@ -558,9 +559,7 @@ export function SearchOrStartChatModal({
                   )}
                   {item.type === "new-chat-query" && (
                     <>
-                      <span className="flex h-[22px] w-[22px] flex-shrink-0 items-center justify-center rounded-full border-[0.5px] border-gray-400 bg-transparent">
-                        <Plus className="h-3 w-3 text-gray-700" strokeWidth={2} />
-                      </span>
+                      <img src="/newchat1.png" alt="" className="h-[22px] w-[22px] flex-shrink-0 object-contain" />
                       <span className="flex-1 min-w-0 text-[13px] font-normal text-gray-900 truncate">
                         {item.label}
                       </span>
@@ -571,8 +570,8 @@ export function SearchOrStartChatModal({
                   )}
                   {item.type === "recent-chat" && (
                     <>
-                      <span className="flex h-[22px] w-[22px] shrink-0 items-center justify-center text-gray-600">
-                        <MessageSquare className="h-[22px] w-[22px]" strokeWidth={1.5} />
+                      <span className="flex h-4 w-4 shrink-0 items-center justify-center text-gray-600">
+                        <MessageSquare className="h-4 w-4" strokeWidth={1.5} />
                       </span>
                       <span className="flex-1 min-w-0 text-[13px] font-normal text-gray-900 truncate">
                         {item.label}

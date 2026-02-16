@@ -14,6 +14,8 @@ import { CompanyLogoUpload } from "./CompanyLogoUpload";
 
 interface ProfileProps {
   onNavigate?: (view: string, options?: { showMap?: boolean }) => void;
+  /** When true, render a compact single-column layout for use inside Settings > General (no contributions/heatmap). */
+  embeddedInSettings?: boolean;
 }
 
 interface ContributionDay {
@@ -44,7 +46,7 @@ interface UserData {
   company_logo_url?: string;
 }
 
-const Profile: React.FC<ProfileProps> = ({ onNavigate }) => {
+const Profile: React.FC<ProfileProps> = ({ onNavigate, embeddedInSettings }) => {
   const [userData, setUserData] = React.useState<UserData | null>(null);
   const [profilePicCacheBust, setProfilePicCacheBust] = React.useState<number | null>(null);
   const [loading, setLoading] = React.useState(true);
@@ -344,29 +346,38 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate }) => {
   }
 
   return (
-    <div className="min-h-screen w-full" style={{ backgroundColor: '#f9fafb', padding: '40px 24px' }}>
-      <div style={{ maxWidth: '1200px', margin: '0 auto', width: '100%' }}>
-        <div 
+    <div
+      className={embeddedInSettings ? 'w-full' : 'min-h-screen w-full'}
+      style={embeddedInSettings ? { padding: 0 } : { backgroundColor: '#f9fafb', padding: '40px 24px' }}
+    >
+      <div style={{ maxWidth: embeddedInSettings ? '100%' : '1200px', margin: embeddedInSettings ? 0 : '0 auto', width: '100%' }}>
+        <div
           className="transition-all duration-200"
-          style={{ 
-            backgroundColor: '#ffffff',
-            boxShadow: '0 1px 3px rgba(0, 0, 0, 0.05), 0 1px 2px rgba(0, 0, 0, 0.1)',
-            transition: 'all 200ms cubic-bezier(0.4, 0, 0.2, 1)',
-            boxSizing: 'border-box',
-            borderRadius: '16px',
-            border: '1px solid #e5e7eb',
-            overflow: 'hidden',
-          }}
+          style={
+            embeddedInSettings
+              ? { backgroundColor: 'transparent', boxSizing: 'border-box' }
+              : {
+                  backgroundColor: '#ffffff',
+                  boxShadow: '0 1px 3px rgba(0, 0, 0, 0.05), 0 1px 2px rgba(0, 0, 0, 0.1)',
+                  transition: 'all 200ms cubic-bezier(0.4, 0, 0.2, 1)',
+                  boxSizing: 'border-box',
+                  borderRadius: '16px',
+                  border: '1px solid #e5e7eb',
+                  overflow: 'hidden',
+                }
+          }
         >
-          <div className="flex flex-col lg:flex-row">
-            {/* Left Sidebar */}
-            <div style={{ 
-              width: '100%',
-              maxWidth: '320px',
-              backgroundColor: '#ffffff',
-              borderRight: '1px solid #e5e7eb',
-              padding: '32px 28px',
-            }}>
+          <div className={embeddedInSettings ? 'flex flex-col' : 'flex flex-col lg:flex-row'}>
+            {/* Left Sidebar / Profile form */}
+            <div
+              style={{
+                width: '100%',
+                maxWidth: embeddedInSettings ? '100%' : '320px',
+                backgroundColor: embeddedInSettings ? 'transparent' : '#ffffff',
+                borderRight: embeddedInSettings ? 'none' : '1px solid #e5e7eb',
+                padding: embeddedInSettings ? '0' : '32px 28px',
+              }}
+            >
               {/* Profile Picture */}
               <div style={{ marginBottom: space.xxl, textAlign: 'center' }}>
                 <div 
@@ -719,7 +730,8 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate }) => {
               </div>
             </div>
 
-            {/* Right Main Content */}
+            {/* Right Main Content — hidden when embedded in Settings */}
+            {!embeddedInSettings && (
             <div style={{ flex: 1, padding: space.xxl }}>
               {/* Contributions Heatmap Section */}
               <div style={{ marginBottom: space.xxl }}>
@@ -1220,6 +1232,7 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate }) => {
                 )}
               </div>
             </div>
+            )}
           </div>
         </div>
       </div>

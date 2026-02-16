@@ -28,6 +28,8 @@ const toastVariants = cva(
     variants: {
       variant: {
         default: "w-full justify-between space-x-3 border border-gray-200 bg-white p-3 pr-4 text-gray-900",
+        compact:
+          "w-fit max-w-[200px] justify-between gap-2 border border-gray-200 bg-white py-1.5 pl-2 pr-7 text-gray-900",
         destructive:
           "destructive w-fit max-w-[320px] justify-between gap-2 border border-red-100 bg-red-50 p-2 pr-8 text-red-800",
       },

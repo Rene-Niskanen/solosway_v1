@@ -6268,15 +6268,15 @@ def _perform_document_deletion(document_id):
     success, document_data, error = doc_storage.get_document(str(document_id), company_name)
     
     if not success:
-            if error == "Document not found":
-                return jsonify({'error': 'Document not found'}), 404
-                return jsonify({'error': f'Failed to retrieve document: {error}'}), 500
-    
+        if error == "Document not found":
+            return jsonify({'error': 'Document not found'}), 404
+        return jsonify({'error': f'Failed to retrieve document: {error}'}), 500
+
     # Extract document fields and verify ownership
-    s3_path = document_data.get('s3_path')
+    s3_path = document_data.get('s3_path') or None
     original_filename = document_data.get('original_filename')
     document_business_uuid = _normalize_uuid_str(document_data.get('business_uuid'))
-    
+
     if not document_business_uuid or document_business_uuid != user_business_uuid:
         logger.warning(
             "Document business mismatch (doc=%s, user=%s). Denying deletion.",
@@ -6284,22 +6284,23 @@ def _perform_document_deletion(document_id):
             user_business_uuid,
         )
         return jsonify({'error': 'Unauthorized'}), 403
-    
+
+    # Allow deletion even when s3_path is missing (e.g. document still processing or created via another path).
+    # UnifiedDeletionService skips S3 deletion when s3_path is None and still removes DB records.
     if not s3_path:
-        logger.error(f"Document {document_id} missing s3_path")
-        return jsonify({'error': 'Document missing S3 path'}), 400
+        logger.info(f"Document {document_id} has no s3_path; will delete DB record only")
 
     logger.info(f"🗑️ DELETE document {document_id} ({original_filename}) by {current_user.email}")
-    
+
     # Use UnifiedDeletionService for all deletion operations
     from .services.unified_deletion_service import UnifiedDeletionService
     deletion_service = UnifiedDeletionService()
-    
+
     result = deletion_service.delete_document_complete(
         document_id=str(document_id),
         business_id=document_business_uuid,
         s3_path=s3_path,
-        delete_s3=True,
+        delete_s3=bool(s3_path),
         recompute_properties=True,
         cleanup_orphans=True
     )

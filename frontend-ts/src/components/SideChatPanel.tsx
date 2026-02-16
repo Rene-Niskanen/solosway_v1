@@ -5,7 +5,7 @@ import { useMemo } from "react";
 import { createPortal, flushSync } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { generateAnimatePresenceKey, generateConditionalKey, generateUniqueKey } from '../utils/keyGenerator';
-import { ChevronLeft, ChevronRight, ChevronDown, ChevronUp, ArrowUp, Paperclip, Mic, Map, Globe, X, SquareDashedMousePointer, Scan, Fullscreen, Plus, PanelLeftOpen, PanelRightClose, PictureInPicture2, Trash2, CreditCard, MoveDiagonal, Square, Files, Image as ImageIcon, File as FileIcon, FileCheck, Minimize, Minimize2, Workflow, Home, Brain, AudioLines, MessageCircleDashed, Copy, Search, MessageSquare, Pencil, Check, Highlighter, SlidersHorizontal, BookOpen, Download, ThumbsUp, ThumbsDown, Link2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, ChevronDown, ChevronUp, ArrowUp, Paperclip, Mic, Map, Globe, X, SquareDashedMousePointer, Scan, Fullscreen, PanelLeftOpen, PanelRightClose, PictureInPicture2, Trash2, CreditCard, MoveDiagonal, Square, Files, Image as ImageIcon, File as FileIcon, FileCheck, Minimize, Minimize2, Workflow, Home, Brain, AudioLines, MessageCircleDashed, Copy, Search, MessageSquare, Pencil, Check, Highlighter, SlidersHorizontal, BookOpen, Download, ThumbsUp, ThumbsDown, Link2, Star, FolderPlus } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { FileAttachment, FileAttachmentData } from './FileAttachment';
 import { PropertyAttachmentData } from './PropertyAttachment';
@@ -48,7 +48,7 @@ import { diffLines } from 'diff';
 import { AtMentionPopover } from './AtMentionPopover';
 import type { AtMentionItem } from './AtMentionPopover';
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator } from '@/components/ui/dropdown-menu';
 import { getFilteredAtMentionItems, preloadAtMentionCache } from '@/services/atMentionCache';
 import { SegmentInput, type SegmentInputHandle } from './SegmentInput';
 import { useSegmentInput, buildInitialSegments } from '@/hooks/useSegmentInput';
@@ -124,7 +124,7 @@ export const CHAT_PANEL_WIDTH = {
   DOC_PREVIEW_MIN: 380,
 } as const;
 
-/** Width of the toggle rail on the left edge of the agent sidebar (ChatPanel). Must match MainContent AGENT_TOGGLE_RAIL_WIDTH. */
+/** Width of the toggle + resize rail on the left edge of the agent sidebar (ChatPanel). Must match MainContent AGENT_TOGGLE_RAIL_WIDTH. */
 const AGENT_SIDEBAR_RAIL_WIDTH = 12;
 
 /** Rotating titles for new-chat empty state (ChatGPT-style); one shown per session */
@@ -151,6 +151,8 @@ interface WidthCalculationParams {
   isManualFullscreen?: boolean;
   /** When true, chat is the only content (no map) - e.g. Chats view - use full width */
   isChatOnlyView?: boolean;
+  /** When true, open chat as 50/50 split over map (e.g. Tools → Chat on map bar) */
+  prefer50SplitOnMap?: boolean;
 }
 
 interface WidthCalculationResult {
@@ -184,6 +186,7 @@ export function calculateChatPanelWidth(params: WidthCalculationParams): WidthCa
     shouldExpand = false,
     isManualFullscreen = false,
     isChatOnlyView = false,
+    prefer50SplitOnMap = false,
   } = params;
 
   // Agent sidebar (right-side ChatPanel) reserve: panel width + toggle rail when open
@@ -191,11 +194,21 @@ export function calculateChatPanelWidth(params: WidthCalculationParams): WidthCa
   const availableWidth = (typeof window !== 'undefined' ? window.innerWidth : 1920) - sidebarWidth - agentSidebarReserve;
   const shouldUse50Percent = isDocumentPreviewOpen || isPropertyDetailsOpen;
 
-  // PRIORITY 1: User has manually resized the panel
-  if (draggedWidth !== null) {
+  // PRIORITY 1: User has manually resized the panel (only when agent sidebar is closed; when open, one sticky boundary)
+  if (draggedWidth !== null && !isChatPanelOpen) {
     return {
       widthPx: draggedWidth,
       widthCss: `${draggedWidth}px`,
+    };
+  }
+
+  // PRIORITY 2a: Tools → Chat on map: 50/50 split over map (no property/details)
+  if (prefer50SplitOnMap) {
+    const availableForSplit = (typeof window !== 'undefined' ? window.innerWidth : 1920) - sidebarWidth - agentSidebarReserve;
+    const halfWidth = Math.max(0, availableForSplit / 2);
+    return {
+      widthPx: halfWidth,
+      widthCss: `calc((100vw - ${sidebarWidth}px - ${agentSidebarReserve}px) / 2)`,
     };
   }
 
@@ -3201,6 +3214,7 @@ interface SideChatPanelProps {
   } | null;
   sidebarWidth?: number; // Width of the sidebar to offset the panel
   isSidebarCollapsed?: boolean; // Main navigation sidebar collapsed state (true when "closed" / icon-only)
+  isSidebarIconsOnly?: boolean; // When true, sidebar is in icons-only (small) mode; Close button shown only when false (big sidebar)
   isFilingSidebarClosing?: boolean; // Whether FilingSidebar is currently closing (for instant updates)
   isSidebarCollapsing?: boolean; // Whether main sidebar is currently collapsing (for instant updates)
   onQuerySubmit?: (query: string) => void; // Callback for submitting new queries from panel
@@ -3216,6 +3230,8 @@ interface SideChatPanelProps {
   onChatWidthChange?: (width: number) => void; // Callback when chat panel width changes (for map resizing)
   isPropertyDetailsOpen?: boolean; // Whether PropertyDetailsPanel is currently open
   shouldExpand?: boolean; // Whether chat should be expanded (for Analyse mode)
+  /** When true, show chat as 50/50 split over map (e.g. opened via Tools → Chat on map bar) */
+  prefer50SplitOnMap?: boolean;
   onQuickStartToggle?: () => void; // Callback to toggle QuickStartBar
   isQuickStartBarVisible?: boolean; // Whether QuickStartBar is currently visible
   isMapVisible?: boolean; // Whether map is currently visible (side-by-side with chat)
@@ -3320,6 +3336,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   citationContext,
   sidebarWidth = 56, // Default to desktop sidebar width (lg:w-14 = 56px)
   isSidebarCollapsed = false,
+  isSidebarIconsOnly = false, // Default to false
   isFilingSidebarClosing = false, // Default to false
   isSidebarCollapsing = false, // Default to false
   onQuerySubmit,
@@ -3335,6 +3352,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   onChatWidthChange,
   isPropertyDetailsOpen = false, // Default to false
   shouldExpand = false, // Default to false
+  prefer50SplitOnMap = false, // Default to false
   onQuickStartToggle,
   isQuickStartBarVisible = false, // Default to false
   isMapVisible = false, // Default to false
@@ -4133,7 +4151,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   const displayOptionsOpenTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const displayOptionsCloseTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const HOVER_OPEN_DELAY_MS = 150;
-  const HOVER_CLOSE_DELAY_MS = 200;
+  const HOVER_CLOSE_DELAY_MS = 400; // Longer delay so moving to dropdown or sidebar doesn't close it too easily
 
   const clearDisplayOptionsOpenTimeout = () => {
     if (displayOptionsOpenTimeoutRef.current !== null) {
@@ -4740,9 +4758,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       isChatPanelOpen,
       isManualFullscreen: isManualFullscreenRef.current,
       isChatOnlyView: isVisible && !isMapVisible,
+      prefer50SplitOnMap,
     });
     return widthPx >= 600;
-  }, [draggedWidth, isExpanded, isFullscreenMode, isPropertyDetailsOpen, expandedCardViewDoc, sidebarWidth, chatPanelWidth, isChatPanelOpen, isVisible, isMapVisible]);
+  }, [draggedWidth, isExpanded, isFullscreenMode, isPropertyDetailsOpen, expandedCardViewDoc, sidebarWidth, chatPanelWidth, isChatPanelOpen, isVisible, isMapVisible, prefer50SplitOnMap]);
 
   // Standalone Minimise shows for 10s after Expand; standalone Expand shows for 10s after Minimise
   const [hasUserExpandedFromView, setHasUserExpandedFromView] = React.useState(false);
@@ -4819,6 +4838,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         isChatPanelOpen,
         isManualFullscreen: isManualFullscreenRef.current,
         isChatOnlyView: isVisible && !isMapVisible,
+        prefer50SplitOnMap,
       });
       
       onChatWidthChange(widthPx);
@@ -4826,7 +4846,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       // Chat is hidden, notify parent that width is 0
       onChatWidthChange(0);
     }
-  }, [isExpanded, isVisible, isPropertyDetailsOpen, draggedWidth, onChatWidthChange, isFullscreenMode, sidebarWidth, isChatPanelOpen, chatPanelWidth, expandedCardViewDoc, isMapVisible]);
+  }, [isExpanded, isVisible, isPropertyDetailsOpen, draggedWidth, onChatWidthChange, isFullscreenMode, sidebarWidth, isChatPanelOpen, chatPanelWidth, expandedCardViewDoc, isMapVisible, prefer50SplitOnMap]);
 
   // When document preview opens (e.g. from "Analyse with AI"), force chat to move aside: exit fullscreen
   // so the 50/50 split is used. Without this, chat can stay full width if it entered fullscreen before
@@ -5535,7 +5555,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   }, [addPropertyAttachment, segmentInput, propertyAttachments, atMentionDocumentChips]);
   
   // Use chat history context
-  const { addChatToHistory, getChatById, updateChatTitle, updateChatStatus, updateChatDescription, updateChatInHistory, chatHistory, saveChatState } = useChatHistory();
+  const { addChatToHistory, getChatById, updateChatTitle, updateChatStatus, updateChatDescription, updateChatInHistory, chatHistory, saveChatState, removeChatFromHistory } = useChatHistory();
   
   // Update chat status to 'completed' when all messages finish loading
   React.useEffect(() => {
@@ -13357,6 +13377,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 shouldExpand,
                 isManualFullscreen: isManualFullscreenRef.current,
                 isChatOnlyView: isVisible && !isMapVisible,
+                prefer50SplitOnMap,
               });
               
               return widthCss;
@@ -13395,9 +13416,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             />
           )}
           {/* Drag handle for resizing from right edge - extends full height above all content */}
-          {/* Only show when property details panel is open OR when document preview is NOT open */}
-          {/* When document preview is open, the document's left edge handles resize instead */}
-          {(isPropertyDetailsOpen || !expandedCardViewDoc) && (
+          {/* Hide when agent sidebar is open: the agent sidebar's left-edge rail is the single sticky handle for this boundary */}
+          {(isPropertyDetailsOpen || !expandedCardViewDoc) && !isChatPanelOpen && (
             <div
               onMouseDown={handleResizeStart}
               className="group"
@@ -13679,22 +13699,23 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   setIsNearEditButton(false);
                 }}
               >
-                <div className="flex items-center space-x-2 min-w-0">
-                  {/* View dropdown: Sidebar, Files, New chat, Fullscreen. When Sidebar/Files/Expand are active, Close/Exit appears beside the dropdown; fullscreen is exit-only inside the dropdown. */}
-                  {isMainSidebarOpen && (
+                <div className="flex items-center space-x-2 min-w-0" data-view-dropdown-ignore>
+                  {/* View dropdown: Sidebar, Files, New chat, Fullscreen. Close sidebar only when big (full) sidebar is open, not when small/icons-only. */}
+                  {isMainSidebarOpen && !isSidebarIconsOnly && (
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
                         e.preventDefault();
+                        setViewOptionsOpen(false);
                         if (onSidebarToggle) onSidebarToggle();
                       }}
-                      className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150`}
+                      className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1.5' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150`}
                       title="Close sidebar"
                       type="button"
                       style={{
-                        padding: actualPanelWidth >= 750 ? '5px 8px' : '5px',
-                        height: '26px',
-                        minHeight: '26px',
+                        padding: actualPanelWidth >= 750 ? '7px 11px' : '6px',
+                        height: '32px',
+                        minHeight: '32px',
                         border: 'none',
                         position: 'relative',
                         zIndex: 10001,
@@ -13703,9 +13724,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         backgroundColor: 'rgba(0, 0, 0, 0.02)'
                       }}
                     >
-                      <PanelRightClose className="w-3.5 h-3.5 text-[#666] scale-x-[-1]" strokeWidth={1.75} />
+                      <PanelRightClose className="w-4 h-4 text-[#666] scale-x-[-1]" strokeWidth={1.75} />
                       {actualPanelWidth >= 750 && (
-                        <span className="text-[12px] font-normal text-[#666]">Close</span>
+                        <span className="text-[13px] font-normal text-[#666]">Close</span>
                       )}
                     </button>
                   )}
@@ -13714,15 +13735,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       onClick={(e) => {
                         e.stopPropagation();
                         e.preventDefault();
+                        setViewOptionsOpen(false);
                         toggleFilingSidebar();
                       }}
-                      className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150`}
+                      className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1.5' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150`}
                       title="Close Files"
                       type="button"
                       style={{
-                        padding: actualPanelWidth >= 750 ? '5px 8px' : '5px',
-                        height: '26px',
-                        minHeight: '26px',
+                        padding: actualPanelWidth >= 750 ? '7px 11px' : '6px',
+                        height: '32px',
+                        minHeight: '32px',
                         border: 'none',
                         position: 'relative',
                         zIndex: 10001,
@@ -13731,9 +13753,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         backgroundColor: 'rgba(0, 0, 0, 0.02)'
                       }}
                     >
-                      <Files className="w-3.5 h-3.5 text-[#666]" strokeWidth={1.75} />
+                      <Files className="w-4 h-4 text-[#666]" strokeWidth={1.75} />
                       {actualPanelWidth >= 750 && (
-                        <span className="text-[12px] font-normal text-[#666]">Close</span>
+                        <span className="text-[13px] font-normal text-[#666]">Close</span>
                       )}
                     </button>
                   )}
@@ -13743,15 +13765,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       onClick={(e) => {
                         e.stopPropagation();
                         e.preventDefault();
+                        setViewOptionsOpen(false);
                         handleMinimiseChat();
                       }}
-                      className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150`}
+                      className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1.5' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150`}
                       title="Minimise chat"
                       type="button"
                       style={{
-                        padding: actualPanelWidth >= 750 ? '5px 8px' : '5px',
-                        height: '26px',
-                        minHeight: '26px',
+                        padding: actualPanelWidth >= 750 ? '7px 11px' : '6px',
+                        height: '32px',
+                        minHeight: '32px',
                         border: 'none',
                         position: 'relative',
                         zIndex: 10001,
@@ -13760,9 +13783,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         backgroundColor: 'rgba(0, 0, 0, 0.02)'
                       }}
                     >
-                      <Minimize2 className="w-3.5 h-3.5 text-[#666]" strokeWidth={1.75} />
+                      <Minimize2 className="w-4 h-4 text-[#666]" strokeWidth={1.75} />
                       {actualPanelWidth >= 750 && (
-                        <span className="text-[12px] font-normal text-[#666]">Minimise</span>
+                        <span className="text-[13px] font-normal text-[#666]">Minimise</span>
                       )}
                     </button>
                   )}
@@ -13771,15 +13794,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       onClick={(e) => {
                         e.stopPropagation();
                         e.preventDefault();
+                        setViewOptionsOpen(false);
                         handleExpandChat();
                       }}
-                      className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150`}
+                      className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1.5' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150`}
                       title="Expand chat"
                       type="button"
                       style={{
-                        padding: actualPanelWidth >= 750 ? '5px 8px' : '5px',
-                        height: '26px',
-                        minHeight: '26px',
+                        padding: actualPanelWidth >= 750 ? '7px 11px' : '6px',
+                        height: '32px',
+                        minHeight: '32px',
                         border: 'none',
                         position: 'relative',
                         zIndex: 10001,
@@ -13788,9 +13812,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         backgroundColor: 'rgba(0, 0, 0, 0.02)'
                       }}
                     >
-                      <MoveDiagonal className="w-3.5 h-3.5 text-[#666]" strokeWidth={1.75} />
+                      <MoveDiagonal className="w-4 h-4 text-[#666]" strokeWidth={1.75} />
                       {actualPanelWidth >= 750 && (
-                        <span className="text-[12px] font-normal text-[#666]">Expand</span>
+                        <span className="text-[13px] font-normal text-[#666]">Expand</span>
                       )}
                     </button>
                   )}
@@ -13801,11 +13825,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         aria-haspopup="true"
                         aria-expanded={viewOptionsOpen}
                         title="View – sidebar, files, new chat, fullscreen"
-                        className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150 cursor-pointer border-none`}
+                        className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1.5' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150 cursor-pointer border-none`}
                         style={{
-                          padding: actualPanelWidth >= 750 ? '5px 8px' : '5px',
-                          height: '26px',
-                          minHeight: '26px',
+                          padding: actualPanelWidth >= 750 ? '7px 11px' : '6px',
+                          height: '32px',
+                          minHeight: '32px',
                           position: 'relative',
                           zIndex: 10001,
                           pointerEvents: 'auto',
@@ -13818,9 +13842,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           setViewOptionsOpen((prev) => !prev);
                         }}
                       >
-                        <PictureInPicture2 className="w-3.5 h-3.5 text-[#666] flex-shrink-0" strokeWidth={1.75} />
+                        <PictureInPicture2 className="w-4 h-4 text-[#666] flex-shrink-0" strokeWidth={1.75} />
                         {actualPanelWidth >= 750 && (
-                          <span className="text-[12px] font-normal text-[#666]">View</span>
+                          <span className="text-[13px] font-normal text-[#666]">View</span>
                         )}
                       </button>
                     </PopoverTrigger>
@@ -13830,6 +13854,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       sideOffset={4}
                       onMouseEnter={handleViewOptionsContentEnter}
                       onMouseLeave={handleViewOptionsContentLeave}
+                      onPointerDownOutside={(e) => {
+                        // Don't close when clicking header buttons or sidebar/rail toggles so the click can register
+                        if ((e.target as HTMLElement).closest?.('[data-view-dropdown-ignore]')) {
+                          e.preventDefault();
+                        }
+                      }}
                       className="min-w-[200px] w-auto rounded-lg border border-gray-200 bg-white p-3 shadow-md"
                       onOpenAutoFocus={(e) => e.preventDefault()}
                     >
@@ -13917,81 +13947,86 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             }}
                             className="flex items-center gap-2 w-full rounded-sm px-2 py-2 text-left hover:bg-[#f5f5f5] text-[12px] text-[#374151]"
                           >
-                            <span className="flex h-[22px] w-[22px] flex-shrink-0 items-center justify-center rounded-full border-[0.5px] border-gray-400 bg-transparent">
-                              <Plus className="h-[12px] w-[12px] text-[#666]" strokeWidth={1.75} />
-                            </span>
+                            <img src="/newchat1.png" alt="" className="h-[18px] w-[18px] flex-shrink-0 object-contain" />
                             New chat
                           </button>
                         )}
                       </div>
                     </PopoverContent>
                   </Popover>
-                  {/* Chat name to the right of View button (when not new chat) */}
-                  {!isNewChatSection && (actualPanelWidth >= 900 ? (
+                  {/* Chat name dropdown to the right of View button (when not new chat) */}
+                  {!isNewChatSection && (
+                  actualPanelWidth >= 900 ? (
                     <div className="flex items-center gap-2.5 max-w-[220px] mr-1 ml-16 py-1">
-                      <MessageSquare
-                        className="w-4 h-4 text-gray-300 flex-shrink-0"
-                        style={{ pointerEvents: 'none' }}
-                      />
                       {isEditingTitle ? (
-                        <div className="flex-1 min-w-0 max-w-[160px]">
-                          <input
-                            type="text"
-                            value={editingTitleValue}
-                            onChange={(e) => setEditingTitleValue(e.target.value)}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter') {
-                                e.preventDefault();
-                                handleSaveTitle();
-                              }
-                              if (e.key === 'Escape') {
-                                handleCancelEdit();
-                              }
-                            }}
-                            onBlur={handleSaveTitle}
-                            className="text-[14px] font-normal text-gray-900 bg-transparent border-none outline-none w-full min-w-0"
-                            autoFocus
-                            onClick={(e) => e.stopPropagation()}
-                          />
-                        </div>
+                        <>
+                          <MessageSquare className="w-4 h-4 text-gray-300 flex-shrink-0" style={{ pointerEvents: 'none' }} />
+                          <div className="flex-1 min-w-0 max-w-[160px]">
+                            <input
+                              type="text"
+                              value={editingTitleValue}
+                              onChange={(e) => setEditingTitleValue(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  e.preventDefault();
+                                  handleSaveTitle();
+                                }
+                                if (e.key === 'Escape') {
+                                  handleCancelEdit();
+                                }
+                              }}
+                              onBlur={handleSaveTitle}
+                              className="text-[14px] font-normal text-gray-900 bg-transparent border-none outline-none w-full min-w-0"
+                              autoFocus
+                              onClick={(e) => e.stopPropagation()}
+                            />
+                          </div>
+                        </>
                       ) : (
-                        <span
-                          className="text-[14px] font-normal text-slate-600 truncate cursor-pointer hover:text-slate-700 flex-1 min-w-0"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleToggleEdit();
-                          }}
-                          onMouseEnter={(e) => {
-                            e.stopPropagation();
-                            setIsHoveringName(true);
-                          }}
-                          onMouseLeave={(e) => {
-                            e.stopPropagation();
-                            setIsHoveringName(false);
-                          }}
-                          title="Click to edit chat name"
-                          style={{
-                            display: 'inline-block',
-                            padding: '0',
-                            margin: '0'
-                          }}
-                        >
-                          {isTitleStreaming ? streamedTitle : (chatTitle || 'New chat')}
-                        </span>
-                      )}
-                      {actualPanelWidth >= 940 && (
-                        <button
-                          ref={editButtonRef}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleToggleEdit();
-                          }}
-                          className={`${isHoveringName ? 'opacity-100' : 'opacity-0'} p-1 rounded hover:bg-gray-100 transition-opacity flex-shrink-0`}
-                          title="Edit chat name"
-                          type="button"
-                        >
-                          <Pencil className="w-3 h-3 text-gray-400" />
-                        </button>
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <button
+                              type="button"
+                              onClick={(e) => e.stopPropagation()}
+                              className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-gray-100/80 transition-colors min-w-0 max-w-full border-0 bg-transparent"
+                              style={{ minHeight: '28px' }}
+                            >
+                              <MessageSquare className="w-4 h-4 text-gray-300 flex-shrink-0" style={{ pointerEvents: 'none' }} />
+                              <span className="text-[14px] font-normal text-slate-600 truncate flex-1 min-w-0 text-left">
+                                {isTitleStreaming ? streamedTitle : (chatTitle || 'New chat')}
+                              </span>
+                              <ChevronDown className="w-4 h-4 text-gray-400 flex-shrink-0 ml-0.5" />
+                            </button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="start" sideOffset={4} onClick={(e) => e.stopPropagation()} className="min-w-[180px] rounded-lg shadow-lg border bg-white py-1">
+                            <DropdownMenuItem onClick={(e) => { e.stopPropagation(); toast({ title: 'Starred', description: 'Chat starred.', variant: 'compact', icon: <Star className="w-3.5 h-3.5" /> }); }} className="flex items-center gap-2 cursor-pointer text-[13px] font-normal text-[#666] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#666]">
+                              <Star className="w-4 h-4 text-[#666]" />
+                              Star
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleToggleEdit(); }} className="flex items-center gap-2 cursor-pointer text-[13px] font-normal text-[#666] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#666]">
+                              <Pencil className="w-4 h-4 text-[#666]" />
+                              Rename
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onClick={(e) => { e.stopPropagation(); toast({ title: 'Add to project', description: 'Add to project coming soon.' }); }} className="flex items-center gap-2 cursor-pointer text-[13px] font-normal text-[#666] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#666]">
+                              <FolderPlus className="w-4 h-4 text-[#666]" />
+                              Add to project
+                            </DropdownMenuItem>
+                            <DropdownMenuSeparator className="my-1 bg-gray-200" />
+                            <DropdownMenuItem
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (currentChatId) {
+                                  removeChatFromHistory(currentChatId);
+                                  if (onNewChat) onNewChat();
+                                }
+                              }}
+                              className="flex items-center gap-2 cursor-pointer text-[13px] font-normal text-red-600 hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-red-600"
+                            >
+                              <Trash2 className="w-4 h-4 text-red-600" />
+                              Delete
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
                       )}
                     </div>
                   ) : isEditingTitle ? (
@@ -14016,7 +14051,55 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         onClick={(e) => e.stopPropagation()}
                       />
                     </div>
-                  ) : null)}
+                  ) : (
+                    <div className="flex items-center max-w-[200px] mr-1 ml-1">
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <button
+                            type="button"
+                            onClick={(e) => e.stopPropagation()}
+                            className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-gray-100/80 transition-colors min-w-0 max-w-full border-0 bg-transparent"
+                            style={{ minHeight: '28px' }}
+                          >
+                            <MessageSquare className="w-4 h-4 text-gray-300 flex-shrink-0" />
+                            <span className="text-[14px] font-normal text-slate-600 truncate flex-1 min-w-0 text-left">
+                              {isTitleStreaming ? streamedTitle : (chatTitle || 'New chat')}
+                            </span>
+                            <ChevronDown className="w-4 h-4 text-gray-400 flex-shrink-0 ml-0.5" />
+                          </button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="start" sideOffset={4} onClick={(e) => e.stopPropagation()} className="min-w-[180px] rounded-lg shadow-lg border bg-white py-1">
+                          <DropdownMenuItem onClick={(e) => { e.stopPropagation(); toast({ title: 'Starred', description: 'Chat starred.', variant: 'compact', icon: <Star className="w-3.5 h-3.5" /> }); }} className="flex items-center gap-2 cursor-pointer text-[13px] font-normal text-[#666] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#666]">
+                            <Star className="w-4 h-4 text-[#666]" />
+                            Star
+                          </DropdownMenuItem>
+                          <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleToggleEdit(); }} className="flex items-center gap-2 cursor-pointer text-[13px] font-normal text-[#666] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#666]">
+                            <Pencil className="w-4 h-4 text-[#666]" />
+                            Rename
+                          </DropdownMenuItem>
+                          <DropdownMenuItem onClick={(e) => { e.stopPropagation(); toast({ title: 'Add to project', description: 'Add to project coming soon.' }); }} className="flex items-center gap-2 cursor-pointer text-[13px] font-normal text-[#666] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#666]">
+                            <FolderPlus className="w-4 h-4 text-[#666]" />
+                            Add to project
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator className="my-1 bg-gray-200" />
+                          <DropdownMenuItem
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (currentChatId) {
+                                removeChatFromHistory(currentChatId);
+                                if (onNewChat) onNewChat();
+                              }
+                            }}
+                            className="flex items-center gap-2 cursor-pointer text-[13px] font-normal text-red-600 hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-red-600"
+                          >
+                            <Trash2 className="w-4 h-4 text-red-600" />
+                            Delete
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
+                  )
+                  )}
                 </div>
                 
                 {/* Center - empty; chat title is shown next to View button in left column */}
@@ -14063,13 +14146,13 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         toggleChatPanel();
                       }
                     }}
-                    className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150 cursor-pointer border-none`}
+                    className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1.5' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150 cursor-pointer border-none`}
                     title={isChatPanelOpen ? "Close Agent Sidebar" : "Agents Sidebar"}
                     type="button"
                     style={{
-                      padding: actualPanelWidth >= 750 ? '5px 8px' : '5px',
-                      height: '26px',
-                      minHeight: '26px',
+                      padding: actualPanelWidth >= 750 ? '7px 11px' : '6px',
+                      height: '32px',
+                      minHeight: '32px',
                       position: 'relative',
                       zIndex: 10001,
                       pointerEvents: 'auto',
@@ -14078,14 +14161,14 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   >
                     {isChatPanelOpen ? (
                       <PanelRightClose
-                        className="w-3.5 h-3.5 text-[#666] flex-shrink-0"
+                        className="w-4 h-4 text-[#666] flex-shrink-0"
                         strokeWidth={1.75}
                       />
                     ) : (
-                      <img src={agentIcon} alt="Agents" className="w-3.5 h-3.5 flex-shrink-0" aria-hidden />
+                      <img src={agentIcon} alt="Agents" className="w-4 h-4 flex-shrink-0" aria-hidden />
                     )}
                     {actualPanelWidth >= 750 && (
-                      <span className="text-[12px] font-normal text-[#666]">
+                      <span className="text-[13px] font-normal text-[#666]">
                         {isChatPanelOpen ? "Close" : "Agents"}
                       </span>
                     )}
@@ -14100,11 +14183,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         aria-haspopup="true"
                         aria-expanded={displayOptionsOpen}
                         title="Response – reasoning trace, answer highlight, and citations"
-                        className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150 cursor-pointer border-none`}
+                        className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1.5' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150 cursor-pointer border-none`}
                         style={{
-                          padding: actualPanelWidth >= 750 ? '5px 8px' : '5px',
-                          height: '26px',
-                          minHeight: '26px',
+                          padding: actualPanelWidth >= 750 ? '7px 11px' : '6px',
+                          height: '32px',
+                          minHeight: '32px',
                           position: 'relative',
                           zIndex: 10001,
                           pointerEvents: 'auto',
@@ -14117,9 +14200,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           setDisplayOptionsOpen((prev) => !prev);
                         }}
                       >
-                        <SlidersHorizontal className="w-3.5 h-3.5 text-[#666] flex-shrink-0" strokeWidth={1.75} />
+                        <SlidersHorizontal className="w-4 h-4 text-[#666] flex-shrink-0" strokeWidth={1.75} />
                         {actualPanelWidth >= 750 && (
-                          <span className="text-[12px] font-normal text-[#666]">Response</span>
+                          <span className="text-[13px] font-normal text-[#666]">Response</span>
                         )}
                       </button>
                     </PopoverTrigger>
@@ -14248,9 +14331,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     className="rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150"
                     title="Close chat"
                     style={{
-                      padding: '5px',
-                      height: '26px',
-                      minHeight: '26px',
+                      padding: actualPanelWidth >= 750 ? '7px 11px' : '6px',
+                      height: '32px',
+                      minHeight: '32px',
                       marginLeft: '8px',
                       ...(isPropertyDetailsOpen ? { marginRight: '8px' } : {}),
                       position: 'relative',

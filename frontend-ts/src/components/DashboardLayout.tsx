@@ -8,7 +8,6 @@ import { ChatPanel } from './ChatPanel';
 import { SearchBar } from './SearchBar';
 import { ChatHistoryProvider, useChatHistory } from './ChatHistoryContext';
 import { ChatReturnNotification } from './ChatReturnNotification';
-import { ProfileDropdown } from './ProfileDropdown';
 import { backendApi } from '@/services/backendApi';
 import { preloadAtMentionCache } from '@/services/atMentionCache';
 import { FilingSidebarProvider, useFilingSidebar } from '../contexts/FilingSidebarContext';
@@ -107,6 +106,8 @@ const DashboardLayoutContent = ({
   const [resetTrigger, setResetTrigger] = React.useState<number>(0);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = React.useState<boolean>(false);
   const [isSidebarExpanded, setIsSidebarExpanded] = React.useState<boolean>(false);
+  const [isSidebarIconsOnly, setIsSidebarIconsOnly] = React.useState<boolean>(false);
+  const SIDEBAR_ICONS_ONLY_WIDTH = 56;
   const [wasChatPanelOpenBeforeCollapse, setWasChatPanelOpenBeforeCollapse] = React.useState<boolean>(false);
   const [homeClicked, setHomeClicked] = React.useState<boolean>(false);
   // Separate states for each button source to prevent conflicts
@@ -165,15 +166,18 @@ const DashboardLayoutContent = ({
     }
     
     
+    // Profile is now under Settings > General > Profile tab; redirect any profile navigation to settings
+    const effectiveViewId = viewId === 'profile' ? 'settings' : viewId;
+
     // Always exit chat mode when navigating to a different view
-    setCurrentView(viewId);
+    setCurrentView(effectiveViewId);
     setIsInChatMode(false);
     setCurrentChatData(null);
     
     // Hide map when navigating to views that don't show the map
     // Map should only be visible when explicitly opened via Map button or in search view
     // Views like 'projects', 'analytics', 'settings', etc. should hide the map
-    if (viewId !== 'search') {
+    if (effectiveViewId !== 'search') {
       if (import.meta.env.VITE_LOCAL_DEBUG_INGEST === '1') {
         fetch('http://127.0.0.1:7243/ingest/1d8b42de-af74-4269-8506-255a4dc9510b',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'DashboardLayout.tsx:150',message:'Non-search view - clearing sidebar map visibility',data:{viewId,isMapVisibleFromSidebar},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
       }
@@ -343,7 +347,8 @@ const DashboardLayoutContent = ({
         setIsSidebarExpanded(false); // Reset expanded state when collapsing
         // DO NOT close chat panel - sidebar and agents sidebar are independent
       } else {
-        // Expanding sidebar - no action needed, chat panel state is independent
+        // Expanding from closed: always show full sidebar (not icons-only)
+        setIsSidebarIconsOnly(false);
       }
       
       return newCollapsed;
@@ -361,6 +366,12 @@ const DashboardLayoutContent = ({
     // Toggle expanded state (only works when sidebar is not collapsed)
     if (!isSidebarCollapsed) {
       setIsSidebarExpanded(prev => !prev);
+    }
+  }, [isSidebarCollapsed]);
+
+  const handleSidebarIconsOnlyToggle = React.useCallback(() => {
+    if (!isSidebarCollapsed) {
+      setIsSidebarIconsOnly(prev => !prev);
     }
   }, [isSidebarCollapsed]);
 
@@ -392,6 +403,7 @@ const DashboardLayoutContent = ({
           if (isSidebarCollapsed) {
             setIsSidebarCollapsed(false);
             setIsSidebarExpanded(false);
+            setIsSidebarIconsOnly(false);
           } else {
             setIsSidebarCollapsed(true);
             setIsSidebarExpanded(false);
@@ -686,7 +698,7 @@ const DashboardLayoutContent = ({
           onChatSelect={handleChatSelect} 
           onNewChat={handleNewChat}
           showChatHistory={true}
-          sidebarWidth={isSidebarCollapsed ? 0 : 224} // 0px when collapsed, 224px when normal
+          sidebarWidth={isSidebarCollapsed ? 0 : (isSidebarIconsOnly ? SIDEBAR_ICONS_ONLY_WIDTH : 224)}
           selectedChatId={currentChatId}
         />
       )}
@@ -704,7 +716,7 @@ const DashboardLayoutContent = ({
           aria-label="Close filing sidebar"
           className="fixed inset-y-0 w-3 group"
           style={{
-            left: (isSidebarCollapsed ? 12 : 224) + filingSidebarWidth - 12,
+            left: (isSidebarCollapsed ? 12 : (isSidebarIconsOnly ? SIDEBAR_ICONS_ONLY_WIDTH : 224)) + filingSidebarWidth - 12,
             zIndex: 100002,
             background: '#F2F2EF',
             pointerEvents: 'auto',
@@ -726,6 +738,8 @@ const DashboardLayoutContent = ({
         activeItem={isProjectDetailOpen ? 'project-detail' : currentView}
         isCollapsed={isSidebarCollapsed}
         isExpanded={isSidebarExpanded}
+        isIconsOnly={isSidebarIconsOnly}
+        onIconsOnlyToggle={handleSidebarIconsOnlyToggle}
         onToggle={handleSidebarToggle}
         onExpand={handleSidebarExpand}
         onNavigate={handleViewChange}
@@ -812,10 +826,15 @@ const DashboardLayoutContent = ({
         homeClicked={homeClicked}
         onHomeResetComplete={() => setHomeClicked(false)}
         onCloseSidebar={() => setIsSidebarCollapsed(true)}
+        onCollapseSidebarToSmall={() => {
+          setIsSidebarCollapsed(false);
+          setIsSidebarIconsOnly(true);
+        }}
         onRestoreSidebarState={(shouldBeCollapsed: boolean) => setIsSidebarCollapsed(shouldBeCollapsed)}
         getSidebarState={() => isSidebarCollapsed}
         isSidebarCollapsed={isSidebarCollapsed}
         isSidebarExpanded={isSidebarExpanded}
+        isSidebarIconsOnly={isSidebarIconsOnly}
         onSidebarToggle={handleSidebarToggle}
         onActiveChatChange={handleActiveChatChange}
         shouldRestoreActiveChat={shouldRestoreActiveChat}

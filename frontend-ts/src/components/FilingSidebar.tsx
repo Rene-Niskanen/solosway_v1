@@ -1320,6 +1320,12 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
       try {
         const response = await backendApi.deleteDocument(itemId);
         if (!response.success) {
+          // Treat 404 / "Document not found" as success (already deleted)
+          const isNotFound = response.statusCode === 404 ||
+            (typeof response.error === 'string' && (response.error.includes('Document not found') || response.error.includes('not found')));
+          if (isNotFound) {
+            return; // Already removed from UI, nothing to do
+          }
           // Restore document if deletion failed
           if (documentToDelete) {
             setDocuments(prev => [...prev, documentToDelete]);
@@ -1953,11 +1959,9 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
             maxHeight: '100vh',
             // Match ChatPanel / agent sidebar background for consistent look
             background: '#F2F2EF',
-            // Position FilingSidebar at sidebar edge (covers toggle rail for seamless look)
-            // When closed, move off-screen to the left to prevent gaps
-            // Sidebar widths: w-0 (collapsed) = 0px, w-56 (normal) = 224px
+            // Position FilingSidebar at main sidebar edge (parent passes effective width: 12 when collapsed, 56 icons-only, 224 full, 320 expanded)
             // When collapsed: FilingSidebar starts at 12px (after toggle rail)
-            // When normal (isSmallSidebarMode): FilingSidebar starts at sidebarWidth (covers toggle rail)
+            // When open (isSmallSidebarMode): FilingSidebar starts at sidebarWidth (56 / 224 / 320)
             left: isOpen 
               ? (sidebarWidth !== undefined 
                 ? (isSmallSidebarMode 

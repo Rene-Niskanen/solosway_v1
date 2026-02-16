@@ -25,6 +25,8 @@ export const ChatPanel = ({
   selectedChatId = null // Currently selected chat ID
 }: ChatPanelProps) => {
   const { isOpen, width, closePanel, setWidth, setIsResizing, isResizing } = useChatPanel();
+  const closePanelRef = React.useRef(closePanel);
+  closePanelRef.current = closePanel;
   console.log('ChatPanel rendering with isOpen:', isOpen, 'showChatHistory:', showChatHistory);
 
   // Agent sidebar resize bounds (must match ChatPanelContext setWidth clamp): smaller and only slightly bigger than default (320)
@@ -57,11 +59,14 @@ export const ChatPanel = ({
       setWidth(newWidth);
     };
 
-    const handleMouseUp = () => {
+    const handleMouseUp = (e: MouseEvent) => {
+      const startX = resizeStateRef.current?.startX;
+      const moved = startX != null && Math.abs(e.clientX - startX) >= 5;
       resizeStateRef.current = null;
       setIsResizing(false);
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
+      if (!moved) closePanelRef.current();
     };
 
     document.body.style.cursor = 'ew-resize';
@@ -181,7 +186,7 @@ export const ChatPanel = ({
     }
   }, [openMenuId]);
 
-  /** Width of the toggle rail on the left edge of the agent sidebar. Must match MainContent AGENT_TOGGLE_RAIL_WIDTH. */
+  /** Combined toggle + resize rail on the left edge: click to close, drag to resize. Must match MainContent AGENT_TOGGLE_RAIL_WIDTH. */
   const AGENT_SIDEBAR_RAIL_WIDTH = 12;
   const totalSidebarWidth = width + AGENT_SIDEBAR_RAIL_WIDTH;
   
@@ -206,45 +211,28 @@ export const ChatPanel = ({
           transform: 'translateZ(0)', // Force GPU acceleration
         }}
       >
-        {/* Toggle rail - left edge of agent sidebar; click closes. Width is part of total sidebar width. */}
+        {/* Combined toggle + resize rail: click to close, drag to resize */}
         {isOpen && (
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              closePanel();
-            }}
-            aria-label="Close agent sidebar"
-            className="relative shrink-0 h-full w-3 group"
+          <div
+            role="button"
+            tabIndex={0}
+            aria-label="Close agent sidebar or drag to resize"
+            data-view-dropdown-ignore
+            onMouseDown={handleResizeStart}
+            onKeyDown={(e) => e.key === 'Enter' && closePanel()}
+            className="relative shrink-0 h-full flex items-center justify-center cursor-ew-resize group"
             style={{
               width: AGENT_SIDEBAR_RAIL_WIDTH,
               background: '#F8F8F5',
               borderLeft: '1px solid #E5E5E2',
               pointerEvents: 'auto',
-              WebkitTapHighlightColor: 'transparent'
+              WebkitTapHighlightColor: 'transparent',
             }}
+            title="Drag to resize or click to close"
           >
             <div
               className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity"
               style={{ background: 'rgba(0, 0, 0, 0.06)' }}
-            />
-          </button>
-        )}
-        {/* Resize handle on left edge of content - drag to change agent sidebar width */}
-        {isOpen && (
-          <div
-            onMouseDown={handleResizeStart}
-            className="shrink-0 h-full flex items-center justify-center cursor-ew-resize hover:bg-slate-200/30 active:bg-slate-200/50 transition-colors"
-            style={{ width: 8 }}
-            title="Drag to resize"
-          >
-            <div
-              style={{
-                width: 2,
-                height: '40px',
-                borderRadius: 1,
-                backgroundColor: isResizing ? 'rgb(100, 116, 139)' : 'rgba(148, 163, 184, 0.5)',
-              }}
             />
           </div>
         )}

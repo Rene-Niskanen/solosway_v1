@@ -1709,8 +1709,10 @@ const SettingsView: React.FC<{
   onCloseSidebar?: () => void;
   onRestoreSidebarState?: (shouldBeCollapsed: boolean) => void;
   getSidebarState?: () => boolean;
-}> = ({ onCloseSidebar, onRestoreSidebarState, getSidebarState }) => {
-  const [activeCategory, setActiveCategory] = React.useState<string>('background');
+  onNavigate?: (view: string, options?: { showMap?: boolean }) => void;
+}> = ({ onCloseSidebar, onRestoreSidebarState, getSidebarState, onNavigate }) => {
+  const [activeCategory, setActiveCategory] = React.useState<string>('general');
+  const [activeGeneralTab, setActiveGeneralTab] = React.useState<string>('profile');
   const [savedLocation, setSavedLocation] = React.useState<string>('');
 
   // Load saved location on mount
@@ -1742,6 +1744,7 @@ const SettingsView: React.FC<{
   };
 
   const settingsCategories = [
+    { id: 'general', label: 'General', icon: User },
     { id: 'background', label: 'Background', icon: Contrast },
     { id: 'map-settings', label: 'Map Settings', icon: Map },
     { id: 'notifications', label: 'Notifications', icon: Bell },
@@ -1752,6 +1755,33 @@ const SettingsView: React.FC<{
 
   const renderSettingsContent = () => {
     switch (activeCategory) {
+      case 'general':
+        return (
+          <div className="space-y-6">
+            <div>
+              <h3 className="text-[15px] font-medium text-gray-900">General</h3>
+              <p className="text-[13px] text-gray-500 mt-1.5 font-normal">Profile and general preferences.</p>
+            </div>
+            {/* Tabs within General */}
+            <div className="border-b border-gray-200">
+              <nav className="flex gap-6" aria-label="General tabs">
+                <button
+                  onClick={() => setActiveGeneralTab('profile')}
+                  className={`py-3 px-1 border-b-2 text-[14px] font-medium transition-colors ${
+                    activeGeneralTab === 'profile'
+                      ? 'border-gray-900 text-gray-900'
+                      : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                  }`}
+                >
+                  Profile
+                </button>
+              </nav>
+            </div>
+            {activeGeneralTab === 'profile' && (
+              <Profile onNavigate={onNavigate} embeddedInSettings />
+            )}
+          </div>
+        );
       case 'map-settings':
         return (
           <div className="space-y-6">
@@ -1890,6 +1920,7 @@ interface FullscreenPropertyViewProps {
   property: any;
   isSidebarCollapsed?: boolean;
   isSidebarExpanded?: boolean;
+  isSidebarIconsOnly?: boolean;
   onClose: () => void;
   restoreChatId?: string | null;
   onMessagesUpdate?: (messages: any[]) => void;
@@ -1906,6 +1937,7 @@ const FullscreenPropertyView: React.FC<FullscreenPropertyViewProps> = ({
   property,
   isSidebarCollapsed,
   isSidebarExpanded,
+  isSidebarIconsOnly = false,
   onClose,
   restoreChatId,
   onMessagesUpdate,
@@ -1922,16 +1954,10 @@ const FullscreenPropertyView: React.FC<FullscreenPropertyViewProps> = ({
   const { isOpen: isAgentSidebarOpen, width: agentSidebarWidth } = useChatPanel();
   const agentSidebarReserve = isAgentSidebarOpen ? (agentSidebarWidth || 320) + AGENT_SIDEBAR_RAIL_WIDTH : 0;
 
-  // Calculate sidebar width for positioning
+  // Calculate sidebar width for positioning (must match MainContent effectiveSidebarWidthWithRail logic)
   const TOGGLE_RAIL_WIDTH = 12;
-  let fullscreenSidebarWidth = 0;
-  if (isSidebarCollapsed) {
-    fullscreenSidebarWidth = TOGGLE_RAIL_WIDTH;
-  } else if (isSidebarExpanded) {
-    fullscreenSidebarWidth = 320 + TOGGLE_RAIL_WIDTH;
-  } else {
-    fullscreenSidebarWidth = 224 + TOGGLE_RAIL_WIDTH;
-  }
+  const fullscreenEffectiveSidebar = isSidebarCollapsed ? 0 : (isSidebarIconsOnly ? 56 : (isSidebarExpanded ? 320 : 224));
+  const fullscreenSidebarWidth = isSidebarCollapsed ? TOGGLE_RAIL_WIDTH : fullscreenEffectiveSidebar + TOGGLE_RAIL_WIDTH;
 
   // Initial 50% split: use space between left sidebar and agent sidebar so property panel doesn't crash
   const initialChatWidth = React.useMemo(() => {
@@ -2016,10 +2042,13 @@ export interface MainContentProps {
   homeClicked?: boolean;
   onHomeResetComplete?: () => void;
   onCloseSidebar?: () => void;
+  /** Collapse sidebar to small (icons-only) instead of fully closing; use on new chat submit. */
+  onCollapseSidebarToSmall?: () => void;
   onRestoreSidebarState?: (shouldBeCollapsed: boolean) => void;
   getSidebarState?: () => boolean;
   isSidebarCollapsed?: boolean;
   isSidebarExpanded?: boolean;
+  isSidebarIconsOnly?: boolean;
   onSidebarToggle?: () => void;
   onMapVisibilityChange?: (isVisible: boolean) => void; // Callback to notify parent of map visibility changes
   onActiveChatChange?: (isActive: boolean) => void; // Callback when active chat state changes
@@ -2047,10 +2076,12 @@ export const MainContent = ({
   homeClicked = false,
   onHomeResetComplete,
   onCloseSidebar,
+  onCollapseSidebarToSmall,
   onRestoreSidebarState,
   getSidebarState,
   isSidebarCollapsed = false,
   isSidebarExpanded = false,
+  isSidebarIconsOnly = false,
   onSidebarToggle,
   onMapVisibilityChange,
   onActiveChatChange,
@@ -2158,6 +2189,7 @@ export const MainContent = ({
   const [isChatBubbleVisible, setIsChatBubbleVisible] = React.useState<boolean>(false); // Track bubble visibility
   const [minimizedChatMessages, setMinimizedChatMessages] = React.useState<any[]>([]); // Store chat messages when minimized
   const [shouldExpandChat, setShouldExpandChat] = React.useState<boolean>(false); // Track if chat should be expanded (for Analyse mode)
+  const [mapChatOpenAs50Split, setMapChatOpenAs50Split] = React.useState<boolean>(false); // Tools → Chat on map: open as 50/50 over map
   const [isQuickStartBarVisible, setIsQuickStartBarVisible] = React.useState<boolean>(false); // Track QuickStartBar visibility as island
   const [isRecentProjectsVisible, setIsRecentProjectsVisible] = React.useState<boolean>(false); // Track Recent Projects visibility
   // Fullscreen property view state (25/75 chat/property split from ProjectsPage)
@@ -2364,9 +2396,14 @@ export const MainContent = ({
     }
   }, [shouldExpandChat, hasPerformedSearch, isMapVisible, shouldRestoreActiveChat]);
   
-  // Calculate sidebar width for property pin centering
-  // Sidebar widths: w-0 (collapsed) = 0px, w-56 (normal) = 224px, toggle rail w-3 = 12px
-  const sidebarWidthValue = isSidebarCollapsed ? 12 : 236; // 0 + 12 = 12 when collapsed, 224 + 12 = 236 when normal
+  // Effective sidebar width (panel only): 0 when collapsed, 56 when icons-only, 224 normal, 320 expanded
+  const EFFECTIVE_SIDEBAR_ICONS_ONLY = 56;
+  const effectiveSidebarWidth = isSidebarCollapsed ? 0 : (isSidebarIconsOnly ? EFFECTIVE_SIDEBAR_ICONS_ONLY : (isSidebarExpanded ? 320 : 224));
+  const TOGGLE_RAIL_WIDTH = 12;
+  // Total left offset (sidebar + rail) for layout
+  const effectiveSidebarWidthWithRail = isSidebarCollapsed ? TOGGLE_RAIL_WIDTH : effectiveSidebarWidth + TOGGLE_RAIL_WIDTH;
+  // Legacy name for property pin centering
+  const sidebarWidthValue = effectiveSidebarWidthWithRail;
   
   const [pendingMapQuery, setPendingMapQuery] = React.useState<string>(""); // Store query when switching to map view
   const pendingMapQueryRef = React.useRef<string>(""); // Ref to store query synchronously for immediate access
@@ -2410,7 +2447,7 @@ export const MainContent = ({
   // Be VERY aggressive - hide projects if there's ANY risk of search bar being cut off
   const SEARCH_BAR_MIN_WIDTH = 350;
   const SEARCH_BAR_MIN_HEIGHT = 300; // Logo + search bar + spacing (increased for more safety)
-  const SIDEBAR_WIDTH = 236; // Sidebar (w-56 = 224px) + toggle rail (w-3 = 12px)
+  const SIDEBAR_WIDTH = effectiveSidebarWidthWithRail; // Sidebar panel + toggle rail (12px)
   const CONTAINER_PADDING = 32; // Container padding on both sides
   const EXTRA_SAFETY_MARGIN = 100; // Extra safety margin to ensure search bar is never cut
   
@@ -2570,12 +2607,10 @@ export const MainContent = ({
     const DOC_PREVIEW_MIN = 380;
     const DOC_PREVIEW_RIGHT_PADDING = 16;
     const AGENT_RAIL = 12;
-    const SIDEBAR_NORMAL = 224;
-    const TOGGLE_RAIL = 12;
     const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1920;
     const sidebarWidth = isFilingSidebarOpen || isFilingSidebarClosing
-      ? (isSidebarCollapsed ? TOGGLE_RAIL : SIDEBAR_NORMAL) + filingSidebarWidth
-      : (isSidebarCollapsed ? 0 : SIDEBAR_NORMAL) + TOGGLE_RAIL;
+      ? (isSidebarCollapsed ? TOGGLE_RAIL_WIDTH : effectiveSidebarWidth) + filingSidebarWidth
+      : (isSidebarCollapsed ? 0 : effectiveSidebarWidth) + TOGGLE_RAIL_WIDTH;
     const agentSidebarWidth = isChatHistoryPanelOpen ? (chatHistoryPanelWidth || 320) + AGENT_RAIL : 0;
     const expected50 = Math.round((viewportWidth - sidebarWidth - agentSidebarWidth) / 2);
     const roundedChat = Math.round(effectiveChatWidthForDocPreview || 0);
@@ -2590,7 +2625,7 @@ export const MainContent = ({
     const backdropLeft = docLeft - 12;
     const backdropWidth = viewportWidth - agentSidebarWidth - backdropLeft;
     return { left: docLeft, width: panelWidth, backdropLeft, backdropWidth };
-  }, [expandedCardViewDoc, effectiveChatWidthForDocPreview, isChatHistoryPanelOpen, chatHistoryPanelWidth, isFilingSidebarOpen, isFilingSidebarClosing, isSidebarCollapsed, filingSidebarWidth]);
+  }, [expandedCardViewDoc, effectiveChatWidthForDocPreview, isChatHistoryPanelOpen, chatHistoryPanelWidth, isFilingSidebarOpen, isFilingSidebarClosing, isSidebarCollapsed, effectiveSidebarWidth, filingSidebarWidth]);
   
   // Sync chat panel visibility to PreviewContext for document preview gating
   // Document preview will only open when chat panel is visible; otherwise it queues silently
@@ -2859,6 +2894,7 @@ export const MainContent = ({
         if (hasPerformedSearch) {
           setHasPerformedSearch(false);
           setShouldExpandChat(false);
+          setMapChatOpenAs50Split(false);
           // Clear chat query to reset chat state
         setMapSearchQuery("");
         setMapSearchContentSegments([]);
@@ -2873,6 +2909,11 @@ export const MainContent = ({
     prevShouldRestoreActiveChatRef.current = shouldRestoreActiveChat;
   }, [externalIsMapVisible, hasPerformedSearch, shouldRestoreActiveChat, expandedCardViewDoc]);
   
+  // Clear 50/50 map flag when chat panel closes (so next open from Tools → Chat can set it again)
+  React.useEffect(() => {
+    if (!hasPerformedSearch) setMapChatOpenAs50Split(false);
+  }, [hasPerformedSearch]);
+
   // Clear pending document preview when starting a new chat
   React.useEffect(() => {
     // When a new chat starts (no messages or explicit new chat), clear pending previews
@@ -3513,11 +3554,11 @@ export const MainContent = ({
     if (isMapVisible && dashboardAttachments.length === 0) {
       console.log('Map search only - not entering chat mode');
       
-      // Collapse sidebar on first query in map view for cleaner UI
+      // Collapse sidebar to small (icons-only) on first query in map view for cleaner UI
       const isFirstQuery = !hasPerformedSearch;
-      if (isFirstQuery && onCloseSidebar) {
-        console.log('Collapsing sidebar for first map query');
-        onCloseSidebar();
+      if (isFirstQuery && onCollapseSidebarToSmall) {
+        console.log('Collapsing sidebar to small for first map query');
+        onCollapseSidebarToSmall();
       }
       
       // Query from map chat bar - don't expand
@@ -3560,9 +3601,9 @@ export const MainContent = ({
     // Query from dashboard - expand to fullscreen view
     setShouldExpandChat(true);
     
-    // Collapse sidebar for cleaner UI when opening SideChatPanel
-    if (onCloseSidebar) {
-      onCloseSidebar();
+    // Collapse sidebar to small (icons-only) when opening SideChatPanel, don't fully close
+    if (onCollapseSidebarToSmall) {
+      onCollapseSidebarToSmall();
     }
     
     // Don't enter normal chat mode - SideChatPanel handles the query
@@ -4245,14 +4286,8 @@ export const MainContent = ({
                         const MAX_PADDING = 32; // 2rem maximum padding
                         const SEARCH_BAR_MIN = 350; // Minimum search bar width for placeholder text (reduced since placeholder is shorter: "Search for anything")
                         
-                        // Calculate actual sidebar width based on state (same as dashboard) - DO THIS FIRST
-                        // Collapsed: 12px (toggle rail only)
-                        // Normal: 236px (224px sidebar + 12px toggle rail)
-                        // Expanded: 332px (320px sidebar + 12px toggle rail)
-                        const TOGGLE_RAIL_WIDTH = 12;
-                        const actualSidebarWidth = isSidebarCollapsed 
-                          ? TOGGLE_RAIL_WIDTH 
-                          : (isSidebarExpanded ? 320 + TOGGLE_RAIL_WIDTH : 224 + TOGGLE_RAIL_WIDTH);
+                        // Use effective sidebar width (includes icons-only mode)
+                        const actualSidebarWidth = effectiveSidebarWidthWithRail;
                         
                         // Calculate available width (account for sidebar) - SAME AS DASHBOARD
                         const availableWidth = isMapVisible 
@@ -4598,22 +4633,7 @@ export const MainContent = ({
             <ProjectsPage 
               onCreateProject={handleCreateProject}
               onPropertySelect={handleProjectPropertySelect}
-              sidebarWidth={(() => {
-                // Calculate sidebar width based on state (matching NewPropertyPinWorkflow logic)
-                const TOGGLE_RAIL_WIDTH = 12; // w-3 = 12px
-                let sidebarWidth = 0;
-                
-                if (isSidebarCollapsed) {
-                  sidebarWidth = 0; // w-0 when collapsed
-                } else if (isSidebarExpanded) {
-                  sidebarWidth = 320; // w-80 = 320px when expanded
-                } else {
-                  // Normal state: w-56 = 224px (sidebar with labels)
-                  sidebarWidth = 224;
-                }
-                
-                return sidebarWidth + TOGGLE_RAIL_WIDTH;
-              })()}
+              sidebarWidth={effectiveSidebarWidthWithRail}
             />
           </div>
         );
@@ -4634,6 +4654,7 @@ export const MainContent = ({
           onCloseSidebar={onCloseSidebar}
           onRestoreSidebarState={onRestoreSidebarState}
           getSidebarState={getSidebarState}
+          onNavigate={handleNavigate}
         />;
       default:
         return <div className="flex items-center justify-center flex-1 relative">
@@ -5222,10 +5243,8 @@ export const MainContent = ({
     }
   }, [hasPendingFile, currentView]);
 
-  // Left margin: reserve space for sidebar + 12px toggle rail so the rail is always visible when it's just the sidebar
-  // Collapsed: rail at 0–12px → content starts at 12px. Open: sidebar 0–224px, rail 224–236px → content starts at 236px
-  const TOGGLE_RAIL_WIDTH = 12;
-  const mainContentMarginLeft = isSidebarCollapsed ? TOGGLE_RAIL_WIDTH : 224 + TOGGLE_RAIL_WIDTH; // 12 or 236
+  // Left margin: reserve space for sidebar + 12px toggle rail (uses effective width for collapsed/icons-only/full)
+  const mainContentMarginLeft = effectiveSidebarWidthWithRail;
 
   // Agent sidebar (right) has a 12px toggle rail on its left edge - reserve it so map/content don't extend under it
   const AGENT_TOGGLE_RAIL_WIDTH = 12;
@@ -5368,9 +5387,7 @@ export const MainContent = ({
         // Normal: 236px (224px sidebar + 12px toggle rail)
         // Expanded: 332px (320px sidebar + 12px toggle rail)
         const TOGGLE_RAIL_WIDTH = 12;
-        const actualSidebarWidth = isSidebarCollapsed 
-          ? TOGGLE_RAIL_WIDTH 
-          : (isSidebarExpanded ? 320 + TOGGLE_RAIL_WIDTH : 224 + TOGGLE_RAIL_WIDTH);
+        const actualSidebarWidth = effectiveSidebarWidthWithRail;
         
         // Calculate center point of available space (same logic as dashboard and first SearchBar)
         // Center = sidebar right edge + (available width / 2)
@@ -5494,6 +5511,8 @@ export const MainContent = ({
                 // This will show SideChatPanel (isVisible = isMapVisible && hasPerformedSearch)
                 // Property details will automatically expand when chatPanelWidth > 0
               } else {
+                // Tools → Chat on map: open chat as 50/50 split over map
+                setMapChatOpenAs50Split(true);
                 // Always open chat panel when button is clicked
                 // First ensure map is visible (needed for SideChatPanel to show)
                 if (!isMapVisible) {
@@ -5545,26 +5564,17 @@ export const MainContent = ({
         onConsumedInitialDocumentChip={() => setInitialDocumentChipForChat(null)}
         citationContext={citationContext}
         isSidebarCollapsed={isSidebarCollapsed}
+        isSidebarIconsOnly={isSidebarIconsOnly}
         sidebarWidth={(() => {
-          // Sidebar widths match Tailwind classes:
-          // - w-0 when collapsed = 0px
-          // - w-56 when normal = 224px (14rem)
-          // Toggle rail is w-3 = 12px
-          const SIDEBAR_NORMAL_WIDTH = 224; // w-56 = 14rem = 224px
-          const TOGGLE_RAIL_WIDTH = 12; // w-3 = 12px
-          
           // Update immediately when closing - no delays to prevent map showing through
           // Only include FilingSidebar width when it's actually open (not when closing)
           if (isFilingSidebarOpen) {
-            // FilingSidebar starts at:
-            // - 224px when sidebar not collapsed (covering toggle rail)
-            // - 12px when sidebar collapsed (after toggle rail)
-            const filingSidebarStart = isSidebarCollapsed ? TOGGLE_RAIL_WIDTH : SIDEBAR_NORMAL_WIDTH;
+            // FilingSidebar starts at: effective sidebar width when open, or rail (12px) when collapsed
+            const filingSidebarStart = isSidebarCollapsed ? TOGGLE_RAIL_WIDTH : effectiveSidebarWidth;
             return filingSidebarStart + filingSidebarWidth;
           } else {
             // FilingSidebar closed: use sidebar + toggle rail width
-            // Update immediately - no transition delay
-            const baseSidebarWidth = isSidebarCollapsed ? 0 : SIDEBAR_NORMAL_WIDTH;
+            const baseSidebarWidth = isSidebarCollapsed ? 0 : effectiveSidebarWidth;
             return baseSidebarWidth + TOGGLE_RAIL_WIDTH;
           }
         })()}
@@ -5579,6 +5589,7 @@ export const MainContent = ({
         }
         isPropertyDetailsOpen={isPropertyDetailsOpen}
         shouldExpand={shouldExpandChat}
+        prefer50SplitOnMap={mapChatOpenAs50Split}
         resetWidthTrigger={resetWidthForDocPreviewTrigger}
         isMapVisible={isMapVisible}
         onQuickStartToggle={() => {
@@ -5859,14 +5870,11 @@ export const MainContent = ({
               onClose={closeExpandedCardView}
               chatPanelWidth={effectiveChatWidthForDocPreview}
               sidebarWidth={(() => {
-                // Use EXACT same calculation as SideChatPanel's sidebarWidth prop
-                const SIDEBAR_NORMAL_WIDTH = 224;
-                const TOGGLE_RAIL_WIDTH = 12;
                 if (isFilingSidebarOpen || isFilingSidebarClosing) {
-                  const filingSidebarStart = isSidebarCollapsed ? TOGGLE_RAIL_WIDTH : SIDEBAR_NORMAL_WIDTH;
+                  const filingSidebarStart = isSidebarCollapsed ? TOGGLE_RAIL_WIDTH : effectiveSidebarWidth;
                   return filingSidebarStart + filingSidebarWidth;
                 }
-                const baseSidebarWidth = isSidebarCollapsed ? 0 : SIDEBAR_NORMAL_WIDTH;
+                const baseSidebarWidth = isSidebarCollapsed ? 0 : effectiveSidebarWidth;
                 return baseSidebarWidth + TOGGLE_RAIL_WIDTH;
               })()}
               onResizeStart={effectiveChatWidthForDocPreview > 0 ? (e: React.MouseEvent) => {
@@ -5989,22 +5997,7 @@ export const MainContent = ({
       {/* New Property Pin Workflow */}
       <NewPropertyPinWorkflow
         isVisible={showNewPropertyWorkflow}
-        sidebarWidth={(() => {
-          // Calculate sidebar width based on state (matching DashboardLayout logic)
-          const TOGGLE_RAIL_WIDTH = 12; // w-3 = 12px
-          let sidebarWidth = 0;
-          
-          if (isSidebarCollapsed) {
-            sidebarWidth = 0; // w-0 when collapsed
-          } else if (isSidebarExpanded) {
-            sidebarWidth = 320; // w-80 = 320px when expanded
-          } else {
-            // Normal state: w-56 = 224px (sidebar with labels)
-            sidebarWidth = 224;
-          }
-          
-          return sidebarWidth + TOGGLE_RAIL_WIDTH;
-        })()}
+        sidebarWidth={effectiveSidebarWidthWithRail}
         initialCenter={initialMapState?.center}
         initialZoom={initialMapState?.zoom}
         onClose={() => {
@@ -6092,23 +6085,7 @@ export const MainContent = ({
       {/* FilingSidebar - Global popout sidebar for document management (wrapped so FileViewModal doesn't close when clicking another doc) */}
       <div ref={filingSidebarContainerRef}>
         <FilingSidebar
-        sidebarWidth={(() => {
-          // Sidebar widths match Tailwind classes:
-          // - w-0 when collapsed = 0px
-          // - w-56 when normal = 224px (14rem)
-          // Toggle rail is w-3 = 12px
-          const SIDEBAR_COLLAPSED_WIDTH = 0;
-          const SIDEBAR_NORMAL_WIDTH = 224;
-          const TOGGLE_RAIL_WIDTH = 12;
-          
-          if (isSidebarCollapsed) {
-            // When collapsed: FilingSidebar starts after toggle rail only
-            return SIDEBAR_COLLAPSED_WIDTH + TOGGLE_RAIL_WIDTH; // 0 + 12 = 12px
-          } else {
-            // When normal: FilingSidebar starts after sidebar (no extra toggle rail gap since it's visually part of sidebar)
-            return SIDEBAR_NORMAL_WIDTH;
-          }
-        })()}
+        sidebarWidth={isSidebarCollapsed ? TOGGLE_RAIL_WIDTH : effectiveSidebarWidth}
         isSmallSidebarMode={!isSidebarCollapsed}
         hideCloseButton={false}
         onOpenFileView={(doc) => setFileViewDocument(doc)}
@@ -6123,6 +6100,7 @@ export const MainContent = ({
         property={selectedPropertyFromProjects}
         isSidebarCollapsed={isSidebarCollapsed}
         isSidebarExpanded={isSidebarExpanded}
+        isSidebarIconsOnly={isSidebarIconsOnly}
         onClose={handleCloseFullscreenPropertyView}
         restoreChatId={propertyChatId}
         onMessagesUpdate={propertyChatId ? (messages) => updateChatInHistory(propertyChatId, messages) : undefined}

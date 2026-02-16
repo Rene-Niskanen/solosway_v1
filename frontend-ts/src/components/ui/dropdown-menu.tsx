@@ -1,6 +1,6 @@
 import * as React from "react";
 import * as DropdownMenuPrimitive from "@radix-ui/react-dropdown-menu";
-import { Check, ChevronRight, Circle } from "lucide-react";
+import { Check, ChevronRight } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
@@ -129,7 +129,7 @@ const DropdownMenuRadioItem = React.forwardRef<
     {!hideIndicator && (
       <span className="absolute left-2 flex h-3 w-3 items-center justify-center">
         <DropdownMenuPrimitive.ItemIndicator>
-          <Circle className="h-1 w-1 fill-current" />
+          <span className="h-1 w-1 rounded-full bg-current" />
         </DropdownMenuPrimitive.ItemIndicator>
       </span>
     )}
