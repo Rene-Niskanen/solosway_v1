@@ -1387,7 +1387,8 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
         <form 
           ref={searchFormRef}
           onSubmit={handleSubmit} 
-          className="relative" 
+          className="relative"
+          data-search-bar="true"
           style={{ overflow: 'visible', height: 'auto', width: '100%' }}
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}

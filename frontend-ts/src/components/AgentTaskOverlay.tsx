@@ -73,7 +73,7 @@ export const AgentTaskOverlay: React.FC<AgentTaskOverlayProps> = ({ message, onS
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
               {/* Velora Icon - larger */}
               <img 
-                src="/velora-dash-logo.png" 
+                src="/veloraboxlogo-fade.png" 
                 alt="Velora" 
                 style={{
                   width: '26px',

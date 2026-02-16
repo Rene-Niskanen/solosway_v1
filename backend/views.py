@@ -20,9 +20,10 @@ import queue
 from .tasks import process_document_task, process_document_fast_task
 # NOTE: DeletionService is deprecated - use UnifiedDeletionService instead
 # from .services.deletion_service import DeletionService
-from sqlalchemy import text
+from sqlalchemy import text, cast, String
 from sqlalchemy.exc import OperationalError, ProgrammingError, DatabaseError
 import json
+import traceback
 from uuid import UUID
 # Citations are now stored directly in graph state with bbox coordinates - no processing needed
 # SessionManager for LangGraph checkpointer thread_id management
@@ -5950,27 +5951,51 @@ def api_dashboard():
         if not business_uuid_str:
             return jsonify({'error': 'User is not associated with a business'}), 400
 
-        business_uuid = UUID(business_uuid_str)
+        try:
+            business_uuid = UUID(business_uuid_str)
+        except (ValueError, TypeError) as e:
+            current_app.logger.warning(f"Dashboard: invalid business_uuid {business_uuid_str!r}: {e}")
+            return jsonify({'error': 'Invalid business configuration'}), 400
+
         # Get user's documents from Supabase
-        doc_service = SupabaseDocumentService()
-        documents = doc_service.get_documents_for_business(business_uuid, limit=10)
-        
+        documents = []
+        try:
+            doc_service = SupabaseDocumentService()
+            documents = doc_service.get_documents_for_business(business_uuid, limit=10)
+        except Exception as doc_err:
+            current_app.logger.warning(f"Dashboard: failed to fetch documents: {doc_err}")
+            documents = []
+
         # Get user's properties (still from PostgreSQL for now)
         properties = []
         try:
-            # Convert UUID to string for text column comparison
+            # Compare as text so we work whether properties.business_id is UUID or TEXT in the DB
             business_id_str = str(business_uuid) if business_uuid else None
-            properties = (
-                Property.query
-                .filter_by(business_id=business_id_str)
-                .order_by(Property.created_at.desc())
-                .limit(10)
-                .all()
-            )
+            if business_id_str:
+                properties = (
+                    Property.query
+                    .filter(cast(Property.business_id, String(36)) == business_id_str)
+                    .order_by(Property.created_at.desc())
+                    .limit(10)
+                    .all()
+                )
         except Exception as e:
             logger.warning(f"Error querying properties from PostgreSQL: {e}")
             properties = []
-        
+
+        # Document count per property without loading Document ORM (avoids missing column classification_reasoning)
+        document_count_by_property_id = {}
+        if properties:
+            try:
+                for prop in properties:
+                    r = db.session.execute(
+                        text("SELECT COUNT(*) AS cnt FROM documents WHERE property_id = :pid"),
+                        {"pid": str(prop.id)},
+                    )
+                    document_count_by_property_id[prop.id] = r.scalar() or 0
+            except Exception as count_err:
+                logger.warning(f"Dashboard: document count by property failed: {count_err}")
+
         # Convert documents to JSON-serializable format
         documents_data = []
         for doc in documents:
@@ -5983,7 +6008,7 @@ def api_dashboard():
                 'file_size': doc.get('file_size')
             })
         
-        # Convert properties to JSON-serializable format
+        # Convert properties to JSON-serializable format (use precomputed counts to avoid loading Document ORM)
         properties_data = []
         for prop in properties:
             properties_data.append({
@@ -5992,7 +6017,7 @@ def api_dashboard():
                 'normalized_address': prop.normalized_address,
                 'completeness_score': prop.completeness_score,
                 'created_at': prop.created_at.isoformat() if prop.created_at else None,
-                'document_count': len(prop.documents) if prop.documents else 0
+                'document_count': document_count_by_property_id.get(prop.id, 0)
             })
     
         # User data (include profile picture and title from Supabase if available)
@@ -6010,6 +6035,12 @@ def api_dashboard():
                     profile_picture_url = request.host_url.rstrip('/') + 'api/user/profile-picture'
         except Exception:
             pass
+        role_name = 'user'
+        if getattr(current_user, 'role', None) is not None:
+            try:
+                role_name = current_user.role.name
+            except (AttributeError, ValueError):
+                pass
         user_data = {
             'id': current_user.id,
             'email': current_user.email,
@@ -6017,7 +6048,7 @@ def api_dashboard():
             'company_name': current_user.company_name,
             'business_id': str(current_user.business_id) if current_user.business_id else None,
             'company_website': current_user.company_website,
-            'role': current_user.role.name,
+            'role': role_name,
             'profile_picture_url': profile_picture_url,
             'title': title
         }
@@ -6035,7 +6066,10 @@ def api_dashboard():
         
     except Exception as e:
         current_app.logger.exception("Dashboard error")
-        return jsonify({'error': str(e)}), 500
+        body = {'error': str(e)}
+        if current_app.debug:
+            body['traceback'] = traceback.format_exc()
+        return jsonify(body), 500
 
 
 @views.route('/api/user/profile-picture', methods=['GET'])

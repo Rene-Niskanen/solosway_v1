@@ -14,7 +14,8 @@ SIMPLE TWO-STEP RETRIEVAL ARCHITECTURE:
 
 import logging
 import json
-from typing import Dict, Any, List, Optional
+from pathlib import Path
+from typing import Dict, Any, List, Optional, Tuple
 # Removed unused imports for document explorer tools:
 # from langchain_openai import ChatOpenAI
 # from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
@@ -29,17 +30,106 @@ from backend.llm.config import config
 # Document explorer tools removed - using simple retrieve_chunks() instead
 # from backend.llm.tools.document_explorer import create_document_explorer_tools
 from backend.services.supabase_client_factory import get_supabase_client
+from backend.services.vector_service import SupabaseVectorService
 
 logger = logging.getLogger(__name__)
 
-# Prefixes to strip from user-style requests so the remainder reads well
-_REASONING_QUERY_STRIP_PREFIXES = (
-    "give me ", "get me ", "can you ", "could you ", "would you ", "will you ",
-    "i need ", "i want ", "i'd like ", "i would like ", "please ", "tell me ",
-    "show me ", "help me ", "i'm looking for ", "find ", "analyse ", "analyze ",
-    "what is ", "what are ", "what's ", "where is ", "how do ", "how does ",
-    "how can ", "when did ", "why does ", "which ",
+
+def _normalize_global_chunks_to_responder_shape(
+    rpc_rows: List[Dict[str, Any]],
+    supabase_client: Any,
+) -> List[Dict[str, Any]]:
+    """
+    Map search_document_vectors RPC rows to the chunk shape the responder expects.
+    Fetches document filenames in one batch; leaves bbox/blocks as-is (may be null from RPC).
+    """
+    if not rpc_rows:
+        return []
+    doc_ids = list({str(r.get("document_id")) for r in rpc_rows if r.get("document_id")})
+    filename_map = {}
+    if doc_ids:
+        try:
+            res = supabase_client.table("documents").select("id, original_filename").in_("id", doc_ids).execute()
+            for row in res.data or []:
+                filename_map[str(row.get("id"))] = row.get("original_filename") or ""
+        except Exception as e:
+            logger.debug("Could not fetch document filenames for global chunks: %s", e)
+    out = []
+    for r in rpc_rows:
+        doc_id = str(r.get("document_id", ""))
+        chunk_text = r.get("chunk_text") or r.get("chunk_text_clean") or ""
+        if not chunk_text:
+            continue
+        out.append({
+            "chunk_id": str(r.get("id", "")),
+            "document_id": doc_id,
+            "chunk_text": chunk_text,
+            "chunk_text_clean": r.get("chunk_text_clean", ""),
+            "document_filename": filename_map.get(doc_id, ""),
+            "page_number": r.get("page_number", 0),
+            "bbox": r.get("bbox") if isinstance(r.get("bbox"), dict) else None,
+            "blocks": r.get("blocks") if isinstance(r.get("blocks"), list) else [],
+        })
+    return out
+
+def _user_query_to_retrieval_query(user_query: str) -> str:
+    """Use the user's words as the retrieval query with minimal cleanup. We never rely on the planner to preserve entity names."""
+    if not (user_query and user_query.strip()):
+        return ""
+    s = user_query.strip().rstrip("?. ")
+    lower = s.lower()
+    for prefix in ("what is ", "what's ", "what are ", "give me ", "please ", "find ", "which ", "tell me ", "show me ", "summarise ", "summarize "):
+        if lower.startswith(prefix):
+            s = s[len(prefix):].strip()
+            lower = s.lower()
+            break
+    return s.strip() if s else user_query.strip()
+
+
+# Stopwords to drop when building a short query for global fallback search (so embedding matches valuation/content chunks)
+_GLOBAL_FALLBACK_STOP = frozenset(
+    ("what", "how", "when", "where", "which", "who", "the", "a", "an", "is", "are", "of", "to", "for", "me", "give", "get", "tell", "show", "find", "please")
 )
+
+
+def _query_for_global_fallback(full_query: str) -> str:
+    """
+    Reduce query to key terms for global chunk search so the embedding matches document content.
+    E.g. 'what is the value of the highlands property' -> 'value highlands property'.
+    Avoids full-sentence embedding being too far from chunks like 'valuation', 'fair condition'.
+    """
+    if not (full_query and full_query.strip()):
+        return full_query.strip()
+    words = full_query.lower().strip().split()
+    kept = [w for w in words if w not in _GLOBAL_FALLBACK_STOP and len(w) > 1]
+    return " ".join(kept).strip() if kept else full_query.strip()
+
+# Defaults only when reasoning_phrases.json is missing (avoid hardcoding the full lists in code)
+_DEFAULT_STRIP_PREFIXES = (
+    "give me ", "what is ", "what are ", "what's ", "please ", "find ", "which ",
+)
+_DEFAULT_STRIP_FILLER = ("good, ", "okay, ", "well, ", "so, ", "yes, ", "right, ", "just, ")
+
+
+def _load_reasoning_phrases() -> Tuple[Tuple[str, ...], Tuple[str, ...]]:
+    """Load strip_prefixes and strip_filler from reasoning_phrases.json (data-driven, not hardcoded)."""
+    config_path = Path(__file__).resolve().parent.parent / "reasoning_phrases.json"
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            data = json.load(f)
+        prefixes = tuple(data.get("strip_prefixes") or [])
+        filler = tuple(data.get("strip_filler") or [])
+        if not prefixes:
+            prefixes = _DEFAULT_STRIP_PREFIXES
+        if not filler:
+            filler = _DEFAULT_STRIP_FILLER
+        return prefixes, filler
+    except (FileNotFoundError, json.JSONDecodeError, OSError) as e:
+        logger.warning("Could not load reasoning_phrases.json (%s), using defaults", e)
+        return _DEFAULT_STRIP_PREFIXES, _DEFAULT_STRIP_FILLER
+
+
+_REASONING_QUERY_STRIP_PREFIXES, _REASONING_QUERY_STRIP_FILLER = _load_reasoning_phrases()
 
 
 def _rephrase_query_for_reasoning_step(raw_query: str) -> str:
@@ -59,6 +149,19 @@ def _rephrase_query_for_reasoning_step(raw_query: str) -> str:
             s = s[len(prefix):].strip()
             lower = s.lower()
             break
+    # Strip leading conversational/filler words (good, okay, well, so, etc.) so steps stay clean
+    while True:
+        changed = False
+        for filler in _REASONING_QUERY_STRIP_FILLER:
+            if lower.startswith(filler):
+                s = s[len(filler):].strip()
+                lower = s.lower()
+                changed = True
+                break
+        if not changed or not s:
+            break
+    if not s:
+        return "documents"
     # Strip trailing question marks and periods so it reads as a statement
     s = s.rstrip("?. ")
     if not s:
@@ -309,11 +412,12 @@ async def executor_node(state: MainWorkflowState, runnable_config=None) -> MainW
         action = resolved_step["action"]
         
         if action == "retrieve_docs":
-            # Simple call - let retriever decide parameters; pass scope from state when set
             _doc_ids = state.get("document_ids")
             _doc_ids = [str(d) for d in _doc_ids] if isinstance(_doc_ids, list) and _doc_ids else None
+            user_query = state.get("user_query") or ""
+            query = _user_query_to_retrieval_query(user_query) or (resolved_step.get("query") or "").strip()
             result = retrieve_documents(
-                query=resolved_step.get("query", ""),
+                query=query,
                 business_id=business_id,
                 property_id=state.get("property_id"),
                 document_ids=_doc_ids,
@@ -322,10 +426,33 @@ async def executor_node(state: MainWorkflowState, runnable_config=None) -> MainW
         elif action == "retrieve_chunks":
             document_ids = resolved_step.get("document_ids")
             if document_ids is None or (isinstance(document_ids, list) and len(document_ids) == 0):
-                logger.warning(f"[EXECUTOR] Step {resolved_step['id']} has no document_ids, skipping")
+                # retrieve_docs returned 0 docs (e.g. "what is the value of highlands" didn't match doc name)
+                # Run global chunk search so we still find content in docs that weren't in step 1
+                logger.warning(f"[EXECUTOR] Step {resolved_step['id']} has no document_ids (retrieve_docs found nothing); trying global chunk search")
+                user_query = state.get("user_query") or ""
+                query = _user_query_to_retrieval_query(user_query) or (resolved_step.get("query") or "").strip()
                 result = []
+                if business_id and query.strip():
+                    try:
+                        vector_service = SupabaseVectorService()
+                        fallback_query = _query_for_global_fallback(query) or query
+                        global_rows = vector_service.search_document_vectors(
+                            fallback_query, business_id, limit=20, similarity_threshold=0.28
+                        )
+                        if global_rows:
+                            supabase = get_supabase_client()
+                            result = _normalize_global_chunks_to_responder_shape(global_rows, supabase)
+                            if result and emitter:
+                                emitter.emit_reasoning(
+                                    label="Searched across all documents",
+                                    detail=None
+                                )
+                            logger.info("[EXECUTOR] No docs from step 1; global chunk search returned %d chunks", len(result))
+                    except Exception as fallback_err:
+                        logger.warning("[EXECUTOR] Global chunk search (no-docs path) failed: %s", fallback_err)
             else:
-                query = resolved_step.get("query", "")
+                user_query = state.get("user_query") or ""
+                query = _user_query_to_retrieval_query(user_query) or (resolved_step.get("query") or "").strip()
                 logger.info(f"[EXECUTOR] Calling retrieve_chunks: '{query[:50]}...' ({len(document_ids)} documents)")
                 
                 # Simple call - let retriever decide all parameters (query profile, top_k, min_score)
@@ -338,6 +465,25 @@ async def executor_node(state: MainWorkflowState, runnable_config=None) -> MainW
                 # Fail loudly if no results - no retry, no interpretation
                 if not result or len(result) == 0:
                     logger.warning(f"[EXECUTOR] ⚠️ No chunks found for query: '{query[:50]}...'")
+                    # Fallback: search all content (global chunk search) so we don't miss content in other docs
+                    if business_id and query.strip():
+                        try:
+                            vector_service = SupabaseVectorService()
+                            fallback_query = _query_for_global_fallback(query) or query
+                            global_rows = vector_service.search_document_vectors(
+                                fallback_query, business_id, limit=20, similarity_threshold=0.28
+                            )
+                            if global_rows:
+                                supabase = get_supabase_client()
+                                result = _normalize_global_chunks_to_responder_shape(global_rows, supabase)
+                                if result and emitter:
+                                    emitter.emit_reasoning(
+                                        label="Searched across all documents",
+                                        detail=None
+                                    )
+                                logger.info("[EXECUTOR] Fallback global search returned %d chunks", len(result))
+                        except Exception as fallback_err:
+                            logger.warning("[EXECUTOR] Global chunk search fallback failed: %s", fallback_err)
                 
         elif action == "query_db":
             # TODO: Implement database query execution

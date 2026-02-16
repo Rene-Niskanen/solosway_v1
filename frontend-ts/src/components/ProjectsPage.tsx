@@ -16,11 +16,11 @@
  */
 
 import * as React from "react";
-import { FolderOpen, ChevronDown, ChevronUp, Trash2, Plus } from "lucide-react";
+import { FolderClosed, ChevronDown, ChevronUp, Trash2, Plus } from "lucide-react";
 import { backendApi } from "@/services/backendApi";
 import { ProjectGlassCard } from "./ProjectGlassCard";
 import { RecentDocumentsSection } from "./RecentDocumentsSection";
-import { preloadDocumentThumbnails } from "./RecentDocumentCard";
+import { preloadDocumentThumbnails, PRELOAD_THUMBNAIL_LIMIT } from "./RecentDocumentCard";
 import { preloadDocumentCovers as preloadDocumentCoversUtil } from "@/utils/preloadDocumentCovers";
 
 // Properties = Projects (same concept, different naming)
@@ -82,7 +82,7 @@ function getCachedData(): CachedData | null {
   if (memoryCache && Date.now() - memoryCache.timestamp < CACHE_MAX_AGE) {
     // Preload thumbnails immediately when returning from cache
     if (memoryCache.documents.length > 0) {
-      preloadDocumentThumbnails(memoryCache.documents);
+      preloadDocumentThumbnails(memoryCache.documents, PRELOAD_THUMBNAIL_LIMIT);
     }
     return memoryCache;
   }
@@ -96,7 +96,7 @@ function getCachedData(): CachedData | null {
       memoryCache = parsed; // Update memory cache
       // Preload thumbnails immediately when returning from localStorage cache
       if (parsed.documents.length > 0) {
-        preloadDocumentThumbnails(parsed.documents);
+        preloadDocumentThumbnails(parsed.documents, PRELOAD_THUMBNAIL_LIMIT);
       }
       return parsed;
     }
@@ -111,7 +111,7 @@ function setCachedData(properties: PropertyData[], documents: DocumentData[]): v
   memoryCache = data;
   // Preload thumbnails when new data is cached
   if (documents.length > 0) {
-    preloadDocumentThumbnails(documents);
+    preloadDocumentThumbnails(documents, PRELOAD_THUMBNAIL_LIMIT);
   }
   try {
     localStorage.setItem(CACHE_KEY, JSON.stringify(data));
@@ -556,7 +556,7 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
       }}
     >
       <div className="w-16 h-16 rounded-full bg-gray-100 flex items-center justify-center mb-5">
-        <FolderOpen className="w-8 h-8 text-gray-400" strokeWidth={1.5} />
+        <FolderClosed className="w-8 h-8 text-gray-400" strokeWidth={1.5} />
       </div>
       <h3 className="text-base font-semibold text-gray-800 mb-1.5">No projects yet.</h3>
       <p style={{ fontSize: '13px', color: '#71717A', marginBottom: '20px' }}>
@@ -621,7 +621,7 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
         }}
       >
         <div className="w-16 h-16 rounded-full bg-gray-100 flex items-center justify-center mb-5 animate-pulse">
-          <FolderOpen className="w-8 h-8 text-gray-400" strokeWidth={1.5} />
+          <FolderClosed className="w-8 h-8 text-gray-400" strokeWidth={1.5} />
         </div>
         <p style={{ fontSize: '13px', color: '#71717A' }}>Loading projects…</p>
       </div>

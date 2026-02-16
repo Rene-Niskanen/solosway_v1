@@ -3,7 +3,8 @@
 import * as React from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { 
-  FolderOpen, 
+  FolderClosed,
+  Files,
   MessageSquare, 
   ListEnd, 
   PanelLeftClose,
@@ -14,14 +15,14 @@ import {
   Trash2,
   ArchiveRestore,
   LibraryBig,
-  Activity,
   ChevronDown,
   Settings,
   LogOut,
   MessageCircle,
+  MessagesSquare,
   User,
-  Layers,
-  Map
+  Map,
+  Search
 } from "lucide-react";
 import { useChatHistory } from "./ChatHistoryContext";
 import { useFilingSidebar } from "../contexts/FilingSidebarContext";
@@ -46,9 +47,12 @@ export interface SidebarProps {
   isMapVisible?: boolean;
   onCreateProject?: () => void;
   hasActiveChat?: boolean; // Whether there's an active chat query running
-  onRestoreActiveChat?: () => void; // Callback to restore/re-engage with active chat
+  onRestoreActiveChat?: () => void; // Callback to open fullscreen chat with map (New chat button)
+  onOpenChatsView?: () => void; // Callback to open new-chat UI (centered, welcome message, no map)
   isChatVisible?: boolean; // Whether the chat panel is currently visible
   onMapToggle?: () => void; // Callback to toggle/open map view
+  onOpenSearch?: () => void; // Callback to open Search modal (command palette)
+  isSearchOpen?: boolean; // When true, hide the toggle rail so it never appears while searching
 }
 
 type NavItem = {
@@ -77,8 +81,11 @@ export const Sidebar = ({
   onCreateProject,
   hasActiveChat = false,
   onRestoreActiveChat,
+  onOpenChatsView,
   isChatVisible = false,
-  onMapToggle
+  onMapToggle,
+  onOpenSearch,
+  isSearchOpen = false
 }: SidebarProps) => {
   const [hoveredChat, setHoveredChat] = React.useState<string | null>(null);
   const [openMenuId, setOpenMenuId] = React.useState<string | null>(null);
@@ -205,11 +212,10 @@ export const Sidebar = ({
   // Primary navigation items
   const primaryNav: NavItem[] = [
     { id: 'home', label: 'Dashboard', icon: LibraryBig, action: 'navigate' },
-    { id: 'projects', label: 'Projects', icon: Layers, action: 'navigate' },
+    { id: 'projects', label: 'Projects', icon: FolderClosed, action: 'navigate' },
+    { id: 'database', label: 'Files', icon: Files, action: 'toggleFiling' },
     { id: 'map', label: 'Map', icon: Map, action: 'openMap' },
-    { id: 'database', label: 'Files', icon: FolderOpen, action: 'toggleFiling' },
-    { id: 'chat', label: 'Chat', icon: MessageCircle, action: 'openChat' },
-    { id: 'analytics', label: 'Analytics', icon: Activity, action: 'navigate' },
+    { id: 'chat', label: 'Chats', icon: MessagesSquare, action: 'openChat' },
   ];
 
   // Secondary navigation items
@@ -232,14 +238,12 @@ export const Sidebar = ({
     } else if (item.action === 'toggleFiling') {
       toggleFilingSidebar();
     } else if (item.action === 'openChat') {
-      // CRITICAL: Chat button should ONLY open fullscreen chat, never route to dashboard
-      // Always call onRestoreActiveChat - this ensures fullscreen chat view, never dashboard
-      if (onRestoreActiveChat) {
-        onRestoreActiveChat();
+      // Chats = new-chat UI (centered, taller bar, "What are you working on?" above, no map)
+      if (onOpenChatsView) {
+        onOpenChatsView();
       } else {
-        console.warn('onRestoreActiveChat not available - chat button cannot open chat');
+        onChatToggle?.();
       }
-      // Explicitly return to prevent any fallback navigation
       return;
     } else if (item.action === 'openMap') {
       // Open map view
@@ -256,14 +260,18 @@ export const Sidebar = ({
     } else {
       handleItemClick(item.id);
     }
-  }, [isFilingSidebarOpen, closeFilingSidebar, onExpand, toggleFilingSidebar, onRestoreActiveChat, onMapToggle, onNavigate, handleItemClick]);
+  }, [isFilingSidebarOpen, closeFilingSidebar, onExpand, toggleFilingSidebar, onOpenChatsView, onChatToggle, onRestoreActiveChat, onMapToggle, onNavigate, handleItemClick]);
 
   const isItemActive = (item: NavItem) => {
+    // While Search modal is open, only Search is highlighted — no section (Dashboard, Projects, etc.)
+    if (isSearchOpen) {
+      return false;
+    }
     // Mutually exclusive selection: Filing sidebar takes priority, then chat, then check activeItem
     if (isFilingSidebarOpen) {
       return item.action === 'toggleFiling';
     }
-    // Chat is active when chat panel is visible
+    // Chats = new-chat UI: active when that view is visible (centered welcome)
     if (item.action === 'openChat') {
       return isChatVisible;
     }
@@ -272,15 +280,18 @@ export const Sidebar = ({
     if (item.action === 'openMap') {
       return activeItem === 'search' && isMapVisible && !isChatVisible;
     }
-    // Dashboard is active when in search view without map visible
+    // Dashboard is active when we're on the dashboard view (main content with search bar). Dashboard is not "Search" — Search is the modal only.
     if (item.id === 'home') {
       return activeItem === 'search' && !isMapVisible && !isChatVisible;
     }
-    // For all other navigation items (projects, analytics, etc.),
+    // For all other navigation items (projects, etc.),
     // check activeItem directly - don't exclude based on isMapVisible
     // since the map might be rendered in the background
     return activeItem === item.id && !isChatVisible;
   };
+
+  // Search button is highlighted only when the Search modal (command palette) is open — not when on the dashboard
+  const isSearchButtonActive = isSearchOpen;
 
   // Chat history handlers
   const handleChatClick = (chatId: string) => {
@@ -378,7 +389,7 @@ export const Sidebar = ({
             <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-amber-500 rounded-full animate-pulse" />
           )}
         </div>
-        <span className="text-[13px] font-normal flex-1 text-left">
+        <span className="text-[14px] font-normal flex-1 text-left">
           {item.label}
         </span>
         {item.badge && (
@@ -481,7 +492,7 @@ export const Sidebar = ({
                     </AvatarFallback>
                   </Avatar>
                   <div className="flex-1 min-w-0">
-                    <p className="text-[13px] font-normal text-gray-900 leading-tight">{userName}</p>
+                    <p className="text-[14px] font-normal text-gray-900 leading-tight">{userName}</p>
                     <p className="text-[11px] font-normal text-gray-500 leading-tight">{userData?.email || userHandle}</p>
                   </div>
                   <ChevronDown 
@@ -504,7 +515,7 @@ export const Sidebar = ({
                       className="overflow-hidden"
                     >
                       <div className="mt-3">
-                        {/* Menu Items — same size and style as nav items (px-3 py-1.5, gap-3, text-[13px], icon 18px) */}
+                        {/* Menu Items — same size and style as nav items (px-3 py-1.5, gap-3, text-[14px], icon 18px) */}
                         <div className="pt-2 pb-0.5">
                           {/* Profile */}
                           <button
@@ -524,7 +535,7 @@ export const Sidebar = ({
                             }
                           >
                             <User className="w-[18px] h-[18px] flex-shrink-0" strokeWidth={1.75} />
-                            <span className="text-[13px] font-normal">Profile</span>
+                            <span className="text-[14px] font-normal">Profile</span>
                           </button>
 
                           {/* Sign Out */}
@@ -536,7 +547,7 @@ export const Sidebar = ({
                             className="w-full flex items-center gap-3 px-3 py-1.5 rounded text-gray-600 hover:bg-white/60 hover:text-gray-900 transition-colors text-left group"
                           >
                             <LogOut className="w-[18px] h-[18px] flex-shrink-0" strokeWidth={1.75} />
-                            <span className="text-[13px] font-normal">Sign out</span>
+                            <span className="text-[14px] font-normal">Sign out</span>
                           </button>
                         </div>
                       </div>
@@ -547,29 +558,63 @@ export const Sidebar = ({
             </div>
 
             {/* Navigation — ⌘E toggles sidebar open/closed (handler in DashboardLayout) */}
-            <div className="px-4 mt-4 mb-2" title="Toggle sidebar (⌘E)">
+            <div className="px-4 mt-[80px] mb-0.5" title="Toggle sidebar (⌘E)">
               <div className="flex items-center justify-between">
                 <span className="text-[11px] font-normal text-gray-400 uppercase tracking-wider">Navigation</span>
                 <span className="text-[10px] text-gray-400 font-normal px-1.5 py-0.5 rounded bg-white/80">⌘E</span>
               </div>
             </div>
 
-            {/* Primary Navigation */}
-            <div className="px-3 space-y-0.5">
-              {primaryNav.map(renderNavItem)}
+            {/* New chat — fullscreen chat with input at bottom (as if query already submitted) */}
+            <div className="pl-2.5 pr-3 mt-4 mb-0.5">
+              <button
+                onClick={() => {
+                  onRestoreActiveChat?.();
+                  onNewChat?.();
+                }}
+                className="w-full flex items-center gap-3 pl-2 pr-3 py-1.5 rounded border border-transparent text-gray-600 hover:bg-white/60 hover:text-gray-900 active:bg-white active:text-gray-900 transition-colors"
+                aria-label="New chat"
+              >
+                <span className="flex h-[22px] w-[22px] flex-shrink-0 items-center justify-center rounded-full ml-0.5 border-[0.5px] border-gray-400 bg-transparent">
+                  <Plus className="h-[12px] w-[12px] text-gray-800" strokeWidth={2} />
+                </span>
+                <span className="text-[14px] font-normal text-left">New chat</span>
+              </button>
             </div>
 
-            {/* Divider */}
-            <div className="mx-4 my-4 h-px bg-gray-200/80" />
+            {/* Search — open command palette modal */}
+            {onOpenSearch && (
+              <div className="pl-2.5 pr-3 mt-0.5 mb-4">
+                <button
+                  onClick={onOpenSearch}
+                  className={`w-full flex items-center gap-3 pl-2 pr-3 py-1.5 rounded border transition-colors ${
+                    isSearchButtonActive
+                      ? 'bg-white text-gray-900 border-gray-300'
+                      : 'border-transparent text-gray-600 hover:bg-white/60 hover:text-gray-900 active:bg-white active:text-gray-900'
+                  }`}
+                  style={{
+                    boxShadow: isSearchButtonActive ? '0 1px 2px rgba(0, 0, 0, 0.04)' : 'none',
+                  }}
+                  aria-label="Search"
+                >
+                  <span className="flex h-[22px] w-[22px] flex-shrink-0 items-center justify-center ml-0.5">
+                    <Search className={`h-4 w-4 ${isSearchButtonActive ? 'text-gray-900' : 'text-gray-700'}`} strokeWidth={2} />
+                  </span>
+                  <span className="text-[14px] font-normal text-left">Search</span>
+                </button>
+              </div>
+            )}
+
+            {/* Primary Navigation */}
+            <div className="px-3 space-y-px">
+              {primaryNav.map(renderNavItem)}
+            </div>
 
             {/* Spacer */}
             <div className="flex-1" />
 
-            {/* Divider before secondary */}
-            <div className="mx-4 mb-3 h-px bg-gray-200/80" />
-
             {/* Secondary Navigation */}
-            <div className="px-3 space-y-0.5">
+            <div className="px-3 space-y-px">
               {secondaryNav.map(renderNavItem)}
             </div>
           </div>
@@ -587,10 +632,10 @@ export const Sidebar = ({
                     // It should NEVER affect the agent sidebar (chat panel) - they are independent
                     onExpand?.();
                   }}
-                  className="p-1.5 rounded-md text-gray-500 hover:text-gray-700 hover:bg-white/60 transition-colors"
+                  className="p-1.5 rounded-md text-gray-900 hover:text-gray-700 hover:bg-white/60 transition-colors"
                   aria-label="Close"
                 >
-                  <ListEnd className="w-4 h-4" strokeWidth={1.75} />
+                  <ListEnd className="w-4 h-4 text-gray-900" strokeWidth={1.75} />
                 </button>
               </div>
               
@@ -600,9 +645,32 @@ export const Sidebar = ({
                 className="w-full flex items-center gap-2.5 px-3 py-2.5 bg-white hover:bg-gray-50 rounded-lg transition-colors border border-gray-200/60"
                 style={{ boxShadow: '0 1px 2px rgba(0, 0, 0, 0.04)' }}
               >
-                <Plus className="w-4 h-4 text-gray-600" strokeWidth={2} />
-                <span className="text-gray-800 font-normal text-[13px]">New chat</span>
+                <span className="flex h-[22px] w-[22px] flex-shrink-0 items-center justify-center rounded-full border-[0.5px] border-gray-400 bg-transparent">
+                  <Plus className="h-[12px] w-[12px] text-gray-800" strokeWidth={2} />
+                </span>
+                <span className="text-gray-800 font-normal text-[14px]">New chat</span>
               </button>
+
+              {/* Search Button - same highlight as collapsed sidebar and nav items */}
+              {onOpenSearch && (
+                <button
+                  onClick={onOpenSearch}
+                  className={`w-full flex items-center gap-3 pl-2 pr-3 py-1.5 mt-2 mb-4 rounded border transition-colors ${
+                    isSearchButtonActive
+                      ? 'bg-white text-gray-900 border-gray-300'
+                      : 'border-transparent text-gray-600 hover:bg-white/60 hover:text-gray-900 active:bg-white active:text-gray-900'
+                  }`}
+                  style={{
+                    boxShadow: isSearchButtonActive ? '0 1px 2px rgba(0, 0, 0, 0.04)' : 'none',
+                  }}
+                  aria-label="Search"
+                >
+                  <span className="flex h-[22px] w-[22px] flex-shrink-0 items-center justify-center ml-0.5">
+                    <Search className={`h-4 w-4 ${isSearchButtonActive ? 'text-gray-900' : 'text-gray-700'}`} strokeWidth={2} />
+                  </span>
+                  <span className="text-[14px] font-normal text-left">Search</span>
+                </button>
+              )}
             </div>
 
             {/* Chat List - scrollable */}
@@ -630,7 +698,7 @@ export const Sidebar = ({
               {displayedChats.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-16 px-4">
                   <MessageSquare className="w-8 h-8 text-gray-300 mb-3" strokeWidth={1.5} />
-                  <p className="text-gray-400 text-[13px] text-center">
+                  <p className="text-gray-400 text-[14px] text-center">
                     {showArchived ? 'No archived chats' : 'Start a new conversation'}
                   </p>
                 </div>
@@ -657,12 +725,12 @@ export const Sidebar = ({
                             }}
                             onBlur={() => handleSaveRename(chat.id)}
                             onClick={(e) => e.stopPropagation()}
-                            className="w-full px-2 py-1 text-[13px] bg-white border border-gray-200 rounded-md focus:outline-none focus:ring-1 focus:ring-gray-300"
+                            className="w-full px-2 py-1 text-[14px] bg-white border border-gray-200 rounded-md focus:outline-none focus:ring-1 focus:ring-gray-300"
                             autoFocus
                           />
                         ) : (
                           <div className="flex items-center justify-between gap-2">
-                            <span className="text-[13px] text-gray-700 truncate flex-1 group-hover:text-gray-900">
+                            <span className="text-[14px] text-gray-700 truncate flex-1 group-hover:text-gray-900">
                               {chat.title}
                             </span>
                             <button
@@ -691,20 +759,20 @@ export const Sidebar = ({
                           >
                             <button
                               onClick={(e) => handleRename(e, chat.id, chat.title)}
-                              className="w-full px-3 py-1.5 text-left text-[13px] text-white/90 hover:bg-white/10 transition-colors"
+                              className="w-full px-3 py-1.5 text-left text-[14px] text-white/90 hover:bg-white/10 transition-colors"
                             >
                               Rename
                             </button>
                             <button
                               onClick={(e) => chat.archived ? handleUnarchiveChat(e, chat.id) : handleArchiveChat(e, chat.id)}
-                              className="w-full px-3 py-1.5 text-left text-[13px] text-white/90 hover:bg-white/10 transition-colors"
+                              className="w-full px-3 py-1.5 text-left text-[14px] text-white/90 hover:bg-white/10 transition-colors"
                             >
                               {chat.archived ? 'Unarchive' : 'Archive'}
                             </button>
                             <div className="h-px bg-white/10 my-1" />
                             <button
                               onClick={(e) => handleDeleteChat(e, chat.id)}
-                              className="w-full px-3 py-1.5 text-left text-[13px] text-white/90 hover:bg-white/10 transition-colors"
+                              className="w-full px-3 py-1.5 text-left text-[14px] text-white/90 hover:bg-white/10 transition-colors"
                             >
                               Delete
                             </button>
@@ -722,7 +790,7 @@ export const Sidebar = ({
       </div>
 
       {/* Sidebar Toggle Rail - seamless with sidebar and adjacent panels */}
-      {/* Hidden when Share feedback modal is open so it's not visible behind the overlay */}
+      {/* Hidden only when Share feedback modal is open (search modal does not hide the rail) */}
       <button
         type="button"
         onClick={(e) => {

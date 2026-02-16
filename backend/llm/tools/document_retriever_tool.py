@@ -247,8 +247,10 @@ def retrieve_documents(
                 # The document_summary JSONB content is typically already reflected in summary_text
                 # If JSONB-specific search is needed, we'll need a custom SQL function
                 
-                # Individual word matches (for cases like "letter of offer" matching "Letter_of_Offer")
-                if len(query_words) > 1:
+                # Individual word matches (for cases like "letter of offer" matching "Letter_of_Offer",
+                # and "highlands" matching "Highlands_Berden.pdf"). Include even for single-word queries
+                # so that document/property names in the query reliably match filenames.
+                if len(query_words) >= 1:
                     for word in query_words:
                         or_conditions.append(f'summary_text.ilike.%{word}%')
                         or_conditions.append(f'original_filename.ilike.%{word}%')
@@ -265,6 +267,23 @@ def retrieve_documents(
         except Exception as e:
             logger.warning(f"Keyword search failed (non-fatal): {e}")
             keyword_results = []
+        
+        # 2b. Fallback: if no keyword results, try simple filename-only search (avoids .or_() issues)
+        # Try longer/more specific words first (e.g. "highlands" before "what") so property/doc names match
+        if not keyword_results and query.strip() and business_id:
+            try:
+                words = [w for w in query.lower().strip().split() if len(w) > 3]
+                words = sorted(words, key=len, reverse=True)
+                for word in words:
+                    fb = supabase.table('documents').select(
+                        'id, original_filename, classification_type, summary_text, document_summary'
+                    ).eq('business_uuid', business_id).ilike('original_filename', f'%{word}%').limit(top_k * 2).execute()
+                    if fb.data:
+                        keyword_results = fb.data
+                        logger.info(f"   Fallback filename search for %r found {len(keyword_results)} documents", word)
+                        break
+            except Exception as e:
+                logger.debug("   Fallback filename search failed: %s", e)
         
         # 3. Filter vector results by business_id if provided
         # (RPC function doesn't support WHERE clauses, so filter post-retrieval)
@@ -446,40 +465,14 @@ def retrieve_documents(
                 logger.warning("   Scope filter (property_id) failed: %s", e)
         
         # 7. GUARDRAIL: Adaptive threshold based on query specificity
-        # Priority: LLM-provided query_type > Heuristic classification
-        # Override min_score for broad queries to improve recall
-        
-        # Use LLM-provided query_type if available, otherwise fallback to heuristic
-        if query_type:
-            # Validate query_type (handle None)
-            if (query_type or '').lower() not in ["broad", "specific"]:
-                logger.warning(f"   Invalid query_type '{query_type}', falling back to heuristic classification")
-                query_type = None
-        
-        if query_type:
-            # Use LLM-provided classification (handle None)
+        # Use planner/LLM-provided query_type only; no code heuristic (prompt is source of truth)
+        if query_type and (query_type or '').lower() in ["broad", "specific"]:
             is_broad_query = ((query_type or '').lower() == "broad")
-            logger.debug(f"   Using LLM-provided query_type: {query_type} (overriding heuristic)")
+            logger.debug(f"   Using planner query_type: {query_type}")
         else:
-            # Fallback to heuristic classification
-            query_lower = query.lower().strip()
-            query_words = query_lower.split()
-            query_words_count = len([w for w in query_words if len(w) > 3])
-            total_words = len(query_words)
-            
-            # Generic terms that indicate broad queries
-            generic_terms = ['documents', 'details', 'information', 'address', 'location', 'property documents']
-            
-            # Classify as broad if:
-            # - Very few significant words (<= 2 words > 3 chars), OR
-            # - Short query (<= 3 total words), OR
-            # - Contains generic terms that make it less specific
-            is_broad_query = (
-                query_words_count <= 2 or 
-                total_words <= 3 or
-                (total_words <= 4 and any(generic in query_lower for generic in generic_terms))
-            )
-            logger.debug(f"   Using heuristic classification (LLM query_type not provided)")
+            # Default to broad for better recall when query_type missing (e.g. planner did not set it)
+            is_broad_query = True
+            logger.debug("   No valid query_type from planner; defaulting to broad")
         
         # 7b. Minimum combined score and minimum vector score (reduce irrelevant docs)
         MIN_COMBINED_SCORE_SPECIFIC = 0.30  # Slightly relaxed so queries like "value of highlands" still return a doc

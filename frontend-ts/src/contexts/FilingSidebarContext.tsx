@@ -21,6 +21,11 @@ interface FilingSidebarContextType {
   selectAll: (itemIds: string[]) => void;
   setWidth: (width: number) => void;
   setIsResizing: (isResizing: boolean) => void;
+  // Big upload overlay (e.g. from search bar "Upload file")
+  uploadOverlayOpen: boolean;
+  setUploadOverlayOpen: (open: boolean) => void;
+  initialPendingFiles: File[] | null;
+  setInitialPendingFiles: (files: File[] | null) => void;
 }
 
 const FilingSidebarContext = createContext<FilingSidebarContextType | undefined>(undefined);
@@ -33,6 +38,8 @@ export const FilingSidebarProvider: React.FC<{ children: React.ReactNode }> = ({
   const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
   const [width, setWidthState] = useState<number>(360); // Default width: 360px
   const [isResizing, setIsResizingState] = useState<boolean>(false);
+  const [uploadOverlayOpen, setUploadOverlayOpen] = useState<boolean>(false);
+  const [initialPendingFiles, setInitialPendingFiles] = useState<File[] | null>(null);
 
   const openSidebar = useCallback(() => {
     setIsOpen(true);
@@ -149,6 +156,10 @@ export const FilingSidebarProvider: React.FC<{ children: React.ReactNode }> = ({
     selectAll,
     setWidth,
     setIsResizing,
+    uploadOverlayOpen,
+    setUploadOverlayOpen,
+    initialPendingFiles,
+    setInitialPendingFiles,
   };
 
   return (

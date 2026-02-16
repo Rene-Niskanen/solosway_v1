@@ -24,8 +24,57 @@ export const ChatPanel = ({
   sidebarWidth = 224, // Default to 224px (normal sidebar width)
   selectedChatId = null // Currently selected chat ID
 }: ChatPanelProps) => {
-  const { isOpen, width, closePanel } = useChatPanel();
+  const { isOpen, width, closePanel, setWidth, setIsResizing, isResizing } = useChatPanel();
   console.log('ChatPanel rendering with isOpen:', isOpen, 'showChatHistory:', showChatHistory);
+
+  // Agent sidebar resize bounds (must match ChatPanelContext setWidth clamp): smaller and only slightly bigger than default (320)
+  const AGENT_SIDEBAR_MIN = 260;
+  const AGENT_SIDEBAR_MAX = 400;
+
+  const panelRef = React.useRef<HTMLDivElement>(null);
+  const resizeStateRef = React.useRef<{ startX: number; startWidth: number } | null>(null);
+
+  const handleResizeStart = React.useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const currentWidth = Math.min(AGENT_SIDEBAR_MAX, Math.max(AGENT_SIDEBAR_MIN, width));
+      resizeStateRef.current = { startX: e.clientX, startWidth: currentWidth };
+      setIsResizing(true);
+    },
+    [width, setIsResizing]
+  );
+
+  React.useEffect(() => {
+    if (!isResizing || !resizeStateRef.current) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!resizeStateRef.current) return;
+      const { startX, startWidth } = resizeStateRef.current;
+      // Panel is on the right: dragging left edge right = narrower (negative deltaX => wider)
+      const deltaX = e.clientX - startX;
+      const newWidth = Math.min(AGENT_SIDEBAR_MAX, Math.max(AGENT_SIDEBAR_MIN, startWidth - deltaX));
+      setWidth(newWidth);
+    };
+
+    const handleMouseUp = () => {
+      resizeStateRef.current = null;
+      setIsResizing(false);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+
+    document.body.style.cursor = 'ew-resize';
+    document.body.style.userSelect = 'none';
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+  }, [isResizing, setWidth, setIsResizing]);
   
   const {
     chatHistory,
@@ -132,8 +181,9 @@ export const ChatPanel = ({
     }
   }, [openMenuId]);
 
-  // Panel ref for internal use
-  const panelRef = React.useRef<HTMLDivElement>(null);
+  /** Width of the toggle rail on the left edge of the agent sidebar. Must match MainContent AGENT_TOGGLE_RAIL_WIDTH. */
+  const AGENT_SIDEBAR_RAIL_WIDTH = 12;
+  const totalSidebarWidth = width + AGENT_SIDEBAR_RAIL_WIDTH;
   
   return (
     <>
@@ -141,7 +191,7 @@ export const ChatPanel = ({
       <div
         ref={panelRef}
         data-chat-panel="true"
-        className="fixed top-0 h-full flex flex-col z-[10001]"
+        className="fixed top-0 h-full flex flex-row z-[10001]"
         onClick={(e) => {
           e.stopPropagation();
           // Close any open menu when clicking on the panel (but not inside menu)
@@ -150,12 +200,59 @@ export const ChatPanel = ({
         style={{
           background: '#F8F8F5',
           right: isOpen ? '0px' : '-1000px', // Move off-screen when closed
-          width: isOpen ? `${width}px` : '320px',
+          width: isOpen ? `${totalSidebarWidth}px` : '332px',
           transition: 'right 0s ease-out, width 0s ease-out',
           willChange: 'right, width',
           transform: 'translateZ(0)', // Force GPU acceleration
         }}
       >
+        {/* Toggle rail - left edge of agent sidebar; click closes. Width is part of total sidebar width. */}
+        {isOpen && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              closePanel();
+            }}
+            aria-label="Close agent sidebar"
+            className="relative shrink-0 h-full w-3 group"
+            style={{
+              width: AGENT_SIDEBAR_RAIL_WIDTH,
+              background: '#F8F8F5',
+              borderLeft: '1px solid #E5E5E2',
+              pointerEvents: 'auto',
+              WebkitTapHighlightColor: 'transparent'
+            }}
+          >
+            <div
+              className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity"
+              style={{ background: 'rgba(0, 0, 0, 0.06)' }}
+            />
+          </button>
+        )}
+        {/* Resize handle on left edge of content - drag to change agent sidebar width */}
+        {isOpen && (
+          <div
+            onMouseDown={handleResizeStart}
+            className="shrink-0 h-full flex items-center justify-center cursor-ew-resize hover:bg-slate-200/30 active:bg-slate-200/50 transition-colors"
+            style={{ width: 8 }}
+            title="Drag to resize"
+          >
+            <div
+              style={{
+                width: 2,
+                height: '40px',
+                borderRadius: 1,
+                backgroundColor: isResizing ? 'rgb(100, 116, 139)' : 'rgba(148, 163, 184, 0.5)',
+              }}
+            />
+          </div>
+        )}
+        <div
+          className="h-full flex flex-col min-w-0"
+          style={{ width: isOpen ? `${width}px` : '320px', minWidth: isOpen ? width : 320, flex: 1 }}
+          onClick={(e) => e.stopPropagation()}
+        >
         <AnimatePresence>
           {isOpen && (
             <motion.div
@@ -279,10 +376,10 @@ export const ChatPanel = ({
               </motion.button>
             </div>
 
-            {/* Chat List */}
+            {/* Chat List - sticky with panel: flex-1 + minHeight 0 so it fills and scrolls inside the sidebar */}
             {showChatHistory && (
               <div
-                className="flex-1 overflow-y-auto overflow-x-hidden px-3 pt-2 pb-3 scrollbar-thin scrollbar-track-transparent scrollbar-thumb-slate-300/50 hover:scrollbar-thumb-slate-400/70"
+                className="flex-1 overflow-y-auto overflow-x-hidden px-3 pt-2 pb-3 scrollbar-thin scrollbar-track-transparent scrollbar-thumb-slate-300/50 hover:scrollbar-thumb-slate-400/70 min-h-0"
                 style={{ backgroundColor: '#F8F8F5' }}
               >
                 {/* Agents Heading */}
@@ -486,9 +583,9 @@ export const ChatPanel = ({
               )}
             </AnimatePresence>
 
-            {/* Empty State when no chat history should be shown */}
+            {/* Empty State when no chat history should be shown - sticky with panel */}
             {!showChatHistory && (
-              <div className="flex-1 flex items-center justify-center p-8">
+              <div className="flex-1 min-h-0 flex items-center justify-center p-8">
                 <div className="text-center max-w-xs">
                   <div className="w-20 h-20 bg-gradient-to-br from-slate-50 to-slate-100 rounded-3xl flex items-center justify-center mx-auto mb-6 border-2 border-slate-200/40">
                     <MessageSquare className="w-8 h-8 text-slate-500" strokeWidth={1.5} />
@@ -505,6 +602,7 @@ export const ChatPanel = ({
             </motion.div>
           )}
         </AnimatePresence>
+        </div>
       </div>
     </>
   );

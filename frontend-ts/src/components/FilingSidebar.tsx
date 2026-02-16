@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Search, Plus, Folder, FolderOpen, FileText, File as FileIcon, ChevronRight, MoreVertical, CheckSquare, Square, Upload, MousePointer2, Trash2, ChevronDown, MapPin, RefreshCw, Link } from 'lucide-react';
+import { X, Search, Plus, Folder, FolderOpen, Files, FileText, File as FileIcon, ChevronRight, MoreVertical, CheckSquare, Square, Upload, MousePointer2, Trash2, ChevronDown, MapPin, RefreshCw, Link } from 'lucide-react';
 import OrbitProgress from 'react-loading-indicators/OrbitProgress';
 import { useFilingSidebar } from '../contexts/FilingSidebarContext';
 import { backendApi } from '../services/backendApi';
@@ -63,6 +63,8 @@ interface FilingSidebarProps {
   onOpenFileView?: (doc: Document) => void;
   /** ID of the document currently open in the File View pop-up; that row gets a faint selection style. */
   openFileViewDocumentId?: string | null;
+  /** When true, dashboard is visible; document list preload runs on first dashboard view for instant sidebar open. */
+  isDashboardVisible?: boolean;
 }
 
 /** Parse getAllDocuments() response into a Document array. Shared by preload and open-sidebar fetch. */
@@ -77,16 +79,20 @@ function parseAllDocumentsResponse(response: any): Document[] {
   return [];
 }
 
+// Stable key for a pending file (must match key used in parent)
+const getPendingFileKey = (file: File) => `${file.name}-${file.size}-${file.lastModified}`;
+
 // Component for displaying pending file with image preview
 const PendingFileItem: React.FC<{
   file: File;
   index: number;
   isSelected?: boolean;
   showOutline?: boolean;
+  isUploading?: boolean;
   onSelect?: (index: number) => void;
   onRemove: (index: number) => void;
   getFileIcon: (doc: Document) => React.ReactNode;
-}> = ({ file, index, isSelected = false, showOutline = false, onSelect, onRemove, getFileIcon }) => {
+}> = ({ file, index, isSelected = false, showOutline = false, isUploading = false, onSelect, onRemove, getFileIcon }) => {
   const isImage = file.type.startsWith('image/');
   const [imageUrl, setImageUrl] = React.useState<string | null>(null);
   
@@ -161,18 +167,24 @@ const PendingFileItem: React.FC<{
           {file.name}
         </div>
       </div>
-      <button
-        onClick={(e) => {
-          e.stopPropagation();
-          onRemove(index);
-        }}
-        className="p-0.5 hover:bg-gray-100 rounded flex-shrink-0 opacity-0 group-hover:opacity-100 transition-all duration-150"
-        title="Remove file"
-      >
-        <div className="w-3 h-3 flex items-center justify-center">
-          <X className="w-3 h-3 text-gray-400" strokeWidth={1.5} />
+      {isUploading ? (
+        <div className="flex-shrink-0 w-5 h-5 flex items-center justify-center">
+          <OrbitProgress color="#6b7280" size="small" dense text="" textColor="" speedPlus={1} style={{ fontSize: '2px' }} />
         </div>
-      </button>
+      ) : (
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onRemove(index);
+          }}
+          className="p-0.5 hover:bg-gray-100 rounded flex-shrink-0 opacity-0 group-hover:opacity-100 transition-all duration-150"
+          title="Remove file"
+        >
+          <div className="w-3 h-3 flex items-center justify-center">
+            <X className="w-3 h-3 text-gray-400" strokeWidth={1.5} />
+          </div>
+        </button>
+      )}
     </motion.div>
   );
 };
@@ -183,6 +195,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
   hideCloseButton = false,
   onOpenFileView,
   openFileViewDocumentId = null,
+  isDashboardVisible = false,
 }) => {
   const {
     isOpen,
@@ -199,6 +212,8 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
     selectAll,
     setWidth: setContextWidth,
     setIsResizing: setContextIsResizing,
+    initialPendingFiles,
+    setInitialPendingFiles,
   } = useFilingSidebar();
   const { getAllPropertyHubs } = useBackendApi();
 
@@ -247,8 +262,10 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
     file: null,
     isExactDuplicate: false
   });
-  /** Placeholders shown at top of file list while uploads are in progress */
+  /** Placeholders shown at top of file list while uploads are in progress (used when not using pending list) */
   const [uploadingPlaceholders, setUploadingPlaceholders] = useState<Array<{ id: string; name: string }>>([]);
+  /** Keys of pending files currently uploading (same list stays visible with spinner) */
+  const [uploadingFileKeys, setUploadingFileKeys] = useState<Set<string>>(new Set());
 
   // Delete confirmation pop-up state
   const [deleteConfirmDialog, setDeleteConfirmDialog] = useState<{
@@ -316,19 +333,19 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
   // Number of doc blobs to preload for "above the fold" in the sidebar (viewable height)
   const VISIBLE_PRELOAD_COUNT = 15;
 
-  // Pre-load global documents in the background on first load so FilingSidebar opens with cached data.
-  // Also start preloading blobs for the first VISIBLE_PRELOAD_COUNT docs so File View opens instantly when user clicks.
+  // Pre-load global documents when dashboard is first visible (not when sidebar opens) so Files opens instantly.
+  // Run warmConnection and getAllDocuments in parallel for speed; preload blobs for first VISIBLE_PRELOAD_COUNT docs.
   useEffect(() => {
-    if (preloadStartedRef.current) return;
+    if (!isDashboardVisible || preloadStartedRef.current) return;
     preloadStartedRef.current = true;
     const run = async () => {
       try {
-        await backendApi.warmConnection?.();
+        // Don't await warmConnection – fetch documents immediately for faster load
+        void backendApi.warmConnection?.();
         const response = await backendApi.getAllDocuments();
         const docs = parseAllDocumentsResponse(response);
         documentCacheRef.current.set('global', docs);
         cacheTimestampRef.current.set('global', Date.now());
-        // Preload blobs for docs that fit in the sidebar viewport so they're ready as soon as user opens sidebar
         if (docs.length > 0) {
           preloadDocumentBlobs(
             docs.slice(0, VISIBLE_PRELOAD_COUNT).map((d) => ({ id: d.id, s3_path: d.s3_path }))
@@ -339,7 +356,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
       }
     };
     run();
-  }, []);
+  }, [isDashboardVisible]);
 
   // Fetch properties and folders when selector opens; prefetch first 2 properties' documents for instant switch
   useEffect(() => {
@@ -454,11 +471,13 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
             if (!isCacheValid) {
               setDocuments(docs);
               loadFolders();
+              setIsLoading(false); // clear loader as soon as data is ready
             }
           } else if (!isCacheValid) {
             setError(response.error || 'Failed to load property documents');
             setDocuments([]);
             setFolders([]);
+            setIsLoading(false);
           }
         } else {
           // Fetch all documents globally
@@ -471,17 +490,20 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
               if (!isCacheValid) {
                 setDocuments(docs);
                 loadFolders();
+                setIsLoading(false); // clear loader as soon as data is ready
               }
             } else if (!isCacheValid) {
               setError(response.error || 'Failed to load documents');
               setDocuments([]);
               setFolders([]);
+              setIsLoading(false);
             }
           } catch (err) {
             if (!isCacheValid) {
               setError('Failed to load documents');
               setDocuments([]);
               setFolders([]);
+              setIsLoading(false);
             }
           }
         }
@@ -489,13 +511,21 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
         console.error('Error fetching documents:', err);
         setError('Failed to load documents');
         setDocuments([]);
-      } finally {
         setIsLoading(false);
+      } finally {
+        setIsLoading(false); // ensure loader is always cleared
       }
     };
 
     fetchData();
   }, [isOpen, viewMode, selectedPropertyId]);
+
+  // When sidebar opens with files from the upload overlay, merge them into pending files
+  useEffect(() => {
+    if (!isOpen || !initialPendingFiles || initialPendingFiles.length === 0) return;
+    setPendingFiles((prev) => [...prev, ...initialPendingFiles]);
+    setInitialPendingFiles(null);
+  }, [isOpen, initialPendingFiles, setInitialPendingFiles]);
 
   // Fetch property addresses and document-to-property mappings from property hubs
   useEffect(() => {
@@ -1516,19 +1546,28 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
     };
   }, []);
 
+  // Accepted file types for drag-and-drop (matches input accept)
+  const ACCEPTED_EXTENSIONS = ['.pdf', '.doc', '.docx', '.xlsx', '.xls', '.csv'];
+  const isAcceptedFile = useCallback((file: File) => {
+    const name = (file.name || '').toLowerCase();
+    return ACCEPTED_EXTENSIONS.some(ext => name.endsWith(ext));
+  }, []);
+
   // Drag and drop handlers
   const handleDragOver = (e: React.DragEvent) => {
+    if (!e.dataTransfer.types.includes('Files')) return;
     e.preventDefault();
     e.stopPropagation();
+    e.dataTransfer.dropEffect = 'copy'; // Required in some browsers to allow drop
     setIsDragOver(true);
   };
 
   const handleDragLeave = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    // Only clear drag state if we're actually leaving the drop zone
-    const relatedTarget = e.relatedTarget as HTMLElement;
-    if (!e.currentTarget.contains(relatedTarget)) {
+    // Only clear drag state if we're actually leaving the drop zone (not entering a child)
+    const relatedTarget = e.relatedTarget as HTMLElement | null;
+    if (relatedTarget == null || !e.currentTarget.contains(relatedTarget)) {
       setIsDragOver(false);
     }
   };
@@ -1538,7 +1577,8 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
     e.stopPropagation();
     setIsDragOver(false);
 
-    const droppedFiles = Array.from(e.dataTransfer.files);
+    const droppedFiles = Array.from(e.dataTransfer.files).filter(isAcceptedFile);
+    if (droppedFiles.length === 0) return;
     // Add files to pending state instead of uploading immediately
     setPendingFiles(prev => [...prev, ...droppedFiles]);
   };
@@ -1562,30 +1602,22 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
     setUploadingPlaceholders((prev) => prev.filter((p) => p.id !== placeholderId));
   }, []);
 
-  // Handle uploading all pending files: instant feedback, hide pending list, process all in parallel, show at top
+  // Handle uploading all pending files: keep same list visible with inline loading, then refresh doc list and clear in one go
   const handleUploadPendingFiles = async () => {
     if (pendingFiles.length === 0) return;
 
     const filesToUpload = [...pendingFiles];
-    const n = filesToUpload.length;
 
-    // (1) Instant feedback: clear pending list and selection immediately so the section below upload zone disappears (keep selectedPropertyForUpload so parallel uploads use it)
-    setPendingFiles([]);
+    // (1) Keep files in place: mark them as uploading (spinner) instead of clearing the list
     setSelectedPendingFileIndex(null);
     setOutlinedPendingFileIndex(null);
     setShowPropertySelector(false);
+    setUploadingFileKeys(new Set(filesToUpload.map((f) => getPendingFileKey(f))));
 
-    // (2) Show uploads at top of sidebar (placeholders show "Uploading" + spinner; no toast)
-    const placeholders = filesToUpload.map((f, i) => ({
-      id: `upload-${i}-${Date.now()}-${f.name}-${f.size}`,
-      name: f.name,
-    }));
-    setUploadingPlaceholders(placeholders);
-
-    // (3) Process all uploads in parallel (no full-page loading spinner)
+    // (2) Process all uploads in parallel (no full-page loading spinner)
     const results = await Promise.all(
-      filesToUpload.map((file, i) =>
-        handleFileUpload(file, placeholders[i].id).then(
+      filesToUpload.map((file) =>
+        handleFileUpload(file, undefined).then(
           () => ({ ok: true as const }),
           () => ({ ok: false as const })
         )
@@ -1593,8 +1625,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
     );
     const successCount = results.filter((r) => r.ok).length;
 
-    // Clear placeholders and refresh document list
-    setUploadingPlaceholders([]);
+    // (3) Refresh document list first, then clear pending/uploading in one batch so nothing disappears then reappears
     const uploadCacheKey =
       viewMode === 'property' && selectedPropertyId ? `property_${selectedPropertyId}` : 'global';
     documentCacheRef.current.delete(uploadCacheKey);
@@ -1623,6 +1654,9 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
       }
     }
 
+    setPendingFiles([]);
+    setUploadingFileKeys(new Set());
+    setUploadingPlaceholders([]);
     setSelectedPropertyForUpload(null);
   };
 
@@ -1994,20 +2028,20 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                   ? 'opacity-90'
                   : ''
               } ${pendingFiles.length > 0 ? 'border-b border-gray-200' : ''}`}
-              style={{ 
-                backgroundColor: isDragOver ? '#F0F0F2' : '#F7F7F9',
+              style={{
+                backgroundColor: '#FFFFFF',
                 padding: '8px 16px',
                 border: '2px dotted #D1D5DB',
                 borderRadius: pendingFiles.length > 0 ? '8px 8px 0 0' : '8px'
               }}
             >
               {/* Document Icon */}
-              <div className="flex items-center justify-center rounded-lg" style={{ width: '100%', overflow: 'visible', backgroundColor: '#F7F7F9' }}>
-                <img 
-                  src="/DocumentUpload2.png" 
-                  alt="Upload files" 
+              <div className="flex items-center justify-center rounded-lg" style={{ width: '100%', overflow: 'visible', backgroundColor: '#FFFFFF' }}>
+                <img
+                  src="/uploadfiles.png"
+                  alt="Upload files"
                   className="object-contain"
-                  style={{ 
+                  style={{
                     width: '695px',
                     height: 'auto',
                     maxWidth: '285px',
@@ -2016,29 +2050,8 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                 />
               </div>
 
-              {/* Text Overlay on Image */}
-              <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none" style={{ padding: '8px 16px', transform: 'translateY(85px)' }}>
-                <div className="flex flex-col items-center justify-center pointer-events-auto">
-                  {/* Instructional Text */}
-                  <p className="text-sm text-gray-600 text-center mb-1">
-                    Drop files here or{' '}
-                    <button
-                      type="button"
-                      className="text-gray-600 hover:text-gray-700 underline underline-offset-2 transition-colors"
-                      style={{ textDecorationThickness: '0.5px', textUnderlineOffset: '2px' }}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleUploadAreaClick();
-                      }}
-                    >
-                      browse
-                    </button>
-                  </p>
-
-                  {/* Supported Formats */}
-                  <p className="text-xs text-gray-400 mt-2">PDF, Word, Excel, CSV</p>
-                </div>
-              </div>
+              {/* Text Overlay - intentionally empty (upload hint text removed) */}
+              <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none" style={{ padding: '8px 16px' }} />
             </div>
 
             {/* Hidden File Input */}
@@ -2060,8 +2073,8 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                 <div className="bg-gray-50 border border-gray-200 border-t-0 rounded-b-lg pl-2 pr-3 py-2 space-y-1 max-h-48 overflow-y-auto filing-pending-files-scroll">
                   <AnimatePresence mode="popLayout">
                     {pendingFiles.map((file, index) => {
-                      // Create a stable key based on file properties
-                      const fileKey = `${file.name}-${file.size}-${file.lastModified}`;
+                      const fileKey = getPendingFileKey(file);
+                      const isUploading = uploadingFileKeys.has(fileKey);
                       return (
                         <PendingFileItem
                           key={fileKey}
@@ -2069,7 +2082,8 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                           index={index}
                           isSelected={selectedPendingFileIndex === index}
                           showOutline={outlinedPendingFileIndex === index}
-                          onSelect={(idx) => {
+                          isUploading={isUploading}
+                          onSelect={isUploading ? undefined : (idx) => {
                             setSelectedPendingFileIndex(idx);
                             setOutlinedPendingFileIndex(idx);
                           }}
@@ -2089,16 +2103,17 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                       <button
                         type="button"
                         onClick={() => {
-                          if (pendingFiles.length > 0) {
+                          if (pendingFiles.length > 0 && uploadingFileKeys.size === 0) {
                             setSelectedPendingFileIndex(0);
                             setShowPropertySelector(true);
                           }
                         }}
+                        disabled={uploadingFileKeys.size > 0}
                         className={`w-full px-3 py-2 border text-xs font-medium rounded-sm flex items-center justify-center gap-2 transition-colors ${
-                          pendingFiles.length > 0
+                          pendingFiles.length > 0 && uploadingFileKeys.size === 0
                             ? 'bg-white border-gray-300 text-gray-900 hover:bg-gray-50 cursor-pointer'
                             : 'bg-gray-50 border-gray-200 text-gray-500 cursor-default'
-                        }`}
+                        } disabled:opacity-50 disabled:cursor-not-allowed`}
                       >
                         <Link className="w-3.5 h-3.5 flex-shrink-0" />
                         <span>Link</span>
@@ -2188,11 +2203,15 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                                     }`}
                                   >
                                     <div className="flex items-center gap-2.5">
+                                      <span className="w-3.5 h-3.5 flex-shrink-0 block">
                                       <img 
-                                        src="/houseicon.png" 
-                                        alt="Property" 
-                                        className="w-3.5 h-3.5 object-contain flex-shrink-0"
+                                        src="/projectsfolder.png" 
+                                        alt=""
+                                        className="w-full h-full object-contain pointer-events-none"
+                                        style={{ display: 'block' }}
+                                        draggable={false}
                                       />
+                                    </span>
                                       <div className="flex-1 min-w-0">
                                         <div className="text-xs font-normal text-gray-900 truncate" style={{ fontFamily: 'system-ui, -apple-system, sans-serif', letterSpacing: '-0.01em' }}>
                                           {address}
@@ -2243,7 +2262,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                   {/* Upload Button - same style as Link; wider when just Link, compact when dropdown selector shown */}
                   <button
                     onClick={handleUploadPendingFiles}
-                    disabled={isLoading}
+                    disabled={isLoading || uploadingFileKeys.size > 0}
                     className={`py-2 text-xs font-medium rounded-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1.5 ${
                       selectedPendingFileIndex === null ? 'flex-1 min-w-0 px-4' : 'flex-shrink-0 px-3'
                     } bg-white hover:bg-gray-50 border border-gray-300 text-gray-900`}
@@ -2251,16 +2270,18 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                     <Upload className="w-3.5 h-3.5 flex-shrink-0" />
                     <span>Upload</span>
                   </button>
-                  {/* Clear - icon only, clears all selected/pending files */}
+                  {/* Clear - icon only, clears all selected/pending files (disabled while uploading) */}
                   <button
                     type="button"
                     onClick={() => {
+                      if (uploadingFileKeys.size > 0) return;
                       setPendingFiles([]);
                       setSelectedPendingFileIndex(null);
                       setShowPropertySelector(false);
                       setSelectedPropertyForUpload(null);
                     }}
-                    className="p-2 rounded-sm border border-gray-300 bg-white hover:bg-gray-50 text-gray-500 hover:text-gray-700 transition-colors flex-shrink-0"
+                    disabled={uploadingFileKeys.size > 0}
+                    className="p-2 rounded-sm border border-gray-300 bg-white hover:bg-gray-50 text-gray-500 hover:text-gray-700 transition-colors flex-shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
                     title="Clear selected files"
                   >
                     <X className="w-3.5 h-3.5" />
@@ -2323,7 +2344,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                   minHeight: '22px'
                 }}
               >
-                By Property
+                By Project
               </button>
             </div>
 
@@ -2467,16 +2488,13 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
           style={{ boxSizing: 'border-box', WebkitOverflowScrolling: 'touch' }}
         >
           {isLoading ? (
-            <div className="w-full py-0.5 space-y-1.5" aria-label="Loading documents">
-              {Array.from({ length: 10 }).map((_, i) => (
-                <div
-                  key={i}
-                  className="flex items-center gap-2.5 pl-8 pr-3 py-1.5 w-full rounded-md border border-gray-200/60 bg-white"
-                >
-                  <div className="w-4 h-4 rounded bg-gray-200/80 shrink-0" />
-                  <div className="h-3.5 flex-1 max-w-[70%] rounded bg-gray-200/80" style={{ width: `${55 + (i % 3) * 15}%` }} />
-                </div>
-              ))}
+            <div className="flex items-center justify-center w-full min-h-[280px] pt-16 pb-8" aria-label="Loading documents">
+              <dotlottie-wc
+                src="https://lottie.host/891f46d7-df4a-4f54-b603-f087ba16403d/aDqReJsKPr.lottie"
+                style={{ width: 300, height: 300 }}
+                autoplay
+                loop
+              />
             </div>
           ) : error ? (
             <div className="flex items-center justify-center h-full">
@@ -2484,7 +2502,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
             </div>
           ) : filteredItems.folders.length === 0 && filteredItems.documents.length === 0 && uploadingPlaceholders.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-gray-500">
-              <FolderOpen className="w-10 h-10 text-gray-300 mb-3" strokeWidth={1.5} />
+              <Files className="w-10 h-10 text-gray-300 mb-3" strokeWidth={1.5} />
               <p className="text-[13px] font-medium text-gray-500 mb-1">No documents</p>
               <p className="text-[12px] text-gray-400 text-center">Upload files or adjust your search</p>
             </div>
@@ -2662,11 +2680,15 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                           className={`w-3 h-3 text-gray-400 flex-shrink-0 transition-transform duration-200 ${isExpanded ? 'rotate-90' : ''}`}
                           strokeWidth={1.75}
                         />
-                        <img 
-                          src="/houseicon.png" 
-                          alt="Property" 
-                          className="w-5 h-5 object-contain flex-shrink-0"
-                        />
+                        <span className="w-5 h-5 flex-shrink-0 block">
+                          <img 
+                            src="/projectsfolder.png" 
+                            alt=""
+                            className="w-full h-full object-contain pointer-events-none"
+                            style={{ display: 'block' }}
+                            draggable={false}
+                          />
+                        </span>
                         <div className="flex-1 min-w-0">
                           {propertyAddress && 
                            !propertyAddress.startsWith('Property ') && 

@@ -4,6 +4,7 @@ import * as React from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { backendApi } from "@/services/backendApi";
 import { toast } from "@/hooks/use-toast";
+import { useFeedbackModal } from "@/contexts/FeedbackModalContext";
 import html2canvas from "html2canvas";
 import { Camera, X } from "lucide-react";
 
@@ -34,17 +35,16 @@ export const ShareFeedbackModal: React.FC<ShareFeedbackModalProps> = ({
   conversationSnippet,
   onSubmitSuccess,
 }) => {
+  const { feedbackScreenshot, setFeedbackScreenshot } = useFeedbackModal();
   const [selectedCategory, setSelectedCategory] = React.useState<string | null>(null);
   const [details, setDetails] = React.useState("");
   const [isSubmitting, setIsSubmitting] = React.useState(false);
-  const [screenshotDataUrl, setScreenshotDataUrl] = React.useState<string | null>(null);
   const [isHiddenForScreenshot, setIsHiddenForScreenshot] = React.useState(false);
   const [isCapturing, setIsCapturing] = React.useState(false);
 
   const resetForm = React.useCallback(() => {
     setSelectedCategory(null);
     setDetails("");
-    setScreenshotDataUrl(null);
   }, []);
 
   const handleClose = React.useCallback(() => {
@@ -74,7 +74,7 @@ export const ShareFeedbackModal: React.FC<ShareFeedbackModalProps> = ({
           logging: false,
         });
         const dataUrl = canvas.toDataURL("image/png");
-        setScreenshotDataUrl(dataUrl);
+        setFeedbackScreenshot(dataUrl);
       } catch (err) {
         toast({
           title: "Screenshot failed",
@@ -87,16 +87,16 @@ export const ShareFeedbackModal: React.FC<ShareFeedbackModalProps> = ({
       }
     }, SCREENSHOT_DELAY_MS);
     return () => clearTimeout(timer);
-  }, [isHiddenForScreenshot, isCapturing]);
+  }, [isHiddenForScreenshot, isCapturing, setFeedbackScreenshot]);
 
   /** Extract base64 from data URL and optionally enforce size limit (backend will also enforce). */
   const getScreenshotBase64 = React.useCallback((): string | undefined => {
-    if (!screenshotDataUrl) return undefined;
-    const base64 = screenshotDataUrl.replace(/^data:image\/\w+;base64,/, "");
+    if (!feedbackScreenshot) return undefined;
+    const base64 = feedbackScreenshot.replace(/^data:image\/\w+;base64,/, "");
     const bytes = Math.ceil((base64.length * 3) / 4);
     if (bytes > SCREENSHOT_MAX_BASE64_BYTES) return undefined; // skip if over limit; backend will not receive
     return base64;
-  }, [screenshotDataUrl]);
+  }, [feedbackScreenshot]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -171,21 +171,33 @@ export const ShareFeedbackModal: React.FC<ShareFeedbackModalProps> = ({
             </div>
             <div>
               <p className="text-sm text-gray-300 mb-2">Screenshot (optional)</p>
-              {screenshotDataUrl ? (
+              {feedbackScreenshot ? (
                 <div className="flex items-start gap-2 p-2 rounded-lg bg-[#2a2a2a] border border-transparent">
                   <img
-                    src={screenshotDataUrl}
+                    src={feedbackScreenshot}
                     alt="Screenshot"
                     className="max-h-24 rounded object-cover border border-[#353535]"
                   />
-                  <button
-                    type="button"
-                    onClick={() => setScreenshotDataUrl(null)}
-                    className="shrink-0 p-1.5 rounded text-gray-400 hover:text-white hover:bg-[#353535] transition-colors"
-                    aria-label="Remove screenshot"
-                  >
-                    <X className="h-4 w-4" />
-                  </button>
+                  <div className="flex flex-col gap-1 shrink-0">
+                    <button
+                      type="button"
+                      onClick={takeScreenshot}
+                      disabled={isCapturing}
+                      className="p-1.5 rounded text-gray-400 hover:text-white hover:bg-[#353535] transition-colors disabled:opacity-50"
+                      aria-label="Replace screenshot"
+                      title="Replace screenshot"
+                    >
+                      <Camera className="h-4 w-4" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setFeedbackScreenshot(null)}
+                      className="p-1.5 rounded text-gray-400 hover:text-white hover:bg-[#353535] transition-colors"
+                      aria-label="Remove screenshot"
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  </div>
                 </div>
               ) : (
                 <button

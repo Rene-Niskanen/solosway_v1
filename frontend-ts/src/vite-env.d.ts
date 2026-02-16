@@ -20,3 +20,13 @@ interface ImportMetaEnv {
 interface ImportMeta {
   readonly env: ImportMetaEnv;
 }
+
+/** dotlottie-wc custom element (Lottie loading animation) */
+declare namespace JSX {
+  interface IntrinsicElements {
+    'dotlottie-wc': React.DetailedHTMLProps<
+      React.HTMLAttributes<HTMLElement> & { src?: string; autoplay?: boolean; loop?: boolean },
+      HTMLElement
+    >;
+  }
+}

@@ -15,9 +15,10 @@ export interface AtMentionItem {
   payload?: unknown;
 }
 
+/** Max items shown when no @ query (initial dropdown). */
 const MAX_ITEMS = 15;
-const MAX_DOCS = 10;
-const MAX_PROPERTIES = 10;
+/** Max filtered matches when user types (e.g. @highlands) so any doc can be found. */
+const MAX_FILTERED_ITEMS = 50;
 
 let cachedItems: AtMentionItem[] = [];
 let preloadPromise: Promise<void> | null = null;
@@ -40,7 +41,7 @@ function normalizeDocList(data: any): Array<{ id: string; filename?: string; ori
 }
 
 function buildPropertyItems(propertyList: any[]): AtMentionItem[] {
-  return (propertyList.slice(0, MAX_PROPERTIES) as any[]).map((hub: any) => {
+  return (propertyList as any[]).map((hub: any) => {
     const p = hub.property || hub;
     const addr = p.formatted_address || p.normalized_address || p.address || 'Unknown Address';
     return {
@@ -54,7 +55,7 @@ function buildPropertyItems(propertyList: any[]): AtMentionItem[] {
 }
 
 function buildDocItems(docList: Array<{ id: string; filename?: string; original_filename?: string; name?: string; [k: string]: any }>): AtMentionItem[] {
-  return docList.slice(0, MAX_DOCS).map((d: any) => ({
+  return docList.map((d: any) => ({
     type: 'document' as const,
     id: String(d.id),
     primaryLabel: d.filename || d.original_filename || d.name || 'Document',
@@ -94,7 +95,8 @@ export function preloadAtMentionCache(): Promise<void> {
 
 /**
  * Get filtered items for the popover from cache (instant, no network).
- * Returns up to MAX_ITEMS; documents first, then properties.
+ * When no query: up to MAX_ITEMS (documents first, then properties).
+ * When filtering (e.g. @highlands): up to MAX_FILTERED_ITEMS so any document can be found.
  */
 export function getFilteredAtMentionItems(query: string): AtMentionItem[] {
   const q = (query || '').trim().toLowerCase();
@@ -102,7 +104,7 @@ export function getFilteredAtMentionItems(query: string): AtMentionItem[] {
   const filtered = cachedItems.filter((item) =>
     item.primaryLabel.toLowerCase().includes(q) || item.secondaryLabel.toLowerCase().includes(q)
   );
-  return filtered.slice(0, MAX_ITEMS);
+  return filtered.slice(0, MAX_FILTERED_ITEMS);
 }
 
 /**

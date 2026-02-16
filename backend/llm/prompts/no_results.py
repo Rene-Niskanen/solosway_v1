@@ -51,3 +51,38 @@ Generate a helpful failure message that:
 - Mentions any relevant document types found
 
 Keep it concise and actionable."""
+
+
+# --- Responder no-chunk branch (when executor ran but no chunks returned) ---
+
+def get_responder_no_chunks_system_prompt() -> str:
+    """System prompt for generating a single no-results message in the responder (no chunks found)."""
+    return """You are a helpful assistant. The user asked a question but the search did not find any matching content.
+
+Generate ONE short, friendly message (1-2 sentences) that:
+- Acknowledges you looked
+- Briefly explains nothing matched (without technical jargon)
+- Suggests rephrasing or adding more detail
+
+Stay in character: warm and helpful. No bullet points, no "Try:" lists. One natural paragraph only."""
+
+
+def get_responder_no_chunks_human_prompt(
+    user_query: str,
+    has_documents: bool,
+    refinement_limit_reached: bool,
+) -> str:
+    """Human prompt for responder no-chunks case."""
+    context = []
+    if refinement_limit_reached:
+        context.append("We already tried a few different ways to find something.")
+    if has_documents:
+        context.append("Some documents were found but none contained content that matched the question.")
+    else:
+        context.append("No documents matched the search.")
+    context_str = " ".join(context) if context else "The search did not find matching content."
+    return f"""The user asked: "{user_query}"
+
+{context_str}
+
+Generate a single short, friendly reply (1-2 sentences) asking them to rephrase or give a bit more detail. No technical terms."""

@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { File, X, Upload, FileText, Image as ImageIcon, ArrowUp, CheckSquare, Square, Trash2, Search, Maximize2, Minimize2, Building2, ChevronLeft, ChevronRight, Plus, RefreshCw, Loader2, ChevronDown, FolderOpen } from 'lucide-react';
+import { File, X, Upload, FileText, Image as ImageIcon, ArrowUp, CheckSquare, Square, Trash2, Search, Maximize2, Minimize2, Building2, ChevronLeft, ChevronRight, Plus, RefreshCw, Loader2, ChevronDown, Files, SquareDashedMousePointer } from 'lucide-react';
 import { useBackendApi } from './BackendApi';
 import { backendApi } from '../services/backendApi';
 import { usePreview } from '../contexts/PreviewContext';
@@ -37,6 +37,8 @@ interface PropertyDetailsPanelProps {
   isInChatMode?: boolean; // Add chat mode prop
   chatPanelWidth?: number; // Width of the chat panel (0 when closed)
   sidebarWidth?: number; // Width of the sidebar for centering calculations
+  /** When in 50/50 split, call this to snap the split back to equal. When provided and chatPanelWidth > 0, a 50/50 button is shown. */
+  onSnapTo50?: () => void;
 }
 
 interface Document {
@@ -1051,7 +1053,8 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
   pinPosition = null,
   isInChatMode = false, // Default to false
   chatPanelWidth = 0, // Default to 0 (chat panel closed)
-  sidebarWidth = 0 // Default to 0 (will be passed from parent for centering)
+  sidebarWidth = 0, // Default to 0 (will be passed from parent for centering)
+  onSnapTo50,
 }) => {
   // Determine if chat panel is actually open based on width
   const isChatPanelOpen = chatPanelWidth > 0 || isInChatMode;
@@ -2568,216 +2571,44 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
             }}
             onClick={(e) => e.stopPropagation()}
           >
-            {/* Section Picker - File Tab Style (Fixed) - Draggable */}
-            <div className="px-10 pt-4 pb-3 bg-[#FCFCF9] relative" style={{ zIndex: 1, borderBottom: 'none' }}>
-              <div className="flex items-end justify-between gap-1">
-                <div className="flex items-end gap-1" style={{ maxWidth: 'fit-content' }}>
-                {/* Back button moved to SideChatPanel (next to View) when in project chat */}
-                {displayOrder.map((section, index) => {
-                  const isActive = activeSection === section;
-                  const sectionConfig = {
-                    documents: {
-                      label: 'Documents',
-                      icon: FileText,
-                    },
-                    propertyDetails: {
-                      label: 'Property Details',
-                      icon: Building2,
-                    },
-                  }[section];
-                  const IconComponent = sectionConfig.icon;
-                  
-                  return (
-                    <button
-                      key={section}
-                      draggable
-                      onDragStart={(e) => {
-                        // Cancel any pending animation frame
-                        if (rafIdRef.current !== null) {
-                          cancelAnimationFrame(rafIdRef.current);
-                          rafIdRef.current = null;
-          }
-                        // Store the original index and section from sectionOrder (not displayOrder)
-                        const originalIndex = sectionOrder.indexOf(section);
-                        setDraggedTabIndex(originalIndex);
-                        setDraggedSection(section);
-                        setPreviewOrder(null); // Clear any previous preview
-                        setDragOverSection(null);
-                        lastDragOverSectionRef.current = null; // Reset ref
-                        e.dataTransfer.effectAllowed = 'move';
-                        e.dataTransfer.setData('text/plain', section);
-                        (e.currentTarget as HTMLElement).style.opacity = '0.5';
-                      }}
-                      onDragEnd={(e) => {
-                        // Cancel any pending animation frame
-                        if (rafIdRef.current !== null) {
-                          cancelAnimationFrame(rafIdRef.current);
-                          rafIdRef.current = null;
-        }
-                        // If we have a preview order, commit it
-                        if (previewOrder) {
-                          setSectionOrder(previewOrder);
-                        }
-                        setDraggedTabIndex(null);
-                        setDraggedSection(null);
-                        setDragOverSection(null);
-                        setPreviewOrder(null);
-                        lastDragOverSectionRef.current = null; // Reset ref
-                        (e.currentTarget as HTMLElement).style.opacity = '1';
-                      }}
-                      onDragOver={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        e.dataTransfer.dropEffect = 'move';
-                        
-                        // Use refs to check state (avoids stale closures)
-                        const currentDraggedSection = draggedSectionRef.current;
-                        if (currentDraggedSection !== null && section !== currentDraggedSection) {
-                          // Only update if we've moved to a different section
-                          // This prevents rapid re-renders and state updates
-                          if (lastDragOverSectionRef.current !== section) {
-                            lastDragOverSectionRef.current = section;
-                            // Throttle updates using requestAnimationFrame
-                            updatePreviewOrder(section);
-                          }
-                        }
-                      }}
-                      onDragLeave={(e) => {
-                        // Only clear if we're actually leaving the tab area
-                        const rect = e.currentTarget.getBoundingClientRect();
-                        const x = e.clientX;
-                        const y = e.clientY;
-                        if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) {
-                          setDragOverSection(null);
-                          lastDragOverSectionRef.current = null; // Reset ref
-                          // Revert to original order when leaving
-                          setPreviewOrder(null);
-            }
-                      }}
-                      onDrop={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        
-                        // Check access level before allowing drop
-                        if (!canUpload()) {
-                          alert('You do not have permission to upload files. Only editors and owners can upload files to this property.');
-                          return;
-                        }
-                        
-                        // Cancel any pending RAF
-                        if (rafIdRef.current !== null) {
-                          cancelAnimationFrame(rafIdRef.current);
-                          rafIdRef.current = null;
-                        }
-                        
-                        // Get current values from refs
-                        const currentDraggedSection = draggedSectionRef.current;
-                        const currentSectionOrder = sectionOrderRef.current;
-    
-                        // Always calculate the final order based on where we dropped
-                        // This ensures it works even if RAF hasn't completed yet
-                        if (currentDraggedSection !== null && section !== currentDraggedSection) {
-                          const finalOrder = [...currentSectionOrder];
-                          const draggedIndex = finalOrder.indexOf(currentDraggedSection);
-                          finalOrder.splice(draggedIndex, 1);
-                          const targetIndex = currentSectionOrder.indexOf(section);
-                          finalOrder.splice(targetIndex, 0, currentDraggedSection);
-                          setSectionOrder(finalOrder);
-                        } else {
-                          // If no valid drop, use preview order if available, otherwise keep current
-                          const currentPreviewOrder = previewOrderRef.current;
-                          if (currentPreviewOrder) {
-                            setSectionOrder(currentPreviewOrder);
-                          }
-                        }
-                        
-                        setDraggedTabIndex(null);
-                        setDraggedSection(null);
-                        setDragOverSection(null);
-                        setPreviewOrder(null);
-                        lastDragOverSectionRef.current = null; // Reset ref
-                      }}
-                      onClick={() => setActiveSection(section)}
-                      className={`
-                        flex items-center gap-2 px-3 py-2 text-sm font-medium cursor-pointer transition-all relative
-                        ${isActive 
-                          ? 'bg-[#FCFCF9] text-gray-900 border-t border-l border-r border-gray-200 rounded-t-lg shadow-sm' 
-                          : 'text-gray-500 hover:text-gray-700 bg-[#FCFCF9] border-t border-l border-r border-gray-200 rounded-t-lg hover:bg-[#F5F5F2]'
-                        }
-                        ${dragOverSection === section ? 'border-blue-400 border-2' : ''}
-                        flex-shrink-0
-                      `}
-                      style={{
-                        marginBottom: isActive ? '-1px' : '0',
-                        zIndex: isActive ? 10 : 1,
-                        minWidth: 'fit-content',
-                        maxWidth: 'none',
-                        width: 'auto',
-                        flexBasis: 'auto',
-                        whiteSpace: 'nowrap',
-                        flexShrink: 0,
-                        flexGrow: 0,
-                        boxSizing: 'border-box',
-                        display: 'inline-flex',
-                        userSelect: 'none',
-                        WebkitUserSelect: 'none',
-                        touchAction: 'none',
-                        position: 'relative',
-                      }}
-                    >
-                      {/* Icon */}
-                      <IconComponent className={`flex-shrink-0 ${isActive ? 'text-gray-900' : 'text-gray-500'}`} style={{ width: '12px', height: '12px', minWidth: '12px', minHeight: '12px', maxWidth: '12px', maxHeight: '12px', flexShrink: 0, pointerEvents: 'none' }} />
-                      {/* Section name */}
-                      <span 
-                        className={`text-xs ${isActive ? 'text-gray-900' : 'text-gray-600'}`}
-                        style={{ 
-                          fontSize: '12px', 
-                          lineHeight: '1.2',
-                          whiteSpace: 'nowrap',
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          flexShrink: 0,
-                          minWidth: 0,
-                          pointerEvents: 'none',
-                        }}
-                      >
-                        {sectionConfig.label}
-                      </span>
-                      {isActive && (
-                        <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#FCFCF9]" />
-                      )}
-                    </button>
-                  );
-                })}
-                  </div>
-                
-                {/* Close Button - Aligned with section tabs in top right */}
-          <button
-            onClick={onClose}
-                  className="p-2 hover:bg-gray-50 rounded-lg text-gray-400 hover:text-gray-600 transition-colors"
-                  title="Close Panel"
+            {/* Panel header with 50/50 snap (when in split) and close button */}
+            <div className="px-10 pt-4 pb-3 bg-[#FCFCF9] relative flex items-center justify-end gap-2" style={{ zIndex: 1, borderBottom: 'none' }}>
+              {chatPanelWidth > 0 && onSnapTo50 && (
+                <button
+                  onClick={onSnapTo50}
+                  className="flex items-center justify-center rounded-full border border-gray-300/80 bg-white hover:bg-gray-50 transition-all duration-150 flex-shrink-0"
                   style={{
-                    marginBottom: '0px', // Align with tabs, no negative margin
-                    zIndex: 10,
+                    padding: '5px',
+                    height: '28px',
+                    width: '28px',
+                    minHeight: '28px',
+                    minWidth: '28px',
+                    cursor: 'pointer',
                   }}
+                  title="Snap to 50/50 split"
                 >
-                  <X size={16} />
-          </button>
-                  </div>
-              </div>
+                  <SquareDashedMousePointer className="w-4 h-4 text-[#666]" strokeWidth={1.5} />
+                </button>
+              )}
+              <button
+                onClick={onClose}
+                className="p-2 hover:bg-gray-50 rounded-lg text-gray-400 hover:text-gray-600 transition-colors"
+                title="Close Panel"
+                style={{ zIndex: 10 }}
+              >
+                <X size={16} />
+              </button>
+            </div>
 
-            {/* Header Area - Clean & Minimal */}
+            {/* Header Area - Clean & Minimal (documents only) */}
             <div className="px-6 bg-[#FCFCF9]" style={{ borderTop: 'none' }}>
               <div className="flex items-center gap-3">
-                {activeSection === 'documents' && (
-                  <div className="flex items-center gap-2 text-xs text-gray-400">
-                    <span>Documents</span>
-                    <span className="font-medium">{filteredDocuments.length}</span>
-            </div>
-            )}
+                <div className="flex items-center gap-2 text-xs text-gray-400">
+                  <span>Documents</span>
+                  <span className="font-medium">{filteredDocuments.length}</span>
+                </div>
 
-                {activeSection === 'documents' && (
-                  <>
+                <>
                     <div className="relative flex-1 group">
                       <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400 group-focus-within:text-blue-500 transition-colors" />
                       <input
@@ -2828,12 +2659,11 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                         backgroundColor: 'rgba(0, 0, 0, 0.02)',
                       }}
                     >
-                      <FolderOpen className="w-3.5 h-3.5 flex-shrink-0 text-[#666]" size={14} strokeWidth={1.75} />
+                      <Files className="w-3.5 h-3.5 flex-shrink-0 text-[#666]" size={14} strokeWidth={1.75} />
                       <span className="text-[12px] font-normal text-[#666]">Files</span>
                     </button>
                   </div>
-                  </>
-                )}
+                </>
                 
                 {/* Fullscreen Toggle Button - Always visible in top right when document is open */}
                 {selectedCardIndex !== null && (
@@ -2854,9 +2684,8 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                 )}
                   </div>
                 
-              {/* Filter Pills - Only show in documents section */}
-              {activeSection === 'documents' && (
-                <div className="flex items-center gap-2 overflow-x-auto pb-2 pt-3 scrollbar-hide">
+              {/* Filter Pills */}
+              <div className="flex items-center gap-2 overflow-x-auto pb-2 pt-3 scrollbar-hide">
                   <button
                     onClick={() => setActiveFilter('all')}
                     className="flex items-center gap-1 rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150 cursor-pointer border-none"
@@ -2897,12 +2726,11 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                     <span className="text-[12px] font-normal text-[#666]">PDFs</span>
                   </button>
                 </div>
-                )}
               </div>
                   
             {/* Content Area - Both sections rendered, inactive one hidden to preserve state */}
             {/* Documents Section - hidden when not active to prevent PDF iframe reload */}
-              <div className={`flex-1 bg-[#FCFCF9] relative ${activeSection !== 'documents' ? 'hidden' : ''} ${selectedCardIndex !== null ? 'overflow-hidden' : 'overflow-y-auto px-10 py-6'}`}>
+              <div className={`flex-1 bg-[#FCFCF9] relative ${selectedCardIndex !== null ? 'overflow-hidden' : 'overflow-y-auto px-10 py-6'}`}>
               {/* Delete Zone */}
                     <AnimatePresence>
                       {isDraggingToDelete && draggedDocumentId && (
@@ -3131,7 +2959,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                             if (isImage) {
                               // Use the stable src that never changes
                               const imageSrc = coverUrl;
-                              // Once rendered, use stable props - never change loading/fetchPriority
+                              // Once rendered, use stable props - never change loading/fetchpriority
                               const wasCached = !!cachedCover || !!previouslyRenderedSrc;
   return (
                                 <img 
@@ -3141,7 +2969,8 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                                   alt={doc.original_filename}
                                   loading={wasCached ? "lazy" : "eager"}
                                   decoding="async"
-                                  fetchPriority={wasCached ? "auto" : "high"}
+                                  // @ts-expect-error - use lowercase fetchpriority per React DOM warning; types still use fetchPriority
+                                  fetchpriority={wasCached ? "auto" : "high"}
                                   style={{
                                     contentVisibility: 'auto',
                                     containIntrinsicSize: '160px 213px',
@@ -3309,8 +3138,8 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                                 
                     </div>
                             
-            {/* Property Details Section - hidden when not active */}
-                <div className={`flex-1 overflow-hidden bg-[#FCFCF9] ${activeSection !== 'propertyDetails' ? 'hidden' : ''}`}>
+            {/* Property Details Section - removed from UI (tabs removed) */}
+                <div className="flex-1 overflow-hidden bg-[#FCFCF9] hidden" aria-hidden="true">
                   {(() => {
                     // Use local property details if available (for optimistic updates), then propertyHub.property_details, then fallback to top-level property fields (e.g. from /api/properties flat response)
                     const hubDetails = property?.propertyHub?.property_details;

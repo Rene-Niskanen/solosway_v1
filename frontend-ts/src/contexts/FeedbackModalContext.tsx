@@ -7,6 +7,9 @@ interface FeedbackModalContextType {
   setIsOpen: (open: boolean) => void;
   messageId: string | null;
   conversationSnippet: string;
+  /** Screenshot captured from the chat bar (tag screenshot). Consumed by ShareFeedbackModal; cleared on modal close/submit. */
+  feedbackScreenshot: string | null;
+  setFeedbackScreenshot: (dataUrl: string | null) => void;
   /** Open the share-feedback modal with optional message context (e.g. from response bar). */
   openFeedback: (messageId: string | null, conversationSnippet: string) => void;
 }
@@ -17,12 +20,14 @@ export const FeedbackModalProvider: React.FC<{ children: React.ReactNode }> = ({
   const [isOpen, setIsOpenState] = useState<boolean>(false);
   const [messageId, setMessageId] = useState<string | null>(null);
   const [conversationSnippet, setConversationSnippet] = useState<string>('');
+  const [feedbackScreenshot, setFeedbackScreenshot] = useState<string | null>(null);
 
   const setIsOpen = useCallback((open: boolean) => {
     setIsOpenState(open);
     if (!open) {
       setMessageId(null);
       setConversationSnippet('');
+      setFeedbackScreenshot(null);
     }
   }, []);
 
@@ -37,6 +42,8 @@ export const FeedbackModalProvider: React.FC<{ children: React.ReactNode }> = ({
     setIsOpen,
     messageId,
     conversationSnippet,
+    feedbackScreenshot,
+    setFeedbackScreenshot,
     openFeedback,
   };
 
@@ -55,6 +62,8 @@ export function useFeedbackModal(): FeedbackModalContextType {
       setIsOpen: () => {},
       messageId: null,
       conversationSnippet: '',
+      feedbackScreenshot: null,
+      setFeedbackScreenshot: () => {},
       openFeedback: () => {},
     };
   }

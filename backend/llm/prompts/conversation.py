@@ -5,12 +5,35 @@ Used when the user is chatting (no document retrieval).
 Callables:
 - get_conversation_system_content(personality_context, memories_section) -> str
 - format_memories_section(memories) -> str
+- get_about_velora_content() -> str
 """
+
+from pathlib import Path
 
 from backend.llm.prompts.base_system import BASE_ROLE
 from backend.llm.prompts.personality import get_personality_choice_instruction
 from backend.llm.prompts.writing import WRITING_RULES
 from backend.llm.prompts.output_formatting import OUTPUT_FORMATTING_RULES
+
+# Cached content of about_velora.md so we don't read disk on every request
+_about_velora_content: str | None = None
+
+
+def get_about_velora_content() -> str:
+    """
+    Load and return the About Velora reference file.
+    Used when the user asks who Velora is or what Velora can do — the model
+    should refer to this content instead of improvising.
+    """
+    global _about_velora_content
+    if _about_velora_content is not None:
+        return _about_velora_content
+    about_path = Path(__file__).parent / "about_velora.md"
+    try:
+        _about_velora_content = about_path.read_text(encoding="utf-8")
+    except OSError:
+        _about_velora_content = ""
+    return _about_velora_content
 
 
 # ============================================================================
@@ -164,7 +187,7 @@ heading, and list rules. The following conversation-specific additions
 apply:
 
 **Length calibration (conversation only):**
-- Simple greeting or acknowledgment: 1–2 sentences.
+- Simple greeting or acknowledgment (e.g. "hello", "hi", "hey"): reply with 1–2 friendly sentences. Do not introduce yourself by name; save that for when they ask "who are you?" or "what can you do?"
 - Straightforward question: short paragraph (2–4 sentences).
 - Nuanced or multi-part question: 2–3 short paragraphs.
 - Never pad a reply to seem more helpful. A two-sentence reply is fine.
@@ -272,6 +295,20 @@ systems, "recalling," or how you store information.
 # ASSEMBLER
 # ============================================================================
 
+ABOUT_VELORA_SECTION_HEADER = """
+---
+
+# REFERENCE: ABOUT VELORA (use ONLY when the user asks who you are or what you can do)
+
+Use this section ONLY when the user explicitly asks about your identity or capabilities (e.g. "who are you?", "what can you do?", "what is Velora?"). Do NOT say your name or introduce yourself in response to a simple greeting like "hello", "hi", or "hey" — for greetings, respond with a normal friendly reply (e.g. "Hi! How can I help?") without volunteering your name.
+
+When they do ask "who are you?" or "what can you do?", your reply MUST be one or two short sentences only, and MUST include the sunglasses emoji 😎. Do NOT write a paragraph. Example: "I'm Velora 😎 How's your day going, [name]?" or "I'm Velora. Who are you? 😎"
+
+When they ask about yourself, use the following as your source of truth. Answer in your own voice; do not recite it verbatim. Keep self-intro replies to 1–2 sentences.
+
+"""
+
+
 def get_conversation_system_content(
     personality_context: str,
     memories_section: str = "",
@@ -283,6 +320,7 @@ def get_conversation_system_content(
     Structure:
       BASE_ROLE (Velora identity + core principles)
       + CONVERSATION_RULES (behavioral policy + style)
+      + ABOUT VELORA reference (file content for self-questions)
       + WRITING_RULES (rewrite / restructuring rules)
       + OUTPUT_FORMATTING_RULES (shared layout standard)
       + workspace_section (if any — current project/documents in scope)
@@ -290,9 +328,15 @@ def get_conversation_system_content(
       + personality choice instruction (pick tone)
       + personality context (previous personality + is_first_message)
     """
+    about_content = get_about_velora_content()
+    about_section = (
+        (ABOUT_VELORA_SECTION_HEADER + about_content) if about_content else ""
+    )
+
     parts = [
         BASE_ROLE,
         CONVERSATION_RULES,
+        about_section,
         WRITING_RULES,
         OUTPUT_FORMATTING_RULES,
     ]
@@ -306,7 +350,7 @@ def get_conversation_system_content(
     parts.append(get_personality_choice_instruction())
     parts.append(personality_context)
 
-    return "\n".join(parts)
+    return "\n".join(p for p in parts if p)
 
 
 def format_memories_section(memories: list[str]) -> str:

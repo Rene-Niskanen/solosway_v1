@@ -1,0 +1,15 @@
+{
+  "strip_prefixes": [
+    "give me ", "get me ", "can you ", "could you ", "would you ", "will you ",
+    "i need ", "i want ", "i'd like ", "i would like ", "please ", "tell me ",
+    "show me ", "help me ", "i'm looking for ", "find ", "analyse ", "analyze ",
+    "what is ", "what are ", "what's ", "where is ", "how do ", "how does ",
+    "how can ", "when did ", "why does ", "which "
+  ],
+  "strip_filler": [
+    "good, ", "good ", "okay, ", "ok, ", "okay ", "ok ", "well, ", "well ",
+    "so, ", "so ", "like, ", "yeah, ", "yes, ", "right, ", "right ", "actually, ",
+    "just, ", "anyway, ", "alright, ", "sure, ", "great, ", "nice, ", "cool, ",
+    "uh, ", "um, ", "hmm, ", "er, "
+  ]
+}

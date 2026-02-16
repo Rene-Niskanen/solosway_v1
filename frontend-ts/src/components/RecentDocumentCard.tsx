@@ -36,6 +36,23 @@ interface RecentDocumentCardProps {
 const thumbnailDataUrlCache = new Map<string, string>();
 const renderingInProgress = new Set<string>();
 
+// Concurrency limit: max N thumbnail renders at a time so first cards appear quickly
+const MAX_CONCURRENT_THUMBNAILS = 3;
+let activeThumbnailRenders = 0;
+const thumbnailQueue: Array<() => void> = [];
+
+function runNextThumbnailInQueue() {
+  if (activeThumbnailRenders >= MAX_CONCURRENT_THUMBNAILS || thumbnailQueue.length === 0) return;
+  activeThumbnailRenders++;
+  const next = thumbnailQueue.shift();
+  if (next) next();
+}
+
+function releaseThumbnailSlot() {
+  activeThumbnailRenders = Math.max(0, activeThumbnailRenders - 1);
+  runNextThumbnailInQueue();
+}
+
 // Get display name from filename
 const getDocumentName = (filename: string): string => {
   if (!filename) return 'Document';
@@ -64,8 +81,11 @@ const isPdfDocument = (doc: DocumentData): boolean => {
 };
 
 // Render PDF first page to a data URL using pdf.js
-// Using 2x resolution for retina displays (360px width for 180px display)
-const renderPdfThumbnail = async (url: string, targetWidth: number = 360): Promise<string> => {
+// Smaller target (200px) and lower JPEG quality for faster render and smaller payload; still sharp at card size
+const PDF_THUMB_TARGET_WIDTH = 200;
+const PDF_THUMB_JPEG_QUALITY = 0.82;
+
+const renderPdfThumbnail = async (url: string, targetWidth: number = PDF_THUMB_TARGET_WIDTH): Promise<string> => {
   const loadingTask = pdfjsLib.getDocument({
     url,
     withCredentials: true,
@@ -74,12 +94,10 @@ const renderPdfThumbnail = async (url: string, targetWidth: number = 360): Promi
   const pdf = await loadingTask.promise;
   const page = await pdf.getPage(1);
   
-  // Calculate scale to fit target width (2x for high DPI)
   const viewport = page.getViewport({ scale: 1 });
   const scale = targetWidth / viewport.width;
   const scaledViewport = page.getViewport({ scale });
   
-  // Create canvas and render at higher resolution
   const canvas = document.createElement('canvas');
   canvas.width = scaledViewport.width;
   canvas.height = scaledViewport.height;
@@ -87,7 +105,6 @@ const renderPdfThumbnail = async (url: string, targetWidth: number = 360): Promi
   
   if (!ctx) throw new Error('Canvas context failed');
   
-  // Render the page
   const renderContext = {
     canvasContext: ctx,
     viewport: scaledViewport,
@@ -95,8 +112,7 @@ const renderPdfThumbnail = async (url: string, targetWidth: number = 360): Promi
   // @ts-expect-error - pdfjs-dist types require canvas but it works without
   await page.render(renderContext).promise;
   
-  // Convert to high quality JPEG (0.92 quality)
-  return canvas.toDataURL('image/jpeg', 0.92);
+  return canvas.toDataURL('image/jpeg', PDF_THUMB_JPEG_QUALITY);
 };
 
 // Render image to a data URL (for caching)
@@ -114,15 +130,11 @@ const renderImageThumbnail = async (url: string): Promise<string> => {
 };
 
 // Main function to render and cache a thumbnail (works for both PDFs and images)
+// Uses a concurrency limit so only MAX_CONCURRENT_THUMBNAILS run at once
 const renderAndCacheThumbnail = async (docId: string, url: string, isPdf: boolean): Promise<string> => {
-  // Check cache first
   const cached = thumbnailDataUrlCache.get(docId);
-  if (cached) {
-    console.log('[ThumbnailCache] HIT:', docId.substring(0, 8));
-    return cached;
-  }
+  if (cached) return cached;
   
-  // Wait if already rendering
   if (renderingInProgress.has(docId)) {
     return new Promise((resolve) => {
       const checkInterval = setInterval(() => {
@@ -131,32 +143,39 @@ const renderAndCacheThumbnail = async (docId: string, url: string, isPdf: boolea
           clearInterval(checkInterval);
           resolve(result);
         }
-      }, 100);
+      }, 80);
     });
   }
   
-  renderingInProgress.add(docId);
-  console.log('[ThumbnailCache] Rendering:', docId.substring(0, 8), isPdf ? '(PDF)' : '(Image)');
-  
-  try {
-    const dataUrl = isPdf 
-      ? await renderPdfThumbnail(url)
-      : await renderImageThumbnail(url);
-    
-    thumbnailDataUrlCache.set(docId, dataUrl);
-    renderingInProgress.delete(docId);
-    if (typeof window !== 'undefined') {
-      if (!(window as any).__preloadedDocumentCovers) (window as any).__preloadedDocumentCovers = {};
-      const c = (window as any).__preloadedDocumentCovers;
-      c[docId] = { ...c[docId], thumbnailUrl: dataUrl, timestamp: Date.now() };
+  return new Promise<string>((resolve, reject) => {
+    const run = async (): Promise<string> => {
+      renderingInProgress.add(docId);
+      try {
+        const dataUrl = isPdf
+          ? await renderPdfThumbnail(url)
+          : await renderImageThumbnail(url);
+        thumbnailDataUrlCache.set(docId, dataUrl);
+        if (typeof window !== 'undefined') {
+          if (!(window as any).__preloadedDocumentCovers) (window as any).__preloadedDocumentCovers = {};
+          const c = (window as any).__preloadedDocumentCovers;
+          c[docId] = { ...c[docId], thumbnailUrl: dataUrl, timestamp: Date.now() };
+        }
+        return dataUrl;
+      } finally {
+        renderingInProgress.delete(docId);
+        releaseThumbnailSlot();
+      }
+    };
+    const wrapped = () => {
+      run().then(resolve).catch(reject);
+    };
+    if (activeThumbnailRenders < MAX_CONCURRENT_THUMBNAILS) {
+      activeThumbnailRenders++;
+      wrapped();
+    } else {
+      thumbnailQueue.push(wrapped);
     }
-    console.log('[ThumbnailCache] CACHED:', docId.substring(0, 8), '- total:', thumbnailDataUrlCache.size);
-    return dataUrl;
-  } catch (error) {
-    renderingInProgress.delete(docId);
-    console.error('[ThumbnailCache] Failed:', docId.substring(0, 8), error);
-    throw error;
-  }
+  });
 };
 
 // Check if thumbnail is cached
@@ -169,11 +188,15 @@ const getCachedThumbnail = (docId: string): string | null => {
   return thumbnailDataUrlCache.get(docId) || null;
 };
 
-// Export preload function for parent components
-export const preloadDocumentThumbnails = (documents: DocumentData[]): void => {
-  console.log('[ThumbnailCache] Preloading', documents.length, 'documents');
+/** Max documents to preload upfront; rest load when their card enters viewport */
+export const PRELOAD_THUMBNAIL_LIMIT = 6;
+
+// Export preload function for parent components (only first N to avoid slow initial load)
+export const preloadDocumentThumbnails = (documents: DocumentData[], limit?: number): void => {
+  const cap = limit ?? PRELOAD_THUMBNAIL_LIMIT;
+  const toPreload = documents.slice(0, cap);
   
-  documents.forEach(doc => {
+  toPreload.forEach(doc => {
     if (isThumbnailCached(doc.id)) return;
     
     const url = doc.cover_image_url || doc.first_page_image_url || getDownloadUrl(doc);
@@ -203,9 +226,27 @@ export const RecentDocumentCard: React.FC<RecentDocumentCardProps> = React.memo(
   const [thumbnailUrl, setThumbnailUrl] = React.useState<string | null>(cachedThumbnail);
   const [isLoading, setIsLoading] = React.useState(!cachedThumbnail);
   const [hasError, setHasError] = React.useState(false);
+  // Lazy load: only fetch thumbnail when card is in (or near) viewport
+  const [shouldLoad, setShouldLoad] = React.useState(!!cachedThumbnail);
+  const cardContainerRef = React.useRef<HTMLDivElement>(null);
   
   // Drag state for visual feedback
   const [isDragging, setIsDragging] = React.useState(false);
+
+  // Intersection Observer: start loading thumbnail when card is visible
+  React.useEffect(() => {
+    if (cachedThumbnail || shouldLoad) return;
+    const el = cardContainerRef.current;
+    if (!el) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) setShouldLoad(true);
+      },
+      { rootMargin: '120px', threshold: 0.01 }
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [cachedThumbnail, shouldLoad]);
   
   // Handle drag start - set drag data and visual state
   const handleDragStart = React.useCallback((e: React.DragEvent) => {
@@ -242,9 +283,9 @@ export const RecentDocumentCard: React.FC<RecentDocumentCardProps> = React.memo(
     return () => window.removeEventListener('documentCoverReady', handler as EventListener);
   }, [document.id, isLoading]);
 
-  // Render thumbnail if not cached
+  // Render thumbnail when visible and not cached
   React.useEffect(() => {
-    if (thumbnailUrl || hasError) return;
+    if (!shouldLoad || thumbnailUrl || hasError) return;
     
     const url = document.cover_image_url || document.first_page_image_url || getDownloadUrl(document);
     if (!url) {
@@ -264,7 +305,7 @@ export const RecentDocumentCard: React.FC<RecentDocumentCardProps> = React.memo(
         setHasError(true);
         setIsLoading(false);
       });
-  }, [document.id, thumbnailUrl, hasError]);
+  }, [document.id, document.cover_image_url, document.first_page_image_url, shouldLoad, thumbnailUrl, hasError]);
 
   const formatDate = (dateStr: string) => {
     return new Date(dateStr).toLocaleDateString('en-US', { 
@@ -276,6 +317,7 @@ export const RecentDocumentCard: React.FC<RecentDocumentCardProps> = React.memo(
 
   return (
     <div
+      ref={cardContainerRef}
       draggable="true"
       onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}
@@ -310,20 +352,6 @@ export const RecentDocumentCard: React.FC<RecentDocumentCardProps> = React.memo(
         transition={{ type: 'spring', stiffness: 400, damping: 25 }}
       >
         <div className="w-full h-full bg-white flex flex-col" style={{ borderRadius: compact ? '4px' : '6px', overflow: 'hidden' }}>
-          {/* Window title bar */}
-          <div 
-            className="flex items-center gap-1.5 flex-shrink-0"
-            style={{
-              padding: compact ? '4px 6px' : '6px 8px',
-              borderBottom: '1px solid #F3F4F6',
-              backgroundColor: '#FAFAFA',
-            }}
-          >
-            <div className={compact ? 'w-1 h-1 rounded-full bg-gray-300' : 'w-1.5 h-1.5 rounded-full bg-gray-300'} />
-            <div className={compact ? 'w-1 h-1 rounded-full bg-gray-300' : 'w-1.5 h-1.5 rounded-full bg-gray-300'} />
-            <div className={compact ? 'w-1 h-1 rounded-full bg-gray-300' : 'w-1.5 h-1.5 rounded-full bg-gray-300'} />
-          </div>
-          
           {/* Document content area */}
           <div className="flex-1 overflow-hidden relative bg-gray-50">
             {isLoading ? (
@@ -338,11 +366,12 @@ export const RecentDocumentCard: React.FC<RecentDocumentCardProps> = React.memo(
                 <div className="h-1.5 bg-gray-100 rounded w-9/12 mb-1" />
               </div>
             ) : thumbnailUrl ? (
-              // Cached thumbnail - instant display
+              // Cached thumbnail - async decode so it doesn't block main thread
               <img 
                 src={thumbnailUrl}
                 alt={document.original_filename}
                 className="w-full h-full object-cover object-top"
+                decoding="async"
               />
             ) : (
               // Fallback: Text placeholder

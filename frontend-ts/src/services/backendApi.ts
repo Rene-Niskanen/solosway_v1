@@ -1913,12 +1913,22 @@ class BackendApiService {
           data: data
         };
       } else {
-        const errorMsg = `HTTP ${response.status}: ${response.statusText}`;
+        let body: { error?: string; traceback?: string } = {};
+        try {
+          body = await response.json();
+        } catch {
+          // ignore non-JSON body
+        }
+        const errorMsg = (body.error && body.error.trim()) ? body.error : `HTTP ${response.status}: ${response.statusText}`;
         console.log(`❌ checkAuth: Authentication failed - ${errorMsg}`);
+        if (response.status === 500 && body.traceback) {
+          console.error('📋 Dashboard 500 traceback:', body.traceback);
+        }
         return {
           success: false,
           error: errorMsg,
-          statusCode: response.status // Include status code for AuthGuard to check
+          statusCode: response.status,
+          traceback: body.traceback
         };
       }
     } catch (error) {

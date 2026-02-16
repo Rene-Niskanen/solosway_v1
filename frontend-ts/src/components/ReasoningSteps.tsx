@@ -841,7 +841,7 @@ const StepRenderer: React.FC<{
       );
     
     case 'searching': {
-      // Lowercase first letter of query after intro so "Locating Who..." → "Locating who..." for better flow
+      // Lowercase first letter of query after intro so "Locating Who..." → "Locating who...". Filler words are stripped backend-side via reasoning_phrases.json.
       const rawMsg = step.message || '';
       const introMatch = rawMsg.match(/^(Locating|Finding|Searching for|Preparing)\s+([A-Z])(.*)$/);
       const searchingDisplayMessage = introMatch
@@ -1574,11 +1574,17 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
       });
   }, [stepsToRender, isLoading, totalReadingSteps]);
   
-  // Don't render if no steps
-  if (!filteredSteps || filteredSteps.length === 0) {
-    // Show planning indicator when loading but no steps yet
-    // This will stop shimmering when first step appears (handled by component unmounting)
-    // Wrapper matches main return (padding, marginLeft, minHeight) to avoid layout jitter when first step arrives
+  // Single planning step: use same layout as "no steps" so "Planning next moves" doesn't jump when backend sends the step
+  const onlyPlanningStep =
+    isLoading &&
+    animatedSteps.length === 1 &&
+    (animatedSteps[0].step.step === 'planning_next_moves' ||
+      (animatedSteps[0].step.action_type === 'summarising' && animatedSteps[0].step.message === 'Planning next moves'));
+  
+  // Don't render if no steps (or when only step is planning - keep same layout to avoid jump)
+  if (!filteredSteps || filteredSteps.length === 0 || onlyPlanningStep) {
+    // Show planning indicator when loading but no steps yet, or when the only step is "Planning next moves"
+    // Using one consistent block avoids: appear in one place → then move up when the planning step arrives
     if (isLoading) {
       return (
         <motion.div

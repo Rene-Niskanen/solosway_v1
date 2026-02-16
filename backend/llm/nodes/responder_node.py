@@ -43,6 +43,10 @@ from backend.llm.utils.personality_prompts import (
 )
 from backend.llm.tools.citation_mapping import create_chunk_citation_tool, _narrow_bbox_to_cited_line
 from backend.llm.prompts.conversation import format_memories_section
+from backend.llm.prompts.no_results import (
+    get_responder_no_chunks_system_prompt,
+    get_responder_no_chunks_human_prompt,
+)
 from backend.llm.utils.workspace_context import build_workspace_context
 from backend.services.supabase_client_factory import get_supabase_client
 
@@ -2250,20 +2254,22 @@ async def responder_node(state: MainWorkflowState, runnable_config=None) -> Main
             return error_output
     
     else:
-        # No chunks found - generate helpful message
+        # No chunks found - generate helpful message via prompt (no hard-coded strings)
         logger.warning("[RESPONDER] ⚠️ No chunks found in execution results")
-        
-        # Check if documents were found but chunks weren't retrieved
         has_documents = any(r.get("action") == "retrieve_docs" and r.get("result") for r in execution_results)
-        
-        # Check if refinement limit was reached
-        if refinement_limit_reached:
-            answer = "I couldn't find relevant information for your question. Try rephrasing or using different keywords."
-        elif has_documents:
-            answer = "I found documents but no matching content. Try rephrasing or being more specific."
-        else:
-            answer = "I couldn't find relevant information. Try rephrasing or adding more context."
-        
+        fallback_answer = "I couldn't find that. Please try rephrasing or adding more detail."
+        try:
+            llm = ChatOpenAI(api_key=config.openai_api_key, model=config.openai_model, temperature=0)
+            response = await llm.ainvoke([
+                SystemMessage(content=get_responder_no_chunks_system_prompt()),
+                HumanMessage(content=get_responder_no_chunks_human_prompt(
+                    user_query, has_documents, refinement_limit_reached
+                )),
+            ])
+            answer = (response.content or "").strip() or fallback_answer
+        except Exception as e:
+            logger.warning("[RESPONDER] No-chunks LLM fallback: %s", e)
+            answer = fallback_answer
         # Prepare no-results output (keep previous personality)
         no_results_output = {
             "final_summary": answer,

@@ -10,7 +10,9 @@ import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
-const TARGET_THUMB_WIDTH = 360;
+// Match RecentDocumentCard thumbnail size for faster render and smaller payload
+const TARGET_THUMB_WIDTH = 200;
+const PDF_THUMB_JPEG_QUALITY = 0.82;
 
 async function renderPdfBlobToDataUrl(blob: Blob): Promise<string | null> {
   try {
@@ -32,7 +34,7 @@ async function renderPdfBlobToDataUrl(blob: Blob): Promise<string | null> {
     };
     // @ts-expect-error - pdfjs-dist types
     await page.render(renderContext).promise;
-    return canvas.toDataURL('image/jpeg', 0.92);
+    return canvas.toDataURL('image/jpeg', PDF_THUMB_JPEG_QUALITY);
   } catch {
     return null;
   }

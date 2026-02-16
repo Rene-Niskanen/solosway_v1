@@ -17,6 +17,8 @@ import { ProjectsProvider } from '../contexts/ProjectsContext';
 import { BrowserFullscreenProvider } from '../contexts/BrowserFullscreenContext';
 import { FeedbackModalProvider, useFeedbackModal } from '../contexts/FeedbackModalContext';
 import { ShareFeedbackModal } from './ShareFeedbackModal';
+import { SearchOrStartChatModal } from './SearchOrStartChatModal';
+import { UploadOverlay } from './UploadOverlay';
 
 export interface DashboardLayoutProps {
   className?: string;
@@ -26,10 +28,11 @@ const DashboardLayoutContent = ({
   className
 }: DashboardLayoutProps) => {
   const navigate = useNavigate();
-  const { closeSidebar: closeFilingSidebar, isOpen: isFilingSidebarOpen, width: filingSidebarWidth } = useFilingSidebar();
-  const { togglePanel: toggleChatPanel, closePanel: closeChatPanel, isOpen: isChatPanelOpen, width: chatPanelWidth } = useChatPanel();
+  const { closeSidebar: closeFilingSidebar, openSidebar: openFilingSidebar, isOpen: isFilingSidebarOpen, width: filingSidebarWidth, setUploadOverlayOpen } = useFilingSidebar();
+  const { togglePanel: toggleChatPanel, closePanel: closeChatPanel, isOpen: isChatPanelOpen } = useChatPanel();
   const { isOpen: isFeedbackModalOpen, setIsOpen: setFeedbackModalOpen, messageId: feedbackMessageId, conversationSnippet: feedbackConversationSnippet } = useFeedbackModal();
   const [selectedBackground, setSelectedBackground] = React.useState<string>('default-background');
+  const [searchModalOpen, setSearchModalOpen] = React.useState(false);
 
   // Preload @ mention cache (properties + documents) so popover shows results instantly
   React.useEffect(() => {
@@ -361,46 +364,46 @@ const DashboardLayoutContent = ({
     }
   }, [isSidebarCollapsed]);
 
-  // Keyboard shortcut: ⌘E toggles sidebar open/closed (label in Sidebar.tsx Navigation)
+  // Keyboard shortcut: ⌘E toggles sidebar open/closed (label in Sidebar.tsx Navigation); ⌘K opens Search modal
   React.useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement;
+      const isEditable =
+        target.tagName === 'INPUT' ||
+        target.tagName === 'TEXTAREA' ||
+        target.isContentEditable ||
+        (target.closest && target.closest('[contenteditable="true"]'));
+
+      // ⌘K (Cmd/Ctrl + K) open Search modal; close file sidebar only (do not collapse main sidebar)
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        if (!isEditable) {
+          e.preventDefault();
+          closeFilingSidebar();
+          setSearchModalOpen(true);
+        }
+        return;
+      }
+
       // ⌘E (Cmd/Ctrl + E) to toggle sidebar open/closed (not expand)
       if ((e.metaKey || e.ctrlKey) && e.key === 'e') {
-        const target = e.target as HTMLElement;
-        
-        // Check if we're in an editable element (input, textarea, or contenteditable)
-        const isEditable = 
-          target.tagName === 'INPUT' || 
-          target.tagName === 'TEXTAREA' ||
-          target.isContentEditable ||
-          (target.closest && target.closest('[contenteditable="true"]'));
-        
-        // Only prevent default if we're not in an editable element
         if (!isEditable) {
           e.preventDefault();
           e.stopPropagation();
-          
-          // Toggle sidebar open/closed, but ensure it opens in normal (non-expanded) state
           if (isSidebarCollapsed) {
-          // Opening sidebar - ensure it's not expanded
-          setIsSidebarCollapsed(false);
-          setIsSidebarExpanded(false);
-          // Don't close chat panel - user must use close button
-        } else {
-          // Closing sidebar - collapse it
-          setIsSidebarCollapsed(true);
-          setIsSidebarExpanded(false);
-          setWasChatPanelOpenBeforeCollapse(isChatPanelOpen);
-          // Don't close chat panel - user must use close button
-        }
+            setIsSidebarCollapsed(false);
+            setIsSidebarExpanded(false);
+          } else {
+            setIsSidebarCollapsed(true);
+            setIsSidebarExpanded(false);
+            setWasChatPanelOpenBeforeCollapse(isChatPanelOpen);
+          }
         }
       }
     };
 
-    // Use capture phase to ensure we catch the event early
     window.addEventListener('keydown', handleKeyDown, true);
     return () => window.removeEventListener('keydown', handleKeyDown, true);
-  }, [isSidebarCollapsed, isChatPanelOpen, closeChatPanel, toggleChatPanel]);
+  }, [isSidebarCollapsed, isChatPanelOpen, closeChatPanel, toggleChatPanel, closeFilingSidebar]);
 
   // Ref to store MainContent's handler so we can call it
   const mainContentNewChatHandlerRef = React.useRef<(() => void) | null>(null);
@@ -461,22 +464,19 @@ const DashboardLayoutContent = ({
     // Do NOT create chat history yet; wait for first submitted query
   }, [handleChatModeChange, currentView, currentChatId, getChatById, hasPerformedSearch]);
 
-  // Handler to restore active chat from sidebar (re-engage with running chat)
+  // Handler to restore active chat from sidebar (New chat button) - must work from any view (Dashboard, Projects, Map, etc.)
   const handleRestoreActiveChat = React.useCallback(() => {
-    console.log('🔄 DashboardLayout: Opening chat', { hasActiveChat, currentView });
+    console.log('🔄 DashboardLayout: Opening new chat', { hasActiveChat, currentView });
     
-    // CRITICAL: Always set these FIRST to prevent dashboard from showing
-    // Set the signal immediately BEFORE any other state changes
-    setShouldRestoreActiveChat(true);
-    // Set chat map visibility - chat needs map visible
-    setIsMapVisibleFromChat(true);
-    // Set chat mode immediately (MUST be set before view change)
-    setIsInChatMode(true);
-    // MainContent will set hasPerformedSearch to true when it receives shouldRestoreActiveChat
-    
-    // CRITICAL: Always ensure we're on search view to show chat (never dashboard)
-    // Even if already on search/home, explicitly set it to ensure proper state
+    // Route to search view first so chat is visible from any section (Projects, Map, Files, etc.)
     setCurrentView('search');
+    // Clear project selection when opening new chat so we don't stay in project-detail mode
+    clearProjectSelectionRef.current?.();
+    
+    // CRITICAL: Set these so MainContent shows fullscreen new-chat UI
+    setShouldRestoreActiveChat(true);
+    setIsMapVisibleFromChat(true);
+    setIsInChatMode(true);
     
     if (hasActiveChat) {
       // There's an active chat - restore it
@@ -498,6 +498,16 @@ const DashboardLayoutContent = ({
       setResetTrigger(prev => prev + 1); // Trigger reset in SearchBar
     }
   }, [hasActiveChat, currentView]);
+
+  // Chats button: open new-chat UI (centered, taller bar, "What are you working on?" above, no map) - from any view
+  const [openChatsViewTrigger, setOpenChatsViewTrigger] = React.useState(0);
+  const handleOpenChatsView = React.useCallback(() => {
+    setCurrentView('search');
+    clearProjectSelectionRef.current?.();
+    setIsMapVisibleFromChat(false);
+    setIsInChatMode(true);
+    setOpenChatsViewTrigger((t) => t + 1);
+  }, []);
   
   // Callback from MainContent when active chat state changes
   const handleActiveChatChange = React.useCallback((isActive: boolean) => {
@@ -681,33 +691,8 @@ const DashboardLayoutContent = ({
         />
       )}
 
-      {/* Agent sidebar closing toggle rail - visible strip on left edge of agent sidebar; click closes only agent sidebar */}
-      {!isSidebarExpanded && isChatPanelOpen && (
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            closeChatPanel();
-          }}
-          aria-label="Close agent sidebar"
-          className="fixed inset-y-0 w-3 group"
-          style={{
-            right: chatPanelWidth,
-            width: 12,
-            zIndex: 10001,
-            background: '#F8F8F5',
-            borderLeft: '1px solid #E5E5E2',
-            pointerEvents: 'auto',
-            WebkitTapHighlightColor: 'transparent'
-          }}
-        >
-          <div
-            className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity"
-            style={{ background: 'rgba(0, 0, 0, 0.06)' }}
-          />
-        </button>
-      )}
-      
+      {/* Agent sidebar toggle rail is now inside ChatPanel so its width is included in the sidebar total */}
+
       {/* FilingSidebar closing toggle rail - separate strip on right edge of FilingSidebar; matches FilingSidebar background (#F2F2EF) */}
       {isFilingSidebarOpen && (
         <button
@@ -749,8 +734,14 @@ const DashboardLayoutContent = ({
         isMapVisible={isMapVisible}
         hasActiveChat={hasActiveChat}
         onRestoreActiveChat={handleRestoreActiveChat}
+        onOpenChatsView={handleOpenChatsView}
         isChatVisible={isChatVisible}
         onMapToggle={handleMapToggle}
+        onOpenSearch={() => {
+          closeFilingSidebar();
+          setSearchModalOpen(true);
+        }}
+        isSearchOpen={searchModalOpen}
         onSignOut={async () => {
           try {
             const result = await backendApi.logout();
@@ -771,7 +762,36 @@ const DashboardLayoutContent = ({
           }
         }}
       />
-      
+
+      <SearchOrStartChatModal
+        open={searchModalOpen}
+        onOpenChange={setSearchModalOpen}
+        onNewChat={() => {
+          handleRestoreActiveChat();
+          handleNewChat();
+        }}
+        onNewChatWithQuery={(query) => {
+          handleRestoreActiveChat();
+          handleNewChat();
+          // Optional: prefill chat input via custom event for MainContent/SideChatPanel to consume
+          window.dispatchEvent(new CustomEvent('searchModalNewChatQuery', { detail: { query } }));
+        }}
+        onChatSelect={handleChatSelect}
+        onNavigate={handleViewChange}
+        onOpenFiles={openFilingSidebar}
+        onUploadFile={() => setUploadOverlayOpen(true)}
+        onOpenFile={(fileId, filename) => {
+          window.dispatchEvent(new CustomEvent('searchModalOpenFile', { detail: { fileId, filename: filename ?? 'Document' } }));
+        }}
+        onProjectSelect={(projectId) => {
+          setSearchModalOpen(false);
+          handleViewChange('search');
+          window.dispatchEvent(new CustomEvent('searchModalSelectProject', { detail: { propertyId: projectId } }));
+        }}
+      />
+
+      <UploadOverlay />
+
       {/* Main Content - with higher z-index when map is visible */}
       <MainContent 
         currentView={currentView} 
@@ -805,6 +825,7 @@ const DashboardLayoutContent = ({
         onMapVisibilityChange={handleMapVisibilityChange}
         onNavigateToDashboard={handleNavigateToDashboard}
         externalIsMapVisible={isMapVisible}
+        openChatsViewTrigger={openChatsViewTrigger}
         onRegisterClearProjectSelection={(clear) => { clearProjectSelectionRef.current = clear; }}
         onProjectDetailOpen={setIsProjectDetailOpen}
       />

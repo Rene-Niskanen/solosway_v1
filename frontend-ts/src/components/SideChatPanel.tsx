@@ -5,7 +5,7 @@ import { useMemo } from "react";
 import { createPortal, flushSync } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { generateAnimatePresenceKey, generateConditionalKey, generateUniqueKey } from '../utils/keyGenerator';
-import { ChevronLeft, ChevronRight, ChevronDown, ChevronUp, ArrowUp, Paperclip, Mic, Map, Globe, X, SquareDashedMousePointer, Scan, Fullscreen, Plus, PanelLeftOpen, PanelRightClose, PictureInPicture2, Trash2, CreditCard, MoveDiagonal, Square, FileText, Image as ImageIcon, File as FileIcon, FileCheck, Minimize, Minimize2, Workflow, Home, FolderOpen, Brain, AudioLines, MessageCircleDashed, Copy, Search, MessageSquare, Pencil, Check, Highlighter, SlidersHorizontal, BookOpen, Download, ThumbsUp, ThumbsDown } from "lucide-react";
+import { ChevronLeft, ChevronRight, ChevronDown, ChevronUp, ArrowUp, Paperclip, Mic, Map, Globe, X, SquareDashedMousePointer, Scan, Fullscreen, Plus, PanelLeftOpen, PanelRightClose, PictureInPicture2, Trash2, CreditCard, MoveDiagonal, Square, Files, Image as ImageIcon, File as FileIcon, FileCheck, Minimize, Minimize2, Workflow, Home, Brain, AudioLines, MessageCircleDashed, Copy, Search, MessageSquare, Pencil, Check, Highlighter, SlidersHorizontal, BookOpen, Download, ThumbsUp, ThumbsDown, Link2 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { FileAttachment, FileAttachmentData } from './FileAttachment';
 import { PropertyAttachmentData } from './PropertyAttachment';
@@ -149,6 +149,8 @@ interface WidthCalculationParams {
   isChatPanelOpen: boolean;
   shouldExpand?: boolean;
   isManualFullscreen?: boolean;
+  /** When true, chat is the only content (no map) - e.g. Chats view - use full width */
+  isChatOnlyView?: boolean;
 }
 
 interface WidthCalculationResult {
@@ -181,6 +183,7 @@ export function calculateChatPanelWidth(params: WidthCalculationParams): WidthCa
     isChatPanelOpen,
     shouldExpand = false,
     isManualFullscreen = false,
+    isChatOnlyView = false,
   } = params;
 
   // Agent sidebar (right-side ChatPanel) reserve: panel width + toggle rail when open
@@ -196,9 +199,9 @@ export function calculateChatPanelWidth(params: WidthCalculationParams): WidthCa
     };
   }
 
-  // PRIORITY 2: Fullscreen mode (from dashboard or explicit) - but NOT when document preview is open
-  // Unless user manually requested fullscreen (overrides document preview)
-  if ((shouldExpand || isFullscreenMode) && (!shouldUse50Percent || isManualFullscreen)) {
+  // PRIORITY 2: Full width when chat is only content (Chats view, no map) or fullscreen/expand
+  // isChatOnlyView = Chats nav: centered welcome, no map - panel should fill main area
+  if ((shouldExpand || isFullscreenMode || isChatOnlyView) && (!shouldUse50Percent || isManualFullscreen)) {
     return {
       widthPx: availableWidth,
       widthCss: `calc(100vw - ${sidebarWidth}px - ${agentSidebarReserve}px)`,
@@ -717,14 +720,9 @@ const StreamingResponseText: React.FC<{
     streamingRef.current = !!(text && text.length > prevTextLenRef.current) || !!isStreaming;
   }, [text, isStreaming]);
 
-  // When streaming ends, immediately complete the reveal so we don't get a "click" when the
-  // reveal animation later catches up and clears wrapper height/overflow.
-  const prevIsStreamingRef = React.useRef(isStreaming);
+  // When showing restored/persisted messages (re-entered chat), skip all reveal animation and show full text at once.
   React.useEffect(() => {
-    const wasStreaming = prevIsStreamingRef.current;
-    prevIsStreamingRef.current = isStreaming;
-    if (!wasStreaming || isStreaming) return;
-    // Just transitioned from streaming to not streaming — finish reveal state immediately
+    if (!skipRevealAnimation || !text) return;
     if (revealRafRef.current) {
       cancelAnimationFrame(revealRafRef.current);
       revealRafRef.current = undefined;
@@ -741,6 +739,55 @@ const StreamingResponseText: React.FC<{
       for (let i = 0; i < n; i++) wrapper.style.removeProperty(`--line-${i}`);
     }
     if (messageId) onRevealCompleteRef.current?.(messageId);
+  }, [skipRevealAnimation, text, messageId]);
+
+  // When streaming ends, smoothly expand the wrapper to full height (no layout "click") then clear and call onRevealComplete.
+  const prevIsStreamingRef = React.useRef(isStreaming);
+  React.useEffect(() => {
+    const wasStreaming = prevIsStreamingRef.current;
+    prevIsStreamingRef.current = isStreaming;
+    if (!wasStreaming || isStreaming) return;
+    if (skipRevealAnimation) return;
+    if (revealRafRef.current) {
+      cancelAnimationFrame(revealRafRef.current);
+      revealRafRef.current = undefined;
+    }
+    revealRunningRef.current = false;
+    overlayRevealDoneRef.current = true;
+    setShowOverlay(false);
+    setLines([]);
+    const wrapper = wrapperRef.current;
+    const rects = lineRectsRef.current;
+    const n = Math.ceil(revealTargetRef.current);
+    if (wrapper && rects.length > 0) {
+      const topPadding = 4;
+      const lastRect = rects[rects.length - 1];
+      const fullHeightPx = topPadding + Math.ceil(lastRect.top + lastRect.height);
+      const onTransitionEnd = () => {
+        wrapper.style.transition = '';
+        wrapper.style.height = '';
+        wrapper.style.overflow = '';
+        for (let i = 0; i < n; i++) wrapper.style.removeProperty(`--line-${i}`);
+        wrapper.removeEventListener('transitionend', onTransitionEnd);
+        if (messageId) onRevealCompleteRef.current?.(messageId);
+      };
+      wrapper.addEventListener('transitionend', onTransitionEnd);
+      for (let i = 0; i < n; i++) wrapper.style.removeProperty(`--line-${i}`);
+      wrapper.style.transition = 'height 0.4s cubic-bezier(0.22, 0.61, 0.36, 1)';
+      wrapper.style.overflow = 'hidden';
+      wrapper.style.height = `${fullHeightPx}px`;
+      const timeout = setTimeout(() => {
+        wrapper.removeEventListener('transitionend', onTransitionEnd);
+        onTransitionEnd();
+      }, 420);
+      return () => clearTimeout(timeout);
+    }
+    if (wrapper) {
+      wrapper.style.height = '';
+      wrapper.style.overflow = '';
+      for (let i = 0; i < n; i++) wrapper.style.removeProperty(`--line-${i}`);
+    }
+    if (messageId) onRevealCompleteRef.current?.(messageId);
   }, [isStreaming, messageId]);
 
   const onTextUpdateRef = React.useRef(onTextUpdate);
@@ -754,6 +801,7 @@ const StreamingResponseText: React.FC<{
   }, [text, isStreaming]);
 
   const measureLines = React.useCallback(() => {
+    if (skipRevealAnimation) return;
     const container = textContainerRef.current;
     if (!container || !container.firstChild) return;
     const range = document.createRange();
@@ -857,7 +905,7 @@ const StreamingResponseText: React.FC<{
       }
     }
     if (newCount > 0 && !revealRunningRef.current) startRevealLoop();
-  }, []);
+  }, [skipRevealAnimation]);
 
   const startRevealLoop = React.useCallback(() => {
     if (revealRunningRef.current || !wrapperRef.current) return;
@@ -928,6 +976,7 @@ const StreamingResponseText: React.FC<{
 
   React.useLayoutEffect(() => {
     if (!text || !textContainerRef.current) return;
+    if (skipRevealAnimation) return;
     const grew = text.length > prevTextLenRef.current;
     prevTextLenRef.current = text.length;
     if (grew && !overlayRevealDoneRef.current) {
@@ -940,7 +989,7 @@ const StreamingResponseText: React.FC<{
       });
       return () => cancelAnimationFrame(raf);
     }
-  }, [text, measureLines]);
+  }, [text, measureLines, skipRevealAnimation]);
 
   React.useEffect(() => {
     const el = textContainerRef.current;
@@ -1484,7 +1533,7 @@ const StreamingResponseText: React.FC<{
         >
           <ReactMarkdown key={markdownKey} skipHtml={true} components={markdownComponents}>{textWithCitationPlaceholders}</ReactMarkdown>
         </div>
-        {showOverlay && lines.length > 0 && (
+        {!skipRevealAnimation && showOverlay && lines.length > 0 && (
           <div style={{ position: 'absolute', left: 0, top: 0, right: 0, bottom: 0, pointerEvents: 'none' }}>
             {lines.map((line, i) => (
               <div
@@ -3182,6 +3231,8 @@ interface SideChatPanelProps {
   initialDocumentChip?: { id: string; label: string } | null;
   /** Called after the initial document chip has been applied so parent can clear it. */
   onConsumedInitialDocumentChip?: () => void;
+  /** When this value changes, clear dragged width and expand so layout snaps to 50/50 (e.g. when opening file from search modal). */
+  resetWidthTrigger?: number;
 }
 
 export interface SideChatPanelRef {
@@ -3293,7 +3344,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   initialContentSegments,
   pendingSearchContentSegmentsRef,
   initialDocumentChip,
-  onConsumedInitialDocumentChip
+  onConsumedInitialDocumentChip,
+  resetWidthTrigger,
 }, ref) => {
   // Main navigation state:
   // - collapsed: icon-only sidebar (treat as "closed" for the purposes of showing open controls)
@@ -3997,7 +4049,14 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       isFirstCitationRef.current = false;
     }
   }, [isVisible, legacyExpandedCardViewDoc, onChatWidthChange, setIsExpanded]);
-  
+
+  // When parent triggers reset (e.g. open file from search modal), force 50/50 split
+  React.useEffect(() => {
+    if (resetWidthTrigger == null) return;
+    setDraggedWidth(null);
+    setIsExpanded(true);
+  }, [resetWidthTrigger]);
+
   // Use refs to store resize state for performance (avoid re-renders during drag)
   const resizeStateRef = React.useRef<{
     startPos: { x: number };
@@ -4680,9 +4739,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       chatPanelWidth,
       isChatPanelOpen,
       isManualFullscreen: isManualFullscreenRef.current,
+      isChatOnlyView: isVisible && !isMapVisible,
     });
     return widthPx >= 600;
-  }, [draggedWidth, isExpanded, isFullscreenMode, isPropertyDetailsOpen, expandedCardViewDoc, sidebarWidth, chatPanelWidth, isChatPanelOpen]);
+  }, [draggedWidth, isExpanded, isFullscreenMode, isPropertyDetailsOpen, expandedCardViewDoc, sidebarWidth, chatPanelWidth, isChatPanelOpen, isVisible, isMapVisible]);
 
   // Standalone Minimise shows for 10s after Expand; standalone Expand shows for 10s after Minimise
   const [hasUserExpandedFromView, setHasUserExpandedFromView] = React.useState(false);
@@ -4758,6 +4818,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         chatPanelWidth,
         isChatPanelOpen,
         isManualFullscreen: isManualFullscreenRef.current,
+        isChatOnlyView: isVisible && !isMapVisible,
       });
       
       onChatWidthChange(widthPx);
@@ -4765,7 +4826,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       // Chat is hidden, notify parent that width is 0
       onChatWidthChange(0);
     }
-  }, [isExpanded, isVisible, isPropertyDetailsOpen, draggedWidth, onChatWidthChange, isFullscreenMode, sidebarWidth, isChatPanelOpen, chatPanelWidth, expandedCardViewDoc]);
+  }, [isExpanded, isVisible, isPropertyDetailsOpen, draggedWidth, onChatWidthChange, isFullscreenMode, sidebarWidth, isChatPanelOpen, chatPanelWidth, expandedCardViewDoc, isMapVisible]);
 
   // When document preview opens (e.g. from "Analyse with AI"), force chat to move aside: exit fullscreen
   // so the 50/50 split is used. Without this, chat can stay full width if it entered fullscreen before
@@ -12533,6 +12594,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   // This ensures the PlanViewer is visible when generating a research plan
   const isEmptyChat = chatMessages.length === 0 && !showPlanViewer;
 
+  // When opened via "New chat" (fullscreen), show input at bottom even when empty; centered layout only when not fullscreen
+  const useCenteredEmptyState = isEmptyChat && !isFullscreenMode && !shouldExpand;
+
   // One random title per empty-state session (stable while isEmptyChat is true)
   const emptyStateTitleMessage = useMemo(
     () =>
@@ -12967,21 +13031,26 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   if (!message.isLoading) {
                     revealEndedForResponseIdRef.current.add(id);
                     setRevealCompleteTick((t) => t + 1);
+                    // Scroll response into place when generation + reveal are done so it "clicks" into view
+                    requestAnimationFrame(() => {
+                      requestAnimationFrame(() => scrollToBottom(true));
+                    });
+                    setTimeout(() => scrollToBottom(true), 100);
                   }
                 }}
                 savedCitationNumbersForMessage={savedCitationNumbersForMessageByMessageId.get(finalKey)}
               />
             </div>
           )}
-          {/* Feedback bar slot: reserve fixed space so hover doesn't move the query bubble below */}
-          {message.text && hasCurrentStreamFinished && revealEndedForResponseIdRef.current.has(finalKey) && (
+          {/* Feedback bar slot: reserve space as soon as stream ends so layout never jumps; bar fades in when reveal completes */}
+          {message.text && hasCurrentStreamFinished && (
             <motion.div
-              initial={{ opacity: 0, height: 0, marginTop: 0 }}
-              animate={showFeedbackBar ? { opacity: 1, height: 28, marginTop: 8 } : { opacity: 0, height: 28, marginTop: 8 }}
-              transition={{ duration: 0.28, ease: [0.25, 0.46, 0.45, 0.94] }}
-              style={{ overflow: 'hidden' }}
+              initial={{ opacity: 0, height: 28, marginTop: 8 }}
+              animate={revealEndedForResponseIdRef.current.has(finalKey) && showFeedbackBar ? { opacity: 1, height: 28, marginTop: 8 } : { opacity: 0, height: 28, marginTop: 8 }}
+              transition={{ duration: 0.38, ease: [0.22, 0.61, 0.36, 1] }}
+              style={{ overflow: 'hidden', pointerEvents: revealEndedForResponseIdRef.current.has(finalKey) ? 'auto' : 'none' }}
             >
-              {showFeedbackBar && (() => {
+              {revealEndedForResponseIdRef.current.has(finalKey) && showFeedbackBar && (() => {
                 const sources = getSourcesFromReadingStepsOrCitations(message);
                 const isSourcesOpen = sourcesDropdownMessageId === finalKey;
                 return (
@@ -13093,10 +13162,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   <button
                     type="button"
                     onClick={(e) => { e.stopPropagation(); setSourcesDropdownMessageId(isSourcesOpen ? null : finalKey); }}
-                    style={{ display: 'flex', alignItems: 'center', gap: '3px', padding: '2px 5px', border: 'none', background: 'none', cursor: 'pointer', color: '#6b7280', fontSize: '12px' }}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: '5px',
+                      padding: '2px 8px', border: '1px solid rgba(0,0,0,0.08)', cursor: 'pointer',
+                      borderRadius: '9999px', backgroundColor: 'rgba(255,255,255,0.6)',
+                      color: '#374151', fontSize: '12px',
+                    }}
                   >
-                    <span>Sources: {sources.count} document{sources.count === 1 ? '' : 's'}</span>
-                    <ChevronDown size={13} style={{ flexShrink: 0, transition: 'transform 0.15s ease', transform: isSourcesOpen ? 'rotate(180deg)' : 'rotate(0deg)' }} />
+                    <Link2 size={12} style={{ flexShrink: 0, color: '#374151' }} />
+                    <span>Sources</span>
+                    <ChevronDown size={12} style={{ flexShrink: 0, color: '#374151', transition: 'transform 0.15s ease', transform: isSourcesOpen ? 'rotate(180deg)' : 'rotate(0deg)' }} />
                   </button>
                 </PopoverTrigger>
                 <PopoverContent className="p-0" align="start" sideOffset={4} style={{ width: '240px', borderRadius: '10px', overflow: 'hidden', zIndex: 1 }}>
@@ -13136,7 +13211,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             {isPDF ? (
                               <img src="/PDF.png" alt="PDF" style={{ width: 12, height: 12, flexShrink: 0, objectFit: 'contain' }} />
                             ) : (
-                              <FileText size={12} style={{ flexShrink: 0, color: '#9ca3af' }} />
+                              <Files size={12} style={{ flexShrink: 0, color: '#9ca3af' }} />
                             )}
                             <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{truncatedName}</span>
                           </button>
@@ -13164,7 +13239,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           to { opacity: 1; }
         }
         .feedback-action-bar-enter {
-          animation: feedback-action-bar-enter 0.32s cubic-bezier(0.25, 0.46, 0.45, 0.94) 0.05s forwards;
+          animation: feedback-action-bar-enter 0.4s cubic-bezier(0.22, 0.61, 0.36, 1) forwards;
         }
         @keyframes feedback-tick-shimmer-kf {
           0%, 100% { opacity: 1; filter: brightness(1); }
@@ -13281,6 +13356,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 isChatPanelOpen,
                 shouldExpand,
                 isManualFullscreen: isManualFullscreenRef.current,
+                isChatOnlyView: isVisible && !isMapVisible,
               });
               
               return widthCss;
@@ -13655,7 +13731,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         backgroundColor: 'rgba(0, 0, 0, 0.02)'
                       }}
                     >
-                      <FolderOpen className="w-3.5 h-3.5 text-[#666]" strokeWidth={1.75} />
+                      <Files className="w-3.5 h-3.5 text-[#666]" strokeWidth={1.75} />
                       {actualPanelWidth >= 750 && (
                         <span className="text-[12px] font-normal text-[#666]">Close</span>
                       )}
@@ -13782,7 +13858,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             }}
                             className="flex items-center gap-2 w-full rounded-sm px-2 py-2 text-left hover:bg-[#f5f5f5] text-[12px] text-[#374151]"
                           >
-                            <FolderOpen className="w-3.5 h-3.5 text-[#666] flex-shrink-0" strokeWidth={1.75} />
+                            <Files className="w-3.5 h-3.5 text-[#666] flex-shrink-0" strokeWidth={1.75} />
                             Files
                           </button>
                         )}
@@ -13841,7 +13917,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             }}
                             className="flex items-center gap-2 w-full rounded-sm px-2 py-2 text-left hover:bg-[#f5f5f5] text-[12px] text-[#374151]"
                           >
-                            <Plus className="w-3.5 h-3.5 text-[#666] flex-shrink-0" strokeWidth={1.75} />
+                            <span className="flex h-[22px] w-[22px] flex-shrink-0 items-center justify-center rounded-full border-[0.5px] border-gray-400 bg-transparent">
+                              <Plus className="h-[12px] w-[12px] text-[#666]" strokeWidth={1.75} />
+                            </span>
                             New chat
                           </button>
                         )}
@@ -13850,7 +13928,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   </Popover>
                   {/* Chat name to the right of View button (when not new chat) */}
                   {!isNewChatSection && (actualPanelWidth >= 900 ? (
-                    <div className="flex items-center gap-2.5 max-w-[220px] mr-1 ml-10 py-1">
+                    <div className="flex items-center gap-2.5 max-w-[220px] mr-1 ml-16 py-1">
                       <MessageSquare
                         className="w-4 h-4 text-gray-300 flex-shrink-0"
                         style={{ pointerEvents: 'none' }}
@@ -14189,17 +14267,17 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             </div>
             
             {/* Conditional layout: Centered empty state OR normal messages + bottom input */}
-            {/* Key by currentChatId so switching chats gets a clean transition (no swooping) */}
+            {/* When fullscreen (e.g. opened via New chat), use bottom input even when empty */}
             <AnimatePresence mode="wait">
             <motion.div
-              key={isEmptyChat ? `empty-${currentChatId ?? 'new'}` : `messages-${currentChatId ?? 'new'}`}
+              key={useCenteredEmptyState ? `empty-${currentChatId ?? 'new'}` : `messages-${currentChatId ?? 'new'}`}
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0, transition: { duration: 0.1 } }}
               transition={{ duration: 0.15 }}
               style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', position: 'relative', width: '100%' }}
             >
-            {isEmptyChat ? (
+            {useCenteredEmptyState ? (
               /* Empty chat state - Centered expanded chat bar (like Cursor's new chat) */
               <div
                 key="empty-chat-layout-inner"
@@ -14868,7 +14946,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                 cursor: 'pointer',
                               }}
                             >
-                              <FileText style={{ 
+                              <Files style={{ 
                                 width: '14px', 
                                 height: '14px', 
                                 color: '#9CA3AF',
@@ -15462,6 +15540,81 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           accept="image/*,.pdf,.doc,.docx"
                         />
                         
+                        {/* Document Selection Button - Only show when property details panel is open; left of Tools */}
+                        {isPropertyDetailsOpen && (
+                          <div className="relative flex items-center">
+                            <button
+                              type="button"
+                              onClick={handleOpenDocumentSelection}
+                              className={`flex items-center gap-1.5 transition-colors relative focus:outline-none outline-none ${
+                                selectedDocumentIds.size > 0
+                                  ? 'text-green-500 hover:text-green-600'
+                                  : isDocumentSelectionMode
+                                    ? 'text-blue-600 hover:text-blue-700'
+                                    : 'text-gray-900 hover:text-gray-700'
+                              }`}
+                              style={{
+                                backgroundColor: selectedDocumentIds.size > 0
+                                  ? 'rgb(240, 253, 244)'
+                                  : isDocumentSelectionMode
+                                    ? 'rgb(239, 246, 255)'
+                                    : '#FFFFFF',
+                                border: '1px solid rgba(229, 231, 235, 0.6)',
+                                borderRadius: '12px',
+                                transition: 'background-color 0.2s ease, border-color 0.2s ease',
+                                height: '24px',
+                                minHeight: '24px',
+                                paddingLeft: '6px',
+                                paddingRight: '6px',
+                              }}
+                              onMouseEnter={(e) => {
+                                if (selectedDocumentIds.size === 0 && !isDocumentSelectionMode) {
+                                  e.currentTarget.style.backgroundColor = '#F5F5F5';
+                                }
+                              }}
+                              onMouseLeave={(e) => {
+                                if (selectedDocumentIds.size === 0 && !isDocumentSelectionMode) {
+                                  e.currentTarget.style.backgroundColor = '#FFFFFF';
+                                }
+                              }}
+                              title={
+                                selectedDocumentIds.size > 0
+                                  ? `${selectedDocumentIds.size} document${selectedDocumentIds.size > 1 ? 's' : ''} selected - Queries will search only these documents. Click to ${isDocumentSelectionMode ? 'exit' : 'enter'} selection mode.`
+                                  : isDocumentSelectionMode
+                                    ? "Document selection mode active - Click document cards to select"
+                                    : "Select documents to search within"
+                              }
+                            >
+                              {selectedDocumentIds.size > 0 ? (
+                                <Scan className="w-3.5 h-3.5" strokeWidth={1.5} />
+                              ) : isDocumentSelectionMode ? (
+                                <Scan className="w-3.5 h-3.5" strokeWidth={1.5} />
+                              ) : (
+                                <SquareDashedMousePointer className="w-3.5 h-3.5" strokeWidth={1.5} />
+                              )}
+                              {selectedDocumentIds.size > 0 && (
+                                <span className="absolute -top-1 -right-1 w-4 h-4 bg-green-500 text-white text-[10px] font-semibold rounded-full flex items-center justify-center">
+                                  {selectedDocumentIds.size}
+                                </span>
+                              )}
+                            </button>
+                            {selectedDocumentIds.size > 0 && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  clearSelectedDocuments();
+                                  setDocumentSelectionMode(false);
+                                }}
+                                className="ml-1 p-0.5 text-gray-400 hover:text-red-500 transition-colors"
+                                title="Clear document selection"
+                              >
+                                <X className="w-3.5 h-3.5" strokeWidth={2} />
+                              </button>
+                            )}
+                          </div>
+                        )}
                         {/* Tools dropdown: Search the web, Map; WebSearchPill when on */}
                         {buttonCollapseLevel < 3 && (
                           <>
@@ -15512,64 +15665,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             />
                           </>
                         )}
-                        {/* Document Selection Button - Only show when property details panel is open */}
-                        {isPropertyDetailsOpen && (
-                          <div className="relative flex items-center">
-                            <button
-                              type="button"
-                              onClick={handleOpenDocumentSelection}
-                              className={`p-1 transition-colors relative ${
-                                selectedDocumentIds.size > 0
-                                  ? 'text-green-500 hover:text-green-600 bg-green-50 rounded'
-                                  : isDocumentSelectionMode
-                                    ? 'text-blue-600 hover:text-blue-700 bg-blue-50 rounded'
-                                    : 'text-gray-900 hover:text-gray-700'
-                              }`}
-                              style={{
-                                border: selectedDocumentIds.size > 0
-                                  ? '1px solid rgba(16, 185, 129, 0.4)'
-                                  : isDocumentSelectionMode
-                                    ? '1px solid rgba(37, 99, 235, 0.4)'
-                                    : '1px solid rgba(156, 163, 175, 0.6)'
-                              }}
-                              title={
-                                selectedDocumentIds.size > 0
-                                  ? `${selectedDocumentIds.size} document${selectedDocumentIds.size > 1 ? 's' : ''} selected - Queries will search only these documents. Click to ${isDocumentSelectionMode ? 'exit' : 'enter'} selection mode.`
-                                  : isDocumentSelectionMode
-                                    ? "Document selection mode active - Click document cards to select"
-                                    : "Select documents to search within"
-                              }
-                            >
-                              {selectedDocumentIds.size > 0 ? (
-                                <Scan className="w-3.5 h-3.5" strokeWidth={1.5} />
-                              ) : isDocumentSelectionMode ? (
-                                <Scan className="w-3.5 h-3.5" strokeWidth={1.5} />
-                              ) : (
-                                <SquareDashedMousePointer className="w-3.5 h-3.5" strokeWidth={1.5} />
-                              )}
-                            {selectedDocumentIds.size > 0 && (
-                              <span className="absolute -top-1 -right-1 w-4 h-4 bg-green-500 text-white text-[10px] font-semibold rounded-full flex items-center justify-center">
-                                {selectedDocumentIds.size}
-                              </span>
-                            )}
-                          </button>
-                              {selectedDocumentIds.size > 0 && (
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.preventDefault();
-                                    e.stopPropagation();
-                                    clearSelectedDocuments();
-                                    setDocumentSelectionMode(false); // Exit selection mode and return to default state
-                                  }}
-                                  className="ml-1 p-0.5 text-gray-400 hover:text-red-500 transition-colors"
-                                  title="Clear document selection"
-                                >
-                                  <X className="w-3.5 h-3.5" strokeWidth={2} />
-                                </button>
-                              )}
-                            </div>
-                          )}
                         {/* Attach button - second to collapse to icon (matches ChatBarToolsDropdown) */}
                         <div className="flex items-center gap-1">
                           <button

@@ -36,7 +36,8 @@ export const ChatPanelProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   }, []);
 
   const setWidth = useCallback((newWidth: number) => {
-    setWidthState(newWidth);
+    const clamped = Math.min(400, Math.max(260, newWidth)); // Agent sidebar: smaller (260) to slightly bigger (400)
+    setWidthState(clamped);
   }, []);
 
   const setIsResizing = useCallback((resizing: boolean) => {

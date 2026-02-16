@@ -8,7 +8,7 @@
  */
 
 import * as React from "react";
-import { RecentDocumentCard, preloadDocumentThumbnails } from "./RecentDocumentCard";
+import { RecentDocumentCard, preloadDocumentThumbnails, PRELOAD_THUMBNAIL_LIMIT } from "./RecentDocumentCard";
 import { usePreview } from "../contexts/PreviewContext";
 
 interface DocumentData {
@@ -47,10 +47,10 @@ export const RecentDocumentsSection: React.FC<RecentDocumentsSectionProps> = ({
 }) => {
   const { openExpandedCardView } = usePreview();
 
-  // Preload all thumbnails immediately when documents change (before render)
+  // Preload only first N thumbnails; rest load when cards scroll into view
   React.useEffect(() => {
     if (documents.length > 0) {
-      preloadDocumentThumbnails(documents);
+      preloadDocumentThumbnails(documents, PRELOAD_THUMBNAIL_LIMIT);
     }
   }, [documents]);
 

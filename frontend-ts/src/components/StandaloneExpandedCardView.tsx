@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Maximize, Maximize2, Minimize2, ZoomIn, ZoomOut, ChevronDown, ChevronLeft, ChevronRight, Download, TextCursorInput } from 'lucide-react';
+import { X, Maximize, Maximize2, Minimize2, ZoomIn, ZoomOut, ChevronDown, ChevronLeft, ChevronRight, Download, TextCursorInput, SquareDashedMousePointer } from 'lucide-react';
 import { usePreview } from '../contexts/PreviewContext';
 import { backendApi } from '../services/backendApi';
 import { useFilingSidebar } from '../contexts/FilingSidebarContext';
@@ -88,6 +88,10 @@ interface StandaloneExpandedCardViewProps {
   isResizing?: boolean; // Whether resize is in progress (for cursor styling)
   /** When true, open in fullscreen overlay (e.g. from file pop-up "View Document") and use higher z-index */
   initialFullscreen?: boolean;
+  /** When false, hide the fullscreen toggle and keep the preview in 50/50 split (e.g. when opened from search modal). Default true. */
+  allowFullscreen?: boolean;
+  /** When in 50/50 split, call this to snap the split back to 50/50. */
+  onSnapTo50?: () => void;
   /** Citations from the last response for this document (from chat panel). When provided, used for citation nav so buttons appear. */
   citationsFromLastResponse?: CitationData[];
   /** Last response message id (for saving citation from document view to docx). */
@@ -110,6 +114,8 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
   onResizeStart,
   isResizing = false,
   initialFullscreen = false,
+  allowFullscreen = true,
+  onSnapTo50,
 }) => {
   // Local state for instant close - hides component immediately before parent state updates
   const [isLocallyHidden, setIsLocallyHidden] = useState(false);
@@ -142,7 +148,11 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
   const [blobType, setBlobType] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [isFullscreen, setIsFullscreen] = useState(initialFullscreen);
+  // When allowFullscreen is false, never go fullscreen (stay 50/50)
+  const [isFullscreen, setIsFullscreen] = useState(initialFullscreen && allowFullscreen);
+  useEffect(() => {
+    if (!allowFullscreen) setIsFullscreen(false);
+  }, [allowFullscreen]);
   // Start with filename prop, but always fetch the real name from backend
   // If the filename is a generic fallback like "document.pdf", don't use it - wait for the real name
   const [displayFilename, setDisplayFilename] = useState<string>(
@@ -440,15 +450,22 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
         setLoading(true);
         setError(null);
         
-        // Check cache first
+        // Check cache first (blobs from preview flow)
         const cachedBlob = (window as any).__preloadedDocumentBlobs?.[docId];
         if (cachedBlob && cachedBlob.url) {
           setPreviewUrl(cachedBlob.url);
           setBlobType(cachedBlob.type);
-          // Update filename from cache if available
           if (cachedBlob.filename && cachedBlob.filename !== 'document.pdf') {
             setDisplayFilename(cachedBlob.filename);
           }
+          setLoading(false);
+          return;
+        }
+        // Reuse document cover preload (e.g. from Projects page thumbnail preload) for instant open
+        const cachedCover = (window as any).__preloadedDocumentCovers?.[docId];
+        if (cachedCover && cachedCover.url) {
+          setPreviewUrl(cachedCover.url);
+          setBlobType(cachedCover.type || 'application/pdf');
           setLoading(false);
           return;
         }
@@ -1697,7 +1714,29 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
             >
               <Download className="w-4 h-4 text-[#666]" strokeWidth={1.75} />
             </motion.button>
-            {/* Fullscreen button */}
+            {/* 50/50 snap button - when in split view, snap split back to equal */}
+            {!isFullscreen && onSnapTo50 && (
+              <motion.button
+                onClick={onSnapTo50}
+                whileHover={{ backgroundColor: '#f0f0f0' }}
+                whileTap={{ backgroundColor: '#e8e8e8' }}
+                className="flex items-center justify-center rounded-full border border-gray-300/80 bg-white transition-all duration-150 flex-shrink-0"
+                style={{
+                  padding: '5px',
+                  height: '28px',
+                  width: '28px',
+                  minHeight: '28px',
+                  minWidth: '28px',
+                  cursor: 'pointer',
+                  marginRight: '8px',
+                }}
+                title="Snap to 50/50 split"
+              >
+                <SquareDashedMousePointer className="w-4 h-4 text-[#666]" strokeWidth={1.5} />
+              </motion.button>
+            )}
+            {/* Fullscreen button - only when allowFullscreen is true (hidden in 50/50 layout) */}
+            {allowFullscreen && (
             <motion.button
               onClick={() => setIsFullscreen(!isFullscreen)}
               whileHover={{ backgroundColor: '#f0f0f0' }}
@@ -1720,6 +1759,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
                 <Maximize className="w-4 h-4 text-[#666]" strokeWidth={1.75} />
               )}
             </motion.button>
+            )}
           </div>
         </div>
       </div>
