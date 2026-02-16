@@ -136,7 +136,7 @@ def trigger_document_processing(document_id: str, dry_run: bool = False) -> bool
         
         task = celery_app.send_task(
             'backend.tasks.process_document_with_dual_stores',
-            args=[document_id, None, doc['original_filename'], business_id],
+            args=[document_id, doc['original_filename'], business_id],
             kwargs={'job_id': None}  # Will trigger new Reducto job
         )
         

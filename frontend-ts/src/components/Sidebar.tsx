@@ -545,8 +545,11 @@ export const Sidebar = ({
             {/* Spacer */}
             <div className="flex-1" />
 
+            {/* Full-bleed separator line (no horizontal padding so it reaches the right edge) */}
+            <div className="flex-shrink-0 w-full border-t border-gray-200/80" aria-hidden />
+
             {/* Profile strip at bottom — Claude style; icons-only shifted right to center in sidebar+rail */}
-            <div className={`relative flex-shrink-0 border-t border-gray-200/80 py-2 mt-auto ${isIconsOnly ? 'flex justify-center pl-[14px] pr-0' : 'px-3'}`}>
+            <div className={`relative flex-shrink-0 py-2 mt-auto ${isIconsOnly ? 'flex justify-center pl-[14px] pr-0' : 'px-3'}`}>
               <AnimatePresence>
                 {!isExpanded && isBrandDropdownOpen && (
                   <motion.div
@@ -787,8 +790,10 @@ export const Sidebar = ({
               )}
             </div>
 
+            {/* Full-bleed separator line (no horizontal padding so it reaches the right edge) */}
+            <div className="flex-shrink-0 w-full border-t border-gray-200/80" aria-hidden />
             {/* Profile strip at bottom — same as main sidebar */}
-            <div className="relative flex-shrink-0 border-t border-gray-200/80 px-3 py-2">
+            <div className="relative flex-shrink-0 px-3 py-2">
               <AnimatePresence>
                 {isExpanded && isBrandDropdownOpen && (
                   <motion.div

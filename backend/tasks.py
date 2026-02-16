@@ -1257,9 +1257,9 @@ def process_document_classification(self, document_id, original_filename, busine
                 if job_id_for_extraction:
                     logger.info(f"   Job ID: {job_id_for_extraction} (passed directly)")
                 
+                # Extraction tasks download file from S3 to avoid large Celery payloads (stuck processing).
                 task = process_document_with_dual_stores.delay(
                     document_id=document_id,
-                    file_content=file_content,
                     original_filename=original_filename,
                     business_id=business_id,
                     job_id=job_id_for_extraction  # ✅ Pass job_id directly
@@ -1273,9 +1273,9 @@ def process_document_classification(self, document_id, original_filename, busine
                 if job_id_for_extraction:
                     logger.info(f"   Job ID: {job_id_for_extraction} (passed directly)")
                 
+                # Extraction tasks download file from S3 to avoid large Celery payloads (stuck processing).
                 task = process_document_minimal_extraction.delay(
                     document_id=document_id,
-                    file_content=file_content,
                     original_filename=original_filename,
                     business_id=business_id,
                     job_id=job_id_for_extraction  # ✅ Pass job_id directly
@@ -1323,10 +1323,11 @@ def process_document_classification(self, document_id, original_filename, busine
                 pass
 
 @shared_task(bind=True)
-def process_document_minimal_extraction(self, document_id, file_content, original_filename, business_id, job_id=None):
+def process_document_minimal_extraction(self, document_id, original_filename, business_id, job_id=None):
     """
     Minimal extraction pipeline for non-valuation documents.
-    Only extracts basic property information if available, and document metadata.
+    Downloads file from S3 (avoids large Celery payloads). Only extracts basic property
+    information if available, and document metadata.
     """
     from . import create_app
     from .models import db, Document, DocumentStatus
@@ -1342,7 +1343,7 @@ def process_document_minimal_extraction(self, document_id, file_content, origina
         # Fetch document from Supabase (not local PostgreSQL)
         doc_storage = DocumentStorageService()
         success, document_dict, error = doc_storage.get_document(str(document_id), business_id)
-        
+
         if not success or not document_dict:
             logger.error(f"Document with id {document_id} not found in Supabase. Error: {error}")
             try:
@@ -1354,9 +1355,26 @@ def process_document_minimal_extraction(self, document_id, file_content, origina
             except Exception as status_err:
                 logger.warning(f"Could not set document status to failed: {status_err}")
             return {'error': f'Document not found: {error}'}
-        
+
         logger.info(f"✅ Retrieved document {document_id} from Supabase")
         document = document_dict  # document is now a dict from Supabase
+
+        # Download file from S3 so we do not pass large payloads through Celery (avoids stuck processing).
+        try:
+            file_content, original_filename_from_s3 = _download_document_bytes_from_s3(str(document_id), business_id)
+            if not original_filename or original_filename == 'document':
+                original_filename = original_filename_from_s3
+        except Exception as e:
+            logger.error(f"Failed to download document from S3: {e}")
+            try:
+                doc_storage.update_document_status(
+                    document_id=str(document_id),
+                    status='failed',
+                    business_id=business_id
+                )
+            except Exception as status_err:
+                logger.warning(f"Could not set document status to failed: {status_err}")
+            return {'error': f'Failed to download from S3: {e}'}
 
         # Initialise processing history service
         history_service = ProcessingHistoryService()
@@ -1880,22 +1898,22 @@ def process_document_minimal_extraction(self, document_id, file_content, origina
                 pass
 
 @shared_task(bind=True)
-def process_document_with_dual_stores(self, document_id, file_content, original_filename, business_id, job_id=None):
+def process_document_with_dual_stores(self, document_id, original_filename, business_id, job_id=None):
     """
     Celery task to process an uploaded document:
-    1. Receives file content directly.
+    1. Downloads file from S3 (avoids large Celery payloads that can leave docs stuck in 'processing').
     2. Saves content to a temporary file.
-    3. Parses with Reducto.
+    3. Parses with Reducto (or uses job_id from classification).
     4. Extracts structured data using Reducto Extract.
     5. Stores data in Supabase.
     """
     from . import create_app
     app = create_app()
-    
+
     with app.app_context():
         # PHASE 1 FIX: Signal Import & Safe Cleanup
         import signal
-        
+
         def safe_signal_cleanup():
             """Safely cancel signal alarm if signal module is available"""
             try:
@@ -1903,20 +1921,12 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
             except (NameError, AttributeError):
                 pass  # signal not imported or not available
         # ==========================================
-        
-        print("=" * 80)
-        print("🚀 EXTRACTION TASK STARTED: process_document_with_dual_stores")
-        print(f"   Document ID: {document_id}")
-        print(f"   Business ID: {business_id}")
-        print(f"   Filename: {original_filename}")
-        print(f"   File size: {len(file_content)} bytes")
-        print("=" * 80)
-        
+
         # Fetch document from Supabase (not local PostgreSQL)
         from .services.document_storage_service import DocumentStorageService
         doc_storage = DocumentStorageService()
         success, document_dict, error = doc_storage.get_document(str(document_id), business_id)
-        
+
         if not success or not document_dict:
             print(f"❌ Document with id {document_id} not found in Supabase. Error: {error}")
             try:
@@ -1928,14 +1938,39 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
             except Exception as status_err:
                 logger.warning(f"Could not set document status to failed: {status_err}")
             return
-        
+
         print(f"✅ Retrieved document {document_id} from Supabase")
         document = document_dict  # document is now a dict from Supabase
+
+        # Download file from S3 so we do not pass large payloads through Celery (avoids stuck processing).
+        try:
+            file_content, original_filename_from_s3 = _download_document_bytes_from_s3(str(document_id), business_id)
+            if not original_filename or original_filename == 'document':
+                original_filename = original_filename_from_s3
+        except Exception as e:
+            print(f"❌ Failed to download document from S3: {e}")
+            try:
+                doc_storage.update_document_status(
+                    document_id=str(document_id),
+                    status='failed',
+                    business_id=business_id
+                )
+            except Exception as status_err:
+                logger.warning(f"Could not set document status to failed: {status_err}")
+            return
+
+        print("=" * 80)
+        print("🚀 EXTRACTION TASK STARTED: process_document_with_dual_stores")
+        print(f"   Document ID: {document_id}")
+        print(f"   Business ID: {business_id}")
+        print(f"   Filename: {original_filename}")
+        print(f"   File size: {len(file_content)} bytes")
+        print("=" * 80)
 
         temp_dir = None
         try:
             print(f"🔄 Starting direct content processing for document_id: {document_id}")
-            
+
             # Update status to processing in Supabase
             doc_storage.update_document_status(
                 document_id=str(document_id),
@@ -1943,7 +1978,7 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                 business_id=business_id
             )
 
-            # --- 1. Save received file content to a temporary file ---
+            # --- 1. Save downloaded file content to a temporary file ---
             temp_dir = tempfile.mkdtemp()
             temp_image_dir = os.path.join(temp_dir, 'images')
             os.makedirs(temp_image_dir, exist_ok=True)
@@ -3071,6 +3106,308 @@ def process_document_task(self, document_id, original_filename, business_id):
     return process_document_classification.delay(document_id, original_filename, business_id)
 
 
+def _run_fast_pipeline_after_parse(
+    document_id: str,
+    business_id: str,
+    property_id: Optional[str],
+    chunks: list,
+    document_text: str,
+    original_filename: str,
+    parse_time: float = 0.0,
+    job_id: Optional[str] = None,
+    processing_start_time: Optional[float] = None,
+):
+    """
+    Run fast pipeline from PHASE 2 (structure + context) through status update.
+    Used by process_document_fast_task (after parse) and process_document_after_parse_task (after webhook).
+    Caller must have app.app_context() active.
+    Returns dict with success, document_id, processing_time, chunks_processed, property_id.
+    """
+    from .services.document_storage_service import DocumentStorageService
+    from .services.vector_service import SupabaseVectorService
+
+    if processing_start_time is None:
+        processing_start_time = time.time()
+    doc_storage = DocumentStorageService()
+
+    context_metadata = {
+        'parsed_text': document_text,
+        'classification_type': None,
+        'original_filename': original_filename,
+        'document_id': document_id,
+        'business_id': business_id,
+        'property_id': property_id,
+    }
+    boilerplate_result = {}
+    context_result = {}
+
+    def _run_structure():
+        from backend.services.structure_extraction_service import StructureExtractionService
+        structure_service = StructureExtractionService()
+        if chunks:
+            section_metadata = structure_service.extract_section_hierarchy(chunks)
+            for i, chunk_meta in enumerate(section_metadata):
+                if i < len(chunks):
+                    chunks[i].update(chunk_meta)
+        boilerplate_info = structure_service.identify_boilerplate(
+            document_text=document_text,
+            chunks=chunks,
+            threashold_percent=25.0
+        )
+        doc_storage.update_document_summary(
+            document_id=document_id,
+            business_id=business_id,
+            updates={
+                'boilerplate_lines': boilerplate_info['boilerplate_lines'],
+                'common_header': boilerplate_info['common_header'],
+                'common_footer': boilerplate_info['common_footer']
+            },
+            merge=True
+        )
+        return boilerplate_info
+
+    def _run_context():
+        from backend.services.document_context_service import DocumentContextService
+        context_service = DocumentContextService()
+        return context_service.generate_document_summary(
+            document_text=document_text,
+            metadata=context_metadata
+        )
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            future_structure = executor.submit(_run_structure)
+            future_context = executor.submit(_run_context)
+            boilerplate_result = future_structure.result()
+            context_result = future_context.result()
+        logger.info(f"📊 Extracted structure and boilerplate (parallel with document context)")
+    except Exception as e:
+        logger.warning(f"⚠️ Parallel structure/context failed in fast pipeline: {e}")
+        if not boilerplate_result and not context_result:
+            try:
+                from backend.services.structure_extraction_service import StructureExtractionService
+                structure_service = StructureExtractionService()
+                if chunks:
+                    section_metadata = structure_service.extract_section_hierarchy(chunks)
+                    for i, chunk_meta in enumerate(section_metadata):
+                        if i < len(chunks):
+                            chunks[i].update(chunk_meta)
+                boilerplate_result = structure_service.identify_boilerplate(
+                    document_text=document_text,
+                    chunks=chunks,
+                    threashold_percent=25.0
+                )
+                doc_storage.update_document_summary(
+                    document_id=document_id,
+                    business_id=business_id,
+                    updates={
+                        'boilerplate_lines': boilerplate_result['boilerplate_lines'],
+                        'common_header': boilerplate_result['common_header'],
+                        'common_footer': boilerplate_result['common_footer']
+                    },
+                    merge=True
+                )
+            except Exception as e2:
+                logger.warning(f"⚠️ Fallback structure extraction failed: {e2}")
+
+    merged_summary = {**boilerplate_result, **context_result}
+    if context_result:
+        merged_summary['document_entities'] = context_result.get('top_entities', [])
+        merged_summary['document_tags'] = context_result.get('document_tags', [])
+        try:
+            doc_storage.update_document_summary(
+                document_id=document_id,
+                business_id=business_id,
+                updates={
+                    **context_result,
+                    'document_entities': merged_summary.get('document_entities', []),
+                    'document_tags': merged_summary.get('document_tags', [])
+                },
+                merge=True
+            )
+        except Exception as e:
+            logger.warning(f"Could not store merged document summary: {e}")
+
+    document_summary = merged_summary
+
+    chunk_extract_start_time = time.time()
+    chunk_texts = []
+    chunk_metadata_list = []
+    bbox_validation_results = []
+    MAX_CHUNK_SIZE = 30000
+
+    def validate_bbox(bbox, chunk_index, chunk_text_preview=""):
+        if not bbox:
+            return {'valid': False, 'reasoning': 'No bbox provided', 'issues': ['missing_bbox'], 'bbox_data': None}
+        if not isinstance(bbox, dict):
+            return {'valid': False, 'reasoning': f'Invalid bbox type: {type(bbox).__name__}', 'issues': ['invalid_type'], 'bbox_data': None}
+        required_fields = ['left', 'top', 'width', 'height', 'page']
+        missing_fields = [field for field in required_fields if field not in bbox]
+        if missing_fields:
+            return {'valid': False, 'reasoning': f'Missing fields: {", ".join(missing_fields)}', 'issues': ['missing_fields'], 'bbox_data': bbox}
+        issues = []
+        if bbox.get('left') is not None and not (0 <= bbox['left'] <= 1):
+            issues.append('left_out_of_range')
+        if bbox.get('top') is not None and not (0 <= bbox['top'] <= 1):
+            issues.append('top_out_of_range')
+        if bbox.get('width') is not None and (bbox['width'] <= 0 or bbox['width'] > 1):
+            issues.append('width_invalid')
+        if bbox.get('height') is not None and (bbox['height'] <= 0 or bbox['height'] > 1):
+            issues.append('height_invalid')
+        if bbox.get('page') is not None and bbox['page'] < 1:
+            issues.append('page_invalid')
+        if issues:
+            return {'valid': False, 'reasoning': f'Validation failed: {", ".join(issues)}', 'issues': issues, 'bbox_data': bbox}
+        return {'valid': True, 'reasoning': 'Valid', 'issues': [], 'bbox_data': bbox}
+
+    for i, chunk in enumerate(chunks):
+        embed_text = chunk.get('embed', '')
+        content_text = chunk.get('content', '')
+        text_to_embed = embed_text if embed_text else content_text
+        if text_to_embed:
+            chunk_texts.append(text_to_embed)
+            chunk_bbox = chunk.get('bbox')
+            bbox_validation = validate_bbox(chunk_bbox, i, text_to_embed[:50])
+            bbox_validation_results.append({'chunk_index': i, 'validation': bbox_validation})
+            if not bbox_validation['valid']:
+                logger.warning(f"⚠️ Chunk {i} bbox validation failed: {bbox_validation['reasoning']}")
+            chunk_page = extract_page_number_from_chunk(chunk)
+            chunk_meta = {
+                'bbox': chunk_bbox,
+                'blocks': chunk.get('blocks', []),
+                'page': chunk_page,
+                'bbox_valid': bbox_validation['valid'],
+                'bbox_validation_reasoning': bbox_validation['reasoning']
+            }
+            chunk_metadata_list.append(chunk_meta)
+            if len(text_to_embed) > MAX_CHUNK_SIZE:
+                logger.warning(f"⚠️ Large chunk detected ({len(text_to_embed)} chars), will be split during embedding")
+
+    chunk_extract_time = time.time() - chunk_extract_start_time
+    logger.info(f"✅ Chunk extraction completed in {chunk_extract_time:.2f}s")
+
+    valid_bbox_count = sum(1 for r in bbox_validation_results if r['validation']['valid'])
+    invalid_bbox_count = len(bbox_validation_results) - valid_bbox_count
+    if bbox_validation_results:
+        try:
+            doc_storage_service = DocumentStorageService()
+            bbox_issues = [
+                {'chunk_index': r['chunk_index'], 'reasoning': r['validation']['reasoning'], 'issues': r['validation']['issues']}
+                for r in bbox_validation_results if not r['validation']['valid']
+            ]
+            doc_storage_service.log_processing_step(
+                document_id=document_id,
+                step_name='bbox_validation',
+                step_status='completed',
+                step_message=f'Validated {len(bbox_validation_results)} bbox coordinates: {valid_bbox_count} valid, {invalid_bbox_count} invalid',
+                step_metadata={
+                    'total_chunks': len(bbox_validation_results),
+                    'valid_bbox_count': valid_bbox_count,
+                    'invalid_bbox_count': invalid_bbox_count,
+                    'bbox_issues': bbox_issues,
+                    'validation_details': bbox_validation_results
+                },
+                duration_seconds=0
+            )
+            logger.info(f"📊 Bbox validation: {valid_bbox_count}/{len(bbox_validation_results)} chunks have valid bbox coordinates")
+        except Exception as e:
+            logger.warning(f"Could not log bbox validation reasoning: {e}")
+
+    vector_metadata = {
+        'document_id': document_id,
+        'business_id': business_id,
+        'property_id': property_id,
+        'classification_type': None,
+        'address_hash': None,
+        'parsed_text': document_text,
+        'boilerplate_lines': document_summary.get('boilerplate_lines', [])
+    }
+
+    embed_start_time = time.time()
+    try:
+        vector_service = SupabaseVectorService()
+        success = vector_service.store_document_vectors(
+            document_id=document_id,
+            chunks=chunk_texts,
+            metadata=vector_metadata,
+            chunk_metadata_list=chunk_metadata_list,
+            lazy_embedding=False,
+            document_summary_precomputed=merged_summary if context_result else None
+        )
+        embed_time = time.time() - embed_start_time
+        if not success:
+            raise Exception("Failed to store document vectors")
+        logger.info(f"✅ Embedding and storage completed in {embed_time:.2f}s")
+
+        try:
+            from .services.document_summary_service import DocumentSummaryService
+            from .services.supabase_document_service import SupabaseDocumentService
+            summary_service = DocumentSummaryService()
+            doc_service = SupabaseDocumentService()
+            doc_dict = doc_service.get_document_by_id(document_id)
+            if doc_dict:
+                db_chunks = doc_service.get_document_chunks(document_id)
+                if db_chunks:
+                    logger.info(f"🔄 Generating document summary and embedding for {document_id[:8]}...")
+                    success_summary = summary_service.generate_and_update_document_embedding(
+                        document=doc_dict,
+                        chunks=db_chunks
+                    )
+                    if success_summary:
+                        logger.info(f"✅ Generated document summary and embedding for {document_id[:8]}")
+                    else:
+                        logger.warning(f"⚠️ Failed to generate document summary/embedding for {document_id[:8]} (non-fatal)")
+                else:
+                    logger.warning(f"⚠️ No chunks found for document {document_id[:8]}, skipping summary generation")
+            else:
+                logger.warning(f"⚠️ Document {document_id[:8]} not found, skipping summary generation")
+        except Exception as summary_error:
+            logger.warning(f"⚠️ Document summary generation failed (non-fatal): {summary_error}")
+    except Exception as e:
+        logger.error(f"❌ Failed to store document vectors: {e}")
+        raise
+
+    total_time = time.time() - processing_start_time
+    logger.info(f"⚡ FAST PIPELINE COMPLETE in {total_time:.2f}s")
+    logger.info(f"   Breakdown: parse={parse_time:.2f}s, extract={chunk_extract_time:.2f}s, embed={embed_time:.2f}s")
+
+    try:
+        doc_storage.supabase.table('documents').update({'status': 'processed'}).eq('id', document_id).execute()
+        logger.info(f"✅ Updated document status to 'processed'")
+        doc_storage_service = DocumentStorageService()
+        step_metadata = {
+            'chunk_count': len(chunk_texts),
+            'processing_method': 'fast_pipeline',
+            'processed_at': datetime.utcnow().isoformat(),
+            'processing_time_seconds': round(total_time, 2),
+            'processing_breakdown': {
+                'parse_time': round(parse_time, 2),
+                'chunk_extraction_time': round(chunk_extract_time, 2),
+                'embedding_time': round(embed_time, 2)
+            }
+        }
+        if job_id:
+            step_metadata['reducto_job_id'] = job_id
+        doc_storage_service.log_processing_step(
+            document_id=document_id,
+            step_name='fast_pipeline',
+            step_status='completed',
+            step_message=f'Fast pipeline completed in {round(total_time, 2)}s',
+            step_metadata=step_metadata,
+            duration_seconds=int(total_time)
+        )
+    except Exception as e:
+        logger.warning(f"Could not update document status: {e}")
+
+    return {
+        'success': True,
+        'document_id': document_id,
+        'processing_time': round(total_time, 2),
+        'chunks_processed': len(chunk_texts),
+        'property_id': property_id
+    }
+
+
 @shared_task(bind=True, name="process_document_fast")
 def process_document_fast_task(
     self,
@@ -3164,7 +3501,44 @@ def process_document_fast_task(
                 logger.error(f"Failed to save temp file: {e}")
                 raise
             
-            # Step 1: Parse with Reducto (fast, section-based, always async)
+            # Optional: submit with webhook and return (no polling); webhook handler enqueues after-parse task
+            use_webhook = os.environ.get('USE_REDUCTO_WEBHOOK_FOR_FAST', 'false').lower() == 'true'
+            webhook_base = (os.environ.get('REDUCTO_WEBHOOK_BASE_URL') or '').rstrip('/')
+            webhook_secret = os.environ.get('REDUCTO_WEBHOOK_SECRET')
+            webhook_url = f"{webhook_base}/api/internal/reducto-webhook" if webhook_base else None
+            if use_webhook and webhook_url and webhook_secret:
+                try:
+                    job_id = reducto.submit_parse_job_with_webhook(
+                        file_path=temp_file_path,
+                        webhook_url=webhook_url,
+                        metadata={
+                            'document_id': document_id,
+                            'business_id': business_id,
+                            'property_id': property_id,
+                            'pipeline_type': 'fast',
+                            'original_filename': original_filename,
+                            'webhook_secret': webhook_secret
+                        }
+                    )
+                    try:
+                        if temp_file_path and os.path.exists(temp_file_path):
+                            os.unlink(temp_file_path)
+                            logger.info(f"✅ Cleaned up temp file")
+                    except Exception as e:
+                        logger.warning(f"Could not clean up temp file: {e}")
+                    logger.info(f"✅ Submitted parse job with webhook: {job_id}, document {document_id}")
+                    return {
+                        'success': True,
+                        'document_id': document_id,
+                        'status': 'submitted',
+                        'job_id': job_id,
+                        'property_id': property_id
+                    }
+                except Exception as e:
+                    logger.warning(f"Webhook submit failed, falling back to polling: {e}")
+                    use_webhook = False
+
+            # Step 1: Parse with Reducto (fast, section-based, always async) or poll path
             parse_start_time = time.time()
             try:
                 parse_result = reducto.parse_document_fast(
@@ -3186,276 +3560,17 @@ def process_document_fast_task(
             
             logger.info(f"✅ Extracted {len(chunks)} section-based chunks, {len(document_text)} chars")
             
-            # PHASE 2: Extract structure and identify boilerplate
-            try:
-                from backend.services.structure_extraction_service import StructureExtractionService
-                structure_service = StructureExtractionService()
-                
-                # Extract section hierarchy
-                if chunks:
-                    section_metadata = structure_service.extract_section_hierarchy(chunks)
-                    for i, chunk_meta in enumerate(section_metadata):
-                        if i < len(chunks):
-                            chunks[i].update(chunk_meta)
-                
-                # Identify boilerplate
-                boilerplate_info = structure_service.identify_boilerplate(
-                    document_text=document_text,
-                    chunks=chunks,
-                    threashold_percent=25.0
-                )
-                
-                # Store in document_summary
-                doc_storage.update_document_summary(
-                    document_id=document_id,
-                    business_id=business_id,
-                    updates={
-                        'boilerplate_lines': boilerplate_info['boilerplate_lines'],
-                        'common_header': boilerplate_info['common_header'],
-                        'common_footer': boilerplate_info['common_footer']
-                    },
-                    merge=True
-                )
-                
-                logger.info(f"📊 Extracted structure and boilerplate for fast pipeline")
-            except Exception as e:
-                logger.warning(f"⚠️ Structure extraction failed in fast pipeline: {e}")
-            
-            # Get document_summary for boilerplate_lines
-            try:
-                success, document_dict, error = doc_storage.get_document(str(document_id), business_id)
-                if success and document_dict:
-                    document_summary = get_document_summary_safe(document_dict)
-                else:
-                    document_summary = {}
-            except Exception as e:
-                logger.warning(f"Could not retrieve document_summary: {e}")
-                document_summary = {}
-            
-            # Step 2: Extract chunk texts and metadata with bbox validation (<1s)
-            chunk_extract_start_time = time.time()
-            
-            chunk_texts = []
-            chunk_metadata_list = []
-            bbox_validation_results = []  # Track bbox validation for reasoning
-            
-            MAX_CHUNK_SIZE = 30000  # ~7500 tokens, safe margin for 8192 token limit
-            
-            def validate_bbox(bbox, chunk_index, chunk_text_preview=""):
-                """
-                Validate bbox structure and return validation result with reasoning.
-                
-                Returns:
-                    dict with keys: valid, reasoning, issues, bbox_data
-                """
-                if not bbox:
-                    return {
-                        'valid': False,
-                        'reasoning': 'No bbox provided - chunk may not have spatial coordinates',
-                        'issues': ['missing_bbox'],
-                        'bbox_data': None
-                    }
-                
-                if not isinstance(bbox, dict):
-                    return {
-                        'valid': False,
-                        'reasoning': f'Invalid bbox type: {type(bbox).__name__}, expected dict',
-                        'issues': ['invalid_type'],
-                        'bbox_data': None
-                    }
-                
-                required_fields = ['left', 'top', 'width', 'height', 'page']
-                missing_fields = [field for field in required_fields if field not in bbox]
-                
-                if missing_fields:
-                    return {
-                        'valid': False,
-                        'reasoning': f'Missing required bbox fields: {", ".join(missing_fields)}',
-                        'issues': ['missing_fields'],
-                        'bbox_data': bbox
-                    }
-                
-                # Validate coordinate ranges (normalized 0-1)
-                issues = []
-                if bbox.get('left') is not None and not (0 <= bbox['left'] <= 1):
-                    issues.append('left_out_of_range')
-                if bbox.get('top') is not None and not (0 <= bbox['top'] <= 1):
-                    issues.append('top_out_of_range')
-                if bbox.get('width') is not None and (bbox['width'] <= 0 or bbox['width'] > 1):
-                    issues.append('width_invalid')
-                if bbox.get('height') is not None and (bbox['height'] <= 0 or bbox['height'] > 1):
-                    issues.append('height_invalid')
-                if bbox.get('page') is not None and bbox['page'] < 1:
-                    issues.append('page_invalid')
-                
-                if issues:
-                    return {
-                        'valid': False,
-                        'reasoning': f'Bbox coordinate validation failed: {", ".join(issues)}',
-                        'issues': issues,
-                        'bbox_data': bbox
-                    }
-                
-                return {
-                    'valid': True,
-                    'reasoning': 'Bbox structure and coordinates are valid',
-                    'issues': [],
-                    'bbox_data': bbox
-                }
-            
-            for i, chunk in enumerate(chunks):
-                # Prefer embed (optimized for embeddings), fallback to content
-                embed_text = chunk.get('embed', '')
-                content_text = chunk.get('content', '')
-                text_to_embed = embed_text if embed_text else content_text
-                
-                if text_to_embed:
-                    chunk_texts.append(text_to_embed)
-                    
-                    # Extract chunk metadata with bbox
-                    chunk_bbox = chunk.get('bbox')
-                    
-                    # Validate bbox with reasoning
-                    bbox_validation = validate_bbox(chunk_bbox, i, text_to_embed[:50])
-                    bbox_validation_results.append({
-                        'chunk_index': i,
-                        'validation': bbox_validation
-                    })
-                    
-                    # Log bbox validation reasoning (only failures to reduce noise)
-                    if not bbox_validation['valid']:
-                        logger.warning(f"⚠️ Chunk {i} bbox validation failed: {bbox_validation['reasoning']}")
-                    # Removed debug logging for successful bbox validation to reduce terminal noise
-                    
-                    # Phase 4: Use robust page number extraction
-                    chunk_page = extract_page_number_from_chunk(chunk)
-                    chunk_meta = {
-                        'bbox': chunk_bbox,
-                        'blocks': chunk.get('blocks', []),
-                        'page': chunk_page,  # Robustly extracted page number
-                        'bbox_valid': bbox_validation['valid'],
-                        'bbox_validation_reasoning': bbox_validation['reasoning']
-                    }
-                    chunk_metadata_list.append(chunk_meta)
-                    
-                    if len(text_to_embed) > MAX_CHUNK_SIZE:
-                        logger.warning(f"⚠️ Large chunk detected ({len(text_to_embed)} chars), will be split during embedding")
-            
-            chunk_extract_time = time.time() - chunk_extract_start_time
-            logger.info(f"✅ Chunk extraction completed in {chunk_extract_time:.2f}s")
-            
-            # Log bbox validation reasoning to document_processing_history
-            valid_bbox_count = sum(1 for r in bbox_validation_results if r['validation']['valid'])
-            invalid_bbox_count = len(bbox_validation_results) - valid_bbox_count
-            
-            if bbox_validation_results:
-                try:
-                    from .services.document_storage_service import DocumentStorageService
-                    doc_storage_service = DocumentStorageService()
-                    
-                    # Summarize bbox validation results
-                    bbox_issues = []
-                    for result in bbox_validation_results:
-                        if not result['validation']['valid']:
-                            bbox_issues.append({
-                                'chunk_index': result['chunk_index'],
-                                'reasoning': result['validation']['reasoning'],
-                                'issues': result['validation']['issues']
-                            })
-                    
-                    doc_storage_service.log_processing_step(
-                        document_id=document_id,
-                        step_name='bbox_validation',
-                        step_status='completed',
-                        step_message=f'Validated {len(bbox_validation_results)} bbox coordinates: {valid_bbox_count} valid, {invalid_bbox_count} invalid',
-                        step_metadata={
-                            'total_chunks': len(bbox_validation_results),
-                            'valid_bbox_count': valid_bbox_count,
-                            'invalid_bbox_count': invalid_bbox_count,
-                            'bbox_issues': bbox_issues,
-                            'validation_details': bbox_validation_results
-                        },
-                        duration_seconds=0
-                    )
-                    logger.info(f"📊 Bbox validation: {valid_bbox_count}/{len(bbox_validation_results)} chunks have valid bbox coordinates")
-                except Exception as e:
-                    logger.warning(f"Could not log bbox validation reasoning: {e}")
-            
-            # Step 3: Prepare metadata (property_id already known!)
-            vector_metadata = {
-                'document_id': document_id,
-                'business_id': business_id,
-                'property_id': property_id,  # Already linked - no extraction needed!
-                'classification_type': None,  # Skip classification
-                'address_hash': None,
-                'parsed_text': document_text,
-                'boilerplate_lines': document_summary.get('boilerplate_lines', [])  # Add boilerplate lines
-            }
-            
-            # Step 4: Store vectors (automatically handles context + embedding)
-            embed_start_time = time.time()
-            
-            try:
-                vector_service = SupabaseVectorService()
-                
-                success = vector_service.store_document_vectors(
-                    document_id=document_id,
-                    chunks=chunk_texts,
-                    metadata=vector_metadata,
-                    chunk_metadata_list=chunk_metadata_list,
-                    lazy_embedding=False  # Immediate embedding
-                )
-                
-                embed_time = time.time() - embed_start_time
-                
-                if not success:
-                    raise Exception("Failed to store document vectors")
-                
-                logger.info(f"✅ Embedding and storage completed in {embed_time:.2f}s")
-                
-                # --- PHASE 5: Generate document summary and embedding ---
-                # Generate document-level summary and embedding for two-level RAG
-                try:
-                    from .services.document_summary_service import DocumentSummaryService
-                    from .services.supabase_document_service import SupabaseDocumentService
-                    
-                    summary_service = DocumentSummaryService()
-                    doc_service = SupabaseDocumentService()
-                    
-                    # Get document from database
-                    doc_dict = doc_service.get_document_by_id(document_id)
-                    
-                    if doc_dict:
-                        # Get chunks from database (needed for summary generation)
-                        db_chunks = doc_service.get_document_chunks(document_id)
-                        
-                        if db_chunks:
-                            logger.info(f"🔄 Generating document summary and embedding for {document_id[:8]}...")
-                            
-                            # Generate summary and embedding
-                            success_summary = summary_service.generate_and_update_document_embedding(
-                                document=doc_dict,
-                                chunks=db_chunks
-                            )
-                            
-                            if success_summary:
-                                logger.info(f"✅ Generated document summary and embedding for {document_id[:8]}")
-                            else:
-                                logger.warning(f"⚠️ Failed to generate document summary/embedding for {document_id[:8]} (non-fatal)")
-                        else:
-                            logger.warning(f"⚠️ No chunks found for document {document_id[:8]}, skipping summary generation")
-                    else:
-                        logger.warning(f"⚠️ Document {document_id[:8]} not found, skipping summary generation")
-                        
-                except Exception as summary_error:
-                    # Non-fatal: document processing should continue even if summary generation fails
-                    logger.warning(f"⚠️ Document summary generation failed (non-fatal): {summary_error}")
-                    import traceback
-                    logger.debug(traceback.format_exc())
-                    
-            except Exception as e:
-                logger.error(f"❌ Failed to store document vectors: {e}")
-                raise
+            result = _run_fast_pipeline_after_parse(
+                document_id=document_id,
+                business_id=business_id,
+                property_id=property_id,
+                chunks=chunks,
+                document_text=document_text,
+                original_filename=original_filename,
+                parse_time=parse_time,
+                job_id=job_id,
+                processing_start_time=processing_start_time
+            )
             
             # Cleanup temp file
             try:
@@ -3465,53 +3580,7 @@ def process_document_fast_task(
             except Exception as e:
                 logger.warning(f"Could not clean up temp file: {e}")
             
-            # Update document status and store metrics
-            total_time = time.time() - processing_start_time
-            logger.info(f"⚡ FAST PIPELINE COMPLETE in {total_time:.2f}s")
-            logger.info(f"   Breakdown: parse={parse_time:.2f}s, extract={chunk_extract_time:.2f}s, embed={embed_time:.2f}s")
-            
-            # Update document status to processed
-            # Note: metadata_json column doesn't exist in Supabase documents table
-            # Metrics are already logged via logger and can be tracked via document_processing_history
-            try:
-                doc_storage.supabase.table('documents').update({
-                    'status': 'processed'
-                }).eq('id', document_id).execute()
-                
-                logger.info(f"✅ Updated document status to 'processed'")
-                
-                # Log processing completion with metrics in document_processing_history
-                from .services.document_storage_service import DocumentStorageService
-                doc_storage_service = DocumentStorageService()
-                doc_storage_service.log_processing_step(
-                    document_id=document_id,
-                    step_name='fast_pipeline',
-                    step_status='completed',
-                    step_message=f'Fast pipeline completed in {round(total_time, 2)}s',
-                    step_metadata={
-                        'reducto_job_id': job_id,
-                        'chunk_count': len(chunk_texts),
-                        'processing_method': 'fast_pipeline',
-                        'processed_at': datetime.utcnow().isoformat(),
-                        'processing_time_seconds': round(total_time, 2),
-                        'processing_breakdown': {
-                            'parse_time': round(parse_time, 2),
-                            'chunk_extraction_time': round(chunk_extract_time, 2),
-                            'embedding_time': round(embed_time, 2)
-                        }
-                    },
-                    duration_seconds=int(total_time)
-                )
-            except Exception as e:
-                logger.warning(f"Could not update document status: {e}")
-            
-            return {
-                'success': True,
-                'document_id': document_id,
-                'processing_time': round(total_time, 2),
-                'chunks_processed': len(chunk_texts),
-                'property_id': property_id
-            }
+            return result
             
         except Exception as e:
             logger.error(f"❌ Fast pipeline failed: {e}", exc_info=True)
@@ -3540,6 +3609,83 @@ def process_document_fast_task(
                 pass
             
             raise
+        finally:
+            try:
+                from .services.document_processing_tasks import clear_document_processing_task_id
+                clear_document_processing_task_id(document_id)
+            except Exception:
+                pass
+
+
+@shared_task(bind=True, name="process_document_after_parse")
+def process_document_after_parse_task(
+    self,
+    document_id: str,
+    job_id: str,
+    business_id: str,
+    property_id: Optional[str],
+    pipeline_type: str,
+    original_filename: str
+):
+    """
+    Continue fast pipeline after Reducto parse completes (webhook path).
+    Fetches result via get_parse_result_from_job_id then runs same post-parse steps as fast pipeline.
+    """
+    from . import create_app
+    app = create_app()
+    processing_start_time = time.time()
+
+    with app.app_context():
+        try:
+            from .services.document_storage_service import DocumentStorageService
+            from .services.reducto_service import ReductoService
+
+            logger.info(f"⚡ AFTER-PARSE: Starting for document {document_id}, job_id {job_id}")
+            reducto = ReductoService()
+            parse_result = reducto.get_parse_result_from_job_id(job_id, return_images=[])
+            document_text = parse_result.get('document_text', '')
+            chunks = parse_result.get('chunks', [])
+
+            if not chunks:
+                logger.error(f"No chunks in parse result for job_id {job_id}")
+                doc_storage = DocumentStorageService()
+                doc_storage.supabase.table('documents').update({'status': 'failed'}).eq('id', document_id).execute()
+                return {'success': False, 'document_id': document_id, 'error': 'No chunks in parse result'}
+
+            logger.info(f"✅ Fetched {len(chunks)} chunks from job_id {job_id}")
+            return _run_fast_pipeline_after_parse(
+                document_id=document_id,
+                business_id=business_id,
+                property_id=property_id,
+                chunks=chunks,
+                document_text=document_text,
+                original_filename=original_filename,
+                parse_time=0.0,
+                job_id=job_id,
+                processing_start_time=processing_start_time
+            )
+        except Exception as e:
+            logger.error(f"❌ After-parse pipeline failed: {e}", exc_info=True)
+            try:
+                from .services.document_storage_service import DocumentStorageService
+                doc_storage = DocumentStorageService()
+                doc_storage.supabase.table('documents').update({
+                    'status': 'failed',
+                    'metadata_json': {
+                        'error': str(e),
+                        'failed_at': datetime.utcnow().isoformat(),
+                        'processing_method': 'fast_pipeline_after_parse'
+                    }
+                }).eq('id', document_id).execute()
+            except Exception:
+                pass
+            raise
+        finally:
+            try:
+                from .services.document_processing_tasks import clear_document_processing_task_id
+                clear_document_processing_task_id(document_id)
+            except Exception:
+                pass
 
 
 # ============================================================================

@@ -1566,6 +1566,59 @@ class ReductoService:
             
             raise
 
+    def submit_parse_job_with_webhook(
+        self,
+        file_path: str,
+        webhook_url: str,
+        metadata: dict
+    ) -> str:
+        """
+        Submit a parse job with a webhook URL; do not poll. When Reducto finishes, it POSTs
+        to webhook_url. Caller should use get_parse_result_from_job_id(job_id) in the webhook
+        handler (or an enqueued task) to get the result.
+
+        Args:
+            file_path: Path to the document file.
+            webhook_url: Full URL for Reducto to POST when the job completes (must be publicly reachable).
+            metadata: Dict to be echoed in the webhook payload (e.g. document_id, business_id, webhook_secret).
+
+        Returns:
+            job_id (str) from the submission.
+        """
+        try:
+            file_path_obj = Path(file_path) if isinstance(file_path, str) else file_path
+            logger.info(f"⚡ Submitting parse job with webhook: {file_path}")
+            upload = self.client.upload(file=file_path_obj)
+
+            fast_settings = {
+                "retrieval": {
+                    "chunking": {
+                        "chunk_mode": "section"
+                    },
+                    "embedding_optimized": True
+                },
+                "return_images": [],
+                "ocr_system": "standard",
+                "formatting": {
+                    "table_output_format": "md"
+                }
+            }
+
+            submission = self.client.parse.run_job(
+                input=upload,
+                settings=fast_settings,
+                async_={
+                    "webhook": {"mode": "direct", "url": webhook_url},
+                    "metadata": metadata
+                }
+            )
+            job_id = submission.job_id
+            logger.info(f"📋 Parse job submitted with webhook: {job_id}")
+            return job_id
+        except Exception as e:
+            logger.error(f"❌ submit_parse_job_with_webhook failed: {e}")
+            raise
+
     def get_parse_result_from_job_id(self, job_id: str, return_images: List[str] = None) -> Dict[str, Any]:
         """
         Retrieve parse results from an existing job_id

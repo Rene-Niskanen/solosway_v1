@@ -841,21 +841,17 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
                       </div>
                     )}
                     {hasFacts && (
-                      <ul className="list-none space-y-2.5 px-0 pb-1 m-0" style={{ fontFamily: 'system-ui, sans-serif' }}>
-                        {displayFacts.map((fact, idx) => (
-                          <li
-                            key={idx}
-                            className="flex flex-col gap-1 rounded-md border border-gray-200/80 bg-white/60 px-2.5 py-2"
-                          >
-                            <span className="text-gray-500 text-[11px] font-semibold uppercase tracking-wider">
-                              {fact.label}
-                            </span>
-                            <span className="text-gray-800 text-xs leading-relaxed break-words">
-                              {fact.value}
-                            </span>
-                          </li>
-                        ))}
-                      </ul>
+                      <div className="rounded-md border border-gray-200/80 bg-white/60 px-2.5 py-2">
+                        <p
+                          className="text-gray-800 text-xs leading-relaxed break-words m-0"
+                          style={{ fontFamily: 'system-ui, sans-serif' }}
+                        >
+                          {displayFacts
+                            .map((fact) => `${fact.label}: ${fact.value}`)
+                            .join('. ')}
+                          {displayFacts.length > 0 ? '.' : ''}
+                        </p>
+                      </div>
                     )}
                   </div>
                 );

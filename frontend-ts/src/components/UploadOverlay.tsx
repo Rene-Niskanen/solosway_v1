@@ -83,41 +83,26 @@ export function UploadOverlay() {
             onDragLeave={handleDragLeave}
             onDrop={handleDrop}
             onClick={handleAreaClick}
-            className={`relative cursor-pointer transition-all duration-200 rounded-lg ${
-              isDragOver ? "opacity-90 scale-[1.01]" : ""
-            }`}
+            className={`relative cursor-pointer select-none transition-all duration-150 ease-out w-full overflow-hidden rounded-lg
+              hover:bg-gray-50/40 active:scale-[0.99] active:opacity-95 active:bg-gray-100/50
+              ${isDragOver ? "opacity-90 scale-[1.01]" : ""}`}
+            style={{
+              border: "2px dotted #D1D5DB",
+              borderRadius: "8px",
+            }}
           >
-            <div
-              className={`w-full flex flex-col items-center justify-center transition-all duration-200 relative min-h-[280px] ${
-                isDragOver ? "opacity-90" : ""
-              }`}
+            <img
+              src="/fileuploaduse.png"
+              alt="Secure file uploads"
+              className="block w-full h-auto pointer-events-none rounded-lg"
               style={{
-                backgroundColor: "#FFFFFF",
-                padding: "8px 16px",
-                borderRadius: "8px",
+                width: "100%",
+                height: "auto",
+                display: "block",
+                transform: "scale(1.12) translateY(-8px)",
+                transformOrigin: "center top",
               }}
-            >
-              <div
-                className="flex items-center justify-center rounded-lg flex-1 w-full overflow-visible"
-                style={{ backgroundColor: "#FFFFFF" }}
-              >
-                <img
-                  src="/uploadfiles.png"
-                  alt="Upload files"
-                  className="object-contain"
-                  style={{
-                    width: "695px",
-                    height: "auto",
-                    maxWidth: "285px",
-                    borderRadius: "8px",
-                  }}
-                />
-              </div>
-              <div
-                className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none"
-                style={{ padding: "8px 16px" }}
-              />
-            </div>
+            />
 
             <input
               ref={fileInputRef}

@@ -73,17 +73,57 @@ def _normalize_global_chunks_to_responder_shape(
     return out
 
 def _user_query_to_retrieval_query(user_query: str) -> str:
-    """Use the user's words as the retrieval query with minimal cleanup. We never rely on the planner to preserve entity names."""
+    """Use the user's words as the retrieval query with minimal cleanup. Preserve entity/person names (e.g. Chandni Solenki) for keyword and filename match."""
     if not (user_query and user_query.strip()):
         return ""
     s = user_query.strip().rstrip("?. ")
     lower = s.lower()
-    for prefix in ("what is ", "what's ", "what are ", "give me ", "please ", "find ", "which ", "tell me ", "show me ", "summarise ", "summarize "):
+    # Strip question lead-ins but preserve the rest (especially names: "Who is X" -> "X...")
+    for prefix in (
+        "what is ", "what's ", "what are ", "who is ", "who are ",
+        "give me ", "please ", "find ", "which ", "tell me ", "show me ",
+        "summarise ", "summarize ", "information about ", "details about ", "details on ",
+    ):
         if lower.startswith(prefix):
             s = s[len(prefix):].strip()
             lower = s.lower()
             break
     return s.strip() if s else user_query.strip()
+
+
+def _focus_for_document_search(user_query: str) -> str:
+    """
+    Produce a short phrase for document-level search (titles/summaries/filenames).
+    Used only for retrieve_documents; chunk search uses the full user query.
+    """
+    if not (user_query and user_query.strip()):
+        return ""
+    s = user_query.strip().rstrip("?. ")
+    lower = s.lower()
+    # Strip common leading question/filler phrases
+    _LEADING_PHRASES = (
+        "what is ", "what's ", "what are ", "who is ", "who are ",
+        "tell me about ", "show me ", "give me ", "find ", "details about ",
+        "information about ", "summarise ", "summarize ", "please ", "which ",
+    )
+    for prefix in _LEADING_PHRASES:
+        if lower.startswith(prefix):
+            s = s[len(prefix):].strip()
+            lower = s.lower()
+            break
+    # First clause or cap length (e.g. first 8 words) so result stays short
+    for sep in (" and ", "?", ","):
+        if sep in s:
+            s = s.split(sep)[0].strip()
+            break
+    words = s.split()
+    if len(words) > 8:
+        s = " ".join(words[:8])
+    s = s.strip()
+    # If empty or too short, return original with trivial cleanup so we don't break behaviour
+    if len(s) < 2:
+        return (user_query or "").strip()
+    return s
 
 
 # Stopwords to drop when building a short query for global fallback search (so embedding matches valuation/content chunks)
@@ -415,7 +455,7 @@ async def executor_node(state: MainWorkflowState, runnable_config=None) -> MainW
             _doc_ids = state.get("document_ids")
             _doc_ids = [str(d) for d in _doc_ids] if isinstance(_doc_ids, list) and _doc_ids else None
             user_query = state.get("user_query") or ""
-            query = _user_query_to_retrieval_query(user_query) or (resolved_step.get("query") or "").strip()
+            query = _focus_for_document_search(user_query) or (resolved_step.get("query") or "").strip()
             result = retrieve_documents(
                 query=query,
                 business_id=business_id,
@@ -430,14 +470,15 @@ async def executor_node(state: MainWorkflowState, runnable_config=None) -> MainW
                 # Run global chunk search so we still find content in docs that weren't in step 1
                 logger.warning(f"[EXECUTOR] Step {resolved_step['id']} has no document_ids (retrieve_docs found nothing); trying global chunk search")
                 user_query = state.get("user_query") or ""
-                query = _user_query_to_retrieval_query(user_query) or (resolved_step.get("query") or "").strip()
+                # Fallback vector call uses short/key-term query, not full sentence
+                fallback_query = _query_for_global_fallback(user_query) or _focus_for_document_search(user_query) or (resolved_step.get("query") or "").strip()
                 result = []
-                if business_id and query.strip():
+                if business_id and fallback_query.strip():
                     try:
                         vector_service = SupabaseVectorService()
-                        fallback_query = _query_for_global_fallback(query) or query
+                        # Use slightly lower threshold when step 1 found no docs so we still surface relevant chunks (e.g. person-name queries)
                         global_rows = vector_service.search_document_vectors(
-                            fallback_query, business_id, limit=20, similarity_threshold=0.28
+                            fallback_query, business_id, limit=20, similarity_threshold=0.22
                         )
                         if global_rows:
                             supabase = get_supabase_client()
@@ -452,7 +493,8 @@ async def executor_node(state: MainWorkflowState, runnable_config=None) -> MainW
                         logger.warning("[EXECUTOR] Global chunk search (no-docs path) failed: %s", fallback_err)
             else:
                 user_query = state.get("user_query") or ""
-                query = _user_query_to_retrieval_query(user_query) or (resolved_step.get("query") or "").strip()
+                # Chunk search uses full user query so "who is", "what is", etc. are preserved for semantic match
+                query = (user_query or "").strip() or (resolved_step.get("query") or "").strip()
                 logger.info(f"[EXECUTOR] Calling retrieve_chunks: '{query[:50]}...' ({len(document_ids)} documents)")
                 
                 # Simple call - let retriever decide all parameters (query profile, top_k, min_score)
@@ -465,13 +507,14 @@ async def executor_node(state: MainWorkflowState, runnable_config=None) -> MainW
                 # Fail loudly if no results - no retry, no interpretation
                 if not result or len(result) == 0:
                     logger.warning(f"[EXECUTOR] ⚠️ No chunks found for query: '{query[:50]}...'")
-                    # Fallback: search all content (global chunk search) so we don't miss content in other docs
-                    if business_id and query.strip():
+                    # Fallback: search all content (global chunk search) with short/key-term query for vector call
+                    fallback_query = _query_for_global_fallback(user_query) or _focus_for_document_search(user_query) or query
+                    if business_id and fallback_query.strip():
                         try:
                             vector_service = SupabaseVectorService()
-                            fallback_query = _query_for_global_fallback(query) or query
+                            # Lower threshold so we don't miss chunks when doc-level search missed the right doc
                             global_rows = vector_service.search_document_vectors(
-                                fallback_query, business_id, limit=20, similarity_threshold=0.28
+                                fallback_query, business_id, limit=20, similarity_threshold=0.22
                             )
                             if global_rows:
                                 supabase = get_supabase_client()

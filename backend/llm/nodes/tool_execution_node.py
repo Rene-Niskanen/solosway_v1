@@ -54,10 +54,44 @@ class ExecutionAwareToolNode:
         if not hasattr(last_message, 'tool_calls') or not last_message.tool_calls:
             # No tool calls - just pass through
             return await self.tool_node.ainvoke(state)
+
+        # Inject business_id (and optional scope) into retrieval tools so they always run scoped to the user
+        business_id = state.get("business_id")
+        property_id = state.get("property_id")
+        document_ids = state.get("document_ids")
+        if business_id or property_id or document_ids:
+            injected_tool_calls = []
+            for tool_call in last_message.tool_calls:
+                name = tool_call.get("name") or ""
+                args = dict(tool_call.get("args") or {})
+                if name == "retrieve_documents":
+                    if business_id is not None:
+                        args["business_id"] = business_id
+                    if property_id is not None:
+                        args["property_id"] = property_id
+                    if document_ids is not None:
+                        args["document_ids"] = document_ids
+                elif name == "retrieve_chunks":
+                    if business_id is not None:
+                        args["business_id"] = business_id
+                injected_tool_calls.append({**tool_call, "args": args})
+            # Build new last message with injected args (preserve message class and id)
+            try:
+                new_last = last_message.copy(update={"tool_calls": injected_tool_calls})
+            except Exception:
+                new_last = last_message
+                logger.debug("Could not copy message for tool arg injection, using original")
+            else:
+                state = {**state, "messages": list(messages[:-1]) + [new_last]}
+
+        # Use the (possibly injected) tool calls for emission and execution
+        current_messages = state.get("messages", messages)
+        last_msg = current_messages[-1] if current_messages else None
+        tool_calls_list = getattr(last_msg, "tool_calls", None) or []
         
         # Emit events for each tool call
         pre_events = {}
-        for tool_call in last_message.tool_calls:
+        for tool_call in tool_calls_list:
             tool_name = tool_call.get('name', 'unknown')
             tool_args = tool_call.get('args', {})
             

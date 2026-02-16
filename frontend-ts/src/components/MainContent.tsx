@@ -4275,7 +4275,7 @@ export const MainContent = ({
                       }}>
                         {/* VELORA Logo - fixed pixel width + crisp scaling to avoid blur from vw/subpixel */}
                         <img 
-                          src="/logo1.png"
+                          src="/HDvelorabackground.png"
                           width={906}
                           height={250}
                           alt="VELORA" 

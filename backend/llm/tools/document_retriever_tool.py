@@ -254,7 +254,13 @@ def retrieve_documents(
                     for word in query_words:
                         or_conditions.append(f'summary_text.ilike.%{word}%')
                         or_conditions.append(f'original_filename.ilike.%{word}%')
-                        # Removed: document_summary::text.ilike (invalid syntax)
+                    # Two-word phrase matches for person/entity names in filenames (e.g. "Chandni Solenki" -> Letter_of_Offer_Chandni_Solenki.docx)
+                    for i in range(len(query_words) - 1):
+                        w1, w2 = query_words[i], query_words[i + 1]
+                        if len(w1) > 2 and len(w2) > 2:
+                            phrase_underscore = f"{w1}_{w2}"
+                            or_conditions.append(f'original_filename.ilike.%{phrase_underscore}%')
+                            or_conditions.append(f'summary_text.ilike.%{phrase_underscore}%')
                 
                 # Apply OR conditions
                 if or_conditions:

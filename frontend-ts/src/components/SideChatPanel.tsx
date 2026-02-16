@@ -4148,6 +4148,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
 
   // Response popover: hover open/close with delay
   const [displayOptionsOpen, setDisplayOptionsOpen] = React.useState(false);
+  const [showStarredToast, setShowStarredToast] = React.useState(false);
+  const starredToastTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  React.useEffect(() => () => { if (starredToastTimeoutRef.current) clearTimeout(starredToastTimeoutRef.current); }, []);
   const displayOptionsOpenTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const displayOptionsCloseTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const HOVER_OPEN_DELAY_MS = 150;
@@ -13683,7 +13686,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 flexShrink: 0,
                 pointerEvents: 'auto',
                 paddingTop: '15px',
-                paddingBottom: '19px'
+                paddingBottom: '19px',
+                isolation: 'isolate'
               }}
             >
               <div 
@@ -13735,35 +13739,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       }}
                     >
                       <PanelRightClose className="w-4 h-4 text-[#666] scale-x-[-1]" strokeWidth={1.75} />
-                      {actualPanelWidth >= 750 && (
-                        <span className="text-[13px] font-normal text-[#666]">Close</span>
-                      )}
-                    </button>
-                  )}
-                  {isFilingSidebarOpen && (
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        e.preventDefault();
-                        setViewOptionsOpen(false);
-                        toggleFilingSidebar();
-                      }}
-                      className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1.5' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150`}
-                      title="Close Files"
-                      type="button"
-                      style={{
-                        padding: actualPanelWidth >= 750 ? '7px 11px' : '6px',
-                        height: '32px',
-                        minHeight: '32px',
-                        border: 'none',
-                        position: 'relative',
-                        zIndex: 10001,
-                        pointerEvents: 'auto',
-                        cursor: 'pointer',
-                        backgroundColor: 'rgba(0, 0, 0, 0.02)'
-                      }}
-                    >
-                      <Files className="w-4 h-4 text-[#666]" strokeWidth={1.75} />
                       {actualPanelWidth >= 750 && (
                         <span className="text-[13px] font-normal text-[#666]">Close</span>
                       )}
@@ -14009,7 +13984,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             </button>
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="start" sideOffset={4} onClick={(e) => e.stopPropagation()} className="min-w-[180px] rounded-lg shadow-lg border bg-white py-1">
-                            <DropdownMenuItem onClick={(e) => { e.stopPropagation(); toast({ title: 'Starred', description: 'Chat starred.', variant: 'compact', icon: <Star className="w-3.5 h-3.5" /> }); }} className="flex items-center gap-2 cursor-pointer text-[13px] font-normal text-[#666] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#666]">
+                            <DropdownMenuItem onClick={(e) => { e.stopPropagation(); if (starredToastTimeoutRef.current) clearTimeout(starredToastTimeoutRef.current); setShowStarredToast(true); starredToastTimeoutRef.current = setTimeout(() => { setShowStarredToast(false); starredToastTimeoutRef.current = null; }, 3000); }} className="flex items-center gap-2 cursor-pointer text-[13px] font-normal text-[#666] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#666]">
                               <Star className="w-4 h-4 text-[#666]" />
                               Star
                             </DropdownMenuItem>
@@ -14079,7 +14054,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           </button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="start" sideOffset={4} onClick={(e) => e.stopPropagation()} className="min-w-[180px] rounded-lg shadow-lg border bg-white py-1">
-                          <DropdownMenuItem onClick={(e) => { e.stopPropagation(); toast({ title: 'Starred', description: 'Chat starred.', variant: 'compact', icon: <Star className="w-3.5 h-3.5" /> }); }} className="flex items-center gap-2 cursor-pointer text-[13px] font-normal text-[#666] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#666]">
+                          <DropdownMenuItem onClick={(e) => { e.stopPropagation(); if (starredToastTimeoutRef.current) clearTimeout(starredToastTimeoutRef.current); setShowStarredToast(true); starredToastTimeoutRef.current = setTimeout(() => { setShowStarredToast(false); starredToastTimeoutRef.current = null; }, 3000); }} className="flex items-center gap-2 cursor-pointer text-[13px] font-normal text-[#666] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#666]">
                             <Star className="w-4 h-4 text-[#666]" />
                             Star
                           </DropdownMenuItem>
@@ -14357,6 +14332,25 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   </button>
                 </div>
               </div>
+              {/* Chat starred toast - below header buttons, corner of chat */}
+              {showStarredToast && (
+                <div
+                  className="absolute left-0 right-0 flex justify-end pointer-events-none"
+                  style={{ top: '100%', marginTop: 6, zIndex: 10003, paddingRight: 0 }}
+                  aria-live="polite"
+                >
+                  <div
+                    className="flex items-center gap-2 rounded-lg border border-gray-200 bg-white py-1.5 pl-2 pr-7 shadow-md min-w-0 max-w-[200px]"
+                    style={{ pointerEvents: 'auto' }}
+                  >
+                    <Star className="w-3.5 h-3.5 text-[#666] flex-shrink-0" />
+                    <div className="grid gap-0 min-w-0">
+                      <span className="text-xs font-medium text-gray-900">Starred</span>
+                      <span className="text-[11px] leading-tight text-gray-600">Chat starred.</span>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
             
             {/* Conditional layout: Centered empty state OR normal messages + bottom input */}

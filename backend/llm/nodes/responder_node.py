@@ -67,6 +67,85 @@ from backend.llm.citation import (
 
 logger = logging.getLogger(__name__)
 
+# Patterns for closing phrases that must only appear at the end (move to end when they appear with more content after)
+_MID_RESPONSE_CLOSING_PATTERNS = [
+    # "Please let me know if you need more details about the transaction process or any other aspect! 📄 ✨"
+    re.compile(
+        r"\s*Please\s+let\s+me\s+know\s+if\s+you\s+need\s+more\s+details(?:\s+about\s+[^.!?]+)?\s+or\s+any\s+other\s+aspect\!?\s*[📄✨\s]*",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\s*If\s+you\s+need\s+more\s+details(?:\s+about[^.!?]*?)?(?:\s+or\s+any\s+other\s+aspect)?[^.]*?[!.]?\s*[📄✨\s]*",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\s*Let\s+me\s+know\s+if\s+you\s+have\s+any\s+(?:other\s+)?questions[^.]*?[!.]?\s*[📄✨\s]*",
+        re.IGNORECASE,
+    ),
+    # "If you want to dive deeper into specific sections or concepts, feel free to ask! 📊 ✨"
+    re.compile(
+        r"\s*If\s+you\s+want\s+to\s+dive\s+deeper(?:\s+into\s+specific\s+sections\s+or\s+concepts)?\s*,\s*feel\s+free\s+to\s+ask\!?\s*[\s📄✨📋🌳📊💡✅😊]*",
+        re.IGNORECASE,
+    ),
+    # Generic "feel free to ask" + optional "dive deeper" variant
+    re.compile(
+        r"\s*Feel\s+free\s+to\s+ask(?:\s+if\s+you\s+want\s+to\s+dive\s+deeper[^.!?\n]*)?\!?\s*[\s📄✨📋🌳📊💡✅😊🙂]*",
+        re.IGNORECASE,
+    ),
+    # "If you need further details or assistance, feel free to ask! 🙂"
+    re.compile(
+        r"\s*If\s+you\s+need\s+further\s+details\s+or\s+assistance\s*,\s*feel\s+free\s+to\s+ask\!?\s*[\s🙂😊📄✨📋🌳📊💡✅]*",
+        re.IGNORECASE,
+    ),
+    # Catch-all: "If you need [anything], feel free to ask" (generic opener before substantive content)
+    re.compile(
+        r"\s*If\s+you\s+need\s+(?:further\s+)?(?:details\s+or\s+assistance|more\s+information|any\s+clarification)[^.!?]*feel\s+free\s+to\s+ask\!?\s*[\s🙂😊📄✨📋🌳📊💡✅]*",
+        re.IGNORECASE,
+    ),
+]
+
+
+def _looks_like_closing_line(s: str) -> bool:
+    """True if the string looks like a standalone closing/follow-up line (for dedupe when moving to end)."""
+    if not s or len(s) > 200:
+        return False
+    t = s.strip().lower()
+    return (
+        "feel free to ask" in t
+        or "let me know" in t
+        or "need more details" in t
+        or "further details or assistance" in t
+        or "dive deeper" in t
+    )
+
+
+def _strip_mid_response_generic_closings(text: str) -> str:
+    """Move closing phrases that appear in the middle or start of a response to the end (on their own line)."""
+    if not (text or text.strip()):
+        return text
+    result = text
+    changed = True
+    while changed:
+        changed = False
+        for pattern in _MID_RESPONSE_CLOSING_PATTERNS:
+            for m in pattern.finditer(result):
+                end = m.end()
+                rest = result[end:].strip()
+                if rest and re.search(r"[a-zA-Z0-9\u00C0-\u024F]", rest):
+                    closing_line = m.group(0).strip()
+                    result = (result[: m.start()] + " " + result[end:]).strip()
+                    result = re.sub(r"  +", " ", result)
+                    result = re.sub(r"\n{3,}", "\n\n", result)
+                    # Append at end on its own line, unless it's already there
+                    last_para = result.rsplit("\n\n", 1)[-1].strip() if "\n\n" in result else result.strip()
+                    if not _looks_like_closing_line(last_para):
+                        result = result.rstrip() + "\n\n" + closing_line
+                    changed = True
+                    break
+            if changed:
+                break
+    return result
+
 
 def _build_responder_workspace_section(
     state: Dict[str, Any], execution_results: List[Dict[str, Any]]
@@ -1717,7 +1796,7 @@ Provide a helpful, conversational answer using Markdown formatting:
 - Use `**bold**` for emphasis or labels
 - Use `-` for bullet points when listing items
 - Use line breaks between sections for better readability
-- Put any closing or sign-off on a new line; if you add a follow-up, make it context-aware (tied to what you said and what they asked), not generic. When you add a follow-up, use a few friendly emojis (2–3), e.g. 📄 ✨ 📋 🌳 📊 💡 ✅ or a friendly smile 😊. Put a space before the first emoji and between each emoji (e.g. "feel free to ask! 😊 📋"). Do not start the response or first paragraph with emojis—the first character must be text; use emojis only after words (e.g. in a closing line). Keep it professional—no hearts, monkeys, or casual gestures.
+- Put any closing or follow-up only at the very end after a blank line; never at the start or after the first heading.
 - Extract and present information directly from the excerpts if it is present
 - Only say information is not found if it is genuinely not in the excerpts
 - Include appropriate context based on question type
@@ -1776,7 +1855,8 @@ Answer (use Markdown formatting for structure and clarity):""")
             if "messages" in tool_result:
                 messages.extend(tool_result["messages"])
             citations = extract_chunk_citations_from_messages(messages)
-    
+
+    answer_text = _strip_mid_response_generic_closings(answer_text)
     return answer_text, citations
 
 
@@ -1828,7 +1908,7 @@ Provide a helpful, conversational answer using Markdown formatting:
 - Use `**bold**` for emphasis or labels
 - Use `-` for bullet points when listing items
 - Use line breaks between sections for better readability
-- Put any closing or sign-off on a new line; if you add a follow-up, make it context-aware (tied to what you said and what they asked), not generic. When you add a follow-up, use a few friendly emojis (2–3), e.g. 📄 ✨ 📋 🌳 📊 💡 ✅ or a friendly smile 😊. Put a space before the first emoji and between each emoji (e.g. "feel free to ask! 😊 📋"). Do not start the response or first paragraph with emojis—the first character must be text; use emojis only after words (e.g. in a closing line). Keep it professional—no hearts, monkeys, or casual gestures.
+- Put any closing or follow-up only at the very end after a blank line; never at the start or after the first heading.
 - Extract and present information directly from the excerpts if it is present
 - Only say information is not found if it is genuinely not in the excerpts
 - Include appropriate context based on question type
@@ -1841,9 +1921,10 @@ Answer (use Markdown formatting for structure and clarity):""")
     logger.info(f"[RESPONDER] Invoking LLM with {len(chunks_metadata)} chunks and {len(pre_created_citations)} pre-created citations")
     response = await llm.ainvoke([system_prompt, human_message])
     
-    # Extract answer text
+    # Extract answer text and move any closing line that appeared mid-response to the end
     answer_text = response.content if hasattr(response, 'content') and response.content else ""
-    
+    answer_text = _strip_mid_response_generic_closings(answer_text)
+
     # Return answer and pre-created citations (already numbered)
     return answer_text, pre_created_citations
 
@@ -1936,7 +2017,7 @@ Is this the first message in the conversation? {is_first_message}
 - Answer based on the content above. For each fact you use, cite it as [ID: X](BLOCK_CITE_ID_N) where the block id is from the <BLOCK> whose content actually contains that fact (e.g. the block with "56" and "D" for EPC current rating).
 - **Place each citation immediately after the fact it supports**, not at the end of the sentence (e.g. "...payment stablecoins are not considered securities [ID: 1](BLOCK_CITE_ID_5), amending various acts..." not "...to reflect this [ID: 1](BLOCK_CITE_ID_5).").
 - **In bullet lists:** put each citation at the end of the bullet it supports (e.g. "- Incredible Location [ID: 1](BLOCK_CITE_ID_1)"), never all citations at the end of the last bullet.
-- Put any closing or sign-off on a new line; if you add a follow-up, make it context-aware (tied to what you said and what they asked), not generic. When you add a follow-up, use a few friendly emojis (2–3), e.g. 📄 ✨ 📋 🌳 📊 💡 ✅ or a friendly smile 😊. Put a space before the first emoji and between each emoji (e.g. "feel free to ask! 😊 📋"). Do not start the response or first paragraph with emojis—the first character must be text; use emojis only after words (e.g. in a closing line). Keep it professional—no hearts, monkeys, or casual gestures.
+- Put any closing or follow-up only at the very end after a blank line; never at the start or after the first heading.
 - Explain in a clear, conversational way; use Markdown where it helps readability. Be accurate.
 """)
 
@@ -1953,6 +2034,7 @@ Is this the first message in the conversation? {is_first_message}
             else DEFAULT_PERSONALITY_ID
         )
         answer_text = (parsed.response or "").strip()
+        answer_text = _strip_mid_response_generic_closings(answer_text)
         logger.info(f"[RESPONDER] Chose personality_id={personality_id}")
         return personality_id, answer_text
     except Exception as e:
@@ -1961,6 +2043,7 @@ Is this the first message in the conversation? {is_first_message}
         fallback_llm = ChatOpenAI(model=config.openai_model, temperature=0.38, max_tokens=4096)
         response = await fallback_llm.ainvoke([system_prompt, human_message])
         answer_text = response.content if hasattr(response, 'content') and response.content else ""
+        answer_text = _strip_mid_response_generic_closings(answer_text)
         return DEFAULT_PERSONALITY_ID, answer_text
 
 
@@ -2037,6 +2120,7 @@ async def generate_answer_with_direct_citations(
         
         # Step 6: Replace [ID: 1] with [1], [ID: 2] with [2], etc. (safe replacement)
         formatted_response = replace_ids_with_citation_numbers(llm_response, citations)
+        formatted_response = _strip_mid_response_generic_closings(formatted_response)
         logger.info(f"[DIRECT_CITATIONS] Replaced citation IDs with numbers")
         
         # Step 7: Format citations for frontend
@@ -2087,7 +2171,8 @@ async def generate_formatted_answer(
 
     llm = ChatOpenAI(api_key=config.openai_api_key, model=config.openai_model, temperature=0)
     response = await llm.ainvoke([SystemMessage(content=system_content), HumanMessage(content=user_content)])
-    return (response.content or "").strip()
+    answer = (response.content or "").strip()
+    return _strip_mid_response_generic_closings(answer)
 
 
 async def responder_node(state: MainWorkflowState, runnable_config=None) -> MainWorkflowState:

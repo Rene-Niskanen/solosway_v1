@@ -1,0 +1,17 @@
+---
+description: When user says "start velora go", run the full Velora stack (Redis, Flask, worker, frontend)
+alwaysApply: true
+---
+
+# Start Velora Go
+
+When the user says **"start velora go"** (or similar: "start velora", "start velora go", "run velora"):
+
+1. Run the start script from the **project root** in a **background** terminal so all services stay up:
+   - Command: `./start-velora-go.sh` or `./scripts/start-velora-go.sh`
+   - Use a terminal with the project root as the working directory.
+   - The script starts: Redis (Docker), Flask API (5001), Celery worker, and frontend (Vite). Press Ctrl+C in that terminal to stop all.
+
+2. Tell the user that Velora is starting and where to open the app (e.g. frontend at http://localhost:5173, API at http://localhost:5001).
+
+Do not run the script in the foreground in a way that blocks the user; use background execution or instruct them to run it in a separate terminal.

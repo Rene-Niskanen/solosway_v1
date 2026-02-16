@@ -17,7 +17,7 @@ import time
 import re
 import math
 import queue
-from .tasks import process_document_task, process_document_fast_task
+from .tasks import process_document_task, process_document_fast_task, process_document_after_parse_task
 # NOTE: DeletionService is deprecated - use UnifiedDeletionService instead
 # from .services.deletion_service import DeletionService
 from sqlalchemy import text, cast, String
@@ -304,6 +304,65 @@ def detailed_health_check():
             'error': str(e),
             'timestamp': datetime.utcnow().isoformat()
         }), 503
+
+
+@views.route('/api/internal/reducto-webhook', methods=['POST'])
+def reducto_webhook():
+    """
+    Webhook called by Reducto when an async parse job completes. Do not protect with @login_required.
+    Validates REDUCTO_WEBHOOK_SECRET from payload metadata; enqueues process_document_after_parse_task on success.
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        status = data.get('status')
+        job_id = data.get('job_id')
+        metadata = data.get('metadata') or {}
+        secret = os.environ.get('REDUCTO_WEBHOOK_SECRET')
+        if secret and metadata.get('webhook_secret') != secret:
+            logger.warning("Reducto webhook: invalid or missing webhook_secret")
+            return jsonify({'error': 'Unauthorized'}), 401
+        if status != 'Completed':
+            logger.info(f"Reducto webhook: job_id={job_id} status={status}, acknowledging")
+            return jsonify({'received': True}), 200
+        document_id = metadata.get('document_id')
+        business_id = metadata.get('business_id')
+        property_id = metadata.get('property_id')
+        pipeline_type = metadata.get('pipeline_type', 'fast')
+        original_filename = metadata.get('original_filename', '')
+        if not document_id or not business_id or not job_id:
+            logger.warning(f"Reducto webhook: missing document_id/business_id/job_id in metadata")
+            return jsonify({'error': 'Bad request', 'message': 'Missing document_id, business_id, or job_id'}), 400
+        # Idempotency: skip re-enqueueing if this job_id was already processed (Reducto may retry)
+        try:
+            import redis
+            redis_host = os.environ.get('REDIS_HOST', 'redis')
+            redis_port = int(os.environ.get('REDIS_PORT', 6379))
+            r = redis.Redis(host=redis_host, port=redis_port, db=0)
+            key = f"reducto_webhook:job_id:{job_id}"
+            if not r.set(key, "1", nx=True, ex=86400):
+                logger.info(f"Reducto webhook: job_id={job_id} already processed, skipping")
+                return jsonify({'received': True}), 200
+        except Exception:
+            pass
+        after_parse_task = process_document_after_parse_task.delay(
+            document_id=document_id,
+            job_id=job_id,
+            business_id=business_id,
+            property_id=property_id or None,
+            pipeline_type=pipeline_type,
+            original_filename=original_filename
+        )
+        try:
+            from .services.document_processing_tasks import set_document_processing_task_id
+            set_document_processing_task_id(str(document_id), after_parse_task.id)
+        except Exception:
+            pass
+        logger.info(f"Reducto webhook: enqueued after-parse task for document_id={document_id} job_id={job_id}")
+        return jsonify({'received': True}), 200
+    except Exception as e:
+        logger.exception("Reducto webhook error")
+        return jsonify({'error': 'Internal server error'}), 500
+
 
 @views.route('/api/performance', methods=['GET'])
 @login_required
@@ -4551,6 +4610,11 @@ def proxy_upload():
                         business_id=str(business_uuid_str),
                         property_id=str(property_id)
                     )
+                    try:
+                        from .services.document_processing_tasks import set_document_processing_task_id
+                        set_document_processing_task_id(str(doc_id), task.id)
+                    except Exception:
+                        pass
                     logger.info(f"⚡ [PROXY-UPLOAD] ✅ Queued fast processing task {task.id} for document {doc_id} (property {property_id})")
                 except Exception as e:
                     logger.error(f"❌ [PROXY-UPLOAD] Failed to queue fast processing task: {e}", exc_info=True)
@@ -4843,13 +4907,17 @@ def process_temp_files():
                     document_ids.append(document_id)
                     
                     # Queue full processing
-                    process_document_fast_task.delay(
+                    task = process_document_fast_task.delay(
                         document_id=document_id,
                         original_filename=filename,
                         business_id=business_uuid_str,
                         property_id=property_id
                     )
-                    
+                    try:
+                        from .services.document_processing_tasks import set_document_processing_task_id
+                        set_document_processing_task_id(str(document_id), task.id)
+                    except Exception:
+                        pass
                     logger.info(f"✅ [PROCESS-TEMP] Created document {document_id} and queued processing")
                     
                     # Clean up temp file
@@ -5027,6 +5095,11 @@ def upload_document():
                     original_filename=filename,
                     business_id=str(business_uuid_str)
                 )
+                try:
+                    from .services.document_processing_tasks import set_document_processing_task_id
+                    set_document_processing_task_id(str(doc_id), task.id)
+                except Exception as track_err:
+                    logger.warning(f"Could not store processing task id for revoke: {track_err}")
                 logger.info(f"🔄 [UPLOAD] ✅ Queued full processing task {task.id} for document {doc_id}")
                 logger.info(f"   Pipeline: classification → extraction → embedding")
             except Exception as e:
@@ -5035,10 +5108,11 @@ def upload_document():
                 # But log this as a critical error since processing won't happen
             
             # Success - document created in Supabase and full processing queued
+            # Note: processing runs in a Celery worker; if no worker is running, doc stays 'uploaded'
             return jsonify({
                 'success': True,
                 'document_id': doc_id,
-                'message': 'Document uploaded and full processing pipeline queued.',
+                'message': 'Document uploaded and full processing pipeline queued. Processing runs in the background (Celery worker must be running).',
                 'status': 'uploaded',
                 'processing_queued': True,  # Always true for this endpoint
                 'pipeline': 'full'  # Indicate this uses the full pipeline
@@ -6252,6 +6326,19 @@ def _perform_document_deletion(document_id):
             user_business_uuid,
         )
         return jsonify({'error': 'Unauthorized'}), 403
+
+    # If document is in the processing pipeline, revoke the Celery task so the worker stops
+    try:
+        from .services.document_processing_tasks import get_and_clear_document_processing_task_id
+        task_id = get_and_clear_document_processing_task_id(str(document_id))
+        if task_id:
+            from flask import current_app
+            celery_app = current_app.extensions.get("celery")
+            if celery_app:
+                celery_app.control.revoke(task_id, terminate=True)
+                logger.info(f"Revoked processing task {task_id} for document {document_id}")
+    except Exception as e:
+        logger.warning(f"Could not revoke processing task for document {document_id}: {e}")
 
     # Allow deletion even when s3_path is missing (e.g. document still processing or created via another path).
     # UnifiedDeletionService skips S3 deletion when s3_path is None and still removes DB records.

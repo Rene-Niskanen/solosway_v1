@@ -865,12 +865,13 @@ def get_response_formatting_prompt(raw_response: str, user_query: str) -> str:
 - Do NOT add periods before citations
 
 **CANONICAL TEMPLATE ENFORCEMENT**:
-1. Verify H1 (#) exists and must contain or start with the direct answer (e.g. the category or value), not only a topic sentence. When the response is a structured overview, start with one main # heading for the topic.
-2. Verify information ordering: primary answer (the figure/category that answers the question) first, key facts directly with citations, optional sections last.
-3. Enforce cognitive load: Split paragraphs >50 words, limit lists to 3-5 items, limit paragraphs to 3 sentences.
-4. Apply structure: # H1 → ## H2 → ### H3 hierarchy. Present information naturally - no separate "Key Concepts" sections.
-5. For lists of provisions or key points: use a numbered list (1., 2., 3.); put each provision title on its own line (or as ###), then the description in the following paragraph.
-6. Avoid orphan lines: do not leave a short fragment (e.g. "of 2025") on a line by itself; attach it to the previous sentence or heading.
+1. If a closing/follow-up line (e.g. "feel free to ask!", "If you need further details or assistance, feel free to ask!") appears at the start or right after a section heading (e.g. after "**Offer Details**"), move it to the very end of the response so it is the last line, on its own after a blank line. The closing line must only appear once and at the end.
+2. Verify H1 (#) exists and must contain or start with the direct answer (e.g. the category or value), not only a topic sentence. When the response is a structured overview, start with one main # heading for the topic.
+3. Verify information ordering: primary answer (the figure/category that answers the question) first, key facts directly with citations, optional sections last.
+4. Enforce cognitive load: Split paragraphs >50 words, limit lists to 3-5 items, limit paragraphs to 3 sentences.
+5. Apply structure: # H1 → ## H2 → ### H3 hierarchy. Present information naturally - no separate "Key Concepts" sections.
+6. For lists of provisions or key points: use a numbered list (1., 2., 3.); put each provision title on its own line (or as ###), then the description in the following paragraph.
+7. Avoid orphan lines: do not leave a short fragment (e.g. "of 2025") on a line by itself; attach it to the previous sentence or heading.
 
 **FORMATTING STANDARDS**:
 - Use markdown: # for H1, ## for H2, ### for H3

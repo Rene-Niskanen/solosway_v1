@@ -813,7 +813,8 @@ class SupabaseVectorService:
         chunks: List[str], 
         metadata: Dict[str, Any],
         chunk_metadata_list: Optional[List[Dict[str, Any]]] = None,  # NEW: Per-chunk metadata
-        lazy_embedding: bool = False  # NEW: If True, store chunks without embeddings (lazy embedding)
+        lazy_embedding: bool = False,  # NEW: If True, store chunks without embeddings (lazy embedding)
+        document_summary_precomputed: Optional[Dict[str, Any]] = None  # When set, skip internal context generation
     ) -> bool:
         """
         Store document vectors in Supabase with bbox metadata for each chunk
@@ -828,6 +829,9 @@ class SupabaseVectorService:
                 - page: Primary page number
             lazy_embedding: If True, store chunks without embeddings (embedding_status='pending')
                            If False, generate embeddings immediately (default behavior)
+            document_summary_precomputed: Optional precomputed document summary (e.g. from parallel
+                context+structure). When provided, skips DocumentContextService.generate_document_summary
+                and uses this dict for party_names and other document_summary reads.
         Returns:
             Success status
         """
@@ -962,67 +966,73 @@ class SupabaseVectorService:
             
             # Skip synchronous context generation if lazy_embedding=True (handled by background tasks)
             if self.use_contextual_retrieval and not lazy_embedding:
-                try:
-                    from .document_context_service import DocumentContextService
-                    context_service = DocumentContextService()
-                    
-                    # Get full document text (from metadata or concatenate chunks)
-                    full_document_text = metadata.get('parsed_text', '')
-                    if not full_document_text:
-                        # Fallback: concatenate all chunks
-                        full_document_text = '\n\n'.join(chunks)
-                    
-                    # Generate ONE document-level summary
-                    document_summary = context_service.generate_document_summary(
-                        document_text=full_document_text,
-                        metadata=metadata
-                    )
-                    
-                    # Store document summary in documents table (if exists)
-                    # CRITICAL FIX: Use DocumentStorageService to MERGE instead of REPLACE
-                    # This preserves existing Reducto data (reducto_chunks, reducto_job_id, bbox metadata)
+                if document_summary_precomputed:
+                    # Caller ran context + structure in parallel and passed merged summary
+                    document_summary = document_summary_precomputed
+                    chunk_contexts = [""] * len(chunks)
+                    logger.info("Using precomputed document summary (parallel context+structure)")
+                else:
                     try:
-                        from .document_storage_service import DocumentStorageService
-                        doc_storage = DocumentStorageService()
+                        from .document_context_service import DocumentContextService
+                        context_service = DocumentContextService()
                         
-                        # Merge AI-generated summary with existing Reducto data
-                        # This preserves all reducto_* fields (chunks, job_id, bbox metadata)
-                        success, error = doc_storage.update_document_summary(
-                            document_id=document_id,
-                            business_id=business_uuid,  # Use business_uuid from metadata
-                            updates={
-                                **document_summary,  # AI-generated summary fields
-                                'document_entities': document_summary.get('top_entities', []),
-                                'document_tags': document_summary.get('document_tags', [])
-                            },
-                            merge=True  # CRITICAL: Merge with existing reducto_* fields
+                        # Get full document text (from metadata or concatenate chunks)
+                        full_document_text = metadata.get('parsed_text', '')
+                        if not full_document_text:
+                            # Fallback: concatenate all chunks
+                            full_document_text = '\n\n'.join(chunks)
+                        
+                        # Generate ONE document-level summary
+                        document_summary = context_service.generate_document_summary(
+                            document_text=full_document_text,
+                            metadata=metadata
                         )
                         
-                        if success:
-                            logger.info(f"✅ Stored document-level summary for {document_id} (merged with existing Reducto data)")
-                        else:
-                            logger.warning(f"Could not store document summary: {error}")
+                        # Store document summary in documents table (if exists)
+                        # CRITICAL FIX: Use DocumentStorageService to MERGE instead of REPLACE
+                        # This preserves existing Reducto data (reducto_chunks, reducto_job_id, bbox metadata)
+                        try:
+                            from .document_storage_service import DocumentStorageService
+                            doc_storage = DocumentStorageService()
+                            
+                            # Merge AI-generated summary with existing Reducto data
+                            # This preserves all reducto_* fields (chunks, job_id, bbox metadata)
+                            success, error = doc_storage.update_document_summary(
+                                document_id=document_id,
+                                business_id=business_uuid,  # Use business_uuid from metadata
+                                updates={
+                                    **document_summary,  # AI-generated summary fields
+                                    'document_entities': document_summary.get('top_entities', []),
+                                    'document_tags': document_summary.get('document_tags', [])
+                                },
+                                merge=True  # CRITICAL: Merge with existing reducto_* fields
+                            )
+                            
+                            if success:
+                                logger.info(f"✅ Stored document-level summary for {document_id} (merged with existing Reducto data)")
+                            else:
+                                logger.warning(f"Could not store document summary: {error}")
+                                # Continue anyway - summary will be prepended to chunks at query-time
+                        except Exception as e:
+                            logger.warning(f"Could not store document summary in documents table: {e}")
+                            import traceback
+                            logger.debug(traceback.format_exc())
                             # Continue anyway - summary will be prepended to chunks at query-time
+                        
+                        # Create empty contexts list (we'll prepend document summary at query-time)
+                        chunk_contexts = [""] * len(chunks)
+                        logger.info(
+                            f"✅ Generated document-level context (1 API call vs {len(chunks)} per-chunk calls)"
+                        )
+                        
+                    except ImportError:
+                        logger.warning("DocumentContextService not available, skipping document-level contextualization")
+                        document_summary = None
+                        chunk_contexts = [""] * len(chunks)
                     except Exception as e:
-                        logger.warning(f"Could not store document summary in documents table: {e}")
-                        import traceback
-                        logger.debug(traceback.format_exc())
-                        # Continue anyway - summary will be prepended to chunks at query-time
-                    
-                    # Create empty contexts list (we'll prepend document summary at query-time)
-                    chunk_contexts = [""] * len(chunks)
-                    logger.info(
-                        f"✅ Generated document-level context (1 API call vs {len(chunks)} per-chunk calls)"
-                    )
-                    
-                except ImportError:
-                    logger.warning("DocumentContextService not available, skipping document-level contextualization")
-                    document_summary = None
-                    chunk_contexts = [""] * len(chunks)
-                except Exception as e:
-                    logger.error(f"Document-level contextualization failed: {e}")
-                    document_summary = None
-                    chunk_contexts = [""] * len(chunks)
+                        logger.error(f"Document-level contextualization failed: {e}")
+                        document_summary = None
+                        chunk_contexts = [""] * len(chunks)
             else:
                 # No contextualization - use original chunks
                 document_summary = None
