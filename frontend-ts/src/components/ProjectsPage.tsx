@@ -739,13 +739,21 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
         className="w-full min-h-full flex flex-col box-border"
         style={{ 
           padding: showAllFiles ? '48px 32px 48px 32px' : '48px 40px 48px 40px',
-          paddingRight: showAllFiles ? '120px' : '220px',
           maxWidth: '100%',
         }}
       >
+        {/* Centered content wrapper so projects and files don't sit with excessive right space when sidebar is small */}
+        <div
+          className="w-full flex flex-col flex-1 min-w-0"
+          style={{
+            maxWidth: '1400px',
+            marginLeft: 'auto',
+            marginRight: 'auto',
+          }}
+        >
         {/* Project Cards Section - hidden when "See All Files" is active */}
         {!showAllFiles && (
-          <div style={{ marginLeft: '24px', marginTop: '24px', width: '100%', maxWidth: '100%', minWidth: 0 }}>
+          <div style={{ marginTop: '24px', marginLeft: '-36px', width: '100%', maxWidth: '100%', minWidth: 0 }}>
             <div 
               className="grid justify-start w-full"
               style={{ 
@@ -790,7 +798,6 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
                   border: 'none',
                   cursor: 'pointer',
                   backgroundColor: 'rgba(0, 0, 0, 0.04)',
-                  marginLeft: '40px',
                   pointerEvents: 'auto',
                 }}
               >
@@ -819,7 +826,6 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
             className={showAllFiles ? 'flex-1 flex flex-col min-h-0' : ''}
             style={{
               paddingBottom: showAllFiles ? 0 : '32px',
-              marginLeft: showAllFiles ? 0 : '48px',
               marginTop: showAllFiles ? 8 : 0,
               width: '100%',
               maxWidth: '100%',
@@ -828,7 +834,7 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
             }}
           >
             {!showAllFiles && (
-              <div className="flex items-center justify-between gap-2 mb-2" style={{ marginLeft: '0' }}>
+              <div className="flex items-center justify-between gap-2 mb-2">
                 <span className="text-[12px] font-normal text-[#666]" style={{ opacity: allDocuments.length ? 1 : 0.6 }}>Files</span>
               </div>
             )}
@@ -840,6 +846,7 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
             />
           </div>
         )}
+        </div>
       </div>
     </div>
   );
