@@ -113,8 +113,8 @@ views = Blueprint('views', __name__)
 logger = logging.getLogger(__name__)
 
 # Stream response pacing: delay in ms between chunks (0 = no delay); chunk size in characters
-STREAM_CHUNK_DELAY_MS = int(os.environ.get("STREAM_CHUNK_DELAY_MS", "18"))
-STREAM_CHUNK_SIZE = int(os.environ.get("STREAM_CHUNK_SIZE", "8"))
+STREAM_CHUNK_DELAY_MS = int(os.environ.get("STREAM_CHUNK_DELAY_MS", "0"))
+STREAM_CHUNK_SIZE = int(os.environ.get("STREAM_CHUNK_SIZE", "32"))
 
 # ---------------------------------------------------------------------------
 # Performance timing helpers (lightweight, server-side only)
