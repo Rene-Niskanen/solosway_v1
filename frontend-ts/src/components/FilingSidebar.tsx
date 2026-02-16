@@ -215,6 +215,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
     setIsResizing: setContextIsResizing,
     initialPendingFiles,
     setInitialPendingFiles,
+    setFilesUploading,
   } = useFilingSidebar();
   const { getAllPropertyHubs } = useBackendApi();
 
@@ -267,7 +268,67 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
   const [uploadingPlaceholders, setUploadingPlaceholders] = useState<Array<{ id: string; name: string }>>([]);
   /** Keys of pending files currently uploading (same list stays visible with spinner) */
   const [uploadingFileKeys, setUploadingFileKeys] = useState<Set<string>>(new Set());
+  /** Document IDs we just uploaded; keep sidebar spinner until they reach completed/failed */
+  const [processingDocumentIds, setProcessingDocumentIds] = useState<Set<string>>(new Set());
   const [showSecureInfo, setShowSecureInfo] = useState(false);
+
+  // Remove from processingDocumentIds when docs reach completed/failed (so spinner can turn off)
+  useEffect(() => {
+    setProcessingDocumentIds((prev) => {
+      if (prev.size === 0) return prev;
+      let next: Set<string> | null = null;
+      for (const id of prev) {
+        const doc = documents.find((d) => d.id === id);
+        if (doc && (doc.status === 'completed' || doc.status === 'failed')) {
+          if (!next) next = new Set(prev);
+          next.delete(id);
+        }
+      }
+      return next ?? prev;
+    });
+  }, [documents]);
+
+  // Poll document list while we have docs still processing so we can clear spinner when done
+  useEffect(() => {
+    if (processingDocumentIds.size === 0) return;
+    const uploadCacheKey =
+      viewMode === 'property' && selectedPropertyId ? `property_${selectedPropertyId}` : 'global';
+    const interval = setInterval(async () => {
+      documentCacheRef.current.delete(uploadCacheKey);
+      cacheTimestampRef.current.delete(uploadCacheKey);
+      if (viewMode === 'property' && selectedPropertyId) {
+        const response = await backendApi.getPropertyHubDocuments(selectedPropertyId);
+        if (response.success && response.data) {
+          let docs: Document[] = [];
+          const data = response.data;
+          if (Array.isArray(data)) docs = data;
+          else if (data?.data?.documents && Array.isArray(data.data.documents)) docs = data.data.documents;
+          else if (data?.data && Array.isArray(data.data)) docs = data.data;
+          else if (Array.isArray(data?.documents)) docs = data.documents;
+          else if (data?.documents && Array.isArray(data.documents)) docs = data.documents;
+          setDocuments(docs);
+        }
+      } else {
+        const response = await backendApi.getAllDocuments();
+        const docs = parseAllDocumentsResponse(response);
+        if (response.success) setDocuments(docs);
+      }
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [viewMode, selectedPropertyId, processingDocumentIds.size]);
+
+  // Sync uploading state to context so Sidebar can show spinner until upload + processing are done
+  useEffect(() => {
+    const hasProcessingDocs =
+      processingDocumentIds.size > 0 &&
+      Array.from(processingDocumentIds).some((id) => {
+        const doc = documents.find((d) => d.id === id);
+        return !doc || doc.status === 'uploaded' || doc.status === 'processing';
+      });
+    const uploading =
+      uploadingFileKeys.size > 0 || uploadingPlaceholders.length > 0 || hasProcessingDocs;
+    setFilesUploading(uploading);
+  }, [uploadingFileKeys, uploadingPlaceholders, processingDocumentIds, documents, setFilesUploading]);
 
   // Delete confirmation pop-up state
   const [deleteConfirmDialog, setDeleteConfirmDialog] = useState<{
@@ -1622,18 +1683,21 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
     setShowPropertySelector(false);
     setUploadingFileKeys(new Set(filesToUpload.map((f) => getPendingFileKey(f))));
 
-    // (2) Process all uploads in parallel (no full-page loading spinner)
-    const results = await Promise.all(
+    // (2) Process all uploads in parallel (no full-page loading spinner); collect document IDs for processing tracking
+    const uploadResults = await Promise.all(
       filesToUpload.map((file) =>
         handleFileUpload(file, undefined).then(
-          () => ({ ok: true as const }),
-          () => ({ ok: false as const })
+          (documentId) => ({ ok: true as const, documentId }),
+          () => ({ ok: false as const, documentId: undefined })
         )
       )
     );
-    const successCount = results.filter((r) => r.ok).length;
+    const successCount = uploadResults.filter((r) => r.ok).length;
+    const uploadedDocumentIds = uploadResults
+      .filter((r): r is { ok: true; documentId: string } => r.ok && !!r.documentId)
+      .map((r) => r.documentId);
 
-    // (3) Refresh document list first, then clear pending/uploading in one batch so nothing disappears then reappears
+    // (3) Refresh document list first, then clear pending/uploading; keep spinner until docs finish processing
     const uploadCacheKey =
       viewMode === 'property' && selectedPropertyId ? `property_${selectedPropertyId}` : 'global';
     documentCacheRef.current.delete(uploadCacheKey);
@@ -1666,6 +1730,14 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
     setUploadingFileKeys(new Set());
     setUploadingPlaceholders([]);
     setSelectedPropertyForUpload(null);
+    // Keep sidebar spinner until these docs reach completed/failed (polling + effect will clear processingDocumentIds)
+    if (uploadedDocumentIds.length > 0) {
+      setProcessingDocumentIds((prev) => {
+        const next = new Set(prev);
+        uploadedDocumentIds.forEach((id) => next.add(id));
+        return next;
+      });
+    }
   };
 
   // Remove a file from pending list
@@ -1686,7 +1758,8 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
   };
 
   // Handle file upload with duplicate checking. placeholderId: when in batch upload, remove from uploading list on done/duplicate.
-  const handleFileUpload = async (file: File, placeholderId?: string) => {
+  // Returns document_id on success so caller can track processing.
+  const handleFileUpload = async (file: File, placeholderId?: string): Promise<string | undefined> => {
     try {
       // Check for duplicates first
       const duplicateCheck = await backendApi.checkDuplicateDocument(file.name, file.size);
@@ -1704,36 +1777,35 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
             file: file,
             isExactDuplicate: is_exact_duplicate || false
           });
-          return;
+          return undefined;
         }
       }
 
       // No duplicate - proceed with upload
-      await proceedWithUpload(file, placeholderId);
+      return await proceedWithUpload(file, placeholderId);
     } catch (error) {
       console.error('Error checking for duplicate:', error);
-      await proceedWithUpload(file, placeholderId);
+      return await proceedWithUpload(file, placeholderId);
     }
   };
 
   // Proceed with actual upload. placeholderId: when in batch upload, remove from uploading list when done.
-  const proceedWithUpload = async (file: File, placeholderId?: string) => {
+  // Returns document_id on success so caller can track processing.
+  const proceedWithUpload = async (file: File, placeholderId?: string): Promise<string | undefined> => {
     try {
-      if (!placeholderId) setIsLoading(true);
       setError(null);
 
       // Check access level if uploading to a property
       if (selectedPropertyForUpload?.type === 'property' && !canUploadToProperty()) {
         setError('You do not have permission to upload files. Only editors and owners can upload files to this property.');
         if (placeholderId) removeUploadingPlaceholder(placeholderId);
-        if (!placeholderId) setIsLoading(false);
-        return;
+        return undefined;
       }
 
       // Dispatch upload start event for global progress bar
       uploadEvents.start(file.name);
 
-      let result;
+      let result: { success: boolean; data?: { document_id?: string }; error?: string };
       if (selectedPropertyForUpload) {
         if (selectedPropertyForUpload.type === 'property') {
           result = await backendApi.uploadPropertyDocumentViaProxy(
@@ -1754,6 +1826,8 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
               console.error('Failed to move document to folder:', error);
             }
           }
+        } else {
+          result = { success: false };
         }
       } else {
         result = await backendApi.uploadDocument(file, (progress) => {
@@ -1762,7 +1836,8 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
       }
 
       if (result.success) {
-        uploadEvents.complete(file.name, result.data?.document_id);
+        const documentId = result.data?.document_id;
+        uploadEvents.complete(file.name, documentId);
         if (placeholderId) removeUploadingPlaceholder(placeholderId);
         // Batch upload refreshes list in handleUploadPendingFiles; single-file upload refreshes here
         if (!placeholderId) {
@@ -1795,6 +1870,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
           }
         }
         setDuplicateDialog({ isOpen: false, filename: '', fileSize: 0, existingDocuments: [], file: null, isExactDuplicate: false });
+        return documentId;
       } else {
         if (placeholderId) removeUploadingPlaceholder(placeholderId);
         if (result.error && (result.error.includes('already exists') || result.error.includes('duplicate'))) {
@@ -1811,6 +1887,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
           uploadEvents.error(file.name, result.error || 'Upload failed');
           setError(result.error || 'Upload failed');
         }
+        return undefined;
       }
     } catch (error) {
       console.error('Upload error:', error);
@@ -1818,8 +1895,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
       uploadEvents.error(file.name, errorMessage);
       setError(errorMessage);
       if (placeholderId) removeUploadingPlaceholder(placeholderId);
-    } finally {
-      if (!placeholderId) setIsLoading(false);
+      return undefined;
     }
   };
 
@@ -2039,22 +2115,23 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
               {showSecureInfo && (
                 <div
                   className="absolute inset-0 z-[5] flex items-center justify-center p-4"
-                  style={{ backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', backgroundColor: 'rgba(249, 250, 251, 0.75)' }}
+                  style={{ backgroundColor: '#F3F4F6' }}
                   onClick={(e) => e.stopPropagation()}
                 >
                   <div
-                    className="overflow-hidden p-3 flex-shrink-0"
+                    className="overflow-hidden flex-shrink-0"
                     style={{
                       border: '2px dotted #D1D5DB',
                       borderRadius: '8px',
                       backgroundColor: '#F9FAFB',
+                      lineHeight: 0,
                     }}
                   >
                     <img
                       src="/(info)upload.png"
                       alt="Secure file uploads – Velora uses AWS S3 for secure file encryption (AES-256)"
-                      className="block w-full h-auto"
-                      style={{ width: '220px', height: 'auto' }}
+                      className="block w-full h-auto align-bottom"
+                      style={{ width: '260px', height: 'auto', display: 'block', objectFit: 'contain' }}
                     />
                   </div>
                 </div>

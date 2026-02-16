@@ -865,7 +865,7 @@ def get_response_formatting_prompt(raw_response: str, user_query: str) -> str:
 - Do NOT add periods before citations
 
 **CANONICAL TEMPLATE ENFORCEMENT**:
-1. If a closing/follow-up line (e.g. "feel free to ask!", "If you need further details or assistance, feel free to ask!") appears at the start or right after a section heading (e.g. after "**Offer Details**"), move it to the very end of the response so it is the last line, on its own after a blank line. The closing line must only appear once and at the end.
+1. If a closing/follow-up line (e.g. "feel free to ask!", "If you need further details or assistance, feel free to ask!", "If you have any more questions about the fees or the process, feel free to ask! 😊") appears at the start or right after a section heading (e.g. after "**Commission Fee**" or "**Offer Details**"), move it to the very end of the response so it is the last line, on its own after a blank line. The closing line must only appear once and at the end.
 2. Verify H1 (#) exists and must contain or start with the direct answer (e.g. the category or value), not only a topic sentence. When the response is a structured overview, start with one main # heading for the topic.
 3. Verify information ordering: primary answer (the figure/category that answers the question) first, key facts directly with citations, optional sections last.
 4. Enforce cognitive load: Split paragraphs >50 words, limit lists to 3-5 items, limit paragraphs to 3 sentences.

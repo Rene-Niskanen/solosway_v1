@@ -102,6 +102,11 @@ _MID_RESPONSE_CLOSING_PATTERNS = [
         r"\s*If\s+you\s+need\s+(?:further\s+)?(?:details\s+or\s+assistance|more\s+information|any\s+clarification)[^.!?]*feel\s+free\s+to\s+ask\!?\s*[\s🙂😊📄✨📋🌳📊💡✅]*",
         re.IGNORECASE,
     ),
+    # "If you have any more questions about the fees or the process, feel free to ask! 😊" (must only be at end)
+    re.compile(
+        r"\s*If\s+you\s+have\s+any\s+(?:more\s+)?questions(?:\s+about\s+[^.!?\n]+)?\s*,\s*feel\s+free\s+to\s+ask\!?\s*[\s😊🙂📄✨📋🌳📊💡✅]*",
+        re.IGNORECASE,
+    ),
 ]
 
 
@@ -116,6 +121,8 @@ def _looks_like_closing_line(s: str) -> bool:
         or "need more details" in t
         or "further details or assistance" in t
         or "dive deeper" in t
+        or "any more questions" in t
+        or "any further questions" in t
     )
 
 

@@ -114,7 +114,7 @@ export const Sidebar = ({
   } = useChatHistory();
 
   // Filing sidebar integration
-  const { toggleSidebar: toggleFilingSidebar, closeSidebar: closeFilingSidebar, isOpen: isFilingSidebarOpen } = useFilingSidebar();
+  const { toggleSidebar: toggleFilingSidebar, closeSidebar: closeFilingSidebar, isOpen: isFilingSidebarOpen, isFilesUploading } = useFilingSidebar();
 
   // Fetch user data on mount
   React.useEffect(() => {
@@ -363,7 +363,9 @@ export const Sidebar = ({
     const Icon = item.icon;
     const active = isItemActive(item);
     const isChat = item.action === 'openChat';
+    const isFiles = item.action === 'toggleFiling';
     const showChatIndicator = isChat && hasActiveChat;
+    const showFilesUploadingIndicator = isFiles && isFilesUploading;
 
     if (isIconsOnly) {
       return (
@@ -387,6 +389,9 @@ export const Sidebar = ({
             <Icon className="w-5 h-5 flex-shrink-0 text-[#635A4F]" strokeWidth={1.75} />
             {showChatIndicator && (
               <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-amber-500 rounded-full animate-pulse" />
+            )}
+            {showFilesUploadingIndicator && (
+              <span className="absolute -top-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-amber-500/30 border-t-amber-500 animate-spin" aria-hidden title="Uploading" />
             )}
           </div>
         </button>
@@ -419,6 +424,9 @@ export const Sidebar = ({
           />
           {showChatIndicator && (
             <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-amber-500 rounded-full animate-pulse" />
+          )}
+          {showFilesUploadingIndicator && (
+            <span className="absolute -top-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-amber-500/30 border-t-amber-500 animate-spin" aria-hidden title="Uploading" />
           )}
         </div>
         <span className="text-[14px] font-normal flex-1 text-left text-[#635A4F]">

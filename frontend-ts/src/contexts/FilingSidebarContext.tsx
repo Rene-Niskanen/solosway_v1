@@ -26,6 +26,9 @@ interface FilingSidebarContextType {
   setUploadOverlayOpen: (open: boolean) => void;
   initialPendingFiles: File[] | null;
   setInitialPendingFiles: (files: File[] | null) => void;
+  // Files are currently uploading (for sidebar Files button spinner)
+  isFilesUploading: boolean;
+  setFilesUploading: (uploading: boolean) => void;
 }
 
 const FilingSidebarContext = createContext<FilingSidebarContextType | undefined>(undefined);
@@ -40,6 +43,7 @@ export const FilingSidebarProvider: React.FC<{ children: React.ReactNode }> = ({
   const [isResizing, setIsResizingState] = useState<boolean>(false);
   const [uploadOverlayOpen, setUploadOverlayOpen] = useState<boolean>(false);
   const [initialPendingFiles, setInitialPendingFiles] = useState<File[] | null>(null);
+  const [isFilesUploading, setFilesUploading] = useState<boolean>(false);
 
   const openSidebar = useCallback(() => {
     setIsOpen(true);
@@ -160,6 +164,8 @@ export const FilingSidebarProvider: React.FC<{ children: React.ReactNode }> = ({
     setUploadOverlayOpen,
     initialPendingFiles,
     setInitialPendingFiles,
+    isFilesUploading,
+    setFilesUploading,
   };
 
   return (
