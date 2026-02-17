@@ -5620,7 +5620,7 @@ def get_document_key_facts(document_id):
         # Prefer stored key_facts_text when present (paragraph form for Key facts panel)
         key_facts_text = doc_summary.get('key_facts_text') or None
         if isinstance(key_facts_text, str) and key_facts_text.strip():
-            key_facts_text = key_facts_text.strip()
+            key_facts_text = sanitise_summary_for_display(key_facts_text.strip()) or key_facts_text.strip()
             key_facts = sanitise_key_facts_list(doc_summary.get('stored_key_facts') or [])
             summary = doc_summary.get('summary') or None
             if summary is not None:
@@ -5638,6 +5638,8 @@ def get_document_key_facts(document_id):
         summary = doc_summary.get('summary') or llm_summary or None
         if summary is not None:
             summary = sanitise_summary_for_display(summary) or None
+        if key_facts_text:
+            key_facts_text = sanitise_summary_for_display(key_facts_text) or key_facts_text
         # Lazy write-back so future loads use stored key facts and key_facts_text
         try:
             business_id = doc_business_uuid or doc_business_id
@@ -6236,6 +6238,68 @@ def delete_profile_picture():
 def dashboard():
     return render_template("dashboard.html", user=current_user)
 
+@views.route('/api/documents/stats', methods=['GET', 'OPTIONS'])
+@login_required
+def get_document_stats():
+    """
+    Return document count and total pages for the current user's business.
+    Only documents with status='completed' (green dot / Full Extraction) are counted.
+    """
+    if request.method == 'OPTIONS':
+        return '', 200
+    business_uuid_str = _ensure_business_uuid()
+    if not business_uuid_str:
+        return jsonify({'error': 'User is not associated with a business'}), 400
+    try:
+        from .services.supabase_client_factory import get_supabase_client
+        supabase = get_supabase_client()
+        result = (
+            supabase.table('documents')
+            .select('id, page_count')
+            .eq('business_uuid', business_uuid_str)
+            .eq('status', 'completed')
+            .execute()
+        )
+        rows = result.data or []
+        document_count = len(rows)
+        total_pages = sum((r.get('page_count') or 0) for r in rows)
+        return jsonify({
+            'success': True,
+            'document_count': document_count,
+            'total_pages': total_pages,
+        })
+    except Exception as e:
+        logger.error(f"Error fetching document stats: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@views.route('/api/usage', methods=['GET', 'OPTIONS'])
+@login_required
+def get_usage():
+    """
+    Return current billing usage for the authenticated user's business.
+    Pages used = sum of document page_count for completed docs in current UTC month.
+    Tier is assumed Professional until real billing exists.
+    """
+    if request.method == 'OPTIONS':
+        return '', 200
+    business_uuid_str = _ensure_business_uuid()
+    if not business_uuid_str:
+        return jsonify({'error': 'User is not associated with a business'}), 400
+    try:
+        from .services.usage_service import get_usage_for_api
+        user_email = getattr(current_user, 'email', None) or None
+        data = get_usage_for_api(
+            business_uuid_str,
+            user_id=current_user.id,
+            user_email=user_email,
+        )
+        return jsonify({'success': True, 'data': data})
+    except Exception as e:
+        logger.exception("Error fetching usage: %s", e)
+        return jsonify({'error': str(e)}), 500
+
+
 @views.route('/api/files', methods=['GET', 'OPTIONS'])
 def get_files():
     """
@@ -6256,6 +6320,7 @@ def get_files():
         return jsonify({'error': 'User is not associated with a business'}), 400
 
     try:
+        from .services.key_facts_service import sanitise_key_facts_list, sanitise_summary_for_display
         # Use Supabase document service
         doc_service = SupabaseDocumentService()
         raw_documents = doc_service.get_documents_for_business(business_uuid_str)
@@ -6271,9 +6336,12 @@ def get_files():
                     doc_summary = {}
             if doc_summary is None:
                 doc_summary = {}
-            d['key_facts'] = doc_summary.get('stored_key_facts') if isinstance(doc_summary.get('stored_key_facts'), list) else []
-            d['summary'] = doc_summary.get('summary') or None
-            d['key_facts_text'] = doc_summary.get('key_facts_text') or None
+            raw_kf = doc_summary.get('stored_key_facts')
+            d['key_facts'] = sanitise_key_facts_list(raw_kf) if isinstance(raw_kf, list) else []
+            s = doc_summary.get('summary') or None
+            d['summary'] = sanitise_summary_for_display(s) if s else None
+            kft = doc_summary.get('key_facts_text') or None
+            d['key_facts_text'] = (sanitise_summary_for_display(kft).strip() or None) if (kft and isinstance(kft, str)) else None
             documents.append(d)
         return jsonify({
             'success': True,
@@ -7778,6 +7846,7 @@ def get_property_hub_documents(property_id):
                 'error': 'Property hub not found'
             }), 404
         
+        from .services.key_facts_service import sanitise_key_facts_list, sanitise_summary_for_display
         # Extract documents from property hub; add key_facts and summary at top level for instant modal display
         raw_docs = property_hub.get('documents', [])
         documents = []
@@ -7791,9 +7860,12 @@ def get_property_hub_documents(property_id):
                     doc_summary = {}
             if doc_summary is None:
                 doc_summary = {}
-            d['key_facts'] = doc_summary.get('stored_key_facts') if isinstance(doc_summary.get('stored_key_facts'), list) else []
-            d['summary'] = doc_summary.get('summary') or None
-            d['key_facts_text'] = doc_summary.get('key_facts_text') or None
+            raw_kf = doc_summary.get('stored_key_facts')
+            d['key_facts'] = sanitise_key_facts_list(raw_kf) if isinstance(raw_kf, list) else []
+            s = doc_summary.get('summary') or None
+            d['summary'] = sanitise_summary_for_display(s) if s else None
+            kft = doc_summary.get('key_facts_text') or None
+            d['key_facts_text'] = (sanitise_summary_for_display(kft).strip() or None) if (kft and isinstance(kft, str)) else None
             documents.append(d)
         return jsonify({
             'success': True,

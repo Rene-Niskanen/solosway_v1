@@ -13,6 +13,10 @@ interface EnhancedEditableFieldProps {
   label?: string;
   icon?: React.ReactNode;
   multiline?: boolean;
+  /** Background color for the container when not editing (e.g. #F3F1EF for visibility on light backgrounds). */
+  containerBackgroundColor?: string;
+  /** When true, no hover animation and no pencil icon (static display). */
+  staticDisplay?: boolean;
 }
 
 export const EnhancedEditableField: React.FC<EnhancedEditableFieldProps> = ({
@@ -25,6 +29,8 @@ export const EnhancedEditableField: React.FC<EnhancedEditableFieldProps> = ({
   label,
   icon,
   multiline = false,
+  containerBackgroundColor,
+  staticDisplay = false,
 }) => {
   const [isEditing, setIsEditing] = React.useState(false);
   const [editValue, setEditValue] = React.useState(() => value || '');
@@ -35,22 +41,19 @@ export const EnhancedEditableField: React.FC<EnhancedEditableFieldProps> = ({
   // Use a ref to store the value when entering edit mode to avoid async state issues
   const editValueRef = React.useRef<string>(value || '');
 
-  // Sync editValue with value prop when not editing, and initialize on mount
+  // Sync editValue with value prop when not editing; when editing, never overwrite ref so user typing is preserved
   React.useEffect(() => {
     const newValue = value || '';
     if (!isEditing) {
-      // Only update if the value actually changed to avoid unnecessary re-renders
       if (editValue !== newValue) {
         setEditValue(newValue);
         editValueRef.current = String(newValue);
       }
-    } else {
-      // Even when editing, update the ref if value prop changes externally
-      editValueRef.current = String(newValue);
     }
+    // When isEditing, do NOT set editValueRef here — the effect below keeps ref in sync with editValue (user typing)
   }, [value, isEditing, editValue]);
-  
-  // Update ref when editValue changes (for when user is typing)
+
+  // Keep ref in sync with editValue so the input always shows what the user is typing
   React.useEffect(() => {
     if (editValue !== null && editValue !== undefined) {
       editValueRef.current = String(editValue);
@@ -59,17 +62,15 @@ export const EnhancedEditableField: React.FC<EnhancedEditableFieldProps> = ({
 
   React.useEffect(() => {
     if (isEditing && inputRef.current) {
-      // Small delay to ensure the input is fully rendered
+      // Focus input when entering edit mode so user can type immediately (including in Profile staticDisplay)
       const timeoutId = setTimeout(() => {
         if (inputRef.current) {
           inputRef.current.focus();
-          // Only select if there's actual text, otherwise just focus
           if (inputRef.current instanceof HTMLInputElement || inputRef.current instanceof HTMLTextAreaElement) {
             const hasText = editValue && editValue.length > 0;
             if (hasText) {
               inputRef.current.select();
             } else {
-              // Just place cursor at the end
               const length = inputRef.current.value.length;
               inputRef.current.setSelectionRange(length, length);
             }
@@ -83,14 +84,12 @@ export const EnhancedEditableField: React.FC<EnhancedEditableFieldProps> = ({
   const handleClick = (e: React.MouseEvent) => {
     e.stopPropagation();
     e.preventDefault();
-    // Ensure editValue is set to the current value before entering edit mode
-    // Convert to string to ensure it's always a valid value
     const currentValue = value ? String(value) : '';
-    // Use functional update to ensure we have the latest value
     setEditValue(currentValue);
-    setIsEditing(true);
+    editValueRef.current = currentValue;
     setError(null);
     setShowSuccess(false);
+    setIsEditing(true);
   };
 
   const handleCancel = () => {
@@ -148,20 +147,15 @@ export const EnhancedEditableField: React.FC<EnhancedEditableFieldProps> = ({
   };
 
   if (isEditing) {
-    // Ensure we always have a valid string value for the input
-    // Use ref first (most up-to-date), then editValue state, then value prop
-    // Check for null/undefined explicitly, not falsy values (empty string is valid)
-    let displayValue = '';
-    if (editValueRef.current !== null && editValueRef.current !== undefined) {
-      displayValue = String(editValueRef.current);
-    } else if (editValue !== null && editValue !== undefined) {
-      displayValue = String(editValue);
-    } else if (value !== null && value !== undefined) {
-      displayValue = String(value);
-    }
-    
+    // Controlled by editValue so typing always works (ref is only for initial sync when entering edit mode)
+    const inputValue = editValue !== null && editValue !== undefined ? String(editValue) : value != null ? String(value) : '';
+
     return (
-      <div style={{ width: '100%' }}>
+      <div
+        style={{ width: '100%', minWidth: 200 }}
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => e.stopPropagation()}
+      >
         <div style={{ display: 'flex', alignItems: multiline ? 'flex-start' : 'center', gap: '10px', width: '100%', flexWrap: 'wrap' }}>
           {icon && (
             <div style={{ display: 'flex', alignItems: 'center', marginTop: multiline ? '10px' : 0, flexShrink: 0, color: '#6b7280' }}>
@@ -172,7 +166,7 @@ export const EnhancedEditableField: React.FC<EnhancedEditableFieldProps> = ({
             {multiline ? (
               <textarea
                 ref={inputRef as React.RefObject<HTMLTextAreaElement>}
-                value={displayValue}
+                value={inputValue}
                 onChange={(e) => setEditValue(e.target.value)}
                 onKeyDown={handleKeyDown}
                 onBlur={() => {
@@ -200,7 +194,7 @@ export const EnhancedEditableField: React.FC<EnhancedEditableFieldProps> = ({
               <input
                 ref={inputRef as React.RefObject<HTMLInputElement>}
                 type={type}
-                value={displayValue}
+                value={inputValue}
                 onChange={(e) => setEditValue(e.target.value)}
                 onKeyDown={handleKeyDown}
                 onBlur={() => {
@@ -238,7 +232,12 @@ export const EnhancedEditableField: React.FC<EnhancedEditableFieldProps> = ({
           </div>
           <div style={{ display: 'flex', gap: '6px', flexShrink: 0, marginTop: multiline ? '8px' : '0', alignItems: 'center' }}>
             <button
-              onClick={handleSave}
+              type="button"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                handleSave();
+              }}
               disabled={isSaving}
               style={{
                 padding: '8px 16px',
@@ -267,19 +266,18 @@ export const EnhancedEditableField: React.FC<EnhancedEditableFieldProps> = ({
               title="Save"
             >
               {isSaving ? (
-                <>
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  <span>Saving</span>
-                </>
+                <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>Saving…</span>
               ) : (
-                <>
-                  <Check className="w-3.5 h-3.5" />
-                  <span>Save</span>
-                </>
+                <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>✓ Save</span>
               )}
             </button>
             <button
-              onClick={handleCancel}
+              type="button"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                handleCancel();
+              }}
               disabled={isSaving}
               style={{
                 padding: '8px 12px',
@@ -309,7 +307,7 @@ export const EnhancedEditableField: React.FC<EnhancedEditableFieldProps> = ({
               }}
               title="Cancel"
             >
-              <X className="w-4 h-4" />
+              ×
             </button>
           </div>
         </div>
@@ -319,22 +317,39 @@ export const EnhancedEditableField: React.FC<EnhancedEditableFieldProps> = ({
 
   const [isHovered, setIsHovered] = React.useState(false);
 
+  const triggerEdit = (e: React.MouseEvent | React.KeyboardEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    if ('button' in e && e.button !== 0) return;
+    if ('key' in e && e.key !== 'Enter' && e.key !== ' ') return;
+    handleClick(e as React.MouseEvent);
+  };
+
+  const displayStyles: React.CSSProperties = {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '12px',
+    padding: '10px 12px',
+    cursor: 'pointer',
+    borderRadius: '8px',
+    border: '1px solid transparent',
+    width: '100%',
+    textAlign: 'left',
+    font: 'inherit',
+    appearance: 'none',
+    backgroundColor: staticDisplay ? (containerBackgroundColor ?? 'transparent') : (isHovered ? '#f9fafb' : (containerBackgroundColor ?? 'transparent')),
+    transition: staticDisplay ? 'none' : 'all 150ms ease',
+  };
+
   return (
-    <div
-      onClick={handleClick}
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: '12px',
-        padding: '10px 12px',
-        cursor: 'pointer',
-        borderRadius: '8px',
-        border: '1px solid transparent',
-        backgroundColor: isHovered ? '#f9fafb' : 'transparent',
-        transition: 'all 150ms ease',
-      }}
+    <button
+      type="button"
+      onClick={triggerEdit}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); triggerEdit(e); } }}
+      onMouseEnter={staticDisplay ? undefined : () => setIsHovered(true)}
+      onMouseLeave={staticDisplay ? undefined : () => setIsHovered(false)}
+      style={displayStyles}
+      className="enhanced-editable-field-trigger"
     >
       {icon && (
         <div style={{ display: 'flex', alignItems: 'center', flexShrink: 0, color: '#9ca3af' }}>
@@ -360,19 +375,26 @@ export const EnhancedEditableField: React.FC<EnhancedEditableFieldProps> = ({
           {(value && value.trim()) ? value : (placeholder || 'Click to edit')}
         </div>
       </div>
-      <div
-        style={{
-          opacity: isHovered || showSuccess ? 1 : 0,
-          transition: 'opacity 150ms ease',
-          flexShrink: 0,
-        }}
-      >
-        {showSuccess ? (
+      {!staticDisplay && (
+        <div
+          style={{
+            opacity: isHovered || showSuccess ? 1 : 0,
+            transition: 'opacity 150ms ease',
+            flexShrink: 0,
+          }}
+        >
+          {showSuccess ? (
+            <Check className="w-4 h-4" style={{ color: '#22c55e' }} />
+          ) : (
+            <Edit2 className="w-3.5 h-3.5" style={{ color: '#9ca3af' }} />
+          )}
+        </div>
+      )}
+      {staticDisplay && showSuccess && (
+        <div style={{ flexShrink: 0 }}>
           <Check className="w-4 h-4" style={{ color: '#22c55e' }} />
-        ) : (
-          <Edit2 className="w-3.5 h-3.5" style={{ color: '#9ca3af' }} />
-        )}
-      </div>
-    </div>
+        </div>
+      )}
+    </button>
   );
 };

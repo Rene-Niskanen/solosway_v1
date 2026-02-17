@@ -11,11 +11,14 @@ import { validateEmail, validatePhone, validateName, validateTitle, validateAddr
 import { useProfileUpdate } from "@/hooks/useProfileUpdate";
 import { ProfileImageUpload } from "./ProfileImageUpload";
 import { CompanyLogoUpload } from "./CompanyLogoUpload";
+import { Button } from "@/components/ui/button";
 
 interface ProfileProps {
   onNavigate?: (view: string, options?: { showMap?: boolean }) => void;
   /** When true, render a compact single-column layout for use inside Settings > General (no contributions/heatmap). */
   embeddedInSettings?: boolean;
+  /** Prefetched user from Settings so profile can render immediately when opening General. */
+  initialUserData?: UserData | null;
 }
 
 interface ContributionDay {
@@ -46,10 +49,11 @@ interface UserData {
   company_logo_url?: string;
 }
 
-const Profile: React.FC<ProfileProps> = ({ onNavigate, embeddedInSettings }) => {
-  const [userData, setUserData] = React.useState<UserData | null>(null);
+const Profile: React.FC<ProfileProps> = ({ onNavigate, embeddedInSettings, initialUserData }) => {
+  const hasInitial = Boolean(embeddedInSettings && initialUserData != null);
+  const [userData, setUserData] = React.useState<UserData | null>(hasInitial ? initialUserData ?? null : null);
   const [profilePicCacheBust, setProfilePicCacheBust] = React.useState<number | null>(null);
-  const [loading, setLoading] = React.useState(true);
+  const [loading, setLoading] = React.useState(!hasInitial);
   const [contributions, setContributions] = React.useState<ContributionDay[]>([]);
   const [activities, setActivities] = React.useState<ContributionActivity[]>([]);
   const [selectedYear, setSelectedYear] = React.useState<number>(new Date().getFullYear());
@@ -63,6 +67,14 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate, embeddedInSettings }) => 
 
   const space = { xs: 4, sm: 8, md: 12, lg: 16, xl: 24, xxl: 32 };
 
+  // When prefetched data arrives (e.g. after Settings prefetch completes), show it immediately
+  React.useEffect(() => {
+    if (embeddedInSettings && initialUserData != null) {
+      setUserData(initialUserData);
+      setLoading(false);
+    }
+  }, [embeddedInSettings, initialUserData]);
+
   // Safety check: reset to current year if selectedYear is in the future
   React.useEffect(() => {
     if (selectedYear > currentYear) {
@@ -70,8 +82,9 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate, embeddedInSettings }) => 
     }
   }, [selectedYear, currentYear]);
 
-  // Fetch user data on mount
+  // Fetch user data on mount. When embedded in Settings, skip fetch and rely on parent prefetch (initialUserData) to avoid double request and faster load.
   React.useEffect(() => {
+    if (embeddedInSettings) return;
     const fetchUserData = async () => {
       try {
         const authResult = await backendApi.checkAuth();
@@ -95,7 +108,7 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate, embeddedInSettings }) => 
       }
     };
     fetchUserData();
-  }, []);
+  }, [embeddedInSettings]);
 
   // Aggregate contributions from projects, documents, and properties
   React.useEffect(() => {
@@ -324,6 +337,38 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate, embeddedInSettings }) => 
   }, [activities]);
 
   if (loading) {
+    if (embeddedInSettings) {
+      return (
+        <div className="max-w-2xl space-y-6 animate-pulse">
+          <div className="h-7 w-24 bg-gray-200 rounded" />
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="space-y-2">
+              <div className="h-4 w-20 bg-gray-200 rounded" />
+              <div className="flex items-center gap-3">
+                <div className="h-10 w-10 rounded-full bg-gray-200" />
+                <div className="h-10 flex-1 bg-gray-200 rounded-md" />
+              </div>
+            </div>
+            <div className="space-y-2">
+              <div className="h-4 w-14 bg-gray-200 rounded" />
+              <div className="h-10 bg-gray-200 rounded-md" />
+            </div>
+          </div>
+          <div className="space-y-2">
+            <div className="h-4 w-20 bg-gray-200 rounded" />
+            <div className="h-10 bg-gray-200 rounded-md" />
+          </div>
+          <div className="space-y-2">
+            <div className="h-4 w-14 bg-gray-200 rounded" />
+            <div className="h-10 bg-gray-200 rounded-md" />
+          </div>
+          <div className="space-y-2">
+            <div className="h-4 w-16 bg-gray-200 rounded" />
+            <div className="h-10 bg-gray-200 rounded-md" />
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="flex items-center justify-center min-h-screen" style={{ backgroundColor: '#f9fafb' }}>
         <style>{`
@@ -368,366 +413,236 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate, embeddedInSettings }) => 
           }
         >
           <div className={embeddedInSettings ? 'flex flex-col' : 'flex flex-col lg:flex-row'}>
-            {/* Left Sidebar / Profile form */}
-            <div
-              style={{
-                width: '100%',
-                maxWidth: embeddedInSettings ? '100%' : '320px',
-                backgroundColor: embeddedInSettings ? 'transparent' : '#ffffff',
-                borderRight: embeddedInSettings ? 'none' : '1px solid #e5e7eb',
-                padding: embeddedInSettings ? '0' : '32px 28px',
-              }}
-            >
-              {/* Profile Picture */}
-              <div style={{ marginBottom: space.xxl, textAlign: 'center' }}>
-                <div 
-                  style={{ position: 'relative', display: 'inline-block', marginBottom: space.xl }}
-                  className="group"
-                >
-                  <div 
-                    className="transition-all duration-200"
-                    style={{
-                      transition: 'all 200ms cubic-bezier(0.4, 0, 0.2, 1)',
-                      boxSizing: 'border-box',
-                      display: 'inline-block',
-                      borderRadius: '50%',
-                      boxShadow: '0 2px 8px rgba(0, 0, 0, 0.08)',
-                      padding: '3px',
-                      backgroundColor: '#ffffff',
-                      border: '1px solid #e5e7eb',
-                    }}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.boxShadow = '0 4px 16px rgba(0, 0, 0, 0.12)';
-                      e.currentTarget.style.borderColor = '#3b82f6';
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.boxShadow = '0 2px 8px rgba(0, 0, 0, 0.08)';
-                      e.currentTarget.style.borderColor = '#e5e7eb';
-                    }}
-                  >
-                    <Avatar style={{ width: '96px', height: '96px', margin: '0 auto', borderRadius: '50%', cursor: 'pointer' }}>
-                      <AvatarImage 
-                        src={(() => {
-                          const base = userData?.profile_image || userData?.avatar_url || userData?.profile_picture_url || "/default profile icon.png";
-                          return base.startsWith('http') && profilePicCacheBust ? `${base}?t=${profilePicCacheBust}` : base;
-                        })()} 
-                        alt={getUserName()}
-                        style={{ objectFit: 'cover', borderRadius: '50%' }}
-                      />
-                      <AvatarFallback style={{ backgroundColor: '#f3f4f6', color: '#6b7280', fontSize: '28px', fontWeight: 600, borderRadius: '50%' }}>
-                        {getUserInitials()}
-                      </AvatarFallback>
-                    </Avatar>
-                  </div>
-                  {/* Hover overlay */}
-                  <div
-                    style={{
-                      position: 'absolute',
-                      top: '3px',
-                      left: '3px',
-                      right: '3px',
-                      bottom: '3px',
-                      backgroundColor: 'rgba(0, 0, 0, 0.5)',
-                      borderRadius: '50%',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      opacity: 0,
-                      transition: 'opacity 200ms cubic-bezier(0.4, 0, 0.2, 1)',
-                      cursor: 'pointer',
-                    }}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.opacity = '1';
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.opacity = '0';
-                    }}
-                    onClick={() => setIsProfileImageModalOpen(true)}
-                  >
-                    <span style={{ color: '#ffffff', fontSize: '12px', fontWeight: 500 }}>Edit</span>
-                  </div>
-                </div>
-                
-                {/* Name - Editable */}
-                <div style={{ marginBottom: space.sm }}>
-                  <EnhancedEditableField
-                    value={
-                      userData?.first_name || userData?.last_name
-                        ? `${userData.first_name || ''} ${userData.last_name || ''}`.trim()
-                        : ''
-                    }
-                    onSave={async (value) => {
-                      try {
-                        const parts = value.trim().split(/\s+/);
-                        const firstName = parts[0] || '';
-                        const lastName = parts.slice(1).join(' ') || '';
-                        if (!firstName) {
-                          throw new Error('First name is required');
-                        }
-                        await updateProfile({ first_name: firstName, last_name: lastName });
-                        setUserData(prev => prev ? { ...prev, first_name: firstName, last_name: lastName } : null);
-                      } catch (error) {
-                        console.error('Failed to save name:', error);
-                        throw error;
-                      }
-                    }}
-                    validate={(value) => {
-                      const trimmed = value.trim();
-                      if (!trimmed) {
-                        return { isValid: false, error: 'Name is required' };
-                      }
-                      const parts = trimmed.split(/\s+/);
-                      if (parts.length < 1 || !parts[0]) {
-                        return { isValid: false, error: 'Please enter at least a first name' };
-                      }
-                      const firstNameResult = validateName(parts[0], 'First name');
-                      if (!firstNameResult.isValid) {
-                        return firstNameResult;
-                      }
-                      if (parts.length > 1 && parts[1]) {
-                        const lastNameResult = validateName(parts.slice(1).join(' '), 'Last name');
-                        if (!lastNameResult.isValid) {
-                          return lastNameResult;
-                        }
-                      }
-                      return { isValid: true };
-                    }}
-                    placeholder="Enter your name"
-                    icon={<User className="w-4 h-4" />}
-                    required
-                  />
-                </div>
+            {/* Left Sidebar / Profile form — when embedded: flat form layout (no cards) */}
+            {embeddedInSettings ? (
+              <div className="max-w-2xl space-y-6">
+                <h2 className="text-xl font-semibold text-gray-900">Profile</h2>
 
-                {/* Title - Editable */}
-                <div style={{ marginBottom: space.sm }}>
-                  <EnhancedEditableField
-                    value={userData?.title || 'Property Manager'}
-                    onSave={async (value) => {
-                      try {
+                {/* Full name (avatar left) + Title in one row */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div className="space-y-1.5">
+                    <label className="block text-sm font-medium text-gray-900">Full name</label>
+                    <div className="flex items-center gap-3">
+                      <div
+                        className="relative shrink-0 rounded-full overflow-hidden w-10 h-10 cursor-pointer ring-2 ring-transparent hover:ring-gray-300 transition-all"
+                        onClick={() => setIsProfileImageModalOpen(true)}
+                      >
+                        <Avatar className="w-10 h-10 rounded-full border border-gray-200">
+                          <AvatarImage
+                            src={(() => {
+                              const base = userData?.profile_image || userData?.avatar_url || userData?.profile_picture_url || "/default profile icon.png";
+                              return base.startsWith('http') && profilePicCacheBust ? `${base}?t=${profilePicCacheBust}` : base;
+                            })()}
+                            alt={getUserName()}
+                            className="object-cover w-full h-full"
+                          />
+                          <AvatarFallback className="bg-gray-900 text-white text-sm font-medium rounded-full w-full h-full flex items-center justify-center">
+                            {getUserInitials()}
+                          </AvatarFallback>
+                        </Avatar>
+                      </div>
+                      <div className="flex-1 min-w-[200px]">
+                        <EnhancedEditableField
+                          containerBackgroundColor="#F3F1EF"
+                          staticDisplay
+                          value={userData?.first_name || userData?.last_name ? `${userData.first_name || ''} ${userData.last_name || ''}`.trim() : ''}
+                          onSave={async (value) => {
+                            const parts = value.trim().split(/\s+/);
+                            const firstName = parts[0] || '';
+                            const lastName = parts.slice(1).join(' ') || '';
+                            if (!firstName) throw new Error('First name is required');
+                            await updateProfile({ first_name: firstName, last_name: lastName });
+                            setUserData(prev => prev ? { ...prev, first_name: firstName, last_name: lastName } : null);
+                          }}
+                          validate={(value) => {
+                            const trimmed = value.trim();
+                            if (!trimmed) return { isValid: false, error: 'Name is required' };
+                            const parts = trimmed.split(/\s+/);
+                            if (!parts[0]) return { isValid: false, error: 'Please enter at least a first name' };
+                            const r = validateName(parts[0], 'First name');
+                            if (!r.isValid) return r;
+                            if (parts.length > 1 && parts[1]) {
+                              const r2 = validateName(parts.slice(1).join(' '), 'Last name');
+                              if (!r2.isValid) return r2;
+                            }
+                            return { isValid: true };
+                          }}
+                          placeholder="Enter your name"
+                          required
+                        />
+                      </div>
+                    </div>
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="block text-sm font-medium text-gray-900">Title</label>
+                    <EnhancedEditableField
+                      containerBackgroundColor="#F3F1EF"
+                      staticDisplay
+                      value={userData?.title || 'Property Manager'}
+                      onSave={async (value) => {
                         await updateProfile({ title: value });
                         setUserData(prev => prev ? { ...prev, title: value } : null);
-                      } catch (error) {
-                        console.error('Failed to save title:', error);
-                        throw error;
-                      }
-                    }}
-                    validate={validateTitle}
-                    placeholder="Enter your title"
-                    required
-                  />
+                      }}
+                      validate={validateTitle}
+                      placeholder="Enter your title"
+                      required
+                    />
+                  </div>
                 </div>
-              </div>
 
-              {/* Divider - full width via negative margins matching sidebar padding */}
-              <div style={{ height: 1, backgroundColor: '#e5e7eb', marginTop: 0, marginRight: -28, marginBottom: space.xl, marginLeft: -28 }} />
-
-              {/* Contact Information */}
-              <div style={{ marginBottom: space.xl }}>
-                {/* Address - Editable */}
-                <div style={{ marginBottom: space.md }}>
+                {/* Location */}
+                <div className="space-y-1.5">
+                  <label className="block text-sm font-medium text-gray-900">Location</label>
                   <EnhancedEditableField
+                    containerBackgroundColor="#F3F1EF"
+                    staticDisplay
                     value={userData?.address || userData?.location || ''}
                     onSave={async (value) => {
-                      try {
-                        await updateProfile({ address: value || null, location: value || null });
-                        setUserData(prev => prev ? { ...prev, address: value || undefined, location: value || undefined } : null);
-                      } catch (error) {
-                        console.error('Failed to save address:', error);
-                        throw error;
-                      }
+                      await updateProfile({ address: value || null, location: value || null });
+                      setUserData(prev => prev ? { ...prev, address: value || undefined, location: value || undefined } : null);
                     }}
                     validate={validateAddress}
                     placeholder="Enter your address"
-                    icon={<MapPin className="w-4 h-4" />}
                     multiline
                   />
                 </div>
 
-                {/* Email - Editable */}
-                <div style={{ marginBottom: space.md }}>
+                {/* Email */}
+                <div className="space-y-1.5">
+                  <label className="block text-sm font-medium text-gray-900">Email</label>
                   <EnhancedEditableField
+                    containerBackgroundColor="#F3F1EF"
+                    staticDisplay
                     value={userData?.email || ''}
                     onSave={async (value) => {
-                      try {
-                        await updateProfile({ email: value });
-                        setUserData(prev => prev ? { ...prev, email: value } : null);
-                      } catch (error) {
-                        console.error('Failed to save email:', error);
-                        throw error;
-                      }
+                      await updateProfile({ email: value });
+                      setUserData(prev => prev ? { ...prev, email: value } : null);
                     }}
                     validate={validateEmail}
                     type="email"
                     placeholder="Enter your email"
-                    icon={<Mail className="w-4 h-4" />}
                     required
                   />
                 </div>
 
-                {/* Phone - Editable */}
-                <div>
+                {/* Phone */}
+                <div className="space-y-1.5">
+                  <label className="block text-sm font-medium text-gray-900">Phone</label>
                   <EnhancedEditableField
+                    containerBackgroundColor="#F3F1EF"
+                    staticDisplay
                     value={userData?.phone || ''}
                     onSave={async (value) => {
-                      try {
-                        await updateProfile({ phone: value || null });
-                        setUserData(prev => prev ? { ...prev, phone: value || undefined } : null);
-                      } catch (error) {
-                        console.error('Failed to save phone:', error);
-                        throw error;
-                      }
+                      await updateProfile({ phone: value || null });
+                      setUserData(prev => prev ? { ...prev, phone: value || undefined } : null);
                     }}
                     validate={validatePhone}
                     type="tel"
                     placeholder="Enter your phone number"
-                    icon={<Phone className="w-4 h-4" />}
                   />
                 </div>
-              </div>
 
-              {/* Divider - full width via negative margins matching sidebar padding */}
-              <div style={{ height: 1, backgroundColor: '#e5e7eb', marginTop: 0, marginRight: -28, marginBottom: space.xl, marginLeft: -28 }} />
-
-              {/* Organization */}
-              <div style={{ marginBottom: space.sm }}>
-                <div style={{ 
-                  fontSize: '11px', 
-                  color: '#9ca3af', 
-                  marginBottom: space.md, 
-                  fontWeight: 600, 
-                  letterSpacing: '0.05em', 
-                  textTransform: 'uppercase',
-                }}>
-                  Organization
-                </div>
-                <EnhancedEditableField
-                  value={userData?.organization || 'Solosway'}
-                  onSave={async (value) => {
-                    await updateProfile({ organization: value });
-                    setUserData(prev => prev ? { ...prev, organization: value } : null);
-                  }}
-                  validate={validateOrganization}
-                  placeholder="Enter organization name"
-                  icon={<Building2 className="w-4 h-4" />}
-                  required
-                />
-                
-                {/* Logo section */}
-                <div style={{ marginTop: space.lg }}>
-                  {userData?.company_logo_url ? (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                      <div
-                        style={{
-                          width: '48px',
-                          height: '48px',
-                          borderRadius: '8px',
-                          overflow: 'hidden',
-                          border: '1px solid #e5e7eb',
-                          backgroundColor: '#ffffff',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                        }}
-                      >
-                        <img
-                          src={userData.company_logo_url}
-                          alt="Company logo"
-                          style={{
-                            width: '100%',
-                            height: '100%',
-                            objectFit: 'contain',
-                          }}
-                        />
+                {/* Organization */}
+                <div className="space-y-1.5">
+                  <label className="block text-sm font-medium text-gray-900">Organization</label>
+                  <EnhancedEditableField
+                    containerBackgroundColor="#F3F1EF"
+                    staticDisplay
+                    value={userData?.organization || 'Solosway'}
+                    onSave={async (value) => {
+                      await updateProfile({ organization: value });
+                      setUserData(prev => prev ? { ...prev, organization: value } : null);
+                    }}
+                    validate={validateOrganization}
+                    placeholder="Enter organization name"
+                    required
+                  />
+                  <div className="pt-1">
+                    {userData?.company_logo_url ? (
+                      <div className="flex items-center gap-3">
+                        <div className="w-12 h-12 rounded-lg overflow-hidden border border-gray-200 bg-white flex items-center justify-center shrink-0">
+                          <img src={userData.company_logo_url} alt="Company logo" className="w-full h-full object-contain" />
+                        </div>
+                        <div className="flex gap-2">
+                          <Button variant="outline" size="sm" onClick={() => setIsCompanyLogoModalOpen(true)} className="rounded-md border-gray-300 text-gray-700 text-sm font-medium">
+                            Change
+                          </Button>
+                          <Button variant="outline" size="sm" onClick={() => { if (window.confirm('Remove company logo?')) { removeCompanyLogo().then(() => setUserData(prev => prev ? { ...prev, company_logo_url: undefined } : null)).catch(console.error); } }} className="rounded-md border-red-200 text-red-600 text-sm font-medium hover:bg-red-50">
+                            Remove
+                          </Button>
+                        </div>
                       </div>
-                      <div style={{ display: 'flex', gap: '8px' }}>
-                        <button
-                          onClick={() => setIsCompanyLogoModalOpen(true)}
-                          style={{
-                            padding: '6px 12px',
-                            fontSize: '12px',
-                            fontWeight: 500,
-                            color: '#3b82f6',
-                            backgroundColor: '#eff6ff',
-                            border: 'none',
-                            borderRadius: '6px',
-                            cursor: 'pointer',
-                            transition: 'all 150ms ease',
-                          }}
-                          onMouseEnter={(e) => {
-                            e.currentTarget.style.backgroundColor = '#dbeafe';
-                          }}
-                          onMouseLeave={(e) => {
-                            e.currentTarget.style.backgroundColor = '#eff6ff';
-                          }}
-                        >
-                          Change
-                        </button>
-                        <button
-                          onClick={() => {
-                            if (window.confirm('Remove company logo?')) {
-                              removeCompanyLogo().then(() => {
-                                setUserData(prev => prev ? { ...prev, company_logo_url: undefined } : null);
-                              }).catch(console.error);
-                            }
-                          }}
-                          style={{
-                            padding: '6px 12px',
-                            fontSize: '12px',
-                            fontWeight: 500,
-                            color: '#ef4444',
-                            backgroundColor: '#fef2f2',
-                            border: 'none',
-                            borderRadius: '6px',
-                            cursor: 'pointer',
-                            transition: 'all 150ms ease',
-                          }}
-                          onMouseEnter={(e) => {
-                            e.currentTarget.style.backgroundColor = '#fee2e2';
-                          }}
-                          onMouseLeave={(e) => {
-                            e.currentTarget.style.backgroundColor = '#fef2f2';
-                          }}
-                        >
-                          Remove
-                        </button>
+                    ) : (
+                      <Button variant="outline" onClick={() => setIsCompanyLogoModalOpen(true)} className="rounded-md border-gray-300 text-gray-600 text-sm font-medium">
+                        <Upload className="w-4 h-4 mr-2" />
+                        Upload company logo
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              </div>
+              ) : (
+                <div style={{ width: '100%', maxWidth: '320px', backgroundColor: '#ffffff', borderRight: '1px solid #e5e7eb', padding: '32px 28px' }}>
+                  {/* Profile Picture */}
+                  <div style={{ marginBottom: space.xxl, textAlign: 'center' }}>
+                    <div style={{ position: 'relative', display: 'inline-block', marginBottom: space.xl }} className="group">
+                      <div className="transition-all duration-200" style={{ boxSizing: 'border-box', display: 'inline-block', borderRadius: '50%', boxShadow: '0 2px 8px rgba(0, 0, 0, 0.08)', padding: '3px', backgroundColor: '#ffffff', border: '1px solid #e5e7eb' }} onMouseEnter={(e) => { e.currentTarget.style.boxShadow = '0 4px 16px rgba(0, 0, 0, 0.12)'; e.currentTarget.style.borderColor = '#3b82f6'; }} onMouseLeave={(e) => { e.currentTarget.style.boxShadow = '0 2px 8px rgba(0, 0, 0, 0.08)'; e.currentTarget.style.borderColor = '#e5e7eb'; }}>
+                        <Avatar style={{ width: '96px', height: '96px', margin: '0 auto', borderRadius: '50%', cursor: 'pointer' }}>
+                          <AvatarImage src={(() => { const base = userData?.profile_image || userData?.avatar_url || userData?.profile_picture_url || "/default profile icon.png"; return base.startsWith('http') && profilePicCacheBust ? `${base}?t=${profilePicCacheBust}` : base; })()} alt={getUserName()} style={{ objectFit: 'cover', borderRadius: '50%' }} />
+                          <AvatarFallback style={{ backgroundColor: '#f3f4f6', color: '#6b7280', fontSize: '28px', fontWeight: 600, borderRadius: '50%' }}>{getUserInitials()}</AvatarFallback>
+                        </Avatar>
+                      </div>
+                      <div style={{ position: 'absolute', top: '3px', left: '3px', right: '3px', bottom: '3px', backgroundColor: 'rgba(0, 0, 0, 0.5)', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: 0, transition: 'opacity 200ms', cursor: 'pointer' }} onMouseEnter={(e) => { e.currentTarget.style.opacity = '1'; }} onMouseLeave={(e) => { e.currentTarget.style.opacity = '0'; }} onClick={() => setIsProfileImageModalOpen(true)}>
+                        <span style={{ color: '#ffffff', fontSize: '12px', fontWeight: 500 }}>Edit</span>
                       </div>
                     </div>
-                  ) : (
-                    <button
-                      onClick={() => setIsCompanyLogoModalOpen(true)}
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '8px',
-                        padding: '10px 16px',
-                        fontSize: '13px',
-                        fontWeight: 500,
-                        color: '#6b7280',
-                        backgroundColor: '#f9fafb',
-                        border: '1px solid #e5e7eb',
-                        borderRadius: '8px',
-                        cursor: 'pointer',
-                        transition: 'all 150ms ease',
-                        width: '100%',
-                        justifyContent: 'center',
+                    <div style={{ marginBottom: space.sm }}>
+                      <EnhancedEditableField value={userData?.first_name || userData?.last_name ? `${userData.first_name || ''} ${userData.last_name || ''}`.trim() : ''} onSave={async (value) => { try { const parts = value.trim().split(/\s+/); const firstName = parts[0] || ''; const lastName = parts.slice(1).join(' ') || ''; if (!firstName) throw new Error('First name is required'); await updateProfile({ first_name: firstName, last_name: lastName }); setUserData(prev => prev ? { ...prev, first_name: firstName, last_name: lastName } : null); } catch (err) { console.error('Failed to save name:', err); throw err; } }} validate={(v) => { const t = v.trim(); if (!t) return { isValid: false, error: 'Name is required' }; const p = t.split(/\s+/); if (!p[0]) return { isValid: false, error: 'Please enter at least a first name' }; const r = validateName(p[0], 'First name'); if (!r.isValid) return r; if (p.length > 1 && p[1]) { const r2 = validateName(p.slice(1).join(' '), 'Last name'); if (!r2.isValid) return r2; } return { isValid: true }; }} placeholder="Enter your name" required />
+                    </div>
+                    <div style={{ marginBottom: space.sm }}>
+                      <EnhancedEditableField value={userData?.title || 'Property Manager'} onSave={async (value) => { try { await updateProfile({ title: value }); setUserData(prev => prev ? { ...prev, title: value } : null); } catch (err) { console.error('Failed to save title:', err); throw err; } }} validate={validateTitle} placeholder="Enter your title" required />
+                    </div>
+                  </div>
+                  <div style={{ height: 1, backgroundColor: '#e5e7eb', marginRight: -28, marginBottom: space.xl, marginLeft: -28 }} />
+                  <div style={{ marginBottom: space.xl }}>
+                    <div style={{ marginBottom: space.md }}><EnhancedEditableField value={userData?.address || userData?.location || ''} onSave={async (value) => { try { await updateProfile({ address: value || null, location: value || null }); setUserData(prev => prev ? { ...prev, address: value || undefined, location: value || undefined } : null); } catch (err) { console.error('Failed to save address:', err); throw err; } }} validate={validateAddress} placeholder="Enter your address" multiline /></div>
+                    <div style={{ marginBottom: space.md }}><EnhancedEditableField value={userData?.email || ''} onSave={async (value) => { try { await updateProfile({ email: value }); setUserData(prev => prev ? { ...prev, email: value } : null); } catch (err) { console.error('Failed to save email:', err); throw err; } }} validate={validateEmail} type="email" placeholder="Enter your email" required /></div>
+                    <div><EnhancedEditableField value={userData?.phone || ''} onSave={async (value) => { try { await updateProfile({ phone: value || null }); setUserData(prev => prev ? { ...prev, phone: value || undefined } : null); } catch (err) { console.error('Failed to save phone:', err); throw err; } }} validate={validatePhone} type="tel" placeholder="Enter your phone number" /></div>
+                  </div>
+                  <div style={{ height: 1, backgroundColor: '#e5e7eb', marginRight: -28, marginBottom: space.xl, marginLeft: -28 }} />
+                  <div style={{ marginBottom: space.sm }}>
+                    <div style={{ fontSize: '11px', color: '#9ca3af', marginBottom: space.md, fontWeight: 600, letterSpacing: '0.05em', textTransform: 'uppercase' }}>Organization</div>
+                    <EnhancedEditableField
+                      value={userData?.organization || 'Solosway'}
+                      onSave={async (value) => {
+                        await updateProfile({ organization: value });
+                        setUserData(prev => prev ? { ...prev, organization: value } : null);
                       }}
-                      onMouseEnter={(e) => {
-                        e.currentTarget.style.backgroundColor = '#f3f4f6';
-                        e.currentTarget.style.borderColor = '#d1d5db';
-                        e.currentTarget.style.color = '#374151';
-                      }}
-                      onMouseLeave={(e) => {
-                        e.currentTarget.style.backgroundColor = '#f9fafb';
-                        e.currentTarget.style.borderColor = '#e5e7eb';
-                        e.currentTarget.style.color = '#6b7280';
-                      }}
-                    >
-                      <Upload className="w-4 h-4" />
-                      <span>Upload company logo</span>
-                    </button>
-                  )}
+                      validate={validateOrganization}
+                      placeholder="Enter organization name"
+                      required
+                    />
+                    <div style={{ marginTop: space.lg }}>
+                      {userData?.company_logo_url ? (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                          <div style={{ width: '48px', height: '48px', borderRadius: '8px', overflow: 'hidden', border: '1px solid #e5e7eb', backgroundColor: '#ffffff', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                            <img src={userData.company_logo_url} alt="Company logo" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+                          </div>
+                          <div style={{ display: 'flex', gap: '8px' }}>
+                            <button onClick={() => setIsCompanyLogoModalOpen(true)} style={{ padding: '6px 12px', fontSize: '12px', fontWeight: 500, color: '#3b82f6', backgroundColor: '#eff6ff', border: 'none', borderRadius: '6px', cursor: 'pointer' }}>Change</button>
+                            <button onClick={() => { if (window.confirm('Remove company logo?')) { removeCompanyLogo().then(() => setUserData(prev => prev ? { ...prev, company_logo_url: undefined } : null)).catch(console.error); } }} style={{ padding: '6px 12px', fontSize: '12px', fontWeight: 500, color: '#ef4444', backgroundColor: '#fef2f2', border: 'none', borderRadius: '6px', cursor: 'pointer' }}>Remove</button>
+                          </div>
+                        </div>
+                      ) : (
+                        <button onClick={() => setIsCompanyLogoModalOpen(true)} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 16px', fontSize: '13px', fontWeight: 500, color: '#6b7280', backgroundColor: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: '8px', cursor: 'pointer', width: '100%', justifyContent: 'center' }}>
+                          <Upload className="w-4 h-4" />
+                          <span>Upload company logo</span>
+                        </button>
+                      )}
+                    </div>
+                  </div>
                 </div>
-              </div>
+              )}
             </div>
 
             {/* Right Main Content — hidden when embedded in Settings */}
@@ -1235,7 +1150,6 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate, embeddedInSettings }) => 
             )}
           </div>
         </div>
-      </div>
 
       {/* Profile Image Upload Modal */}
       <ProfileImageUpload

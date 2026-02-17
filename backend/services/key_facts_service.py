@@ -365,6 +365,8 @@ def format_key_facts_as_paragraph(
         text = text[:_KEY_FACTS_TEXT_MAX_LENGTH - 1].rstrip()
         if not text.endswith('.'):
             text += '…'
+    # Ensure no markdown leaks (e.g. from summary or legacy data)
+    text = sanitise_summary_for_display(text) or ''
     return text
 
 

@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { StackedDocumentPreviews } from './DocumentPreviewCard';
 import { LLMContextViewer } from './LLMContextViewer';
 import { generateAnimatePresenceKey, generateUniqueKey } from '../utils/keyGenerator';
-import { Search, SearchCheck, TextSearch, ScanText, BookOpenCheck, FileQuestion, Sparkle, TextSelect, Play, FolderOpen, MapPin, Highlighter, Infinity, ChevronRight } from 'lucide-react';
+import { Search, SearchCheck, TextSearch, ScanText, BookOpenCheck, FileQuestion, Sparkle, TextSelect, Play, FolderOpen, MapPin, Highlighter, Infinity } from 'lucide-react';
 import { FileChoiceStep, ResponseModeChoice } from './FileChoiceStep';
 import { FileAttachmentData } from './FileAttachment';
 import { ThinkingBlock, isTrivialThinkingContent } from './ThinkingBlock';
@@ -251,7 +251,7 @@ interface ReasoningStepsProps {
   skipAnimations?: boolean; // Skip animations when restoring a chat (instant display)
   /** When true, collapse to max 2 steps (first searching + first "No relevant") for display */
   isNoResultsResponse?: boolean;
-  /** When true, steps are shown under the thought dropdown after completion - use faint font colour for "Found X relevant document:" and document names */
+  /** When true, steps are shown under the thought dropdown after completion - use faint font for "Found X relevant document:" and document names */
   thoughtCompleted?: boolean;
 }
 
@@ -352,8 +352,6 @@ const READING_ANIMATION_DURATION = 100; // Brief animation to show "Reading" sta
 const ACTION_COLOR = '#9CA3AF';   // Light grey for "Searching", "Reading", "Read"
 const DETAIL_COLOR = '#374151';   // Dark grey for details: filenames, document card
 const FAINT_COLOR = '#9CA3AF';    // Faint when under thought dropdown and completed
-const FOUND_DOCUMENTS_COLOR = '#556479';  // "Found X relevant document:" reasoning step
-
 const ReadingStepWithTransition: React.FC<{
   filename: string;
   docMetadata: any;
@@ -493,7 +491,6 @@ const ReadingStepWithTransition: React.FC<{
               onClick={() => docMetadata && onDocumentClick?.(docMetadata)}
               role={docMetadata && onDocumentClick ? 'button' : undefined}
             >
-              <ChevronRight size={14} style={{ color: '#9CA3AF', flexShrink: 0, strokeWidth: 2 }} />
               {phase === 'reading' && !hasResponseText ? (
                 <span
                   className="reading-filename-border-glow"
@@ -672,7 +669,7 @@ const StepRenderer: React.FC<{
   allReadingComplete?: boolean; // All reading steps have completed
   hasResponseText?: boolean; // Stop animations when response text has started
   model?: 'gpt-4o-mini' | 'gpt-4o' | 'claude-sonnet' | 'claude-opus';
-  thoughtCompleted?: boolean; // When true, use faint font for "Found X relevant document:" and document names
+  thoughtCompleted?: boolean; // When true, use faint font for "Found X relevant documents:" and document names
 }> = ({ step, allSteps, stepIndex, isLoading, readingStepIndex = 0, isLastReadingStep = false, totalReadingSteps = 0, onDocumentClick, shownDocumentsRef, allReadingComplete = false, hasResponseText = false, model = 'gpt-4o-mini', thoughtCompleted = false }) => {
   const actionColor = thoughtCompleted ? FAINT_COLOR : ACTION_COLOR;
   const detailColor = thoughtCompleted ? FAINT_COLOR : DETAIL_COLOR;
@@ -813,12 +810,12 @@ const StepRenderer: React.FC<{
     case 'exploring':
       // "Found 1 relevant document:" or "Found 15 relevant sections:" - text only, no document cards here.
       // Document preview cards appear only under the "Reading [filename]" step.
-      // Only the "X relevant document(s):" part uses FOUND_DOCUMENTS_COLOR; "Found" and icon use action colour.
+      // Use same colour for whole phrase (no different colour for the number).
       const isSectionsStep = step.message.toLowerCase().includes('section');
       const isNoResultsStep = step.message.toLowerCase().includes('no relevant');
       const foundActionColor = thoughtCompleted ? FAINT_COLOR : ACTION_COLOR;
       const foundActionStyle = { color: foundActionColor, fontWeight: 500 as const };
-      const foundDetailColor = thoughtCompleted ? FAINT_COLOR : FOUND_DOCUMENTS_COLOR;
+      const foundDetailColor = foundActionColor;
 
       const colonIndex = step.message.indexOf(': ');
       let prefix = step.message;

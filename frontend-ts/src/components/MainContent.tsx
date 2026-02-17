@@ -13,12 +13,13 @@ import { Property3DBackground } from './Property3DBackground';
 import { PropertyCyclingBackground } from './PropertyCyclingBackground';
 import { SquareMap, SquareMapRef } from './SquareMap';
 import Profile from './Profile';
+import { UsageAndBillingSection } from './UsageAndBillingSection';
 import { FileManager } from './FileManager';
 import { useSystem } from '@/contexts/SystemContext';
 import { backendApi } from '@/services/backendApi';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogOverlay } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { MapPin, Palette, Bell, Shield, Globe, Monitor, LibraryBig, Upload, BarChart3, Database, Settings, User, CloudUpload, Image, Map, Fullscreen, Minimize, Minimize2, Plus, ArrowUp, Folder, Layers, Check, Focus, Contrast, Search, Loader2, ArrowRight, ArrowLeft } from 'lucide-react';
+import { MapPin, Palette, Bell, Shield, Globe, Monitor, LibraryBig, Upload, BarChart3, Database, Settings, User, CloudUpload, Image, Map, Fullscreen, Minimize, Minimize2, Plus, ArrowUp, Folder, Layers, Check, Focus, Contrast, Search, Loader2, ArrowRight, ArrowLeft, CreditCard } from 'lucide-react';
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import { DocumentPreviewModal } from './DocumentPreviewModal';
@@ -26,6 +27,7 @@ import { FileAttachmentData } from './FileAttachment';
 import { usePreview } from '../contexts/PreviewContext';
 import { useChatStateStore, useActiveChatDocumentPreview, type CitationData, type DocumentPreview } from '../contexts/ChatStateStore';
 import { CitationExportProvider } from '../contexts/CitationExportContext';
+import { useAuthUser } from '@/contexts/AuthContext';
 import { StandaloneExpandedCardView } from './StandaloneExpandedCardView';
 import { AgentTaskOverlay } from './AgentTaskOverlay';
 import { RecentProjectsSection } from './RecentProjectsSection';
@@ -1704,16 +1706,67 @@ const BackgroundSettings: React.FC = () => {
   );
 };
 
+// Normalize user (from AuthContext or checkAuth) to the shape Profile expects
+function normalizeUserForProfile(user: Record<string, unknown> | null | undefined): {
+  first_name?: string; last_name?: string; email?: string; profile_image?: string; avatar_url?: string; profile_picture_url?: string;
+  phone?: string; location?: string; address?: string; title?: string; organization?: string; company_logo_url?: string;
+} | null {
+  if (!user) return null;
+  return {
+    ...user,
+    title: (user.title as string) || 'Property Manager',
+    location: (user.location as string) || 'New York, NY',
+    address: (user.address as string) || (user.location as string) || 'New York, NY',
+    phone: (user.phone as string) || '',
+    email: (user.email as string) || '',
+    organization: (user.organization as string) || 'Solosway',
+    company_logo_url: user.company_logo_url as string | undefined,
+  } as { first_name?: string; last_name?: string; email?: string; profile_image?: string; avatar_url?: string; profile_picture_url?: string; phone?: string; location?: string; address?: string; title?: string; organization?: string; company_logo_url?: string };
+}
+
 // Settings View Component with Sidebar Navigation
-const SettingsView: React.FC<{ 
+const SettingsView: React.FC<{
   onCloseSidebar?: () => void;
   onRestoreSidebarState?: (shouldBeCollapsed: boolean) => void;
   getSidebarState?: () => boolean;
-  onNavigate?: (view: string, options?: { showMap?: boolean }) => void;
-}> = ({ onCloseSidebar, onRestoreSidebarState, getSidebarState, onNavigate }) => {
+  onNavigate?: (view: string, options?: { showMap?: boolean; openCategory?: string }) => void;
+  initialCategory?: string;
+  onClearInitialCategory?: () => void;
+}> = ({ onCloseSidebar, onRestoreSidebarState, getSidebarState, onNavigate, initialCategory, onClearInitialCategory }) => {
+  const authUser = useAuthUser() as Record<string, unknown> | null | undefined;
   const [activeCategory, setActiveCategory] = React.useState<string>('general');
-  const [activeGeneralTab, setActiveGeneralTab] = React.useState<string>('profile');
   const [savedLocation, setSavedLocation] = React.useState<string>('');
+  // Prefetched user for General > Profile. Initialized from dashboard auth (loaded on app load) so Profile shows instantly; refreshed below when Settings opens.
+  const [prefetchedUser, setPrefetchedUser] = React.useState<{
+    first_name?: string; last_name?: string; email?: string; profile_image?: string; avatar_url?: string; profile_picture_url?: string;
+    phone?: string; location?: string; address?: string; title?: string; organization?: string; company_logo_url?: string;
+  } | null>(() => normalizeUserForProfile(authUser ?? undefined));
+
+  // Sync from auth context when it becomes available (e.g. if Settings opened before AuthGuard finished)
+  React.useEffect(() => {
+    if (authUser && !prefetchedUser) setPrefetchedUser(normalizeUserForProfile(authUser));
+  }, [authUser]);
+
+  // Refresh profile from API when Settings opens so we have latest data (dashboard already loaded user on app load)
+  React.useEffect(() => {
+    let cancelled = false;
+    backendApi.checkAuth().then((authResult) => {
+      if (cancelled) return;
+      if (authResult.success && authResult.data?.user) {
+        const user = authResult.data.user as Record<string, unknown>;
+        setPrefetchedUser(normalizeUserForProfile(user));
+      }
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
+  // When opening Settings with a specific category (e.g. Usage & Billing), select it once then clear
+  React.useEffect(() => {
+    if (initialCategory) {
+      setActiveCategory(initialCategory);
+      onClearInitialCategory?.();
+    }
+  }, [initialCategory, onClearInitialCategory]);
 
   // Load saved location on mount
   React.useEffect(() => {
@@ -1745,6 +1798,7 @@ const SettingsView: React.FC<{
 
   const settingsCategories = [
     { id: 'general', label: 'General', icon: User },
+    { id: 'usage-billing', label: 'Usage & Billing', icon: CreditCard },
     { id: 'background', label: 'Background', icon: Contrast },
     { id: 'map-settings', label: 'Map Settings', icon: Map },
     { id: 'notifications', label: 'Notifications', icon: Bell },
@@ -1762,26 +1816,11 @@ const SettingsView: React.FC<{
               <h3 className="text-[15px] font-medium text-gray-900">General</h3>
               <p className="text-[13px] text-gray-500 mt-1.5 font-normal">Profile and general preferences.</p>
             </div>
-            {/* Tabs within General */}
-            <div className="border-b border-gray-200">
-              <nav className="flex gap-6" aria-label="General tabs">
-                <button
-                  onClick={() => setActiveGeneralTab('profile')}
-                  className={`py-3 px-1 border-b-2 text-[14px] font-medium transition-colors ${
-                    activeGeneralTab === 'profile'
-                      ? 'border-gray-900 text-gray-900'
-                      : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-                  }`}
-                >
-                  Profile
-                </button>
-              </nav>
-            </div>
-            {activeGeneralTab === 'profile' && (
-              <Profile onNavigate={onNavigate} embeddedInSettings />
-            )}
+            <Profile onNavigate={onNavigate} embeddedInSettings initialUserData={prefetchedUser} />
           </div>
         );
+      case 'usage-billing':
+        return <UsageAndBillingSection />;
       case 'map-settings':
         return (
           <div className="space-y-6">
@@ -1855,40 +1894,28 @@ const SettingsView: React.FC<{
   };
 
   return (
-    <div className="w-full h-full flex">
+    <div className="w-full h-full flex gap-24 bg-[#FAF9F6] -ml-16 lg:-ml-24">
       {/* Settings Sidebar - Sleek Design */}
-      <div className="w-64 border-r border-slate-100 bg-white/95 backdrop-blur-sm">
-        <div className="p-6 border-b border-gray-100">
+      <div className="w-64 shrink-0 bg-[#FAF9F6]">
+        <div className="p-6">
           <h2 className="text-[15px] font-medium text-gray-900">Settings</h2>
           <p className="text-[13px] text-gray-500 mt-1.5 font-normal">Manage your preferences</p>
         </div>
-        <nav className="px-3 py-3 space-y-0.5">
+        <nav className="px-3 py-3 space-y-1">
           {settingsCategories.map((category) => {
-            const Icon = category.icon;
             const isActive = activeCategory === category.id;
             return (
               <button
                 key={category.id}
                 onClick={() => setActiveCategory(category.id)}
-                className={`w-full flex items-center gap-3 px-3 py-1.5 rounded transition-colors duration-75 group relative border ${
-                  isActive 
-                    ? 'bg-white text-gray-900 border-gray-300' 
-                    : 'text-gray-600 hover:bg-white/60 hover:text-gray-900 border-transparent'
+                className={`w-full flex items-center px-4 py-2 rounded-[5px] text-[13px] font-normal transition-colors duration-75 group relative text-left ${
+                  isActive
+                    ? 'bg-[#F1EDE4] text-gray-900'
+                    : 'text-gray-600 hover:bg-[#F1EDE4]/40'
                 }`}
-                style={{
-                  boxShadow: isActive ? '0 1px 2px rgba(0, 0, 0, 0.04)' : 'none',
-                  transition: 'background-color 75ms, color 75ms, border-color 75ms',
-                  boxSizing: 'border-box'
-                }}
                 aria-label={category.label}
               >
-                <div className="relative">
-                  <Icon
-                    className="w-[18px] h-[18px] flex-shrink-0"
-                    strokeWidth={1.75}
-                  />
-                </div>
-                <span className="text-[13px] font-normal flex-1 text-left">
+                <span className="text-left">
                   {category.label}
                 </span>
               </button>
@@ -1898,16 +1925,11 @@ const SettingsView: React.FC<{
       </div>
 
       {/* Settings Content */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-y-auto bg-[#FAF9F6]">
         <div className="max-w-4xl mx-auto p-8">
-          <motion.div
-            key={activeCategory}
-            initial={{ opacity: 0, x: 20 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ duration: 0.3 }}
-          >
+          <div key={activeCategory}>
             {renderSettingsContent()}
-          </motion.div>
+          </div>
         </div>
       </div>
     </div>
@@ -2029,6 +2051,9 @@ const FullscreenPropertyView: React.FC<FullscreenPropertyViewProps> = ({
 export interface MainContentProps {
   className?: string;
   currentView?: string;
+  /** When opening Settings via "Go to Usage & Billing", preselect this category */
+  initialSettingsCategory?: string | null;
+  onClearInitialSettingsCategory?: () => void;
   onChatModeChange?: (inChatMode: boolean, chatData?: any) => void;
   onChatHistoryCreate?: (chatData: any) => void;
   currentChatData?: {
@@ -2040,7 +2065,7 @@ export interface MainContentProps {
   currentChatId?: string | null;
   isInChatMode?: boolean;
   resetTrigger?: number;
-  onNavigate?: (view: string, options?: { showMap?: boolean }) => void;
+  onNavigate?: (view: string, options?: { showMap?: boolean; openCategory?: string }) => void;
   homeClicked?: boolean;
   onHomeResetComplete?: () => void;
   onCloseSidebar?: () => void;
@@ -2068,6 +2093,8 @@ export interface MainContentProps {
 export const MainContent = ({
   className,
   currentView = 'search',
+  initialSettingsCategory,
+  onClearInitialSettingsCategory,
   onChatModeChange,
   onChatHistoryCreate,
   currentChatData,
@@ -4415,7 +4442,7 @@ export const MainContent = ({
                               bottom: isMapVisible ? '24px' : (shouldPositionAtBottom ? '0' : 'auto'),
                               left: mapViewLeft,
                               transform: mapViewTransform,
-                              zIndex: isMapVisible ? 50 : (shouldPositionAtBottom ? 100 : 10), // Higher z-index when fixed at bottom
+                              zIndex: Math.max(100002, isMapVisible ? 50 : (shouldPositionAtBottom ? 100 : 10)), // Above FilingSidebar (100001) so bar receives drag when hovering with file
                               width: isMapVisible ? 'clamp(400px, 85vw, 650px)' : '100%', // Full width in dashboard, constrained in map view
                               maxWidth: isMapVisible ? 'clamp(400px, 85vw, 650px)' : 'none', // No max width constraint in dashboard (handled by padding)
                               boxSizing: 'border-box', // Include padding in width calculation
@@ -4692,6 +4719,8 @@ export const MainContent = ({
           onRestoreSidebarState={onRestoreSidebarState}
           getSidebarState={getSidebarState}
           onNavigate={handleNavigate}
+          initialCategory={initialSettingsCategory ?? undefined}
+          onClearInitialCategory={onClearInitialSettingsCategory}
         />;
       default:
         return <div className="flex items-center justify-center flex-1 relative">
@@ -5292,10 +5321,10 @@ export const MainContent = ({
   return (
     <CitationExportProvider>
     <div 
-    className={`flex-1 relative ${(currentView === 'search' || currentView === 'home') ? '' : 'bg-white'} ${className || ''}`} 
+    className={`flex-1 relative ${(currentView === 'search' || currentView === 'home') ? '' : currentView === 'settings' ? 'bg-[#FAF9F6]' : 'bg-white'} ${className || ''}`} 
     style={{ 
       marginLeft: mainContentMarginLeft,
-      backgroundColor: (currentView === 'search' || currentView === 'home') ? 'transparent' : '#ffffff', 
+      backgroundColor: (currentView === 'search' || currentView === 'home') ? 'transparent' : currentView === 'settings' ? '#FAF9F6' : '#ffffff', 
       position: 'relative', 
       zIndex: isChatHistoryPanelOpen ? 10000 : 1, // Above backdrop (9999) when agent sidebar open so clicking the new-chat bar doesn't close it
       transition: 'none', // Instant transition to prevent gaps when sidebar opens/closes
@@ -5804,12 +5833,14 @@ export const MainContent = ({
                 ? 'bg-white'
                 : currentView === 'notifications'
                   ? 'bg-white'
-                  : (currentView === 'search' || currentView === 'home') ? '' : 'bg-white'
+                  : currentView === 'settings'
+                    ? 'bg-[#FAF9F6]'
+                    : (currentView === 'search' || currentView === 'home') ? '' : 'bg-white'
       } ${isInChatMode ? 'p-0' : currentView === 'upload' ? 'p-8' : currentView === 'analytics' ? 'p-4' : currentView === 'profile' ? 'p-0' : currentView === 'notifications' ? 'p-0 m-0' : 'p-8 lg:p-16'}`} style={{ 
-        backgroundColor: (currentView === 'search' || currentView === 'home') ? 'transparent' : '#ffffff', 
+        backgroundColor: (currentView === 'search' || currentView === 'home') ? 'transparent' : currentView === 'settings' ? '#FAF9F6' : '#ffffff', 
         background: (currentView === 'search' || currentView === 'home') ? 'transparent' : undefined,
-        pointerEvents: (isMapVisible || externalIsMapVisible) ? 'none' : 'auto', // Block pointer events when map is visible so clicks pass through to map
-        zIndex: (isMapVisible || externalIsMapVisible) ? 0 : 1, // Below map when map is visible, above background when not
+        pointerEvents: currentView === 'settings' ? 'auto' : (isMapVisible || externalIsMapVisible) ? 'none' : 'auto', // Settings always receives clicks; otherwise block when map visible
+        zIndex: currentView === 'settings' ? 1 : (isMapVisible || externalIsMapVisible) ? 0 : 1, // Settings always on top; below map when map visible otherwise
         transition: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked) ? 'none' : undefined, // Disable all transitions when transitioning from chat
         willChange: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked) ? 'auto' : undefined // Prevent layout shifts during transitions
       }}>

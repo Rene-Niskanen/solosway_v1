@@ -542,15 +542,11 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
     hasAnyProperties 
   });
 
-  // Empty state - minimal, Claude/OpenAI-inspired design
+  // Empty state - minimal, Claude/OpenAI-inspired design (fills parent so it adjusts to sidebar)
   const InitialEmptyState = () => (
     <div 
-      className="fixed flex flex-col items-center justify-center"
+      className="absolute inset-0 flex flex-col items-center justify-center"
       style={{
-        top: 0,
-        left: sidebarWidth,
-        right: 0,
-        bottom: 0,
         background: '#FCFCF9',
         pointerEvents: 'auto',
       }}
@@ -586,10 +582,7 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
     return (
       <div 
         className="w-full h-full flex flex-col items-center justify-center min-h-[60vh]"
-        style={{
-          paddingLeft: `${sidebarWidth}px`,
-          pointerEvents: 'auto',
-        }}
+        style={{ pointerEvents: 'auto' }}
       >
         <p className="text-red-500 mb-4">{error}</p>
         <button
@@ -610,12 +603,8 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
   if (isLoading && !hasAnyProperties) {
     return (
       <div
-        className="fixed flex flex-col items-center justify-center"
+        className="absolute inset-0 flex flex-col items-center justify-center"
         style={{
-          top: 0,
-          left: sidebarWidth,
-          right: 0,
-          bottom: 0,
           background: '#FCFCF9',
           pointerEvents: 'auto',
         }}
@@ -630,22 +619,25 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
 
   // Show initial empty state when there are no properties at all (and not loading)
   if (!hasAnyProperties && !isLoading) {
-    return <InitialEmptyState />;
+    return (
+      <div className="relative w-full h-full min-h-full">
+        <InitialEmptyState />
+      </div>
+    );
   }
 
-  // Show full page with cream background - instant snap loading
+  // Show full page with cream background - fills parent so layout adjusts to sidebar
   return (
     <div 
-      className="fixed inset-0 overflow-y-auto"
+      className="relative w-full min-h-full overflow-y-auto"
       style={{
-        left: sidebarWidth,
         background: '#FCFCF9',
         pointerEvents: 'auto',
       }}
     >
       {/* Top right: Select, View less/See All Files, Delete, Create Project */}
       <div
-        className="fixed z-50 flex items-center gap-2"
+        className="absolute z-50 flex items-center gap-2"
         style={{
           top: '24px',
           right: '24px',
@@ -753,7 +745,7 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
         >
         {/* Project Cards Section - hidden when "See All Files" is active */}
         {!showAllFiles && (
-          <div style={{ marginTop: '24px', marginLeft: '-36px', width: '100%', maxWidth: '100%', minWidth: 0 }}>
+          <div style={{ marginTop: '24px', width: '100%', maxWidth: '100%', minWidth: 0 }}>
             <div 
               className="grid justify-start w-full"
               style={{ 

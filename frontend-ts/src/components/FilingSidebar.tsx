@@ -83,6 +83,9 @@ function parseAllDocumentsResponse(response: any): Document[] {
 // Stable key for a pending file (must match key used in parent)
 const getPendingFileKey = (file: File) => `${file.name}-${file.size}-${file.lastModified}`;
 
+/** Scale factor for file/folder list proportions (1 = 100%, 0.9 = 10% smaller). */
+const FILING_SIDEBAR_FILE_SCALE = 0.9;
+
 // Component for displaying pending file with image preview
 const PendingFileItem: React.FC<{
   file: File;
@@ -134,8 +137,8 @@ const PendingFileItem: React.FC<{
         {isImage && imageUrl ? (
           <div
             style={{
-              width: '40px',
-              height: '40px',
+              width: `${40 * FILING_SIDEBAR_FILE_SCALE}px`,
+              height: `${40 * FILING_SIDEBAR_FILE_SCALE}px`,
               borderRadius: '4px',
               overflow: 'hidden',
               backgroundColor: '#F3F4F6',
@@ -164,7 +167,7 @@ const PendingFileItem: React.FC<{
         )}
       </div>
       <div className="flex-1 min-w-0">
-        <div className="text-xs font-normal text-gray-900 truncate" style={{ fontFamily: 'system-ui, -apple-system, sans-serif', letterSpacing: '-0.01em' }}>
+        <div className="font-normal text-gray-900 truncate" style={{ fontFamily: 'system-ui, -apple-system, sans-serif', letterSpacing: '-0.01em', fontSize: `${12 * FILING_SIDEBAR_FILE_SCALE}px` }}>
           {file.name}
         </div>
       </div>
@@ -271,6 +274,8 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
   /** Document IDs we just uploaded; keep sidebar spinner until they reach completed/failed */
   const [processingDocumentIds, setProcessingDocumentIds] = useState<Set<string>>(new Set());
   const [showSecureInfo, setShowSecureInfo] = useState(false);
+  /** Document/page stats (completed docs only). Fetched with document list. */
+  const [docStats, setDocStats] = useState<{ document_count: number; total_pages: number } | null>(null);
 
   // Remove from processingDocumentIds when docs reach completed/failed (so spinner can turn off)
   useEffect(() => {
@@ -313,6 +318,13 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
         const docs = parseAllDocumentsResponse(response);
         if (response.success) setDocuments(docs);
       }
+      // Refresh document/page stats when list refreshes (e.g. processing completed)
+      try {
+        const statsRes = await backendApi.getDocumentStats();
+        if (statsRes.success && statsRes.data) setDocStats(statsRes.data);
+        // Notify sidebar + Settings > Usage & Billing to refetch page count (linked to this upload area + UploadOverlay + NewPropertyPinWorkflow)
+        window.dispatchEvent(new CustomEvent('usageShouldRefresh'));
+      } catch (_) {}
     }, 3000);
     return () => clearInterval(interval);
   }, [viewMode, selectedPropertyId, processingDocumentIds.size]);
@@ -536,6 +548,11 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
               loadFolders();
               setIsLoading(false); // clear loader as soon as data is ready
             }
+            // Fetch document/page stats (completed docs only, business-wide)
+            try {
+              const statsRes = await backendApi.getDocumentStats();
+              if (statsRes.success && statsRes.data) setDocStats(statsRes.data);
+            } catch (_) {}
           } else if (!isCacheValid) {
             setError(response.error || 'Failed to load property documents');
             setDocuments([]);
@@ -555,6 +572,11 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                 loadFolders();
                 setIsLoading(false); // clear loader as soon as data is ready
               }
+              // Fetch document/page stats (completed docs only)
+              try {
+                const statsRes = await backendApi.getDocumentStats();
+                if (statsRes.success && statsRes.data) setDocStats(statsRes.data);
+              } catch (_) {}
             } else if (!isCacheValid) {
               setError(response.error || 'Failed to load documents');
               setDocuments([]);
@@ -923,7 +945,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
     });
   };
 
-  // Get file type icon (sized to match row: w-3.5 h-3.5 so containers stay same height)
+  // Get file type icon (sized to match row proportions)
   const getFileIcon = (doc: Document) => {
     const filename = doc.original_filename.toLowerCase();
     const iconClass = "w-3.5 h-3.5 object-contain flex-shrink-0";
@@ -1004,17 +1026,22 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
 
   // Handle drag start for file items
   const handleDragStart = (e: React.DragEvent, doc: Document) => {
-    // Store document data in dataTransfer for drop handlers
-    e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('application/json', JSON.stringify({
+    const payload = {
       type: 'filing-sidebar-document',
       documentId: doc.id,
       filename: doc.original_filename,
       fileType: doc.file_type,
       s3Path: doc.s3_path
-    }));
-    // Also set text data as fallback
-    e.dataTransfer.setData('text/plain', doc.id);
+    };
+    const jsonStr = JSON.stringify(payload);
+    e.dataTransfer.effectAllowed = 'copy';
+    // Use text/plain for cross-browser compatibility (Chrome often blocks getData for custom MIME types)
+    e.dataTransfer.setData('text/plain', jsonStr);
+    e.dataTransfer.setData('application/json', jsonStr);
+    if (e.dataTransfer.setDragImage) {
+      const target = e.currentTarget as HTMLElement;
+      if (target) e.dataTransfer.setDragImage(target, 20, 20);
+    }
     console.log('📤 FilingSidebar: Started dragging document:', doc.original_filename);
   };
 
@@ -1403,6 +1430,12 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
         }
         alert('Failed to delete document. Please try again.');
       }
+
+      // Refresh document/page stats after delete (succeeded or not, so count stays correct)
+      try {
+        const statsRes = await backendApi.getDocumentStats();
+        if (statsRes.success && statsRes.data) setDocStats(statsRes.data);
+      } catch (_) {}
     }
   };
 
@@ -1466,6 +1499,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
           clearInterval(intervalId);
           setDocuments(prev => prev.map(d => (d.id === doc.id ? { ...d, status: 'completed' } : d)));
           setReprocessedDocs(prev => new Set(prev).add(doc.id));
+          window.dispatchEvent(new CustomEvent('usageShouldRefresh'));
           setReprocessingDocs(prev => {
             const next = new Set(prev);
             next.delete(doc.id);
@@ -1488,6 +1522,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
         clearInterval(intervalId);
         setDocuments(prev => prev.map(d => (d.id === doc.id ? { ...d, status: 'completed' } : d)));
         setReprocessedDocs(prev => new Set(prev).add(doc.id));
+        window.dispatchEvent(new CustomEvent('usageShouldRefresh'));
         setReprocessingDocs(prev => {
           const next = new Set(prev);
           next.delete(doc.id);
@@ -1589,6 +1624,9 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
             if (pipelinePollingRef.current) {
               clearInterval(pipelinePollingRef.current);
               pipelinePollingRef.current = null;
+            }
+            if (data.status === 'completed') {
+              window.dispatchEvent(new CustomEvent('usageShouldRefresh'));
             }
           }
         }
@@ -1725,6 +1763,12 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
         cacheTimestampRef.current.set(uploadCacheKey, Date.now());
       }
     }
+
+    // Refresh document/page stats after upload
+    try {
+      const statsRes = await backendApi.getDocumentStats();
+      if (statsRes.success && statsRes.data) setDocStats(statsRes.data);
+    } catch (_) {}
 
     setPendingFiles([]);
     setUploadingFileKeys(new Set());
@@ -2056,16 +2100,16 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
             // Force GPU acceleration for smoother rendering
             transform: 'translateZ(0)',
             backfaceVisibility: 'hidden',
-            // Ensure background extends fully to prevent any gaps
-            boxShadow: 'none',
+            // 3D overhang on right: soft shadow cast right + subtle edge
+            boxShadow: '4px 0 10px -2px rgba(0,0,0,0.06), 8px 0 16px -4px rgba(0,0,0,0.03), inset -1px 0 0 rgba(0,0,0,0.04)',
             borderRight: 'none',
             // Extend slightly beyond to ensure full coverage
             minWidth: '360px',
             right: 'auto',
             // Hide pointer events when closed
             pointerEvents: isOpen ? 'auto' : 'none',
-            // Constrain height so flex child can scroll
-            overflow: 'hidden',
+            // Visible so right-edge shadow isn't clipped; scroll is on inner content
+            overflow: 'visible',
           }}
         >
         {/* Header - Unified Design */}
@@ -2152,14 +2196,14 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                 </button>
               </div>
               <img
-                src="/upload(1).png"
+                src="/upload(1) 2.png"
                 alt="Secure file uploads"
                 className="block w-full h-auto pointer-events-none rounded-lg"
                 style={{
                   width: '100%',
                   height: 'auto',
                   display: 'block',
-                  transform: 'scale(1.12) translateY(-36px)',
+                  transform: 'scale(1.12) translateY(-18px)',
                   transformOrigin: 'center top',
                 }}
               />
@@ -2416,6 +2460,27 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                 style={{ borderRadius: '8px', WebkitTapHighlightColor: 'transparent', transition: 'none', boxShadow: 'none' }}
               />
             </div>
+
+            {/* Document and page stats (completed / green-dot docs only); click to refresh */}
+            {docStats !== null && (
+              <div className="mb-3 flex items-center gap-1.5 text-[11px] text-gray-500" style={{ fontFamily: 'system-ui, sans-serif' }}>
+                <span>{docStats.document_count.toLocaleString()} documents · {docStats.total_pages.toLocaleString()} pages</span>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      const res = await backendApi.getDocumentStats();
+                      if (res.success && res.data) setDocStats(res.data);
+                    } catch (_) {}
+                  }}
+                  className="p-0.5 rounded hover:bg-gray-200 text-gray-400 hover:text-gray-600"
+                  title="Refresh count"
+                  aria-label="Refresh document and page count"
+                >
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+                </button>
+              </div>
+            )}
 
             {/* Actions Row - Unified Style */}
             <div className="flex items-center gap-2 w-full" style={{ width: '100%', boxSizing: 'border-box' }}>
@@ -2701,12 +2766,13 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                           }
                         }}
                         onBlur={() => handleSaveRename(folder.id, true)}
-                        className="w-full px-2 py-1 text-xs border border-blue-500 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500/20 bg-white"
+                        className="w-full px-2 py-1 border border-blue-500 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500/20 bg-white"
+                        style={{ fontSize: `${12 * FILING_SIDEBAR_FILE_SCALE}px` }}
                         autoFocus
                         onClick={(e) => e.stopPropagation()}
                       />
                     ) : (
-                      <div className="text-xs font-normal text-gray-900 truncate" style={{ fontFamily: 'system-ui, -apple-system, sans-serif', letterSpacing: '-0.01em' }}>
+                      <div className="font-normal text-gray-900 truncate" style={{ fontFamily: 'system-ui, -apple-system, sans-serif', letterSpacing: '-0.01em', fontSize: `${12 * FILING_SIDEBAR_FILE_SCALE}px` }}>
                         {folder.name}
                       </div>
                     )}
@@ -2739,7 +2805,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                   <div className="px-0 mb-0.5">
                     <div className="px-4 py-2 ml-4 mr-8 rounded-md border bg-gray-50/80 border-gray-200/60 flex items-center gap-2.5">
                       <OrbitProgress color="#22c55e" size="small" dense text="" textColor="" speedPlus={1} style={{ fontSize: '2px' }} />
-                      <span className="text-xs font-medium text-gray-600">Uploading</span>
+                      <span className="font-medium text-gray-600" style={{ fontSize: `${12 * FILING_SIDEBAR_FILE_SCALE}px` }}>Uploading</span>
                     </div>
                     <div className="py-0.5 w-full" style={{ boxSizing: 'border-box' }}>
                       {uploadingPlaceholders.map((p) => (
@@ -2750,7 +2816,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                           <div className="flex-shrink-0 w-3.5 h-3.5 flex items-center justify-center">
                             <OrbitProgress color="#22c55e" size="small" dense text="" textColor="" speedPlus={1} style={{ fontSize: '2px' }} />
                           </div>
-                          <div className="flex-1 min-w-0 text-xs font-normal text-gray-700 truncate" style={{ fontFamily: 'system-ui, -apple-system, sans-serif', letterSpacing: '-0.01em' }}>
+                          <div className="flex-1 min-w-0 font-normal text-gray-700 truncate" style={{ fontFamily: 'system-ui, -apple-system, sans-serif', letterSpacing: '-0.01em', fontSize: `${12 * FILING_SIDEBAR_FILE_SCALE}px` }}>
                             {p.name}
                           </div>
                         </div>
@@ -2798,12 +2864,12 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                           {propertyAddress && 
                            !propertyAddress.startsWith('Property ') && 
                            propertyAddress !== 'Unknown Property' && (
-                            <div className="text-xs font-normal text-gray-900 truncate" style={{ fontFamily: 'system-ui, -apple-system, sans-serif', letterSpacing: '-0.01em' }}>
+                            <div className="font-normal text-gray-900 truncate" style={{ fontFamily: 'system-ui, -apple-system, sans-serif', letterSpacing: '-0.01em', fontSize: `${12 * FILING_SIDEBAR_FILE_SCALE}px` }}>
                               {propertyAddress}
                             </div>
                           )}
                         </div>
-                        <span className="text-xs text-gray-500 flex-shrink-0 font-medium">
+                        <span className="text-gray-500 flex-shrink-0 font-medium" style={{ fontSize: `${12 * FILING_SIDEBAR_FILE_SCALE}px` }}>
                           {propertyDocs.length}
                         </span>
                       </div>
@@ -2926,12 +2992,13 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                                         }
                                       }}
                                       onBlur={() => handleSaveRename(doc.id, false)}
-                                      className="w-full px-2 py-1 text-xs border border-blue-500 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500/20 bg-white"
+                                      className="w-full px-2 py-1 border border-blue-500 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500/20 bg-white"
+                                      style={{ fontSize: `${12 * FILING_SIDEBAR_FILE_SCALE}px` }}
                                       autoFocus
                                       onClick={(e) => e.stopPropagation()}
                                     />
                                   ) : (
-                                    <div className="text-xs font-normal text-gray-900 truncate" style={{ fontFamily: 'system-ui, -apple-system, sans-serif', letterSpacing: '-0.01em' }}>
+                                    <div className="font-normal text-gray-900 truncate" style={{ fontFamily: 'system-ui, -apple-system, sans-serif', letterSpacing: '-0.01em', fontSize: `${12 * FILING_SIDEBAR_FILE_SCALE}px` }}>
                                       {doc.original_filename}
                                     </div>
                                   )}
@@ -2960,7 +3027,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                                         )}
                                       </div>
                                     ) : doc.status === 'failed' ? (
-                                      // Failed - same slot size as green (w-3 h-3) so red dot aligns with green
+                                      // Failed - same slot size as green so red dot aligns with green
                                       <div className="relative flex items-center justify-center w-3 h-3 flex-shrink-0 cursor-default">
                                         <span
                                           className="w-1.5 h-1.5 rounded-full bg-red-500 block opacity-100 group-hover:opacity-0 transition-opacity duration-150"
@@ -3025,7 +3092,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                       <div className="flex-shrink-0 w-3.5 h-3.5 flex items-center justify-center">
                         <OrbitProgress color="#22c55e" size="small" dense text="" textColor="" speedPlus={1} style={{ fontSize: '2px' }} />
                       </div>
-                      <div className="flex-1 min-w-0 text-xs font-normal text-gray-700 truncate" style={{ fontFamily: 'system-ui, -apple-system, sans-serif', letterSpacing: '-0.01em' }}>
+                      <div className="flex-1 min-w-0 font-normal text-gray-700 truncate" style={{ fontFamily: 'system-ui, -apple-system, sans-serif', letterSpacing: '-0.01em', fontSize: `${12 * FILING_SIDEBAR_FILE_SCALE}px` }}>
                         {p.name}
                       </div>
                     </div>
@@ -3146,12 +3213,13 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                               }
                             }}
                             onBlur={() => handleSaveRename(doc.id, false)}
-                            className="w-full px-2 py-1 text-xs border border-blue-500 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500/20 bg-white"
+                            className="w-full px-2 py-1 border border-blue-500 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500/20 bg-white"
+                            style={{ fontSize: `${12 * FILING_SIDEBAR_FILE_SCALE}px` }}
                             autoFocus
                             onClick={(e) => e.stopPropagation()}
                           />
                         ) : (
-                          <div className="text-xs font-normal text-gray-900 truncate" style={{ fontFamily: 'system-ui, -apple-system, sans-serif', letterSpacing: '-0.01em' }}>
+                          <div className="font-normal text-gray-900 truncate" style={{ fontFamily: 'system-ui, -apple-system, sans-serif', letterSpacing: '-0.01em', fontSize: `${12 * FILING_SIDEBAR_FILE_SCALE}px` }}>
                             {doc.original_filename}
                           </div>
                         )}
@@ -3180,7 +3248,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                               )}
                             </div>
                           ) : doc.status === 'failed' ? (
-                            // Failed - same slot size as green (w-3 h-3) so red dot aligns with green
+                            // Failed - same slot size as green so red dot aligns with green
                             <div className="relative flex items-center justify-center w-3 h-3 flex-shrink-0 cursor-default">
                               <span
                                 className="w-1.5 h-1.5 rounded-full bg-red-500 block opacity-100 group-hover:opacity-0 transition-opacity duration-150"

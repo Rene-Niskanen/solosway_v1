@@ -32,6 +32,18 @@ interface ApiResponse<T = any> {
   statusCode?: number;
 }
 
+/** Usage for billing UI: current month pages, limit, plan. From GET /api/usage */
+export interface UsageResponse {
+  plan: string;
+  monthly_limit: number;
+  pages_used: number;
+  remaining: number;
+  usage_percent: number;
+  billing_cycle_start: string;
+  billing_cycle_end: string;
+  user_email?: string;
+}
+
 // Property image interface
 interface PropertyImage {
   url: string;
@@ -828,6 +840,21 @@ class BackendApiService {
     return this.fetchApi<any>('/api/files', {
       method: 'GET',
     });
+  }
+
+  /**
+   * Get document and page stats for the current user (completed docs only, green dot).
+   * Used for "X documents · Y pages" in FilingSidebar.
+   */
+  async getDocumentStats(): Promise<ApiResponse<{ document_count: number; total_pages: number }>> {
+    return this.fetchApi<{ document_count: number; total_pages: number }>('/api/documents/stats', {
+      method: 'GET',
+    });
+  }
+
+  /** Billing usage: pages used this month, limit, plan. See BILLING_SPEC.md */
+  async getUsage(): Promise<ApiResponse<UsageResponse>> {
+    return this.fetchApi<UsageResponse>('/api/usage', { method: 'GET' });
   }
 
   async getDocumentsByFolder(folderId: string): Promise<ApiResponse<any>> {

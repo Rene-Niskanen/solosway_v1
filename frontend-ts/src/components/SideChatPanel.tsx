@@ -962,6 +962,11 @@ const StreamingResponseText: React.FC<{
         wrapper.style.overflow = 'hidden';
       }
 
+      // Keep scroll in sync with reveal so the user always sees the revealed content (not just at 100%)
+      if (streamingRef.current || pos < target - 0.001) {
+        onTextUpdateRef.current?.();
+      }
+
       const done = pos >= target - 0.001 && !streamingRef.current;
       if (!done || streamingRef.current) {
         revealRafRef.current = requestAnimationFrame(tick);
@@ -8662,6 +8667,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   }, [isVisible, actualPanelWidth, inputContainerWidth, draggedWidth]);
   
   const messagesEndRef = React.useRef<HTMLDivElement>(null);
+  /** Ref on the inner content wrapper that grows when messages stream - used by ResizeObserver to scroll during streaming */
+  const contentWrapperRef = React.useRef<HTMLDivElement>(null);
   const initialScrollHeightRef = React.useRef<number | null>(null);
   const isDeletingRef = React.useRef(false);
   const autoScrollEnabledRef = React.useRef(true);
@@ -8754,35 +8761,42 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     prevLoadingRef.current = hasLoadingMessage;
   }, [chatMessages, hasLoadingMessage, scrollToBottom]);
   
-  // During streaming: always keep view pinned to bottom so the latest line is visible above the chat bar
-  React.useEffect(() => {
+  // During streaming: scroll in the same layout pass as content updates so the user always sees new content in view
+  React.useLayoutEffect(() => {
     if (!hasLoadingMessage || !latestMessageText) return;
-    // Force scroll when streaming so content never goes behind the chat bar
-    const raf1 = requestAnimationFrame(() => {
-      requestAnimationFrame(() => scrollToBottom(true));
-    });
-    // Delayed fallback so we scroll after React commit + any markdown reflow
-    const t = setTimeout(() => scrollToBottom(true), 80);
-    return () => {
-      cancelAnimationFrame(raf1);
-      clearTimeout(t);
-    };
+    scrollToBottom(true);
   }, [hasLoadingMessage, latestMessageText, scrollToBottom]);
-  
-  // Scroll when content height changes during loading (e.g. markdown reflow, images) - poll so we keep latest line in view
-  // This respects manual scroll - only scrolls if user is already at bottom
+
+  // ResizeObserver: as soon as the content wrapper grows during streaming, scroll so new content stays in view
   React.useEffect(() => {
     if (!hasLoadingMessage) return;
-    
+    const wrapper = contentWrapperRef.current;
     const contentArea = contentAreaRef.current;
-    if (!contentArea) return;
-    
-    // Track content height changes
-    let lastHeight = contentArea.scrollHeight;
-    
+    if (!wrapper || !contentArea) return;
+
+    const resizeObserver = new ResizeObserver(() => {
+      isProgrammaticScrollRef.current = true;
+      const anchor = messagesEndRef.current;
+      if (anchor) {
+        anchor.scrollIntoView({ block: 'end', behavior: 'auto', inline: 'nearest' });
+      } else {
+        contentArea.scrollTop = contentArea.scrollHeight;
+      }
+    });
+    resizeObserver.observe(wrapper);
+    return () => resizeObserver.disconnect();
+  }, [hasLoadingMessage]);
+
+  // Poll when content height changes during loading (e.g. markdown reflow, images) - keeps latest line in view
+  React.useEffect(() => {
+    if (!hasLoadingMessage) return;
+
+    let lastHeight = 0;
+
     const checkForGrowth = () => {
+      const contentArea = contentAreaRef.current;
+      if (!contentArea) return;
       const currentHeight = contentArea.scrollHeight;
-      // When content grows during streaming, always scroll so latest line stays in the safe area above chat bar
       if (currentHeight > lastHeight) {
         lastHeight = currentHeight;
         isProgrammaticScrollRef.current = true;
@@ -8794,10 +8808,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         }
       }
     };
-    
-    // Poll at ~60fps during streaming so we stay pinned to bottom as content grows
+
     const intervalId = setInterval(checkForGrowth, 16);
-    
     return () => clearInterval(intervalId);
   }, [hasLoadingMessage]);
   
@@ -10626,11 +10638,24 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     setIsDragOver(false);
     
     try {
-      // Check if this is a document from FilingSidebar
-      const jsonData = e.dataTransfer.getData('application/json');
+      // Check if this is a document from FilingSidebar (use text/plain for Chrome/cross-browser)
+      let jsonData = e.dataTransfer.getData('application/json');
+      if (!jsonData) jsonData = e.dataTransfer.getData('text/plain');
       if (jsonData) {
-        const data = JSON.parse(jsonData);
+        let data: { type?: string; documentId?: string; filename?: string; fileType?: string; s3Path?: string };
+        try {
+          data = JSON.parse(jsonData);
+        } catch {
+          data = {};
+        }
         if (data.type === 'filing-sidebar-document') {
+          if (attachedFiles.length >= MAX_FILES) {
+            toast({
+              description: `Maximum of ${MAX_FILES} files allowed. Please remove a file before adding another.`,
+              duration: 3000,
+            });
+            return;
+          }
           console.log('📥 SideChatPanel: Dropped document from FilingSidebar:', data.filename);
           
           // Create optimistic attachment immediately with placeholder file
@@ -10657,7 +10682,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           // Fetch the actual file in the background
           (async () => {
             try {
-              const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
+              const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5001';
               let downloadUrl: string;
               
               if (data.s3Path) {
@@ -10734,30 +10759,18 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
 
   const handleDragOver = React.useCallback((e: React.DragEvent) => {
     e.preventDefault();
-    e.stopPropagation(); // Stop propagation like SearchBar
-    
-    // Check if this is a document from FilingSidebar (has application/json type) or regular files
-    const hasFilingSidebarDocument = e.dataTransfer.types.includes('application/json');
-    const hasFiles = e.dataTransfer.types.includes('Files');
-    
-    console.log('🔄 SideChatPanel: handleDragOver called', { 
-      hasFilingSidebarDocument, 
-      hasFiles, 
-      types: Array.from(e.dataTransfer.types),
-      target: (e.target as HTMLElement)?.tagName,
-      currentTarget: (e.currentTarget as HTMLElement)?.tagName
-    });
-    
+    e.stopPropagation();
+    const types = e.dataTransfer.types;
+    const hasFilingSidebarDocument = types.includes('application/json') || types.includes('text/plain');
+    const hasFiles = types.includes('Files');
     if (hasFilingSidebarDocument || hasFiles) {
-      e.dataTransfer.dropEffect = 'move';
+      e.dataTransfer.dropEffect = 'copy';
       isDragOverRef.current = true;
-      setIsDragOver(true);
-      console.log('✅ SideChatPanel: Setting isDragOver to true');
+      flushSync(() => setIsDragOver(true));
     } else {
       e.dataTransfer.dropEffect = 'none';
       isDragOverRef.current = false;
-      setIsDragOver(false);
-      console.log('❌ SideChatPanel: No valid drag types, setting isDragOver to false');
+      flushSync(() => setIsDragOver(false));
     }
   }, []);
 
@@ -14447,7 +14460,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       overflow: 'visible', 
                       height: 'auto', 
                       width: '100%',
-                      pointerEvents: 'auto'
+                      pointerEvents: 'auto',
+                      margin: '-10px'
                     }}
                     onDragOver={handleDragOver}
                     onDragLeave={handleDragLeave}
@@ -14457,12 +14471,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     <div 
                       className={`relative flex flex-col ${isSubmitted ? 'opacity-75' : ''}`}
                       onClick={(e) => e.stopPropagation()}
+                      onDragOver={handleDragOver}
+                      onDragLeave={handleDragLeave}
+                      onDrop={handleDrop}
                       style={{
-                        background: isDragOver ? '#F0F9FF' : 'rgba(255, 255, 255, 0.72)',
+                        background: isDragOver ? 'rgba(59, 130, 246, 0.1)' : 'rgba(255, 255, 255, 0.72)',
                         backdropFilter: isDragOver ? 'none' : 'blur(16px) saturate(160%)',
                         WebkitBackdropFilter: isDragOver ? 'none' : 'blur(16px) saturate(160%)',
-                        border: isDragOver ? '2px dashed rgb(36, 41, 50)' : '1px solid #E0E0E0',
-                        boxShadow: isDragOver ? '0 4px 12px 0 rgba(59, 130, 246, 0.15), 0 2px 4px 0 rgba(59, 130, 246, 0.10)' : '0 1px 3px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.02)',
+                        border: isDragOver ? '2px dashed rgba(59, 130, 246, 0.75)' : '1px solid #E0E0E0',
+                        boxShadow: isDragOver ? '0 0 0 1px rgba(59, 130, 246, 0.25)' : '0 1px 3px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.02)',
                         position: 'relative',
                         paddingTop: '12px',
                         paddingBottom: '12px',
@@ -14471,10 +14488,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         overflow: 'hidden',
                         width: '100%',
                         height: 'auto',
-                        minHeight: '160px', // Taller for empty state
+                        minHeight: '160px',
                         boxSizing: 'border-box',
                         borderRadius: '14px',
-                        transition: 'background-color 0.2s ease-in-out, border-color 0.2s ease-in-out, box-shadow 0.2s ease-in-out',
+                        transition: isDragOver ? 'background-color 0.08s ease-out, border-color 0.08s ease-out, box-shadow 0.08s ease-out' : 'background-color 0.2s ease-in-out, border-color 0.2s ease-in-out, box-shadow 0.2s ease-in-out',
                       }}
                     >
                       {/* File Attachments Display */}
@@ -14804,7 +14821,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     paddingRight: actualPanelWidth < 320 ? '12px' : '32px',
                     margin: '0 auto' // Center the content wrapper
                   }}>
-                  <div className="flex flex-col" style={{ minHeight: '100%', gap: '16px', width: '100%' }}>
+                  <div ref={contentWrapperRef} className="flex flex-col" style={{ minHeight: '100%', gap: '16px', width: '100%' }}>
                     <AnimatePresence>
                       {renderedMessages}
                     </AnimatePresence>
@@ -15272,17 +15289,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   justifyContent: 'center', 
                   alignItems: 'center',
                   position: 'relative',
-                  // Match content wrapper padding to align chatbar with text display
-                  // Reduce padding when panel is narrow
+                  margin: '-10px',
                   paddingLeft: actualPanelWidth < 320 ? '12px' : '32px',
                   paddingRight: actualPanelWidth < 320 ? '12px' : '32px',
-                  pointerEvents: 'auto' // Ensure form can receive drag events
+                  pointerEvents: 'auto'
                 }}
-                onDragOver={handleDragOver}
-                onDragLeave={handleDragLeave}
-                onDrop={handleDrop}
-              >
-                {/* Wrapper for chat bar + overlay - no z-index so overlay shows through; only inner chat bar is above overlay */}
+                  onDragOver={handleDragOver}
+                  onDragLeave={handleDragLeave}
+                  onDrop={handleDrop}
+                >
+                  {/* Wrapper for chat bar + overlay - no z-index so overlay shows through; only inner chat bar is above overlay */}
                 <div 
                   onClick={(e) => e.stopPropagation()} // Prevent clicks from closing agent sidebar
                   style={{ 
@@ -15303,13 +15319,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   <div 
                     className={`relative flex flex-col ${isSubmitted ? 'opacity-75' : ''}`}
                     onClick={(e) => e.stopPropagation()} // Prevent clicks from closing agent sidebar
+                    onDragOver={handleDragOver}
+                    onDragLeave={handleDragLeave}
+                    onDrop={handleDrop}
                     style={{
-                      background: isDragOver ? '#F0F9FF' : '#ffffff',
+                      background: isDragOver ? 'rgba(59, 130, 246, 0.1)' : '#ffffff',
                       backdropFilter: isDragOver ? 'none' : 'blur(16px) saturate(160%)',
                       WebkitBackdropFilter: isDragOver ? 'none' : 'blur(16px) saturate(160%)',
-                      border: isDragOver ? '2px dashed rgb(36, 41, 50)' : '1px solid #E0E0E0',
+                      border: isDragOver ? '2px dashed rgba(59, 130, 246, 0.75)' : '1px solid #E0E0E0',
                       boxShadow: isDragOver 
-                        ? '0 4px 12px 0 rgba(59, 130, 246, 0.15), 0 2px 4px 0 rgba(59, 130, 246, 0.10)' 
+                        ? '0 0 0 1px rgba(59, 130, 246, 0.25)' 
                         : '0 1px 3px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.02)',
                       position: 'relative',
                       paddingTop: '10px',
@@ -15322,8 +15341,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       minHeight: '44px',
                       boxSizing: 'border-box',
                       borderRadius: '14px',
-                      transition: 'background-color 0.2s ease-in-out, border-color 0.2s ease-in-out, box-shadow 0.2s ease-in-out',
-                      zIndex: citationClickPanel ? 10051 : 2, // Above citation overlay (10050) when open; above bot overlay otherwise
+                      transition: isDragOver ? 'background-color 0.08s ease-out, border-color 0.08s ease-out, box-shadow 0.08s ease-out' : 'background-color 0.2s ease-in-out, border-color 0.2s ease-in-out, box-shadow 0.2s ease-in-out',
+                      zIndex: citationClickPanel ? 10051 : 2,
                     }}
                   >
                   {/* Input row - match SearchBar: gap for spacing to icons */}

@@ -7,6 +7,7 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { backendApi } from '../services/backendApi';
+import { AuthProvider } from '../contexts/AuthContext';
 
 interface AuthGuardProps {
   children: React.ReactNode;
@@ -125,12 +126,12 @@ export const AuthGuard: React.FC<AuthGuardProps> = ({ children }) => {
     return loadingScreen;
   }
 
-  // User is authenticated, render children
+  // User is authenticated, render children with user in context so Sidebar etc. show correct role on first paint
   console.log('✅ AuthGuard: Rendering protected content for user:', userInfo?.email);
   // Update localStorage to track auth state
   if (isAuthenticated) {
     localStorage.setItem('isAuthenticated', 'true');
   }
-  return <>{children}</>;
+  return <AuthProvider user={userInfo ?? null}>{children}</AuthProvider>;
 };
 

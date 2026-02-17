@@ -18,6 +18,9 @@ import { FeedbackModalProvider, useFeedbackModal } from '../contexts/FeedbackMod
 import { ShareFeedbackModal } from './ShareFeedbackModal';
 import { SearchOrStartChatModal } from './SearchOrStartChatModal';
 import { UploadOverlay } from './UploadOverlay';
+import { PlanModalProvider, usePlanModal } from '../contexts/PlanModalContext';
+import { CurrencyProvider } from '../contexts/CurrencyContext';
+import { PlanSelectionModal } from './PlanSelectionModal';
 
 export interface DashboardLayoutProps {
   className?: string;
@@ -36,6 +39,7 @@ const DashboardLayoutContent = ({
   const { closeSidebar: closeFilingSidebar, openSidebar: openFilingSidebar, isOpen: isFilingSidebarOpen, width: filingSidebarWidth, setUploadOverlayOpen, setInitialPendingFiles } = useFilingSidebar();
   const { togglePanel: toggleChatPanel, closePanel: closeChatPanel, isOpen: isChatPanelOpen } = useChatPanel();
   const { isOpen: isFeedbackModalOpen, setIsOpen: setFeedbackModalOpen, messageId: feedbackMessageId, conversationSnippet: feedbackConversationSnippet } = useFeedbackModal();
+  const { isOpen: planModalOpen, currentPlan: planModalCurrentPlan, closePlanModal } = usePlanModal();
   const [selectedBackground, setSelectedBackground] = React.useState<string>('default-background');
   const [searchModalOpen, setSearchModalOpen] = React.useState(false);
   const uploadFileInputRef = React.useRef<HTMLInputElement>(null);
@@ -103,6 +107,7 @@ const DashboardLayoutContent = ({
   };
 
   const [currentView, setCurrentView] = React.useState<string>('search');
+  const [settingsOpenCategory, setSettingsOpenCategory] = React.useState<string | null>(null);
   const [isInChatMode, setIsInChatMode] = React.useState<boolean>(false);
   const [currentChatData, setCurrentChatData] = React.useState<any>(null);
   const [currentChatId, setCurrentChatId] = React.useState<string | null>(null);
@@ -130,7 +135,7 @@ const DashboardLayoutContent = ({
   const { addChatToHistory, updateChatInHistory, getChatById, updateChatStatus } = useChatHistory();
   const clearProjectSelectionRef = React.useRef<(() => void) | null>(null);
 
-  const handleViewChange = (viewId: string) => {
+  const handleViewChange = (viewId: string, options?: { openCategory?: string }) => {
     // Show notification only if we're currently in chat mode and navigating away from it
     if (isInChatMode && previousChatData && (viewId !== 'search' && viewId !== 'home')) {
       setShowChatNotification(true);
@@ -175,6 +180,11 @@ const DashboardLayoutContent = ({
     
     // Profile is now under Settings > General > Profile tab; redirect any profile navigation to settings
     const effectiveViewId = viewId === 'profile' ? 'settings' : viewId;
+
+    // When opening Settings with a specific category (e.g. Usage & Billing), remember it for MainContent
+    if (effectiveViewId === 'settings' && options?.openCategory) {
+      setSettingsOpenCategory(options.openCategory);
+    }
 
     // Always exit chat mode when navigating to a different view
     setCurrentView(effectiveViewId);
@@ -740,7 +750,20 @@ const DashboardLayoutContent = ({
         </button>
       )}
 
-      {/* Sidebar - with higher z-index when map is visible */}
+      {/* Fullscreen plan modal - hides sidebar when open */}
+      {planModalOpen && (
+        <PlanSelectionModal
+          fullscreen
+          open={true}
+          currentPlan={planModalCurrentPlan ?? "professional"}
+          onOpenChange={(open) => {
+            if (!open) closePlanModal();
+          }}
+        />
+      )}
+
+      {/* Sidebar - hidden when plan modal is fullscreen */}
+      {!planModalOpen && (
       <Sidebar 
         onItemClick={handleViewChange} 
         onChatToggle={handleChatPanelToggle} 
@@ -786,6 +809,7 @@ const DashboardLayoutContent = ({
           }
         }}
       />
+      )}
 
       <SearchOrStartChatModal
         open={searchModalOpen}
@@ -837,7 +861,9 @@ const DashboardLayoutContent = ({
 
       {/* Main Content - with higher z-index when map is visible */}
       <MainContent 
-        currentView={currentView} 
+        currentView={currentView}
+        initialSettingsCategory={settingsOpenCategory}
+        onClearInitialSettingsCategory={() => setSettingsOpenCategory(null)}
         onChatModeChange={handleChatModeChange}
         onChatHistoryCreate={handleChatHistoryCreate}
         currentChatData={currentChatData}
@@ -889,7 +915,11 @@ export const DashboardLayout = (props: DashboardLayoutProps) => {
           <ProjectsProvider>
             <BrowserFullscreenProvider>
               <FeedbackModalProvider>
-                <DashboardLayoutContent {...props} />
+                <PlanModalProvider>
+                  <CurrencyProvider>
+                    <DashboardLayoutContent {...props} />
+                  </CurrencyProvider>
+                </PlanModalProvider>
               </FeedbackModalProvider>
             </BrowserFullscreenProvider>
           </ProjectsProvider>

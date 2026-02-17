@@ -1040,11 +1040,24 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
     setIsDragOver(false);
     
     try {
-      // Check if this is a document from FilingSidebar
-      const jsonData = e.dataTransfer.getData('application/json');
+      // Check if this is a document from FilingSidebar (use text/plain for Chrome/cross-browser)
+      let jsonData = e.dataTransfer.getData('application/json');
+      if (!jsonData) jsonData = e.dataTransfer.getData('text/plain');
       if (jsonData) {
-        const data = JSON.parse(jsonData);
+        let data: { type?: string; documentId?: string; filename?: string; fileType?: string; s3Path?: string };
+        try {
+          data = JSON.parse(jsonData);
+        } catch {
+          data = {};
+        }
         if (data.type === 'filing-sidebar-document') {
+          if (attachedFiles.length >= MAX_FILES) {
+            toast({
+              description: `Maximum of ${MAX_FILES} files allowed. Please remove a file before adding another.`,
+              duration: 3000,
+            });
+            return;
+          }
           console.log('📥 SearchBar: Dropped document from FilingSidebar:', data.filename);
           
           // Create optimistic attachment immediately with placeholder file
@@ -1077,7 +1090,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
           // Fetch the actual file in the background
           (async () => {
             try {
-              const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
+              const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5001';
               let downloadUrl: string;
               
               if (data.s3Path) {
@@ -1167,17 +1180,15 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    
-    // Check if this is a document from FilingSidebar (has application/json type) or regular files
-    const hasFilingSidebarDocument = e.dataTransfer.types.includes('application/json');
-    const hasFiles = e.dataTransfer.types.includes('Files');
-    
+    const types = e.dataTransfer.types;
+    const hasFilingSidebarDocument = types.includes('application/json') || types.includes('text/plain');
+    const hasFiles = types.includes('Files');
     if (hasFilingSidebarDocument || hasFiles) {
-      e.dataTransfer.dropEffect = 'move';
-      setIsDragOver(true);
+      e.dataTransfer.dropEffect = 'copy';
+      flushSync(() => setIsDragOver(true));
     } else {
       e.dataTransfer.dropEffect = 'none';
-      setIsDragOver(false);
+      flushSync(() => setIsDragOver(false));
     }
   }, []);
 
@@ -1384,6 +1395,14 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
             />
           </div>
         )}
+        {/* Wrapper with expanded hit area so drag-over registers when cursor is near the bar */}
+        <div
+          className="relative"
+          style={{ margin: '-10px' }}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+        >
         <form 
           ref={searchFormRef}
           onSubmit={handleSubmit} 
@@ -1396,20 +1415,20 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
         >
             <div 
             className={`relative flex flex-col ${isSubmitted ? 'opacity-75' : ''}`}
-              style={{
-                // White background in map view, glassmorphism otherwise; keep strong affordances during drag-over.
-                background: isMapVisible 
-                  ? (isDragOver ? '#F0F9FF' : '#FFFFFF')
-                  : (isDragOver ? '#F0F9FF' : 'rgba(255, 255, 255, 0.72)'),
-                backdropFilter: isMapVisible || isDragOver ? 'none' : 'blur(16px) saturate(160%)',
-                WebkitBackdropFilter: isMapVisible || isDragOver ? 'none' : 'blur(16px) saturate(160%)',
-                // Pixel-perfect: very thin light grey border when not dragging.
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+                style={{
+                  background: isMapVisible 
+                  ? (isDragOver ? 'rgba(59, 130, 246, 0.1)' : '#FFFFFF')
+                  : (isDragOver ? 'rgba(59, 130, 246, 0.1)' : '#FFFFFF'),
+                backdropFilter: isMapVisible || isDragOver ? 'none' : 'none',
+                WebkitBackdropFilter: isMapVisible || isDragOver ? 'none' : 'none',
                 border: isDragOver
-                  ? '2px dashed rgb(36, 41, 50)'
+                  ? '2px dashed rgba(59, 130, 246, 0.75)'
                   : '1px solid #E0E0E0',
-                // ChatGPT-style subtle drop shadow: soft lift, minimal offset, light opacity.
                 boxShadow: isDragOver 
-                  ? '0 4px 12px 0 rgba(59, 130, 246, 0.15), 0 2px 4px 0 rgba(59, 130, 246, 0.10)' 
+                  ? '0 0 0 1px rgba(59, 130, 246, 0.25)' 
                   : '0 1px 3px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.02)',
                 paddingTop: '12px',
                 paddingBottom: '12px',
@@ -1428,9 +1447,9 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                 maxHeight: isMapVisible ? 'calc(100vh - 96px)' : (isDashboardView ? '220px' : undefined),
                 boxSizing: 'border-box',
                 borderRadius: '14px', // Match SideChatPanel chat bar corners
-                // IMPORTANT: don't animate layout (height) while typing; textarea auto-resizes on keystrokes.
-                // Restrict transitions to purely visual properties to avoid "step up" / reflow animations.
-                transition: 'background-color 0.2s ease-in-out, border-color 0.2s ease-in-out, box-shadow 0.2s ease-in-out, opacity 0.2s ease-in-out',
+                transition: isDragOver
+                  ? 'background-color 0.08s ease-out, border-color 0.08s ease-out, box-shadow 0.08s ease-out'
+                  : 'background-color 0.2s ease-in-out, border-color 0.2s ease-in-out, box-shadow 0.2s ease-in-out, opacity 0.2s ease-in-out',
                 position: 'relative'
               }}
             >
@@ -1840,6 +1859,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
             </div>
             </div>
           </form>
+        </div>
       </div>
       {/* Document Preview Modal is now rendered at MainContent level using shared context */}
     </div>

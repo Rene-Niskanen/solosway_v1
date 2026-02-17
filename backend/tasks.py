@@ -195,6 +195,15 @@ def extract_page_number_from_chunk(chunk: dict) -> Optional[int]:
     Returns:
         Page number (int) or None if not found
     """
+    # Strategy 0: Chunk-level top-level keys (some APIs store page at root)
+    for key in ('page', 'page_number', 'original_page'):
+        val = chunk.get(key)
+        if val is not None:
+            try:
+                return int(val)
+            except (ValueError, TypeError):
+                pass
+
     # Strategy 1: Chunk-level bbox - PREFER original_page per Reducto recommendation
     chunk_bbox = chunk.get('bbox')
     if chunk_bbox:
@@ -226,22 +235,46 @@ def extract_page_number_from_chunk(chunk: dict) -> Optional[int]:
         page_counts = {}
         for block in blocks:
             if isinstance(block, dict):
+                page = None
                 block_bbox = block.get('bbox')
                 if block_bbox and isinstance(block_bbox, dict):
-                    # Prefer original_page for source document references
                     page = block_bbox.get('original_page') or block_bbox.get('page')
-                    if page is not None:
-                        try:
-                            page = int(page)
-                            page_counts[page] = page_counts.get(page, 0) + 1
-                        except (ValueError, TypeError):
-                            pass
+                if page is None:
+                    # Fallback: page at block root (some APIs)
+                    for key in ('page', 'page_number', 'original_page'):
+                        page = block.get(key)
+                        if page is not None:
+                            break
+                if page is not None:
+                    try:
+                        page = int(page)
+                        page_counts[page] = page_counts.get(page, 0) + 1
+                    except (ValueError, TypeError):
+                        pass
         
         if page_counts:
             # Return most common page
             return max(page_counts, key=page_counts.get)
     
     return None  # No page number found
+
+
+def get_pdf_page_count_from_bytes(file_content: bytes) -> Optional[int]:
+    """
+    Get page count from PDF file bytes using PyMuPDF. Returns None for non-PDF or on error.
+    """
+    if not file_content or len(file_content) < 100:
+        return None
+    try:
+        import fitz  # type: ignore  # PyMuPDF
+        doc = fitz.open(stream=file_content, filetype="pdf")
+        try:
+            return len(doc)
+        finally:
+            doc.close()
+    except Exception:
+        return None
+
 
 # Create enhanced geocoding function for addresses
 def geocode_address_parallel(addresses: list, max_workers: int = 3) -> list:
@@ -1056,13 +1089,24 @@ def process_document_classification(self, document_id, original_filename, busine
                     except Exception as e:
                         logger.warning(f"⚠️ Failed to update property_id in documents table: {e}")
                 
-                # Also update status (separate call)
+                # Compute page_count: use actual PDF page count when available, else max from chunks
+                pdf_pages = get_pdf_page_count_from_bytes(file_content) if file_content else None
+                page_numbers = []
+                for ch in (chunks or []):
+                    p = extract_page_number_from_chunk(ch)
+                    if p is not None:
+                        page_numbers.append(p)
+                max_page_from_chunks = max(page_numbers) if page_numbers else 0
+                page_count = pdf_pages if pdf_pages is not None else max_page_from_chunks
+
+                # Also update status and page_count (separate call)
                 doc_storage.update_document_status(
                     document_id=str(document_id),
                     status='processing',  # Keep processing status
-                    business_id=business_id
+                    business_id=business_id,
+                    additional_data={'page_count': page_count}
                 )
-                logger.info(f"✅ Stored parsed text and metadata in Supabase")
+                logger.info(f"✅ Stored parsed text and metadata in Supabase (page_count={page_count})")
                 
                 # Phase 5: REMOVED duplicate vector creation from classification step
                 # Vector creation now happens in extraction step with proper metadata:
@@ -2093,13 +2137,23 @@ def process_document_with_dual_stores(self, document_id, original_filename, busi
                     extracted_json={},
                     business_id=business_id
                 )
-                
-                # Update document_summary
+
+                # Compute page_count: use actual PDF page count when available, else max from chunks
+                pdf_pages = get_pdf_page_count_from_bytes(file_content) if file_content else None
+                page_numbers = []
+                for ch in (chunks or []):
+                    p = extract_page_number_from_chunk(ch)
+                    if p is not None:
+                        page_numbers.append(p)
+                max_page_from_chunks = max(page_numbers) if page_numbers else 0
+                page_count = pdf_pages if pdf_pages is not None else max_page_from_chunks
+
+                # Update document_summary and page_count
                 doc_storage.update_document_status(
                     document_id=str(document_id),
                     status='processing',
                     business_id=business_id,
-                    additional_data={'document_summary': document_summary}
+                    additional_data={'document_summary': document_summary, 'page_count': page_count}
                 )
             else:
                 logger.info(f"✅ Using existing job_id from classification: {job_id}")

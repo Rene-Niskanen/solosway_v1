@@ -791,6 +791,29 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
+  // When documents from this flow reach 'completed', notify sidebar/settings to refresh usage count
+  const completedDocIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const docIds = uploadedFiles.filter(f => f.documentId && f.uploadStatus === 'complete').map(f => f.documentId!);
+    if (docIds.length === 0) return;
+    const interval = setInterval(async () => {
+      for (const id of docIds) {
+        if (completedDocIdsRef.current.has(id)) continue;
+        try {
+          const res = await backendApi.getDocumentStatus(id);
+          const inner = res?.data && typeof res.data === 'object' && 'data' in res.data
+            ? (res.data as { data: { status?: string } }).data
+            : (res?.data as { status?: string } | undefined);
+          if (inner?.status === 'completed') {
+            completedDocIdsRef.current.add(id);
+            window.dispatchEvent(new CustomEvent('usageShouldRefresh'));
+          }
+        } catch (_) {}
+      }
+    }, 2000);
+    return () => clearInterval(interval);
+  }, [uploadedFiles]);
+
   // Update spin speed and visibility as suggestions arrive
   useEffect(() => {
     if (isLoadingSuggestions) {
