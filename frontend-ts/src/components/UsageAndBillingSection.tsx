@@ -1,10 +1,10 @@
 "use client";
 
 import * as React from "react";
-import { backendApi, type UsageResponse } from "@/services/backendApi";
 import { Button } from "@/components/ui/button";
 import { TIERS, upgradeToBusinessCopy, getLocaleCurrency, getPriceForTier, formatPrice, type TierKey } from "@/config/billing";
 import { usePlanModal } from "@/contexts/PlanModalContext";
+import { useUsage } from "@/contexts/UsageContext";
 import { useCurrencyOptional, CURRENCY_OPTIONS } from "@/contexts/CurrencyContext";
 import {
   Select,
@@ -16,51 +16,7 @@ import {
 
 export const UsageAndBillingSection: React.FC = () => {
   const { openPlanModal } = usePlanModal();
-  const [usage, setUsage] = React.useState<UsageResponse | null>(null);
-  const [loading, setLoading] = React.useState(true);
-  const [error, setError] = React.useState<string | null>(null);
-
-  const fetchUsage = React.useCallback(() => {
-    setError(null);
-    backendApi
-      .getUsage()
-      .then((res) => {
-        const payload = res.data && typeof res.data === 'object' && 'data' in res.data ? (res.data as { data: UsageResponse }).data : res.data;
-        if (res.success && payload) setUsage(payload);
-        else setError(res.error || "Failed to load usage");
-      })
-      .catch(() => setError("Unable to load usage"));
-  }, []);
-
-  React.useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    backendApi
-      .getUsage()
-      .then((res) => {
-        if (cancelled) return;
-        const payload = res.data && typeof res.data === 'object' && 'data' in res.data ? (res.data as { data: UsageResponse }).data : res.data;
-        if (res.success && payload) setUsage(payload);
-        else setError(res.error || "Failed to load usage");
-      })
-      .catch(() => {
-        if (!cancelled) setError("Unable to load usage");
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  // Refetch when a document finishes processing so count updates instantly
-  React.useEffect(() => {
-    const handler = () => fetchUsage();
-    window.addEventListener('usageShouldRefresh', handler);
-    return () => window.removeEventListener('usageShouldRefresh', handler);
-  }, [fetchUsage]);
+  const { usage, loading, error } = useUsage();
 
   if (loading) {
     return (
@@ -90,7 +46,7 @@ export const UsageAndBillingSection: React.FC = () => {
           </p>
         </div>
         <div className="rounded-lg border border-gray-200 bg-white p-6 text-gray-600">
-          {error || "No usage data available."}
+          {error ? "Unable to load usage." : "No usage data available."}
         </div>
       </div>
     );
@@ -120,7 +76,7 @@ export const UsageAndBillingSection: React.FC = () => {
           <label className="flex items-center gap-2 text-[13px] text-gray-600">
             <span>Currency</span>
             <Select value={currency} onValueChange={currencyContext.setCurrency}>
-              <SelectTrigger className="w-[100px] h-8 text-xs rounded-md border-gray-200 pl-2 pr-1.5 gap-1 focus:ring-gray-300 focus:ring-offset-0">
+              <SelectTrigger className="flex h-6 w-[72px] items-center justify-between rounded-md border border-gray-200 bg-white py-0 pl-1.5 pr-0.5 gap-0.5 text-xs text-gray-900 focus:ring-1 focus:ring-gray-300 focus:ring-offset-0 [&_svg]:h-2.5 [&_svg]:w-2.5">
                 <SelectValue placeholder="Currency" />
               </SelectTrigger>
               <SelectContent className="z-[200] min-w-0 w-[var(--radix-select-trigger-width)] p-1 text-xs border-gray-200 bg-white shadow-sm" position="popper">
@@ -155,7 +111,7 @@ export const UsageAndBillingSection: React.FC = () => {
         {!businessCopy && <div className="mb-4" />}
         <Button
           variant="outline"
-          onClick={() => openPlanModal(usage.plan)}
+          onClick={() => openPlanModal(usage.plan, usage.billing_cycle_end)}
           className="rounded-sm px-3 py-1 h-auto text-xs font-medium bg-transparent border border-gray-300 text-gray-700 hover:bg-transparent hover:text-gray-700 mt-4"
         >
           Manage Subscription

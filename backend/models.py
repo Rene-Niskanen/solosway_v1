@@ -73,6 +73,8 @@ class User(db.Model, UserMixin):
     company_name = db.Column(db.String(150))
     company_website = db.Column(db.String(200))
     business_id = db.Column(UUID(as_uuid=True))
+    subscription_tier = db.Column(db.String(32), default="professional", nullable=False)
+    subscription_period_ends_at = db.Column(db.Date, nullable=True)  # end of current plan period (1 month from switch)
 
     # New fields for invite-only system
     role = db.Column(db.Enum(UserRole), default=UserRole.USER, nullable=False)

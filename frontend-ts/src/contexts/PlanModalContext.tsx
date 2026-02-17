@@ -5,7 +5,8 @@ import * as React from "react";
 type PlanModalContextValue = {
   isOpen: boolean;
   currentPlan: string | null;
-  openPlanModal: (currentPlan: string) => void;
+  billingCycleEnd: string | null;
+  openPlanModal: (currentPlan: string, billingCycleEnd?: string) => void;
   closePlanModal: () => void;
 };
 
@@ -26,20 +27,23 @@ export function usePlanModalOptional(): PlanModalContextValue | null {
 export const PlanModalProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [isOpen, setIsOpen] = React.useState(false);
   const [currentPlan, setCurrentPlan] = React.useState<string | null>(null);
+  const [billingCycleEnd, setBillingCycleEnd] = React.useState<string | null>(null);
 
-  const openPlanModal = React.useCallback((plan: string) => {
+  const openPlanModal = React.useCallback((plan: string, cycleEnd?: string) => {
     setCurrentPlan(plan);
+    setBillingCycleEnd(cycleEnd ?? null);
     setIsOpen(true);
   }, []);
 
   const closePlanModal = React.useCallback(() => {
     setIsOpen(false);
     setCurrentPlan(null);
+    setBillingCycleEnd(null);
   }, []);
 
   const value: PlanModalContextValue = React.useMemo(
-    () => ({ isOpen, currentPlan, openPlanModal, closePlanModal }),
-    [isOpen, currentPlan, openPlanModal, closePlanModal]
+    () => ({ isOpen, currentPlan, billingCycleEnd, openPlanModal, closePlanModal }),
+    [isOpen, currentPlan, billingCycleEnd, openPlanModal, closePlanModal]
   );
 
   return (

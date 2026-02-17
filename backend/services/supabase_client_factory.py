@@ -153,12 +153,18 @@ def get_supabase_db_url() -> str:
     # Priority 1: Direct connection string (SUPABASE_DB_URL)
     # This is the recommended approach for production databases
     # Format: postgresql://user:password@host:port/database
-    direct_url = os.environ.get("SUPABASE_DB_URL")
+    direct_url = (os.environ.get("SUPABASE_DB_URL") or "").strip()
     if direct_url:
         logger.info("Using SUPABASE_DB_URL for LangGraph checkpointer")
         return direct_url
-    
-    # Priority 2: Construct from SUPABASE_URL + SUPABASE_DB_PASSWORD (optional)
+
+    # Priority 2: Session pooler (SUPABASE_DB_URL_SESSION) - same format, works for SQLAlchemy
+    session_url = (os.environ.get("SUPABASE_DB_URL_SESSION") or "").strip()
+    if session_url:
+        logger.info("Using SUPABASE_DB_URL_SESSION for database connection")
+        return session_url
+
+    # Priority 3: Construct from SUPABASE_URL + SUPABASE_DB_PASSWORD (optional)
     # Only works if you have SUPABASE_URL (not available in all production setups)
     supabase_url = os.environ.get("SUPABASE_URL")
     db_password = os.environ.get("SUPABASE_DB_PASSWORD")
@@ -184,10 +190,9 @@ def get_supabase_db_url() -> str:
     # No valid Supabase connection string found
     error_msg = (
         "No Supabase database connection string available. "
-        "Please set SUPABASE_DB_URL with your direct PostgreSQL connection string.\n\n"
+        "Set SUPABASE_DB_URL or SUPABASE_DB_URL_SESSION to your PostgreSQL connection string.\n\n"
         "Format: postgresql://user:password@host:port/database\n\n"
-        "You can find this in your Supabase dashboard under:\n"
-        "  Settings > Database > Connection string (Direct connection)\n\n"
+        "In Supabase: Settings > Database > Connection string (URI or Session pooler).\n\n"
     )
     raise ValueError(error_msg)
 

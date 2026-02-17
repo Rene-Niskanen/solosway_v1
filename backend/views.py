@@ -4,7 +4,7 @@ from .models import Document, DocumentStatus, Property, PropertyDetails, Documen
 from .services.property_enrichment_service import PropertyEnrichmentService
 from .services.supabase_document_service import SupabaseDocumentService
 from .services.supabase_client_factory import get_supabase_client
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import os
 import uuid
 import requests
@@ -550,7 +550,7 @@ def handle_options_request():
             resp.headers['Access-Control-Allow-Origin'] = origin
         resp.headers['Access-Control-Allow-Credentials'] = 'true'
         resp.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
-        resp.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
+        resp.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, PATCH, DELETE, OPTIONS'
         resp.headers['Access-Control-Max-Age'] = '3600'
         return resp
 
@@ -564,7 +564,7 @@ def add_cors_headers(response):
         response.headers.add('Access-Control-Allow-Origin', origin)
         response.headers.add('Access-Control-Allow-Credentials', 'true')
         response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
-        response.headers.add('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
+        response.headers.add('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS')
     return response
 
 @views.route('/api/llm/query/stream', methods=['POST', 'OPTIONS'])
@@ -6287,17 +6287,65 @@ def get_usage():
     if not business_uuid_str:
         return jsonify({'error': 'User is not associated with a business'}), 400
     try:
-        from .services.usage_service import get_usage_for_api
+        from .services.usage_service import get_usage_for_api, ALLOWED_TIERS, DEFAULT_TIER
         user_email = getattr(current_user, 'email', None) or None
+        stored = getattr(current_user, 'subscription_tier', None)
+        plan = stored if (stored and stored in ALLOWED_TIERS) else DEFAULT_TIER
+        billing_cycle_start_override = None
+        billing_cycle_end_override = None
+        period_end = getattr(current_user, 'subscription_period_ends_at', None)
+        if period_end:
+            start = period_end - timedelta(days=30)
+            billing_cycle_start_override = start.strftime("%Y-%m-%d")
+            billing_cycle_end_override = period_end.strftime("%Y-%m-%d")
         data = get_usage_for_api(
             business_uuid_str,
             user_id=current_user.id,
             user_email=user_email,
+            plan_override=plan,
+            billing_cycle_start_override=billing_cycle_start_override,
+            billing_cycle_end_override=billing_cycle_end_override,
         )
         return jsonify({'success': True, 'data': data})
     except Exception as e:
         logger.exception("Error fetching usage: %s", e)
         return jsonify({'error': str(e)}), 500
+
+
+@views.route('/api/usage/plan', methods=['PATCH', 'OPTIONS'])
+@login_required
+def update_plan():
+    """
+    Update the authenticated user's subscription tier (personal, professional, business).
+    No billing; for testing you can switch back and forth. Idempotent if already on that plan.
+    """
+    if request.method == 'OPTIONS':
+        return '', 200
+    try:
+        from .services.usage_service import ALLOWED_TIERS
+        from .models import db
+        body = request.get_json(silent=True) or {}
+        plan = body.get('plan')
+        if not plan or not isinstance(plan, str):
+            return jsonify({'success': False, 'error': 'Invalid plan. Must be one of: personal, professional, business.'}), 400
+        plan = plan.strip().lower()
+        if plan not in ALLOWED_TIERS:
+            return jsonify({'success': False, 'error': 'Invalid plan. Must be one of: personal, professional, business.'}), 400
+        current = getattr(current_user, 'subscription_tier', None)
+        if current == plan:
+            return jsonify({'success': True, 'plan': plan}), 200
+        current_user.subscription_tier = plan
+        current_user.subscription_period_ends_at = (datetime.now(timezone.utc).date() + timedelta(days=30))
+        db.session.commit()
+        return jsonify({'success': True, 'plan': plan}), 200
+    except Exception as e:
+        try:
+            from .models import db
+            db.session.rollback()
+        except Exception:
+            pass
+        logger.exception("Error updating plan: %s", e)
+        return jsonify({'success': False, 'error': 'Unable to update plan. Please try again.'}), 500
 
 
 @views.route('/api/files', methods=['GET', 'OPTIONS'])

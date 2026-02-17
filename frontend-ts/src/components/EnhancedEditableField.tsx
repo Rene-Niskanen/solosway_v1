@@ -154,6 +154,7 @@ export const EnhancedEditableField: React.FC<EnhancedEditableFieldProps> = ({
       <div
         style={{ width: '100%', minWidth: 200 }}
         onClick={(e) => e.stopPropagation()}
+        onPointerDownCapture={(e) => e.stopPropagation()}
         onKeyDown={(e) => e.stopPropagation()}
       >
         <div style={{ display: 'flex', alignItems: multiline ? 'flex-start' : 'center', gap: '10px', width: '100%', flexWrap: 'wrap' }}>
@@ -341,11 +342,26 @@ export const EnhancedEditableField: React.FC<EnhancedEditableFieldProps> = ({
     transition: staticDisplay ? 'none' : 'all 150ms ease',
   };
 
+  // Use div with role="button" instead of <button> to avoid any native form/link behavior
+  // that could cause navigation or blank screen when used inside complex layouts (e.g. Settings > Profile).
   return (
-    <button
-      type="button"
-      onClick={triggerEdit}
-      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); triggerEdit(e); } }}
+    <div
+      role="button"
+      tabIndex={0}
+      aria-label={placeholder || 'Edit'}
+      onClick={(e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        triggerEdit(e);
+      }}
+      onPointerDownCapture={(e) => e.stopPropagation()}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          e.stopPropagation();
+          triggerEdit(e);
+        }
+      }}
       onMouseEnter={staticDisplay ? undefined : () => setIsHovered(true)}
       onMouseLeave={staticDisplay ? undefined : () => setIsHovered(false)}
       style={displayStyles}
@@ -395,6 +411,6 @@ export const EnhancedEditableField: React.FC<EnhancedEditableFieldProps> = ({
           <Check className="w-4 h-4" style={{ color: '#22c55e' }} />
         </div>
       )}
-    </button>
+    </div>
   );
 };

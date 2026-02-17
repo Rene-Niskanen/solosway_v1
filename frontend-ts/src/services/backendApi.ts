@@ -857,6 +857,14 @@ class BackendApiService {
     return this.fetchApi<UsageResponse>('/api/usage', { method: 'GET' });
   }
 
+  /** Update subscription tier (personal, professional, business). No billing; for testing you can switch back and forth. */
+  async updatePlan(plan: string): Promise<ApiResponse<{ plan: string }>> {
+    return this.fetchApi<{ plan: string }>('/api/usage/plan', {
+      method: 'PATCH',
+      body: JSON.stringify({ plan }),
+    });
+  }
+
   async getDocumentsByFolder(folderId: string): Promise<ApiResponse<any>> {
     // Fetch documents in a specific folder
     return this.fetchApi<any>(`/api/documents/folder/${folderId}`, {

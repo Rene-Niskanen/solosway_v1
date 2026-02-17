@@ -31,8 +31,11 @@ import {
 import { useChatHistory } from "./ChatHistoryContext";
 import { useFilingSidebar } from "../contexts/FilingSidebarContext";
 import { useFeedbackModal } from "../contexts/FeedbackModalContext";
+import { usePlanModal } from "../contexts/PlanModalContext";
+import { useUsage } from "../contexts/UsageContext";
 import { useAuthUser } from "../contexts/AuthContext";
-import { backendApi, type UsageResponse } from "@/services/backendApi";
+import { backendApi } from "@/services/backendApi";
+import { TIERS, type TierKey } from "@/config/billing";
 
 export interface SidebarProps {
   className?: string;
@@ -104,13 +107,8 @@ export const Sidebar = ({
   const [showArchived, setShowArchived] = React.useState<boolean>(false);
   const [isBrandDropdownOpen, setIsBrandDropdownOpen] = React.useState<boolean>(false);
   const [profilePicCacheBust, setProfilePicCacheBust] = React.useState<number | null>(null);
-  const [usageData, setUsageData] = React.useState<UsageResponse | null>(null);
-  const [usageLoading, setUsageLoading] = React.useState(true);
-  const [usageError, setUsageError] = React.useState(false);
-  const [usagePopupOpen, setUsagePopupOpen] = React.useState(false);
-  const usagePopupLeaveTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
-  const usagePopupEnterTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
-  const USAGE_POPUP_HOVER_DELAY_MS = 500;
+  const { openPlanModal } = usePlanModal();
+  const { usage: usageData, loading: usageLoading, error: usageError } = useUsage();
   const brandButtonRef = React.useRef<HTMLButtonElement>(null);
   const brandButtonRefExpanded = React.useRef<HTMLButtonElement>(null);
   const brandDropdownRef = React.useRef<HTMLDivElement>(null);
@@ -163,72 +161,6 @@ export const Sidebar = ({
     };
     fetchUserData();
   }, []);
-
-  const fetchUsage = React.useCallback(() => {
-    setUsageError(false);
-    backendApi.getUsage()
-      .then((res) => {
-        const payload = res.data && typeof res.data === 'object' && 'data' in res.data ? (res.data as { data: UsageResponse }).data : res.data;
-        if (res.success && payload) setUsageData(payload);
-        else setUsageError(true);
-      })
-      .catch(() => setUsageError(true));
-  }, []);
-
-  // Fetch usage on mount and whenever a document finishes processing (instant sync with Settings)
-  React.useEffect(() => {
-    let cancelled = false;
-    setUsageLoading(true);
-    setUsageError(false);
-    backendApi.getUsage()
-      .then((res) => {
-        if (cancelled) return;
-        const payload = res.data && typeof res.data === 'object' && 'data' in res.data ? (res.data as { data: UsageResponse }).data : res.data;
-        if (res.success && payload) setUsageData(payload);
-        else setUsageError(true);
-      })
-      .catch(() => { if (!cancelled) setUsageError(true); })
-      .finally(() => { if (!cancelled) setUsageLoading(false); });
-    return () => { cancelled = true; };
-  }, []);
-
-  React.useEffect(() => {
-    const handler = () => fetchUsage();
-    window.addEventListener('usageShouldRefresh', handler);
-    return () => window.removeEventListener('usageShouldRefresh', handler);
-  }, [fetchUsage]);
-
-  // Usage popup: delay open on hover so it doesn't appear straight away; delay close on leave so moving to popup keeps it open
-  const clearUsagePopupLeaveTimer = React.useCallback(() => {
-    if (usagePopupLeaveTimerRef.current) {
-      clearTimeout(usagePopupLeaveTimerRef.current);
-      usagePopupLeaveTimerRef.current = null;
-    }
-  }, []);
-  const clearUsagePopupEnterTimer = React.useCallback(() => {
-    if (usagePopupEnterTimerRef.current) {
-      clearTimeout(usagePopupEnterTimerRef.current);
-      usagePopupEnterTimerRef.current = null;
-    }
-  }, []);
-  const scheduleUsagePopupOpen = React.useCallback(() => {
-    clearUsagePopupEnterTimer();
-    usagePopupEnterTimerRef.current = setTimeout(() => setUsagePopupOpen(true), USAGE_POPUP_HOVER_DELAY_MS);
-  }, [clearUsagePopupEnterTimer]);
-  const scheduleUsagePopupClose = React.useCallback(() => {
-    clearUsagePopupEnterTimer();
-    clearUsagePopupLeaveTimer();
-    usagePopupLeaveTimerRef.current = setTimeout(() => setUsagePopupOpen(false), 150);
-  }, [clearUsagePopupLeaveTimer, clearUsagePopupEnterTimer]);
-  const onUsageBarOrPopupEnter = React.useCallback(() => {
-    clearUsagePopupLeaveTimer();
-    clearUsagePopupEnterTimer();
-    setUsagePopupOpen(true);
-  }, [clearUsagePopupLeaveTimer, clearUsagePopupEnterTimer]);
-  React.useEffect(() => () => {
-    clearUsagePopupLeaveTimer();
-    clearUsagePopupEnterTimer();
-  }, [clearUsagePopupLeaveTimer, clearUsagePopupEnterTimer]);
 
   // Sync profile picture when updated from Profile page (and bust cache so new image shows)
   React.useEffect(() => {
@@ -319,8 +251,10 @@ export const Sidebar = ({
   }, [userName]);
 
   const planLabel = React.useMemo(() => {
-    const plan = usageData?.plan ? usageData.plan.charAt(0).toUpperCase() + usageData.plan.slice(1) : 'Free';
-    return `${plan} plan`;
+    const plan = usageData?.plan as TierKey | undefined;
+    const tier = plan && plan in TIERS ? TIERS[plan] : null;
+    const name = tier?.name ?? (plan ? plan.charAt(0).toUpperCase() + plan.slice(1) : 'Free');
+    return `${name} plan`;
   }, [usageData?.plan]);
 
   // Primary navigation items
@@ -583,9 +517,9 @@ export const Sidebar = ({
           // Force GPU acceleration for smoother rendering
           transform: 'translateZ(0)',
           backfaceVisibility: 'hidden',
-          // Ensure background extends fully to prevent any gaps
+          // Ensure background extends fully to prevent any gaps (1px same-color border prevents dashboard background leakage at seam)
           boxShadow: 'none',
-          borderRight: 'none',
+          borderRight: '1px solid #F2F2EF',
           // Ensure full height coverage - use 100vh to cover entire viewport
           minHeight: '100vh',
           height: '100vh',
@@ -610,7 +544,7 @@ export const Sidebar = ({
           <div className="flex flex-col h-full min-h-0 pb-3 pt-12">
             {/* Top-right (expanded) / same column as icons (icons-only): Show only icons / Expand sidebar toggle */}
             {onIconsOnlyToggle && (
-              <div className={`absolute top-0.5 pt-3 z-10 ${isIconsOnly ? 'left-0 right-0 flex justify-center pl-[14px] pr-0' : 'right-0 flex items-center justify-end pr-2'}`}>
+              <div className={`absolute top-1.5 pt-3 z-10 ${isIconsOnly ? 'left-0 right-0 flex justify-center pl-[14px] pr-0' : 'right-0 flex items-center justify-end pr-2'}`}>
                 <button
                   type="button"
                   onClick={(e) => { e.stopPropagation(); onIconsOnlyToggle(); }}
@@ -660,105 +594,13 @@ export const Sidebar = ({
               {primaryNav.map(renderNavItem)}
             </div>
 
-            {/* Scrollable middle: spacer + usage — profile stays visible at bottom */}
+            {/* Scrollable middle: spacer — profile stays visible at bottom; usage bar moved to FilingSidebar */}
             <div className="flex-1 min-h-0 overflow-y-auto flex flex-col">
               <div className="flex-1 min-h-0" />
-              {/* Usage: thin line above profile; full card on hover (state + delay so moving up to popup keeps it open); hidden when account dropdown is open */}
-              {!isExpanded && !isIconsOnly && !isBrandDropdownOpen && (
-              <div
-                className="relative flex-shrink-0 px-3 pb-1.5"
-                onMouseEnter={scheduleUsagePopupOpen}
-                onMouseLeave={scheduleUsagePopupClose}
-              >
-                {/* Full card — visible when bar or popup hovered; mb-1 so it sits just above the bar */}
-                <div
-                  className={`absolute bottom-full left-3 right-0 mb-3 rounded-md border border-gray-200 bg-white p-2 shadow-lg transition-opacity duration-150 z-[10001] ${usagePopupOpen ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`}
-                  style={{ boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}
-                  onMouseEnter={onUsageBarOrPopupEnter}
-                  onMouseLeave={scheduleUsagePopupClose}
-                >
-                  {usageLoading ? (
-                    <div className="space-y-1.5">
-                      <div className="flex justify-between items-center">
-                        <span className="text-[12px] font-medium text-gray-900">Your usage</span>
-                        <span className="text-[10px] text-gray-400">Loading...</span>
-                      </div>
-                      <div className="h-1 w-full rounded-full bg-gray-200" />
-                    </div>
-                  ) : usageError ? (
-                    <div className="space-y-1.5">
-                      <p className="text-[12px] font-medium text-gray-900">Usage</p>
-                      <p className="text-[11px] text-gray-500">Unable to load usage.</p>
-                      <button
-                        onClick={() => { closeFilingSidebar(); setIsBrandDropdownOpen(false); onNavigate?.('settings', { openCategory: 'usage-billing' }); }}
-                        className="w-full py-1 rounded text-[12px] font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 transition-colors"
-                      >
-                        Go to Usage & Billing
-                      </button>
-                    </div>
-                  ) : usageData ? (
-                    <>
-                      <div className="flex justify-between items-center gap-1.5 mb-1">
-                        <span className="text-[12px] font-medium text-gray-900">Your Usage This Month</span>
-                        <span className="flex-shrink-0 rounded-full bg-orange-500 px-1.5 py-0.5 text-[10px] font-medium text-white">
-                          {Math.round(usageData.usage_percent ?? 0)}%
-                        </span>
-                      </div>
-                      <p className="text-[11px] text-gray-700 mb-1">
-                        {(usageData.pages_used ?? 0).toLocaleString()} of {(usageData.monthly_limit ?? 0).toLocaleString()} pages used
-                      </p>
-                      <p className="text-[10px] text-gray-500 mb-1.5">
-                        {(usageData.remaining ?? 0).toLocaleString()} pages remaining
-                      </p>
-                      <div className="flex gap-0.5 h-1 rounded overflow-hidden mb-1.5" aria-hidden>
-                        {Array.from({ length: 32 }).map((_, i) => {
-                          const fill = (i + 1) / 32 <= (usageData.usage_percent ?? 0) / 100;
-                          return (
-                            <div
-                              key={i}
-                              className={`flex-1 min-w-0 ${fill ? 'bg-gradient-to-r from-orange-500 to-orange-600' : 'bg-gray-200'}`}
-                            />
-                          );
-                        })}
-                      </div>
-                      <button
-                        onClick={() => { closeFilingSidebar(); setIsBrandDropdownOpen(false); onNavigate?.('settings', { openCategory: 'usage-billing' }); }}
-                        className="w-full py-1 rounded text-[12px] font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 transition-colors"
-                      >
-                        Go to Usage & Billing
-                      </button>
-                    </>
-                  ) : null}
-                </div>
-                {/* Thin line only — always visible above profile button */}
-                <div
-                  className="flex gap-0.5 h-1.5 rounded overflow-hidden cursor-default"
-                  aria-label="Page usage this month"
-                  title="Hover for details"
-                >
-                  {usageLoading ? (
-                    <div className="flex-1 h-full rounded bg-gray-200" />
-                  ) : usageData ? (
-                    Array.from({ length: 32 }).map((_, i) => {
-                      const fill = (i + 1) / 32 <= (usageData.usage_percent ?? 0) / 100;
-                      return (
-                        <div
-                          key={i}
-                          className={`flex-1 min-w-0 h-full ${fill ? 'bg-gradient-to-r from-orange-500 to-orange-600' : 'bg-gray-200'}`}
-                        />
-                      );
-                    })
-                  ) : (
-                    <div className="flex-1 h-full rounded bg-gray-200" />
-                  )}
-                </div>
-              </div>
-            )}
-
             </div>
 
-            {/* Profile strip at bottom — faint line above, no container colour */}
-            <div className={`relative flex-shrink-0 min-h-[52px] border-t border-gray-100 pl-3 pr-3 py-2 ${isIconsOnly ? 'flex justify-center' : ''}`}>
+            {/* Profile strip at bottom — line on top only */}
+            <div className={`relative flex-shrink-0 min-h-[54px] border-0 border-t border-gray-200 pl-5 pr-3 pt-4 pb-2 ${isIconsOnly ? 'flex justify-center' : ''}`}>
               {/* Icons-only: render dropdown in portal so it isn't clipped by sidebar transform/overflow */}
               {isIconsOnly && isBrandDropdownOpen && iconsOnlyDropdownPosition && typeof document !== 'undefined' &&
                 createPortal(
@@ -804,7 +646,10 @@ export const Sidebar = ({
                       </button>
                       <div className="border-t border-gray-100 my-1" />
                       <button
-                        onClick={() => setIsBrandDropdownOpen(false)}
+                        onClick={() => {
+                          setIsBrandDropdownOpen(false);
+                          openPlanModal(usageData?.plan ?? "professional", usageData?.billing_cycle_end);
+                        }}
                         className="w-full flex items-center gap-3 px-2 py-2 rounded text-[#141413] hover:bg-gray-50 transition-colors text-left"
                       >
                         <ArrowUpCircle className="w-4 h-4 flex-shrink-0 text-[#141413]" strokeWidth={1.25} />
@@ -841,7 +686,7 @@ export const Sidebar = ({
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, y: 4 }}
                     transition={{ duration: 0.15, ease: [0.4, 0, 0.2, 1] }}
-                    className={`rounded-2xl bg-white z-[10002] pt-3 pb-1.5 absolute bottom-full mb-1 ${isIconsOnly ? 'left-2 right-2' : 'left-3 right-3'}`}
+                    className={`rounded-2xl bg-white z-[10002] pt-3 pb-1.5 absolute bottom-full mb-3 ${isIconsOnly ? 'left-2 right-2' : 'left-3 right-3'}`}
                     style={{ boxShadow: '0 4px 16px rgba(0,0,0,0.08), 0 0 0 1px rgba(0,0,0,0.03)' }}
                   >
                     <div className="px-3 pb-2">
@@ -868,7 +713,10 @@ export const Sidebar = ({
                       </button>
                       <div className="border-t border-gray-100 my-1" />
                       <button
-                        onClick={() => setIsBrandDropdownOpen(false)}
+                        onClick={() => {
+                          setIsBrandDropdownOpen(false);
+                          openPlanModal(usageData?.plan ?? "professional", usageData?.billing_cycle_end);
+                        }}
                         className="w-full flex items-center gap-3 px-2 py-2 rounded text-[#141413] hover:bg-gray-50 transition-colors text-left"
                       >
                         <ArrowUpCircle className="w-4 h-4 flex-shrink-0 text-[#141413]" strokeWidth={1.25} />
@@ -902,16 +750,16 @@ export const Sidebar = ({
                   ref={brandButtonRef}
                   onClick={() => setIsBrandDropdownOpen(!isBrandDropdownOpen)}
                   className={`flex items-center rounded transition-colors duration-75 text-left min-w-0 ${
-                    isIconsOnly ? 'p-1' : 'gap-1.5 flex-1 py-0.5'
+                    isIconsOnly ? 'p-1' : 'gap-3 flex-1 py-0.5'
                   }`}
                   aria-label="Account menu"
                 >
-                  <div className="h-6 w-6 rounded-full bg-gray-700 flex items-center justify-center flex-shrink-0 text-white text-xs font-medium">
+                  <div className="h-[26px] w-[26px] rounded-full bg-gray-700 flex items-center justify-center flex-shrink-0 text-white text-xs font-medium">
                     {userInitials}
                   </div>
                   {!isIconsOnly && (
                     <div className="min-w-0 flex-1 text-left">
-                      <p className="text-[12px] font-semibold text-[#141413] truncate leading-tight">{userName}</p>
+                      <p className="text-[13px] font-semibold text-[#141413] truncate leading-tight">{userName}</p>
                       <p className="text-[11px] text-muted-foreground truncate leading-tight">{planLabel}</p>
                     </div>
                   )}
@@ -925,7 +773,7 @@ export const Sidebar = ({
                   className="p-1 rounded text-muted-foreground hover:text-[#141413] transition-colors"
                   aria-label="Account menu"
                 >
-                  <ChevronsUpDown className="w-3.5 h-3.5" strokeWidth={1.5} />
+                  <ChevronsUpDown className="w-4 h-4" strokeWidth={1.5} />
                 </button>
               </div>
             </div>
@@ -1093,97 +941,8 @@ export const Sidebar = ({
               )}
             </div>
 
-            {/* Usage: thin line above profile; full card on hover (expanded sidebar; same state so moving up keeps popup open); hidden when account dropdown is open */}
-            {!isBrandDropdownOpen && (
-            <div
-              className="relative flex-shrink-0 px-3 pb-1.5"
-              onMouseEnter={scheduleUsagePopupOpen}
-              onMouseLeave={scheduleUsagePopupClose}
-            >
-              <div
-                className={`absolute bottom-full left-3 right-0 mb-3 rounded-md border border-gray-200 bg-white p-2 shadow-lg transition-opacity duration-150 z-[10001] ${usagePopupOpen ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`}
-                style={{ boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}
-                onMouseEnter={onUsageBarOrPopupEnter}
-                onMouseLeave={scheduleUsagePopupClose}
-              >
-                {usageLoading ? (
-                  <div className="space-y-1.5">
-                    <div className="flex justify-between items-center">
-                      <span className="text-[12px] font-medium text-gray-900">Your usage</span>
-                      <span className="text-[10px] text-gray-400">Loading...</span>
-                    </div>
-                    <div className="h-1 w-full rounded-full bg-gray-200" />
-                  </div>
-                ) : usageError ? (
-                  <div className="space-y-1.5">
-                    <p className="text-[12px] font-medium text-gray-900">Usage</p>
-                    <p className="text-[11px] text-gray-500">Unable to load usage.</p>
-                    <button
-                      onClick={() => { closeFilingSidebar(); setIsBrandDropdownOpen(false); onNavigate?.('settings', { openCategory: 'usage-billing' }); }}
-                      className="w-full py-1 rounded text-[12px] font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 transition-colors"
-                    >
-                      Go to Usage & Billing
-                    </button>
-                  </div>
-                ) : usageData ? (
-                  <>
-                    <div className="flex justify-between items-center gap-1.5 mb-1">
-                      <span className="text-[12px] font-medium text-gray-900">Your Usage This Month</span>
-                      <span className="flex-shrink-0 rounded-full bg-orange-500 px-1.5 py-0.5 text-[10px] font-medium text-white">
-                        {Math.round(usageData.usage_percent ?? 0)}%
-                      </span>
-                    </div>
-                    <p className="text-[11px] text-gray-700 mb-1">
-                      {(usageData.pages_used ?? 0).toLocaleString()} of {(usageData.monthly_limit ?? 0).toLocaleString()} pages used
-                    </p>
-                    <p className="text-[10px] text-gray-500 mb-1.5">
-                      {(usageData.remaining ?? 0).toLocaleString()} pages remaining
-                    </p>
-                    <div className="flex gap-0.5 h-1 rounded overflow-hidden mb-1.5" aria-hidden>
-                      {Array.from({ length: 32 }).map((_, i) => {
-                        const fill = (i + 1) / 32 <= (usageData.usage_percent ?? 0) / 100;
-                        return (
-                          <div
-                            key={i}
-                            className={`flex-1 min-w-0 ${fill ? 'bg-gradient-to-r from-orange-500 to-orange-600' : 'bg-gray-200'}`}
-                          />
-                        );
-                      })}
-                    </div>
-                    <button
-                      onClick={() => { closeFilingSidebar(); setIsBrandDropdownOpen(false); onNavigate?.('settings', { openCategory: 'usage-billing' }); }}
-                      className="w-full py-1 rounded text-[12px] font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 transition-colors"
-                    >
-                      Go to Usage & Billing
-                    </button>
-                  </>
-                ) : null}
-              </div>
-              <div
-                className="flex gap-0.5 h-1.5 rounded overflow-hidden cursor-default"
-                aria-label="Page usage this month"
-                title="Hover for details"
-              >
-                {usageLoading ? (
-                  <div className="flex-1 h-full rounded bg-gray-200" />
-                ) : usageData ? (
-                  Array.from({ length: 32 }).map((_, i) => {
-                    const fill = (i + 1) / 32 <= (usageData.usage_percent ?? 0) / 100;
-                    return (
-                      <div
-                        key={i}
-                        className={`flex-1 min-w-0 h-full ${fill ? 'bg-gradient-to-r from-orange-500 to-orange-600' : 'bg-gray-200'}`}
-                      />
-                    );
-                  })
-                ) : (
-                  <div className="flex-1 h-full rounded bg-gray-200" />
-                )}
-              </div>
-            </div>
-            )}
-            {/* Profile strip at bottom — faint line above, no container colour */}
-            <div className="relative flex-shrink-0 min-h-[52px] border-t border-gray-100 pl-3 pr-3 py-2">
+            {/* Profile strip at bottom — line on top only */}
+            <div className="relative flex-shrink-0 min-h-[54px] border-0 border-t border-gray-200 pl-5 pr-3 pt-4 pb-2">
               <AnimatePresence>
                 {isExpanded && isBrandDropdownOpen && (
                   <motion.div
@@ -1192,7 +951,7 @@ export const Sidebar = ({
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, y: 4 }}
                     transition={{ duration: 0.15, ease: [0.4, 0, 0.2, 1] }}
-                    className="absolute bottom-full left-3 right-3 mb-1 rounded-2xl bg-white z-[10002] pt-3 pb-1.5"
+                    className="absolute bottom-full left-3 right-3 mb-3 rounded-2xl bg-white z-[10002] pt-3 pb-1.5"
                     style={{ boxShadow: '0 4px 16px rgba(0,0,0,0.08), 0 0 0 1px rgba(0,0,0,0.03)' }}
                   >
                     <div className="px-3 pb-2">
@@ -1219,7 +978,10 @@ export const Sidebar = ({
                       </button>
                       <div className="border-t border-gray-100 my-1" />
                       <button
-                        onClick={() => setIsBrandDropdownOpen(false)}
+                        onClick={() => {
+                          setIsBrandDropdownOpen(false);
+                          openPlanModal(usageData?.plan ?? "professional", usageData?.billing_cycle_end);
+                        }}
                         className="w-full flex items-center gap-3 px-2 py-2 rounded text-[#141413] hover:bg-gray-50 transition-colors text-left"
                       >
                         <ArrowUpCircle className="w-4 h-4 flex-shrink-0 text-[#141413]" strokeWidth={1.25} />
@@ -1252,14 +1014,14 @@ export const Sidebar = ({
                 <button
                   ref={brandButtonRefExpanded}
                   onClick={() => setIsBrandDropdownOpen(!isBrandDropdownOpen)}
-                  className="flex items-center gap-1.5 flex-1 min-w-0 py-0.5 rounded transition-colors duration-75 text-left"
+                  className="flex items-center gap-3 flex-1 min-w-0 py-0.5 rounded transition-colors duration-75 text-left"
                   aria-label="Account menu"
                 >
-                  <div className="h-6 w-6 rounded-full bg-gray-700 flex items-center justify-center flex-shrink-0 text-white text-xs font-medium">
+                  <div className="h-[26px] w-[26px] rounded-full bg-gray-700 flex items-center justify-center flex-shrink-0 text-white text-xs font-medium">
                     {userInitials}
                   </div>
                   <div className="min-w-0 flex-1 text-left">
-                    <p className="text-[12px] font-semibold text-[#141413] truncate leading-tight">{userName}</p>
+                    <p className="text-[13px] font-semibold text-[#141413] truncate leading-tight">{userName}</p>
                     <p className="text-[11px] text-muted-foreground truncate leading-tight">{planLabel}</p>
                   </div>
                 </button>
@@ -1272,7 +1034,7 @@ export const Sidebar = ({
                   className="p-1 rounded text-muted-foreground hover:text-[#141413] transition-colors"
                   aria-label="Account menu"
                 >
-                  <ChevronsUpDown className="w-3.5 h-3.5" strokeWidth={1.5} />
+                  <ChevronsUpDown className="w-4 h-4" strokeWidth={1.5} />
                 </button>
               </div>
             </div>

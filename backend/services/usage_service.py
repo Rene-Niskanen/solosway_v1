@@ -19,6 +19,7 @@ TIER_LIMITS = {
     "professional": 2000,
     "business": 5000,
 }
+ALLOWED_TIERS = ("personal", "professional", "business")
 DEFAULT_TIER = "professional"
 
 # For future enforcement (not implemented in this phase)
@@ -79,24 +80,36 @@ def get_usage_for_api(
     business_uuid: str,
     user_id: Any = None,
     user_email: str | None = None,
+    plan_override: str | None = None,
+    billing_cycle_start_override: str | None = None,
+    billing_cycle_end_override: str | None = None,
 ) -> Dict[str, Any]:
     """
     Build the usage payload for GET /api/usage.
-    Assumes DEFAULT_TIER (professional) for everyone.
+    Uses plan_override if provided and in ALLOWED_TIERS; otherwise DEFAULT_TIER.
+    When billing_cycle_*_override are provided (e.g. from user.subscription_period_ends_at),
+    use them so the plan period is "1 month from switch" instead of calendar month.
     """
     pages_used = get_pages_used_this_month(business_uuid)
-    plan = DEFAULT_TIER
+    plan = (
+        plan_override
+        if plan_override and plan_override in ALLOWED_TIERS
+        else DEFAULT_TIER
+    )
     monthly_limit = TIER_LIMITS.get(plan, TIER_LIMITS[DEFAULT_TIER])
     remaining = max(0, monthly_limit - pages_used)
     usage_percent = (
         round((pages_used / monthly_limit) * 100, 2) if monthly_limit > 0 else 0.0
     )
 
-    _, start_utc, end_utc = get_current_billing_month_utc()
-    # Last day of month for display (e.g. 2026-02-28)
-    last_day = end_utc - timedelta(days=1)
-    billing_cycle_start = start_utc.strftime("%Y-%m-%d")
-    billing_cycle_end = last_day.strftime("%Y-%m-%d")
+    if billing_cycle_end_override and billing_cycle_start_override:
+        billing_cycle_start = billing_cycle_start_override
+        billing_cycle_end = billing_cycle_end_override
+    else:
+        _, start_utc, end_utc = get_current_billing_month_utc()
+        last_day = end_utc - timedelta(days=1)
+        billing_cycle_start = start_utc.strftime("%Y-%m-%d")
+        billing_cycle_end = last_day.strftime("%Y-%m-%d")
 
     return {
         "plan": plan,

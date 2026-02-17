@@ -20,7 +20,10 @@ import { SearchOrStartChatModal } from './SearchOrStartChatModal';
 import { UploadOverlay } from './UploadOverlay';
 import { PlanModalProvider, usePlanModal } from '../contexts/PlanModalContext';
 import { CurrencyProvider } from '../contexts/CurrencyContext';
+import { UsageProvider, useUsage } from '../contexts/UsageContext';
 import { PlanSelectionModal } from './PlanSelectionModal';
+import { toast } from '@/hooks/use-toast';
+import { TIERS, type TierKey } from '@/config/billing';
 
 export interface DashboardLayoutProps {
   className?: string;
@@ -39,8 +42,11 @@ const DashboardLayoutContent = ({
   const { closeSidebar: closeFilingSidebar, openSidebar: openFilingSidebar, isOpen: isFilingSidebarOpen, width: filingSidebarWidth, setUploadOverlayOpen, setInitialPendingFiles } = useFilingSidebar();
   const { togglePanel: toggleChatPanel, closePanel: closeChatPanel, isOpen: isChatPanelOpen } = useChatPanel();
   const { isOpen: isFeedbackModalOpen, setIsOpen: setFeedbackModalOpen, messageId: feedbackMessageId, conversationSnippet: feedbackConversationSnippet } = useFeedbackModal();
-  const { isOpen: planModalOpen, currentPlan: planModalCurrentPlan, closePlanModal } = usePlanModal();
+  const { isOpen: planModalOpen, currentPlan: planModalCurrentPlan, billingCycleEnd: planModalBillingCycleEnd, closePlanModal } = usePlanModal();
+  const { setUsageOptimistic, refetch: refetchUsage } = useUsage();
   const [selectedBackground, setSelectedBackground] = React.useState<string>('default-background');
+  const [planChangeInProgress, setPlanChangeInProgress] = React.useState(false);
+  const [planChangeTierId, setPlanChangeTierId] = React.useState<TierKey | null>(null);
   const [searchModalOpen, setSearchModalOpen] = React.useState(false);
   const uploadFileInputRef = React.useRef<HTMLInputElement>(null);
 
@@ -756,8 +762,71 @@ const DashboardLayoutContent = ({
           fullscreen
           open={true}
           currentPlan={planModalCurrentPlan ?? "professional"}
+          billingCycleEnd={planModalBillingCycleEnd ?? undefined}
+          isChangingPlan={planChangeInProgress}
+          changingToTierId={planChangeTierId}
           onOpenChange={(open) => {
             if (!open) closePlanModal();
+          }}
+          onUpgrade={async (tierId: TierKey) => {
+            setPlanChangeTierId(tierId);
+            setPlanChangeInProgress(true);
+            const timeoutMs = 15000;
+            try {
+              const res = await Promise.race([
+                backendApi.updatePlan(tierId),
+                new Promise<never>((_, reject) =>
+                  setTimeout(() => reject(new Error('Request timed out')), timeoutMs)
+                ),
+              ]);
+              if (res.success) {
+                closePlanModal();
+                setUsageOptimistic(tierId);
+                refetchUsage();
+                window.dispatchEvent(new CustomEvent('usageShouldRefresh'));
+                const name = TIERS[tierId]?.name ?? tierId;
+                toast({ title: 'Plan updated', description: `You're now on ${name}.` });
+              } else {
+                closePlanModal();
+                toast({ title: 'Could not update plan', description: res.error ?? 'Please try again.', variant: 'destructive' });
+              }
+            } catch {
+              closePlanModal();
+              toast({ title: 'Could not update plan', description: 'Please try again.', variant: 'destructive' });
+            } finally {
+              setPlanChangeInProgress(false);
+              setPlanChangeTierId(null);
+            }
+          }}
+          onSwitch={async (tierId: TierKey) => {
+            setPlanChangeTierId(tierId);
+            setPlanChangeInProgress(true);
+            const timeoutMs = 15000;
+            try {
+              const res = await Promise.race([
+                backendApi.updatePlan(tierId),
+                new Promise<never>((_, reject) =>
+                  setTimeout(() => reject(new Error('Request timed out')), timeoutMs)
+                ),
+              ]);
+              if (res.success) {
+                closePlanModal();
+                setUsageOptimistic(tierId);
+                refetchUsage();
+                window.dispatchEvent(new CustomEvent('usageShouldRefresh'));
+                const name = TIERS[tierId]?.name ?? tierId;
+                toast({ title: 'Plan updated', description: `You're now on ${name}.` });
+              } else {
+                closePlanModal();
+                toast({ title: 'Could not update plan', description: res.error ?? 'Please try again.', variant: 'destructive' });
+              }
+            } catch {
+              closePlanModal();
+              toast({ title: 'Could not update plan', description: 'Please try again.', variant: 'destructive' });
+            } finally {
+              setPlanChangeInProgress(false);
+              setPlanChangeTierId(null);
+            }
           }}
         />
       )}
@@ -916,9 +985,11 @@ export const DashboardLayout = (props: DashboardLayoutProps) => {
             <BrowserFullscreenProvider>
               <FeedbackModalProvider>
                 <PlanModalProvider>
-                  <CurrencyProvider>
-                    <DashboardLayoutContent {...props} />
-                  </CurrencyProvider>
+                  <UsageProvider>
+                    <CurrencyProvider>
+                      <DashboardLayoutContent {...props} />
+                    </CurrencyProvider>
+                  </UsageProvider>
                 </PlanModalProvider>
               </FeedbackModalProvider>
             </BrowserFullscreenProvider>

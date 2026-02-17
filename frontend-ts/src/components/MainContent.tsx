@@ -1638,7 +1638,7 @@ const BackgroundSettings: React.FC = () => {
         </p>
       </div>
 
-      {/* Background Preview Cards - Similar to reference image but with white theme */}
+      {/* Background Preview Cards - borders match UsageAndBillingSection plan card (rounded-xl, border border-gray-200, shadow-sm) */}
       <div className="grid grid-cols-3 gap-4">
         {BACKGROUNDS.map((background) => {
           const isSelected = selectedBackground === background.id;
@@ -1646,10 +1646,10 @@ const BackgroundSettings: React.FC = () => {
             <motion.button
               key={background.id}
               onClick={() => handleBackgroundSelect(background.id)}
-              className={`relative rounded-none overflow-hidden border-2 transition-all ${
+              className={`relative rounded-xl overflow-hidden border border-gray-200 transition-all ${
                 isSelected
-                  ? 'border-slate-900 shadow-lg ring-2 ring-slate-900 ring-offset-2'
-                  : 'border-slate-200 hover:border-slate-300'
+                  ? 'shadow-sm'
+                  : 'hover:border-gray-300'
               }`}
               style={{
                 aspectRatio: '16/9',
@@ -1670,12 +1670,12 @@ const BackgroundSettings: React.FC = () => {
               />
               {/* Overlay for selected state - subtle white overlay */}
               {isSelected && (
-                <div className="absolute inset-0 bg-white/5 border-2 border-slate-900 rounded-none" />
+                <div className="absolute inset-0 bg-white/5 rounded-xl" />
               )}
               {/* Checkmark indicator - white circle with checkmark */}
               {isSelected && (
-                <div className="absolute top-2 right-2 w-6 h-6 bg-white rounded-full flex items-center justify-center shadow-md border border-slate-200">
-                  <Check className="w-4 h-4 text-slate-900" strokeWidth={2.5} />
+                <div className="absolute top-2 right-2 w-6 h-6 bg-white rounded-full flex items-center justify-center shadow-sm border border-gray-200">
+                  <Check className="w-4 h-4 text-gray-900" strokeWidth={2.5} />
                 </div>
               )}
             </motion.button>
@@ -1684,7 +1684,7 @@ const BackgroundSettings: React.FC = () => {
         {/* Add Background Button */}
         <motion.button
           onClick={() => fileInputRef.current?.click()}
-          className="relative rounded-none overflow-hidden border-2 border-slate-200 hover:border-slate-300 transition-all flex items-center justify-center"
+          className="relative rounded-xl overflow-hidden border border-gray-200 hover:border-gray-300 transition-all flex items-center justify-center"
           style={{
             aspectRatio: '16/9',
             background: 'white',
@@ -1732,7 +1732,7 @@ const SettingsView: React.FC<{
   onNavigate?: (view: string, options?: { showMap?: boolean; openCategory?: string }) => void;
   initialCategory?: string;
   onClearInitialCategory?: () => void;
-}> = ({ onCloseSidebar, onRestoreSidebarState, getSidebarState, onNavigate, initialCategory, onClearInitialCategory }) => {
+  }> = ({ onCloseSidebar, onRestoreSidebarState, getSidebarState, onNavigate, initialCategory, onClearInitialCategory }) => {
   const authUser = useAuthUser() as Record<string, unknown> | null | undefined;
   const [activeCategory, setActiveCategory] = React.useState<string>('general');
   const [savedLocation, setSavedLocation] = React.useState<string>('');
@@ -2173,7 +2173,7 @@ export const MainContent = ({
   const [hasPerformedSearch, setHasPerformedSearch] = React.useState<boolean>(false);
   // When opening chat from "Analyse with AI", prefill the chat bar with this document so the first query uses it
   const [initialDocumentChipForChat, setInitialDocumentChipForChat] = React.useState<{ id: string; label: string } | null>(null);
-  
+
   // Keep ref in sync with state
   React.useEffect(() => {
     isMapVisibleRef.current = isMapVisible;
@@ -3504,7 +3504,7 @@ export const MainContent = ({
     });
   };
 
-  const handleNavigate = (view: string, options?: { showMap?: boolean }) => {
+  const handleNavigate = (view: string, options?: { showMap?: boolean; openCategory?: string }) => {
     if (options?.showMap) {
       setIsMapVisible(true);
     }
@@ -5323,7 +5323,8 @@ export const MainContent = ({
     <div 
     className={`flex-1 relative ${(currentView === 'search' || currentView === 'home') ? '' : currentView === 'settings' ? 'bg-[#FAF9F6]' : 'bg-white'} ${className || ''}`} 
     style={{ 
-      marginLeft: mainContentMarginLeft,
+      // Overlap 1px when Settings so dashboard background doesn't show through a subpixel gap (no reddish-brown leakage)
+      marginLeft: currentView === 'settings' ? mainContentMarginLeft - 1 : mainContentMarginLeft,
       backgroundColor: (currentView === 'search' || currentView === 'home') ? 'transparent' : currentView === 'settings' ? '#FAF9F6' : '#ffffff', 
       position: 'relative', 
       zIndex: isChatHistoryPanelOpen ? 10000 : 1, // Above backdrop (9999) when agent sidebar open so clicking the new-chat bar doesn't close it
@@ -6161,6 +6162,10 @@ export const MainContent = ({
         onOpenFileView={(doc) => setFileViewDocument(doc)}
         openFileViewDocumentId={fileViewDocument?.id ?? null}
         isDashboardVisible={!isMapVisible && !externalIsMapVisible}
+        onNavigateToUsageBilling={() => {
+          closeSidebar();
+          handleNavigate('settings', { openCategory: 'usage-billing' });
+        }}
       />
       </div>
 

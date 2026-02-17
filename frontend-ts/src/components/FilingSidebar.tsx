@@ -7,6 +7,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { X, Search, Plus, Folder, FolderOpen, Files, FileText, File as FileIcon, ChevronRight, MoreVertical, CheckSquare, Square, Upload, MousePointer2, Trash2, ChevronDown, MapPin, RefreshCw, Link, Info } from 'lucide-react';
 import OrbitProgress from 'react-loading-indicators/OrbitProgress';
 import { useFilingSidebar } from '../contexts/FilingSidebarContext';
+import { useUsage } from '../contexts/UsageContext';
 import { backendApi } from '../services/backendApi';
 import { preloadDocumentBlobs } from '../services/documentBlobCache';
 import { usePreview } from '../contexts/PreviewContext';
@@ -66,6 +67,8 @@ interface FilingSidebarProps {
   openFileViewDocumentId?: string | null;
   /** When true, dashboard is visible; document list preload runs on first dashboard view for instant sidebar open. */
   isDashboardVisible?: boolean;
+  /** When provided, "Go to Usage & Billing" in the usage popup will call this (e.g. close sidebar and navigate to settings). */
+  onNavigateToUsageBilling?: () => void;
 }
 
 /** Parse getAllDocuments() response into a Document array. Shared by preload and open-sidebar fetch. */
@@ -200,6 +203,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
   onOpenFileView,
   openFileViewDocumentId = null,
   isDashboardVisible = false,
+  onNavigateToUsageBilling,
 }) => {
   const {
     isOpen,
@@ -276,6 +280,44 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
   const [showSecureInfo, setShowSecureInfo] = useState(false);
   /** Document/page stats (completed docs only). Fetched with document list. */
   const [docStats, setDocStats] = useState<{ document_count: number; total_pages: number } | null>(null);
+
+  // Usage (billing) — bar + popup in place of doc stats (from UsageContext)
+  const { usage: usageData, loading: usageLoading, error: usageError } = useUsage();
+  const [usagePopupOpen, setUsagePopupOpen] = useState(false);
+  const usagePopupLeaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const usagePopupEnterTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const USAGE_POPUP_HOVER_DELAY_MS = 500;
+
+  const clearUsagePopupLeaveTimer = useCallback(() => {
+    if (usagePopupLeaveTimerRef.current) {
+      clearTimeout(usagePopupLeaveTimerRef.current);
+      usagePopupLeaveTimerRef.current = null;
+    }
+  }, []);
+  const clearUsagePopupEnterTimer = useCallback(() => {
+    if (usagePopupEnterTimerRef.current) {
+      clearTimeout(usagePopupEnterTimerRef.current);
+      usagePopupEnterTimerRef.current = null;
+    }
+  }, []);
+  const scheduleUsagePopupOpen = useCallback(() => {
+    clearUsagePopupEnterTimer();
+    usagePopupEnterTimerRef.current = setTimeout(() => setUsagePopupOpen(true), USAGE_POPUP_HOVER_DELAY_MS);
+  }, [clearUsagePopupEnterTimer]);
+  const scheduleUsagePopupClose = useCallback(() => {
+    clearUsagePopupEnterTimer();
+    clearUsagePopupLeaveTimer();
+    usagePopupLeaveTimerRef.current = setTimeout(() => setUsagePopupOpen(false), 150);
+  }, [clearUsagePopupLeaveTimer, clearUsagePopupEnterTimer]);
+  const onUsageBarOrPopupEnter = useCallback(() => {
+    clearUsagePopupLeaveTimer();
+    clearUsagePopupEnterTimer();
+    setUsagePopupOpen(true);
+  }, [clearUsagePopupLeaveTimer, clearUsagePopupEnterTimer]);
+  useEffect(() => () => {
+    clearUsagePopupLeaveTimer();
+    clearUsagePopupEnterTimer();
+  }, [clearUsagePopupLeaveTimer, clearUsagePopupEnterTimer]);
 
   // Remove from processingDocumentIds when docs reach completed/failed (so spinner can turn off)
   useEffect(() => {
@@ -2461,26 +2503,97 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
               />
             </div>
 
-            {/* Document and page stats (completed / green-dot docs only); click to refresh */}
-            {docStats !== null && (
-              <div className="mb-3 flex items-center gap-1.5 text-[11px] text-gray-500" style={{ fontFamily: 'system-ui, sans-serif' }}>
-                <span>{docStats.document_count.toLocaleString()} documents · {docStats.total_pages.toLocaleString()} pages</span>
-                <button
-                  type="button"
-                  onClick={async () => {
-                    try {
-                      const res = await backendApi.getDocumentStats();
-                      if (res.success && res.data) setDocStats(res.data);
-                    } catch (_) {}
-                  }}
-                  className="p-0.5 rounded hover:bg-gray-200 text-gray-400 hover:text-gray-600"
-                  title="Refresh count"
-                  aria-label="Refresh document and page count"
-                >
-                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
-                </button>
+            {/* Page usage this month — thin bar + hover popup (replaces doc count) */}
+            <div
+              className="relative mb-3"
+              onMouseEnter={scheduleUsagePopupOpen}
+              onMouseLeave={scheduleUsagePopupClose}
+            >
+              <div
+                className={`absolute bottom-full left-0 right-0 mb-2 rounded-md border border-gray-200 bg-white p-2 shadow-lg transition-opacity duration-150 z-[10001] ${usagePopupOpen ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`}
+                style={{ boxShadow: '0 4px 12px rgba(0,0,0,0.1)', marginLeft: '-1rem', marginRight: '-1rem' }}
+                onMouseEnter={onUsageBarOrPopupEnter}
+                onMouseLeave={scheduleUsagePopupClose}
+              >
+                {usageLoading ? (
+                  <div className="space-y-1.5">
+                    <div className="flex justify-between items-center">
+                      <span className="text-[12px] font-medium text-gray-900">Your usage</span>
+                      <span className="text-[10px] text-gray-400">Loading...</span>
+                    </div>
+                    <div className="h-1 w-full rounded-full bg-gray-200" />
+                  </div>
+                ) : usageError ? (
+                  <div className="space-y-1.5">
+                    <p className="text-[12px] font-medium text-gray-900">Usage</p>
+                    <p className="text-[11px] text-gray-500">Unable to load usage.</p>
+                    {onNavigateToUsageBilling && (
+                      <button
+                        onClick={() => { closeSidebar(); onNavigateToUsageBilling(); }}
+                        className="w-full py-1 rounded text-[12px] font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 transition-colors"
+                      >
+                        Go to Usage & Billing
+                      </button>
+                    )}
+                  </div>
+                ) : usageData ? (
+                  <>
+                    <div className="flex justify-between items-center gap-1.5 mb-1">
+                      <span className="text-[12px] font-medium text-gray-900">Your Usage This Month</span>
+                      <span className="flex-shrink-0 rounded-full bg-orange-500 px-1.5 py-0.5 text-[10px] font-medium text-white">
+                        {Math.round(usageData.usage_percent ?? 0)}%
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-gray-700 mb-1">
+                      {(usageData.pages_used ?? 0).toLocaleString()} of {(usageData.monthly_limit ?? 0).toLocaleString()} pages used
+                    </p>
+                    <p className="text-[10px] text-gray-500 mb-1.5">
+                      {(usageData.remaining ?? 0).toLocaleString()} pages remaining
+                    </p>
+                    <div className="flex gap-0.5 h-1 rounded overflow-hidden mb-1.5" aria-hidden>
+                      {Array.from({ length: 32 }).map((_, i) => {
+                        const fill = (i + 1) / 32 <= (usageData.usage_percent ?? 0) / 100;
+                        return (
+                          <div
+                            key={i}
+                            className={`flex-1 min-w-0 ${fill ? 'bg-gradient-to-r from-orange-500 to-orange-600' : 'bg-gray-200'}`}
+                          />
+                        );
+                      })}
+                    </div>
+                    {onNavigateToUsageBilling && (
+                      <button
+                        onClick={() => { closeSidebar(); onNavigateToUsageBilling(); }}
+                        className="w-full py-1 rounded text-[12px] font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 transition-colors"
+                      >
+                        Go to Usage & Billing
+                      </button>
+                    )}
+                  </>
+                ) : null}
               </div>
-            )}
+              <div
+                className="flex gap-0.5 h-1.5 rounded overflow-hidden cursor-default"
+                aria-label="Page usage this month"
+                title="Hover for details"
+              >
+                {usageLoading ? (
+                  <div className="flex-1 h-full rounded bg-gray-200" />
+                ) : usageData ? (
+                  Array.from({ length: 32 }).map((_, i) => {
+                    const fill = (i + 1) / 32 <= (usageData.usage_percent ?? 0) / 100;
+                    return (
+                      <div
+                        key={i}
+                        className={`flex-1 min-w-0 h-full ${fill ? 'bg-gradient-to-r from-orange-500 to-orange-600' : 'bg-gray-200'}`}
+                      />
+                    );
+                  })
+                ) : (
+                  <div className="flex-1 h-full rounded bg-gray-200" />
+                )}
+              </div>
+            </div>
 
             {/* Actions Row - Unified Style */}
             <div className="flex items-center gap-2 w-full" style={{ width: '100%', boxSizing: 'border-box' }}>

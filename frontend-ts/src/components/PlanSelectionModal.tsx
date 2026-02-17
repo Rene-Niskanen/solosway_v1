@@ -8,6 +8,16 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
   TIERS,
   type TierKey,
   getLocaleCurrency,
@@ -29,10 +39,32 @@ import {
   Users,
   Headphones,
   CreditCard,
+  X,
   type LucideIcon,
 } from "lucide-react";
 
 const TIER_ORDER: TierKey[] = ["personal", "professional", "business"];
+
+/** Normalize API/context plan string to TierKey for comparison and indexOf. */
+function normalizePlan(plan: string | null | undefined): TierKey {
+  if (!plan || typeof plan !== "string") return "professional";
+  const p = plan.trim().toLowerCase();
+  if (p === "pro" || p === "professional") return "professional";
+  if (p === "starter" || p === "personal") return "personal";
+  if (p === "business") return "business";
+  return TIER_ORDER.includes(p as TierKey) ? (p as TierKey) : "professional";
+}
+
+function formatBillingCycleEnd(s: string | undefined): string | null {
+  if (!s || typeof s !== "string") return null;
+  try {
+    const d = new Date(s + "T12:00:00Z");
+    if (Number.isNaN(d.getTime())) return null;
+    return d.toLocaleDateString(undefined, { day: "numeric", month: "long", year: "numeric" });
+  } catch {
+    return null;
+  }
+}
 
 /** Single-container currency dropdown: trigger + list in one wrapper, no portal, so it always joins. */
 function CurrencyDropdown({
@@ -58,11 +90,11 @@ function CurrencyDropdown({
   const selected = CURRENCY_OPTIONS.find((o) => o.value === value) ?? CURRENCY_OPTIONS[0];
 
   return (
-    <div ref={containerRef} className="relative w-[90px]">
+    <div ref={containerRef} className="relative w-[72px]">
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        className={`flex h-7 w-full items-center justify-between border border-gray-200 pl-2 pr-1 gap-0.5 text-sm text-gray-900 focus:ring-1 focus:ring-gray-300 focus:ring-offset-0 ${
+        className={`flex h-6 w-full items-center justify-between border border-gray-200 pl-1.5 pr-0.5 gap-0.5 text-xs text-gray-900 focus:ring-1 focus:ring-gray-300 focus:ring-offset-0 ${
           open
             ? "rounded-t-md rounded-b-none border-b-0 bg-gray-50"
             : "rounded-md bg-white"
@@ -72,12 +104,12 @@ function CurrencyDropdown({
         aria-label="Currency"
       >
         <span className="truncate">{selected.label}</span>
-        <ChevronDown className="h-3 w-3 shrink-0 opacity-50" />
+        <ChevronDown className="h-2.5 w-2.5 shrink-0 opacity-50" />
       </button>
       {open && (
         <ul
           role="listbox"
-          className="absolute left-0 right-0 top-full z-[200] rounded-b-md rounded-t-none border border-gray-200 border-t-0 bg-white py-0.5 text-sm text-gray-900 shadow-none"
+          className="absolute left-0 right-0 top-full z-[200] rounded-b-md rounded-t-none border border-gray-200 border-t-0 bg-white py-0.5 text-xs text-gray-900 shadow-none"
           style={{ marginTop: 0 }}
         >
           {CURRENCY_OPTIONS.filter((opt) => opt.value !== value).map((opt) => (
@@ -88,7 +120,7 @@ function CurrencyDropdown({
                 onValueChange(opt.value);
                 setOpen(false);
               }}
-              className="flex cursor-default items-center px-2 py-1 first:pt-1 last:pb-1 hover:bg-gray-50 text-gray-900"
+              className="flex cursor-default items-center px-1.5 py-0.5 first:pt-0.5 last:pb-0.5 hover:bg-gray-50 text-gray-900"
             >
               {opt.label}
             </li>
@@ -163,26 +195,35 @@ export interface PlanSelectionModalProps {
   fullscreen?: boolean;
   onUpgrade?: (tier: TierKey) => void;
   onSwitch?: (tier: TierKey) => void;
+  /** For reassurance copy: "You can keep using your current plan limit until [date]" */
+  billingCycleEnd?: string;
+  /** When true, disable plan buttons and show updating state */
+  isChangingPlan?: boolean;
+  /** When set, only this tier's button shows "Updating plan…"; others show normal label */
+  changingToTierId?: TierKey | null;
 }
 
 function PlanModalContent({
   currentPlan,
   onAction,
   showTitle = true,
+  isChangingPlan = false,
+  changingToTierId = null,
 }: {
   currentPlan: string;
   onAction: (tierId: TierKey) => void;
   showTitle?: boolean;
+  isChangingPlan?: boolean;
+  changingToTierId?: TierKey | null;
 }) {
   const currencyContext = useCurrencyOptional();
   const currency = currencyContext?.currency ?? getLocaleCurrency();
   const setCurrency = currencyContext?.setCurrency;
-
   return (
     <>
       {showTitle && (
         <>
-          <h2 className="text-2xl font-normal text-gray-900 text-center mt-10 mb-4">
+          <h2 className="text-2xl font-normal text-gray-900 text-center mt-20 mb-4">
             Upgrade your plan
           </h2>
           {setCurrency && (
@@ -238,16 +279,19 @@ function PlanModalContent({
                   ) : (
                     <button
                       type="button"
-                      onClick={() => onAction(tierId)}
+                      disabled={isChangingPlan}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        onAction(tierId);
+                      }}
                       className={
                         isBusiness
                           ? "flex items-center justify-center h-10 w-full min-h-[2.5rem] px-4 py-2 text-sm font-medium rounded-full bg-gray-900 text-white hover:bg-gray-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-400 focus-visible:ring-offset-0 transition-colors disabled:pointer-events-none disabled:opacity-50 mb-8"
                           : "flex items-center justify-center h-10 w-full px-4 py-2 text-sm font-medium rounded-full border border-gray-200 bg-white text-gray-900 hover:bg-gray-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-400 focus-visible:ring-offset-0 transition-colors disabled:pointer-events-none disabled:opacity-50 mb-8"
                       }
                     >
-                      {isBusiness
-                        ? "Upgrade to Business"
-                        : `Switch to ${tier.name}`}
+                      {isChangingPlan && changingToTierId === tierId ? "Updating plan…" : isBusiness ? "Upgrade to Business" : `Switch to ${tier.name}`}
                     </button>
                   )}
 
@@ -268,22 +312,21 @@ function PlanModalContent({
         })}
       </div>
 
-      <p className="text-center text-sm text-gray-500 mt-8">
-        Need more capabilities for your business?
-        <br />
+      <div className="flex flex-col items-center gap-2 mt-8 text-center text-sm text-gray-500">
+        <img
+          src="/velora-dash-logo.png"
+          alt="Velora"
+          className="h-7 w-auto"
+        />
+        <span>Need more capabilities for your business?</span>
         <a
           href="#"
-          className="inline-flex flex-col items-center gap-1.5 text-gray-700 underline hover:opacity-80"
+          className="text-gray-700 underline hover:opacity-80"
           onClick={(e) => e.preventDefault()}
         >
-          <img
-            src="/velora-dash-logo.png"
-            alt="Velora"
-            className="h-5 w-auto"
-          />
           See Velora Enterprise
         </a>
-      </p>
+      </div>
     </>
   );
 }
@@ -295,60 +338,233 @@ export const PlanSelectionModal: React.FC<PlanSelectionModalProps> = ({
   fullscreen = false,
   onUpgrade,
   onSwitch,
+  billingCycleEnd,
+  isChangingPlan = false,
+  changingToTierId = null,
 }) => {
-  const handleAction = (tierId: TierKey) => {
-    if (tierId === currentPlan) return;
-    const isUpgrade =
-      TIER_ORDER.indexOf(tierId) > TIER_ORDER.indexOf(currentPlan as TierKey);
-    if (isUpgrade && onUpgrade) onUpgrade(tierId);
-    else if (!isUpgrade && onSwitch) onSwitch(tierId);
-    onOpenChange(false);
+  const [confirmOpen, setConfirmOpen] = React.useState(false);
+  const [confirmPendingTierId, setConfirmPendingTierId] = React.useState<TierKey | null>(null);
+
+  const normalizedPlan = React.useMemo(() => normalizePlan(currentPlan), [currentPlan]);
+  const currencyContext = useCurrencyOptional();
+  const currency = currencyContext?.currency ?? getLocaleCurrency();
+
+  const performSwitch = React.useCallback(
+    (tierId: TierKey) => {
+      if (tierId === normalizedPlan) return;
+      const isUpgrade =
+        TIER_ORDER.indexOf(tierId) > TIER_ORDER.indexOf(normalizedPlan);
+      if (isUpgrade && onUpgrade) {
+        onUpgrade(tierId);
+      } else if (!isUpgrade && onSwitch) {
+        onSwitch(tierId);
+      } else if (onUpgrade) {
+        onUpgrade(tierId);
+      } else if (onSwitch) {
+        onSwitch(tierId);
+      }
+      // Parent closes modal on success; stay open to show "Updating plan…" until then
+    },
+    [normalizedPlan, onUpgrade, onSwitch]
+  );
+
+  const handleAction = React.useCallback(
+    (tierId: TierKey) => {
+      if (tierId === normalizedPlan) return;
+      const isDowngrade =
+        TIER_ORDER.indexOf(tierId) < TIER_ORDER.indexOf(normalizedPlan);
+      if (isDowngrade) {
+        setConfirmPendingTierId(tierId);
+        setConfirmOpen(true);
+      } else {
+        performSwitch(tierId);
+      }
+    },
+    [normalizedPlan, performSwitch]
+  );
+
+  const handleConfirmDowngrade = React.useCallback(() => {
+    const tierToApply = confirmPendingTierId;
+    setConfirmOpen(false);
+    setConfirmPendingTierId(null);
+    if (tierToApply && onSwitch) {
+      onSwitch(tierToApply);
+    }
+  }, [confirmPendingTierId, onSwitch]);
+
+  const formattedBillingDate = formatBillingCycleEnd(billingCycleEnd);
+  const dateFallback = formattedBillingDate ?? "your next billing cycle";
+  const currentPlanName = TIERS[normalizedPlan]?.name ?? normalizedPlan ?? "plan";
+  const newPlanName = confirmPendingTierId
+    ? (TIERS[confirmPendingTierId]?.name ?? confirmPendingTierId)
+    : "your new plan";
+  const confirmMessage = {
+    intro: "Your current",
+    plan: currentPlanName,
+    until: "plan stays active until",
+    date: dateFallback,
+    then: ". On that date it will change to",
+    newPlan: newPlanName,
+    end: ".",
+  };
+  const billingDateText = `Billing will start on ${dateFallback}`;
+  const confirmPriceFormatted =
+    confirmPendingTierId != null
+      ? `${currency} ${formatPrice(getPriceForTier(confirmPendingTierId, currency), currency)}/month`
+      : "";
+
+  const contentProps = {
+    currentPlan: normalizedPlan,
+    onAction: handleAction,
+    isChangingPlan,
+    changingToTierId,
   };
 
   if (fullscreen) {
     if (!open) return null;
     return (
-      <div className="fixed inset-0 z-[100] bg-[#F9F9F9] overflow-y-auto">
-        <button
-          type="button"
-          onClick={() => onOpenChange(false)}
-          className="fixed right-6 top-6 z-10 flex h-10 w-10 items-center justify-center rounded-md text-gray-500 hover:bg-gray-100 hover:text-gray-700 transition-colors"
-          aria-label="Close"
-        >
-          <span className="text-2xl font-extralight leading-none">×</span>
-        </button>
-        <div className="max-w-6xl mx-auto py-12 px-6">
-          <PlanModalContent currentPlan={currentPlan} onAction={handleAction} showTitle />
+      <>
+        <div className="fixed inset-0 z-[100] bg-[#F9F9F9] overflow-y-auto">
+          <button
+            type="button"
+            onClick={() => onOpenChange(false)}
+            className="fixed right-6 top-6 z-10 flex h-10 w-10 items-center justify-center rounded-md text-gray-500 hover:bg-gray-100 hover:text-gray-700 transition-colors"
+            aria-label="Close"
+          >
+            <span className="text-2xl font-extralight leading-none">×</span>
+          </button>
+          <div className="max-w-6xl mx-auto py-12 px-6">
+            <PlanModalContent {...contentProps} showTitle />
+          </div>
+          {/* Inline confirm (z above fullscreen) so it’s visible; AlertDialog is z-50 and was hidden behind z-[100] */}
+          {confirmOpen && (
+            <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/20 backdrop-blur-[2px] p-4" role="dialog" aria-modal="true" aria-labelledby="confirm-plan-title">
+              <div className="bg-white rounded-2xl shadow-xl max-w-xl w-full p-6" onClick={(e) => e.stopPropagation()}>
+                <div className="flex items-start justify-between">
+                  <h2 id="confirm-plan-title" className="text-base font-medium text-gray-900">Confirm plan changes</h2>
+                  <button
+                    type="button"
+                    onClick={() => { setConfirmOpen(false); setConfirmPendingTierId(null); }}
+                    className="flex h-8 w-8 items-center justify-center rounded text-gray-600 hover:bg-gray-100 transition-colors"
+                    aria-label="Close"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+                <p className="mt-4 text-sm text-gray-700">
+                  {confirmMessage.intro} <span className="font-medium">{confirmMessage.plan}</span> {confirmMessage.until} <span className="font-medium">{confirmMessage.date}</span>{confirmMessage.then} <span className="font-medium">{confirmMessage.newPlan}</span>{confirmMessage.end}
+                </p>
+                {confirmPendingTierId != null && (
+                  <div className="mt-5 mb-5 rounded-lg bg-gray-50 p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="font-semibold text-gray-900 text-base">{newPlanName}</p>
+                        <p className="mt-1 text-sm text-gray-500">{billingDateText}</p>
+                      </div>
+                      {confirmPriceFormatted && (
+                        <p className="text-base text-gray-900 whitespace-nowrap">{confirmPriceFormatted}</p>
+                      )}
+                    </div>
+                  </div>
+                )}
+                <div className="flex justify-end gap-2 mt-6">
+                  <button
+                    type="button"
+                    onClick={() => { setConfirmOpen(false); setConfirmPendingTierId(null); }}
+                    className="px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-full hover:bg-gray-50"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      handleConfirmDowngrade();
+                    }}
+                    className="px-3 py-1.5 text-xs font-medium text-white bg-gray-900 rounded-full hover:bg-gray-800"
+                  >
+                    Confirm
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
-      </div>
+      </>
     );
   }
 
-  const currencyContext = useCurrencyOptional();
-
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-6xl w-[95vw] bg-background border border-gray-200 p-0 gap-0 overflow-hidden">
-        <DialogHeader className="p-6 pb-4">
-          <div className="flex flex-col sm:flex-row items-center justify-center gap-3 text-center">
-            <DialogTitle className="text-2xl font-normal text-gray-900">
-              Upgrade your plan
-            </DialogTitle>
-            {currencyContext?.setCurrency && (
-              <label className="flex items-center gap-2 text-sm text-gray-600">
-                <span>Currency</span>
-                <CurrencyDropdown
-                  value={currencyContext.currency}
-                  onValueChange={currencyContext.setCurrency}
-                />
-              </label>
-            )}
+    <>
+      <Dialog open={open} onOpenChange={onOpenChange}>
+        <DialogContent className="max-w-6xl w-[95vw] bg-background border border-gray-200 p-0 gap-0 overflow-hidden">
+          <DialogHeader className="p-6 pb-4">
+            <div className="flex flex-col sm:flex-row items-center justify-center gap-3 text-center">
+              <DialogTitle className="text-2xl font-normal text-gray-900">
+                Upgrade your plan
+              </DialogTitle>
+              {currencyContext?.setCurrency && (
+                <label className="flex items-center gap-2 text-sm text-gray-600">
+                  <span>Currency</span>
+                  <CurrencyDropdown
+                    value={currencyContext.currency}
+                    onValueChange={currencyContext.setCurrency}
+                  />
+                </label>
+              )}
+            </div>
+          </DialogHeader>
+          <div className="px-6 pb-6">
+            <PlanModalContent {...contentProps} showTitle={false} />
           </div>
-        </DialogHeader>
-        <div className="px-6 pb-6">
-          <PlanModalContent currentPlan={currentPlan} onAction={handleAction} showTitle={false} />
-        </div>
-      </DialogContent>
-    </Dialog>
+        </DialogContent>
+      </Dialog>
+      <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="text-base font-medium">Confirm plan changes</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div>
+                <p className="text-sm text-gray-700">
+                  {confirmMessage.intro} <span className="font-medium">{confirmMessage.plan}</span> {confirmMessage.until} <span className="font-medium">{confirmMessage.date}</span>{confirmMessage.then} <span className="font-medium">{confirmMessage.newPlan}</span>{confirmMessage.end}
+                </p>
+                {confirmPendingTierId != null && (
+                  <div className="mt-5 mb-2 rounded-lg border border-gray-200 bg-gray-50 p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="font-semibold text-gray-900 text-base">{newPlanName}</p>
+                        <p className="mt-1 text-sm text-gray-500">{billingDateText}</p>
+                      </div>
+                      {confirmPriceFormatted && (
+                        <p className="text-base text-gray-900 whitespace-nowrap">{confirmPriceFormatted}</p>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel
+              onClick={() => setConfirmPendingTierId(null)}
+              className="px-3 py-1.5 text-xs font-medium rounded-full bg-white text-gray-700 border border-gray-300 hover:bg-gray-50"
+            >
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                handleConfirmDowngrade();
+              }}
+              className="px-3 py-1.5 text-xs font-medium rounded-full bg-gray-900 text-white hover:bg-gray-800"
+            >
+              Confirm
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
   );
 };

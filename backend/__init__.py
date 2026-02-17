@@ -7,6 +7,11 @@ import os
 import logging
 # flask_migrate removed - using Supabase for schema management
 from flask_cors import CORS
+
+# Load .env from project root before Config (which reads SUPABASE_DB_URL etc.)
+_load_env_path = path.abspath(path.join(path.dirname(__file__), "..", ".env"))
+load_dotenv(_load_env_path)
+
 from .config import Config
 from .celery_utils import celery_init_app
 
