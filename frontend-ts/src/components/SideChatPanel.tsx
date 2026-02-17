@@ -854,13 +854,13 @@ const StreamingResponseText: React.FC<{
     let lineRects: LineRect[] = Object.values(byLine)
       .map((b) => ({ top: b.top, left: b.left, width: b.right - b.left, height: b.bottom - b.top }))
       .sort((a, b) => a.top - b.top);
-    // Clamp each line's height so overlay never touches the next line (prevents "top of highlight" bleed onto line below)
-    const OVERLAY_GAP_PX = 2;
+    // Keep full line height so we never clip mid-line; no gap clamp that could cut words
     for (let i = 0; i < lineRects.length; i++) {
       const nextTop = i + 1 < lineRects.length ? lineRects[i + 1].top : lineRects[i].top + lineRects[i].height;
-      const maxHeight = nextTop - lineRects[i].top - OVERLAY_GAP_PX;
-      if (maxHeight < lineRects[i].height && maxHeight > 0) {
-        lineRects[i] = { ...lineRects[i], height: maxHeight };
+      const naturalBottom = lineRects[i].top + lineRects[i].height;
+      // Snap height to at most the next line's top so we never show a partial next line
+      if (naturalBottom > nextTop && nextTop > lineRects[i].top) {
+        lineRects[i] = { ...lineRects[i], height: nextTop - lineRects[i].top };
       }
     }
     const newCount = lineRects.length;
@@ -875,13 +875,9 @@ const StreamingResponseText: React.FC<{
           const pos = revealPositionRef.current;
           const currentLine = Math.min(Math.floor(pos), newCount - 1);
           const rect = lineRects[currentLine];
-          const currentLineBottom = rect.top + rect.height;
-          const nextLineTop = currentLine + 1 < newCount ? lineRects[currentLine + 1].top : currentLineBottom;
-          const LINE_BUFFER_PX = 3;
-          const revealedBottom = currentLine + 1 < newCount
-            ? Math.min(currentLineBottom, nextLineTop - LINE_BUFFER_PX)
-            : currentLineBottom;
-          wrapperRef.current.style.height = `${topPadding + Math.floor(revealedBottom)}px`;
+          // Use full line bottom so we never cut through a line vertically (avoids mid-word cutoff)
+          const revealedBottom = rect.top + rect.height;
+          wrapperRef.current.style.height = `${topPadding + Math.ceil(revealedBottom)}px`;
           wrapperRef.current.style.overflow = 'hidden';
         }
         return;
@@ -895,13 +891,9 @@ const StreamingResponseText: React.FC<{
       const pos = revealPositionRef.current;
       const currentLine = Math.min(Math.floor(pos), newCount - 1);
       const rect = lineRects[currentLine];
-      const currentLineBottom = rect.top + rect.height;
-      const nextLineTop = currentLine + 1 < newCount ? lineRects[currentLine + 1].top : currentLineBottom;
-      const LINE_BUFFER_PX = 3;
-      const revealedBottom = currentLine + 1 < newCount
-        ? Math.min(currentLineBottom, nextLineTop - LINE_BUFFER_PX)
-        : currentLineBottom;
-      wrapperRef.current.style.height = `${topPadding + Math.floor(revealedBottom)}px`;
+      // Use full line bottom so we never cut through a line vertically (avoids mid-word cutoff)
+      const revealedBottom = rect.top + rect.height;
+      wrapperRef.current.style.height = `${topPadding + Math.ceil(revealedBottom)}px`;
       wrapperRef.current.style.overflow = 'hidden';
       for (let i = 0; i < newCount; i++) {
         const pos = revealPositionRef.current;
@@ -952,13 +944,9 @@ const StreamingResponseText: React.FC<{
         const topPadding = 4;
         const currentLineIdx = Math.min(Math.floor(pos), rects.length - 1, overlayCount - 1);
         const rect = rects[currentLineIdx];
-        const currentLineBottom = rect.top + rect.height;
-        const nextLineTop = currentLineIdx + 1 < rects.length ? rects[currentLineIdx + 1].top : currentLineBottom;
-        const LINE_BUFFER_PX = 3;
-        const revealedBottom = currentLineIdx + 1 < rects.length
-          ? Math.min(currentLineBottom, nextLineTop - LINE_BUFFER_PX)
-          : currentLineBottom;
-        wrapper.style.height = `${topPadding + Math.floor(revealedBottom)}px`;
+        // Use full line bottom so we never cut through a line vertically (avoids mid-word cutoff)
+        const revealedBottom = rect.top + rect.height;
+        wrapper.style.height = `${topPadding + Math.ceil(revealedBottom)}px`;
         wrapper.style.overflow = 'hidden';
       }
 
@@ -1555,12 +1543,12 @@ const StreamingResponseText: React.FC<{
                   top: line.top,
                   right: 0,
                   height: line.height,
-                  background: 'linear-gradient(to right, transparent 0%, rgba(252,252,249,0.12) 6%, rgba(252,252,249,0.4) 15%, rgba(252,252,249,0.88) 28%, #FCFCF9 38%, #FCFCF9 100%)',
+                  // Gradient: transparent at left (clip boundary = soft edge so we don't cut words), solid on right (cover unrevealed text)
+                  background: 'linear-gradient(to right, transparent 0%, rgba(252,252,249,0.12) 15%, rgba(252,252,249,0.5) 35%, rgba(252,252,249,0.9) 55%, #FCFCF9 75%, #FCFCF9 100%)',
                   clipPath: `inset(0 0 0 calc(var(--line-${i}, 0) * 100%))`,
                   pointerEvents: 'none',
-                  filter: 'blur(0.6px)',
-                  WebkitFilter: 'blur(0.6px)',
-                  // Contain blur so it doesn't bleed onto the line below
+                  filter: 'blur(0.5px)',
+                  WebkitFilter: 'blur(0.5px)',
                   isolation: 'isolate',
                   overflow: 'hidden',
                 }}
@@ -8675,6 +8663,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   const lastScrollHeightRef = React.useRef(0);
   // So we don't turn off follow mode when we programmatically scroll to bottom (scroll event would otherwise set autoScrollEnabledRef = false)
   const isProgrammaticScrollRef = React.useRef(false);
+  // Smoothed target for streaming scroll (EMA) so we ease toward bottom instead of chasing jumpy scrollHeight
+  const smoothedScrollTargetRef = React.useRef<number | null>(null);
   
   // Track previous loading state to detect when response completes
   const prevLoadingRef = React.useRef(false);
