@@ -23,7 +23,6 @@ import { CurrencyProvider } from '../contexts/CurrencyContext';
 import { UsageProvider, useUsage } from '../contexts/UsageContext';
 import { PlanSelectionModal } from './PlanSelectionModal';
 import { useToast } from '@/hooks/use-toast';
-import { ToastAction } from '@/components/ui/toast';
 import { TIERS, type TierKey } from '@/config/billing';
 
 export interface DashboardLayoutProps {
@@ -45,7 +44,7 @@ const DashboardLayoutContent = ({
   const { isOpen: isFeedbackModalOpen, setIsOpen: setFeedbackModalOpen, messageId: feedbackMessageId, conversationSnippet: feedbackConversationSnippet } = useFeedbackModal();
   const { isOpen: planModalOpen, currentPlan: planModalCurrentPlan, billingCycleEnd: planModalBillingCycleEnd, closePlanModal } = usePlanModal();
   const { setUsageOptimistic, refetch: refetchUsage } = useUsage();
-  const { toast: showToast, dismiss } = useToast();
+  const { toast: showToast } = useToast();
   const [selectedBackground, setSelectedBackground] = React.useState<string>('default-background');
   const [planChangeInProgress, setPlanChangeInProgress] = React.useState(false);
   const [planChangeTierId, setPlanChangeTierId] = React.useState<TierKey | null>(null);
@@ -787,14 +786,10 @@ const DashboardLayoutContent = ({
                 refetchUsage();
                 window.dispatchEvent(new CustomEvent('usageShouldRefresh', { detail: { plan: tierId } }));
                 const name = TIERS[tierId]?.name ?? tierId;
-                const t = showToast({
+                showToast({
                   title: "You're all set",
                   description: `You're now on the ${name} plan.`,
                   variant: "success",
-                });
-                t.update({
-                  id: t.id,
-                  action: <ToastAction altText="Dismiss" onClick={() => dismiss(t.id)}>Got it</ToastAction>,
                 });
               } else {
                 closePlanModal();
@@ -825,14 +820,10 @@ const DashboardLayoutContent = ({
                 refetchUsage();
                 window.dispatchEvent(new CustomEvent('usageShouldRefresh', { detail: { plan: tierId } }));
                 const name = TIERS[tierId]?.name ?? tierId;
-                const t = showToast({
+                showToast({
                   title: "You're all set",
                   description: `You're now on the ${name} plan.`,
                   variant: "success",
-                });
-                t.update({
-                  id: t.id,
-                  action: <ToastAction altText="Dismiss" onClick={() => dismiss(t.id)}>Got it</ToastAction>,
                 });
               } else {
                 closePlanModal();

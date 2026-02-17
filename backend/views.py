@@ -112,9 +112,9 @@ views = Blueprint('views', __name__)
 # Set up logging
 logger = logging.getLogger(__name__)
 
-# Stream response pacing: delay in ms between chunks (0 = no delay); chunk size in characters
+# Stream response pacing: delay in ms between chunks (0 = no delay); chunk size in characters (larger = quicker perceived streaming)
 STREAM_CHUNK_DELAY_MS = int(os.environ.get("STREAM_CHUNK_DELAY_MS", "0"))
-STREAM_CHUNK_SIZE = int(os.environ.get("STREAM_CHUNK_SIZE", "32"))
+STREAM_CHUNK_SIZE = int(os.environ.get("STREAM_CHUNK_SIZE", "64"))
 
 # ---------------------------------------------------------------------------
 # Performance timing helpers (lightweight, server-side only)
@@ -127,6 +127,7 @@ class _Timing:
     """Tiny timing utility for per-request performance logs."""
     def __init__(self) -> None:
         self._t0 = time.perf_counter()
+        self._wall_t0 = time.time()
         self.marks: dict[str, float] = {"t0": self._t0}
 
     def mark(self, name: str) -> None:
@@ -142,6 +143,17 @@ class _Timing:
             prev_name, prev_t = name, t
         out["total_ms"] = _perf_ms(self._t0, time.perf_counter())
         return out
+
+    def log_timestamps(self) -> None:
+        """Log each mark with absolute timestamp and ms from start for performance analysis."""
+        from datetime import datetime, timezone
+        ordered = sorted(self.marks.items(), key=lambda kv: kv[1])
+        t0 = self._t0
+        for name, t in ordered:
+            ms = _perf_ms(t0, t)
+            wall_ts = self._wall_t0 + (t - t0)
+            iso = datetime.fromtimestamp(wall_ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+            logger.info("  [PERF] %s: +%d ms  (%s)", name, ms, iso)
 
 
 # ---------------------------------------------------------------------------
@@ -1260,6 +1272,7 @@ def query_documents_stream():
                             logger.info("🟡 [REASONING] Starting to stream events and emit reasoning steps...")
                         final_result = None
                         summary_already_streamed = False  # Track if we've already streamed the summary
+                        first_token_sent_marked = False  # For PERF timing: mark first token sent once
                         streamed_summary = None  # Store the exact summary that was streamed to ensure consistency
                         memory_storage_scheduled = False  # Track if Mem0 memory storage has been scheduled for this request
                         
@@ -1696,6 +1709,27 @@ def query_documents_stream():
                                             final_result['citations'] = citations_from_citation
                                             logger.info(f"⚡ [CITATION_QUERY] Captured {len(citations_from_citation)} citations")
                                     
+                                    # Handle RunnableSequence end: inner LLM chain inside responder emits as "RunnableSequence", not "responder"
+                                    # Capture LLM response content so we have final_summary for the post-loop stream
+                                    elif node_name == "RunnableSequence":
+                                        out = output if output else state_update
+                                        if out and (final_result is None or not final_result.get("final_summary")):
+                                            content = None
+                                            if isinstance(out, dict):
+                                                content = out.get("content")
+                                                if content is None and isinstance(out.get("response"), dict):
+                                                    content = out.get("response", {}).get("content")
+                                            elif hasattr(out, "content"):
+                                                content = getattr(out, "content", None)
+                                            if content and isinstance(content, str) and len(content.strip()) > 0:
+                                                if final_result is None:
+                                                    final_result = {}
+                                                final_result["final_summary"] = content.strip()
+                                                logger.info(
+                                                    "🟢 [STREAM] Captured final_summary from RunnableSequence (responder LLM) (%d chars)",
+                                                    len(content.strip()),
+                                                )
+
                                     # Handle responder node completion (main path: planner → executor → responder, including chip/@ queries)
                                     # Use same citation mapping as summarize path: capture chunk_citations with bbox, block_id, doc_id
                                     elif node_name == "responder":
@@ -1935,6 +1969,9 @@ def query_documents_stream():
                                             # Stream in chunks to maintain formatting while still providing smooth streaming
                                             for i in range(0, len(final_summary_from_state), STREAM_CHUNK_SIZE):
                                                 if i == 0:
+                                                    if not first_token_sent_marked:
+                                                        timing.mark("first_token_sent")
+                                                        first_token_sent_marked = True
                                                     logger.info("🚀 [STREAM] First chunk streamed IMMEDIATELY from summarize_results")
                                                 chunk = final_summary_from_state[i:i + STREAM_CHUNK_SIZE]
                                                 yield f"data: {json.dumps({'type': 'token', 'token': chunk})}\n\n"
@@ -2287,6 +2324,9 @@ def query_documents_stream():
                             # Stream in chunks to maintain formatting while still providing smooth streaming
                             for i in range(0, len(full_summary), STREAM_CHUNK_SIZE):
                                 if i == 0:
+                                    if not first_token_sent_marked:
+                                        timing.mark("first_token_sent")
+                                        first_token_sent_marked = True
                                     logger.info("🟡 [STREAM] First chunk streamed from existing summary")
                                 chunk = full_summary[i:i + STREAM_CHUNK_SIZE]
                                 yield f"data: {json.dumps({'type': 'token', 'token': chunk})}\n\n"
@@ -2881,6 +2921,8 @@ def query_documents_stream():
                             "doc_ids_count": len(document_ids) if document_ids else 0,
                             "timing": timing.to_ms()
                         }))
+                        logger.info("🟣 [PERF][STREAM] timestamps (ms from start, UTC):")
+                        timing.log_timestamps()
                     
                     except Exception as e:
                         logger.error(f"Error in run_and_stream: {e}")

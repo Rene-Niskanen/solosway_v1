@@ -17,7 +17,7 @@ export function Toaster() {
           (typeof description === "string" ? description : null) ||
           (typeof title === "string" ? title : null) ||
           "Error";
-        const displayIcon = isSuccess ? (icon ?? <CheckCircle2 className="h-4 w-4 text-green-600" aria-hidden />) : icon;
+        const displayIcon = isSuccess ? (icon ?? <CheckCircle2 className="h-6 w-6 text-green-600 shrink-0" aria-hidden />) : icon;
 
         return (
           <Toast key={id} duration={duration || 3000} variant={variant} {...props}>

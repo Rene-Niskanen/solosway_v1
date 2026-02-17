@@ -164,7 +164,6 @@ const FEATURES_BASE: Record<TierKey, string[]> = {
     "Dedicated support agent",
     "2× faster processing speeds",
     "Extend your page limit",
-    "For small teams (3–10 people)",
   ],
 };
 
@@ -172,7 +171,7 @@ const FEATURES_BASE: Record<TierKey, string[]> = {
 const FEATURE_ICONS: Record<TierKey, LucideIcon[]> = {
   personal: [BookOpen, Sparkles, MessageSquare, Search, Receipt],
   professional: [BookOpen, Cpu, Cloud, Zap, Search, Briefcase],
-  business: [BookOpen, Cpu, Cloud, Users, Headphones, Zap, CreditCard, Users],
+  business: [BookOpen, Cpu, Cloud, Users, Headphones, Zap, CreditCard],
 };
 
 function getFeaturesForTier(tierId: TierKey, _currency: string): string[] {
@@ -349,48 +348,32 @@ export const PlanSelectionModal: React.FC<PlanSelectionModalProps> = ({
   const currencyContext = useCurrencyOptional();
   const currency = currencyContext?.currency ?? getLocaleCurrency();
 
-  const performSwitch = React.useCallback(
-    (tierId: TierKey) => {
-      if (tierId === normalizedPlan) return;
-      const isUpgrade =
-        TIER_ORDER.indexOf(tierId) > TIER_ORDER.indexOf(normalizedPlan);
-      if (isUpgrade && onUpgrade) {
-        onUpgrade(tierId);
-      } else if (!isUpgrade && onSwitch) {
-        onSwitch(tierId);
-      } else if (onUpgrade) {
-        onUpgrade(tierId);
-      } else if (onSwitch) {
-        onSwitch(tierId);
-      }
-      // Parent closes modal on success; stay open to show "Updating plan…" until then
-    },
-    [normalizedPlan, onUpgrade, onSwitch]
-  );
-
   const handleAction = React.useCallback(
     (tierId: TierKey) => {
       if (tierId === normalizedPlan) return;
-      const isDowngrade =
-        TIER_ORDER.indexOf(tierId) < TIER_ORDER.indexOf(normalizedPlan);
-      if (isDowngrade) {
-        setConfirmPendingTierId(tierId);
-        setConfirmOpen(true);
-      } else {
-        performSwitch(tierId);
-      }
+      setConfirmPendingTierId(tierId);
+      setConfirmOpen(true);
     },
-    [normalizedPlan, performSwitch]
+    [normalizedPlan]
   );
 
-  const handleConfirmDowngrade = React.useCallback(() => {
+  const handleConfirmPlanChange = React.useCallback(() => {
     const tierToApply = confirmPendingTierId;
     setConfirmOpen(false);
     setConfirmPendingTierId(null);
-    if (tierToApply && onSwitch) {
+    if (!tierToApply) return;
+    const isUpgrade =
+      TIER_ORDER.indexOf(tierToApply) > TIER_ORDER.indexOf(normalizedPlan);
+    if (isUpgrade && onUpgrade) {
+      onUpgrade(tierToApply);
+    } else if (!isUpgrade && onSwitch) {
+      onSwitch(tierToApply);
+    } else if (onUpgrade) {
+      onUpgrade(tierToApply);
+    } else if (onSwitch) {
       onSwitch(tierToApply);
     }
-  }, [confirmPendingTierId, onSwitch]);
+  }, [confirmPendingTierId, normalizedPlan, onUpgrade, onSwitch]);
 
   const formattedBillingDate = formatBillingCycleEnd(billingCycleEnd);
   const dateFallback = formattedBillingDate ?? "your next billing cycle";
@@ -398,15 +381,28 @@ export const PlanSelectionModal: React.FC<PlanSelectionModalProps> = ({
   const newPlanName = confirmPendingTierId
     ? (TIERS[confirmPendingTierId]?.name ?? confirmPendingTierId)
     : "your new plan";
-  const confirmMessage = {
-    intro: "Your current",
-    plan: currentPlanName,
-    until: "plan stays active until",
-    date: dateFallback,
-    then: ". On that date it will change to",
-    newPlan: newPlanName,
-    end: ".",
-  };
+  const isConfirmDowngrade =
+    confirmPendingTierId != null &&
+    TIER_ORDER.indexOf(confirmPendingTierId) < TIER_ORDER.indexOf(normalizedPlan);
+  const confirmMessage = isConfirmDowngrade
+    ? {
+        intro: "Your current",
+        plan: currentPlanName,
+        until: "plan stays active until",
+        date: dateFallback,
+        then: ". On that date it will change to",
+        newPlan: newPlanName,
+        end: ".",
+      }
+    : {
+        intro: "You're about to switch to",
+        plan: newPlanName + ".",
+        until: "",
+        date: "",
+        then: "",
+        newPlan: "",
+        end: dateFallback ? ` Billing will apply from ${dateFallback}.` : "",
+      };
   const billingDateText = `Billing will start on ${dateFallback}`;
   const confirmPriceFormatted =
     confirmPendingTierId != null
@@ -480,7 +476,7 @@ export const PlanSelectionModal: React.FC<PlanSelectionModalProps> = ({
                     onClick={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
-                      handleConfirmDowngrade();
+                      handleConfirmPlanChange();
                     }}
                     className="px-3 py-1.5 text-xs font-medium text-white bg-gray-900 rounded-full hover:bg-gray-800"
                   >
@@ -556,7 +552,7 @@ export const PlanSelectionModal: React.FC<PlanSelectionModalProps> = ({
               onClick={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                handleConfirmDowngrade();
+                handleConfirmPlanChange();
               }}
               className="px-3 py-1.5 text-xs font-medium rounded-full bg-gray-900 text-white hover:bg-gray-800"
             >

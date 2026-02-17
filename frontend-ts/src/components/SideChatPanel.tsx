@@ -8761,57 +8761,44 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     prevLoadingRef.current = hasLoadingMessage;
   }, [chatMessages, hasLoadingMessage, scrollToBottom]);
   
-  // During streaming: scroll in the same layout pass as content updates so the user always sees new content in view
-  React.useLayoutEffect(() => {
-    if (!hasLoadingMessage || !latestMessageText) return;
-    scrollToBottom(true);
-  }, [hasLoadingMessage, latestMessageText, scrollToBottom]);
-
-  // ResizeObserver: as soon as the content wrapper grows during streaming, scroll so new content stays in view
+  // During streaming: smooth-follow scroll so the view eases toward the bottom instead of jittering on every token.
+  // Single RAF loop lerps scrollTop toward scrollHeight each frame; ResizeObserver/poll no longer do instant scroll during stream.
+  const SMOOTH_SCROLL_LERP = 0.22; // 0.15 = gentler, 0.28 = snappier
   React.useEffect(() => {
     if (!hasLoadingMessage) return;
-    const wrapper = contentWrapperRef.current;
     const contentArea = contentAreaRef.current;
-    if (!wrapper || !contentArea) return;
+    if (!contentArea) return;
 
-    const resizeObserver = new ResizeObserver(() => {
+    let rafId: number;
+    let cancelled = false;
+
+    const tick = () => {
+      if (cancelled) return;
+      const el = contentAreaRef.current;
+      if (!el) {
+        rafId = requestAnimationFrame(tick);
+        return;
+      }
       isProgrammaticScrollRef.current = true;
-      const anchor = messagesEndRef.current;
-      if (anchor) {
-        anchor.scrollIntoView({ block: 'end', behavior: 'auto', inline: 'nearest' });
+      const target = Math.max(0, el.scrollHeight - el.clientHeight);
+      const current = el.scrollTop;
+      const diff = target - current;
+      if (Math.abs(diff) <= 2) {
+        el.scrollTop = target;
       } else {
-        contentArea.scrollTop = contentArea.scrollHeight;
+        el.scrollTop = current + diff * SMOOTH_SCROLL_LERP;
       }
-    });
-    resizeObserver.observe(wrapper);
-    return () => resizeObserver.disconnect();
-  }, [hasLoadingMessage]);
-
-  // Poll when content height changes during loading (e.g. markdown reflow, images) - keeps latest line in view
-  React.useEffect(() => {
-    if (!hasLoadingMessage) return;
-
-    let lastHeight = 0;
-
-    const checkForGrowth = () => {
-      const contentArea = contentAreaRef.current;
-      if (!contentArea) return;
-      const currentHeight = contentArea.scrollHeight;
-      if (currentHeight > lastHeight) {
-        lastHeight = currentHeight;
-        isProgrammaticScrollRef.current = true;
-        const anchor = messagesEndRef.current;
-        if (anchor) {
-          anchor.scrollIntoView({ block: 'end', behavior: 'auto', inline: 'nearest' });
-        } else {
-          contentArea.scrollTop = contentArea.scrollHeight;
-        }
-      }
+      rafId = requestAnimationFrame(tick);
     };
 
-    const intervalId = setInterval(checkForGrowth, 16);
-    return () => clearInterval(intervalId);
+    rafId = requestAnimationFrame(tick);
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(rafId);
+    };
   }, [hasLoadingMessage]);
+
+  // ResizeObserver and poll removed during streaming; the smooth RAF loop above runs every frame and follows content height, so no extra scroll triggers needed.
   
   // Scroll to bottom when chat panel becomes visible and has messages
   const prevIsVisibleForScrollRef = React.useRef<boolean>(isVisible);
