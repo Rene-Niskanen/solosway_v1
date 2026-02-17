@@ -22,6 +22,8 @@ type UsageContextValue = {
 
 const UsageContext = React.createContext<UsageContextValue | null>(null);
 
+const OPTIMISTIC_PLAN_GRACE_MS = 5000;
+
 export function useUsage(): UsageContextValue {
   const ctx = React.useContext(UsageContext);
   if (!ctx) {
@@ -38,6 +40,7 @@ export const UsageProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [usage, setUsage] = React.useState<UsageResponse | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState(false);
+  const optimisticPlanRef = React.useRef<{ plan: TierKey; at: number } | null>(null);
 
   const refetch = React.useCallback(() => {
     setError(false);
@@ -45,10 +48,32 @@ export const UsageProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       .getUsage()
       .then((res) => {
         const payload = parseUsagePayload(res);
-        if (payload) {
-          setUsage(payload);
-        } else {
+        if (!payload) {
           setError(true);
+          return;
+        }
+        const optimistic = optimisticPlanRef.current;
+        if (
+          optimistic &&
+          Date.now() - optimistic.at < OPTIMISTIC_PLAN_GRACE_MS &&
+          payload.plan !== optimistic.plan
+        ) {
+          const tier = TIERS[optimistic.plan];
+          const monthly_limit = tier?.pageLimit ?? payload.monthly_limit;
+          const remaining = Math.max(0, monthly_limit - payload.pages_used);
+          const usage_percent = monthly_limit > 0 ? (payload.pages_used / monthly_limit) * 100 : 0;
+          setUsage({
+            ...payload,
+            plan: optimistic.plan,
+            monthly_limit,
+            remaining,
+            usage_percent,
+          });
+        } else {
+          if (optimistic && (payload.plan === optimistic.plan || Date.now() - optimistic.at >= OPTIMISTIC_PLAN_GRACE_MS)) {
+            optimisticPlanRef.current = null;
+          }
+          setUsage(payload);
         }
       })
       .catch(() => setError(true))
@@ -56,6 +81,7 @@ export const UsageProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   }, []);
 
   const setUsageOptimistic = React.useCallback((plan: TierKey) => {
+    optimisticPlanRef.current = { plan, at: Date.now() };
     setUsage((prev) => {
       if (!prev) return prev;
       const tier = TIERS[plan];

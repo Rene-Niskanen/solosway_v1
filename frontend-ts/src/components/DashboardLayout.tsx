@@ -783,7 +783,7 @@ const DashboardLayoutContent = ({
                 closePlanModal();
                 setUsageOptimistic(tierId);
                 refetchUsage();
-                window.dispatchEvent(new CustomEvent('usageShouldRefresh'));
+                window.dispatchEvent(new CustomEvent('usageShouldRefresh', { detail: { plan: tierId } }));
                 const name = TIERS[tierId]?.name ?? tierId;
                 toast({ title: 'Plan updated', description: `You're now on ${name}.` });
               } else {
@@ -813,7 +813,7 @@ const DashboardLayoutContent = ({
                 closePlanModal();
                 setUsageOptimistic(tierId);
                 refetchUsage();
-                window.dispatchEvent(new CustomEvent('usageShouldRefresh'));
+                window.dispatchEvent(new CustomEvent('usageShouldRefresh', { detail: { plan: tierId } }));
                 const name = TIERS[tierId]?.name ?? tierId;
                 toast({ title: 'Plan updated', description: `You're now on ${name}.` });
               } else {
