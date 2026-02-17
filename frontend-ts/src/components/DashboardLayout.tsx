@@ -22,7 +22,8 @@ import { PlanModalProvider, usePlanModal } from '../contexts/PlanModalContext';
 import { CurrencyProvider } from '../contexts/CurrencyContext';
 import { UsageProvider, useUsage } from '../contexts/UsageContext';
 import { PlanSelectionModal } from './PlanSelectionModal';
-import { toast } from '@/hooks/use-toast';
+import { useToast } from '@/hooks/use-toast';
+import { ToastAction } from '@/components/ui/toast';
 import { TIERS, type TierKey } from '@/config/billing';
 
 export interface DashboardLayoutProps {
@@ -44,6 +45,7 @@ const DashboardLayoutContent = ({
   const { isOpen: isFeedbackModalOpen, setIsOpen: setFeedbackModalOpen, messageId: feedbackMessageId, conversationSnippet: feedbackConversationSnippet } = useFeedbackModal();
   const { isOpen: planModalOpen, currentPlan: planModalCurrentPlan, billingCycleEnd: planModalBillingCycleEnd, closePlanModal } = usePlanModal();
   const { setUsageOptimistic, refetch: refetchUsage } = useUsage();
+  const { toast: showToast, dismiss } = useToast();
   const [selectedBackground, setSelectedBackground] = React.useState<string>('default-background');
   const [planChangeInProgress, setPlanChangeInProgress] = React.useState(false);
   const [planChangeTierId, setPlanChangeTierId] = React.useState<TierKey | null>(null);
@@ -785,14 +787,22 @@ const DashboardLayoutContent = ({
                 refetchUsage();
                 window.dispatchEvent(new CustomEvent('usageShouldRefresh', { detail: { plan: tierId } }));
                 const name = TIERS[tierId]?.name ?? tierId;
-                toast({ title: 'Plan updated', description: `You're now on ${name}.` });
+                const t = showToast({
+                  title: "You're all set",
+                  description: `You're now on the ${name} plan.`,
+                  variant: "success",
+                });
+                t.update({
+                  id: t.id,
+                  action: <ToastAction altText="Dismiss" onClick={() => dismiss(t.id)}>Got it</ToastAction>,
+                });
               } else {
                 closePlanModal();
-                toast({ title: 'Could not update plan', description: res.error ?? 'Please try again.', variant: 'destructive' });
+                showToast({ title: 'Could not update plan', description: res.error ?? 'Please try again.', variant: 'destructive' });
               }
             } catch {
               closePlanModal();
-              toast({ title: 'Could not update plan', description: 'Please try again.', variant: 'destructive' });
+              showToast({ title: 'Could not update plan', description: 'Please try again.', variant: 'destructive' });
             } finally {
               setPlanChangeInProgress(false);
               setPlanChangeTierId(null);
@@ -815,14 +825,22 @@ const DashboardLayoutContent = ({
                 refetchUsage();
                 window.dispatchEvent(new CustomEvent('usageShouldRefresh', { detail: { plan: tierId } }));
                 const name = TIERS[tierId]?.name ?? tierId;
-                toast({ title: 'Plan updated', description: `You're now on ${name}.` });
+                const t = showToast({
+                  title: "You're all set",
+                  description: `You're now on the ${name} plan.`,
+                  variant: "success",
+                });
+                t.update({
+                  id: t.id,
+                  action: <ToastAction altText="Dismiss" onClick={() => dismiss(t.id)}>Got it</ToastAction>,
+                });
               } else {
                 closePlanModal();
-                toast({ title: 'Could not update plan', description: res.error ?? 'Please try again.', variant: 'destructive' });
+                showToast({ title: 'Could not update plan', description: res.error ?? 'Please try again.', variant: 'destructive' });
               }
             } catch {
               closePlanModal();
-              toast({ title: 'Could not update plan', description: 'Please try again.', variant: 'destructive' });
+              showToast({ title: 'Could not update plan', description: 'Please try again.', variant: 'destructive' });
             } finally {
               setPlanChangeInProgress(false);
               setPlanChangeTierId(null);

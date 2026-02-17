@@ -20,6 +20,27 @@ WORKSPACE_MAX_DOCS_LISTED = 20
 WORKSPACE_HEADING = "## Current workspace"
 
 
+def get_document_ids_for_property(property_id: Optional[str], business_id: str) -> List[str]:
+    """
+    Resolve property_id to a list of document IDs (same source as build_workspace_context).
+    Used by planner normalizer when we have property scope but invalid/placeholder document_ids.
+    """
+    if not property_id or not business_id:
+        return []
+    try:
+        supabase = get_supabase_client()
+        rel_result = (
+            supabase.table("document_relationships")
+            .select("document_id")
+            .eq("property_id", property_id)
+            .execute()
+        )
+        return [str(r["document_id"]) for r in (rel_result.data or []) if r.get("document_id")]
+    except Exception as e:
+        logger.warning("get_document_ids_for_property failed: %s", e)
+        return []
+
+
 def get_documents_with_property_context(
     document_ids: List[str],
     business_id: str,

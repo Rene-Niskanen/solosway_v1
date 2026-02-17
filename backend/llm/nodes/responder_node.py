@@ -126,11 +126,41 @@ def _looks_like_closing_line(s: str) -> bool:
     )
 
 
+# Patterns that match closing fragments *embedded* in a line (e.g. "Offer Details for Banda Lane free to ask! 😊")
+# Strip these from the end of any line that is NOT the last paragraph (leakage from LLM putting closing in heading).
+_EMBEDDED_CLOSING_SUFFIX_PATTERNS = [
+    re.compile(r"\s+free to ask\!?\s*[😊🙂📄✨📋🌳📊💡✅\s]*$", re.IGNORECASE),
+    re.compile(r",?\s*feel free to ask\!?\s*[😊🙂📄✨📋🌳📊💡✅\s]*$", re.IGNORECASE),
+    re.compile(r"\s+If you need (?:more )?information or further assistance, feel\s*$", re.IGNORECASE),
+    re.compile(r"\s+If you need further details or assistance, feel free to ask\!?\s*[😊🙂\s]*$", re.IGNORECASE),
+    re.compile(r"\s+let me know(?: if you need[^.]*)?\!?\s*[😊🙂📄✨\s]*$", re.IGNORECASE),
+]
+
+
+def _strip_embedded_closing_fragments(text: str) -> str:
+    """Remove closing phrases that were leaked into headings or mid-response lines (e.g. 'Offer Details for X free to ask! 😊')."""
+    if not (text or text.strip()):
+        return text
+    paras = re.split(r"\n\n+", text)
+    out = []
+    for i, para in enumerate(paras):
+        is_last = i == len(paras) - 1
+        # Strip embedded closing fragments from: (1) any non-final paragraph, or (2) a line that looks like a heading (leakage)
+        looks_like_heading = "**" in para or para.strip().startswith("#")
+        if not is_last or looks_like_heading:
+            for pat in _EMBEDDED_CLOSING_SUFFIX_PATTERNS:
+                para = pat.sub("", para).rstrip()
+                para = re.sub(r"\s*[,–\-]\s*$", "", para)
+        out.append(para)
+    return "\n\n".join(out)
+
+
 def _strip_mid_response_generic_closings(text: str) -> str:
     """Move closing phrases that appear in the middle or start of a response to the end (on their own line)."""
     if not (text or text.strip()):
         return text
-    result = text
+    # First: remove closing fragments embedded in headings/mid lines (e.g. "Offer Details for Banda Lane free to ask! 😊")
+    result = _strip_embedded_closing_fragments(text)
     changed = True
     while changed:
         changed = False

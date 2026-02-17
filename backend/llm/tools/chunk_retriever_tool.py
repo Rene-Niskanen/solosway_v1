@@ -44,7 +44,7 @@ def retrieve_chunks(
     All intelligence happens here:
     - Heuristic query profile detection (fact/explanation/summary)
     - Adaptive top_k, min_score, per_doc_limit based on query type
-    - Hybrid search (vector + keyword)
+    - Hybrid search (vector + keyword). When HyDE is enabled, vector search may use hypothetical-answer embedding; keyword search always uses the original query.
     - Global reranking
     
     Args:
@@ -106,49 +106,15 @@ def retrieve_chunks(
         
         logger.info(f"[RETRIEVER] Query profile: {query_profile} (top_k={effective_top_k}, min_score={effective_min_score}, per_doc_limit={per_doc_limit})")
         
-        # 3. Generate query embedding using Voyage AI (matches database embeddings)
-        # CRITICAL: Chunk embeddings use Voyage AI (1024 dimensions) to match database schema
-        # This matches the embeddings stored in document_vectors.embedding column
-        import os
-        use_voyage = os.environ.get('USE_VOYAGE_EMBEDDINGS', 'true').lower() == 'true'
-        
-        if use_voyage:
-            try:
-                from voyageai import Client
-                voyage_api_key = os.environ.get('VOYAGE_API_KEY')
-                if not voyage_api_key:
-                    logger.error("VOYAGE_API_KEY not set, cannot generate chunk embedding")
-                    return []
-                
-                voyage_client = Client(api_key=voyage_api_key)
-                voyage_model = os.environ.get('VOYAGE_EMBEDDING_MODEL', 'voyage-law-2')
-                
-                response = voyage_client.embed(
-                    texts=[query],
-                    model=voyage_model,
-                    input_type='query'  # Use 'query' for query embeddings
-                )
-                query_embedding = response.embeddings[0]
-                logger.debug(f"✅ Using Voyage AI embedding ({len(query_embedding)} dimensions) for chunk search")
-            except Exception as e:
-                logger.error(f"Failed to generate Voyage embedding: {e}")
+        # 3. Query embedding for vector search (HyDE when enabled; skip for summarize - we fetch all chunks). Keyword search always uses original query.
+        query_embedding = None
+        if not is_summarize_query:
+            from backend.llm.hyde import get_query_embedding_for_retrieval
+            query_embedding = get_query_embedding_for_retrieval(query)
+            if query_embedding is None:
+                logger.error("Failed to generate query embedding for chunk search")
                 return []
-        else:
-            # Fallback to OpenAI if Voyage is disabled
-            try:
-                from openai import OpenAI
-                openai_client = OpenAI(api_key=os.environ.get('OPENAI_API_KEY'))
-                response = openai_client.embeddings.create(
-                    model="text-embedding-3-small",
-                    input=[query]
-                )
-                query_embedding = response.data[0].embedding
-                logger.warning(f"⚠️ Using OpenAI embedding ({len(query_embedding)} dimensions) - Voyage is disabled")
-            except Exception as e:
-                logger.error(f"Failed to generate OpenAI embedding: {e}")
-                return []
-        
-        logger.debug(f"   Query embedding dimension: {len(query_embedding)}")
+            logger.debug(f"   Query embedding dimension: {len(query_embedding)}")
         
         # 4. Get Supabase client
         supabase = get_supabase_client()

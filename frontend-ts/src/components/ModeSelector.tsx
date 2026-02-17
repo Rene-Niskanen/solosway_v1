@@ -70,11 +70,11 @@ export function ModeSelector({ className, compact = false, small = false, large 
   const gapClass = showText ? 'gap-2.5' : ''; // Gap between icon and label text
   const paddingClass = compact ? 'px-2 py-0.5' : 'px-2.5 py-0.5'; // Padding - reduced py from 1 to 0.5
 
-  // Set background color based on mode: beige for Agent, light grey for Reader, light green for Plan
-  const backgroundColor = mode === 'agent' ? '#F2DEB6' : mode === 'plan' ? '#EBF1DE' : '#E5E7EB';
-  // Set text and icon color: darker orange for Agent, dark green for Plan, black for Reader
-  const textColor = mode === 'agent' ? '#78350F' : mode === 'plan' ? '#3D5A1F' : '#1A1A1A';
-  const iconColor = mode === 'agent' ? '#78350F' : mode === 'plan' ? '#3D5A1F' : '#1A1A1A';
+  // Set background: Agent = light grey, Plan = orange/beige, Reader = green
+  const backgroundColor = mode === 'agent' ? '#F3F3F3' : mode === 'plan' ? '#F2DEB6' : '#EBF1DE';
+  // Set text and icon: Agent = medium grey, Plan = dark orange, Reader = dark green
+  const textColor = mode === 'agent' ? '#7F7F7F' : mode === 'plan' ? '#78350F' : '#3D5A1F';
+  const iconColor = mode === 'agent' ? '#7F7F7F' : mode === 'plan' ? '#78350F' : '#3D5A1F';
 
   return (
     <DropdownMenu
@@ -95,7 +95,7 @@ export function ModeSelector({ className, compact = false, small = false, large 
           style={{
             backgroundColor: backgroundColor,
             color: textColor,
-            border: (mode === 'agent' || mode === 'plan') ? '1px solid rgba(229, 231, 235, 0.6)' : 'none',
+            border: mode !== 'agent' ? '1px solid rgba(229, 231, 235, 0.6)' : 'none',
             fontSize: textSize,
             fontWeight: 500,
             cursor: 'pointer',
@@ -106,7 +106,7 @@ export function ModeSelector({ className, compact = false, small = false, large 
         >
           <CurrentIcon className={iconSize} strokeWidth={2} style={{ color: iconColor }} />
           {showText && <span className="text-xs font-medium">{currentMode.label}</span>}
-          {showText && <ChevronDown className="w-3 h-3 opacity-50" strokeWidth={2} style={{ color: iconColor }} />}
+          {showText && <ChevronDown className="w-3 h-3" strokeWidth={2} style={{ color: iconColor }} />}
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent

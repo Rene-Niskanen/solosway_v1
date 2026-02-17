@@ -1280,9 +1280,23 @@ def query_documents_stream():
                                     break
                             return events_yielded
                         
+                        # Timeout per graph event so a stuck node (e.g. executor retrieval) doesn't hang forever
+                        GRAPH_EVENT_TIMEOUT = 120  # seconds
                         try:
                             event_stream = graph.astream_events(initial_state, config_dict, version="v2")
-                            async for event in event_stream:
+                            stream_iter = event_stream.__aiter__()
+                            while True:
+                                try:
+                                    event = await asyncio.wait_for(stream_iter.__anext__(), timeout=GRAPH_EVENT_TIMEOUT)
+                                except StopAsyncIteration:
+                                    break
+                                except asyncio.TimeoutError:
+                                    logger.error(
+                                        "🟡 [STREAM] Graph event stream timed out after %ss (node may be stuck)",
+                                        GRAPH_EVENT_TIMEOUT,
+                                    )
+                                    yield f"data: {json.dumps({'type': 'error', 'message': 'Request timed out. The search is taking too long—please try again or try a simpler query.'})}\n\n"
+                                    break
                                 # NEW: Consume execution events from queue (non-blocking, after each graph event)
                                 execution_events = consume_execution_events()
                                 for exec_event in execution_events:
@@ -6288,12 +6302,22 @@ def get_usage():
         return jsonify({'error': 'User is not associated with a business'}), 400
     try:
         from .services.usage_service import get_usage_for_api, ALLOWED_TIERS, DEFAULT_TIER
+        from .models import db
         user_email = getattr(current_user, 'email', None) or None
         stored = getattr(current_user, 'subscription_tier', None)
         plan = stored if (stored and stored in ALLOWED_TIERS) else DEFAULT_TIER
         billing_cycle_start_override = None
         billing_cycle_end_override = None
         period_end = getattr(current_user, 'subscription_period_ends_at', None)
+        today_utc = datetime.now(timezone.utc).date()
+        if not period_end:
+            period_end = today_utc + timedelta(days=30)
+            current_user.subscription_period_ends_at = period_end
+            db.session.commit()
+        elif period_end < today_utc:
+            period_end = today_utc + timedelta(days=30)
+            current_user.subscription_period_ends_at = period_end
+            db.session.commit()
         if period_end:
             start = period_end - timedelta(days=30)
             billing_cycle_start_override = start.strftime("%Y-%m-%d")

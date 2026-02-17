@@ -63,6 +63,13 @@ class LLMConfig(BaseSettings):
     mem0_search_limit: int = int(os.getenv("MEM0_SEARCH_LIMIT", "5"))
     mem0_search_timeout: float = float(os.getenv("MEM0_SEARCH_TIMEOUT", "2.0"))
 
+    # HyDE (Hypothetical Document Embeddings) - improve retrieval when user wording doesn't match docs
+    use_hyde: bool = os.getenv("USE_HYDE", "false").lower() == "true"
+    hyde_num_docs: int = int(os.getenv("HYDE_NUM_DOCS", "2"))
+    hyde_model: str = os.getenv("HYDE_MODEL", "")  # empty = use openai_model at runtime
+    hyde_skip_max_words: int = int(os.getenv("HYDE_SKIP_MAX_WORDS", "8"))  # skip HyDE for short/entity-like queries (e.g. "value of highlands")
+    hyde_cache_ttl_seconds: int = int(os.getenv("HYDE_CACHE_TTL_SECONDS", "60"))
+
 
 config = LLMConfig()
 

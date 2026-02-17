@@ -288,8 +288,14 @@ def resolve_step_references(step: ExecutionStep, execution_results: List[Dict[st
                 else:
                     logger.warning(f"[RESOLVE] Could not find result for step_id '{step_id}' in execution_results. Available step_ids: {[r.get('step_id') for r in execution_results]}")
             else:
-                # Not a reference, use as-is
-                resolved_ids.append(doc_id_ref)
+                # Not a reference: only use if it looks like a UUID (reject planner placeholders like "<copy UUIDs from workspace lines above>")
+                if isinstance(doc_id_ref, str) and doc_id_ref.strip():
+                    try:
+                        from uuid import UUID
+                        UUID(doc_id_ref.strip())
+                        resolved_ids.append(doc_id_ref.strip())
+                    except (ValueError, TypeError):
+                        logger.warning(f"[RESOLVE] Skipping invalid document_id placeholder: {doc_id_ref[:50]}...")
         
         if resolved_ids:
             resolved_step["document_ids"] = resolved_ids
@@ -466,31 +472,35 @@ async def executor_node(state: MainWorkflowState, runnable_config=None) -> MainW
         elif action == "retrieve_chunks":
             document_ids = resolved_step.get("document_ids")
             if document_ids is None or (isinstance(document_ids, list) and len(document_ids) == 0):
-                # retrieve_docs returned 0 docs (e.g. "what is the value of highlands" didn't match doc name)
-                # Run global chunk search so we still find content in docs that weren't in step 1
-                logger.warning(f"[EXECUTOR] Step {resolved_step['id']} has no document_ids (retrieve_docs found nothing); trying global chunk search")
+                # No document_ids: planner may have output a placeholder (e.g. "<copy UUIDs from workspace lines above>").
+                # Run retrieve_documents first to get real doc IDs, then retrieve_chunks on those.
+                logger.warning(f"[EXECUTOR] Step {resolved_step['id']} has no document_ids; running retrieve_documents first")
                 user_query = state.get("user_query") or ""
-                # Fallback vector call uses short/key-term query, not full sentence
-                fallback_query = _query_for_global_fallback(user_query) or _focus_for_document_search(user_query) or (resolved_step.get("query") or "").strip()
+                query = (user_query or "").strip() or (resolved_step.get("query") or "").strip()
+                doc_search_query = _focus_for_document_search(user_query) or query
                 result = []
-                if business_id and fallback_query.strip():
+                if business_id and doc_search_query.strip():
                     try:
-                        vector_service = SupabaseVectorService()
-                        # Use slightly lower threshold when step 1 found no docs so we still surface relevant chunks (e.g. person-name queries)
-                        global_rows = vector_service.search_document_vectors(
-                            fallback_query, business_id, limit=20, similarity_threshold=0.22
+                        docs = retrieve_documents(
+                            query=doc_search_query,
+                            business_id=business_id,
+                            property_id=state.get("property_id"),
+                            document_ids=state.get("document_ids"),
                         )
-                        if global_rows:
-                            supabase = get_supabase_client()
-                            result = _normalize_global_chunks_to_responder_shape(global_rows, supabase)
-                            if result and emitter:
-                                emitter.emit_reasoning(
-                                    label="Searched across all documents",
-                                    detail=None
-                                )
-                            logger.info("[EXECUTOR] No docs from step 1; global chunk search returned %d chunks", len(result))
+                        if docs:
+                            doc_ids = [d.get("document_id") for d in docs if d.get("document_id")]
+                            if doc_ids and emitter:
+                                emitter.emit_reasoning(label="Searching for documents", detail=None)
+                            result = retrieve_chunks(
+                                query=query,
+                                document_ids=doc_ids,
+                                business_id=business_id,
+                            ) if doc_ids else []
+                            logger.info("[EXECUTOR] No doc_ids in step; ran retrieve_documents -> %d docs, retrieve_chunks -> %d chunks", len(doc_ids), len(result))
+                        else:
+                            logger.warning("[EXECUTOR] retrieve_documents returned 0 docs (query=%r)", doc_search_query[:50])
                     except Exception as fallback_err:
-                        logger.warning("[EXECUTOR] Global chunk search (no-docs path) failed: %s", fallback_err)
+                        logger.warning("[EXECUTOR] retrieve_documents (no-doc_ids path) failed: %s", fallback_err)
             else:
                 user_query = state.get("user_query") or ""
                 # Chunk search uses full user query so "who is", "what is", etc. are preserved for semantic match

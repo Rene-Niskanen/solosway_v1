@@ -14151,9 +14151,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       padding: actualPanelWidth >= 750 ? '7px 11px' : '6px',
                       height: '32px',
                       minHeight: '32px',
+                      border: 'none',
                       position: 'relative',
                       zIndex: 10001,
                       pointerEvents: 'auto',
+                      cursor: 'pointer',
                       backgroundColor: isChatPanelOpen ? 'rgba(0, 0, 0, 0.04)' : 'rgba(0, 0, 0, 0.02)',
                     }}
                   >
@@ -14326,7 +14328,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         onMapToggle();
                       }
                     }}
-                    className="rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150"
+                    className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1.5' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150`}
                     title="Close chat"
                     style={{
                       padding: actualPanelWidth >= 750 ? '7px 11px' : '6px',
@@ -14338,7 +14340,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       zIndex: 10001,
                       pointerEvents: 'auto',
                       border: 'none',
-                      cursor: 'pointer'
+                      cursor: 'pointer',
+                      backgroundColor: 'rgba(0, 0, 0, 0.02)'
                     }}
                   >
                     <X className="w-4 h-4 text-[#666]" strokeWidth={1.75} />

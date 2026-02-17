@@ -1797,16 +1797,16 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                       onClick={() => {}}
                       className="flex items-center gap-1.5 px-2 py-1 rounded-full text-gray-900 transition-colors focus:outline-none outline-none"
                       style={{
-                        backgroundColor: '#ECECEC',
+                        backgroundColor: '#F3F3F3',
                         transition: 'background-color 0.2s ease',
                         height: '24px',
                         minHeight: '24px'
                       }}
                       onMouseEnter={(e) => {
-                        e.currentTarget.style.backgroundColor = '#E0E0E0';
+                        e.currentTarget.style.backgroundColor = '#EBEBEB';
                       }}
                       onMouseLeave={(e) => {
-                        e.currentTarget.style.backgroundColor = '#ECECEC';
+                        e.currentTarget.style.backgroundColor = '#F3F3F3';
                       }}
                     >
                       <AudioLines className="w-3.5 h-3.5" strokeWidth={1.5} />

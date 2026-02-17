@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 from langchain_core.output_parsers import PydanticOutputParser
 
 from backend.llm.config import config
-from backend.llm.types import MainWorkflowState, ExecutionPlan
+from backend.llm.types import MainWorkflowState
 from backend.llm.contracts.validators import validate_planner_output
 from backend.llm.prompts.planner import (
     get_planner_system_prompt,
@@ -23,9 +23,92 @@ from backend.llm.prompts.planner import (
     get_planner_followup_prompt,
     REFINE_HINT,
 )
-from backend.llm.utils.workspace_context import build_workspace_context
+from backend.llm.utils.workspace_context import build_workspace_context, get_document_ids_for_property
 
 logger = logging.getLogger(__name__)
+
+
+def _is_valid_uuid(s: str) -> bool:
+    """True if s is a valid UUID string."""
+    if not isinstance(s, str) or not s.strip():
+        return False
+    try:
+        from uuid import UUID
+        UUID(s.strip())
+        return True
+    except (ValueError, TypeError):
+        return False
+
+
+def _is_from_step_ref(s: str) -> bool:
+    """True if s is a step reference like <from_step_search_docs>."""
+    return isinstance(s, str) and s.strip().startswith("<from_step_") and s.strip().endswith(">")
+
+
+def _has_invalid_document_ids(document_ids: Optional[List[str]]) -> bool:
+    """True if any entry is not a valid UUID and not a <from_step_*> reference."""
+    if not document_ids:
+        return False
+    for ref in document_ids:
+        if not _is_valid_uuid(ref) and not _is_from_step_ref(ref):
+            return True
+    return False
+
+
+def _canonical_two_step_plan(user_query: str) -> dict:
+    """Fixed 2-step plan: retrieve_docs then retrieve_chunks with <from_step_search_docs>."""
+    q = (user_query or "").strip() or "Search documents"
+    return {
+        "objective": f"Answer query: {q[:80]}{'...' if len(q) > 80 else ''}",
+        "steps": [
+            {"id": "search_docs", "action": "retrieve_docs", "query": q, "reasoning_label": "Searched documents", "reasoning_detail": None},
+            {"id": "search_chunks", "action": "retrieve_chunks", "query": q, "document_ids": ["<from_step_search_docs>"], "reasoning_label": "Reviewed relevant sections", "reasoning_detail": None},
+        ],
+        "use_prior_context": False,
+        "format_instruction": None,
+    }
+
+
+def _normalize_document_ids(execution_plan: dict, state: MainWorkflowState) -> dict:
+    """
+    For any retrieve_chunks step with invalid document_ids (placeholder or non-UUID),
+    replace from state.document_ids, or resolve state.property_id to doc IDs, or rewrite to 2-step.
+    """
+    steps = execution_plan.get("steps") or []
+    state_doc_ids = state.get("document_ids")
+    state_doc_ids = [str(d) for d in state_doc_ids] if isinstance(state_doc_ids, list) and state_doc_ids else None
+    property_id = state.get("property_id")
+    business_id = state.get("business_id") or ""
+
+    for step in steps:
+        if step.get("action") != "retrieve_chunks":
+            continue
+        doc_ids = step.get("document_ids") or []
+        if not _has_invalid_document_ids(doc_ids):
+            continue
+
+        if state_doc_ids:
+            step["document_ids"] = state_doc_ids
+            logger.info("[PLANNER] Normalizer: replaced document_ids from state (%d docs)", len(state_doc_ids))
+        elif property_id and business_id:
+            resolved = get_document_ids_for_property(property_id, business_id)
+            if resolved:
+                step["document_ids"] = resolved
+                logger.info("[PLANNER] Normalizer: replaced document_ids from property_id (%d docs)", len(resolved))
+            else:
+                # Can't resolve property -> rewrite to 2-step
+                user_query = (state.get("user_query") or "").strip()
+                execution_plan.update(_canonical_two_step_plan(user_query))
+                logger.info("[PLANNER] Normalizer: invalid document_ids and property_id resolved to 0 docs; rewrote to 2-step")
+                return execution_plan
+        else:
+            # No scope: rewrite entire plan to canonical 2-step
+            user_query = (state.get("user_query") or "").strip()
+            execution_plan.update(_canonical_two_step_plan(user_query))
+            logger.info("[PLANNER] Normalizer: invalid document_ids and no scope; rewrote to 2-step")
+            return execution_plan
+
+    return execution_plan
 
 # Prompt for chip-path query rewrite (one short LLM call so retrieval matches document wording)
 CHIP_QUERY_REWRITE_PROMPT = """The user is asking a follow-up question about a document they were just viewing. Output a short keyword phrase (3-8 words) that would appear in the document and help find the right passage. Use terms from legal/lease docs when relevant.
@@ -282,6 +365,34 @@ async def planner_node(state: MainWorkflowState, runnable_config=None) -> MainWo
             validate_planner_output(planner_output)
             return planner_output
 
+    # No-scope path: no document_ids, no property_id -> inject fixed 2-step plan (skip LLM for plan shape)
+    property_id = state.get("property_id")
+    has_document_scope = bool(
+        (raw_doc_ids and isinstance(raw_doc_ids, list) and len(raw_doc_ids) > 0)
+        or property_id
+    )
+    if not has_document_scope:
+        user_query_stripped = (user_query or "").strip() or "Search documents"
+        execution_plan = _canonical_two_step_plan(user_query_stripped)
+        logger.info("[PLANNER] No scope: injected fixed 2-step plan (no LLM)")
+        if emitter:
+            planning_label = _rephrase_query_to_finding(user_query)
+            emitter.emit_reasoning(label=planning_label, detail=None)
+        plan_message = AIMessage(
+            content=f"Generated execution plan: {execution_plan['objective']} (2 steps)"
+        )
+        planner_output = {
+            "execution_plan": execution_plan,
+            "current_step_index": 0,
+            "execution_results": [],
+            "messages": [plan_message],
+            "plan_refinement_count": plan_refinement_count,
+            "prior_turn_content": None,
+            "format_instruction": None,
+        }
+        validate_planner_output(planner_output)
+        return planner_output
+
     is_refinement = plan_refinement_count > 0 or state.get("execution_plan") is not None
     if is_refinement:
         plan_refinement_count += 1
@@ -328,6 +439,7 @@ async def planner_node(state: MainWorkflowState, runnable_config=None) -> MainWo
         plan_dict = parser.parse(response.content)
         execution_plan = _plan_dict_to_execution_plan(plan_dict)
         execution_plan = _normalize_two_step_plan(execution_plan)
+        execution_plan = _normalize_document_ids(execution_plan, state)
 
         logger.info("[PLANNER] ✅ Generated plan with %s steps", len(execution_plan["steps"]))
         logger.info("[PLANNER] Objective: %s", execution_plan["objective"])

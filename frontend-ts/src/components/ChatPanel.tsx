@@ -203,7 +203,7 @@ export const ChatPanel = ({
           if (openMenuId) setOpenMenuId(null);
         }}
         style={{
-          background: '#F8F8F5',
+          background: '#4A4A4A',
           right: isOpen ? '0px' : '-1000px', // Move off-screen when closed
           width: isOpen ? `${totalSidebarWidth}px` : '332px',
           transition: 'right 0s ease-out, width 0s ease-out',
@@ -223,8 +223,8 @@ export const ChatPanel = ({
             className="relative shrink-0 h-full flex items-center justify-center cursor-ew-resize group"
             style={{
               width: AGENT_SIDEBAR_RAIL_WIDTH,
-              background: '#F8F8F5',
-              borderLeft: '1px solid #E5E5E2',
+              background: '#4A4A4A',
+              borderLeft: '1px solid rgba(255,255,255,0.08)',
               pointerEvents: 'auto',
               WebkitTapHighlightColor: 'transparent',
             }}
@@ -232,7 +232,7 @@ export const ChatPanel = ({
           >
             <div
               className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity"
-              style={{ background: 'rgba(0, 0, 0, 0.06)' }}
+              style={{ background: 'rgba(255, 255, 255, 0.08)' }}
             />
           </div>
         )}
@@ -259,7 +259,7 @@ export const ChatPanel = ({
               style={{ background: 'transparent' }}
             >
             {/* Header */}
-            <div className="px-4 py-3" style={{ backgroundColor: '#F8F8F5' }}>
+            <div className="px-4 py-3" style={{ backgroundColor: '#4A4A4A' }}>
               {archivedChats.length > 0 && (
                 <div className="flex items-center justify-end mb-3">
                   <motion.button
@@ -268,8 +268,8 @@ export const ChatPanel = ({
                     whileTap={{ scale: 0.95 }}
                     className={`p-1.5 text-xs rounded-md transition-colors duration-75 ease-out ${
                       showArchived 
-                        ? 'bg-amber-100 text-amber-700 hover:bg-amber-200' 
-                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                        ? 'bg-amber-500/30 text-amber-200 hover:bg-amber-500/40' 
+                        : 'bg-white/15 text-[#C5C5C5] hover:bg-white/20'
                     }`}
                   >
                     {showArchived ? <ArchiveRestore className="w-3.5 h-3.5" /> : <Archive className="w-3.5 h-3.5" />}
@@ -284,8 +284,8 @@ export const ChatPanel = ({
                   placeholder="Search"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full pl-2 pr-14 py-1.5 text-[13px] bg-transparent border-none focus:outline-none placeholder:text-[#A0A0A0] placeholder:text-[13px]"
-                  style={{ color: '#6B7280' }}
+                  className="w-full pl-2 pr-14 py-1.5 text-[13px] bg-transparent border-none focus:outline-none placeholder:text-[13px] placeholder:text-[#8A8A8A]"
+                  style={{ color: '#C5C5C5', caretColor: '#C5C5C5' }}
                 />
                 {/* Options (sliders) + Close - Inline with Search Input */}
                 <div className="absolute right-1 top-1/2 -translate-y-1/2 flex items-center gap-0.5 z-10">
@@ -294,12 +294,12 @@ export const ChatPanel = ({
                       <button
                         type="button"
                         onClick={(e) => e.stopPropagation()}
-                        className="p-1 rounded-full hover:bg-slate-200/50 active:bg-slate-200/70 transition-colors duration-75 ease-out flex items-center justify-center"
+                        className="p-1 rounded-full hover:bg-white/15 active:bg-white/20 transition-colors duration-75 ease-out flex items-center justify-center"
                         title="Options"
                         aria-haspopup="true"
                         aria-expanded={optionsMenuOpen}
                       >
-                        <SlidersHorizontal className="w-4 h-4 text-[#A0A0A0] hover:text-slate-500" strokeWidth={1.5} />
+                        <SlidersHorizontal className="w-4 h-4 text-[#B0B0B0] hover:text-[#D0D0D0]" strokeWidth={1.5} />
                       </button>
                     </PopoverTrigger>
                     <PopoverContent
@@ -335,11 +335,11 @@ export const ChatPanel = ({
                       e.stopPropagation();
                       closePanel();
                     }}
-                    className="p-1 rounded-full hover:bg-slate-200/50 active:bg-slate-200/70 transition-colors duration-75 ease-out flex items-center justify-center"
+                    className="p-1 rounded-full hover:bg-white/15 active:bg-white/20 transition-colors duration-75 ease-out flex items-center justify-center"
                     title="Close Agent Sidebar"
                     type="button"
                   >
-                    <X className="w-4 h-4 text-[#A0A0A0] hover:text-slate-500" strokeWidth={1.5} />
+                    <X className="w-4 h-4 text-[#B0B0B0] hover:text-[#D0D0D0]" strokeWidth={1.5} />
                   </button>
                 </div>
               </div>
@@ -354,11 +354,11 @@ export const ChatPanel = ({
                 }} 
                 whileHover={{ scale: 1.01 }} 
                 whileTap={{ scale: 0.99 }} 
-                className="w-full flex items-center justify-center gap-1.5 px-2.5 py-1.5 border border-slate-300/70 hover:border-slate-400/80 rounded transition-[border-color,background-color] duration-75 ease-out group"
-                style={{ backgroundColor: 'white', opacity: 1, backdropFilter: 'none' }}
+                className="w-full flex items-center justify-center gap-1.5 px-2.5 py-1.5 border border-white/15 hover:border-white/25 rounded transition-[border-color,background-color] duration-75 ease-out group"
+                style={{ backgroundColor: '#5A5A5A', opacity: 1, backdropFilter: 'none' }}
               >
-                <Plus className="w-3 h-3 text-slate-500" />
-                <span className="text-slate-600 text-[11px] font-medium">
+                <Plus className="w-3 h-3 text-[#C5C5C5]" />
+                <span className="text-[11px] font-medium" style={{ color: '#D0D0D0' }}>
                   New Agent
                 </span>
               </motion.button>
@@ -367,13 +367,13 @@ export const ChatPanel = ({
             {/* Chat List - sticky with panel: flex-1 + minHeight 0 so it fills and scrolls inside the sidebar */}
             {showChatHistory && (
               <div
-                className="flex-1 overflow-y-auto overflow-x-hidden px-3 pt-2 pb-3 scrollbar-thin scrollbar-track-transparent scrollbar-thumb-slate-300/50 hover:scrollbar-thumb-slate-400/70 min-h-0"
-                style={{ backgroundColor: '#F8F8F5' }}
+                className="flex-1 overflow-y-auto overflow-x-hidden px-3 pt-2 pb-3 scrollbar-thin scrollbar-track-transparent min-h-0"
+                style={{ backgroundColor: '#4A4A4A', scrollbarColor: 'rgba(255,255,255,0.2) transparent' }}
               >
                 {/* Agents Heading */}
                 {displayedChats.length > 0 && (
                   <div className="px-0 pt-2 pb-0.5 mb-0.5">
-                    <h2 className="text-[12px] font-medium text-gray-400 pl-2">Agents</h2>
+                    <h2 className="text-[12px] font-medium pl-2" style={{ color: '#B0B0B0' }}>Agents</h2>
                   </div>
                 )}
                 <AnimatePresence mode="popLayout">
@@ -417,9 +417,10 @@ export const ChatPanel = ({
                         onClick={() => handleChatClick(chat.id)} 
                         className={`group relative px-2.5 py-1.5 rounded-md cursor-pointer w-full mb-0.5 transition-[background-color] duration-75 ease-out ${
                           selectedChatId === chat.id 
-                            ? 'bg-white' 
-                            : openMenuId ? '' : 'hover:bg-[#EBEBE8]'
+                            ? '' 
+                            : openMenuId ? '' : 'hover:bg-white/10'
                         }`}
+                        style={selectedChatId === chat.id ? { backgroundColor: '#5A5A5A' } : undefined}
                       >
                         {isEditing ? (
                           <div className="flex items-center space-x-2" onClick={(e) => e.stopPropagation()}>
@@ -439,28 +440,24 @@ export const ChatPanel = ({
                         ) : (
                           <div className="flex flex-col w-full relative">
                             {/* Title row */}
-                            <div className="flex items-center gap-1.5 text-[12px] font-normal text-slate-800 truncate pr-5">
+                            <div className="flex items-center gap-1.5 text-[12px] font-normal truncate pr-5" style={{ color: '#D0D0D0' }}>
                               {chat.status === 'loading' && (
-                                <Loader2 className="w-3 h-3 text-slate-500 animate-spin flex-shrink-0" />
+                                <Loader2 className="w-3 h-3 animate-spin flex-shrink-0" style={{ color: '#B0B0B0' }} />
                               )}
                               {chat.status === 'completed' && (
-                                <CircleCheck className="w-3 h-3 text-slate-500 flex-shrink-0" aria-hidden />
+                                <CircleCheck className="w-3 h-3 flex-shrink-0" style={{ color: '#B0B0B0' }} aria-hidden />
                               )}
                               <span
-                                className="text-[12px] font-normal text-slate-600 truncate cursor-pointer hover:text-slate-700 flex-1 min-w-0"
+                                className="text-[12px] font-normal truncate cursor-pointer flex-1 min-w-0 hover:opacity-90"
+                                style={{ color: '#D0D0D0', display: 'inline-block', padding: 0, margin: 0 }}
                                 title="Click to edit chat name"
-                                style={{
-                                  display: 'inline-block',
-                                  padding: '0',
-                                  margin: '0'
-                                }}
                               >
                                 {chat.title || 'New chat'}
                               </span>
                             </div>
                             
                             {/* Timestamp below title */}
-                            <div className="text-[10px] text-slate-400 mt-0.5">
+                            <div className="text-[10px] mt-0.5" style={{ color: '#A0A0A0' }}>
                               {formatTimestamp(new Date(chat.timestamp))}
                             </div>
                             
@@ -470,7 +467,7 @@ export const ChatPanel = ({
                                 onClick={(e) => handleMenuToggle(e, chat.id)}
                                 className="opacity-0 group-hover:opacity-100 p-0.5 rounded transition-[opacity,transform] duration-75 ease-out transform hover:scale-110 active:scale-95"
                               >
-                                <MoreVertical className="w-3.5 h-3.5 text-slate-400 transition-colors duration-75 ease-out" />
+                                <MoreVertical className="w-3.5 h-3.5 transition-colors duration-75 ease-out" style={{ color: '#A0A0A0' }} />
                               </button>
                               
                               {openMenuId === chat.id && (
@@ -573,15 +570,15 @@ export const ChatPanel = ({
 
             {/* Empty State when no chat history should be shown - sticky with panel */}
             {!showChatHistory && (
-              <div className="flex-1 min-h-0 flex items-center justify-center p-8">
+              <div className="flex-1 min-h-0 flex items-center justify-center p-8" style={{ backgroundColor: '#4A4A4A' }}>
                 <div className="text-center max-w-xs">
-                  <div className="w-20 h-20 bg-gradient-to-br from-slate-50 to-slate-100 rounded-3xl flex items-center justify-center mx-auto mb-6 border-2 border-slate-200/40">
-                    <MessageSquare className="w-8 h-8 text-slate-500" strokeWidth={1.5} />
+                  <div className="w-20 h-20 rounded-3xl flex items-center justify-center mx-auto mb-6 border-2 border-white/15" style={{ background: 'linear-gradient(to bottom right, rgba(255,255,255,0.08), rgba(255,255,255,0.04))' }}>
+                    <MessageSquare className="w-8 h-8" style={{ color: '#A0A0A0' }} strokeWidth={1.5} />
                   </div>
-                  <h3 className="text-slate-800 font-semibold text-xl mb-3 tracking-tight">
+                  <h3 className="font-semibold text-xl mb-3 tracking-tight" style={{ color: '#D0D0D0' }}>
                     <span>Start a Conversation</span>
                   </h3>
-                  <p className="text-slate-500 text-sm leading-relaxed font-medium">
+                  <p className="text-sm leading-relaxed font-medium" style={{ color: '#A0A0A0' }}>
                     <span>Search for something to begin an intelligent conversation with AI</span>
                   </p>
                 </div>

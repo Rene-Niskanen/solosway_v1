@@ -63,6 +63,16 @@ export const UsageAndBillingSection: React.FC = () => {
   const planDescription = tier?.targetUser ?? "";
   const businessCopy = usage.plan !== "business" ? upgradeToBusinessCopy(usage.plan) : null;
 
+  const pagesUsed = usage.pages_used ?? 0;
+  const monthlyLimit = usage.monthly_limit ?? 0;
+  const overAllowance = pagesUsed > monthlyLimit;
+  const displayPercentLabel = overAllowance ? "100%+" : `${(usage.usage_percent ?? 0).toFixed(1)}%`;
+  const barFillRatio = Math.min((usage.usage_percent ?? 0) / 100, 1);
+  const usageSectionTitle = usage.billing_cycle_end ? "Usage this period" : "Usage this month";
+  const periodEndFormatted = usage.billing_cycle_end
+    ? new Date(usage.billing_cycle_end + "T12:00:00Z").toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })
+    : null;
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
@@ -118,18 +128,23 @@ export const UsageAndBillingSection: React.FC = () => {
         </Button>
       </div>
 
-      {/* Usage this month */}
+      {/* Usage this period / month */}
       <div className="rounded-lg border border-gray-200 p-6 shadow-sm" style={{ backgroundColor: '#F1F2EE' }}>
-        <h4 className="text-[14px] font-normal text-gray-900 mb-3">Usage this month</h4>
+        <h4 className="text-[14px] font-normal text-gray-900 mb-3">
+          {usageSectionTitle}
+          {periodEndFormatted && (
+            <span className="text-[12px] font-normal text-gray-500 ml-1.5">(ends {periodEndFormatted})</span>
+          )}
+        </h4>
         <div className="flex items-center justify-between mb-2">
-          <span className="text-[24px] font-normal text-gray-900">{usage.usage_percent.toFixed(1)}%</span>
+          <span className="text-[24px] font-normal text-gray-900">{displayPercentLabel}</span>
           <span className="text-[13px] text-gray-600">
-            {usage.pages_used.toLocaleString()} / {usage.monthly_limit.toLocaleString()} pages
+            {(usage.pages_used ?? 0).toLocaleString()} / {(usage.monthly_limit ?? 0).toLocaleString()} pages
           </span>
         </div>
         <div className="h-2 w-full rounded-full bg-gray-200 overflow-hidden flex">
           {Array.from({ length: 32 }).map((_, i) => {
-            const fill = (i + 1) / 32 <= usage.usage_percent / 100;
+            const fill = (i + 1) / 32 <= barFillRatio;
             return (
               <div
                 key={i}
@@ -140,7 +155,9 @@ export const UsageAndBillingSection: React.FC = () => {
           })}
         </div>
         <p className="text-[13px] text-gray-600 mt-2">
-          {usage.remaining.toLocaleString()} pages remaining · {usage.usage_percent.toFixed(1)}% of monthly allowance used
+          {overAllowance
+            ? `0 pages remaining · Over allowance for this period${periodEndFormatted ? ` until ${periodEndFormatted}` : ""}`
+            : `${(usage.remaining ?? monthlyLimit).toLocaleString()} pages remaining · ${(usage.usage_percent ?? 0).toFixed(1)}% of monthly allowance used`}
         </p>
       </div>
     </div>

@@ -46,19 +46,17 @@ def get_current_billing_month_utc() -> Tuple[str, datetime, datetime]:
     return yyyy_mm, start_utc, end_utc
 
 
-def get_pages_used_this_month(business_uuid: str) -> int:
+def get_pages_used_in_period(
+    business_uuid: str, start_utc: datetime, end_utc: datetime
+) -> int:
     """
-    Sum page_count for all documents in the current billing month (UTC).
-    Only completed documents; created_at must fall in [month_start, month_end).
-    Callable anytime; no caching.
+    Sum page_count for completed documents with created_at in [start_utc, end_utc).
+    Used for subscription-period usage (start/switch to a plan until period ends).
     """
-    _, start_utc, end_utc = get_current_billing_month_utc()
     start_iso = start_utc.isoformat()
     end_iso = end_utc.isoformat()
-
     try:
         supabase = get_supabase_client()
-        # Supabase/PostgREST: .gte and .lt for range
         result = (
             supabase.table("documents")
             .select("id, page_count, created_at")
@@ -69,11 +67,21 @@ def get_pages_used_this_month(business_uuid: str) -> int:
             .execute()
         )
         rows = result.data or []
-        total = sum((r.get("page_count") or 0) for r in rows)
-        return total
+        # Coerce each page_count to int; treat None/missing as 0 so usage starts at 0 with no docs
+        return sum(max(0, int(r.get("page_count") or 0)) for r in rows)
     except Exception as e:
-        logger.exception("get_pages_used_this_month failed: %s", e)
+        logger.exception("get_pages_used_in_period failed: %s", e)
         raise
+
+
+def get_pages_used_this_month(business_uuid: str) -> int:
+    """
+    Sum page_count for all documents in the current billing month (UTC).
+    Only completed documents; created_at must fall in [month_start, month_end).
+    Callable anytime; no caching.
+    """
+    _, start_utc, end_utc = get_current_billing_month_utc()
+    return get_pages_used_in_period(business_uuid, start_utc, end_utc)
 
 
 def get_usage_for_api(
@@ -87,29 +95,49 @@ def get_usage_for_api(
     """
     Build the usage payload for GET /api/usage.
     Uses plan_override if provided and in ALLOWED_TIERS; otherwise DEFAULT_TIER.
-    When billing_cycle_*_override are provided (e.g. from user.subscription_period_ends_at),
-    use them so the plan period is "1 month from switch" instead of calendar month.
+    When billing_cycle_*_override are provided (subscription period from start/switch),
+    usage = pages from documents created in [period_start, min(now, period_end)] so
+    usage is tracked only within the current plan period until it ends.
     """
-    pages_used = get_pages_used_this_month(business_uuid)
     plan = (
         plan_override
         if plan_override and plan_override in ALLOWED_TIERS
         else DEFAULT_TIER
     )
     monthly_limit = TIER_LIMITS.get(plan, TIER_LIMITS[DEFAULT_TIER])
-    remaining = max(0, monthly_limit - pages_used)
-    usage_percent = (
-        round((pages_used / monthly_limit) * 100, 2) if monthly_limit > 0 else 0.0
-    )
 
     if billing_cycle_end_override and billing_cycle_start_override:
         billing_cycle_start = billing_cycle_start_override
         billing_cycle_end = billing_cycle_end_override
+        # Count usage only within this subscription period (from start/switch until now or period end)
+        try:
+            start_date = datetime.strptime(billing_cycle_start_override, "%Y-%m-%d").date()
+            end_date = datetime.strptime(billing_cycle_end_override, "%Y-%m-%d").date()
+            period_start_utc = datetime(
+                start_date.year, start_date.month, start_date.day, 0, 0, 0, tzinfo=timezone.utc
+            )
+            period_end_utc = datetime(
+                end_date.year, end_date.month, end_date.day, 23, 59, 59, tzinfo=timezone.utc
+            ) + timedelta(seconds=1)
+            now_utc = datetime.now(timezone.utc)
+            end_cap = min(now_utc, period_end_utc)
+            pages_used = get_pages_used_in_period(business_uuid, period_start_utc, end_cap)
+        except (ValueError, TypeError) as e:
+            logger.warning("Invalid billing_cycle dates, falling back to calendar month: %s", e)
+            pages_used = get_pages_used_this_month(business_uuid)
     else:
         _, start_utc, end_utc = get_current_billing_month_utc()
         last_day = end_utc - timedelta(days=1)
         billing_cycle_start = start_utc.strftime("%Y-%m-%d")
         billing_cycle_end = last_day.strftime("%Y-%m-%d")
+        pages_used = get_pages_used_this_month(business_uuid)
+
+    # Ensure pages_used is a non-negative int so UI shows 0/limit when no usage (not 1/limit)
+    pages_used = max(0, int(pages_used))
+    remaining = max(0, monthly_limit - pages_used)
+    usage_percent = (
+        round((pages_used / monthly_limit) * 100, 2) if monthly_limit > 0 else 0.0
+    )
 
     return {
         "plan": plan,

@@ -121,7 +121,7 @@ export const Sidebar = ({
     if (contextUser) setUserData(contextUser);
   }, [contextUser]);
 
-  // When icons-only and dropdown open, position popup with fixed so it overlays sidebar and content (same appearance)
+  // When icons-only and dropdown open, position popup with fixed so it appears above the strip but fully in view (to the right of the narrow strip so nothing is clipped)
   React.useLayoutEffect(() => {
     if (!isIconsOnly || !isBrandDropdownOpen || isExpanded) {
       setIconsOnlyDropdownPosition(null);
@@ -130,7 +130,8 @@ export const Sidebar = ({
     const el = brandButtonRef.current;
     if (!el) return;
     const rect = el.getBoundingClientRect();
-    setIconsOnlyDropdownPosition({ top: rect.top, left: rect.left });
+    // Position dropdown to the right of the icons-only strip (56px) so it's never clipped by sidebar overflow/edge
+    setIconsOnlyDropdownPosition({ top: rect.top, left: SIDEBAR_ICONS_ONLY_WIDTH });
   }, [isIconsOnly, isBrandDropdownOpen, isExpanded]);
 
   // Chat history state
@@ -618,8 +619,9 @@ export const Sidebar = ({
                       marginTop: -4,
                       width: 280,
                       minWidth: 280,
+                      maxWidth: 280,
                       boxShadow: '0 4px 16px rgba(0,0,0,0.08), 0 0 0 1px rgba(0,0,0,0.03)',
-                      zIndex: 10002,
+                      zIndex: 100002,
                     }}
                   >
                     <div className="px-3 pb-2">
@@ -764,17 +766,19 @@ export const Sidebar = ({
                     </div>
                   )}
                 </button>
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setIsBrandDropdownOpen((prev) => !prev);
-                  }}
-                  className="p-1 rounded text-muted-foreground hover:text-[#141413] transition-colors"
-                  aria-label="Account menu"
-                >
-                  <ChevronsUpDown className="w-4 h-4" strokeWidth={1.5} />
-                </button>
+                {!isIconsOnly && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setIsBrandDropdownOpen((prev) => !prev);
+                    }}
+                    className="p-1 rounded text-muted-foreground hover:text-[#141413] transition-colors"
+                    aria-label="Account menu"
+                  >
+                    <ChevronsUpDown className="w-4 h-4" strokeWidth={1.5} />
+                  </button>
+                )}
               </div>
             </div>
           </div>

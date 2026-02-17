@@ -2537,22 +2537,27 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                     )}
                   </div>
                 ) : usageData ? (
+                  (() => {
+                    const overAllowance = (usageData.pages_used ?? 0) > (usageData.monthly_limit ?? 0);
+                    const percentLabel = overAllowance ? "100%+" : `${Math.round(usageData.usage_percent ?? 0)}%`;
+                    const barFill = Math.min((usageData.usage_percent ?? 0) / 100, 1);
+                    return (
                   <>
                     <div className="flex justify-between items-center gap-1.5 mb-1">
-                      <span className="text-[12px] font-medium text-gray-900">Your Usage This Month</span>
+                      <span className="text-[12px] font-medium text-gray-900">Your usage this period</span>
                       <span className="flex-shrink-0 rounded-full bg-orange-500 px-1.5 py-0.5 text-[10px] font-medium text-white">
-                        {Math.round(usageData.usage_percent ?? 0)}%
+                        {percentLabel}
                       </span>
                     </div>
                     <p className="text-[11px] text-gray-700 mb-1">
-                      {(usageData.pages_used ?? 0).toLocaleString()} of {(usageData.monthly_limit ?? 0).toLocaleString()} pages used
+                      {(usageData.pages_used ?? 0).toLocaleString()} of {(usageData.monthly_limit ?? 0).toLocaleString()} pages used{overAllowance ? " (over allowance)" : ""}
                     </p>
                     <p className="text-[10px] text-gray-500 mb-1.5">
-                      {(usageData.remaining ?? 0).toLocaleString()} pages remaining
+                      {overAllowance ? "0 pages remaining" : `${(usageData.remaining ?? 0).toLocaleString()} pages remaining`}
                     </p>
                     <div className="flex gap-0.5 h-1 rounded overflow-hidden mb-1.5" aria-hidden>
                       {Array.from({ length: 32 }).map((_, i) => {
-                        const fill = (i + 1) / 32 <= (usageData.usage_percent ?? 0) / 100;
+                        const fill = (i + 1) / 32 <= barFill;
                         return (
                           <div
                             key={i}
@@ -2570,18 +2575,20 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                       </button>
                     )}
                   </>
+                    ); })()
                 ) : null}
               </div>
               <div
                 className="flex gap-0.5 h-1.5 rounded overflow-hidden cursor-default"
-                aria-label="Page usage this month"
+                aria-label="Page usage this period"
                 title="Hover for details"
               >
                 {usageLoading ? (
                   <div className="flex-1 h-full rounded bg-gray-200" />
                 ) : usageData ? (
                   Array.from({ length: 32 }).map((_, i) => {
-                    const fill = (i + 1) / 32 <= (usageData.usage_percent ?? 0) / 100;
+                    const barFill = Math.min((usageData.usage_percent ?? 0) / 100, 1);
+                    const fill = (i + 1) / 32 <= barFill;
                     return (
                       <div
                         key={i}
