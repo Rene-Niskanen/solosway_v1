@@ -98,7 +98,7 @@ export function ModelSelector({ className, compact = false }: ModelSelectorProps
             overflow: 'hidden',
           }}
         >
-          {compact && <Cpu className={iconSize} strokeWidth={2} style={{ color: '#9D9D9D' }} />}
+          {compact && <Cpu className={`${iconSize} text-gray-900`} strokeWidth={1.5} />}
           {showText && (
             <span style={{
               ...(currentModel.id === miniModelId ? { color: miniTriggerColor } : {}),
@@ -110,7 +110,7 @@ export function ModelSelector({ className, compact = false }: ModelSelectorProps
               {displayLabel}
             </span>
           )}
-          <ChevronDown className="w-3 h-3" strokeWidth={2} style={{ color: '#9D9D9D' }} />
+          <ChevronDown className="w-3 h-3 text-gray-900" strokeWidth={2} />
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent

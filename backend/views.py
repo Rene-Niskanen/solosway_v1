@@ -29,6 +29,7 @@ from uuid import UUID
 # SessionManager for LangGraph checkpointer thread_id management
 from backend.llm.utils.session_manager import session_manager
 from backend.config import Config
+from backend.llm.nodes.responder_node import _strip_mid_response_generic_closings
 
 def _strip_intent_fragment_from_response(text):
     """Remove leading 'of [property name]' leakage from response (e.g. 'of Highlands' from intent phrase)."""
@@ -1974,7 +1975,11 @@ def query_documents_stream():
                                             # Stream the final response text directly - preserve all formatting
                                             # Strip leading "of [property]" leakage (intent phrase fragment) before streaming
                                             final_summary_from_state = _strip_intent_fragment_from_response(final_summary_from_state or "")
+                                            # Move any closing phrase that leaked to the start/middle to the end (e.g. "feel free to ask" before "£1,950,000")
+                                            final_summary_from_state = _strip_mid_response_generic_closings(final_summary_from_state or "")
                                             streamed_summary = final_summary_from_state
+                                            if final_result is not None:
+                                                final_result['final_summary'] = final_summary_from_state
                                             logger.info("🚀 [STREAM] Streaming final response directly (preserving formatting)")
                                             
                                             # Stream in chunks to maintain formatting while still providing smooth streaming
@@ -2264,6 +2269,8 @@ def query_documents_stream():
                         full_summary = streamed_summary if streamed_summary else final_result.get('final_summary', '')
                         # Strip leading "of [property]" leakage (intent phrase fragment) before streaming/complete
                         full_summary = _strip_intent_fragment_from_response(full_summary or "")
+                        # Move any closing phrase that leaked to the start/middle to the end (never show "feel free to ask" before main content)
+                        full_summary = _strip_mid_response_generic_closings(full_summary or "")
 
                         # --- Mem0: Schedule memory storage (fire-and-forget) ---
                         if not memory_storage_scheduled and full_summary:
@@ -3871,6 +3878,8 @@ def query_documents():
         
         # Format response for frontend
         final_summary = result.get("final_summary", "")
+        final_summary = _strip_intent_fragment_from_response(final_summary or "")
+        final_summary = _strip_mid_response_generic_closings(final_summary or "")
         
         # --- Mem0: Schedule memory storage (non-streaming path) ---
         if final_summary:

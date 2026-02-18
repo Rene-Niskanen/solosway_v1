@@ -7,11 +7,12 @@ import type { CSSProperties } from 'react';
 
 /** Space from viewport bottom to the bottom of the input bar (px). Use for fixed containers. */
 export const INPUT_BAR_SPACE_BELOW_DASHBOARD = 32;
-export const INPUT_BAR_SPACE_BELOW_MAP = 24;
-/** Larger space below when map has more chrome (e.g. MapChatBar-style placement). */
+/** Space below the input bar on map view (matches panel for consistent spacing). */
+export const INPUT_BAR_SPACE_BELOW_MAP = 48;
+/** Alias for map view; same as INPUT_BAR_SPACE_BELOW_MAP. */
 export const INPUT_BAR_SPACE_BELOW_MAP_LARGE = 48;
-/** Space below the input bar when it's in a flex panel (e.g. SideChatPanel). Same as dashboard to avoid jump when typing. */
-export const INPUT_BAR_SPACE_BELOW_PANEL = 32;
+/** Space below the input bar when it's in a flex panel (e.g. SideChatPanel fullscreen chat). */
+export const INPUT_BAR_SPACE_BELOW_PANEL = 48;
 
 /** Shared width constraints for the fixed input bar container. */
 export const INPUT_BAR_CONTAINER_WIDTH = 'clamp(400px, 85vw, 650px)';

@@ -1261,7 +1261,7 @@ const ChatInterface = forwardRef<{ handleFileDrop: (file: File) => void }, ChatI
                       lineHeight: '22px',
                       paddingTop: '0px',
                       paddingBottom: '10px',
-                      paddingRight: inputValue.trim() !== '' ? '36px' : '12px',
+                      paddingRight: inputValue.trim() !== '' ? '30px' : '12px',
                       scrollbarWidth: 'thin',
                       scrollbarColor: '#D1D5DB transparent',
                       verticalAlign: 'baseline'
@@ -1286,6 +1286,7 @@ const ChatInterface = forwardRef<{ handleFileDrop: (file: File) => void }, ChatI
                 <motion.button
                   type="button"
                   className="flex items-center justify-center w-7 h-7 text-black hover:text-gray-700 transition-colors"
+                  style={{ marginLeft: '-4px' }}
                   whileHover={{ scale: 1.08 }}
                   whileTap={{ scale: 0.9 }}
                   title="Voice input"
@@ -1298,12 +1299,12 @@ const ChatInterface = forwardRef<{ handleFileDrop: (file: File) => void }, ChatI
                     onClick={handleSendMessage} 
                     className={`flex items-center justify-center relative focus:outline-none outline-none ${!isTyping ? '' : 'cursor-not-allowed'}`}
                     style={{
-                      width: '36px',
-                      height: '36px',
-                      minWidth: '36px',
-                      minHeight: '36px',
-                      maxWidth: '36px',
-                      maxHeight: '36px',
+                      width: '30px',
+                      height: '30px',
+                      minWidth: '30px',
+                      minHeight: '30px',
+                      maxWidth: '30px',
+                      maxHeight: '30px',
                       borderRadius: '50%',
                       border: 'none',
                       flexShrink: 0,

@@ -143,10 +143,10 @@ When you use information from chunks in your answer:
    - chunk_id: The CHUNK_ID from the chunk you're citing
    - cited_text: The EXACT text from that chunk (not a paraphrase)
 3. Call this tool for EVERY piece of information you mention that comes from chunks
-4. **CRITICAL**: After calling match_citation_to_chunk, include citation numbers in your answer text using [1], [2], [3] format
+4. **CRITICAL**: After calling match_citation_to_chunk, include citation numbers in your answer text using [1], [2], [3] format only (with brackets)
    - Example: "<<<MAIN>>>[AMOUNT]<<<END_MAIN>>> is the offer value [1]. This represents the purchase price [1]. <<<MAIN>>>[AMOUNT]<<<END_MAIN>>> is the deposit [2]."
    - Each citation number corresponds to a match_citation_to_chunk tool call you made
-   - Number them sequentially: [1], [2], [3], etc.
+   - Number them sequentially: [1], [2], [3], etc. Never use bare digits (e.g. **£1,950,000**1 is wrong; use **£1,950,000**[1]).
 
 **IMPORTANT:**
 - Use the original text from chunks, not your paraphrased version

@@ -26,7 +26,6 @@ import { DocumentPreviewModal } from './DocumentPreviewModal';
 import { FileAttachmentData } from './FileAttachment';
 import { usePreview } from '../contexts/PreviewContext';
 import { useChatStateStore, useActiveChatDocumentPreview, type CitationData, type DocumentPreview } from '../contexts/ChatStateStore';
-import { CitationExportProvider } from '../contexts/CitationExportContext';
 import { useAuthUser } from '@/contexts/AuthContext';
 import { StandaloneExpandedCardView } from './StandaloneExpandedCardView';
 import { AgentTaskOverlay } from './AgentTaskOverlay';
@@ -2215,6 +2214,7 @@ export const MainContent = ({
   const [selectedPropertyFromProjects, setSelectedPropertyFromProjects] = React.useState<any>(null);
   const [hasActiveChat, setHasActiveChat] = React.useState<boolean>(false); // Track if there's an active chat query running
   const [resetWidthForDocPreviewTrigger, setResetWidthForDocPreviewTrigger] = React.useState<number>(0); // Increment to force 50/50 when opening file from search modal
+  const [chatBarGlowTrigger, setChatBarGlowTrigger] = React.useState<number>(0); // Timestamp to trigger chat bar border glow after query submit (dashboard/map)
 
   // Browser Fullscreen API - shared state so all fullscreen buttons show "Exit" when active
   const { isBrowserFullscreen, toggleBrowserFullscreen } = useBrowserFullscreen();
@@ -3565,7 +3565,9 @@ export const MainContent = ({
     pendingSearchContentSegmentsRef.current = segments.length > 0 ? segments : undefined;
     setMapSearchQuery(query);
     setMapSearchContentSegments(segments);
-    
+    // Trigger chat bar border glow when SideChatPanel shows (dashboard or map with attachments)
+    setChatBarGlowTrigger(Date.now());
+
     // If map is visible and there are no attachments, only search on the map, don't enter chat
     // BUT if there are attachments, we need to show SideChatPanel to handle file choice
     if (isMapVisible && dashboardAttachments.length === 0) {
@@ -5308,7 +5310,6 @@ export const MainContent = ({
     : 0;
   
   return (
-    <CitationExportProvider>
     <div 
     className={`flex-1 relative ${(currentView === 'search' || currentView === 'home') ? '' : currentView === 'settings' ? 'bg-[#FAF9F6]' : 'bg-white'} ${className || ''}`} 
     style={{ 
@@ -5639,6 +5640,7 @@ export const MainContent = ({
         shouldExpand={shouldExpandChat}
         prefer50SplitOnMap={mapChatOpenAs50Split}
         resetWidthTrigger={resetWidthForDocPreviewTrigger}
+        chatBarGlowTrigger={chatBarGlowTrigger}
         isMapVisible={isMapVisible}
         onQuickStartToggle={() => {
           setIsQuickStartBarVisible(!isQuickStartBarVisible);
@@ -6166,6 +6168,5 @@ export const MainContent = ({
         userFirstName={userData == null ? undefined : (userData.first_name?.trim() || 'there')}
       />
     </div>
-    </CitationExportProvider>
   );
   };

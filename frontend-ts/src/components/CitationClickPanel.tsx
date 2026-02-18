@@ -72,7 +72,7 @@ export function computeCitationPreviewTransform(
   const logoHeight = 0.02 * imageHeight;
   const minBboxHeightPx = logoHeight;
   const baseBboxHeight = Math.max(originalBboxHeight, minBboxHeightPx);
-  const bboxPadding = 8;
+  const bboxPadding = 4;
   const finalBboxWidth = originalBboxWidth + bboxPadding * 2;
   const finalBboxHeight = baseBboxHeight === minBboxHeightPx ? minBboxHeightPx : baseBboxHeight + bboxPadding * 2;
   const bboxLeft = Math.max(0, centerX - finalBboxWidth / 2);
@@ -82,18 +82,18 @@ export function computeCitationPreviewTransform(
   const finalBboxLeft = Math.max(0, constrainedLeft);
   const finalBboxTop = Math.max(0, constrainedTop);
 
-  // Center the bbox in the viewport with even padding on all sides
-  const previewPadding = 20;
+  // Center the bbox in the viewport with even padding on all sides (tighter = more zoomed-in)
+  const previewPadding = 8;
   const availableWidth = previewWidth - previewPadding * 2;
   const availableHeight = previewHeight - previewPadding * 2;
-  // Uniform padding around bbox in image pixels so zoom fits bbox + padding
-  const uniformBboxPaddingPx = Math.min(imageWidth, imageHeight) * 0.04;
+  // Uniform padding around bbox in image pixels so zoom fits bbox + padding (smaller = zoomed in closer)
+  const uniformBboxPaddingPx = Math.min(imageWidth, imageHeight) * 0.012;
   const contentWidth = Math.max(originalBboxWidth + uniformBboxPaddingPx * 2, 1);
   const contentHeight = Math.max(originalBboxHeight + uniformBboxPaddingPx * 2, 1);
   const zoomForWidth = availableWidth / contentWidth;
   const zoomForHeight = availableHeight / contentHeight;
   const rawZoom = Math.min(zoomForWidth, zoomForHeight);
-  const zoom = Math.min(0.7, rawZoom);
+  const zoom = Math.min(1.2, rawZoom);
 
   // Place bbox center at viewport center for even padding
   const idealTranslateX = previewWidth / 2 - centerX * zoom;
@@ -562,7 +562,7 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
             display: "flex",
             justifyContent: "space-between",
             gap: "10px",
-            background: "linear-gradient(to top, rgba(255,255,255,0.92) 0%, rgba(255,255,255,0.5) 50%, transparent 100%)",
+            background: "linear-gradient(to top, rgba(255,255,255,0.92) 0%, rgba(255,255,255,0.5) 35%, transparent 55%)",
             pointerEvents: "none",
             zIndex: 10,
           }}
@@ -581,7 +581,7 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
               color: "#374151",
               backgroundColor: "#FFFFFF",
               border: "1px solid #d1d5db",
-              borderRadius: "20px",
+              borderRadius: "6px",
               cursor: "pointer",
               transition: "background-color 0.08s ease",
               boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
@@ -607,7 +607,7 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
               color: "#374151",
               backgroundColor: "#FFFFFF",
               border: "1px solid #d1d5db",
-              borderRadius: "20px",
+              borderRadius: "6px",
               cursor: "pointer",
               transition: "background-color 0.08s ease",
               boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
@@ -634,7 +634,7 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
                 color: "#374151",
                 backgroundColor: "#FFFFFF",
                 border: "1px solid #d1d5db",
-                borderRadius: "20px",
+                borderRadius: "6px",
                 cursor: "pointer",
                 transition: "background-color 0.08s ease",
                 boxShadow: "0 1px 3px rgba(0,0,0,0.08)",

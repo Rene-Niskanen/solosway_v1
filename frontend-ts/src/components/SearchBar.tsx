@@ -1555,7 +1555,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                       lineHeight: '20px',
                       paddingTop: '12px',
                       paddingBottom: '4px',
-                      paddingRight: '36px',
+                      paddingRight: '30px',
                       paddingLeft: '0px',
                       color: segmentInput.getPlainText() ? '#333333' : undefined,
                       boxSizing: 'border-box',
@@ -1606,7 +1606,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                       marginTop: '-4px',
                     }}
                   >
-                    {/* Left: Plus (Attach), Mode selector, Model selector - same as SideChatPanel */}
+                    {/* Left: Plus (Attach) only */}
                     <div className={`flex items-center gap-1 ${isVeryNarrow ? 'justify-start' : ''}`} style={{ flexShrink: 1, minWidth: 0, overflow: 'hidden' }}>
                   {contextConfig.showMic && (
                     <>
@@ -1649,11 +1649,32 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                       />
                     </>
                   )}
-                      {/* Mode Selector Dropdown - show labels on dashboard (same as Tools/Attach/Voice) */}
+                    </div>
+
+                    {/* Right: Mode, Model, Voice, Panel Toggle, Document Selection, WebSearchPill, Send */}
+                    <div className={`flex items-center gap-1.5 flex-shrink-0 ${isVeryNarrow ? 'flex-wrap justify-end' : ''}`} style={{ marginRight: '4px' }}>
+                      {/* Mode Selector, Model Selector, Voice */}
                       <ModeSelector compact={true} className="mr-2" />
-                      {/* Model Selector Dropdown - icon only in chat bar */}
                       <ModelSelector compact={true} />
-                      
+                      {contextConfig.showMic && (
+                        <button
+                          type="button"
+                          onClick={() => {}}
+                          className="flex items-center justify-center text-gray-900 transition-colors focus:outline-none outline-none"
+                          style={{
+                            backgroundColor: 'transparent',
+                            width: '32px',
+                            height: '32px',
+                            minWidth: '32px',
+                            minHeight: '32px',
+                            padding: '6px',
+                            marginLeft: '-4px'
+                          }}
+                          title="Voice input"
+                        >
+                          <AudioLines className="w-5 h-5 text-gray-900" strokeWidth={1.5} />
+                        </button>
+                      )}
                       {/* Panel Toggle Button - In map view, Chat is in Tools dropdown; otherwise show "Expand chat" or "Analyse" */}
                       {onPanelToggle && !isMapVisible && (
                     isPropertyDetailsOpen ? (
@@ -1723,10 +1744,6 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                       </button>
                     )
                       )}
-                    </div>
-
-                    {/* Right Icons - same as SideChatPanel */}
-                    <div className={`flex items-center gap-1.5 flex-shrink-0 ${isVeryNarrow ? 'flex-wrap justify-end' : ''}`} style={{ marginRight: '4px' }}>
                 {/* Document Selection Toggle Button - Only show when property details panel is open */}
                 {isPropertyDetailsOpen && (
                   <div className="relative flex items-center">
@@ -1783,29 +1800,12 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                       </div>
                     )}
                 
-                  {/* WebSearchPill when on, Voice, Send */}
+                  {/* WebSearchPill when on, Send */}
                   {onMapToggle != null && isWebSearchEnabled && (
                     <WebSearchPill onDismiss={() => setIsWebSearchEnabled(false)} />
                   )}
-                  {contextConfig.showMic && (
-                    <button
-                      type="button"
-                      onClick={() => {}}
-                      className="flex items-center justify-center text-gray-900 transition-colors focus:outline-none outline-none"
-                      style={{
-                        backgroundColor: 'transparent',
-                        width: '32px',
-                        height: '32px',
-                        minWidth: '32px',
-                        minHeight: '32px',
-                        padding: '6px'
-                      }}
-                    >
-                      <AudioLines className="w-5 h-5" strokeWidth={1.5} />
-                    </button>
-                  )}
                 
-                <AnimatePresence>
+                      <AnimatePresence>
                   {(searchValue.trim() || attachedFiles.length > 0 || propertyAttachments.length > 0) && (
                     <motion.button 
                       key="send-button"
@@ -1817,12 +1817,12 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                       transition={{ duration: 0 }}
                       className={`flex items-center justify-center relative focus:outline-none outline-none ${!isSubmitted ? '' : 'cursor-not-allowed'}`}
                       style={{
-                        width: '36px',
-                        height: '36px',
-                        minWidth: '36px',
-                        minHeight: '36px',
-                        maxWidth: '36px',
-                        maxHeight: '36px',
+                        width: '30px',
+                        height: '30px',
+                        minWidth: '30px',
+                        minHeight: '30px',
+                        maxWidth: '30px',
+                        maxHeight: '30px',
                         borderRadius: '50%',
                         border: 'none',
                         flexShrink: 0,

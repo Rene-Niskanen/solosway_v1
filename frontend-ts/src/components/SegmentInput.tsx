@@ -458,10 +458,23 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
     paddingLeft: "8px",
     fontSize: effectiveFontSize,
     lineHeight: effectiveLineHeight,
-    color: "#BABABA",
+    color: "#CACACA",
     pointerEvents: "none" as const,
     whiteSpace: "pre-wrap" as const,
     wordWrap: "break-word" as const,
+    display: "flex" as const,
+    alignItems: "flex-start",
+  };
+
+  // Bobbing caret before placeholder when empty; only bobs when focused
+  const bobbingCaretStyle: React.CSSProperties = {
+    flexShrink: 0,
+    width: "1px",
+    height: effectiveLineHeight,
+    backgroundColor: "#333",
+    ...(isFocused ? { animation: "segment-input-caret-bob 1s step-end infinite" } : {}),
+    alignSelf: "stretch",
+    minHeight: "1em",
   };
 
   // When focusing while empty, restore selection so the caret (blinking line) appears immediately.
@@ -487,6 +500,10 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
 
   return (
     <div style={rootStyle}>
+      <style>{`@keyframes segment-input-caret-bob {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}`}</style>
       {scrollWrapperStyle ? (
         <>
           <style>{`.segment-input-scroll::-webkit-scrollbar { width: 6px; }
@@ -513,6 +530,7 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
               fontSize: effectiveFontSize,
               lineHeight: effectiveLineHeight,
               ...effectivePadding,
+              ...(isEmpty ? { caretColor: "transparent" } : {}),
             }}
             spellCheck={spellCheck}
             onFocus={handleFocus}
@@ -531,7 +549,8 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
           >
             {showPlaceholderOverlay && (
               <div aria-hidden contentEditable={false} suppressContentEditableWarning style={overlayStyle}>
-                {placeholder}
+                {isFocused && <span style={bobbingCaretStyle} aria-hidden />}
+                <span style={{ flex: 1, minWidth: 0, whiteSpace: "pre-wrap", wordWrap: "break-word" }}>{placeholder}</span>
               </div>
             )}
         {segments.map((seg, i) => {
@@ -547,12 +566,12 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
               data-segment-index={i}
               style={{
                 ...(isOnlyEmpty && showPlaceholderOverlay
-                  ? { display: "inline-block", minWidth: "100%", color: "rgba(186,186,186,0.01)" }
+                  ? { display: "inline-block", minWidth: "100%", color: "rgba(202,202,202,0.01)" }
                   : showPlaceholderHere
                     ? {
                         display: "inline-block",
                         minWidth: "100%",
-                        color: "#BABABA",
+                        color: "#CACACA",
                         ...(placeholderFontSize != null && { fontSize: effectiveFontSize }),
                       }
                     : {}),
@@ -615,6 +634,7 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
           fontSize: effectiveFontSize,
           lineHeight: effectiveLineHeight,
           ...effectivePadding,
+          ...(isEmpty ? { caretColor: "transparent" } : {}),
         }}
         spellCheck={spellCheck}
         onFocus={handleFocus}
@@ -631,11 +651,12 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
           }
         }}
       >
-        {showPlaceholderOverlay && (
-          <div aria-hidden contentEditable={false} suppressContentEditableWarning style={overlayStyle}>
-            {placeholder}
-          </div>
-        )}
+            {showPlaceholderOverlay && (
+              <div aria-hidden contentEditable={false} suppressContentEditableWarning style={overlayStyle}>
+                {isFocused && <span style={bobbingCaretStyle} aria-hidden />}
+                <span style={{ flex: 1, minWidth: 0, whiteSpace: "pre-wrap", wordWrap: "break-word" }}>{placeholder}</span>
+              </div>
+            )}
         {segments.map((seg, i) => {
         if (isTextSegment(seg)) {
           const isOnlyEmpty = segments.length === 1 && seg.value === "";
@@ -649,12 +670,12 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
               data-segment-index={i}
               style={{
                 ...(isOnlyEmpty && showPlaceholderOverlay
-                  ? { display: "inline-block", minWidth: "100%", color: "rgba(186,186,186,0.01)" }
+                  ? { display: "inline-block", minWidth: "100%", color: "rgba(202,202,202,0.01)" }
                   : showPlaceholderHere
                     ? {
                         display: "inline-block",
                         minWidth: "100%",
-                        color: "#BABABA",
+                        color: "#CACACA",
                         ...(placeholderFontSize != null && { fontSize: effectiveFontSize }),
                       }
                     : {}),

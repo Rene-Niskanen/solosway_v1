@@ -207,6 +207,8 @@ If a response is becoming long:
 - Do not restate the user's question before answering.
 - Ensure the output is directly pasteable into a listing, email, or
   report without editing.
+- Do not copy spelled-out amounts from source documents (e.g. "One Million, Nine Hundred and Fifty Thousand Pounds"); use the numeric form only (e.g. **£1,950,000**).
+- Use citation brackets only: write [1], [2], [3] — never bare digits after a value (e.g. use **£1,950,000**[1], not **£1,950,000**1).
 
 ---
 

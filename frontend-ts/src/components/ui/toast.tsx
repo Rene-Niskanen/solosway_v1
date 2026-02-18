@@ -33,7 +33,7 @@ const toastVariants = cva(
         destructive:
           "destructive w-fit max-w-[320px] justify-between gap-2 border border-red-100 bg-red-50 p-2 pr-8 text-red-800",
         success:
-          "w-full justify-between space-x-3 border border-gray-200 bg-white p-3 pr-4 text-gray-900",
+          "w-full justify-between space-x-2 border border-gray-200 bg-white p-3 pr-4 text-gray-900",
       },
     },
     defaultVariants: {

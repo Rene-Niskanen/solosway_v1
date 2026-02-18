@@ -136,9 +136,37 @@ _EMBEDDED_CLOSING_SUFFIX_PATTERNS = [
     re.compile(r"\s+let me know(?: if you need[^.]*)?\!?\s*[😊🙂📄✨\s]*$", re.IGNORECASE),
 ]
 
+# Fragments that leak at the *start* or *middle* of a line (e.g. after "**Market Value**").
+# Strip these from non-final paragraphs / headings so the closing only appears at the end.
+_EMBEDDED_CLOSING_MIDLINE_PATTERNS = [
+    # Full phrase including optional "**Label** " or "Market Value " so we remove the whole leakage in one go
+    re.compile(
+        r"(?:\*\*[^*]+\*\*\s+)?(?:Market\s+Value\s+)?or\s+related\s+details\s*,\s*feel\s+free\s+to\s+ask\!?\s*[😊🙂📄✨📋🌳📊💡✅\s]*",
+        re.IGNORECASE,
+    ),
+    # "any more questions about [X], feel free to ask! 😊" leaking before the value (e.g. before **£1,950,000**)
+    re.compile(
+        r"\s*any\s+more\s+questions\s+about\s+[^.!?\n]+(?:,\s*feel\s+free\s+to\s+ask\!?\s*[😊🙂📄✨\s]*)?(?=\s*\*\*|\s*£|\s*\[?\d+\]?)",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\s+or\s+need\s+more\s+details\s*,\s*feel\s+free\s+to\s+ask\!?\s*[😊🙂\s]*", re.IGNORECASE),
+    re.compile(r",\s*feel\s+free\s+to\s+ask\!?\s*[😊🙂📄✨\s]*(?=\s*\*\*|\s*\[?\d+\]?|\s*£|\s*\d)", re.IGNORECASE),
+]
+
+# Parentheticals that are spelled-out amounts from source docs (e.g. "(One Million, Nine Hundred and Fifty Thousand Pounds)")
+# Strip these so they don't leak into the answer.
+_AMOUNT_IN_WORDS_PAREN = re.compile(
+    r"\s*\(\s*[^)]*(?:Million|Thousand|Hundred)[^)]*(?:Pounds|Dollars|Euros|USD|GBP)\s*\)\s*",
+    re.IGNORECASE,
+)
+
+# Bare citation digits: model sometimes outputs "**£1,950,000**1" or "Pounds)2" instead of [1] [2]
+_BARE_CITATION_AFTER_BOLD = re.compile(r"\*\*(\d)(?=\s|$|,|\s*\()")
+_BARE_CITATION_AFTER_PAREN = re.compile(r"\)(\d)(?=\s|$|,)")
+
 
 def _strip_embedded_closing_fragments(text: str) -> str:
-    """Remove closing phrases that were leaked into headings or mid-response lines (e.g. 'Offer Details for X free to ask! 😊')."""
+    """Remove closing phrases that were leaked into headings or mid-response lines (e.g. 'Offer Details for X free to ask! 😊' or '**Market Value** or related details, feel free to ask!')."""
     if not (text or text.strip()):
         return text
     paras = re.split(r"\n\n+", text)
@@ -151,8 +179,36 @@ def _strip_embedded_closing_fragments(text: str) -> str:
             for pat in _EMBEDDED_CLOSING_SUFFIX_PATTERNS:
                 para = pat.sub("", para).rstrip()
                 para = re.sub(r"\s*[,–\-]\s*$", "", para)
+            # Strip closing fragments that appear in the *middle* of a line (e.g. "**Market Value** or related details, feel free to ask! **£1,950,000**")
+            for pat in _EMBEDDED_CLOSING_MIDLINE_PATTERNS:
+                para = pat.sub(" ", para)
+            para = re.sub(r"  +", " ", para).strip()
         out.append(para)
     return "\n\n".join(out)
+
+
+def _strip_amount_in_words_parentheticals(text: str) -> str:
+    """Remove source-doc leakage like (One Million, Nine Hundred and Fifty Thousand Pounds)."""
+    if not text:
+        return text
+    return _AMOUNT_IN_WORDS_PAREN.sub(" ", text)
+
+
+def _normalize_bare_citation_digits(text: str) -> str:
+    """Turn **£1,950,000**1 and )2 into **£1,950,000**[1] and )[2]."""
+    if not text:
+        return text
+    text = _BARE_CITATION_AFTER_BOLD.sub(r"**[\1]", text)
+    text = _BARE_CITATION_AFTER_PAREN.sub(r")[\1]", text)
+    return text
+
+
+def _strip_leaked_heading_before_value(text: str) -> str:
+    """Remove leaked 'Market Value ' (or similar) when it appears right before a bold value."""
+    if not text:
+        return text
+    # Only when followed by ** (bold value) so we don't strip legitimate "Market Value" in prose
+    return re.sub(r"(^|\s)Market\s+Value\s+(?=\*\*)", r"\1", text, flags=re.IGNORECASE)
 
 
 def _strip_mid_response_generic_closings(text: str) -> str:
@@ -181,6 +237,11 @@ def _strip_mid_response_generic_closings(text: str) -> str:
                     break
             if changed:
                 break
+    # Normalize bare citation digits (**...**1 → **...**[1], )2 → )[2]) then strip source-doc leakage
+    result = _normalize_bare_citation_digits(result)
+    result = _strip_amount_in_words_parentheticals(result)
+    result = _strip_leaked_heading_before_value(result)
+    result = re.sub(r"  +", " ", result).strip() if result else result
     return result
 
 

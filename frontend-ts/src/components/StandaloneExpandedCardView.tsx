@@ -11,8 +11,6 @@ import { useChatPanel } from '../contexts/ChatPanelContext';
 import { CitationActionMenu } from './CitationActionMenu';
 import { useActiveChatState, useChatStateStore } from '../contexts/ChatStateStore';
 import type { CitationData, ChatMessage } from '../contexts/ChatStateStore';
-import { useCitationExportOptional } from '../contexts/CitationExportContext';
-import { cropPageImageToBbox } from '../utils/citationExport';
 import { CHAT_PANEL_WIDTH } from './SideChatPanel';
 
 // PDF.js for canvas-based PDF rendering
@@ -188,9 +186,6 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
   // Citation action menu state
   const [citationMenuPosition, setCitationMenuPosition] = useState<{ x: number; y: number } | null>(null);
   const [selectedCitation, setSelectedCitation] = useState<any>(null);
-
-  // Citation export: screenshot mode (Choose) - drag to capture region
-  const citationExport = useCitationExportOptional();
 
   // Stable key for the current highlight (doc + page + bbox) so we only apply center-scroll once per citation.
   const getHighlightKey = useCallback(() => {
@@ -1965,50 +1960,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
             });
             window.dispatchEvent(event);
           }}
-          onAddToWriting={async (citation) => {
-            if (!citationExport || !lastResponseMessageId || !lastResponseCitations || !renderedPages.size) {
-              setCitationMenuPosition(null);
-              setSelectedCitation(null);
-              return;
-            }
-            const docIdStr = String(citation.fileId || citation.doc_id);
-            const pageNum = citation.bbox?.page ?? 1;
-            const bbox = citation.bbox ?? { left: 0, top: 0, width: 1, height: 1, page: pageNum };
-            const tol = 0.02;
-            const citationNumber = Object.entries(lastResponseCitations).find(([, c]) => {
-              const cDoc = String(c?.doc_id ?? (c as any)?.document_id ?? '');
-              const cPage = c?.page ?? c?.bbox?.page ?? c?.page_number ?? 0;
-              if (cDoc !== docIdStr || cPage !== pageNum) return false;
-              const cb = c?.bbox;
-              if (!cb) return false;
-              return Math.abs((cb.left ?? 0) - (bbox.left ?? 0)) < tol && Math.abs((cb.top ?? 0) - (bbox.top ?? 0)) < tol;
-            })?.[0];
-            if (!citationNumber) {
-              setCitationMenuPosition(null);
-              setSelectedCitation(null);
-              return;
-            }
-            const pageEntry = renderedPages.get(pageNum);
-            if (!pageEntry) {
-              setCitationMenuPosition(null);
-              setSelectedCitation(null);
-              return;
-            }
-            const { canvas, dimensions } = pageEntry;
-            const dataUrl = canvas.toDataURL('image/png');
-            try {
-              const cropped = await cropPageImageToBbox(dataUrl, dimensions.width, dimensions.height, bbox);
-              citationExport.setCitationExportData((prev) => ({
-                ...prev,
-                [lastResponseMessageId]: {
-                  ...(prev[lastResponseMessageId] ?? {}),
-                  [citationNumber]: { type: 'copy', imageDataUrl: cropped },
-                },
-              }));
-              window.dispatchEvent(new CustomEvent('citation-saved-for-docx'));
-            } catch (_) {
-              // ignore
-            }
+          onAddToWriting={async () => {
             setCitationMenuPosition(null);
             setSelectedCitation(null);
           }}

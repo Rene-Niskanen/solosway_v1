@@ -36,6 +36,17 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
   initialValue = ""
 }) => {
   const [isSubmitted, setIsSubmitted] = React.useState<boolean>(false);
+  const [showBarGlow, setShowBarGlow] = React.useState<boolean>(false);
+  const chatBarGlowTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const CHAT_BAR_GLOW_DURATION_MS = 1900; // Pulse 1.5s + hold, then hide; 0.2s transition to finish before next interaction
+  const startChatBarGlow = React.useCallback(() => {
+    setShowBarGlow(true);
+    if (chatBarGlowTimeoutRef.current) clearTimeout(chatBarGlowTimeoutRef.current);
+    chatBarGlowTimeoutRef.current = setTimeout(() => {
+      setShowBarGlow(false);
+      chatBarGlowTimeoutRef.current = null;
+    }, CHAT_BAR_GLOW_DURATION_MS);
+  }, []);
   const [isFocused, setIsFocused] = React.useState<boolean>(false);
   const [isWebSearchEnabled, setIsWebSearchEnabled] = React.useState<boolean>(false);
   const [isCompact, setIsCompact] = React.useState<boolean>(false);
@@ -85,6 +96,29 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
       );
     }
   }, [initialValue]);
+
+  // Ensure chat bar glow keyframes exist (MapChatBar can be visible without SideChatPanel mounted)
+  React.useEffect(() => {
+    if (typeof document === 'undefined' || document.getElementById('map-chat-bar-glow-style')) return;
+    const style = document.createElement('style');
+    style.id = 'map-chat-bar-glow-style';
+    style.textContent = `
+      @keyframes chatBarGlowRotate {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(360deg); }
+      }
+      @keyframes chatBarGlowPulse {
+        0% { opacity: 0.35; }
+        40% { opacity: 1; }
+        100% { opacity: 0; }
+      }
+    `;
+    document.head.appendChild(style);
+    return () => {
+      const el = document.getElementById('map-chat-bar-glow-style');
+      if (el) el.remove();
+    };
+  }, []);
 
   React.useEffect(() => {
     const plain = segmentInput.getPlainText();
@@ -230,6 +264,7 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
           }
         }
       }
+      startChatBarGlow();
       onQuerySubmit(submitted, contentSegments.length > 0 ? { contentSegments } : undefined);
       segmentInput.setSegments([{ type: 'text', value: '' }]);
       setAtMentionDocumentChips([]);
@@ -285,11 +320,38 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
           </motion.div>
         )}
 
+        {/* Glow wrapper: soft pulse effect around chat bar */}
+        <div
+          style={{
+            position: 'relative',
+            padding: showBarGlow ? 2 : 0,
+            borderRadius: '28px',
+            overflow: 'hidden',
+            width: '100%',
+            boxSizing: 'border-box',
+            transition: 'padding 0.2s ease-out',
+          }}
+        >
+          {showBarGlow && (
+            <div
+              style={{
+                position: 'absolute',
+                inset: 0,
+                borderRadius: '28px',
+                background: 'linear-gradient(135deg, rgba(59, 130, 246, 0.5), rgba(34, 197, 94, 0.45))',
+                animation: 'chatBarGlowPulse 1.5s ease-in-out forwards',
+                pointerEvents: 'none',
+                filter: 'blur(2px)',
+              }}
+            />
+          )}
         <div 
           className={`relative flex flex-col ${isSubmitted ? 'opacity-75' : ''}`}
           style={{
             background: '#FFFFFF',
-            border: '1px solid #B8BCC4', // Match SideChatPanel border
+            borderWidth: 1,
+            borderStyle: 'solid',
+            borderColor: showBarGlow ? 'transparent' : '#B8BCC4',
             boxShadow: 'none', // No shadow like SideChatPanel
             position: 'relative',
             paddingTop: '16px',
@@ -302,8 +364,8 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
             height: '132px',
             minHeight: '132px',
             boxSizing: 'border-box',
-            borderRadius: '28px', // Pill-style rounded corners like Google chat bar
-            transition: 'background-color 0.2s ease-in-out, border-color 0.2s ease-in-out, box-shadow 0.2s ease-in-out',
+            borderRadius: showBarGlow ? '26px' : '28px',
+            transition: 'background-color 0.2s ease-in-out, border-color 0.28s ease-out, box-shadow 0.2s ease-in-out, border-radius 0.2s ease-out',
             zIndex: 2
           }}
         >
@@ -393,7 +455,7 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
                     lineHeight: '20px',
                     paddingTop: '12px',
                     paddingBottom: '4px',
-                    paddingRight: (segmentInput.getPlainText().trim() !== '' || propertyAttachments.length > 0 || atMentionDocumentChips.length > 0) ? '36px' : '12px',
+                    paddingRight: (segmentInput.getPlainText().trim() !== '' || propertyAttachments.length > 0 || atMentionDocumentChips.length > 0) ? '30px' : '12px',
                     paddingLeft: '14px',
                     color: segmentInput.getPlainText() ? '#0D0D0D' : undefined,
                     boxSizing: 'border-box',
@@ -428,7 +490,7 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
               />
             </div>
             
-            {/* Bottom row: Mode/Model selectors (Left) and Action buttons (Right) */}
+            {/* Bottom row: Plus (Left) only; Right: Mode, Model, Voice, WebSearchPill, Send */}
             <div 
               className="relative flex items-center justify-between w-full"
               style={{
@@ -439,7 +501,7 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
                 flexShrink: 0,
               }}
             >
-              {/* Left group: Plus (Attach dropdown), Mode selector and Model selector */}
+              {/* Left: Plus (Attach dropdown) only */}
               <div className="flex items-center gap-1">
                 <input
                   ref={fileInputRef}
@@ -475,14 +537,9 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
                   }] : []),
                 ]}
               />
-                {/* Mode Selector Dropdown */}
-                <ModeSelector compact={true} className="mr-2" />
-                
-                {/* Model Selector Dropdown */}
-                <ModelSelector compact={true} />
               </div>
 
-              {/* Right group: WebSearchPill when on, Voice, Send */}
+              {/* Right: Mode, Model, Voice, WebSearchPill, Send */}
               <motion.div 
                 className="flex items-center gap-1.5 flex-shrink-0" 
                 style={{ marginRight: '4px' }}
@@ -492,10 +549,8 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
                   default: { duration: 0.18, ease: [0.16, 1, 0.3, 1] }
                 }}
               >
-                {isWebSearchEnabled && (
-                  <WebSearchPill onDismiss={() => setIsWebSearchEnabled(false)} />
-                )}
-                {/* Voice Button */}
+                <ModeSelector compact={true} className="mr-2" />
+                <ModelSelector compact={true} />
                 <button
                   type="button"
                   className="flex items-center justify-center text-gray-900 focus:outline-none outline-none"
@@ -503,12 +558,16 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
                     backgroundColor: 'transparent',
                     height: '22px',
                     minHeight: '22px',
-                    padding: '0 2px'
+                    padding: '0 2px',
+                    marginLeft: '-4px'
                   }}
                   title="Voice input"
                 >
-                  <AudioLines className="w-3.5 h-3.5" strokeWidth={1.5} />
+                  <AudioLines className="w-3.5 h-3.5 text-gray-900" strokeWidth={1.5} />
                 </button>
+                {isWebSearchEnabled && (
+                  <WebSearchPill onDismiss={() => setIsWebSearchEnabled(false)} />
+                )}
                 
                 {/* Send button */}
                 <AnimatePresence>
@@ -523,12 +582,12 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
                       transition={{ duration: 0 }}
                       className={`flex items-center justify-center relative focus:outline-none outline-none ${!isSubmitted ? '' : 'cursor-not-allowed'}`}
                       style={{
-                        width: '36px',
-                        height: '36px',
-                        minWidth: '36px',
-                        minHeight: '36px',
-                        maxWidth: '36px',
-                        maxHeight: '36px',
+                        width: '30px',
+                        height: '30px',
+                        minWidth: '30px',
+                        minHeight: '30px',
+                        maxWidth: '30px',
+                        maxHeight: '30px',
                         borderRadius: '50%',
                         border: 'none',
                         flexShrink: 0,
@@ -559,6 +618,7 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
               </motion.div>
             </div>
           </div>
+        </div>
         </div>
       </form>
     </div>

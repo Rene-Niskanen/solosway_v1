@@ -30,7 +30,7 @@ export function ChatBarAttachDropdown({
       <DropdownMenuTrigger asChild>
         <button
           type="button"
-          className={`flex items-center justify-center text-gray-900 transition-colors focus:outline-none outline-none ${className || ""}`}
+          className={`flex items-center justify-center text-gray-900 transition-colors focus:outline-none outline-none rounded-full ${className || ""}`}
           style={{
             backgroundColor: "transparent",
             border: "none",
@@ -41,6 +41,7 @@ export function ChatBarAttachDropdown({
             padding: 0,
             marginRight: "12px",
             marginLeft: 0,
+            borderRadius: "50%",
           }}
           title="Attach"
         >
@@ -73,7 +74,7 @@ export function ChatBarAttachDropdown({
             fontWeight: 400,
           }}
         >
-          <Paperclip className="w-5 h-5 flex-shrink-0" strokeWidth={1.5} style={{ color: "#6b7280" }} />
+          <Paperclip className="w-5 h-5 flex-shrink-0 text-gray-900" strokeWidth={1.5} />
           <span className="flex-1">Attach</span>
         </DropdownMenuItem>
         {toolsItems.length > 0 && (
@@ -96,7 +97,7 @@ export function ChatBarAttachDropdown({
                     fontWeight: 400,
                   }}
                 >
-                  <Icon className="w-5 h-5 flex-shrink-0" strokeWidth={2} style={{ color: "#6b7280" }} />
+                  <Icon className="w-5 h-5 flex-shrink-0 text-gray-900" strokeWidth={1.5} />
                   <span className="flex-1">{item.label}</span>
                   {item.badge != null && (
                     <span className="text-gray-500" style={{ fontSize: "9px" }}>{item.badge}</span>
