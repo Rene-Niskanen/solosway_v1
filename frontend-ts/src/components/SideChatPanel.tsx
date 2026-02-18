@@ -1179,6 +1179,9 @@ const StreamingResponseText: React.FC<{
     return processCitationsBeforeMarkdown(prepared);
   }, [textWithTagsStripped, citations, showCitations]);
 
+  // Run length per citation: only show document preview / callout when <= 2 citations in a row
+  const citationRunLengthByNum = React.useMemo(() => getCitationRunLengthMap(textWithTagsStripped), [textWithTagsStripped]);
+
   // Stable selector that reads from refs so markdownComponents identity doesn't change when only selection changes (avoids CitationLink remount → flash)
   const isCitationSelectedStable = React.useCallback((num: string) =>
     selectedCitationNumberRef.current != null && selectedCitationMessageIdRef.current != null &&
@@ -1452,9 +1455,9 @@ const StreamingResponseText: React.FC<{
               wordBreak: 'break-word'
             }}>{processChildrenWithCitationsFlattened(children ?? null, 'p')}</p>
           )}
-          {citationNumbers.map((num, i) => (
+          {citationNumbers.filter((num) => (citationRunLengthByNum.get(num) ?? 1) <= 2).map((num, i) => (
             <div key={`callout-p-${i}-${num}`} style={{ width: '100%', maxWidth: '100%', minWidth: 0, boxSizing: 'border-box' }}>
-              <CitationCallout citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} isCalloutClosed={closedCitationCallouts?.has(`${messageId ?? ''}:${num}`)} onCloseCallout={onCloseCitationCallout ? () => onCloseCitationCallout(messageId ?? '', num) : undefined} />
+              <CitationCallout key={`callout-${messageId ?? ''}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} isCalloutClosed={closedCitationCallouts?.has(`${messageId ?? ''}:${num}`)} onCloseCallout={onCloseCitationCallout ? () => onCloseCitationCallout(messageId ?? '', num) : undefined} />
             </div>
           ))}
         </>
@@ -1473,8 +1476,8 @@ const StreamingResponseText: React.FC<{
             overflowWrap: 'break-word',
             wordBreak: 'break-word'
           }}>{processChildrenWithCitationsFlattened(children ?? null, 'h1')}</h1>
-          {citationNumbers.map((num, i) => (
-            <CitationCallout key={`callout-h1-${i}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} isCalloutClosed={closedCitationCallouts?.has(`${messageId ?? ''}:${num}`)} onCloseCallout={onCloseCitationCallout ? () => onCloseCitationCallout(messageId ?? '', num) : undefined} />
+          {citationNumbers.filter((num) => (citationRunLengthByNum.get(num) ?? 1) <= 2).map((num, i) => (
+            <CitationCallout key={`callout-${messageId ?? ''}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} isCalloutClosed={closedCitationCallouts?.has(`${messageId ?? ''}:${num}`)} onCloseCallout={onCloseCitationCallout ? () => onCloseCitationCallout(messageId ?? '', num) : undefined} />
           ))}
         </>
       );
@@ -1492,9 +1495,9 @@ const StreamingResponseText: React.FC<{
             overflowWrap: 'break-word',
             wordBreak: 'break-word'
           }}>{processChildrenWithCitationsFlattened(children ?? null, 'h2')}</h2>
-          {citationNumbers.map((num, i) => (
+          {citationNumbers.filter((num) => (citationRunLengthByNum.get(num) ?? 1) <= 2).map((num, i) => (
             <div key={`callout-h2-${i}-${num}`} style={{ width: '100%', maxWidth: '100%', minWidth: 0, boxSizing: 'border-box' }}>
-              <CitationCallout citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} isCalloutClosed={closedCitationCallouts?.has(`${messageId ?? ''}:${num}`)} onCloseCallout={onCloseCitationCallout ? () => onCloseCitationCallout(messageId ?? '', num) : undefined} />
+              <CitationCallout key={`callout-${messageId ?? ''}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} isCalloutClosed={closedCitationCallouts?.has(`${messageId ?? ''}:${num}`)} onCloseCallout={onCloseCitationCallout ? () => onCloseCitationCallout(messageId ?? '', num) : undefined} />
             </div>
           ))}
         </>
@@ -1513,9 +1516,9 @@ const StreamingResponseText: React.FC<{
             overflowWrap: 'break-word',
             wordBreak: 'break-word'
           }}>{processChildrenWithCitationsFlattened(children ?? null, 'h3')}</h3>
-          {citationNumbers.map((num, i) => (
+          {citationNumbers.filter((num) => (citationRunLengthByNum.get(num) ?? 1) <= 2).map((num, i) => (
             <div key={`callout-h3-${i}-${num}`} style={{ width: '100%', maxWidth: '100%', minWidth: 0, boxSizing: 'border-box' }}>
-              <CitationCallout citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} isCalloutClosed={closedCitationCallouts?.has(`${messageId ?? ''}:${num}`)} onCloseCallout={onCloseCitationCallout ? () => onCloseCitationCallout(messageId ?? '', num) : undefined} />
+              <CitationCallout key={`callout-${messageId ?? ''}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} isCalloutClosed={closedCitationCallouts?.has(`${messageId ?? ''}:${num}`)} onCloseCallout={onCloseCitationCallout ? () => onCloseCitationCallout(messageId ?? '', num) : undefined} />
             </div>
           ))}
         </>
@@ -1550,9 +1553,9 @@ const StreamingResponseText: React.FC<{
           wordBreak: 'break-word'
         }}>
           {processChildrenWithCitationsFlattened(children ?? null, 'li')}
-          {citationNumbers.map((num, i) => (
+          {citationNumbers.filter((num) => (citationRunLengthByNum.get(num) ?? 1) <= 2).map((num, i) => (
             <div key={`callout-li-${i}-${num}`} style={{ width: '100%', maxWidth: '100%', minWidth: 0, boxSizing: 'border-box' }}>
-              <CitationCallout citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} isCalloutClosed={closedCitationCallouts?.has(`${messageId ?? ''}:${num}`)} onCloseCallout={onCloseCitationCallout ? () => onCloseCitationCallout(messageId ?? '', num) : undefined} />
+              <CitationCallout key={`callout-${messageId ?? ''}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} isCalloutClosed={closedCitationCallouts?.has(`${messageId ?? ''}:${num}`)} onCloseCallout={onCloseCitationCallout ? () => onCloseCitationCallout(messageId ?? '', num) : undefined} />
             </div>
           ))}
         </li>
@@ -1601,16 +1604,16 @@ const StreamingResponseText: React.FC<{
             overflowWrap: 'break-word',
             wordBreak: 'break-word'
           }}>{processChildrenWithCitationsFlattened(children ?? null, 'blockquote')}</blockquote>
-          {citationNumbers.map((num, i) => (
+          {citationNumbers.filter((num) => (citationRunLengthByNum.get(num) ?? 1) <= 2).map((num, i) => (
             <div key={`callout-blockquote-${i}-${num}`} style={{ width: '100%', maxWidth: '100%', minWidth: 0, boxSizing: 'border-box' }}>
-              <CitationCallout citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} isCalloutClosed={closedCitationCallouts?.has(`${messageId ?? ''}:${num}`)} onCloseCallout={onCloseCitationCallout ? () => onCloseCitationCallout(messageId ?? '', num) : undefined} />
+              <CitationCallout key={`callout-${messageId ?? ''}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} isCalloutClosed={closedCitationCallouts?.has(`${messageId ?? ''}:${num}`)} onCloseCallout={onCloseCitationCallout ? () => onCloseCitationCallout(messageId ?? '', num) : undefined} />
             </div>
           ))}
         </>
       );
     },
     hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '17.5px 0' }} />,
-  }), [renderCitationPlaceholder, skipHighlight, runBlueSwoop, isStreaming, citations, onAskFollowUpFromCallout, onViewInDocumentFromCallout, citationViewedInDocument, onCloseDocumentFromCallout, messageId, closedCitationCallouts, onCloseCitationCallout]);
+  }), [renderCitationPlaceholder, skipHighlight, runBlueSwoop, isStreaming, citations, citationRunLengthByNum, onAskFollowUpFromCallout, onViewInDocumentFromCallout, citationViewedInDocument, onCloseDocumentFromCallout, messageId, closedCitationCallouts, onCloseCitationCallout]);
 
   return (
     <>
@@ -2210,6 +2213,11 @@ const CitationCallout: React.FC<{
   const [previewSize, setPreviewSize] = React.useState({ width: 400, height: 180 });
   const [isClosed, setIsClosed] = React.useState(false);
 
+  // Keep local closed state in sync with parent (so close persists across parent re-renders)
+  React.useEffect(() => {
+    if (isCalloutClosed) setIsClosed(true);
+  }, [isCalloutClosed]);
+
   React.useLayoutEffect(() => {
     const el = previewContainerRef.current;
     if (!el) return;
@@ -2299,20 +2307,19 @@ const CitationCallout: React.FC<{
   };
 
   const closeButtonPadding = 10;
+  const handleClose = React.useCallback(() => {
+    setIsClosed(true);
+    onCloseCallout?.();
+  }, [onCloseCallout]);
   const closeButton = (
     <button
       type="button"
-      onClick={(e) => {
-        e.stopPropagation();
-        onCloseCallout?.();
-        if (!onCloseCallout) setIsClosed(true);
-      }}
       aria-label="Close citation"
       style={{
         position: 'absolute',
         top: closeButtonPadding,
         right: closeButtonPadding,
-        zIndex: 2,
+        zIndex: 10,
         width: 28,
         height: 28,
         display: 'flex',
@@ -2328,6 +2335,17 @@ const CitationCallout: React.FC<{
         lineHeight: 0,
         fontFamily: 'inherit',
         transition: 'color 0.15s ease, background-color 0.15s ease',
+        pointerEvents: 'auto',
+      }}
+      onPointerDown={(e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        handleClose();
+      }}
+      onClick={(e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        handleClose();
       }}
       onMouseEnter={(e) => {
         const el = e.currentTarget as HTMLElement;
@@ -2564,7 +2582,7 @@ const CitationCallout: React.FC<{
                       color: isViewedInDocument ? '#78350F' : '#374151',
                       backgroundColor: isViewedInDocument ? '#F2DEB6' : '#F3F3F3',
                       border: isViewedInDocument ? '1px solid rgba(244, 192, 133, 0.5)' : '1px solid #e5e7eb',
-                      borderRadius: 4,
+                      borderRadius: 8,
                       cursor: 'pointer',
                       transition: 'background-color 0.15s ease, box-shadow 0.15s ease',
                       boxShadow: '0 1px 1px rgba(0,0,0,0.05)',
@@ -2698,6 +2716,47 @@ const truncateQueryText = (
   document.body.removeChild(measureElement);
   return { truncatedText: bestMatch, isTruncated: true };
 };
+
+const citationRunLengthSuperscriptMap: Record<string, string> = {
+  '¹': '1', '²': '2', '³': '3', '⁴': '4', '⁵': '5',
+  '⁶': '6', '⁷': '7', '⁸': '8', '⁹': '9'
+};
+const citationRunLengthRe = /\[(\d+)\]|[¹²³⁴⁵⁶⁷⁸⁹]+(?:\d+)?/g;
+
+/** Returns a map of citation number -> how many citations are in a row (adjacent in text). Only whitespace/comma between counts as "in a row". */
+function getCitationRunLengthMap(text: string): Map<string, number> {
+  const map = new globalThis.Map<string, number>();
+  if (!text) return map;
+  const matches: { num: string; start: number; end: number }[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = citationRunLengthRe.exec(text)) !== null) {
+    const raw = m[0];
+    const num = raw.startsWith('[') ? (m[1] ?? '') : Array.from(raw).map((c) => citationRunLengthSuperscriptMap[c] ?? (/\d/.test(c) ? c : '')).join('') || raw;
+    if (num) matches.push({ num, start: m.index, end: m.index + m[0].length });
+  }
+  if (matches.length === 0) return map;
+  let run: string[] = [matches[0].num];
+  for (let i = 1; i < matches.length; i++) {
+    const gap = text.slice(matches[i - 1].end, matches[i].start);
+    const onlyWhitespaceOrComma = /^[\s,]*$/.test(gap);
+    if (onlyWhitespaceOrComma) {
+      run.push(matches[i].num);
+    } else {
+      const len = run.length;
+      run.forEach((n) => map.set(n, len));
+      run = [matches[i].num];
+    }
+  }
+  const len = run.length;
+  run.forEach((n) => map.set(n, len));
+  return map;
+}
+
+/** Returns how many citations are in a row (adjacent in text) for the given citation number. Only whitespace/comma between counts as "in a row". */
+function getCitationAdjacentRunLength(text: string, citationNumber: string): number {
+  if (!text || citationNumber == null) return 1;
+  return getCitationRunLengthMap(text).get(citationNumber) ?? 1;
+}
 
 // Helper function to render text with clickable citation links
 // Supports both superscript (¹, ², ³) and bracket ([1], [2]) formats
@@ -9457,14 +9516,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         });
       }
     }
-    // Keep auto-scroll on while the latest message is streaming so we always follow the streamed response
-    if (hasLoadingMessage) {
-      const lastMsg = chatMessages[chatMessages.length - 1];
-      if (lastMsg?.isLoading && lastMsg?.text) {
-        autoScrollEnabledRef.current = true;
-      }
-    }
-    
+    // Do NOT force auto-scroll on during streaming: if the user manually scrolls up, respect that until they scroll back near bottom.
+
     // When loading completes, do a final scroll so the full response is visible above the chat bar
     if (prevLoadingRef.current && !hasLoadingMessage) {
       setTimeout(() => scrollToBottom(true), 50);
@@ -9724,6 +9777,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   }, [openCitationInDocumentView]);
 
   // User clicked a citation in message text: open doc or show panel (no scroll here — push-down scroll is for streaming only)
+  // Only show the document preview panel when at most 2 citations are next to each other; skip panel for 3+ in a row
   const handleUserCitationClick = React.useCallback((data: CitationDataType, anchorRect?: DOMRect, sourceMessageText?: string, messageId?: string, citationNumber?: string) => {
     if (isDocumentPreviewOpenRef.current) {
       // Document preview already open: go straight to this citation in the document view (no panel)
@@ -9734,6 +9788,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       return;
     }
     if (anchorRect != null) {
+      const runLength = getCitationAdjacentRunLength(sourceMessageText ?? '', citationNumber ?? '');
+      if (runLength > 2) return; // Don't show preview when 3+ citations in a row
       setCitationClickPanel({ citationData: data as CitationData, anchorRect, sourceMessageText, messageId, citationNumber });
     }
   }, [openCitationInDocumentView, currentChatId, setDocumentViewedCitation]);
@@ -15991,7 +16047,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         left: '50%',
                         bottom: '100%',
                         transform: 'translateX(-50%)',
-                        marginBottom: '8px',
+                        marginBottom: '20px',
                         zIndex: 10,
                         pointerEvents: 'auto'
                       }}
@@ -16013,11 +16069,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           height: '40px',
                           padding: 0,
                           borderRadius: '50%',
-                          border: '1px solid rgba(0,0,0,0.08)',
-                          backgroundColor: 'rgba(255, 255, 255, 0.98)',
-                          boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
+                          border: '1px solid rgba(0,0,0,0.06)',
+                          backgroundColor: 'rgba(248, 250, 252, 0.92)',
+                          boxShadow: '0 2px 6px rgba(0,0,0,0.06)',
                           cursor: 'pointer',
-                          color: '#374151',
+                          color: '#6b7280',
                           flexShrink: 0
                         }}
                       >
