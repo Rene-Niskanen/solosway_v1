@@ -15546,20 +15546,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                   onClick={() => {}}
                                   className="flex items-center justify-center text-gray-900 transition-colors focus:outline-none outline-none mr-2"
                                   style={{
-                                    backgroundColor: '#F3F3F3',
-                                    transition: 'background-color 0.2s ease',
+                                    backgroundColor: 'transparent',
                                     width: '32px',
                                     height: '32px',
                                     minWidth: '32px',
                                     minHeight: '32px',
-                                    padding: '6px',
-                                    borderRadius: '50%'
-                                  }}
-                                  onMouseEnter={(e) => {
-                                    e.currentTarget.style.backgroundColor = '#EBEBEB';
-                                  }}
-                                  onMouseLeave={(e) => {
-                                    e.currentTarget.style.backgroundColor = '#F3F3F3';
+                                    padding: '6px'
                                   }}
                                   title="Voice input"
                                 >
@@ -15580,14 +15572,20 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                 transition={{ duration: 0 }}
                                 className={`flex items-center justify-center relative focus:outline-none outline-none ${!isSubmitted ? '' : 'cursor-not-allowed'}`}
                                 style={{
-                                  width: '32px',
-                                  height: '32px',
-                                  minWidth: '32px',
-                                  minHeight: '32px',
+                                  width: '36px',
+                                  height: '36px',
+                                  minWidth: '36px',
+                                  minHeight: '36px',
+                                  maxWidth: '36px',
+                                  maxHeight: '36px',
                                   borderRadius: '50%',
-                                  flexShrink: 0
+                                  border: 'none',
+                                  flexShrink: 0,
+                                  alignSelf: 'center'
                                 }}
                                 disabled={isSubmitted}
+                                title="Send"
+                                tabIndex={0}
                                 whileHover={!isSubmitted ? { scale: 1.05 } : {}}
                                 whileTap={!isSubmitted ? { scale: 0.95 } : {}}
                               >
@@ -16299,7 +16297,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             paddingTop: '12px',
                             paddingBottom: '4px',
                             paddingRight: '36px',
-                            paddingLeft: '14px',
+                            paddingLeft: '0px',
                             color: segmentInput.getPlainText() ? '#333333' : undefined,
                             boxSizing: 'border-box',
                           }}
@@ -16317,8 +16315,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           }}
                         />
                         
-                        {/* Property Search Results Popup - positioned ABOVE the input */}
-                        {showPropertySearchPopup && propertySearchResults.length > 0 && (
+                        {/* Property Search Results Popup - disabled: never show (was showing address list above input) */}
+                        {false && showPropertySearchPopup && propertySearchResults.length > 0 && (
                           <div
                             ref={propertySearchPopupRef}
                             style={{
@@ -16618,20 +16616,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             onClick={() => {}}
                             className="flex items-center justify-center text-gray-900 transition-colors focus:outline-none outline-none mr-2"
                             style={{
-                              backgroundColor: '#F3F3F3',
-                              transition: 'background-color 0.2s ease',
+                              backgroundColor: 'transparent',
                               width: '32px',
                               height: '32px',
                               minWidth: '32px',
                               minHeight: '32px',
-                              padding: '6px',
-                              borderRadius: '50%'
-                            }}
-                            onMouseEnter={(e) => {
-                              e.currentTarget.style.backgroundColor = '#EBEBEB';
-                            }}
-                            onMouseLeave={(e) => {
-                              e.currentTarget.style.backgroundColor = '#F3F3F3';
+                              padding: '6px'
                             }}
                             title="Voice input"
                           >
@@ -16659,12 +16649,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                   layout={false}
                                   className="flex items-center justify-center relative focus:outline-none outline-none"
                                   style={{
-                                    width: '28px',
-                                    height: '28px',
-                                    minWidth: '28px',
-                                    minHeight: '28px',
-                                    maxWidth: '28px',
-                                    maxHeight: '28px',
+                                    width: '36px',
+                                    height: '36px',
+                                    minWidth: '36px',
+                                    minHeight: '36px',
+                                    maxWidth: '36px',
+                                    maxHeight: '36px',
                                     borderRadius: '50%',
                                     border: 'none',
                                     backgroundColor: '#6E6E6E',
@@ -16675,9 +16665,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                     scale: 0.95
                                   }}
                                   title="Stop generating"
+                                  tabIndex={0}
                                 >
                                   <svg 
-                                    className="w-3.5 h-3.5" 
+                                    className="w-4 h-4" 
                                     viewBox="0 0 10 10" 
                                     fill="none" 
                                     xmlns="http://www.w3.org/2000/svg"
@@ -16709,14 +16700,20 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                   layout={false}
                                   className={`flex items-center justify-center relative focus:outline-none outline-none ${!isSubmitted ? '' : 'cursor-not-allowed'}`}
                                   style={{
-                                    width: '28px',
-                                    height: '28px',
-                                    minWidth: '28px',
-                                    minHeight: '28px',
+                                    width: '36px',
+                                    height: '36px',
+                                    minWidth: '36px',
+                                    minHeight: '36px',
+                                    maxWidth: '36px',
+                                    maxHeight: '36px',
                                     borderRadius: '50%',
-                                    flexShrink: 0
+                                    border: 'none',
+                                    flexShrink: 0,
+                                    alignSelf: 'center'
                                   }}
                                   disabled={isSubmitted}
+                                  title="Send"
+                                  tabIndex={0}
                                   whileHover={!isSubmitted ? { 
                                     scale: 1.05
                                   } : {}}
@@ -16731,7 +16728,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                     className="absolute inset-0 flex items-center justify-center"
                                     style={{ pointerEvents: 'none' }}
                                   >
-                                    <ArrowUp className="w-4 h-4" strokeWidth={2.5} style={{ color: '#ffffff' }} />
+                                    <ArrowUp className="w-5 h-5" strokeWidth={2.5} style={{ color: '#ffffff' }} />
                                   </motion.div>
                                 </motion.button>
                               );

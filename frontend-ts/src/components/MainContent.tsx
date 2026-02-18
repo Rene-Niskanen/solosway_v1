@@ -1609,6 +1609,7 @@ function normalizeUserForProfile(user: Record<string, unknown> | null | undefine
 }
 
 const COMPLETION_SOUND_OPTIONS: { value: CompletionSoundOption; label: string }[] = [
+  { value: 'ascending', label: 'Default' },
   { value: 'off', label: 'Off' },
   { value: 'chime', label: 'Chime' },
   { value: 'soft', label: 'Soft' },
@@ -1616,19 +1617,18 @@ const COMPLETION_SOUND_OPTIONS: { value: CompletionSoundOption; label: string }[
   { value: 'bell', label: 'Bell' },
   { value: 'blip', label: 'Blip' },
   { value: 'ding', label: 'Ding' },
-  { value: 'ascending', label: 'Ascending' },
 ];
 
 // Notifications settings: volume (Spotify-style) + sound selector (card styled like UsageAndBillingSection plan card)
 const NotificationsSettingsContent: React.FC = () => {
   const [soundOption, setSoundOptionState] = React.useState<CompletionSoundOption>(() => {
-    if (typeof window === 'undefined') return 'chime';
+    if (typeof window === 'undefined') return 'ascending';
     const v = window.localStorage.getItem(NOTIFICATION_SOUND_STORAGE_KEY);
-    if (v === null) return 'chime';
-    if (v === 'true' || v === 'on' || v === 'chime') return 'chime';
+    if (v === null) return 'ascending';
+    if (v === 'true' || v === 'on' || v === 'chime') return 'ascending';
     if (v === 'false' || v === 'off') return 'off';
     if (['chime', 'soft', 'bright', 'bell', 'blip', 'ding', 'ascending'].includes(v)) return v as CompletionSoundOption;
-    return 'chime';
+    return 'ascending';
   });
   const [volume, setVolumeState] = React.useState(() => getStoredSoundVolume());
   const setSoundOption = (value: CompletionSoundOption) => {

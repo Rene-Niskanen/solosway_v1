@@ -40,7 +40,7 @@ export function ChatBarAttachDropdown({
             minWidth: "32px",
             padding: 0,
             marginRight: "12px",
-            marginLeft: "6px",
+            marginLeft: 0,
           }}
           title="Attach"
         >

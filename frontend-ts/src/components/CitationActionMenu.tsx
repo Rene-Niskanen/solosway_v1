@@ -277,24 +277,32 @@ export const CitationActionMenu: React.FC<CitationActionMenuProps> = ({
                 <motion.button
                   type="submit"
                   disabled={!queryText.trim()}
-                  className="flex items-center justify-center"
+                  className="flex items-center justify-center relative focus:outline-none outline-none"
                   style={{
-                    width: '32px',
-                    height: '32px',
+                    width: '36px',
+                    height: '36px',
+                    minWidth: '36px',
+                    minHeight: '36px',
+                    maxWidth: '36px',
+                    maxHeight: '36px',
                     borderRadius: '50%',
                     border: 'none',
+                    flexShrink: 0,
+                    alignSelf: 'center',
                     cursor: queryText.trim() ? 'pointer' : 'not-allowed'
                   }}
                   animate={{
-                    backgroundColor: queryText.trim() ? '#415C85' : '#F3F4F6',
+                    backgroundColor: queryText.trim() ? '#4A4A4A' : '#F3F4F6',
                     opacity: queryText.trim() ? 1 : 0.6
                   }}
-                  whileHover={queryText.trim() ? { scale: 1.02, backgroundColor: '#374B6D' } : {}}
-                  whileTap={queryText.trim() ? { scale: 0.98 } : {}}
+                  whileHover={queryText.trim() ? { scale: 1.05 } : {}}
+                  whileTap={queryText.trim() ? { scale: 0.95 } : {}}
                   transition={{ duration: 0.15, ease: [0.16, 1, 0.3, 1] }}
+                  title="Send"
+                  tabIndex={0}
                 >
                   <ArrowUp 
-                    className="w-4 h-4" 
+                    className="w-5 h-5" 
                     strokeWidth={2.5} 
                     style={{ color: queryText.trim() ? '#ffffff' : '#4B5563' }} 
                   />

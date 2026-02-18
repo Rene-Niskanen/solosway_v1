@@ -12,14 +12,14 @@ export type CompletionSoundOption = 'off' | 'chime' | 'soft' | 'bright' | 'bell'
 const VALID_OPTIONS: CompletionSoundOption[] = ['off', 'chime', 'soft', 'bright', 'bell', 'blip', 'ding', 'ascending'];
 
 function getStoredSoundOption(): CompletionSoundOption {
-  if (typeof window === 'undefined') return 'chime';
+  if (typeof window === 'undefined') return 'ascending';
   const stored = window.localStorage.getItem(NOTIFICATION_SOUND_STORAGE_KEY);
-  if (stored === null) return 'chime';
-  if (stored === 'true' || stored === 'on' || stored === 'chime') return 'chime';
+  if (stored === null) return 'ascending';
+  if (stored === 'true' || stored === 'on' || stored === 'chime') return 'ascending';
   if (stored === 'false' || stored === 'off') return 'off';
-  if (stored === 'subtle') return 'chime'; // removed option, fallback to chime
+  if (stored === 'subtle') return 'ascending'; // removed option, fallback to default
   if (VALID_OPTIONS.includes(stored as CompletionSoundOption)) return stored as CompletionSoundOption;
-  return 'chime';
+  return 'ascending';
 }
 
 /** Volume 0–100. Default 80. */

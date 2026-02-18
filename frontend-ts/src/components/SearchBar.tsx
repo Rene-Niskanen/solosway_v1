@@ -1556,7 +1556,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                       paddingTop: '12px',
                       paddingBottom: '4px',
                       paddingRight: '36px',
-                      paddingLeft: '14px',
+                      paddingLeft: '0px',
                       color: segmentInput.getPlainText() ? '#333333' : undefined,
                       boxSizing: 'border-box',
                     }}
@@ -1783,8 +1783,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                       </div>
                     )}
                 
-                      {/* WebSearchPill when on, Voice, Send */}
-                      <div className="flex items-center gap-1.5 flex-shrink-0">
+                  {/* WebSearchPill when on, Voice, Send */}
                   {onMapToggle != null && isWebSearchEnabled && (
                     <WebSearchPill onDismiss={() => setIsWebSearchEnabled(false)} />
                   )}
@@ -1794,20 +1793,12 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                       onClick={() => {}}
                       className="flex items-center justify-center text-gray-900 transition-colors focus:outline-none outline-none"
                       style={{
-                        backgroundColor: '#F3F3F3',
-                        transition: 'background-color 0.2s ease',
+                        backgroundColor: 'transparent',
                         width: '32px',
                         height: '32px',
                         minWidth: '32px',
                         minHeight: '32px',
-                        padding: '6px',
-                        borderRadius: '50%'
-                      }}
-                      onMouseEnter={(e) => {
-                        e.currentTarget.style.backgroundColor = '#EBEBEB';
-                      }}
-                      onMouseLeave={(e) => {
-                        e.currentTarget.style.backgroundColor = '#F3F3F3';
+                        padding: '6px'
                       }}
                     >
                       <AudioLines className="w-5 h-5" strokeWidth={1.5} />
@@ -1830,10 +1821,16 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                         height: '36px',
                         minWidth: '36px',
                         minHeight: '36px',
+                        maxWidth: '36px',
+                        maxHeight: '36px',
                         borderRadius: '50%',
-                        flexShrink: 0
+                        border: 'none',
+                        flexShrink: 0,
+                        alignSelf: 'center'
                       }}
                       disabled={isSubmitted}
+                      title="Send"
+                      tabIndex={0}
                       whileHover={!isSubmitted ? { 
                         scale: 1.05
                       } : {}}
@@ -1848,12 +1845,11 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                         className="absolute inset-0 flex items-center justify-center"
                         style={{ pointerEvents: 'none' }}
                       >
-                        <ArrowUp className="w-6 h-6" strokeWidth={2.5} style={{ color: '#ffffff' }} />
+                        <ArrowUp className="w-5 h-5" strokeWidth={2.5} style={{ color: '#ffffff' }} />
                       </motion.div>
                     </motion.button>
                   )}
                 </AnimatePresence>
-                      </div>
                     </div>
                   </div>
                 );

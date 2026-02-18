@@ -433,7 +433,7 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
   // Single source of truth for spacing so overlay and contentEditable never drift (avoids placeholder glitch)
   const effectiveFontSize = placeholderFontSize ?? style?.fontSize ?? "14px";
   const effectiveLineHeight = style?.lineHeight ?? (placeholderFontSize ? "28px" : "22px");
-  const placeholderLeftInsetPx = 18;
+  const placeholderLeftInsetPx = 2;
   const effectivePadding: React.CSSProperties = {
     padding: style?.padding ?? 0,
     ...(style?.paddingLeft != null && {
@@ -447,7 +447,7 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
     ...(placeholderFontSize != null && style?.paddingTop == null && { paddingTop: "8px" }),
   };
 
-  // Placeholder overlay: no extra left padding; effectivePadding already insets content so placeholder and typed text align.
+  // Placeholder overlay: same left padding as first text segment (8px) so pre-text and typed text align.
   const overlayStyle: React.CSSProperties = {
     position: "absolute" as const,
     left: 0,
@@ -455,6 +455,7 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
     right: 0,
     bottom: 0,
     padding: 0,
+    paddingLeft: "8px",
     fontSize: effectiveFontSize,
     lineHeight: effectiveLineHeight,
     color: "#BABABA",
@@ -544,8 +545,8 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
                 segmentRefs.current[i] = el;
               }}
               data-segment-index={i}
-              style={
-                isOnlyEmpty && showPlaceholderOverlay
+              style={{
+                ...(isOnlyEmpty && showPlaceholderOverlay
                   ? { display: "inline-block", minWidth: "100%", color: "rgba(186,186,186,0.01)" }
                   : showPlaceholderHere
                     ? {
@@ -554,8 +555,9 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
                         color: "#BABABA",
                         ...(placeholderFontSize != null && { fontSize: effectiveFontSize }),
                       }
-                    : undefined
-              }
+                    : {}),
+                ...(i === 0 ? { paddingLeft: "8px" } : {}),
+              }}
             >
               {(isOnlyEmpty && showPlaceholderOverlay) || showPlaceholderHere ? placeholder : seg.value}
             </span>
@@ -645,8 +647,8 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
                 segmentRefs.current[i] = el;
               }}
               data-segment-index={i}
-              style={
-                isOnlyEmpty && showPlaceholderOverlay
+              style={{
+                ...(isOnlyEmpty && showPlaceholderOverlay
                   ? { display: "inline-block", minWidth: "100%", color: "rgba(186,186,186,0.01)" }
                   : showPlaceholderHere
                     ? {
@@ -655,8 +657,9 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
                         color: "#BABABA",
                         ...(placeholderFontSize != null && { fontSize: effectiveFontSize }),
                       }
-                    : undefined
-              }
+                    : {}),
+                ...(i === 0 ? { paddingLeft: "8px" } : {}),
+              }}
             >
               {(isOnlyEmpty && showPlaceholderOverlay) || showPlaceholderHere ? placeholder : seg.value}
             </span>

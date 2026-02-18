@@ -1296,18 +1296,25 @@ const ChatInterface = forwardRef<{ handleFileDrop: (file: File) => void }, ChatI
                   <motion.button 
                     type="submit" 
                     onClick={handleSendMessage} 
-                    className={`flex items-center justify-center relative ${!isTyping ? '' : 'cursor-not-allowed'}`}
+                    className={`flex items-center justify-center relative focus:outline-none outline-none ${!isTyping ? '' : 'cursor-not-allowed'}`}
                     style={{
-                      width: '48px',
-                      height: '48px',
-                      minWidth: '48px',
-                      minHeight: '48px',
-                      borderRadius: '50%'
+                      width: '36px',
+                      height: '36px',
+                      minWidth: '36px',
+                      minHeight: '36px',
+                      maxWidth: '36px',
+                      maxHeight: '36px',
+                      borderRadius: '50%',
+                      border: 'none',
+                      flexShrink: 0,
+                      alignSelf: 'center'
                     }}
                     animate={{
-                      backgroundColor: (inputValue.trim() || attachedFiles.length > 0) ? '#415C85' : 'transparent'
+                      backgroundColor: (inputValue.trim() || attachedFiles.length > 0) ? '#4A4A4A' : '#F3F4F6'
                     }}
                     disabled={isTyping || (!inputValue.trim() && attachedFiles.length === 0)}
+                    title={(inputValue.trim() || attachedFiles.length > 0) ? 'Send' : undefined}
+                    tabIndex={0}
                     whileHover={(!isTyping && (inputValue.trim() || attachedFiles.length > 0)) ? { 
                       scale: 1.05
                     } : {}}
@@ -1330,7 +1337,7 @@ const ChatInterface = forwardRef<{ handleFileDrop: (file: File) => void }, ChatI
                       className="absolute inset-0 flex items-center justify-center"
                       style={{ pointerEvents: 'none' }}
                     >
-                      <ChevronRight className="w-6 h-6" strokeWidth={1.5} style={{ color: '#6B7280' }} />
+                      <ChevronRight className="w-5 h-5" strokeWidth={1.5} style={{ color: '#6B7280' }} />
                     </motion.div>
                     <motion.div
                       key="arrow-up"
@@ -1343,7 +1350,7 @@ const ChatInterface = forwardRef<{ handleFileDrop: (file: File) => void }, ChatI
                       className="absolute inset-0 flex items-center justify-center"
                       style={{ pointerEvents: 'none' }}
                     >
-                      <ArrowUp className="w-6 h-6" strokeWidth={2.5} style={{ color: '#ffffff' }} />
+                      <ArrowUp className="w-5 h-5" strokeWidth={2.5} style={{ color: '#ffffff' }} />
                     </motion.div>
                   </motion.button>
                 </div>

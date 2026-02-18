@@ -35,16 +35,16 @@ export function ChatBarToolsDropdown({
       <DropdownMenuTrigger asChild>
         <button
           type="button"
-          className={`flex items-center gap-1.5 text-gray-900 transition-colors focus:outline-none outline-none ${className || ""}`}
+          className={`flex items-center justify-center text-gray-900 transition-colors focus:outline-none outline-none rounded-full ${className || ""}`}
           style={{
             backgroundColor: "#FFFFFF",
             border: "1px solid rgba(229, 231, 235, 0.6)",
-            borderRadius: "12px",
             transition: "background-color 0.2s ease, border-color 0.2s ease",
             height: "24px",
             minHeight: "24px",
-            paddingLeft: compact ? "6px" : "8px",
-            paddingRight: compact ? "6px" : "8px",
+            width: "24px",
+            minWidth: "24px",
+            padding: 0,
           }}
           onMouseEnter={(e) => {
             e.currentTarget.style.backgroundColor = "#F5F5F5";
@@ -55,7 +55,6 @@ export function ChatBarToolsDropdown({
           title="Tools"
         >
           <Bolt className="w-3.5 h-3.5" strokeWidth={2} />
-          {!compact && <span className="text-xs font-medium">Tools</span>}
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent

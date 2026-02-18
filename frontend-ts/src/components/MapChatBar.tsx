@@ -498,20 +498,12 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
                 {/* Voice Button */}
                 <button
                   type="button"
-                  className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-gray-900 focus:outline-none outline-none"
+                  className="flex items-center justify-center text-gray-900 focus:outline-none outline-none"
                   style={{
-                    backgroundColor: '#ECECEC',
-                    transition: 'background-color 0.15s ease',
-                    willChange: 'background-color',
+                    backgroundColor: 'transparent',
                     height: '22px',
                     minHeight: '22px',
-                    fontSize: '12px'
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.backgroundColor = '#E0E0E0';
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.backgroundColor = '#ECECEC';
+                    padding: '0 2px'
                   }}
                   title="Voice input"
                 >
@@ -535,10 +527,16 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
                         height: '36px',
                         minWidth: '36px',
                         minHeight: '36px',
+                        maxWidth: '36px',
+                        maxHeight: '36px',
                         borderRadius: '50%',
-                        flexShrink: 0
+                        border: 'none',
+                        flexShrink: 0,
+                        alignSelf: 'center'
                       }}
                       disabled={isSubmitted}
+                      title="Send"
+                      tabIndex={0}
                       whileHover={!isSubmitted ? { 
                         scale: 1.05
                       } : {}}
@@ -553,7 +551,7 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
                         className="absolute inset-0 flex items-center justify-center"
                         style={{ pointerEvents: 'none' }}
                       >
-                        <ArrowUp className="w-6 h-6" strokeWidth={2.5} style={{ color: '#ffffff' }} />
+                        <ArrowUp className="w-5 h-5" strokeWidth={2.5} style={{ color: '#ffffff' }} />
                       </motion.div>
                     </motion.button>
                   )}
