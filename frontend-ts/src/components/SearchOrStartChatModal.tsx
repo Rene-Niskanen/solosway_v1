@@ -217,14 +217,7 @@ export function SearchOrStartChatModal({
         label: `New chat "${query.trim()}"`,
         query: query.trim(),
       });
-      if (!chatsOnly) {
-        if (QUERY_MATCH_UPLOAD.test(query) && onUploadFile) {
-          list.push({ type: "action", id: "action-upload", action: "upload", label: "Upload file" });
-        }
-      }
-      // When searching, always show Files and Projects actions so user can open those views with the query
-      list.push({ type: "action", id: "action-files", action: "files", label: "Files" });
-      list.push({ type: "action", id: "action-projects", action: "projects", label: "Projects" });
+      // Chats (recents) first when typing, so starting a chat or opening a recent is quicker
       filteredRecents.forEach((c) => {
         list.push({
           type: "recent-chat",
@@ -234,7 +227,14 @@ export function SearchOrStartChatModal({
           meta: formatRecentMeta(c.timestamp),
         });
       });
-      // When there's a search query, always show matching files and projects (search across everything)
+      if (!chatsOnly) {
+        list.push({ type: "action", id: "action-files", action: "files", label: "Files" });
+        list.push({ type: "action", id: "action-projects", action: "projects", label: "Projects" });
+        if (QUERY_MATCH_UPLOAD.test(query) && onUploadFile) {
+          list.push({ type: "action", id: "action-upload", action: "upload", label: "Upload file" });
+        }
+      }
+      // When there's a search query, show matching files and projects below actions
       filteredProjects.forEach((p) => {
         list.push({ type: "project", id: `project-${p.id}`, projectId: p.id, label: p.label, imageUrl: p.imageUrl });
       });

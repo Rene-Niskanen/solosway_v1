@@ -1342,50 +1342,95 @@ const StreamingResponseText: React.FC<{
     return processFlattenedWithCitations(segments, keyPrefix);
   };
 
+  // Collect citation numbers in document order for a block (used to render inline callouts below the block).
+  const collectCitationNumbersInOrder = (nodes: React.ReactNode): string[] => {
+    const segments = flattenSegments(nodes);
+    const nums: string[] = [];
+    for (const seg of segments) {
+      if (typeof seg === 'string' && seg.startsWith('%%CITATION_')) {
+        const n = citationNumFromPlaceholder(seg);
+        if (n) nums.push(n);
+      }
+    }
+    return nums;
+  };
+
   // Markdown components: memoized so identity is stable when only citation selection/saved changes (prevents CitationLink remount → flash)
   const markdownComponents = React.useMemo(() => ({
     p: ({ children }: { children?: React.ReactNode }) => {
-      return <p style={{ 
-        margin: '0 0 17.5px 0', 
-        textAlign: 'left',
-        lineHeight: '1.7',
-        wordWrap: 'break-word',
-        overflowWrap: 'break-word',
-        wordBreak: 'break-word'
-      }}>{processChildrenWithCitationsFlattened(children ?? null, 'p')}</p>;
+      const citationNumbers = collectCitationNumbersInOrder(children ?? null);
+      return (
+        <>
+          <p style={{
+            margin: '0 0 17.5px 0',
+            textAlign: 'left',
+            lineHeight: '1.7',
+            wordWrap: 'break-word',
+            overflowWrap: 'break-word',
+            wordBreak: 'break-word'
+          }}>{processChildrenWithCitationsFlattened(children ?? null, 'p')}</p>
+          {citationNumbers.map((num, i) => (
+            <CitationCallout key={`callout-p-${i}-${num}`} citationNumber={num} citation={citations?.[num]} />
+          ))}
+        </>
+      );
     },
     h1: ({ children }: { children?: React.ReactNode }) => {
-      return <h1 style={{ 
-        fontSize: '22px', 
-        fontWeight: 600, 
-        margin: '15.2px 0 11px 0', 
-        color: '#111827',
-        wordWrap: 'break-word',
-        overflowWrap: 'break-word',
-        wordBreak: 'break-word'
-      }}>{processChildrenWithCitationsFlattened(children ?? null, 'h1')}</h1>;
+      const citationNumbers = collectCitationNumbersInOrder(children ?? null);
+      return (
+        <>
+          <h1 style={{
+            fontSize: '22px',
+            fontWeight: 600,
+            margin: '15.2px 0 11px 0',
+            color: '#111827',
+            wordWrap: 'break-word',
+            overflowWrap: 'break-word',
+            wordBreak: 'break-word'
+          }}>{processChildrenWithCitationsFlattened(children ?? null, 'h1')}</h1>
+          {citationNumbers.map((num, i) => (
+            <CitationCallout key={`callout-h1-${i}-${num}`} citationNumber={num} citation={citations?.[num]} />
+          ))}
+        </>
+      );
     },
     h2: ({ children }: { children?: React.ReactNode }) => {
-      return <h2 style={{ 
-        fontSize: '19px', 
-        fontWeight: 600, 
-        margin: '13.1px 0 8.8px 0', 
-        color: '#111827',
-        wordWrap: 'break-word',
-        overflowWrap: 'break-word',
-        wordBreak: 'break-word'
-      }}>{processChildrenWithCitationsFlattened(children ?? null, 'h2')}</h2>;
+      const citationNumbers = collectCitationNumbersInOrder(children ?? null);
+      return (
+        <>
+          <h2 style={{
+            fontSize: '19px',
+            fontWeight: 600,
+            margin: '13.1px 0 8.8px 0',
+            color: '#111827',
+            wordWrap: 'break-word',
+            overflowWrap: 'break-word',
+            wordBreak: 'break-word'
+          }}>{processChildrenWithCitationsFlattened(children ?? null, 'h2')}</h2>
+          {citationNumbers.map((num, i) => (
+            <CitationCallout key={`callout-h2-${i}-${num}`} citationNumber={num} citation={citations?.[num]} />
+          ))}
+        </>
+      );
     },
     h3: ({ children }: { children?: React.ReactNode }) => {
-      return <h3 style={{ 
-        fontSize: '16px', 
-        fontWeight: 600, 
-        margin: '10.9px 0 6.6px 0', 
-        color: '#111827',
-        wordWrap: 'break-word',
-        overflowWrap: 'break-word',
-        wordBreak: 'break-word'
-      }}>{processChildrenWithCitationsFlattened(children ?? null, 'h3')}</h3>;
+      const citationNumbers = collectCitationNumbersInOrder(children ?? null);
+      return (
+        <>
+          <h3 style={{
+            fontSize: '16px',
+            fontWeight: 600,
+            margin: '10.9px 0 6.6px 0',
+            color: '#111827',
+            wordWrap: 'break-word',
+            overflowWrap: 'break-word',
+            wordBreak: 'break-word'
+          }}>{processChildrenWithCitationsFlattened(children ?? null, 'h3')}</h3>
+          {citationNumbers.map((num, i) => (
+            <CitationCallout key={`callout-h3-${i}-${num}`} citationNumber={num} citation={citations?.[num]} />
+          ))}
+        </>
+      );
     },
     ul: ({ children }: { children?: React.ReactNode }) => <ul style={{ 
       margin: '8.8px 0 4.4px 0', 
@@ -1405,14 +1450,22 @@ const StreamingResponseText: React.FC<{
       wordBreak: 'break-word'
     }}>{children}</ol>,
     li: ({ children }: { children?: React.ReactNode }) => {
-      return <li style={{ 
-        margin: '4.4px 0 4.4px 0',
-        lineHeight: '1.7',
-        paddingLeft: '8.8px',
-        wordWrap: 'break-word',
-        overflowWrap: 'break-word',
-        wordBreak: 'break-word'
-      }}>{processChildrenWithCitationsFlattened(children ?? null, 'li')}</li>;
+      const citationNumbers = collectCitationNumbersInOrder(children ?? null);
+      return (
+        <li style={{
+          margin: '4.4px 0 4.4px 0',
+          lineHeight: '1.7',
+          paddingLeft: '8.8px',
+          wordWrap: 'break-word',
+          overflowWrap: 'break-word',
+          wordBreak: 'break-word'
+        }}>
+          {processChildrenWithCitationsFlattened(children ?? null, 'li')}
+          {citationNumbers.map((num, i) => (
+            <CitationCallout key={`callout-li-${i}-${num}`} citationNumber={num} citation={citations?.[num]} />
+          ))}
+        </li>
+      );
     },
     strong: ({ children }: { children?: React.ReactNode }) => {
       const boldContent = (
@@ -1444,17 +1497,27 @@ const StreamingResponseText: React.FC<{
       overflowWrap: 'break-word',
       wordBreak: 'break-word'
     }}>{children}</code>,
-    blockquote: ({ children }: { children?: React.ReactNode }) => <blockquote style={{ 
-      borderLeft: '3px solid #d1d5db', 
-      paddingLeft: '13.1px', 
-      margin: '8.8px 0', 
-      color: '#6b7280',
-      wordWrap: 'break-word',
-      overflowWrap: 'break-word',
-      wordBreak: 'break-word'
-    }}>{children}</blockquote>,
+    blockquote: ({ children }: { children?: React.ReactNode }) => {
+      const citationNumbers = collectCitationNumbersInOrder(children ?? null);
+      return (
+        <>
+          <blockquote style={{
+            borderLeft: '3px solid #d1d5db',
+            paddingLeft: '13.1px',
+            margin: '8.8px 0',
+            color: '#6b7280',
+            wordWrap: 'break-word',
+            overflowWrap: 'break-word',
+            wordBreak: 'break-word'
+          }}>{processChildrenWithCitationsFlattened(children ?? null, 'blockquote')}</blockquote>
+          {citationNumbers.map((num, i) => (
+            <CitationCallout key={`callout-blockquote-${i}-${num}`} citationNumber={num} citation={citations?.[num]} />
+          ))}
+        </>
+      );
+    },
     hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '17.5px 0' }} />,
-  }), [renderCitationPlaceholder, skipHighlight, runBlueSwoop, isStreaming]);
+  }), [renderCitationPlaceholder, skipHighlight, runBlueSwoop, isStreaming, citations]);
 
   return (
     <>
@@ -1977,6 +2040,57 @@ const CitationLink: React.FC<{
         />
       )}
     </>
+  );
+};
+
+/** Strip internal refs and markdown from citation excerpt for clean display in callout. */
+function sanitizeCitationCalloutText(raw: string): string {
+  let out = raw
+    // Remove internal block cite refs e.g. [id: 9](block_cite_id_34) or [id: 2](block_cite_id_6)
+    .replace(/\[id:\s*\d+\]\(block_cite_id_\d+\)/g, '')
+    // Strip bold/underline markdown so callout shows plain text
+    .replace(/\*\*([^*]*)\*\*/g, '$1')
+    .replace(/__([^_]*)__/g, '$1')
+    .replace(/\*([^*]*)\*/g, '$1')
+    .replace(/_([^_]*)_/g, '$1');
+  // Collapse multiple spaces and trim
+  out = out.replace(/\s+/g, ' ').trim();
+  return out;
+}
+
+/** Inline citation callout: gray box with cited excerpt, full width of response paragraph. Renders for every citation; shows fallback when no excerpt. */
+const CitationCallout: React.FC<{
+  citationNumber: string;
+  citation: { cited_text?: string; block_content?: string } | undefined;
+}> = ({ citationNumber, citation }) => {
+  const raw = (citation?.cited_text ?? citation?.block_content ?? '').trim();
+  const text = raw ? sanitizeCitationCalloutText(raw) : '';
+  const displayText = text || 'View in document for full source.';
+  return (
+    <div
+      role="region"
+      aria-label={`Citation ${citationNumber} excerpt`}
+      style={{
+        display: 'block',
+        width: '100%',
+        boxSizing: 'border-box',
+        marginTop: '8.8px',
+        marginBottom: '17.5px',
+        padding: '13.1px 15.2px',
+        backgroundColor: '#f3f4f6',
+        border: '1px solid #e5e7eb',
+        borderRadius: '8px',
+        fontSize: '15.2px',
+        lineHeight: '1.7',
+        color: text ? '#374151' : '#6b7280',
+        fontFamily: 'Inter, system-ui, sans-serif',
+        wordWrap: 'break-word',
+        overflowWrap: 'break-word',
+        whiteSpace: 'pre-wrap',
+      }}
+    >
+      {displayText}
+    </div>
   );
 };
 
@@ -8891,7 +9005,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   // Open citation in 50/50 document view (extracted for use from "View in document" and agent-triggered opens)
   const openCitationInDocumentView = React.useCallback(async (citationData: CitationData, fromAgentAction: boolean = false) => {
     try {
-      const docId = citationData.doc_id ?? (citationData as { document_id?: string }).document_id;
+      const rawDocId = citationData.doc_id ?? (citationData as { document_id?: string }).document_id;
+      const docId = rawDocId != null ? String(rawDocId) : '';
       if (!docId) {
         toast({ title: "Error", description: "Document ID not found in citation", variant: "destructive" });
         return;
@@ -8937,13 +9052,18 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         if ((left === 0 && top === 0 && width === 1 && height === 1) || area > 0.9) return false;
         return true;
       };
+      // Normalize page to 1-based (backend may send 0 for first page)
+      const citationPage = citationData.bbox?.page ?? citationData.page ?? citationData.page_number ?? 0;
+      const pageOneBased = citationPage >= 1 ? citationPage : 1;
+
       let highlightData: CitationHighlight | undefined;
       if (citationData.bbox && typeof citationData.bbox.left === 'number' && typeof citationData.bbox.top === 'number' &&
           typeof citationData.bbox.width === 'number' && typeof citationData.bbox.height === 'number' && validateBbox(citationData.bbox)) {
-        const highlightPage = citationData.bbox.page || citationData.page || citationData.page_number || 1;
+        const highlightPage = citationData.bbox.page ?? citationData.page ?? citationData.page_number ?? 1;
+        const page = highlightPage >= 1 ? highlightPage : 1;
         highlightData = {
           fileId: docId,
-          bbox: { left: citationData.bbox.left, top: citationData.bbox.top, width: citationData.bbox.width, height: citationData.bbox.height, page: highlightPage },
+          bbox: { left: citationData.bbox.left, top: citationData.bbox.top, width: citationData.bbox.width, height: citationData.bbox.height, page },
           doc_id: docId,
           block_id: citationData.block_id || '',
           block_content: (citationData as any).cited_text || (citationData as any).block_content || '',
@@ -8964,12 +9084,24 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         const highlightSource = priorityList.find((entry) => hasValidBbox(entry.chunk));
         const highlightChunk = highlightSource?.chunk;
         if (highlightChunk?.bbox && validateBbox(highlightChunk.bbox)) {
-          const highlightPage = highlightChunk.bbox.page || highlightChunk.page_number || citationData.page || citationData.page_number || 1;
+          const chunkPage = highlightChunk.bbox.page ?? highlightChunk.page_number ?? citationData.page ?? citationData.page_number ?? 1;
+          const page = chunkPage >= 1 ? chunkPage : 1;
           highlightData = {
             fileId: docId,
-            bbox: { left: highlightChunk.bbox.left, top: highlightChunk.bbox.top, width: highlightChunk.bbox.width, height: highlightChunk.bbox.height, page: highlightPage }
+            bbox: { left: highlightChunk.bbox.left, top: highlightChunk.bbox.top, width: highlightChunk.bbox.width, height: highlightChunk.bbox.height, page }
           };
         }
+      }
+      // Fallback: we have a page but no bbox — show a small top-of-page highlight so the document view scrolls to the right page and shows a visible region
+      if (!highlightData && pageOneBased >= 1) {
+        highlightData = {
+          fileId: docId,
+          bbox: { left: 0.1, top: 0.08, width: 0.25, height: 0.06, page: pageOneBased },
+          doc_id: docId,
+          block_id: citationData.block_id || '',
+          block_content: (citationData as any).cited_text || (citationData as any).block_content || '',
+          original_filename: citationData.original_filename || ''
+        };
       }
       const currentFullscreenMode = isFullscreenModeRef.current;
       const isDocumentPreviewAlreadyOpen = !!expandedCardViewDoc;

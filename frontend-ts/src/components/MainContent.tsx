@@ -4693,7 +4693,7 @@ export const MainContent = ({
         return <div />;
       case 'projects':
         return (
-          <div className="w-full h-full overflow-auto">
+          <div className="w-full h-full overflow-auto" style={{ paddingLeft: 24 }}>
             <ProjectsPage 
               onCreateProject={handleCreateProject}
               onPropertySelect={handleProjectPropertySelect}
@@ -5324,7 +5324,8 @@ export const MainContent = ({
     className={`flex-1 relative ${(currentView === 'search' || currentView === 'home') ? '' : currentView === 'settings' ? 'bg-[#FAF9F6]' : 'bg-white'} ${className || ''}`} 
     style={{ 
       // Overlap 1px when Settings so dashboard background doesn't show through a subpixel gap (no reddish-brown leakage)
-      marginLeft: currentView === 'settings' ? mainContentMarginLeft - 1 : mainContentMarginLeft,
+      // Projects: start at sidebar edge when open (no rail gap); when collapsed use rail-only offset
+      marginLeft: currentView === 'settings' ? mainContentMarginLeft - 1 : currentView === 'projects' ? (isSidebarCollapsed ? mainContentMarginLeft : effectiveSidebarWidth) : mainContentMarginLeft,
       backgroundColor: (currentView === 'search' || currentView === 'home') ? 'transparent' : currentView === 'settings' ? '#FAF9F6' : '#ffffff', 
       position: 'relative', 
       zIndex: isChatHistoryPanelOpen ? 10000 : 1, // Above backdrop (9999) when agent sidebar open so clicking the new-chat bar doesn't close it
@@ -5837,7 +5838,7 @@ export const MainContent = ({
                   : currentView === 'settings'
                     ? 'bg-[#FAF9F6]'
                     : (currentView === 'search' || currentView === 'home') ? '' : 'bg-white'
-      } ${isInChatMode ? 'p-0' : currentView === 'upload' ? 'p-8' : currentView === 'analytics' ? 'p-4' : currentView === 'profile' ? 'p-0' : currentView === 'notifications' ? 'p-0 m-0' : 'p-8 lg:p-16'}`} style={{ 
+      } ${isInChatMode ? 'p-0' : currentView === 'upload' ? 'p-8' : currentView === 'analytics' ? 'p-4' : currentView === 'profile' ? 'p-0' : currentView === 'notifications' ? 'p-0 m-0' : currentView === 'projects' ? 'p-0' : 'p-8 lg:p-16'}`} style={{ 
         backgroundColor: (currentView === 'search' || currentView === 'home') ? 'transparent' : currentView === 'settings' ? '#FAF9F6' : '#ffffff', 
         background: (currentView === 'search' || currentView === 'home') ? 'transparent' : undefined,
         pointerEvents: currentView === 'settings' ? 'auto' : (isMapVisible || externalIsMapVisible) ? 'none' : 'auto', // Settings always receives clicks; otherwise block when map visible
@@ -5903,6 +5904,7 @@ export const MainContent = ({
             : currentView === 'analytics' ? 'h-full overflow-hidden'
             : currentView === 'profile' ? 'h-full w-full'
             : currentView === 'notifications' ? 'h-full w-full'
+            : currentView === 'projects' ? 'h-full w-full'
             : 'max-w-5xl mx-auto'
         } flex-1 flex flex-col`}>
           {/* Always render without animation - the y: 20 animation causes "drop" effect */}

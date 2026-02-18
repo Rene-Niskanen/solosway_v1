@@ -3092,7 +3092,9 @@ def query_documents_stream():
                     finally:
                         chunk_queue.put(None)  # Signal completion
                 
-                # Start async generator in a separate thread only when not using GraphRunner
+                # Start async generator in a separate thread only when not using GraphRunner.
+                # When use_runner is True, thread stays None (GraphRunner feeds queue from main flow).
+                thread = None
                 if not use_runner:
                     thread = threading.Thread(target=run_async_gen, daemon=True)
                     thread.start()
@@ -3112,8 +3114,8 @@ def query_documents_stream():
                         logger.info("🔴 [STREAM] Client disconnected (broken pipe), stopping stream")
                         break
                     except queue.Empty:
-                        # Timeout - check if thread is still alive
-                        if not thread.is_alive():
+                        # Timeout - if we have a worker thread, check if it's still alive
+                        if thread is not None and not thread.is_alive():
                             if error_occurred.is_set():
                                 try:
                                     yield f"data: {json.dumps({'type': 'error', 'message': error_message[0] or 'Unknown error'})}\n\n"
@@ -3122,9 +3124,9 @@ def query_documents_stream():
                             break
                         continue
                     except Exception as queue_err:
-                        # Other queue errors - check thread status
+                        # Other queue errors - if we have a worker thread, check its status
                         logger.warning(f"⚠️ [STREAM] Queue error: {queue_err}")
-                        if not thread.is_alive():
+                        if thread is not None and not thread.is_alive():
                             break
                         continue
                         

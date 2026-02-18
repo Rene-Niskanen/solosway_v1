@@ -731,12 +731,11 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
         className="w-full min-h-full flex flex-col box-border"
         style={{ 
           padding: '24px',
-          maxWidth: '100%',
         }}
       >
         {/* Project Cards Section - hidden when "See All Files" is active */}
         {!showAllFiles && (
-          <div style={{ marginLeft: '24px', marginTop: '24px', width: '100%', maxWidth: '100%', minWidth: 0 }}>
+          <div style={{ marginTop: '24px', width: '100%', maxWidth: '100%', minWidth: 0 }}>
             <div 
               className="grid justify-start w-full"
               style={{ 
@@ -781,7 +780,7 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
                   border: 'none',
                   cursor: 'pointer',
                   backgroundColor: 'rgba(0, 0, 0, 0.04)',
-                  marginLeft: '40px',
+                  marginLeft: 0,
                   pointerEvents: 'auto',
                 }}
               >
@@ -810,7 +809,7 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
             className={showAllFiles ? 'flex-1 flex flex-col min-h-0' : ''}
             style={{
               paddingBottom: showAllFiles ? 0 : '32px',
-              marginLeft: showAllFiles ? 0 : '24px',
+              marginLeft: 0,
               marginTop: showAllFiles ? 8 : 0,
               width: '100%',
               maxWidth: '100%',

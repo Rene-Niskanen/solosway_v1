@@ -194,7 +194,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
 
   // Stable key for the current highlight (doc + page + bbox) so we only apply center-scroll once per citation.
   const getHighlightKey = useCallback(() => {
-    if (!highlight || highlight.fileId !== docId || !highlight.bbox) return null;
+    if (!highlight || String(highlight.fileId) !== String(docId) || !highlight.bbox) return null;
     const b = highlight.bbox;
     return `${docId}:${b.page}:${b.left.toFixed(4)}:${b.top.toFixed(4)}:${b.width.toFixed(4)}:${b.height.toFixed(4)}`;
   }, [highlight, docId]);
@@ -1278,7 +1278,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
   const [initialScrollApplied, setInitialScrollApplied] = useState(false);
 
   const applyScrollToHighlight = useCallback((el: HTMLDivElement) => {
-    if (!highlight || highlight.fileId !== docId || !highlight.bbox) return false;
+    if (!highlight || String(highlight.fileId) !== String(docId) || !highlight.bbox) return false;
     const pageNum = highlight.bbox.page;
     const pageData = renderedPages.get(pageNum);
     if (!pageData) return false;
@@ -1312,7 +1312,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
   }, [highlight, docId, renderedPages]);
 
   React.useLayoutEffect(() => {
-    if (!highlight || highlight.fileId !== docId || !highlight.bbox || !pdfWrapperRef.current) return;
+    if (!highlight || String(highlight.fileId) !== String(docId) || !highlight.bbox || !pdfWrapperRef.current) return;
     const pageNum = highlight.bbox.page;
     const pageData = renderedPages.get(pageNum);
     if (!pageData) return;
@@ -1832,7 +1832,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
                       },
                       style: { display: 'block', width: '100%', height: '100%' }
                     })}
-                    {highlight && highlight.fileId === docId && highlight.bbox.page === pageNum && !isZooming && (() => {
+                    {highlight && String(highlight.fileId) === String(docId) && highlight.bbox.page === pageNum && !isZooming && (() => {
                       // Calculate logo size: fixed height = slightly larger to better match small BBOX highlights (2.0% of page height, minus 1px for bottom alignment)
                       const logoHeight = 0.02 * dimensions.height - 1;
                       // Assume logo is roughly square or slightly wider (adjust aspect ratio as needed)

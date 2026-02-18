@@ -66,8 +66,10 @@ export const UsageAndBillingSection: React.FC = () => {
   const pagesUsed = usage.pages_used ?? 0;
   const monthlyLimit = usage.monthly_limit ?? 0;
   const overAllowance = pagesUsed > monthlyLimit;
-  const displayPercentLabel = overAllowance ? "100%+" : `${(usage.usage_percent ?? 0).toFixed(1)}%`;
-  const barFillRatio = Math.min((usage.usage_percent ?? 0) / 100, 1);
+  const usagePercent = usage.usage_percent ?? 0;
+  const formattedPercent = usagePercent === 0 ? "0%" : `${usagePercent.toFixed(1)}%`;
+  const displayPercentLabel = overAllowance ? "100%+" : formattedPercent;
+  const barFillRatio = Math.min(usagePercent / 100, 1);
   const usageSectionTitle = usage.billing_cycle_end ? "Usage this period" : "Usage this month";
   const periodEndFormatted = usage.billing_cycle_end
     ? new Date(usage.billing_cycle_end + "T12:00:00Z").toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })
@@ -157,7 +159,7 @@ export const UsageAndBillingSection: React.FC = () => {
         <p className="text-[13px] text-gray-600 mt-2">
           {overAllowance
             ? `0 pages remaining · Over allowance for this period${periodEndFormatted ? ` until ${periodEndFormatted}` : ""}`
-            : `${(usage.remaining ?? monthlyLimit).toLocaleString()} pages remaining · ${(usage.usage_percent ?? 0).toFixed(1)}% of monthly allowance used`}
+            : `${(usage.remaining ?? monthlyLimit).toLocaleString()} pages remaining · ${formattedPercent} of monthly allowance used`}
         </p>
       </div>
     </div>
