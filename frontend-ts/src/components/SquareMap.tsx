@@ -4736,6 +4736,11 @@ export const SquareMap = React.forwardRef<SquareMapRef, SquareMapProps>(({
             (message.includes('evaluated to null') || message.includes('was expected to be of type number'))) {
           return; // Suppress this specific harmless warning
         }
+        // Filter out Framer Motion AnimatePresence "multiple children" + mode "wait" warning
+        // Occurs with nested AnimatePresence in the app; harmless and would require broader refactor to fix
+        if (message.includes('multiple children') && message.includes('AnimatePresence') && message.includes('mode') && message.includes('wait')) {
+          return;
+        }
         originalConsoleWarn.apply(console, args);
       };
       console.warn = suppressMapboxLayerWarnings;

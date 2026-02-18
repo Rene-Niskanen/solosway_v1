@@ -5,7 +5,7 @@ import { useMemo } from "react";
 import { createPortal, flushSync } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { generateAnimatePresenceKey, generateConditionalKey, generateUniqueKey } from '../utils/keyGenerator';
-import { ChevronLeft, ChevronRight, ChevronDown, ChevronUp, ArrowUp, Paperclip, Mic, Map, Globe, X, SquareDashedMousePointer, Scan, Fullscreen, PanelLeftOpen, PanelRightClose, PictureInPicture2, Trash2, CreditCard, MoveDiagonal, Square, Files, Image as ImageIcon, File as FileIcon, FileCheck, Minimize, Minimize2, Workflow, Home, Brain, AudioLines, MessageCircleDashed, Copy, Search, MessageSquare, Pencil, Check, Highlighter, SlidersHorizontal, BookOpen, Download, ThumbsUp, ThumbsDown, Link2, Star, FolderPlus } from "lucide-react";
+import { ChevronLeft, ChevronRight, ChevronDown, ChevronUp, ArrowUp, Paperclip, Mic, Map, Globe, X, SquareDashedMousePointer, Scan, Fullscreen, PanelLeftOpen, PanelRightClose, PictureInPicture2, Trash2, CreditCard, MoveDiagonal, Square, Files, Image as ImageIcon, File as FileIcon, FileCheck, Minimize, Minimize2, Workflow, Home, Brain, AudioLines, MessageCircle, MessageCircleDashed, Copy, Search, MessageSquare, Pencil, Check, Highlighter, SlidersHorizontal, BookOpen, Download, ThumbsUp, ThumbsDown, Link2, Star, FolderPlus, FileSearchCorner } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { FileAttachment, FileAttachmentData } from './FileAttachment';
 import { PropertyAttachmentData } from './PropertyAttachment';
@@ -53,7 +53,7 @@ import { getFilteredAtMentionItems, preloadAtMentionCache } from '@/services/atM
 import { SegmentInput, type SegmentInputHandle } from './SegmentInput';
 import { useSegmentInput, buildInitialSegments } from '@/hooks/useSegmentInput';
 import { isTextSegment, isChipSegment, contentSegmentsToLinkedQuery, segmentsToLinkedQuery, type QueryContentSegment, type ChipSegment } from '@/types/segmentInput';
-import { CitationClickPanel } from './CitationClickPanel';
+import { CitationClickPanel, computeCitationPreviewTransform, CitationPagePreviewContent, type CachedPageImage } from './CitationClickPanel';
 import { useCitationExportOptional } from '../contexts/CitationExportContext';
 import { useFeedbackModal } from '../contexts/FeedbackModalContext';
 import { cropPageImageToBbox, buildDocxMarkdownWithCitationImages } from '../utils/citationExport';
@@ -539,11 +539,12 @@ const extractMarkdownBlocks = (combined: string): { completeBlocks: string[], re
     const isHeading = line.match(/^##+\s+.+$/);
     const endsWithPunctuation = line.match(/[.!?;:]\s*$/);
     const isBlankLine = line.trim() === '';
-    const isLongEnough = line.trim().length > 50 && line.match(/\s/);
+    const isLongEnough = line.trim().length > 24 && line.match(/\s/);
+    const isMediumLine = line.trim().length >= 16; // Emit sooner for medium lines so streaming feels responsive
     
     // Determine if we should try to emit this block
     // CRITICAL: Only emit if at word boundary to prevent mid-word splits
-    const shouldTryEmit = endsAtWordBoundary && (!isLastLine || isHeading || endsWithPunctuation || isBlankLine || isLongEnough);
+    const shouldTryEmit = endsAtWordBoundary && (!isLastLine || isHeading || endsWithPunctuation || isBlankLine || isLongEnough || isMediumLine);
     
     if (shouldTryEmit) {
       // Check if current block has incomplete markdown
@@ -687,7 +688,13 @@ const StreamingResponseText: React.FC<{
   onRevealComplete?: (messageId: string) => void;
   /** Citation numbers (e.g. "1", "2") that have been saved for docx export for this message – those links render greyer. */
   savedCitationNumbersForMessage?: Set<string>;
-}> = ({ text, isStreaming, citations, handleCitationClick, renderTextWithCitations, onTextUpdate, messageId, skipHighlight, showCitations = true, orangeCitationNumbers, selectedCitationNumber, selectedCitationMessageId, skipHighlightSwoop = false, skipRevealAnimation = false, onRevealComplete, savedCitationNumbersForMessage }) => {
+  /** Called when user clicks "Ask follow up" on a citation callout preview. */
+  onAskFollowUpFromCallout?: (messageId: string, citationNumber: string, citationData: any) => void;
+  /** Called when user clicks "View in document" on a citation callout preview. */
+  onViewInDocumentFromCallout?: (citationData: any) => void;
+  /** When hovering a paragraph that has citations, show that citation in the persistent preview below the response. */
+  onParagraphWithCitationsHover?: (citationData: any, citationNumber: string) => void;
+}> = ({ text, isStreaming, citations, handleCitationClick, renderTextWithCitations, onTextUpdate, messageId, skipHighlight, showCitations = true, orangeCitationNumbers, selectedCitationNumber, selectedCitationMessageId, skipHighlightSwoop = false, skipRevealAnimation = false, onRevealComplete, savedCitationNumbersForMessage, onAskFollowUpFromCallout, onViewInDocumentFromCallout, onParagraphWithCitationsHover }) => {
   const [shouldAnimate, setShouldAnimate] = React.useState(false);
   const hasAnimatedRef = React.useRef(false);
   const hasSwoopedBlueRef = React.useRef(false);
@@ -722,9 +729,33 @@ const StreamingResponseText: React.FC<{
   handleCitationClickRef.current = handleCitationClick;
   savedCitationNumbersForMessageRef.current = savedCitationNumbersForMessage;
 
+  // Show excerpt text (the "writing for which piece it links to") only once per citation; subsequent uses show only the callout card.
+  const excerptShownForCitationsRef = React.useRef(new Set<string>());
+  const prevMessageIdForExcerptRef = React.useRef<string | undefined>(undefined);
+  if (prevMessageIdForExcerptRef.current !== messageId) {
+    excerptShownForCitationsRef.current.clear();
+    prevMessageIdForExcerptRef.current = messageId;
+  }
+
   React.useEffect(() => {
     streamingRef.current = !!(text && text.length > prevTextLenRef.current) || !!isStreaming;
   }, [text, isStreaming]);
+
+  // Preload citation preview images as soon as we have citations so callouts snap in when ready (no loading state)
+  React.useEffect(() => {
+    if (!citations) return;
+    for (const num of Object.keys(citations)) {
+      const c = citations[num];
+      const docId = c?.doc_id ?? (c as { document_id?: string })?.document_id;
+      const pageNum = c?.page ?? c?.bbox?.page ?? (c as { page_number?: number })?.page_number ?? 1;
+      const filename = ((c?.original_filename ?? '') as string).toLowerCase();
+      const isWord = filename.endsWith('.docx') || filename.endsWith('.doc');
+      const hasBbox = c?.bbox && typeof c.bbox.left === 'number' && typeof c.bbox.top === 'number' && typeof c.bbox.width === 'number' && typeof c.bbox.height === 'number';
+      if (docId && hasBbox && !isWord) {
+        preloadHoverPreview(docId, pageNum).catch(() => {});
+      }
+    }
+  }, [citations]);
 
   // When showing restored/persisted messages (re-entered chat), skip all reveal animation and show full text at once.
   React.useEffect(() => {
@@ -938,13 +969,32 @@ const StreamingResponseText: React.FC<{
 
       const rects = lineRectsRef.current;
       const overlayCount = overlayCountRef.current;
+      const topPadding = 4;
       if (rects.length > 0 && overlayCount > 0) {
-        const topPadding = 4;
         const currentLineIdx = Math.min(Math.floor(pos), rects.length - 1, overlayCount - 1);
         const rect = rects[currentLineIdx];
         const revealedBottom = rect.top + rect.height;
         wrapper.style.height = `${topPadding + Math.ceil(revealedBottom)}px`;
         wrapper.style.overflow = 'hidden';
+        // Which citation placeholders are inside the revealed region? Only show their callouts.
+        const container = textContainerRef.current;
+        if (container) {
+          const containerRect = container.getBoundingClientRect();
+          const revealedThreshold = revealedBottom + topPadding;
+          const nextRevealed = new Set<string>();
+          container.querySelectorAll('[data-citation-number]').forEach((el) => {
+            const num = (el as HTMLElement).getAttribute('data-citation-number');
+            if (!num) return;
+            const elRect = el.getBoundingClientRect();
+            const elTopInContainer = elRect.top - containerRect.top;
+            if (elTopInContainer < revealedThreshold) nextRevealed.add(num);
+          });
+          const prevSet = prevRevealedCitationNumbersRef.current;
+          if (nextRevealed.size !== prevSet.size || [...nextRevealed].some((x) => !prevSet.has(x))) {
+            prevRevealedCitationNumbersRef.current = nextRevealed;
+            setRevealedCitationNumbers(nextRevealed);
+          }
+        }
       }
 
       if (streamingRef.current || pos < target - 0.001) {
@@ -962,6 +1012,12 @@ const StreamingResponseText: React.FC<{
         wrapper.style.height = '';
         wrapper.style.overflow = '';
         for (let i = 0; i < n; i++) wrapper.style.removeProperty(`--line-${i}`);
+        // Show all citation callouts now that reveal is complete
+        const allCits = allCitationNumbersInTextRef.current;
+        if (allCits.size > 0) {
+          prevRevealedCitationNumbersRef.current = allCits;
+          setRevealedCitationNumbers(new Set(allCits));
+        }
         const mid = messageId;
         if (mid) onRevealCompleteRef.current?.(mid);
       }
@@ -1129,7 +1185,22 @@ const StreamingResponseText: React.FC<{
     const prepared = prepareResponseTextForDisplay(textWithTagsStripped);
     return processCitationsBeforeMarkdown(prepared);
   }, [textWithTagsStripped, citations, showCitations]);
-  
+
+  // Citation numbers that appear in the current text (for "show all callouts" when reveal is skipped/done)
+  const allCitationNumbersInText = React.useMemo(() => {
+    const re = /%%CITATION_(?:SUPERSCRIPT|BRACKET|PENDING)_(\d+)%%/g;
+    const set = new Set<string>();
+    let m;
+    while ((m = re.exec(textWithCitationPlaceholders)) !== null) set.add(m[1]!);
+    return set;
+  }, [textWithCitationPlaceholders]);
+
+  // During line-by-line reveal, only show CitationCallout for citations that have been "revealed" (placeholder passed by reveal)
+  const [revealedCitationNumbers, setRevealedCitationNumbers] = React.useState<Set<string>>(() => new Set());
+  const prevRevealedCitationNumbersRef = React.useRef<Set<string>>(new Set());
+  const allCitationNumbersInTextRef = React.useRef<Set<string>>(new Set());
+  allCitationNumbersInTextRef.current = allCitationNumbersInText;
+
   // Stable selector that reads from refs so markdownComponents identity doesn't change when only selection changes (avoids CitationLink remount → flash)
   const isCitationSelectedStable = React.useCallback((num: string) =>
     selectedCitationNumberRef.current != null && selectedCitationMessageIdRef.current != null &&
@@ -1186,13 +1257,21 @@ const StreamingResponseText: React.FC<{
       const num = superscriptMatch[1];
       const citData = citations?.[num];
       if (citData) {
-        return <CitationLink key={key} citationNumber={num} citationData={citData} onClick={onClick} isSelected={isCitationSelectedStable(num)} isSaved={isSavedNum(num)} />;
+        return (
+          <span key={key} data-citation-number={num} style={{ display: 'inline-flex', verticalAlign: 'middle' }}>
+            <CitationLink citationNumber={num} citationData={citData} onClick={onClick} isSelected={isCitationSelectedStable(num)} isSaved={isSavedNum(num)} />
+          </span>
+        );
       }
     } else if (bracketMatch) {
       const num = bracketMatch[1];
       const citData = citations?.[num];
       if (citData) {
-        return <CitationLink key={key} citationNumber={num} citationData={citData} onClick={onClick} isSelected={isCitationSelectedStable(num)} isSaved={isSavedNum(num)} />;
+        return (
+          <span key={key} data-citation-number={num} style={{ display: 'inline-flex', verticalAlign: 'middle' }}>
+            <CitationLink citationNumber={num} citationData={citData} onClick={onClick} isSelected={isCitationSelectedStable(num)} isSaved={isSavedNum(num)} />
+          </span>
+        );
       }
     }
     return placeholder;
@@ -1355,29 +1434,68 @@ const StreamingResponseText: React.FC<{
     return nums;
   };
 
+  // Plain text of a block for comparison (strips citation placeholders and [id: N](...) refs, normalizes whitespace). Used to hide duplicate excerpt lines.
+  const getBlockPlainTextForComparison = (nodes: React.ReactNode): string => {
+    const segments = flattenSegments(nodes);
+    const parts: string[] = [];
+    const refPattern = /\[id:\s*\d+\]\([^)]*\)/g; // full ref e.g. [id: 12](block_cite_id_34)
+    const incompleteRefPattern = /\[id:\s*\d+\]\([^)]*$/g; // incomplete ref e.g. [id: 12](blockciteid with no closing paren
+    for (const seg of segments) {
+      if (typeof seg === 'string' && !seg.startsWith('%%CITATION_')) {
+        parts.push(seg.replace(refPattern, '').replace(incompleteRefPattern, ''));
+      }
+    }
+    return parts.join('').replace(/\s+/g, ' ').trim();
+  };
+
+  // Normalize for excerpt comparison: collapse spaces and optional commas so "to the bank secrecy act , ," can match excerpt tail.
+  const normalizeForExcerptMatch = (s: string): string =>
+    s.replace(/\s+/g, ' ').replace(/\s*,\s*/g, ' ').replace(/,+/g, ' ').trim();
+
   // Markdown components: memoized so identity is stable when only citation selection/saved changes (prevents CitationLink remount → flash)
   const markdownComponents = React.useMemo(() => ({
     p: ({ children }: { children?: React.ReactNode }) => {
       const citationNumbers = collectCitationNumbersInOrder(children ?? null);
-      return (
+      const blockText = getBlockPlainTextForComparison(children ?? null);
+      const isOnlyCitationExcerpt = citations && blockText.length > 0 && citationNumbers.length > 0 && citationNumbers.some((num) => {
+        const c = citations[num];
+        let excerpt = (c?.cited_text ?? c?.block_content ?? '').replace(/\[id:\s*\d+\]\([^)]*\)/g, '').replace(/\[id:\s*\d+\]\([^)]*$/g, '').replace(/\s+/g, ' ').trim();
+        if (excerpt.length === 0) return false;
+        const blockNorm = normalizeForExcerptMatch(blockText);
+        const excerptNorm = normalizeForExcerptMatch(excerpt);
+        if (blockNorm.length === 0) return true;
+        return blockNorm === excerptNorm || excerptNorm.includes(blockNorm) || blockNorm.includes(excerptNorm);
+      });
+      const shouldShowExcerptThisTime = isOnlyCitationExcerpt && citationNumbers.some((num) => !excerptShownForCitationsRef.current.has(num));
+      if (shouldShowExcerptThisTime) {
+        citationNumbers.forEach((num) => excerptShownForCitationsRef.current.add(num));
+      }
+      const firstNum = citationNumbers[0];
+      const content = (
         <>
-          <p style={{
-            margin: '0 0 17.5px 0',
-            textAlign: 'left',
-            lineHeight: '1.7',
-            wordWrap: 'break-word',
-            overflowWrap: 'break-word',
-            wordBreak: 'break-word'
-          }}>{processChildrenWithCitationsFlattened(children ?? null, 'p')}</p>
-          {citationNumbers.map((num, i) => (
-            <CitationCallout key={`callout-p-${i}-${num}`} citationNumber={num} citation={citations?.[num]} />
+          {(!isOnlyCitationExcerpt || shouldShowExcerptThisTime) && (
+            <p style={{
+              margin: '0 0 17.5px 0',
+              textAlign: 'left',
+              lineHeight: '1.7',
+              wordWrap: 'break-word',
+              overflowWrap: 'break-word',
+              wordBreak: 'break-word'
+            }}>{processChildrenWithCitationsFlattened(children ?? null, 'p')}</p>
+          )}
+          {citationNumbers.filter((num) => revealedCitationNumbers.has(num)).map((num, i) => (
+            <CitationCallout key={`callout-p-${i}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num]) : undefined} />
           ))}
         </>
       );
+      return onParagraphWithCitationsHover && firstNum && citations?.[firstNum] ? (
+        <span style={{ display: 'contents' }} onMouseEnter={() => onParagraphWithCitationsHover(citations[firstNum], firstNum)}>{content}</span>
+      ) : content;
     },
     h1: ({ children }: { children?: React.ReactNode }) => {
       const citationNumbers = collectCitationNumbersInOrder(children ?? null);
-      return (
+      const firstNum = citationNumbers[0];
+      const content = (
         <>
           <h1 style={{
             fontSize: '22px',
@@ -1388,15 +1506,19 @@ const StreamingResponseText: React.FC<{
             overflowWrap: 'break-word',
             wordBreak: 'break-word'
           }}>{processChildrenWithCitationsFlattened(children ?? null, 'h1')}</h1>
-          {citationNumbers.map((num, i) => (
-            <CitationCallout key={`callout-h1-${i}-${num}`} citationNumber={num} citation={citations?.[num]} />
+          {citationNumbers.filter((num) => revealedCitationNumbers.has(num)).map((num, i) => (
+            <CitationCallout key={`callout-h1-${i}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num]) : undefined} />
           ))}
         </>
       );
+      return onParagraphWithCitationsHover && firstNum && citations?.[firstNum] ? (
+        <span style={{ display: 'contents' }} onMouseEnter={() => onParagraphWithCitationsHover(citations[firstNum], firstNum)}>{content}</span>
+      ) : content;
     },
     h2: ({ children }: { children?: React.ReactNode }) => {
       const citationNumbers = collectCitationNumbersInOrder(children ?? null);
-      return (
+      const firstNum = citationNumbers[0];
+      const content = (
         <>
           <h2 style={{
             fontSize: '19px',
@@ -1407,15 +1529,19 @@ const StreamingResponseText: React.FC<{
             overflowWrap: 'break-word',
             wordBreak: 'break-word'
           }}>{processChildrenWithCitationsFlattened(children ?? null, 'h2')}</h2>
-          {citationNumbers.map((num, i) => (
-            <CitationCallout key={`callout-h2-${i}-${num}`} citationNumber={num} citation={citations?.[num]} />
+          {citationNumbers.filter((num) => revealedCitationNumbers.has(num)).map((num, i) => (
+            <CitationCallout key={`callout-h2-${i}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num]) : undefined} />
           ))}
         </>
       );
+      return onParagraphWithCitationsHover && firstNum && citations?.[firstNum] ? (
+        <span style={{ display: 'contents' }} onMouseEnter={() => onParagraphWithCitationsHover(citations[firstNum], firstNum)}>{content}</span>
+      ) : content;
     },
     h3: ({ children }: { children?: React.ReactNode }) => {
       const citationNumbers = collectCitationNumbersInOrder(children ?? null);
-      return (
+      const firstNum = citationNumbers[0];
+      const content = (
         <>
           <h3 style={{
             fontSize: '16px',
@@ -1426,11 +1552,14 @@ const StreamingResponseText: React.FC<{
             overflowWrap: 'break-word',
             wordBreak: 'break-word'
           }}>{processChildrenWithCitationsFlattened(children ?? null, 'h3')}</h3>
-          {citationNumbers.map((num, i) => (
-            <CitationCallout key={`callout-h3-${i}-${num}`} citationNumber={num} citation={citations?.[num]} />
+          {citationNumbers.filter((num) => revealedCitationNumbers.has(num)).map((num, i) => (
+            <CitationCallout key={`callout-h3-${i}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num]) : undefined} />
           ))}
         </>
       );
+      return onParagraphWithCitationsHover && firstNum && citations?.[firstNum] ? (
+        <span style={{ display: 'contents' }} onMouseEnter={() => onParagraphWithCitationsHover(citations[firstNum], firstNum)}>{content}</span>
+      ) : content;
     },
     ul: ({ children }: { children?: React.ReactNode }) => <ul style={{ 
       margin: '8.8px 0 4.4px 0', 
@@ -1451,7 +1580,8 @@ const StreamingResponseText: React.FC<{
     }}>{children}</ol>,
     li: ({ children }: { children?: React.ReactNode }) => {
       const citationNumbers = collectCitationNumbersInOrder(children ?? null);
-      return (
+      const firstNum = citationNumbers[0];
+      const content = (
         <li style={{
           margin: '4.4px 0 4.4px 0',
           lineHeight: '1.7',
@@ -1461,11 +1591,14 @@ const StreamingResponseText: React.FC<{
           wordBreak: 'break-word'
         }}>
           {processChildrenWithCitationsFlattened(children ?? null, 'li')}
-          {citationNumbers.map((num, i) => (
-            <CitationCallout key={`callout-li-${i}-${num}`} citationNumber={num} citation={citations?.[num]} />
+          {citationNumbers.filter((num) => revealedCitationNumbers.has(num)).map((num, i) => (
+            <CitationCallout key={`callout-li-${i}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num]) : undefined} />
           ))}
         </li>
       );
+      return onParagraphWithCitationsHover && firstNum && citations?.[firstNum] ? (
+        <span style={{ display: 'contents' }} onMouseEnter={() => onParagraphWithCitationsHover(citations[firstNum], firstNum)}>{content}</span>
+      ) : content;
     },
     strong: ({ children }: { children?: React.ReactNode }) => {
       const boldContent = (
@@ -1499,7 +1632,8 @@ const StreamingResponseText: React.FC<{
     }}>{children}</code>,
     blockquote: ({ children }: { children?: React.ReactNode }) => {
       const citationNumbers = collectCitationNumbersInOrder(children ?? null);
-      return (
+      const firstNum = citationNumbers[0];
+      const content = (
         <>
           <blockquote style={{
             borderLeft: '3px solid #d1d5db',
@@ -1510,14 +1644,17 @@ const StreamingResponseText: React.FC<{
             overflowWrap: 'break-word',
             wordBreak: 'break-word'
           }}>{processChildrenWithCitationsFlattened(children ?? null, 'blockquote')}</blockquote>
-          {citationNumbers.map((num, i) => (
-            <CitationCallout key={`callout-blockquote-${i}-${num}`} citationNumber={num} citation={citations?.[num]} />
+          {citationNumbers.filter((num) => revealedCitationNumbers.has(num)).map((num, i) => (
+            <CitationCallout key={`callout-blockquote-${i}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num]) : undefined} />
           ))}
         </>
       );
+      return onParagraphWithCitationsHover && firstNum && citations?.[firstNum] ? (
+        <span style={{ display: 'contents' }} onMouseEnter={() => onParagraphWithCitationsHover(citations[firstNum], firstNum)}>{content}</span>
+      ) : content;
     },
     hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '17.5px 0' }} />,
-  }), [renderCitationPlaceholder, skipHighlight, runBlueSwoop, isStreaming, citations]);
+  }), [renderCitationPlaceholder, skipHighlight, runBlueSwoop, isStreaming, citations, onAskFollowUpFromCallout, onViewInDocumentFromCallout, messageId, revealedCitationNumbers, onParagraphWithCitationsHover]);
 
   return (
     <>
@@ -1571,6 +1708,9 @@ const StreamingResponseText: React.FC<{
         .streaming-response-text li {
           margin-top: 4.4px !important;
           margin-bottom: 4.4px !important;
+        }
+        .citation-callout-preview-scroll::-webkit-scrollbar {
+          display: none;
         }
       `}</style>
       <div ref={wrapperRef} style={{ position: 'relative' }}>
@@ -2058,18 +2198,110 @@ function sanitizeCitationCalloutText(raw: string): string {
   return out;
 }
 
-/** Inline citation callout: gray box with cited excerpt, full width of response paragraph. Renders for every citation; shows fallback when no excerpt. */
+/** Inline citation callout: gray box with cited excerpt and optional document preview (same as citation panel). */
 const CitationCallout: React.FC<{
   citationNumber: string;
-  citation: { cited_text?: string; block_content?: string } | undefined;
-}> = ({ citationNumber, citation }) => {
+  citation: {
+    cited_text?: string;
+    block_content?: string;
+    doc_id?: string;
+    document_id?: string;
+    bbox?: { left: number; top: number; width: number; height: number; page?: number };
+    page?: number;
+    page_number?: number;
+    original_filename?: string | null;
+    classification_type?: string;
+  } | undefined;
+  onAskFollowUp?: () => void;
+  onViewInDocument?: () => void;
+}> = ({ citationNumber, citation, onAskFollowUp, onViewInDocument }) => {
   const raw = (citation?.cited_text ?? citation?.block_content ?? '').trim();
   const text = raw ? sanitizeCitationCalloutText(raw) : '';
   const displayText = text || 'View in document for full source.';
+
+  const docId = citation?.doc_id ?? (citation as { document_id?: string })?.document_id;
+  const pageNum = citation?.page ?? citation?.bbox?.page ?? (citation as { page_number?: number })?.page_number ?? 1;
+  const bbox = citation?.bbox;
+  const hasBbox = bbox && typeof bbox.left === 'number' && typeof bbox.top === 'number' && typeof bbox.width === 'number' && typeof bbox.height === 'number';
+  const filename = (citation?.original_filename ?? '').toLowerCase();
+  const isWordDoc = filename.endsWith('.docx') || filename.endsWith('.doc');
+  const canShowPreview = docId && hasBbox && !isWordDoc;
+
+  const [cachedPageImage, setCachedPageImage] = React.useState<CachedPageImage | null>(null);
+  const previewContainerRef = React.useRef<HTMLDivElement>(null);
+  const [previewSize, setPreviewSize] = React.useState({ width: 400, height: 180 });
+
+  React.useLayoutEffect(() => {
+    const el = previewContainerRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => {
+      setPreviewSize({ width: el.offsetWidth, height: el.offsetHeight });
+    });
+    ro.observe(el);
+    setPreviewSize({ width: el.offsetWidth, height: el.offsetHeight });
+    return () => ro.disconnect();
+  }, []);
+
+  React.useEffect(() => {
+    if (!canShowPreview) {
+      setCachedPageImage(null);
+      return;
+    }
+    const cacheKey = `hover-${docId}-${pageNum}`;
+    const cached = hoverPreviewCache.get(cacheKey);
+    if (cached) {
+      setCachedPageImage({ pageImage: cached.pageImage, imageWidth: cached.imageWidth, imageHeight: cached.imageHeight });
+      return;
+    }
+    let cancelled = false;
+    preloadHoverPreview(docId!, pageNum).then((entry) => {
+      if (cancelled || !entry) return;
+      setCachedPageImage({ pageImage: entry.pageImage, imageWidth: entry.imageWidth, imageHeight: entry.imageHeight });
+    });
+    return () => { cancelled = true; };
+  }, [canShowPreview, docId, pageNum]);
+
+  const transform = React.useMemo(() => {
+    if (!cachedPageImage || !hasBbox || !bbox) {
+      return {
+        safeZoom: 1,
+        safeTranslateX: 0,
+        safeTranslateY: 0,
+        finalBboxLeft: 0,
+        finalBboxTop: 0,
+        finalBboxWidth: 0,
+        finalBboxHeight: 0,
+      };
+    }
+    return computeCitationPreviewTransform(
+      bbox,
+      cachedPageImage.imageWidth,
+      cachedPageImage.imageHeight,
+      previewSize.width,
+      previewSize.height
+    );
+  }, [cachedPageImage, hasBbox, bbox, previewSize.width, previewSize.height]);
+
+  const showPreviewOnly = canShowPreview && cachedPageImage;
+  const displayFilename = citation?.original_filename ?? 'Document';
+  const docTypeLabel = citation?.classification_type != null
+    ? String(citation.classification_type).replace(/_/g, ' ')
+    : 'PDF Document';
+  const displayDocType = docTypeLabel === 'Document' ? 'PDF Document' : docTypeLabel;
+
+  const handleWheel = React.useCallback((e: React.WheelEvent) => {
+    const scrollEl = (e.currentTarget as HTMLElement).closest?.('.sidechat-scroll') as HTMLElement | null;
+    if (scrollEl && scrollEl.scrollHeight > scrollEl.clientHeight) {
+      scrollEl.scrollTop += e.deltaY;
+      e.preventDefault();
+    }
+  }, []);
+
   return (
     <div
       role="region"
       aria-label={`Citation ${citationNumber} excerpt`}
+      onWheel={handleWheel}
       style={{
         display: 'block',
         width: '100%',
@@ -2077,8 +2309,8 @@ const CitationCallout: React.FC<{
         marginTop: '8.8px',
         marginBottom: '17.5px',
         padding: '13.1px 15.2px',
-        backgroundColor: '#f3f4f6',
-        border: '1px solid #e5e7eb',
+        backgroundColor: 'transparent',
+        border: 'none',
         borderRadius: '8px',
         fontSize: '15.2px',
         lineHeight: '1.7',
@@ -2087,9 +2319,208 @@ const CitationCallout: React.FC<{
         wordWrap: 'break-word',
         overflowWrap: 'break-word',
         whiteSpace: 'pre-wrap',
+        overflow: 'hidden',
       }}
     >
-      {displayText}
+      {canShowPreview && cachedPageImage && (
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            borderRadius: 12,
+            overflow: 'hidden',
+            border: '1px solid #e5e7eb',
+            boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
+            marginTop: 0,
+          }}
+        >
+          {/* Block 1 – Preview only (rendered when image is ready) */}
+          <div
+            ref={previewContainerRef}
+            style={{
+              width: '100%',
+              height: 180,
+              minHeight: 180,
+              position: 'relative',
+              overflow: 'hidden',
+              backgroundColor: '#f9fafb',
+            }}
+          >
+            <CitationPagePreviewContent
+              cachedPageImage={cachedPageImage}
+              transform={transform}
+              showBbox={true}
+              className="citation-callout-preview-scroll"
+              disableScroll
+            />
+          </div>
+          {/* Single row: document info (left) + action buttons (right) */}
+          <div
+            style={{
+              flexShrink: 0,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 12,
+              padding: '8px 12px',
+              minHeight: 40,
+              backgroundColor: '#FFFFFF',
+              borderTop: '1px solid #e5e7eb',
+            }}
+          >
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                minWidth: 0,
+                flex: 1,
+              }}
+            >
+              <div
+                style={{
+                  width: 24,
+                  height: 24,
+                  borderRadius: 6,
+                  backgroundColor: '#FFFFFF',
+                  border: '1px solid rgba(0,0,0,0.08)',
+                  boxShadow: '0 1px 2px rgba(0,0,0,0.06)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  flexShrink: 0,
+                  overflow: 'hidden',
+                }}
+              >
+                <img
+                  src="/PDF.png"
+                  alt=""
+                  style={{ width: 14, height: 14, objectFit: 'contain' }}
+                />
+              </div>
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div
+                  style={{
+                    fontWeight: 600,
+                    fontSize: '12px',
+                    color: '#1f2937',
+                    lineHeight: 1.25,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {displayFilename}
+                </div>
+                <div
+                  style={{
+                    fontSize: '11px',
+                    color: '#6b7280',
+                    marginTop: 0,
+                  }}
+                >
+                  {displayDocType} · Page {pageNum}
+                </div>
+              </div>
+              <ChevronDown style={{ width: 12, height: 12, color: '#9ca3af', flexShrink: 0 }} aria-hidden />
+            </div>
+            {(onAskFollowUp || onViewInDocument) && (
+              <div
+                role="group"
+                aria-label="Citation actions"
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  flexShrink: 0,
+                }}
+              >
+                {onViewInDocument && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      (e.currentTarget as HTMLElement).blur();
+                      onViewInDocument();
+                    }}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '4px',
+                      padding: '4px 8px',
+                      fontSize: '11px',
+                      fontWeight: 400,
+                      color: '#374151',
+                      backgroundColor: '#FFFFFF',
+                      border: '1px solid #d1d5db',
+                      borderRadius: 6,
+                      cursor: 'pointer',
+                      transition: 'background-color 0.15s ease, box-shadow 0.15s ease',
+                      boxShadow: '0 1px 2px rgba(0,0,0,0.05)',
+                      outline: 'none',
+                    }}
+                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#f9fafb'; }}
+                    onMouseLeave={(e) => {
+                      const el = e.currentTarget as HTMLElement;
+                      el.style.backgroundColor = '#FFFFFF';
+                      el.style.boxShadow = '0 1px 2px rgba(0,0,0,0.05)';
+                    }}
+                    onFocus={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = '0 1px 2px rgba(0,0,0,0.05), 0 0 0 2px #0160B2'; }}
+                    onBlur={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = '0 1px 2px rgba(0,0,0,0.05)'; }}
+                  >
+                    <FileSearchCorner size={12} />
+                    View in document
+                  </button>
+                )}
+                {onAskFollowUp && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      (e.currentTarget as HTMLElement).blur();
+                      onAskFollowUp();
+                    }}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '4px',
+                      padding: '4px 8px',
+                      fontSize: '11px',
+                      fontWeight: 400,
+                      color: '#FDFEFF',
+                      backgroundColor: '#0160B2',
+                      border: 'none',
+                      borderRadius: 6,
+                      cursor: 'pointer',
+                      transition: 'background-color 0.15s ease, box-shadow 0.15s ease',
+                      boxShadow: '0 1px 2px rgba(0,0,0,0.08)',
+                      outline: 'none',
+                    }}
+                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#014d8c'; }}
+                    onMouseLeave={(e) => {
+                      const el = e.currentTarget as HTMLElement;
+                      el.style.backgroundColor = '#0160B2';
+                      el.style.boxShadow = '0 1px 2px rgba(0,0,0,0.08)';
+                    }}
+                    onFocus={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = '0 1px 2px rgba(0,0,0,0.08), 0 0 0 2px #0160B2'; }}
+                    onBlur={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = '0 1px 2px rgba(0,0,0,0.08)'; }}
+                  >
+                    <MessageCircle style={{ width: 12, height: 12 }} strokeWidth={2} />
+                    Ask Question
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+      {docId && isWordDoc && !showPreviewOnly && (
+        <div style={{ marginTop: '8px', fontSize: '13px', color: '#6b7280' }}>
+          Preview not available for Word documents. Use &quot;View in document&quot; to open the file.
+        </div>
+      )}
     </div>
   );
 };
@@ -5226,6 +5657,33 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   React.useEffect(() => {
     chatMessagesRef.current = chatMessages;
   }, [chatMessages]);
+  // Default citation for persistent preview (first citation in first message with citations); used when no paragraph is hovered.
+  const defaultCitation = React.useMemo(() => {
+    for (const m of chatMessages) {
+      if (m.type !== 'response') continue;
+      const cits = m.citations;
+      if (!cits || Object.keys(cits).length === 0) continue;
+      const nums = Object.keys(cits).sort((a, b) => Number(a) - Number(b));
+      const num = nums[0];
+      const citationData = cits[num];
+      if (!citationData) continue;
+      return { citationData: citationData as CitationData, messageId: m.id ?? '', citationNumber: num };
+    }
+    return null;
+  }, [chatMessages]);
+  const effectivePersistentCitation = persistentCitationPreview ?? defaultCitation;
+  React.useLayoutEffect(() => {
+    if (!effectivePersistentCitation || !persistentPreviewAnchorRef.current) {
+      setPersistentPreviewAnchorRect(null);
+      return;
+    }
+    const el = persistentPreviewAnchorRef.current;
+    const update = () => setPersistentPreviewAnchorRect(el.getBoundingClientRect());
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [effectivePersistentCitation]);
   const lastResponseForDownload = React.useMemo(() => {
     const responses = chatMessages.filter((m) => m.type === 'response' && m.text?.trim());
     return responses.length > 0 ? responses[responses.length - 1] : null;
@@ -12868,15 +13326,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             display: 'flex', flexDirection: 'column', gap: '6.6px', alignItems: 'flex-end',
             boxSizing: 'border-box'
           }}>
-            {/* BBOX Preview for citation queries */}
-            {message.fromCitation && message.citationBboxData && (
-              <div style={{ marginBottom: '11px', maxWidth: '100%' }}>
-                <CitationBboxPreview 
-                  citationBboxData={message.citationBboxData}
-                  onClick={handleCitationPreviewClick}
-                />
-              </div>
-            )}
             <div style={{ backgroundColor: '#F3F3F3', borderRadius: '15.4px', padding: '4.4px 6.6px 4.4px 11px', width: 'fit-content', maxWidth: '100%', maxHeight: 'min(320px, 50vh)', overflowY: 'auto', overflowX: 'hidden', wordWrap: 'break-word', overflowWrap: 'break-word', display: 'block', boxSizing: 'border-box', WebkitOverflowScrolling: 'touch' }}>
               {message.attachments?.length > 0 && (
                 <div style={{ marginBottom: (message.text || message.propertyAttachments?.length > 0) ? '8.8px' : '0', display: 'flex', flexWrap: 'wrap', gap: '4.4px' }}>
@@ -13218,6 +13667,40 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   }
                 }}
                 savedCitationNumbersForMessage={savedCitationNumbersForMessageByMessageId.get(finalKey)}
+                onAskFollowUpFromCallout={(msgId, citationNumber, citationData) => {
+                  const data = citationData as CitationData & { document_id?: string; block_id?: string; cited_text?: string; block_content?: string; bbox?: { left: number; top: number; width: number; height: number }; page?: number; page_number?: number };
+                  const docId = data?.document_id ?? (data as any)?.doc_id;
+                  const pageNum = data?.page ?? data?.page_number ?? (data?.bbox as any)?.page ?? 1;
+                  const bbox = data?.bbox ?? { left: 0, top: 0, width: 0, height: 0 };
+                  if (docId) {
+                    preloadCitationBboxSegment({ document_id: docId, page_number: pageNum, bbox });
+                  }
+                  const raw = (data?.cited_text || data?.block_content || 'this citation').trim().slice(0, 200);
+                  const snippet = raw.replace(/\*\*/g, '').replace(/__/g, '');
+                  const id = `cite-${docId ?? 'doc'}-${pageNum}-${Date.now()}`;
+                  const sourceMessageText = message.text != null ? message.text.slice(-2000) : undefined;
+                  segmentInput.insertChipAtCursor(
+                    {
+                      type: 'chip',
+                      kind: 'citation_snippet',
+                      id,
+                      label: snippet,
+                      payload: {
+                        citationData: { ...data, block_id: data?.block_id, cited_text: snippet },
+                        sourceMessageText,
+                        messageId: msgId,
+                        citationNumber,
+                      },
+                    },
+                    { trailingSpace: true }
+                  );
+              requestAnimationFrame(() => {
+                inputRef.current?.focus();
+                requestAnimationFrame(() => restoreSelectionRef.current?.());
+              });
+                }}
+                onViewInDocumentFromCallout={(citationData) => openCitationInDocumentView(citationData as CitationData, false)}
+                onParagraphWithCitationsHover={message.citations && Object.keys(message.citations).length > 0 ? (citationData: any, citationNumber: string) => setPersistentCitationPreview({ citationData, messageId: finalKey, citationNumber }) : undefined}
               />
             </div>
           )}
@@ -13428,9 +13911,13 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           animation: feedback-tick-shimmer-kf 0.5s ease-out;
         }
       `}</style>
-      {/* Dark overlay when citation panel is open - rendered inside panel so chat bar can sit above it (z-index) */}
-      {citationClickPanel && (() => {
-        const data = citationClickPanel.citationData as CitationData & { document_id?: string };
+      {/* Citation panel: from click (next to citation) or persistent (below response, one open at all times when chat has citations) */}
+      {(citationClickPanel || (effectivePersistentCitation && persistentPreviewAnchorRect)) && (() => {
+        const fromClick = !!citationClickPanel;
+        const panelCitation = fromClick
+          ? { citationData: citationClickPanel!.citationData, anchorRect: citationClickPanel!.anchorRect, messageId: citationClickPanel!.messageId, citationNumber: citationClickPanel!.citationNumber, sourceMessageText: citationClickPanel!.sourceMessageText }
+          : { citationData: effectivePersistentCitation!.citationData, anchorRect: persistentPreviewAnchorRect!, messageId: effectivePersistentCitation!.messageId, citationNumber: effectivePersistentCitation!.citationNumber, sourceMessageText: chatMessages.find((m) => m.id === effectivePersistentCitation!.messageId)?.text?.slice(-2000) };
+        const data = panelCitation.citationData as CitationData & { document_id?: string };
         const docId = data.document_id ?? data.doc_id;
         const pageNum = data.page ?? data.bbox?.page ?? data.page_number ?? 1;
         const cacheKey = docId ? `hover-${docId}-${pageNum}` : '';
@@ -13441,19 +13928,18 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         const cachedPageImage = fromCache ?? citationPanelLoadedImage;
         return createPortal(
           <CitationClickPanel
-            citationData={citationClickPanel.citationData}
-            anchorRect={citationClickPanel.anchorRect}
+            citationData={panelCitation.citationData}
+            anchorRect={panelCitation.anchorRect}
             cachedPageImage={cachedPageImage}
             onViewInDocument={() => {
-              const { messageId, citationNumber } = citationClickPanel;
-              openCitationInDocumentView(citationClickPanel.citationData, false);
-              const viewed = messageId != null && citationNumber != null ? { messageId, citationNumber } : null;
+              openCitationInDocumentView(panelCitation.citationData, false);
+              const viewed = panelCitation.messageId != null && panelCitation.citationNumber != null ? { messageId: panelCitation.messageId, citationNumber: panelCitation.citationNumber } : null;
               setCitationViewedInDocument(viewed);
               if (currentChatId && viewed) setDocumentViewedCitation(currentChatId, viewed);
               setCitationClickPanel(null);
             }}
             onAskFollowUp={() => {
-              const citationData = citationClickPanel.citationData as CitationData & { document_id?: string; block_id?: string; cited_text?: string; block_content?: string; bbox?: { left: number; top: number; width: number; height: number }; page?: number; page_number?: number };
+              const citationData = panelCitation.citationData as CitationData & { document_id?: string; block_id?: string; cited_text?: string; block_content?: string; bbox?: { left: number; top: number; width: number; height: number }; page?: number; page_number?: number };
               const docId = citationData.document_id ?? (citationData as any).doc_id;
               const pageNum = citationData.page ?? citationData.page_number ?? (citationData.bbox as any)?.page ?? 1;
               const bbox = citationData.bbox ?? { left: 0, top: 0, width: 0, height: 0 };
@@ -13461,10 +13947,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 preloadCitationBboxSegment({ document_id: docId, page_number: pageNum, bbox });
               }
               const raw = (citationData.cited_text || citationData.block_content || 'this citation').trim().slice(0, 200);
-              // Strip markdown so chip label doesn't show ** or __ etc.
               const snippet = raw.replace(/\*\*/g, '').replace(/__/g, '');
               const id = `cite-${docId ?? 'doc'}-${pageNum}-${Date.now()}`;
-              const sourceMessageText = citationClickPanel.sourceMessageText != null ? citationClickPanel.sourceMessageText.slice(-2000) : undefined;
               segmentInput.insertChipAtCursor(
                 {
                   type: 'chip',
@@ -13473,9 +13957,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   label: snippet,
                   payload: {
                     citationData: { ...citationData, block_id: citationData.block_id, cited_text: snippet },
-                    sourceMessageText,
-                    messageId: citationClickPanel.messageId,
-                    citationNumber: citationClickPanel.citationNumber,
+                    sourceMessageText: panelCitation.sourceMessageText,
+                    messageId: panelCitation.messageId,
+                    citationNumber: panelCitation.citationNumber,
                   },
                 },
                 { trailingSpace: true }
@@ -13486,13 +13970,13 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 requestAnimationFrame(() => restoreSelectionRef.current?.());
               });
             }}
-            onSaveCitation={citationExport && citationClickPanel.messageId != null && citationClickPanel.citationNumber != null ? async () => {
-              const ok = await saveCitationForDocx(citationClickPanel.messageId!, citationClickPanel.citationNumber!, citationClickPanel.citationData as CitationData & { document_id?: string; bbox?: { left: number; top: number; width: number; height: number } });
+            onSaveCitation={citationExport && panelCitation.messageId != null && panelCitation.citationNumber != null ? async () => {
+              const ok = await saveCitationForDocx(panelCitation.messageId!, panelCitation.citationNumber!, panelCitation.citationData as CitationData & { document_id?: string; bbox?: { left: number; top: number; width: number; height: number } });
               setCitationClickPanel(null);
               if (ok) showCitationSavedFeedbackOnce();
               else toast({ title: 'Could not save citation', description: 'Try again or open the document view to save from there.', variant: 'destructive' });
             } : undefined}
-            onClose={() => setCitationClickPanel(null)}
+            onClose={() => fromClick ? setCitationClickPanel(null) : setPersistentCitationPreview(null)}
           />,
           document.body
         );
@@ -13511,7 +13995,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           transition={{ duration: 0 }} // No animation - instant appearance
           layout={false} // Disable layout animation
           onClick={(e) => e.stopPropagation()} // Prevent clicks from closing agent sidebar
-          className={`fixed top-0 bottom-0 ${citationClickPanel ? 'z-[10051]' : 'z-[10001]'}`}
+          className={`fixed top-0 bottom-0 ${citationClickPanel || (effectivePersistentCitation && persistentPreviewAnchorRect) ? 'z-[10051]' : 'z-[10001]'}`}
           style={{
             left: (() => {
               // Always use sidebarWidth prop which MainContent calculates correctly
@@ -15272,13 +15756,17 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   </div>
                 </div>
                 </div>
+                {/* Anchor for persistent citation preview: panel positions above this so one citation stays visible below the response */}
+                {effectivePersistentCitation != null && (
+                  <div ref={persistentPreviewAnchorRef} style={{ height: 1, minHeight: 1, flexShrink: 0, visibility: 'hidden', pointerEvents: 'none' }} aria-hidden />
+                )}
             
                 {/* Chat Input at Bottom - Condensed SearchBar design (only for non-empty chat). When citation panel open, transparent so overlay shows; only inner chat bar sits above overlay. */}
                 <div 
                   ref={chatInputContainerRef}
               onClick={(e) => e.stopPropagation()} // Prevent clicks from closing agent sidebar
-              style={{ 
-                backgroundColor: citationClickPanel ? 'transparent' : '#FCFCF9', 
+                style={{ 
+                backgroundColor: citationClickPanel || (effectivePersistentCitation && persistentPreviewAnchorRect) ? 'transparent' : '#FCFCF9',
                 paddingTop: '12px', 
                 paddingBottom: '32px', 
                 paddingLeft: '0', // Remove left padding - centering handled by form
@@ -15290,7 +15778,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 display: 'flex',
                 justifyContent: 'center', // Center the form
                 width: '100%',
-                zIndex: citationClickPanel ? 10051 : 5, // Above overlay when citation panel open; container bg transparent so overlay shows, only inner chat bar is opaque
+                zIndex: citationClickPanel || (effectivePersistentCitation && persistentPreviewAnchorRect) ? 10051 : 5, // Above overlay when citation panel open; container bg transparent so overlay shows, only inner chat bar is opaque
                 pointerEvents: 'auto' // Ensure container can receive drag events
               }}
                 >

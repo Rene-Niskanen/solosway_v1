@@ -37,6 +37,157 @@ export interface CachedPageImage {
   imageHeight: number;
 }
 
+/** Result of computeCitationPreviewTransform for use in CitationPagePreviewContent. */
+export interface CitationPreviewTransform {
+  safeZoom: number;
+  safeTranslateX: number;
+  safeTranslateY: number;
+  finalBboxLeft: number;
+  finalBboxTop: number;
+  finalBboxWidth: number;
+  finalBboxHeight: number;
+}
+
+/**
+ * Compute zoom/translate and bbox overlay position so the citation bbox is centered and visible.
+ * Bbox is in normalized 0–1 coordinates. Safe to call with any container dimensions.
+ */
+export function computeCitationPreviewTransform(
+  bbox: { left: number; top: number; width: number; height: number },
+  imageWidth: number,
+  imageHeight: number,
+  containerWidth: number,
+  containerHeight: number
+): CitationPreviewTransform {
+  const previewWidth = Math.max(containerWidth, 280);
+  const previewHeight = Math.max(containerHeight, 200);
+
+  const originalBboxWidth = bbox.width * imageWidth;
+  const originalBboxHeight = bbox.height * imageHeight;
+  const originalBboxLeft = bbox.left * imageWidth;
+  const originalBboxTop = bbox.top * imageHeight;
+  const centerX = originalBboxLeft + originalBboxWidth / 2;
+  const centerY = originalBboxTop + originalBboxHeight / 2;
+
+  const logoHeight = 0.02 * imageHeight;
+  const minBboxHeightPx = logoHeight;
+  const baseBboxHeight = Math.max(originalBboxHeight, minBboxHeightPx);
+  const bboxPadding = 8;
+  const finalBboxWidth = originalBboxWidth + bboxPadding * 2;
+  const finalBboxHeight = baseBboxHeight === minBboxHeightPx ? minBboxHeightPx : baseBboxHeight + bboxPadding * 2;
+  const bboxLeft = Math.max(0, centerX - finalBboxWidth / 2);
+  const bboxTop = Math.max(0, centerY - finalBboxHeight / 2);
+  const constrainedLeft = Math.min(bboxLeft, imageWidth - finalBboxWidth);
+  const constrainedTop = Math.min(bboxTop, imageHeight - finalBboxHeight);
+  const finalBboxLeft = Math.max(0, constrainedLeft);
+  const finalBboxTop = Math.max(0, constrainedTop);
+
+  // Center the bbox in the viewport with even padding on all sides
+  const previewPadding = 20;
+  const availableWidth = previewWidth - previewPadding * 2;
+  const availableHeight = previewHeight - previewPadding * 2;
+  // Uniform padding around bbox in image pixels so zoom fits bbox + padding
+  const uniformBboxPaddingPx = Math.min(imageWidth, imageHeight) * 0.04;
+  const contentWidth = Math.max(originalBboxWidth + uniformBboxPaddingPx * 2, 1);
+  const contentHeight = Math.max(originalBboxHeight + uniformBboxPaddingPx * 2, 1);
+  const zoomForWidth = availableWidth / contentWidth;
+  const zoomForHeight = availableHeight / contentHeight;
+  const rawZoom = Math.min(zoomForWidth, zoomForHeight);
+  const zoom = Math.min(0.7, rawZoom);
+
+  // Place bbox center at viewport center for even padding
+  const idealTranslateX = previewWidth / 2 - centerX * zoom;
+  const idealTranslateY = previewHeight / 2 - centerY * zoom;
+  // Clamp so we don't show area outside the image
+  const minTranslateX = previewWidth - imageWidth * zoom;
+  const maxTranslateX = 0;
+  const minTranslateY = previewHeight - imageHeight * zoom;
+  const maxTranslateY = 0;
+  const translateX = Math.max(minTranslateX, Math.min(maxTranslateX, idealTranslateX));
+  const translateY = Math.max(minTranslateY, Math.min(maxTranslateY, idealTranslateY));
+
+  return {
+    safeZoom: Number.isFinite(zoom) && zoom > 0 ? zoom : 1,
+    safeTranslateX: Number.isFinite(translateX) ? translateX : 0,
+    safeTranslateY: Number.isFinite(translateY) ? translateY : 0,
+    finalBboxLeft,
+    finalBboxTop,
+    finalBboxWidth,
+    finalBboxHeight,
+  };
+}
+
+/** Presentational preview: scroll container + image + optional bbox overlay. Use with computeCitationPreviewTransform. */
+export const CitationPagePreviewContent: React.FC<{
+  cachedPageImage: CachedPageImage;
+  transform: CitationPreviewTransform;
+  showBbox: boolean;
+  className?: string;
+  style?: React.CSSProperties;
+  /** When true, prevents scroll/pan so the preview is fixed (e.g. in citation callouts). */
+  disableScroll?: boolean;
+}> = ({ cachedPageImage, transform, showBbox, className, style, disableScroll }) => (
+  <div
+    className={className ?? "citation-panel-preview-scroll"}
+    style={{
+      position: "absolute",
+      inset: 0,
+      overflow: disableScroll ? "hidden" : "auto",
+      scrollbarWidth: "none",
+      msOverflowStyle: "none",
+      ...(disableScroll
+        ? { touchAction: "none", overscrollBehavior: "none" as const }
+        : {}),
+      ...style,
+    }}
+  >
+    <div
+      style={{
+        position: "absolute",
+        left: 0,
+        top: 0,
+        transform: `translate(${transform.safeTranslateX}px, ${transform.safeTranslateY}px) scale(${transform.safeZoom})`,
+        transformOrigin: "0 0",
+        width: `${cachedPageImage.imageWidth}px`,
+        height: `${cachedPageImage.imageHeight}px`,
+      }}
+    >
+      <img
+        src={cachedPageImage.pageImage}
+        alt="Document preview"
+        style={{
+          position: "absolute",
+          left: 0,
+          top: 0,
+          width: `${cachedPageImage.imageWidth}px`,
+          height: `${cachedPageImage.imageHeight}px`,
+          pointerEvents: "none",
+        }}
+      />
+      {showBbox && (
+        <div
+          style={{
+            position: "absolute",
+            left: `${transform.finalBboxLeft}px`,
+            top: `${transform.finalBboxTop}px`,
+            width: `${Math.min(cachedPageImage.imageWidth, transform.finalBboxWidth)}px`,
+            height: `${Math.min(cachedPageImage.imageHeight, transform.finalBboxHeight)}px`,
+            backgroundColor: "rgba(188, 212, 235, 0.4)",
+            border: "none",
+            backgroundImage: "repeating-linear-gradient(90deg, rgba(188, 212, 235, 0.4) 0px, rgba(188, 212, 235, 0.4) 10px, rgba(163, 173, 189, 0.8) 10px, rgba(163, 173, 189, 0.8) 20px), repeating-linear-gradient(0deg, rgba(188, 212, 235, 0.4) 0px, rgba(188, 212, 235, 0.4) 10px, rgba(163, 173, 189, 0.8) 10px, rgba(163, 173, 189, 0.8) 20px), repeating-linear-gradient(90deg, rgba(188, 212, 235, 0.4) 0px, rgba(188, 212, 235, 0.4) 10px, rgba(163, 173, 189, 0.8) 10px, rgba(163, 173, 189, 0.8) 20px), repeating-linear-gradient(0deg, rgba(188, 212, 235, 0.4) 0px, rgba(188, 212, 235, 0.4) 10px, rgba(163, 173, 189, 0.8) 10px, rgba(163, 173, 189, 0.8) 20px)",
+            backgroundSize: "20px 2px, 2px 20px, 20px 2px, 2px 20px",
+            backgroundPosition: "0 0, 100% 0, 0 100%, 0 0",
+            backgroundRepeat: "repeat-x, repeat-y, repeat-x, repeat-y",
+            borderRadius: "2px",
+            pointerEvents: "none",
+            zIndex: 10,
+          }}
+        />
+      )}
+    </div>
+  </div>
+);
+
 const PANEL_WIDTH = 400;
 const PANEL_MAX_HEIGHT_VH = 75;
 const GAP = 12;
@@ -141,84 +292,29 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
   const bbox = citationData.bbox;
   const hasBbox = bbox && typeof bbox.left === "number" && typeof bbox.top === "number" && typeof bbox.width === "number" && typeof bbox.height === "number";
 
-  // Match hover preview fixed dimensions so zoom/translate math is identical (hover uses previewWidth=280, previewHeight=200)
   const previewWidth = Math.max(previewSize.width, 280);
   const previewHeight = Math.max(previewSize.height, 200);
 
-  // === IDENTICAL to citation hover preview: BBOX positioning, logo, zoom/translate (same as StandaloneExpandedCardView) ===
-  let zoom = 1;
-  let translateX = 0;
-  let translateY = 0;
-  let finalBboxLeft = 0;
-  let finalBboxTop = 0;
-  let finalBboxWidth = 0;
-  let finalBboxHeight = 0;
-  let logoLeft = 0;
-  let logoTop = 0;
-  let logoWidth = 0;
-  let logoHeight = 0;
-
-  if (cachedPageImage && hasBbox) {
-    const imageWidth = cachedPageImage.imageWidth;
-    const imageHeight = cachedPageImage.imageHeight;
-
-    // BBOX in image pixels (same as hover preview)
-    const originalBboxWidth = bbox.width * imageWidth;
-    const originalBboxHeight = bbox.height * imageHeight;
-    const originalBboxLeft = bbox.left * imageWidth;
-    const originalBboxTop = bbox.top * imageHeight;
-    const centerX = originalBboxLeft + originalBboxWidth / 2;
-    const centerY = originalBboxTop + originalBboxHeight / 2;
-
-    logoHeight = 0.02 * imageHeight;
-    logoWidth = logoHeight;
-    const minBboxHeightPx = logoHeight;
-    const baseBboxHeight = Math.max(originalBboxHeight, minBboxHeightPx);
-    const bboxPadding = 8;
-    finalBboxWidth = originalBboxWidth + bboxPadding * 2;
-    finalBboxHeight = baseBboxHeight === minBboxHeightPx ? minBboxHeightPx : baseBboxHeight + bboxPadding * 2;
-    const bboxLeft = Math.max(0, centerX - finalBboxWidth / 2);
-    const bboxTop = Math.max(0, centerY - finalBboxHeight / 2);
-    const constrainedLeft = Math.min(bboxLeft, imageWidth - finalBboxWidth);
-    const constrainedTop = Math.min(bboxTop, imageHeight - finalBboxHeight);
-    finalBboxLeft = Math.max(0, constrainedLeft);
-    finalBboxTop = Math.max(0, constrainedTop);
-    logoLeft = finalBboxLeft - logoWidth + 2;
-    logoTop = finalBboxTop;
-
-    // Zoom/crop - identical to hover preview
-    const previewPadding = 15;
-    const availableWidth = previewWidth - previewPadding * 2;
-    const availableHeight = previewHeight - previewPadding * 2;
-    const combinedLeft = logoLeft;
-    const combinedRight = finalBboxLeft + finalBboxWidth;
-    const combinedWidth = combinedRight - combinedLeft;
-    const combinedCenterX = (combinedLeft + combinedRight) / 2;
-    const combinedCenterY = finalBboxTop + finalBboxHeight / 2;
-    const zoomForWidth = combinedWidth > 0 ? availableWidth / combinedWidth : 0.7;
-    const zoomForHeight = finalBboxHeight > 0 ? availableHeight / finalBboxHeight : 0.7;
-    const rawZoom = Math.min(zoomForWidth, zoomForHeight);
-    zoom = Math.min(0.7, rawZoom);
-
-    const idealTranslateX = previewWidth / 2 - combinedCenterX * zoom;
-    const idealTranslateY = previewHeight / 2 - combinedCenterY * zoom;
-    const viewMargin = 10;
-    const scaledBboxLeft = combinedLeft * zoom;
-    const scaledBboxRight = combinedRight * zoom;
-    const scaledBboxTop = finalBboxTop * zoom;
-    const scaledBboxBottom = (finalBboxTop + finalBboxHeight) * zoom;
-    const minTranslateX = viewMargin - scaledBboxLeft;
-    const maxTranslateX = previewWidth - viewMargin - scaledBboxRight;
-    const minTranslateY = viewMargin - scaledBboxTop;
-    const maxTranslateY = previewHeight - viewMargin - scaledBboxBottom;
-    translateX = minTranslateX > maxTranslateX ? (minTranslateX + maxTranslateX) / 2 : Math.max(minTranslateX, Math.min(maxTranslateX, idealTranslateX));
-    translateY = minTranslateY > maxTranslateY ? (minTranslateY + maxTranslateY) / 2 : Math.max(minTranslateY, Math.min(maxTranslateY, idealTranslateY));
-  }
-
-  // Ensure valid numbers so the transform never hides the image (guard against NaN/Infinity from edge cases)
-  const safeZoom = Number.isFinite(zoom) && zoom > 0 ? zoom : 1;
-  const safeTranslateX = Number.isFinite(translateX) ? translateX : 0;
-  const safeTranslateY = Number.isFinite(translateY) ? translateY : 0;
+  const transform = React.useMemo(() => {
+    if (!cachedPageImage || !hasBbox || !bbox) {
+      return {
+        safeZoom: 1 as number,
+        safeTranslateX: 0,
+        safeTranslateY: 0,
+        finalBboxLeft: 0,
+        finalBboxTop: 0,
+        finalBboxWidth: 0,
+        finalBboxHeight: 0,
+      };
+    }
+    return computeCitationPreviewTransform(
+      bbox,
+      cachedPageImage.imageWidth,
+      cachedPageImage.imageHeight,
+      previewWidth,
+      previewHeight
+    );
+  }, [cachedPageImage, hasBbox, bbox, previewWidth, previewHeight]);
 
   return (
     <>
@@ -418,63 +514,12 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
       >
         {/* Citation render area - scrollable, scrollbar hidden via class */}
         {cachedPageImage ? (
-          <div
+          <CitationPagePreviewContent
+            cachedPageImage={cachedPageImage}
+            transform={transform}
+            showBbox={!!hasBbox}
             className="citation-panel-preview-scroll"
-            style={{
-              position: "absolute",
-              inset: 0,
-              overflow: "auto",
-              scrollbarWidth: "none",
-              msOverflowStyle: "none",
-            }}
-          >
-            <div
-              style={{
-                position: "absolute",
-                left: 0,
-                top: 0,
-                transform: `translate(${safeTranslateX}px, ${safeTranslateY}px) scale(${safeZoom})`,
-                transformOrigin: "0 0",
-                width: `${cachedPageImage.imageWidth}px`,
-                height: `${cachedPageImage.imageHeight}px`,
-              }}
-            >
-              <img
-                src={cachedPageImage.pageImage}
-                alt="Document preview"
-                style={{
-                  position: "absolute",
-                  left: 0,
-                  top: 0,
-                  width: `${cachedPageImage.imageWidth}px`,
-                  height: `${cachedPageImage.imageHeight}px`,
-                  pointerEvents: "none",
-                }}
-              />
-              {hasBbox && (
-                <>
-                  <div
-                    style={{
-                      position: "absolute",
-                      left: `${finalBboxLeft}px`,
-                      top: `${finalBboxTop}px`,
-                      width: `${Math.min(cachedPageImage.imageWidth, finalBboxWidth)}px`,
-                      height: `${Math.min(cachedPageImage.imageHeight, finalBboxHeight)}px`,
-                      backgroundColor: "rgba(188, 212, 235, 0.4)",
-                      border: "none",
-                      backgroundImage: "repeating-linear-gradient(90deg, rgba(188, 212, 235, 0.4) 0px, rgba(188, 212, 235, 0.4) 10px, rgba(163, 173, 189, 0.8) 10px, rgba(163, 173, 189, 0.8) 20px), repeating-linear-gradient(0deg, rgba(188, 212, 235, 0.4) 0px, rgba(188, 212, 235, 0.4) 10px, rgba(163, 173, 189, 0.8) 10px, rgba(163, 173, 189, 0.8) 20px), repeating-linear-gradient(90deg, rgba(188, 212, 235, 0.4) 0px, rgba(188, 212, 235, 0.4) 10px, rgba(163, 173, 189, 0.8) 10px, rgba(163, 173, 189, 0.8) 20px), repeating-linear-gradient(0deg, rgba(188, 212, 235, 0.4) 0px, rgba(188, 212, 235, 0.4) 10px, rgba(163, 173, 189, 0.8) 10px, rgba(163, 173, 189, 0.8) 20px)",
-                      backgroundSize: "20px 2px, 2px 20px, 20px 2px, 2px 20px",
-                      backgroundPosition: "0 0, 100% 0, 0 100%, 0 0",
-                      backgroundRepeat: "repeat-x, repeat-y, repeat-x, repeat-y",
-                      borderRadius: "2px",
-                      pointerEvents: "none",
-                      zIndex: 10,
-                    }}
-                  />
-                </>
-              )}
-            </div>
-          </div>
+          />
         ) : (
           <div
             style={{

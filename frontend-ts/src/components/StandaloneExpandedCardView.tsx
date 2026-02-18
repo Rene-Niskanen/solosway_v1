@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Maximize, Maximize2, Minimize2, ZoomIn, ZoomOut, ChevronDown, ChevronLeft, ChevronRight, Download, TextCursorInput, SquareDashedMousePointer } from 'lucide-react';
+import { X, Maximize, Maximize2, Minimize2, ZoomIn, ZoomOut, ChevronDown, ChevronUp, Download, SquareDashedMousePointer } from 'lucide-react';
 import { usePreview } from '../contexts/PreviewContext';
 import { backendApi } from '../services/backendApi';
 import { useFilingSidebar } from '../contexts/FilingSidebarContext';
@@ -1568,7 +1568,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
         <div className="flex items-center justify-between">
           {/* Left: Close button + PDF icon + Document name */}
           <div 
-            className="flex items-center gap-2 min-w-0 max-w-[43%]"
+            className="flex items-center gap-2 min-w-0 max-w-[36%]"
             style={{
               zIndex: 1,
               borderBottom: '2px solid rgba(0, 0, 0, 0.25)',
@@ -1605,22 +1605,12 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
             {!initialFullscreen && highlight != null && (
               <>
                 <div
-                  className="flex items-center gap-0 rounded-md border border-slate-200/70"
+                  className="flex items-center gap-1.5 rounded-md border border-slate-200/70"
                   style={{
-                    padding: '3px 6px 3px 10px',
+                    padding: '3px 6px',
                     backgroundColor: '#F9F9F8',
                   }}
                 >
-                  {panelWidth >= 400 ? (
-                    <span className="text-slate-600 text-xs font-medium whitespace-nowrap mr-1.5">Citations</span>
-                  ) : (
-                    <span className="mr-1.5 flex items-center justify-center text-slate-600" title="Citations">
-                      <TextCursorInput className="w-4 h-4" strokeWidth={2} />
-                    </span>
-                  )}
-                  <span className={`text-xs tabular-nums whitespace-nowrap font-medium ml-2 mr-2 ${sortedCitations.length > 0 ? 'text-slate-500' : 'text-slate-400'}`}>
-                    {sortedCitations.length > 0 ? `${currentCitationIndex + 1}/${sortedCitations.length}` : '—'}
-                  </span>
                   <button
                     type="button"
                     onClick={handleReviewPrevCitation}
@@ -1628,8 +1618,11 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
                     className="p-1 rounded text-gray-700 hover:bg-black/5 disabled:opacity-40 disabled:pointer-events-none"
                     aria-label="Previous citation"
                   >
-                    <ChevronLeft className="w-4 h-4" strokeWidth={2} />
+                    <ChevronUp className="w-3.5 h-3.5" strokeWidth={2} />
                   </button>
+                  <span className={`text-xs tabular-nums whitespace-nowrap font-medium ${sortedCitations.length > 0 ? 'text-slate-500' : 'text-slate-400'}`}>
+                    {sortedCitations.length > 0 ? `${currentCitationIndex + 1} of ${sortedCitations.length}` : '—'}
+                  </span>
                   <button
                     type="button"
                     onClick={handleReviewNextCitation}
@@ -1637,7 +1630,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
                     className="p-1 rounded text-gray-700 hover:bg-black/5 disabled:opacity-40 disabled:pointer-events-none"
                     aria-label="Next citation"
                   >
-                    <ChevronRight className="w-4 h-4" strokeWidth={2} />
+                    <ChevronDown className="w-3.5 h-3.5" strokeWidth={2} />
                   </button>
                 </div>
                 <div
