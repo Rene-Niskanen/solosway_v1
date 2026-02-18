@@ -14845,14 +14845,14 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             <button
                               type="button"
                               onClick={(e) => e.stopPropagation()}
-                              className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-gray-100/80 transition-colors min-w-0 max-w-full border-0 bg-transparent"
-                              style={{ minHeight: '28px' }}
+                              className="flex items-center gap-2 rounded-md px-3 py-2.5 text-left hover:bg-gray-100/80 transition-colors min-w-0 max-w-full border-0 bg-transparent"
+                              style={{ minHeight: '34px' }}
                             >
-                              <MessageSquare className="w-4 h-4 text-gray-300 flex-shrink-0" style={{ pointerEvents: 'none' }} />
+                              <MessageSquare className="w-[19px] h-[19px] text-gray-300 flex-shrink-0" style={{ pointerEvents: 'none' }} />
                               <span className="text-[14px] font-normal text-slate-600 truncate flex-1 min-w-0 text-left">
                                 {isTitleStreaming ? streamedTitle : (chatTitle || 'New chat')}
                               </span>
-                              <ChevronDown className="w-4 h-4 text-gray-400 flex-shrink-0 ml-0.5" />
+                              <ChevronDown className="w-[19px] h-[19px] text-gray-400 flex-shrink-0 ml-0.5" />
                             </button>
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="start" sideOffset={4} onClick={(e) => e.stopPropagation()} className="min-w-[180px] rounded-lg shadow-lg border bg-white py-1">
@@ -14915,14 +14915,14 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           <button
                             type="button"
                             onClick={(e) => e.stopPropagation()}
-                            className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-gray-100/80 transition-colors min-w-0 max-w-full border-0 bg-transparent"
-                            style={{ minHeight: '28px' }}
+                            className="flex items-center gap-2 rounded-md px-3 py-2.5 text-left hover:bg-gray-100/80 transition-colors min-w-0 max-w-full border-0 bg-transparent"
+                            style={{ minHeight: '34px' }}
                           >
-                            <MessageSquare className="w-4 h-4 text-gray-300 flex-shrink-0" />
+                            <MessageSquare className="w-[19px] h-[19px] text-gray-300 flex-shrink-0" />
                             <span className="text-[14px] font-normal text-slate-600 truncate flex-1 min-w-0 text-left">
                               {isTitleStreaming ? streamedTitle : (chatTitle || 'New chat')}
                             </span>
-                            <ChevronDown className="w-4 h-4 text-gray-400 flex-shrink-0 ml-0.5" />
+                            <ChevronDown className="w-[19px] h-[19px] text-gray-400 flex-shrink-0 ml-0.5" />
                           </button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="start" sideOffset={4} onClick={(e) => e.stopPropagation()} className="min-w-[180px] rounded-lg shadow-lg border bg-white py-1">
