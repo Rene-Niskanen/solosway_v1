@@ -173,10 +173,8 @@ export const CitationActionMenu: React.FC<CitationActionMenuProps> = ({
           zIndex: 1000,
           minWidth: showChatInput ? '340px' : '180px',
           maxWidth: showChatInput ? '400px' : '180px',
-          // Glassmorphism style for chat mode, simpler for menu mode
-          background: showChatInput ? 'rgba(255, 255, 255, 0.92)' : 'white',
-          backdropFilter: showChatInput ? 'blur(16px) saturate(160%)' : 'none',
-          WebkitBackdropFilter: showChatInput ? 'blur(16px) saturate(160%)' : 'none',
+          // Solid background for chat mode, simpler for menu mode
+          background: 'white',
           border: showChatInput ? '1px solid rgba(82, 101, 128, 0.25)' : '1px solid #e5e7eb',
           boxShadow: showChatInput 
             ? '0 4px 24px rgba(0, 0, 0, 0.12), 0 1px 2px rgba(0, 0, 0, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.6)'

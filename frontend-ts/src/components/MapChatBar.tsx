@@ -2,18 +2,19 @@
 
 import * as React from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { ArrowUp, Paperclip, LibraryBig, PanelRightOpen, AudioLines, Globe } from "lucide-react";
+import { ArrowUp, LibraryBig, PanelRightOpen, AudioLines, Globe, X } from "lucide-react";
 import { usePropertySelection } from '../contexts/PropertySelectionContext';
 import { useDocumentSelection } from '../contexts/DocumentSelectionContext';
 import { ModeSelector } from './ModeSelector';
 import { ModelSelector } from './ModelSelector';
-import { ChatBarToolsDropdown } from './ChatBarToolsDropdown';
+import { ChatBarAttachDropdown } from './ChatBarAttachDropdown';
 import { WebSearchPill } from './SelectedModePill';
 import { SegmentInput, type SegmentInputHandle } from './SegmentInput';
 import { AtMentionPopover, type AtMentionItem } from './AtMentionPopover';
 import { getFilteredAtMentionItems, preloadAtMentionCache } from '@/services/atMentionCache';
 import { useSegmentInput, buildInitialSegments } from '@/hooks/useSegmentInput';
 import { isTextSegment, isChipSegment, type QueryContentSegment } from '@/types/segmentInput';
+import { INPUT_BAR_SPACE_BELOW_MAP_LARGE, getInputBarFixedContainerStyles } from '@/utils/inputBarPosition';
 
 interface MapChatBarProps {
   onQuerySubmit?: (query: string, options?: { contentSegments?: QueryContentSegment[] }) => void;
@@ -46,12 +47,13 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
   const [atItems, setAtItems] = React.useState<AtMentionItem[]>([]);
   const [atSelectedIndex, setAtSelectedIndex] = React.useState(0);
   const inputRef = React.useRef<SegmentInputHandle | null>(null);
+  const fileInputRef = React.useRef<HTMLInputElement>(null);
   const atMentionAnchorRef = React.useRef<HTMLDivElement>(null);
   const restoreSelectionRef = React.useRef<(() => void) | null>(null);
   const isDeletingRef = React.useRef(false);
   const formRef = React.useRef<HTMLFormElement>(null);
 
-  const { setSelectionModeActive, propertyAttachments, removePropertyAttachment, addPropertyAttachment } = usePropertySelection();
+  const { setSelectionModeActive, propertyAttachments, removePropertyAttachment, addPropertyAttachment, clearPropertyAttachments } = usePropertySelection();
   const { toggleDocumentSelection } = useDocumentSelection();
 
   const initialSegments = React.useMemo(
@@ -242,16 +244,12 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
     <div 
       className="w-full flex justify-center items-center" 
       style={{ 
-        position: 'fixed',
-        bottom: '48px',
-        left: '50%',
-        transform: 'translateX(-50%)',
-        zIndex: 50,
-        width: 'min(100%, 640px)', // Match SideChatPanel width
-        maxWidth: '640px',
+        ...getInputBarFixedContainerStyles(INPUT_BAR_SPACE_BELOW_MAP_LARGE, { zIndex: 50 }),
+        display: 'flex',
+        justifyContent: 'center',
+        alignItems: 'center',
         paddingLeft: '32px',
         paddingRight: '32px',
-        boxSizing: 'border-box'
       }}
     >
       <form ref={formRef} onSubmit={handleSubmit} className="relative" style={{ overflow: 'visible', height: 'auto', width: '100%' }}>
@@ -294,29 +292,32 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
             border: '1px solid #B8BCC4', // Match SideChatPanel border
             boxShadow: 'none', // No shadow like SideChatPanel
             position: 'relative',
-            paddingTop: '8px', // Match SideChatPanel padding
-            paddingBottom: '8px',
-            paddingRight: '12px',
-            paddingLeft: '12px',
-            overflow: 'visible',
+            paddingTop: '16px',
+            paddingBottom: '24px',
+            paddingRight: '16px',
+            paddingLeft: '16px',
+            overflow: 'hidden',
             width: '100%',
             minWidth: '300px',
-            height: 'auto',
-            minHeight: '48px', // Match SideChatPanel minHeight
+            height: '132px',
+            minHeight: '132px',
             boxSizing: 'border-box',
-            borderRadius: '8px', // Match SideChatPanel sharper corners
+            borderRadius: '28px', // Pill-style rounded corners like Google chat bar
             transition: 'background-color 0.2s ease-in-out, border-color 0.2s ease-in-out, box-shadow 0.2s ease-in-out',
             zIndex: 2
           }}
         >
-          {/* Input row */}
+          {/* Input row - fixed height so bar never moves when typing */}
           <div 
             className="relative flex flex-col w-full" 
             style={{ 
-              height: 'auto', 
-              minHeight: '24px',
+              height: '92px',
+              minHeight: '92px',
               width: '100%',
-              minWidth: '0'
+              minWidth: '0',
+              gap: '2px',
+              flexShrink: 0,
+              overflow: 'hidden',
             }}
           >
             {/* SegmentInput + @ context - chips only inline (no row above, matches SearchBar) */}
@@ -324,19 +325,37 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
               ref={atMentionAnchorRef}
               className="flex items-start w-full"
               style={{
-                minHeight: '24px',
+                height: '48px',
+                minHeight: '48px',
                 width: '100%',
-                marginTop: '4px',
-                marginBottom: '0px',
+                marginBottom: '6px',
                 flexShrink: 0,
               }}
             >
               <div
                 className="flex-1 relative flex items-start w-full"
-                style={{ overflow: 'visible', minHeight: '24px', width: '100%', minWidth: '0' }}
+                style={{ overflow: 'visible', height: '36px', minHeight: '36px', width: '100%', minWidth: '0', flexShrink: 0 }}
                 onFocus={() => setIsFocused(true)}
                 onBlur={() => setIsFocused(false)}
               >
+                {(segmentInput.getPlainText().trim() !== '' || propertyAttachments.length > 0 || atMentionDocumentChips.length > 0) && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      segmentInput.setSegments([{ type: 'text', value: '' }]);
+                      setAtMentionDocumentChips([]);
+                      clearPropertyAttachments();
+                      inputRef.current?.focus();
+                    }}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center justify-center w-6 h-6 text-gray-400 hover:text-gray-600 transition-colors z-10"
+                    title="Clear query"
+                    aria-label="Clear query"
+                  >
+                    <X className="w-3.5 h-3.5" strokeWidth={2} />
+                  </button>
+                )}
                 <SegmentInput
                   ref={inputRef}
                   segments={segmentInput.segments}
@@ -362,16 +381,20 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
                   removeChipAtSegmentIndex={segmentInput.removeChipAtIndex}
                   restoreSelectionRef={restoreSelectionRef}
                   placeholder={placeholder}
+                  placeholderFontSize="16.38px"
                   disabled={isSubmitted}
                   style={{
                     width: '100%',
+                    height: '36px', // Fixed height so bar doesn't grow when typing (content scrolls inside)
                     minHeight: '28px',
                     maxHeight: '120px',
+                    overflowY: 'auto',
+                    overflowX: 'hidden',
                     lineHeight: '20px',
-                    paddingTop: '0px',
+                    paddingTop: '12px',
                     paddingBottom: '4px',
-                    paddingRight: '12px',
-                    paddingLeft: '6px',
+                    paddingRight: (segmentInput.getPlainText().trim() !== '' || propertyAttachments.length > 0 || atMentionDocumentChips.length > 0) ? '36px' : '12px',
+                    paddingLeft: '14px',
                     color: segmentInput.getPlainText() ? '#0D0D0D' : undefined,
                     boxSizing: 'border-box',
                   }}
@@ -411,19 +434,55 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
               style={{
                 width: '100%',
                 minWidth: '0',
-                minHeight: '32px' // Match SideChatPanel
+                height: '36px',
+                minHeight: '36px',
+                flexShrink: 0,
               }}
             >
-              {/* Left group: Mode selector and Model selector */}
+              {/* Left group: Plus (Attach dropdown), Mode selector and Model selector */}
               <div className="flex items-center gap-1">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  onChange={(e) => {
+                    // File handling can be wired by parent if needed
+                    if (fileInputRef.current) fileInputRef.current.value = '';
+                  }}
+                  className="hidden"
+                  accept="image/*,.pdf,.doc,.docx"
+                />
+                <ChatBarAttachDropdown
+                onAttachClick={() => fileInputRef.current?.click()}
+                toolsItems={[
+                  {
+                    id: 'web-search',
+                    icon: Globe,
+                    label: 'Search the web',
+                    onClick: () => setIsWebSearchEnabled((prev) => !prev),
+                  },
+                  {
+                    id: 'dashboard',
+                    icon: LibraryBig,
+                    label: 'Dashboard',
+                    onClick: () => onMapToggle?.(),
+                  },
+                  ...(onPanelToggle ? [{
+                    id: 'chat',
+                    icon: PanelRightOpen,
+                    label: 'Chat',
+                    onClick: () => onPanelToggle(),
+                  }] : []),
+                ]}
+              />
                 {/* Mode Selector Dropdown */}
-                <ModeSelector compact={isCompact} />
+                <ModeSelector compact={true} className="mr-2" />
                 
                 {/* Model Selector Dropdown */}
-                <ModelSelector compact={isCompact} />
+                <ModelSelector compact={true} />
               </div>
 
-              {/* Right group: Tools (dropdown: Search the web, Dashboard), WebSearchPill when on, Attach, Voice, Send */}
+              {/* Right group: WebSearchPill when on, Voice, Send */}
               <motion.div 
                 className="flex items-center gap-1.5 flex-shrink-0" 
                 style={{ marginRight: '4px' }}
@@ -436,60 +495,6 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
                 {isWebSearchEnabled && (
                   <WebSearchPill onDismiss={() => setIsWebSearchEnabled(false)} />
                 )}
-                <ChatBarToolsDropdown
-                  items={[
-                    {
-                      id: 'web-search',
-                      icon: Globe,
-                      label: 'Search the web',
-                      onClick: () => setIsWebSearchEnabled((prev) => !prev),
-                    },
-                    {
-                      id: 'dashboard',
-                      icon: LibraryBig,
-                      label: 'Dashboard',
-                      onClick: () => onMapToggle?.(),
-                    },
-                    ...(onPanelToggle
-                      ? [
-                          {
-                            id: 'chat',
-                            icon: PanelRightOpen,
-                            label: 'Chat',
-                            onClick: () => onPanelToggle(),
-                          },
-                        ]
-                      : []),
-                  ]}
-                />
-                {/* Attach Button (matches ChatBarToolsDropdown) */}
-                <div className="flex items-center gap-1">
-                  <button
-                    type="button"
-                    className="flex items-center gap-1.5 text-gray-900 transition-colors focus:outline-none outline-none"
-                    style={{
-                      backgroundColor: '#FFFFFF',
-                      border: '1px solid rgba(229, 231, 235, 0.6)',
-                      borderRadius: '12px',
-                      transition: 'background-color 0.2s ease, border-color 0.2s ease',
-                      height: '24px',
-                      minHeight: '24px',
-                      paddingLeft: '8px',
-                      paddingRight: '8px',
-                    }}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.backgroundColor = '#F5F5F5';
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.backgroundColor = '#FFFFFF';
-                    }}
-                    title="Attach file"
-                  >
-                    <Paperclip className="w-3.5 h-3.5" strokeWidth={1.5} />
-                    <span className="text-xs font-medium">Attach</span>
-                  </button>
-                </div>
-                
                 {/* Voice Button */}
                 <button
                   type="button"
@@ -511,7 +516,6 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
                   title="Voice input"
                 >
                   <AudioLines className="w-3.5 h-3.5" strokeWidth={1.5} />
-                  <span className="text-xs font-medium">Voice</span>
                 </button>
                 
                 {/* Send button */}
@@ -521,16 +525,16 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
                       key="send-button"
                       type="submit" 
                       onClick={handleSubmit} 
-                      initial={{ opacity: 0, scale: 0.8 }}
+                      initial={{ opacity: 1, scale: 1 }}
                       animate={{ opacity: 1, scale: 1, backgroundColor: '#4A4A4A' }}
-                      exit={{ opacity: 0, scale: 0.8 }}
-                      transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+                      exit={{ opacity: 1, scale: 1 }}
+                      transition={{ duration: 0 }}
                       className={`flex items-center justify-center relative focus:outline-none outline-none ${!isSubmitted ? '' : 'cursor-not-allowed'}`}
                       style={{
-                        width: '24px',
-                        height: '24px',
-                        minWidth: '24px',
-                        minHeight: '24px',
+                        width: '36px',
+                        height: '36px',
+                        minWidth: '36px',
+                        minHeight: '36px',
                         borderRadius: '50%',
                         flexShrink: 0
                       }}
@@ -549,7 +553,7 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
                         className="absolute inset-0 flex items-center justify-center"
                         style={{ pointerEvents: 'none' }}
                       >
-                        <ArrowUp className="w-4 h-4" strokeWidth={2.5} style={{ color: '#ffffff' }} />
+                        <ArrowUp className="w-6 h-6" strokeWidth={2.5} style={{ color: '#ffffff' }} />
                       </motion.div>
                     </motion.button>
                   )}

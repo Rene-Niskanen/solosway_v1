@@ -1317,9 +1317,6 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
     const pageData = renderedPages.get(pageNum);
     if (!pageData) return;
 
-    const highlightKey = getHighlightKey();
-    if (didAutoScrollToHighlightRef.current === highlightKey) return;
-
     for (let i = 1; i <= pageNum; i++) {
       if (!renderedPages.has(i)) return;
     }
@@ -1331,6 +1328,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
       return applyScrollToHighlight(wrapper);
     };
 
+    const highlightKey = getHighlightKey();
     if (tryApply()) {
       didAutoScrollToHighlightRef.current = highlightKey;
       setInitialScrollApplied(true);
@@ -1342,7 +1340,6 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
     let rafId: number;
     const retry = () => {
       attempt++;
-      if (didAutoScrollToHighlightRef.current === highlightKey) return;
       const ok = tryApply();
       if (ok) {
         didAutoScrollToHighlightRef.current = highlightKey;

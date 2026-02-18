@@ -2511,7 +2511,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
             >
               <div
                 className={`absolute bottom-full left-0 right-0 mb-2 rounded-md border border-gray-200 bg-white p-2 shadow-lg transition-opacity duration-150 z-[10001] ${usagePopupOpen ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`}
-                style={{ boxShadow: '0 4px 12px rgba(0,0,0,0.1)', marginLeft: '-1rem', marginRight: '-1rem' }}
+                style={{ boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}
                 onMouseEnter={onUsageBarOrPopupEnter}
                 onMouseLeave={scheduleUsagePopupClose}
               >

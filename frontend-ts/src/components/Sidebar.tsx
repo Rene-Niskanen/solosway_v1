@@ -750,7 +750,15 @@ export const Sidebar = ({
               <div className={`flex items-center gap-0.5 w-full ${isIconsOnly ? 'justify-center' : ''}`}>
                 <button
                   ref={brandButtonRef}
-                  onClick={() => setIsBrandDropdownOpen(!isBrandDropdownOpen)}
+                  onClick={() => {
+                    if (isIconsOnly) {
+                      // Expand to full sidebar first, then show the pop-up after layout settles
+                      onIconsOnlyToggle?.();
+                      window.setTimeout(() => setIsBrandDropdownOpen(true), 180);
+                    } else {
+                      setIsBrandDropdownOpen(!isBrandDropdownOpen);
+                    }
+                  }}
                   className={`flex items-center rounded transition-colors duration-75 text-left min-w-0 ${
                     isIconsOnly ? 'p-1' : 'gap-3 flex-1 py-0.5'
                   }`}

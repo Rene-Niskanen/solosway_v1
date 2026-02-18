@@ -19,7 +19,7 @@ import { useSystem } from '@/contexts/SystemContext';
 import { backendApi } from '@/services/backendApi';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogOverlay } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { MapPin, Palette, Bell, Shield, Globe, Monitor, LibraryBig, Upload, BarChart3, Database, Settings, User, CloudUpload, Image, Map, Fullscreen, Minimize, Minimize2, Plus, ArrowUp, Folder, Layers, Check, Focus, Contrast, Search, Loader2, ArrowRight, ArrowLeft, CreditCard } from 'lucide-react';
+import { MapPin, Palette, Bell, Shield, Globe, Monitor, LibraryBig, Upload, BarChart3, Database, Settings, User, CloudUpload, Image, Map, Fullscreen, Minimize, Minimize2, Plus, ArrowUp, Folder, Layers, Check, Focus, Contrast, Search, Loader2, ArrowRight, ArrowLeft, CreditCard, Locate, Volume2 } from 'lucide-react';
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import { DocumentPreviewModal } from './DocumentPreviewModal';
@@ -42,9 +42,23 @@ import { FileViewModal, type FileViewDocument } from './FileViewModal';
 import { ProjectsPage } from './ProjectsPage';
 import { PropertyDetailsPanel } from './PropertyDetailsPanel';
 import { preloadDocumentCovers } from '@/utils/preloadDocumentCovers';
+import {
+  INPUT_BAR_SPACE_BELOW_DASHBOARD,
+  INPUT_BAR_SPACE_BELOW_MAP,
+  getInputBarFixedContainerStyles,
+} from '@/utils/inputBarPosition';
 import { useChatHistory } from './ChatHistoryContext';
 import { useBrowserFullscreen } from '../contexts/BrowserFullscreenContext';
 import type { QueryContentSegment } from '@/types/segmentInput';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { playCompletionSound, NOTIFICATION_SOUND_STORAGE_KEY, NOTIFICATION_SOUND_VOLUME_KEY, getStoredSoundVolume, type CompletionSoundOption } from '../utils/playCompletionSound';
+import { Slider } from '@/components/ui/slider';
 
 export const DEFAULT_MAP_LOCATION_KEY = 'defaultMapLocation';
 
@@ -1084,182 +1098,124 @@ const LocationPickerModal: React.FC<{
 
   return (
     <>
-      <motion.button
-        onClick={() => {
-          setIsOpen(true);
-        }}
-        className="w-full group relative bg-white border border-slate-200 rounded-none hover:border-slate-300 hover:shadow-sm transition-all duration-200 text-left"
-        whileHover={{ scale: 1.001 }}
-        whileTap={{ scale: 0.999 }}
-      >
-          <div className="flex items-start gap-3 px-5 py-4">
-          {/* Minimal icon */}
-          <div className="flex-shrink-0 pt-0.5">
-            <MapPin className="w-5 h-5 text-slate-400 group-hover:text-slate-600 transition-colors" strokeWidth={1.5} />
-          </div>
-          
-          {/* Content */}
-          <div className="flex-1 min-w-0">
-            <div className="font-medium text-slate-900 mb-1" style={{ fontSize: '13px' }}>
-              Default Map Location
-            </div>
-            <div className="text-xs text-slate-500 mb-3">
-              Choose where the map opens when you first view it
-            </div>
-            {savedLocation && (
-              <div className="text-slate-600 font-normal" style={{ fontSize: '12px' }}>
-                {savedLocation}
-              </div>
-            )}
-          </div>
-          
-          {/* Subtle arrow */}
-          <div className="flex-shrink-0 text-slate-300 group-hover:text-slate-400 transition-colors pt-0.5">
-            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-            </svg>
-          </div>
+      <div className="w-full min-w-0 rounded-xl border border-gray-200 p-6 shadow-sm" style={{ backgroundColor: '#F6F7F3' }}>
+        <div className="flex flex-wrap items-baseline gap-2 mb-2">
+          <span className="text-[17px] font-normal text-gray-900">Default Map Location</span>
         </div>
-      </motion.button>
+        <p className="text-[13px] text-gray-600 mb-1">
+          Choose where the map opens when you first view it.
+        </p>
+        {savedLocation && (
+          <div className="flex items-center gap-2 mb-4">
+            <Locate className="w-4 h-4 flex-shrink-0 text-gray-500" strokeWidth={2} />
+            <span className="text-[15px] font-normal text-gray-700">{savedLocation}</span>
+          </div>
+        )}
+        {!savedLocation && <div className="mb-4" />}
+        <Button
+          variant="outline"
+          onClick={() => setIsOpen(true)}
+          className="rounded-sm px-3 py-1 h-auto text-xs font-medium bg-transparent border border-gray-300 text-gray-700 hover:bg-transparent hover:text-gray-700 mt-4"
+        >
+          Set default location
+        </Button>
+      </div>
 
       <Dialog open={isOpen} onOpenChange={setIsOpen}>
         <style>{`
-          [data-radix-dialog-overlay] {
-            background-color: rgba(0, 0, 0, 0.2) !important;
-          }
-          [data-radix-dialog-content] {
-            will-change: transform;
-          }
           .mapboxgl-canvas {
             will-change: transform;
             transform: translateZ(0);
             image-rendering: -webkit-optimize-contrast;
           }
         `}</style>
-        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto p-0" style={{ borderRadius: 0 }}>
-          <DialogHeader className="px-4 pt-4 pb-3 border-b" style={{ borderColor: '#E9E9EB' }}>
-            <DialogTitle style={{ fontSize: '14px', fontWeight: 500, color: '#415C85', letterSpacing: '-0.01em' }}>Set Default Map Location</DialogTitle>
-          </DialogHeader>
-
-          <div className="px-4 py-4 space-y-4">
-            {/* Location Input */}
-            <div className="space-y-1.5 relative">
-              <label style={{ fontSize: '13px', fontWeight: 500, color: '#63748A', letterSpacing: '-0.01em' }}>Search Location</label>
-              <div className="relative">
-                <div
-                  className="flex items-center"
-                  id="location-search-container"
-                  style={{
-                    width: '100%',
-                    padding: '10px 12px',
-                    backgroundColor: '#FCFCFC',
-                    border: '1px solid #E9E9EB',
-                    borderRadius: '2px',
-                    transition: 'border-color 150ms ease',
+        <DialogContent
+          className="p-0 gap-0 overflow-hidden border-0 bg-white max-h-[90vh] min-w-0 max-w-4xl w-[min(56rem,calc(100vw-32px))] rounded-xl flex flex-col !z-[100100]"
+          style={{ boxShadow: '0 4px 24px rgba(0,0,0,0.08)' }}
+          overlayClassName="bg-black/10 !z-[100100]"
+        >
+          {/* Top bar — same style as SearchOrStartChatModal (New chat / Recents dialog) */}
+          <div
+            className="flex shrink-0 flex-col gap-3 pl-10 pr-12 py-6 rounded-t-xl"
+            style={{ backgroundColor: '#F5F5F5' }}
+          >
+            <DialogTitle className="text-[14px] font-medium text-gray-900 tracking-tight m-0 p-0">
+              Set Default Map Location
+            </DialogTitle>
+            <div className="relative">
+              <div
+                className="flex items-center gap-3 min-h-[40px]"
+                id="location-search-container"
+                style={{
+                  width: '100%',
+                  padding: '8px 12px',
+                  backgroundColor: 'white',
+                  border: '1px solid #E5E5E5',
+                  borderRadius: '8px',
+                  transition: 'border-color 150ms ease, box-shadow 150ms ease',
+                }}
+              >
+                <Search className="w-4 h-4 text-neutral-400 flex-shrink-0" strokeWidth={2} />
+                <input
+                  type="text"
+                  value={locationInput}
+                  onChange={(e) => {
+                    setLocationInput(e.target.value);
+                    setGeocodeError('');
+                    if (!isSelectingSuggestionRef.current) {
+                      setShowSuggestions(true);
+                    }
                   }}
-                >
-                  <Search className="w-4 h-4 text-gray-400 flex-shrink-0" strokeWidth={2} style={{ marginRight: '12px' }} />
-                  <input
-                    type="text"
-                    value={locationInput}
-                    onChange={(e) => {
-                      setLocationInput(e.target.value);
-                      setGeocodeError('');
-                      if (!isSelectingSuggestionRef.current) {
-                        setShowSuggestions(true);
+                  onFocus={(e) => {
+                    const container = e.currentTarget.closest('#location-search-container') as HTMLElement;
+                    if (container) {
+                      container.style.borderColor = '#d4d4d4';
+                      container.style.boxShadow = '0 0 0 2px rgba(0,0,0,0.05)';
+                    }
+                    if (suggestions.length > 0) {
+                      setShowSuggestions(true);
+                    }
+                  }}
+                  onBlur={(e) => {
+                    const container = e.currentTarget.closest('#location-search-container') as HTMLElement;
+                    if (container) {
+                      container.style.borderColor = '#E5E5E5';
+                      container.style.boxShadow = 'none';
+                    }
+                    setTimeout(() => {
+                      setShowSuggestions(false);
+                    }, 200);
+                  }}
+                  placeholder="Search for a location..."
+                  className="flex-1 min-w-0 h-full bg-transparent text-sm pl-0 text-neutral-600 placeholder:text-neutral-400 placeholder:font-normal font-medium outline-none"
+                />
+                {isLoadingSuggestions && (
+                  <div className="flex-shrink-0">
+                    <Loader2 className="w-4 h-4 animate-spin text-gray-400" />
+                  </div>
+                )}
+                {locationInput && !isLoadingSuggestions && (
+                  <button
+                    onClick={() => {
+                      if (locationInput.trim()) {
+                        geocodeLocation(locationInput);
                       }
                     }}
-                    onFocus={(e) => {
-                      const container = e.currentTarget.closest('#location-search-container') as HTMLElement;
-                      if (container) {
-                        container.style.borderColor = '#415C85';
-                        container.style.boxShadow = '0 0 0 2px rgba(65, 92, 133, 0.1)';
-                      }
-                      if (suggestions.length > 0) {
-                        setShowSuggestions(true);
-                      }
-                    }}
-                    onBlur={(e) => {
-                      const container = e.currentTarget.closest('#location-search-container') as HTMLElement;
-                      if (container) {
-                        container.style.borderColor = '#E9E9EB';
-                        container.style.boxShadow = 'none';
-                      }
-                      // Delay hiding suggestions to allow click events
-                      setTimeout(() => {
-                        setShowSuggestions(false);
-                      }, 200);
-                    }}
-                    placeholder="Search for a location..."
-                    style={{
-                      flex: 1,
-                      fontSize: '14px',
-                      fontWeight: 400,
-                      color: '#63748A',
-                      backgroundColor: 'transparent',
-                      border: 'none',
-                      outline: 'none',
-                      letterSpacing: '-0.01em',
-                      lineHeight: '1.4'
-                    }}
-                  />
-                  {isLoadingSuggestions && (
-                    <div className="flex-shrink-0 ml-2">
-                      <Loader2 className="w-4 h-4 animate-spin text-gray-400" />
-                    </div>
-                  )}
-                  {locationInput && !isLoadingSuggestions && (
-                    <button
-                      onClick={() => {
-                        if (locationInput.trim()) {
-                          geocodeLocation(locationInput);
-                        }
-                      }}
-                      disabled={isGeocoding}
-                      className="flex-shrink-0 disabled:opacity-50 ml-2"
-                      style={{
-                        padding: '0',
-                        backgroundColor: 'transparent',
-                        color: '#63748A',
-                        borderRadius: '16px',
-                        width: '36px',
-                        height: '32px',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        transition: 'background-color 150ms ease',
-                      }}
-                      onMouseEnter={(e) => {
-                        e.currentTarget.style.backgroundColor = '#f5f5f5';
-                      }}
-                      onMouseLeave={(e) => {
-                        e.currentTarget.style.backgroundColor = 'transparent';
-                      }}
-                    >
-                      {isGeocoding ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowRight className="w-4 h-4" strokeWidth={2} />}
-                    </button>
-                  )}
-                </div>
-
-                {/* Suggestions Dropdown */}
-                {showSuggestions && suggestions.length > 0 && (
-                  <div 
-                    className="absolute z-50"
-                    style={{
-                      top: '100%',
-                      left: 0,
-                      right: 0,
-                      width: '100%',
-                      background: '#FCFCFC',
-                      border: '1px solid #E9E9EB',
-                      borderTop: 'none',
-                      borderRadius: '0 0 2px 2px',
-                      boxShadow: 'none',
-                      maxHeight: '400px',
-                      overflowY: 'auto',
-                      marginTop: '1px',
-                    }}
+                    disabled={isGeocoding}
+                    className="flex-shrink-0 disabled:opacity-50 p-2 rounded-md hover:bg-gray-100 text-neutral-500 transition-colors"
                   >
+                    {isGeocoding ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowRight className="w-4 h-4" strokeWidth={2} />}
+                  </button>
+                )}
+              </div>
+
+              {/* Suggestions Dropdown — list style like Recents (rounded-lg items, same typography) */}
+              {showSuggestions && suggestions.length > 0 && (
+                <div
+                  className="absolute z-50 left-0 right-0 mt-1 rounded-lg border border-gray-200 bg-white shadow-lg overflow-hidden"
+                  style={{ maxHeight: '320px' }}
+                >
+                  <div className="overflow-y-auto py-2 max-h-[320px] [-webkit-overflow-scrolling:touch]">
                     {suggestions.map((suggestion, index) => (
                       <button
                         key={index}
@@ -1273,156 +1229,84 @@ const LocationPickerModal: React.FC<{
                           e.stopPropagation();
                           handleSuggestionSelect(suggestion);
                         }}
-                        className="w-full text-left px-4 py-3 hover:bg-gray-50 transition-colors border-b border-gray-100 last:border-b-0"
-                        style={{
-                          fontSize: '14px',
-                          color: '#63748A',
-                          lineHeight: '1.4',
-                        }}
+                        className="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-left transition-colors hover:bg-gray-100 mx-2"
                       >
-                        <div className="flex items-start gap-3">
-                          <MapPin className="w-4 h-4 text-gray-400 flex-shrink-0 mt-0.5" strokeWidth={1.5} />
-                          <span>{suggestion.place_name}</span>
-                        </div>
+                        <MapPin className="w-4 h-4 text-gray-400 flex-shrink-0" strokeWidth={1.5} />
+                        <span className="flex-1 min-w-0 text-[13px] font-normal text-gray-900 truncate">
+                          {suggestion.place_name}
+                        </span>
                       </button>
                     ))}
                   </div>
-                )}
-              </div>
-              {isGeocoding && (
-                <p style={{ fontSize: '12px', color: '#6C7180', display: 'flex', alignItems: 'center', gap: '6px', marginTop: '8px' }}>
-                  <span style={{ display: 'inline-block', width: '4px', height: '4px', backgroundColor: '#6C7180', borderRadius: '50%', animation: 'pulse 1.5s ease-in-out infinite' }} />
-                  Searching...
-                </p>
-              )}
-              {geocodeError && (
-                <p style={{ fontSize: '12px', color: '#DC2626', display: 'flex', alignItems: 'center', gap: '6px', marginTop: '8px' }}>
-                  <span style={{ display: 'inline-block', width: '4px', height: '4px', backgroundColor: '#DC2626', borderRadius: '50%' }} />
-                  {geocodeError}
-                </p>
+                </div>
               )}
             </div>
+            {isGeocoding && (
+              <p className="text-[12px] text-gray-500 flex items-center gap-1.5">
+                <span className="inline-block w-1 h-1 bg-gray-500 rounded-full animate-pulse" />
+                Searching...
+              </p>
+            )}
+            {geocodeError && (
+              <p className="text-[12px] text-red-600 flex items-center gap-1.5">
+                <span className="inline-block w-1 h-1 bg-red-500 rounded-full" />
+                {geocodeError}
+              </p>
+            )}
+          </div>
 
-            {/* Map Preview */}
-            <div className="space-y-1.5">
-              <label style={{ fontSize: '13px', fontWeight: 500, color: '#63748A', letterSpacing: '-0.01em' }}>Map Preview</label>
-              <div 
-                className="w-full h-96 overflow-hidden relative"
-                style={{ 
-                  minHeight: '384px', 
-                  width: '100%',
-                  border: '1px solid #E9E9EB',
-                  borderRadius: '2px',
-                  backgroundColor: '#F9F9F9'
-                }}
-              >
+          {/* Scrollable body — same pattern as Search modal (flex-1 min-h-0 overflow-y-auto) */}
+          <div className="flex-1 min-h-0 overflow-y-auto py-4 px-4 scroll-smooth [-webkit-overflow-scrolling:touch]">
+            <p className="px-4 pt-1 pb-2 text-[11px] text-gray-500 font-medium">
+              Map Preview
+            </p>
+            <div
+              className="w-full h-96 overflow-hidden relative rounded-lg border border-gray-200 bg-gray-50"
+              style={{ minHeight: '384px' }}
+            >
                 {/* Map Container */}
-                <div 
+                <div
                   ref={mapContainer}
-                  className="w-full h-full"
-                  style={{ 
-                    position: 'relative', 
-                    zIndex: 1, 
-                    pointerEvents: 'auto',
-                    willChange: 'transform',
-                    transform: 'translateZ(0)', // Force GPU acceleration
-                    backfaceVisibility: 'hidden' // Optimize rendering
+                  className="w-full h-full relative z-[1] pointer-events-auto will-change-transform"
+                  style={{
+                    transform: 'translateZ(0)',
+                    backfaceVisibility: 'hidden',
                   }}
                 />
               </div>
-            </div>
-
           </div>
 
-          <DialogFooter style={{ padding: '12px 16px', borderTop: '1px solid #E9E9EB', backgroundColor: '#F9F9F9' }}>
-            <div className="flex items-center justify-between w-full">
+          <DialogFooter
+            className="shrink-0 flex-row justify-between gap-2 rounded-b-xl border-t border-gray-200 px-6 py-4"
+            style={{ backgroundColor: '#F5F5F5' }}
+          >
+            <button
+              onClick={() => setIsOpen(false)}
+              className="px-4 py-2 text-[13px] font-medium text-gray-600 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors"
+            >
+              Cancel
+            </button>
+            <div className="flex items-center gap-2">
               <button
-                onClick={() => setIsOpen(false)}
-                style={{
-                  padding: '8px 12px',
-                  fontSize: '12px',
-                  fontWeight: 500,
-                  color: '#63748A',
-                  backgroundColor: '#F3F4F6',
-                  border: '1px solid #E9E9EB',
-                  borderRadius: '2px',
-                  cursor: 'pointer',
-                  transition: 'background-color 150ms ease',
-                  letterSpacing: '-0.01em'
+                onClick={() => {
+                  setIsOpen(false);
+                  if (getSidebarState) {
+                    sidebarStateBeforePreviewRef.current = getSidebarState();
+                  }
+                  onCloseSidebar?.();
+                  setIsPreviewMode(true);
                 }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.backgroundColor = '#F0F6FF';
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.backgroundColor = '#F3F4F6';
-                }}
+                className="px-4 py-2 text-[13px] font-medium text-gray-600 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors"
               >
-                Cancel
+                Adjust Zoom & Preview
               </button>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => {
-                    setIsOpen(false);
-                    // Store sidebar state before closing
-                    if (getSidebarState) {
-                      sidebarStateBeforePreviewRef.current = getSidebarState();
-                    }
-                    // Close sidebar when entering preview mode
-                    onCloseSidebar?.();
-                    setIsPreviewMode(true);
-                  }}
-                  style={{
-                    padding: '8px 12px',
-                    fontSize: '12px',
-                    fontWeight: 500,
-                    color: '#63748A',
-                    backgroundColor: '#F3F4F6',
-                    border: '1px solid #E9E9EB',
-                    borderRadius: '2px',
-                    cursor: 'pointer',
-                    transition: 'background-color 150ms ease',
-                    letterSpacing: '-0.01em'
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.backgroundColor = '#F0F6FF';
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.backgroundColor = '#F3F4F6';
-                  }}
-                >
-                  Adjust Zoom & Preview
-                </button>
-                <button
-                  onClick={handleConfirm}
-                  disabled={!selectedCoordinates}
-                  style={{
-                    padding: '8px 12px',
-                    fontSize: '12px',
-                    fontWeight: 500,
-                    color: '#FFFFFF',
-                    backgroundColor: !selectedCoordinates ? '#F3F4F6' : '#415C85',
-                    border: '1px solid #E9E9EB',
-                    borderRadius: '2px',
-                    cursor: !selectedCoordinates ? 'not-allowed' : 'pointer',
-                    transition: 'background-color 150ms ease',
-                    letterSpacing: '-0.01em',
-                    minWidth: '140px',
-                    opacity: !selectedCoordinates ? 0.5 : 1
-                  }}
-                  onMouseEnter={(e) => {
-                    if (selectedCoordinates) {
-                      e.currentTarget.style.backgroundColor = '#3A4F73';
-                    }
-                  }}
-                  onMouseLeave={(e) => {
-                    if (selectedCoordinates) {
-                      e.currentTarget.style.backgroundColor = '#415C85';
-                    }
-                  }}
-                >
-                  Confirm Location
-                </button>
-              </div>
+              <button
+                onClick={handleConfirm}
+                disabled={!selectedCoordinates}
+                className="px-4 py-2 text-[13px] font-medium text-white rounded-lg min-w-[140px] transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:bg-gray-300 bg-gray-900 hover:bg-gray-800 disabled:hover:bg-gray-300"
+              >
+                Confirm Location
+              </button>
             </div>
           </DialogFooter>
         </DialogContent>
@@ -1724,6 +1608,108 @@ function normalizeUserForProfile(user: Record<string, unknown> | null | undefine
   } as { first_name?: string; last_name?: string; email?: string; profile_image?: string; avatar_url?: string; profile_picture_url?: string; phone?: string; location?: string; address?: string; title?: string; organization?: string; company_logo_url?: string };
 }
 
+const COMPLETION_SOUND_OPTIONS: { value: CompletionSoundOption; label: string }[] = [
+  { value: 'off', label: 'Off' },
+  { value: 'chime', label: 'Chime' },
+  { value: 'soft', label: 'Soft' },
+  { value: 'bright', label: 'Bright' },
+  { value: 'bell', label: 'Bell' },
+  { value: 'blip', label: 'Blip' },
+  { value: 'ding', label: 'Ding' },
+  { value: 'ascending', label: 'Ascending' },
+];
+
+// Notifications settings: volume (Spotify-style) + sound selector (card styled like UsageAndBillingSection plan card)
+const NotificationsSettingsContent: React.FC = () => {
+  const [soundOption, setSoundOptionState] = React.useState<CompletionSoundOption>(() => {
+    if (typeof window === 'undefined') return 'chime';
+    const v = window.localStorage.getItem(NOTIFICATION_SOUND_STORAGE_KEY);
+    if (v === null) return 'chime';
+    if (v === 'true' || v === 'on' || v === 'chime') return 'chime';
+    if (v === 'false' || v === 'off') return 'off';
+    if (['chime', 'soft', 'bright', 'bell', 'blip', 'ding', 'ascending'].includes(v)) return v as CompletionSoundOption;
+    return 'chime';
+  });
+  const [volume, setVolumeState] = React.useState(() => getStoredSoundVolume());
+  const setSoundOption = (value: CompletionSoundOption) => {
+    setSoundOptionState(value);
+    window.localStorage.setItem(NOTIFICATION_SOUND_STORAGE_KEY, value);
+  };
+  const setVolume = (value: number) => {
+    setVolumeState(value);
+    window.localStorage.setItem(NOTIFICATION_SOUND_VOLUME_KEY, String(value));
+  };
+  const soundEnabled = soundOption !== 'off';
+  return (
+    <div className="space-y-6">
+      <div>
+        <h3 className="text-[15px] font-medium text-gray-900">Notifications</h3>
+        <p className="text-[13px] text-gray-500 mt-1.5 font-normal">
+          Control when and how you get notified.
+        </p>
+      </div>
+      <div className="w-full min-w-0 rounded-xl border border-gray-200 p-6 shadow-sm" style={{ backgroundColor: '#F6F7F3' }}>
+        <div className="flex flex-wrap items-baseline gap-2 mb-2">
+          <span className="text-[17px] font-normal text-gray-900">Response completion sound</span>
+        </div>
+        <p className="text-[13px] text-gray-600 mb-4">
+          Play a short sound when Velora finishes a response. Adjust volume and choose a sound.
+        </p>
+
+        {/* Volume: Spotify-style — speaker icon + horizontal slider */}
+        <div className="flex items-center gap-3 mb-5">
+          <Volume2 className="h-5 w-5 shrink-0 text-gray-500" aria-hidden />
+          <Slider
+            value={[volume]}
+            onValueChange={([v]) => setVolume(v)}
+            min={0}
+            max={100}
+            step={1}
+            aria-label="Notification sound volume"
+            className="flex-1 min-w-0 max-w-[240px] [&_.bg-primary]:!bg-gray-600 [&_.bg-secondary]:!bg-gray-200 [&_.border-primary]:!border-gray-400 [&_.border-primary]:!bg-white"
+          />
+          <span className="text-[12px] text-gray-500 w-7 tabular-nums">{volume}%</span>
+        </div>
+
+        {/* Sound selector + Test */}
+        <div className="flex items-center gap-4 flex-wrap">
+          <Select value={soundOption} onValueChange={setSoundOption}>
+            <SelectTrigger
+              aria-label="Response completion sound"
+              className="h-9 w-[130px] shrink-0 rounded-md border border-gray-200 bg-white text-[13px] text-gray-900 focus:ring-1 focus:ring-gray-300 focus:ring-offset-0 focus:border-gray-300 [&_svg]:text-gray-500"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent
+              className="z-[200] border-gray-200 bg-white shadow-sm"
+              position="popper"
+            >
+              {COMPLETION_SOUND_OPTIONS.map((opt) => (
+                <SelectItem
+                  key={opt.value}
+                  value={opt.value}
+                  className="text-[13px] text-gray-900 focus:bg-gray-100 focus:text-gray-900 data-[highlighted]:bg-gray-100 data-[highlighted]:text-gray-900"
+                >
+                  {opt.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => playCompletionSound()}
+            disabled={!soundEnabled}
+            className="rounded-sm px-3 py-1 h-auto text-xs font-medium bg-white border border-gray-200 text-gray-700 hover:bg-gray-50 hover:text-gray-900"
+          >
+            Test sound
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // Settings View Component with Sidebar Navigation
 const SettingsView: React.FC<{
   onCloseSidebar?: () => void;
@@ -1840,6 +1826,8 @@ const SettingsView: React.FC<{
             />
           </div>
         );
+      case 'notifications':
+        return <NotificationsSettingsContent />;
       case 'background':
         return <BackgroundSettings />;
       case 'database':
@@ -4348,6 +4336,7 @@ export const MainContent = ({
                         // Calculate padding dynamically to ensure equal spacing and prevent cutoff
                         const MIN_PADDING = 16; // 1rem minimum padding
                         const MAX_PADDING = 32; // 2rem maximum padding
+                        const EXTRA_HORIZONTAL_PADDING = 16; // Extra padding left/right so input bar sits slightly inward (matches SideChatPanel)
                         const SEARCH_BAR_MIN = 350; // Minimum search bar width for placeholder text (reduced since placeholder is shorter: "Search for anything")
                         
                         // Use effective sidebar width (includes icons-only mode)
@@ -4433,13 +4422,13 @@ export const MainContent = ({
                               alignItems: isMapVisible ? 'center' : 'center', // Center content vertically
                               marginTop: shouldPositionAtBottom ? 'auto' : (isVerySmall ? 'auto' : '0'),
                               marginBottom: shouldPositionAtBottom ? '0' : (isVerySmall ? 'auto' : '0'),
-                              paddingLeft: isMapVisible ? '0' : `${finalPadding}px`, // Equal padding on left
-                              paddingRight: isMapVisible ? '0' : `${finalPadding}px`, // Equal padding on right
-                              paddingBottom: shouldPositionAtBottom ? '20px' : '0', // Bottom padding when fixed at bottom
+                              paddingLeft: isMapVisible ? `${EXTRA_HORIZONTAL_PADDING}px` : `${finalPadding + EXTRA_HORIZONTAL_PADDING}px`, // Equal padding left/right (extra so bar sits slightly inward)
+                              paddingRight: isMapVisible ? `${EXTRA_HORIZONTAL_PADDING}px` : `${finalPadding + EXTRA_HORIZONTAL_PADDING}px`, // Equal padding right
+                              paddingBottom: shouldPositionAtBottom ? '0' : '0', // No extra padding so bar bottom = INPUT_BAR_SPACE_BELOW_DASHBOARD (matches panel, no jump)
                               paddingTop: shouldPositionAtBottom ? '16px' : '0', // Top padding when fixed at bottom (ChatGPT-style)
                               overflow: 'visible', // Ensure content is never clipped
                               position: isMapVisible ? 'fixed' : (shouldPositionAtBottom ? 'fixed' : 'relative'),
-                              bottom: isMapVisible ? '24px' : (shouldPositionAtBottom ? '0' : 'auto'),
+                              bottom: isMapVisible ? `${INPUT_BAR_SPACE_BELOW_MAP}px` : (shouldPositionAtBottom ? `${INPUT_BAR_SPACE_BELOW_DASHBOARD}px` : 'auto'),
                               left: mapViewLeft,
                               transform: mapViewTransform,
                               zIndex: Math.max(100002, isMapVisible ? 50 : (shouldPositionAtBottom ? 100 : 10)), // Above FilingSidebar (100001) so bar receives drag when hovering with file
@@ -4693,7 +4682,7 @@ export const MainContent = ({
         return <div />;
       case 'projects':
         return (
-          <div className="w-full h-full overflow-auto" style={{ paddingLeft: 24 }}>
+          <div className="w-full h-full overflow-auto min-h-0">
             <ProjectsPage 
               onCreateProject={handleCreateProject}
               onPropertySelect={handleProjectPropertySelect}
@@ -5519,22 +5508,11 @@ export const MainContent = ({
             }}
             className="" 
             style={{ 
-              position: 'fixed',
-              bottom: '24px',
-              left: mapViewLeft,
-              transform: mapViewTransform,
-              zIndex: 10000, // VERY HIGH z-index to ensure it's on top
-              width: 'clamp(400px, 85vw, 650px)',
-              maxWidth: 'clamp(400px, 85vw, 650px)',
-              maxHeight: 'calc(100vh - 48px)', // Constrain to viewport: 24px bottom + 24px top padding
-              boxSizing: 'border-box',
-              pointerEvents: 'auto', // Ensure it's clickable
-              // Remove flex from container - let SearchBar determine its own size
-              display: 'block',
-              // Add minHeight to prevent collapse before content renders
-              minHeight: '60px',
-              // Don't clip the SearchBar shadow
-              overflow: 'visible',
+              ...getInputBarFixedContainerStyles(INPUT_BAR_SPACE_BELOW_MAP, {
+                left: mapViewLeft,
+                transform: mapViewTransform,
+                zIndex: 10000,
+              }),
               // Add transition for smooth movement when sidebar opens/closes
               transition: transitionValue,
               WebkitTransition: transitionValue,

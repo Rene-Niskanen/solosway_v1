@@ -953,7 +953,7 @@ const ChatInterface = forwardRef<{ handleFileDrop: (file: File) => void }, ChatI
                         duration: 0.08,
                         ease: snapEasing
                       }} onClick={() => handleCopyMessage(message.content, message.id)} className={`w-8 h-8 flex items-center justify-center transition-all duration-100 rounded-xl ${copiedMessageId === message.id ? 'text-emerald-500 bg-emerald-50 hover:bg-emerald-100' : 'text-slate-400 hover:text-slate-600 hover:bg-slate-100'}`}>
-                              {copiedMessageId === message.id ? <Check className="w-4 h-4" strokeWidth={1.5} /> : <Copy className="w-4 h-4" strokeWidth={1.5} />}
+                              {copiedMessageId === message.id ? <Check className="w-[18px] h-[18px]" strokeWidth={1.5} /> : <Copy className="w-[18px] h-[18px]" strokeWidth={1.5} />}
                             </motion.button>
                             
                             <motion.button whileHover={{
@@ -964,7 +964,7 @@ const ChatInterface = forwardRef<{ handleFileDrop: (file: File) => void }, ChatI
                         duration: 0.08,
                         ease: snapEasing
                       }} onClick={() => handleThumbsUp(message.id)} className={`w-8 h-8 flex items-center justify-center rounded-xl transition-all duration-100 ${likedMessages.has(message.id) ? 'text-emerald-500 bg-emerald-50 hover:bg-emerald-100 shadow-[0_0_8px_rgba(34,197,94,0.15)]' : 'text-slate-400 hover:text-emerald-500 hover:bg-emerald-50'}`}>
-                              <ThumbsUp className="w-4 h-4" strokeWidth={1.5} />
+                              <ThumbsUp className="w-[18px] h-[18px]" strokeWidth={1.5} />
                             </motion.button>
                             
                             <motion.button whileHover={{
@@ -975,7 +975,7 @@ const ChatInterface = forwardRef<{ handleFileDrop: (file: File) => void }, ChatI
                         duration: 0.08,
                         ease: snapEasing
                       }} onClick={() => handleThumbsDown(message.id)} className={`w-8 h-8 flex items-center justify-center rounded-xl transition-all duration-100 ${dislikedMessages.has(message.id) ? 'text-red-500 bg-red-50 hover:bg-red-100 shadow-[0_0_8px_rgba(239,68,68,0.15)]' : 'text-slate-400 hover:text-red-500 hover:bg-red-50'}`}>
-                              <ThumbsDown className="w-4 h-4" strokeWidth={1.5} />
+                              <ThumbsDown className="w-[18px] h-[18px]" strokeWidth={1.5} />
                             </motion.button>
                           </motion.div>}
                       </motion.div>
@@ -1197,6 +1197,22 @@ const ChatInterface = forwardRef<{ handleFileDrop: (file: File) => void }, ChatI
               {/* Input row */}
               <div className={`relative flex ${isMultiLine ? 'items-start' : 'items-end'}`}>
                 <div className={`flex-1 relative flex ${isMultiLine ? 'items-start' : 'items-end'} min-h-[24px]`} style={{ marginBottom: '0px' }}>
+                  {inputValue.trim() !== '' && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setInputValue('');
+                        inputRef.current?.focus();
+                      }}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center justify-center w-6 h-6 text-gray-400 hover:text-gray-600 transition-colors z-10"
+                      title="Clear query"
+                      aria-label="Clear query"
+                    >
+                      <X className="w-3.5 h-3.5" strokeWidth={2} />
+                    </button>
+                  )}
                   <motion.textarea 
                     layout={false}
                     ref={inputRef} 
@@ -1237,7 +1253,7 @@ const ChatInterface = forwardRef<{ handleFileDrop: (file: File) => void }, ChatI
                       }
                     }} 
                     placeholder="Ask anything..." 
-                    className="w-full bg-transparent focus:outline-none text-base font-normal text-gray-900 placeholder:text-gray-500 resize-none [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-gray-300 [&::-webkit-scrollbar-thumb]:rounded-full"
+                    className="w-full bg-transparent focus:outline-none text-base font-normal text-gray-900 placeholder:text-gray-500 placeholder:text-[20.8px] resize-none [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-gray-300 [&::-webkit-scrollbar-thumb]:rounded-full"
                     style={{
                       minHeight: '24px',
                       maxHeight: '350px',
@@ -1245,7 +1261,7 @@ const ChatInterface = forwardRef<{ handleFileDrop: (file: File) => void }, ChatI
                       lineHeight: '22px',
                       paddingTop: '0px',
                       paddingBottom: '10px',
-                      paddingRight: '12px',
+                      paddingRight: inputValue.trim() !== '' ? '36px' : '12px',
                       scrollbarWidth: 'thin',
                       scrollbarColor: '#D1D5DB transparent',
                       verticalAlign: 'baseline'
@@ -1282,10 +1298,10 @@ const ChatInterface = forwardRef<{ handleFileDrop: (file: File) => void }, ChatI
                     onClick={handleSendMessage} 
                     className={`flex items-center justify-center relative ${!isTyping ? '' : 'cursor-not-allowed'}`}
                     style={{
-                      width: '32px',
-                      height: '32px',
-                      minWidth: '32px',
-                      minHeight: '32px',
+                      width: '48px',
+                      height: '48px',
+                      minWidth: '48px',
+                      minHeight: '48px',
                       borderRadius: '50%'
                     }}
                     animate={{
@@ -1327,7 +1343,7 @@ const ChatInterface = forwardRef<{ handleFileDrop: (file: File) => void }, ChatI
                       className="absolute inset-0 flex items-center justify-center"
                       style={{ pointerEvents: 'none' }}
                     >
-                      <ArrowUp className="w-4 h-4" strokeWidth={2.5} style={{ color: '#ffffff' }} />
+                      <ArrowUp className="w-6 h-6" strokeWidth={2.5} style={{ color: '#ffffff' }} />
                     </motion.div>
                   </motion.button>
                 </div>

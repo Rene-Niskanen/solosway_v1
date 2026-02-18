@@ -4,7 +4,7 @@ import * as React from "react";
 import { useState, useRef, useEffect, useLayoutEffect, useImperativeHandle, forwardRef, useCallback, useMemo } from "react";
 import { flushSync } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import { ChevronRight, Map, ArrowUp, LibraryBig, Mic, PanelRightOpen, SquareDashedMousePointer, Scan, Fullscreen, X, Brain, MoveDiagonal, MapPinHouse, MessageCircle, Upload, Paperclip, AudioLines, Globe } from "lucide-react";
+import { ChevronRight, Map, ArrowUp, LibraryBig, Mic, PanelRightOpen, SquareDashedMousePointer, Scan, Fullscreen, X, Brain, MoveDiagonal, MapPinHouse, MessageCircle, Upload, AudioLines, Globe } from "lucide-react";
 import { ImageUploadButton } from './ImageUploadButton';
 import { FileAttachment, FileAttachmentData } from './FileAttachment';
 import { toast } from "@/hooks/use-toast";
@@ -15,13 +15,14 @@ import { backendApi } from '../services/backendApi';
 import { QuickStartBar } from './QuickStartBar';
 import { ModeSelector } from './ModeSelector';
 import { ModelSelector } from './ModelSelector';
-import { ChatBarToolsDropdown } from './ChatBarToolsDropdown';
+import { ChatBarAttachDropdown } from './ChatBarAttachDropdown';
 import { WebSearchPill } from './SelectedModePill';
 import { AtMentionPopover, type AtMentionItem } from './AtMentionPopover';
 import { SegmentInput, type SegmentInputHandle } from './SegmentInput';
 import { getFilteredAtMentionItems, preloadAtMentionCache } from '@/services/atMentionCache';
 import { useSegmentInput, buildInitialSegments } from '@/hooks/useSegmentInput';
 import { isTextSegment, isChipSegment, type QueryContentSegment } from '@/types/segmentInput';
+import { INPUT_BAR_SPACE_BELOW_DASHBOARD } from '@/utils/inputBarPosition';
 
 export interface SearchBarProps {
   className?: string;
@@ -1326,8 +1327,9 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
       }`}
       style={{
         ...(contextConfig.position === "bottom" && !isMapVisible && { 
+          bottom: `${INPUT_BAR_SPACE_BELOW_DASHBOARD}px`,
           // Constrain height to stay within viewport when fixed at bottom
-          maxHeight: 'calc(100vh - 40px)', // Viewport height minus bottom offset (20px) and padding
+          maxHeight: `calc(100vh - ${INPUT_BAR_SPACE_BELOW_DASHBOARD + 16}px)`, // Viewport minus space below and padding
           overflowY: 'auto', // Allow scrolling if content exceeds max height
           overflowX: 'visible'
         }),
@@ -1355,15 +1357,16 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
         ref={searchContainerRef}
         className={isMapVisible ? "w-full" : "w-full mx-auto"} 
         style={{ 
-          maxWidth: isMapVisible 
-            ? '100%' // In map view, use 100% width - parent container handles max width
-            : (isVerySmallScreen && !isMapVisible 
-              ? `min(${contextConfig.maxWidth}, calc(100vw - 32px))` // On very small screens, ensure it fits viewport
-              : contextConfig.maxWidth),
-          minWidth: '0', // Allow flexibility on very small screens - parent container handles spacing
-          width: '100%', // Always 100% width - let parent container handle constraints
-          boxSizing: 'border-box', // Ensure padding is included in width calculation
-          position: isMapVisible ? 'relative' : 'relative' // Enable absolute positioning for QuickStartBar in map view
+          // Match SideChatPanel positioning when dashboard: same width constraint and min width as panel chat bar wrapper
+          ...(isMapVisible
+            ? { maxWidth: '100%', minWidth: '0', width: '100%' }
+            : {
+                width: 'min(100%, 640px)',
+                minWidth: '200px',
+                maxWidth: '640px',
+              }),
+          boxSizing: 'border-box',
+          position: 'relative',
         }}
       >
         {/* QuickStartBar - appears above search bar in map view when button is clicked */}
@@ -1419,45 +1422,49 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
             onDragLeave={handleDragLeave}
             onDrop={handleDrop}
                 style={{
-                  background: isMapVisible 
-                  ? (isDragOver ? 'rgba(59, 130, 246, 0.1)' : '#FFFFFF')
-                  : (isDragOver ? 'rgba(59, 130, 246, 0.1)' : '#FFFFFF'),
-                backdropFilter: isMapVisible || isDragOver ? 'none' : 'none',
-                WebkitBackdropFilter: isMapVisible || isDragOver ? 'none' : 'none',
-                border: isDragOver
-                  ? '2px dashed rgba(59, 130, 246, 0.75)'
-                  : '1px solid #E0E0E0',
-                boxShadow: isDragOver 
-                  ? '0 0 0 1px rgba(59, 130, 246, 0.25)' 
-                  : '0 1px 3px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.02)',
-                paddingTop: '12px',
-                paddingBottom: '12px',
-                paddingRight: '12px',
-                paddingLeft: '12px',
-                // Keep the bar bottom-anchored by capping overall card height; allow children to scroll within.
-                overflow: 'hidden',
+                  background: isDragOver ? 'rgba(59, 130, 246, 0.1)' : '#ffffff',
+                  border: isDragOver ? '2px dashed rgba(59, 130, 246, 0.75)' : '1px solid #E0E0E0',
+                  boxShadow: isDragOver 
+                    ? '0 0 0 1px rgba(59, 130, 246, 0.25)' 
+                    : '0 1px 3px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.02)',
+                  position: 'relative',
+                  paddingTop: '16px',
+                  paddingBottom: '12px',
+                  paddingRight: '16px',
+                  paddingLeft: '16px',
+                  overflow: 'visible',
+                  width: '100%',
+                  height: 'auto',
+                  minHeight: 'fit-content',
+                  boxSizing: 'border-box',
+                  borderRadius: '28px',
+                  transition: isDragOver ? 'background-color 0.08s ease-out, border-color 0.08s ease-out, box-shadow 0.08s ease-out' : 'background-color 0.2s ease-in-out, border-color 0.2s ease-in-out, box-shadow 0.2s ease-in-out',
+                }}
+            >
+            {/* Input row - same as SideChatPanel (56px when no files so bar height 128 fits input + button row, no cutoff) */}
+            <div 
+              className="relative flex flex-col w-full" 
+              style={{ 
+                height: 'auto',
+                minHeight: '28px',
                 width: '100%',
                 minWidth: '0',
-                height: 'auto',
-                // Set a fixed minHeight to prevent container from growing when textarea expands slightly
-                // This prevents the "jump" when typing - container stays stable, only textarea scrolls internally
-                minHeight: isMapVisible ? 'fit-content' : '48px', // Match chip proportions; fit-content in map view
-                // In map mode this component is bottom-fixed by parent; ensure it never grows off-screen.
-                // In dashboard mode, cap height so it doesn't expand into the Recent Projects section.
-                maxHeight: isMapVisible ? 'calc(100vh - 96px)' : (isDashboardView ? '220px' : undefined),
-                boxSizing: 'border-box',
-                borderRadius: '14px', // Match SideChatPanel chat bar corners
-                transition: isDragOver
-                  ? 'background-color 0.08s ease-out, border-color 0.08s ease-out, box-shadow 0.08s ease-out'
-                  : 'background-color 0.2s ease-in-out, border-color 0.2s ease-in-out, box-shadow 0.2s ease-in-out, opacity 0.2s ease-in-out',
-                position: 'relative'
+                gap: '2px',
+                flexShrink: 0,
+                overflow: 'visible',
               }}
             >
-            {/* File Attachments Display - Inside search bar container, top-left */}
-            {attachedFiles.length > 0 && (
-                <div 
-                  style={{ height: 'auto' }}
-                  className="mb-4 flex flex-wrap gap-2 justify-start"
+            <AnimatePresence mode="wait">
+              {attachedFiles.length > 0 && (
+                <motion.div 
+                  key="file-attachments-search"
+                  initial={false}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.1, ease: "easeOut" }}
+                  style={{ maxHeight: '52px', overflowY: 'auto', marginBottom: '12px', flexShrink: 0 }}
+                  className="flex flex-wrap gap-2 justify-start"
+                  layout={false}
                 >
                   {attachedFiles.map((file, idx) => {
                   const fileKey = (file.id && String(file.id).length > 0) 
@@ -1475,27 +1482,42 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                   />
                   );
                 })}
-                </div>
+                </motion.div>
               )}
+            </AnimatePresence>
             
-            {/* Input row - Always show icons at bottom */}
-            <div 
-              className="relative flex flex-col w-full" 
-              style={{ 
-                height: 'auto', 
-                minHeight: '24px',
-                width: '100%',
-                minWidth: '0', // Prevent width constraints
-                gap: isMapVisible ? '0' : '12px' // Match SideChatPanel: no gap in map view, use gap in dashboard
-              }}
-            >
-              {/* Inline text + chips (SegmentInput) - ref used as popover anchor so it sits directly under input */}
-              <div 
-                ref={atMentionAnchorRef}
+            {/* SegmentInput row - same as SideChatPanel (48px height, marginBottom 6px) */}
+              <div
                 className="flex items-start w-full"
-                style={{ minHeight: '24px', width: '100%', marginTop: isMapVisible ? '4px' : '0px', marginBottom: isMapVisible ? '12px' : '0px', paddingTop: 0, paddingBottom: 0 }}
+                style={{ height: 'auto', minHeight: '28px', width: '100%', marginBottom: '6px', flexShrink: 0 }}
               >
-                <div className="flex-1 relative flex items-start w-full" style={{ overflow: 'visible', minHeight: '24px', width: '100%', minWidth: '0', alignSelf: 'flex-start' }} onFocus={() => setIsFocused(true)} onBlur={() => setIsFocused(false)}>
+                <div
+                  ref={atMentionAnchorRef}
+                  className="flex-1 relative flex items-start w-full"
+                  style={{ overflow: 'visible', height: 'auto', minHeight: '28px', width: '100%', minWidth: '0', flexShrink: 0 }}
+                  onFocus={() => setIsFocused(true)}
+                  onBlur={() => setIsFocused(false)}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  {(segmentInput.getPlainText().trim() !== '' || propertyAttachments.length > 0 || atMentionDocumentChips.length > 0 || attachedFiles.length > 0) && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        segmentInput.setSegments([{ type: "text", value: "" }]);
+                        setAtMentionDocumentChips([]);
+                        clearPropertyAttachments();
+                        setAttachedFiles([]);
+                        inputRef.current?.focus();
+                      }}
+                      className="absolute right-2 top-[11px] -translate-y-1/2 flex items-center justify-center w-6 h-6 text-gray-400 hover:text-gray-600 transition-colors z-10"
+                      title="Clear query"
+                      aria-label="Clear query"
+                    >
+                      <X className="w-5 h-5" strokeWidth={2} />
+                    </button>
+                  )}
                   <SegmentInput
                     ref={inputRef}
                     segments={segmentInput.segments}
@@ -1521,19 +1543,24 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                     removeChipAtSegmentIndex={segmentInput.removeChipAtIndex}
                     restoreSelectionRef={restoreSelectionRef}
                     placeholder={contextConfig.placeholder}
+                    placeholderFontSize="16.38px"
                     disabled={isSubmitted}
                     style={{
                       width: '100%',
+                      height: '36px',
                       minHeight: '28px',
                       maxHeight: contextConfig.position === "bottom" && !isMapVisible ? 'calc(100vh - 200px)' : isMapVisible ? '120px' : isDashboardView ? '160px' : '350px',
+                      overflowY: 'auto',
+                      overflowX: 'hidden',
                       lineHeight: '20px',
-                      paddingTop: '0px',
+                      paddingTop: '12px',
                       paddingBottom: '4px',
-                      paddingRight: '12px',
-                      paddingLeft: '6px',
+                      paddingRight: '36px',
+                      paddingLeft: '14px',
                       color: segmentInput.getPlainText() ? '#333333' : undefined,
                       boxSizing: 'border-box',
                     }}
+                    scrollWrapperPaddingBottom={isMapVisible ? undefined : '14px'}
                     onKeyDown={(e) => {
                       if (e.key === 'Enter' && !e.shiftKey) {
                         e.preventDefault();
@@ -1545,7 +1572,6 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                       }
                     }}
                   />
-                </div>
               </div>
               <AtMentionPopover
                 open={atMentionOpen}
@@ -1562,25 +1588,74 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                   setAtItems([]);
                 }}
               />
-              {/* Icons row - Panel toggle, Map toggle on left, other icons on right */}
-              <div 
-                className="relative flex items-center justify-between w-full"
-                style={{
-                  width: '100%',
-                  minWidth: '0',
-                  minHeight: '32px', // Match SideChatPanel
-                  flexShrink: 0 // Prevent shrinking
-                }}
-              >
-                {/* Left group: Mode selector, Model selector, Panel toggle */}
-                <div className="flex items-center flex-shrink-0 gap-1">
-                  {/* Mode Selector Dropdown - show labels on dashboard (same as Tools/Attach/Voice) */}
-                  <ModeSelector compact={false} />
-                  {/* Model Selector Dropdown - show labels on dashboard */}
-                  <ModelSelector compact={false} />
-                  
-                  {/* Panel Toggle Button - In map view, Chat is in Tools dropdown; otherwise show "Expand chat" or "Analyse" */}
-                  {onPanelToggle && !isMapVisible && (
+            </div>
+            </div>
+            {/* Button row - same as SideChatPanel (direct child of bar, bar padding applies) */}
+            {(() => {
+                const isVeryNarrow = false; // dashboard search bar: match SideChatPanel structure; set true for narrow layout if needed
+                return (
+                  <div
+                    className={`relative flex w-full ${isVeryNarrow ? 'flex-col gap-2' : 'items-center justify-between'}`}
+                    style={{
+                      width: '100%',
+                      minWidth: '0',
+                      height: isVeryNarrow ? 'auto' : '36px',
+                      minHeight: isVeryNarrow ? 'auto' : '36px',
+                      flexShrink: 0,
+                      overflow: 'hidden', // Prevent visual overflow while measuring
+                      marginTop: '-4px',
+                    }}
+                  >
+                    {/* Left: Plus (Attach), Mode selector, Model selector - same as SideChatPanel */}
+                    <div className={`flex items-center gap-1 ${isVeryNarrow ? 'justify-start' : ''}`} style={{ flexShrink: 1, minWidth: 0, overflow: 'hidden' }}>
+                  {contextConfig.showMic && (
+                    <>
+                      <input
+                        ref={fileInputRef}
+                        type="file"
+                        multiple
+                        onChange={(e) => {
+                          const files = Array.from(e.target.files || []);
+                          files.forEach(file => handleFileUpload(file));
+                          if (fileInputRef.current) {
+                            fileInputRef.current.value = '';
+                          }
+                        }}
+                        className="hidden"
+                        accept="image/*,.pdf,.doc,.docx"
+                      />
+                      <ChatBarAttachDropdown
+                        onAttachClick={() => fileInputRef.current?.click()}
+                        toolsItems={onMapToggle != null ? [
+                          {
+                            id: 'web-search',
+                            icon: Globe,
+                            label: 'Search the web',
+                            onClick: () => setIsWebSearchEnabled((prev) => !prev),
+                          },
+                          {
+                            id: 'map',
+                            icon: isMapVisible ? LibraryBig : MapPinHouse,
+                            label: isMapVisible ? 'Back to search' : 'Go to map',
+                            onClick: () => onMapToggle?.(),
+                          },
+                          ...(isMapVisible && onPanelToggle ? [{
+                            id: 'chat',
+                            icon: MessageCircle,
+                            label: 'Chat',
+                            onClick: () => onPanelToggle(),
+                          }] : []),
+                        ] : []}
+                      />
+                    </>
+                  )}
+                      {/* Mode Selector Dropdown - show labels on dashboard (same as Tools/Attach/Voice) */}
+                      <ModeSelector compact={true} className="mr-2" />
+                      {/* Model Selector Dropdown - icon only in chat bar */}
+                      <ModelSelector compact={true} />
+                      
+                      {/* Panel Toggle Button - In map view, Chat is in Tools dropdown; otherwise show "Expand chat" or "Analyse" */}
+                      {onPanelToggle && !isMapVisible && (
                     isPropertyDetailsOpen ? (
                     <button
                       type="button"
@@ -1618,7 +1693,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                           e.currentTarget.style.boxShadow = '0 1px 2px rgba(0, 0, 0, 0.05)';
                         }}
                     >
-                        <Brain className="w-3.5 h-3.5" strokeWidth={2} style={{ animation: 'none' }} />
+                        <Brain className="w-5 h-5" strokeWidth={2} style={{ animation: 'none' }} />
                         <span style={{ animation: 'none' }}>Analyse</span>
                     </button>
                     ) : (
@@ -1627,35 +1702,31 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                         onClick={onPanelToggle}
                         className="flex items-center gap-1.5 px-2 py-1 text-gray-900 transition-colors focus:outline-none outline-none"
                         style={{
-                          backgroundColor: '#FFFFFF',
-                          border: '1px solid rgba(229, 231, 235, 0.6)',
-                          borderRadius: '12px',
+                          backgroundColor: '#F5F5F5',
+                          border: '1px solid rgba(229, 231, 235, 0.5)',
+                          borderRadius: '9999px',
                           transition: 'background-color 0.2s ease',
                           marginLeft: hasPreviousSession && isMapVisible ? '8px' : '4px',
                           height: '24px',
                           minHeight: '24px'
                         }}
                         onMouseEnter={(e) => {
-                          e.currentTarget.style.backgroundColor = '#F5F5F5';
+                          e.currentTarget.style.backgroundColor = '#EBEBEB';
                         }}
                         onMouseLeave={(e) => {
-                          e.currentTarget.style.backgroundColor = '#FFFFFF';
+                          e.currentTarget.style.backgroundColor = '#F5F5F5';
                         }}
                         title="Expand chat"
                       >
-                        <MessageCircle className="w-3.5 h-3.5" strokeWidth={1.5} />
+                        <MessageCircle className="w-5 h-5" strokeWidth={1.5} />
                         <span className="text-xs font-medium">Chat</span>
                       </button>
                     )
-                  )}
-                </div>
-              
-                {/* Other icons - on the right */}
-                <div className="flex items-center space-x-3 flex-shrink-0" style={{ 
-                  minWidth: '0',
-                  flexShrink: 0,
-                  marginRight: '4px'
-                }}>
+                      )}
+                    </div>
+
+                    {/* Right Icons - same as SideChatPanel */}
+                    <div className={`flex items-center gap-1.5 flex-shrink-0 ${isVeryNarrow ? 'flex-wrap justify-end' : ''}`} style={{ marginRight: '4px' }}>
                 {/* Document Selection Toggle Button - Only show when property details panel is open */}
                 {isPropertyDetailsOpen && (
                   <div className="relative flex items-center">
@@ -1706,101 +1777,31 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                             className="ml-1 p-0.5 text-gray-400 hover:text-red-500 transition-colors"
                             title="Clear document selection"
                           >
-                            <X className="w-3.5 h-3.5" strokeWidth={2} />
+                            <X className="w-5 h-5" strokeWidth={2} />
                           </button>
                         )}
                       </div>
                     )}
                 
-                {/* Tools, Attach, Voice, Send - right side, Tools always next to Attach; same menu everywhere: Search the web + Map/Back to search */}
-                <div className="flex items-center gap-2">
-                  {onMapToggle != null && (
-                    <>
-                      {isWebSearchEnabled && (
-                        <WebSearchPill onDismiss={() => setIsWebSearchEnabled(false)} />
-                      )}
-                      <ChatBarToolsDropdown
-                        items={[
-                          {
-                            id: 'web-search',
-                            icon: Globe,
-                            label: 'Search the web',
-                            onClick: () => setIsWebSearchEnabled((prev) => !prev),
-                          },
-                          {
-                            id: 'map',
-                            icon: isMapVisible ? LibraryBig : MapPinHouse,
-                            label: isMapVisible ? 'Back to search' : 'Go to map',
-                            onClick: () => onMapToggle?.(),
-                          },
-                          ...(isMapVisible && onPanelToggle
-                            ? [
-                                {
-                                  id: 'chat',
-                                  icon: MessageCircle,
-                                  label: 'Chat',
-                                  onClick: () => onPanelToggle(),
-                                },
-                              ]
-                            : []),
-                        ]}
-                      />
-                    </>
+                      {/* WebSearchPill when on, Voice, Send */}
+                      <div className="flex items-center gap-1.5 flex-shrink-0">
+                  {onMapToggle != null && isWebSearchEnabled && (
+                    <WebSearchPill onDismiss={() => setIsWebSearchEnabled(false)} />
                   )}
-                  {contextConfig.showMic && (
-                    <>
-                      <input
-                        ref={fileInputRef}
-                        type="file"
-                        multiple
-                        onChange={(e) => {
-                          const files = Array.from(e.target.files || []);
-                          files.forEach(file => handleFileUpload(file));
-                          if (fileInputRef.current) {
-                            fileInputRef.current.value = '';
-                          }
-                        }}
-                        className="hidden"
-                        accept="image/*,.pdf,.doc,.docx"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => fileInputRef.current?.click()}
-                        className="flex items-center gap-1.5 text-gray-900 transition-colors focus:outline-none outline-none"
-                        style={{
-                          backgroundColor: '#FFFFFF',
-                          border: '1px solid rgba(229, 231, 235, 0.6)',
-                          borderRadius: '12px',
-                          transition: 'background-color 0.2s ease, border-color 0.2s ease',
-                          height: '24px',
-                          minHeight: '24px',
-                          paddingLeft: '8px',
-                          paddingRight: '8px',
-                        }}
-                        onMouseEnter={(e) => {
-                          e.currentTarget.style.backgroundColor = '#F5F5F5';
-                        }}
-                        onMouseLeave={(e) => {
-                          e.currentTarget.style.backgroundColor = '#FFFFFF';
-                        }}
-                        title="Attach file"
-                      >
-                        <Paperclip className="w-3.5 h-3.5" strokeWidth={1.5} />
-                        <span className="text-xs font-medium">Attach</span>
-                      </button>
-                    </>
-                  )}
-                  
                   {contextConfig.showMic && (
                     <button
                       type="button"
                       onClick={() => {}}
-                      className="flex items-center gap-1.5 px-2 py-1 rounded-full text-gray-900 transition-colors focus:outline-none outline-none"
+                      className="flex items-center justify-center text-gray-900 transition-colors focus:outline-none outline-none"
                       style={{
                         backgroundColor: '#F3F3F3',
                         transition: 'background-color 0.2s ease',
-                        height: '24px',
-                        minHeight: '24px'
+                        width: '32px',
+                        height: '32px',
+                        minWidth: '32px',
+                        minHeight: '32px',
+                        padding: '6px',
+                        borderRadius: '50%'
                       }}
                       onMouseEnter={(e) => {
                         e.currentTarget.style.backgroundColor = '#EBEBEB';
@@ -1809,8 +1810,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                         e.currentTarget.style.backgroundColor = '#F3F3F3';
                       }}
                     >
-                      <AudioLines className="w-3.5 h-3.5" strokeWidth={1.5} />
-                      <span className="text-xs font-medium">Voice</span>
+                      <AudioLines className="w-5 h-5" strokeWidth={1.5} />
                     </button>
                   )}
                 
@@ -1820,16 +1820,16 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                       key="send-button"
                       type="submit" 
                       onClick={handleSubmit} 
-                      initial={{ opacity: 0, scale: 0.8 }}
+                      initial={{ opacity: 1, scale: 1 }}
                       animate={{ opacity: 1, scale: 1, backgroundColor: '#4A4A4A' }}
-                      exit={{ opacity: 0, scale: 0.8 }}
-                      transition={{ duration: 0.15, ease: [0.16, 1, 0.3, 1] }}
+                      exit={{ opacity: 1, scale: 1 }}
+                      transition={{ duration: 0 }}
                       className={`flex items-center justify-center relative focus:outline-none outline-none ${!isSubmitted ? '' : 'cursor-not-allowed'}`}
                       style={{
-                        width: '24px',
-                        height: '24px',
-                        minWidth: '24px',
-                        minHeight: '24px',
+                        width: '36px',
+                        height: '36px',
+                        minWidth: '36px',
+                        minHeight: '36px',
                         borderRadius: '50%',
                         flexShrink: 0
                       }}
@@ -1848,17 +1848,18 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                         className="absolute inset-0 flex items-center justify-center"
                         style={{ pointerEvents: 'none' }}
                       >
-                        <ArrowUp className="w-4 h-4" strokeWidth={2.5} style={{ color: '#ffffff' }} />
+                        <ArrowUp className="w-6 h-6" strokeWidth={2.5} style={{ color: '#ffffff' }} />
                       </motion.div>
                     </motion.button>
                   )}
                 </AnimatePresence>
-                </div>
-              </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
-            </div>
-            </div>
-          </form>
+        </form>
         </div>
       </div>
       {/* Document Preview Modal is now rendered at MainContent level using shared context */}

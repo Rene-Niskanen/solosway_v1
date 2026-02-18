@@ -104,10 +104,10 @@ export const UsageAndBillingSection: React.FC = () => {
       </div>
 
       {/* Current plan card — same shape/position as overlay, primary styling */}
-      <div className="w-full min-w-0 rounded-xl border border-gray-200 p-6 shadow-sm" style={{ backgroundColor: '#F1F2EE' }}>
+      <div className="w-full min-w-0 rounded-xl border border-gray-200 p-6 shadow-sm" style={{ backgroundColor: '#F6F7F3' }}>
         <div className="flex flex-wrap items-baseline gap-2 mb-2">
           <span className="text-[17px] font-normal text-gray-900">{planName}</span>
-          <span className="inline-flex items-center rounded-[2px] bg-gray-600 px-1 py-0.5 text-[10px] font-medium text-gray-200 leading-tight -translate-y-0.5">Current</span>
+          <span className="inline-flex items-center rounded-md bg-gray-600 px-1.5 py-px text-[10px] font-medium text-gray-200 leading-tight -translate-y-0.5">Current</span>
           {planPriceFormatted != null && (
             <span className="text-[15px] font-normal text-gray-700">{planPriceFormatted}/mo.</span>
           )}
@@ -131,7 +131,7 @@ export const UsageAndBillingSection: React.FC = () => {
       </div>
 
       {/* Usage this period / month */}
-      <div className="rounded-lg border border-gray-200 p-6 shadow-sm" style={{ backgroundColor: '#F1F2EE' }}>
+      <div className="rounded-lg border border-gray-200 p-6 shadow-sm" style={{ backgroundColor: '#F6F7F3' }}>
         <h4 className="text-[14px] font-normal text-gray-900 mb-3">
           {usageSectionTitle}
           {periodEndFormatted && (

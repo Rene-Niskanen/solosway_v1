@@ -626,10 +626,10 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
     );
   }
 
-  // Show full page with cream background - fills parent so layout adjusts to sidebar
+  // Show full page with cream background - fills parent tightly next to sidebar
   return (
     <div 
-      className="relative w-full min-h-full overflow-y-auto"
+      className="relative w-full h-full min-h-0 overflow-y-auto"
       style={{
         background: '#FCFCF9',
         pointerEvents: 'auto',

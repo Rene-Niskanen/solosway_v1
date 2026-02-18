@@ -5,7 +5,7 @@ import { useMemo } from "react";
 import { createPortal, flushSync } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { generateAnimatePresenceKey, generateConditionalKey, generateUniqueKey } from '../utils/keyGenerator';
-import { ChevronLeft, ChevronRight, ChevronDown, ChevronUp, ArrowUp, Paperclip, Mic, Map, Globe, X, SquareDashedMousePointer, Scan, Fullscreen, PanelLeftOpen, PanelRightClose, PictureInPicture2, Trash2, CreditCard, MoveDiagonal, Square, Files, Image as ImageIcon, File as FileIcon, FileCheck, Minimize, Minimize2, Workflow, Home, Brain, AudioLines, MessageCircle, MessageCircleDashed, Copy, Search, MessageSquare, Pencil, Check, Highlighter, SlidersHorizontal, BookOpen, Download, ThumbsUp, ThumbsDown, Link2, Star, FolderPlus, FileSearchCorner } from "lucide-react";
+import { ChevronLeft, ChevronRight, ChevronDown, ChevronUp, ArrowUp, Mic, Map, Globe, X, SquareDashedMousePointer, Scan, Fullscreen, PanelLeftOpen, PanelRightClose, PictureInPicture2, Trash2, CreditCard, MoveDiagonal, Square, Files, Image as ImageIcon, File as FileIcon, FileCheck, Minimize, Minimize2, Workflow, Home, Brain, AudioLines, MessageCircle, MessageCircleDashed, Copy, Search, MessageSquare, Pencil, Check, Highlighter, SlidersHorizontal, BookOpen, Download, ThumbsUp, ThumbsDown, Link2, Star, FolderPlus, FileSearchCorner } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { FileAttachment, FileAttachmentData } from './FileAttachment';
 import { PropertyAttachmentData } from './PropertyAttachment';
@@ -38,7 +38,7 @@ import { useMode } from '../contexts/ModeContext';
 import { useModel } from '../contexts/ModelContext';
 import { useBrowserFullscreen } from '../contexts/BrowserFullscreenContext';
 import { BotStatusOverlay } from './BotStatusOverlay';
-import { ChatBarToolsDropdown } from './ChatBarToolsDropdown';
+import { ChatBarAttachDropdown } from './ChatBarAttachDropdown';
 import { WebSearchPill } from './SelectedModePill';
 import { PlanViewer, PlanBuildStatus } from './PlanViewer';
 import { ExpandedPlanViewer } from './ExpandedPlanViewer';
@@ -58,6 +58,8 @@ import { useCitationExportOptional } from '../contexts/CitationExportContext';
 import { useFeedbackModal } from '../contexts/FeedbackModalContext';
 import { cropPageImageToBbox, buildDocxMarkdownWithCitationImages } from '../utils/citationExport';
 import { convertMarkdownToDocx, downloadDocx } from '@mohtasham/md-to-docx';
+import { playCompletionSound } from '../utils/playCompletionSound';
+import { INPUT_BAR_SPACE_BELOW_PANEL } from '@/utils/inputBarPosition';
 
 /** Strip HTML/SVG tags from query string so submitted text never includes e.g. <svg /> from icons. */
 function stripHtmlFromQuery(s: string): string {
@@ -697,7 +699,11 @@ const StreamingResponseText: React.FC<{
   citationViewedInDocument?: { messageId: string; citationNumber: string } | null;
   /** Called when user clicks "Close document" on a citation callout. */
   onCloseDocumentFromCallout?: () => void;
-}> = ({ text, isStreaming, citations, handleCitationClick, renderTextWithCitations, onTextUpdate, messageId, skipHighlight, showCitations = true, orangeCitationNumbers, selectedCitationNumber, selectedCitationMessageId, skipHighlightSwoop = false, skipRevealAnimation = false, onRevealComplete, savedCitationNumbersForMessage, onAskFollowUpFromCallout, onViewInDocumentFromCallout, citationViewedInDocument, onCloseDocumentFromCallout }) => {
+  /** Set of closed callout keys `${messageId}:${citationNumber}` so callouts stay closed when user clicks the citation link again. */
+  closedCitationCallouts?: Set<string>;
+  /** Called when user clicks × on a citation callout. */
+  onCloseCitationCallout?: (messageId: string, citationNumber: string) => void;
+}> = ({ text, isStreaming, citations, handleCitationClick, renderTextWithCitations, onTextUpdate, messageId, skipHighlight, showCitations = true, orangeCitationNumbers, selectedCitationNumber, selectedCitationMessageId, skipHighlightSwoop = false, skipRevealAnimation = false, onRevealComplete, savedCitationNumbersForMessage, onAskFollowUpFromCallout, onViewInDocumentFromCallout, citationViewedInDocument, onCloseDocumentFromCallout, closedCitationCallouts, onCloseCitationCallout }) => {
   const [shouldAnimate, setShouldAnimate] = React.useState(false);
   const hasAnimatedRef = React.useRef(false);
   const hasSwoopedBlueRef = React.useRef(false);
@@ -744,21 +750,7 @@ const StreamingResponseText: React.FC<{
     streamingRef.current = !!(text && text.length > prevTextLenRef.current) || !!isStreaming;
   }, [text, isStreaming]);
 
-  // Preload citation preview images as soon as we have citations so callouts snap in when ready (no loading state)
-  React.useEffect(() => {
-    if (!citations) return;
-    for (const num of Object.keys(citations)) {
-      const c = citations[num];
-      const docId = c?.doc_id ?? (c as { document_id?: string })?.document_id;
-      const pageNum = c?.page ?? c?.bbox?.page ?? (c as { page_number?: number })?.page_number ?? 1;
-      const filename = ((c?.original_filename ?? '') as string).toLowerCase();
-      const isWord = filename.endsWith('.docx') || filename.endsWith('.doc');
-      const hasBbox = c?.bbox && typeof c.bbox.left === 'number' && typeof c.bbox.top === 'number' && typeof c.bbox.width === 'number' && typeof c.bbox.height === 'number';
-      if (docId && hasBbox && !isWord) {
-        preloadHoverPreview(docId, pageNum).catch(() => {});
-      }
-    }
-  }, [citations]);
+  // Citation preview is loaded only when CitationCallout is in view (IntersectionObserver), not on citation appear
 
   // When showing restored/persisted messages (re-entered chat), skip all reveal animation and show full text at once.
   React.useEffect(() => {
@@ -1462,7 +1454,7 @@ const StreamingResponseText: React.FC<{
           )}
           {citationNumbers.map((num, i) => (
             <div key={`callout-p-${i}-${num}`} style={{ width: '100%', maxWidth: '100%', minWidth: 0, boxSizing: 'border-box' }}>
-              <CitationCallout citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} />
+              <CitationCallout citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} isCalloutClosed={closedCitationCallouts?.has(`${messageId ?? ''}:${num}`)} onCloseCallout={onCloseCitationCallout ? () => onCloseCitationCallout(messageId ?? '', num) : undefined} />
             </div>
           ))}
         </>
@@ -1482,7 +1474,7 @@ const StreamingResponseText: React.FC<{
             wordBreak: 'break-word'
           }}>{processChildrenWithCitationsFlattened(children ?? null, 'h1')}</h1>
           {citationNumbers.map((num, i) => (
-            <CitationCallout key={`callout-h1-${i}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} />
+            <CitationCallout key={`callout-h1-${i}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} isCalloutClosed={closedCitationCallouts?.has(`${messageId ?? ''}:${num}`)} onCloseCallout={onCloseCitationCallout ? () => onCloseCitationCallout(messageId ?? '', num) : undefined} />
           ))}
         </>
       );
@@ -1502,7 +1494,7 @@ const StreamingResponseText: React.FC<{
           }}>{processChildrenWithCitationsFlattened(children ?? null, 'h2')}</h2>
           {citationNumbers.map((num, i) => (
             <div key={`callout-h2-${i}-${num}`} style={{ width: '100%', maxWidth: '100%', minWidth: 0, boxSizing: 'border-box' }}>
-              <CitationCallout citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} />
+              <CitationCallout citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} isCalloutClosed={closedCitationCallouts?.has(`${messageId ?? ''}:${num}`)} onCloseCallout={onCloseCitationCallout ? () => onCloseCitationCallout(messageId ?? '', num) : undefined} />
             </div>
           ))}
         </>
@@ -1523,7 +1515,7 @@ const StreamingResponseText: React.FC<{
           }}>{processChildrenWithCitationsFlattened(children ?? null, 'h3')}</h3>
           {citationNumbers.map((num, i) => (
             <div key={`callout-h3-${i}-${num}`} style={{ width: '100%', maxWidth: '100%', minWidth: 0, boxSizing: 'border-box' }}>
-              <CitationCallout citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} />
+              <CitationCallout citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} isCalloutClosed={closedCitationCallouts?.has(`${messageId ?? ''}:${num}`)} onCloseCallout={onCloseCitationCallout ? () => onCloseCitationCallout(messageId ?? '', num) : undefined} />
             </div>
           ))}
         </>
@@ -1560,7 +1552,7 @@ const StreamingResponseText: React.FC<{
           {processChildrenWithCitationsFlattened(children ?? null, 'li')}
           {citationNumbers.map((num, i) => (
             <div key={`callout-li-${i}-${num}`} style={{ width: '100%', maxWidth: '100%', minWidth: 0, boxSizing: 'border-box' }}>
-              <CitationCallout citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} />
+              <CitationCallout citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} isCalloutClosed={closedCitationCallouts?.has(`${messageId ?? ''}:${num}`)} onCloseCallout={onCloseCitationCallout ? () => onCloseCitationCallout(messageId ?? '', num) : undefined} />
             </div>
           ))}
         </li>
@@ -1611,14 +1603,14 @@ const StreamingResponseText: React.FC<{
           }}>{processChildrenWithCitationsFlattened(children ?? null, 'blockquote')}</blockquote>
           {citationNumbers.map((num, i) => (
             <div key={`callout-blockquote-${i}-${num}`} style={{ width: '100%', maxWidth: '100%', minWidth: 0, boxSizing: 'border-box' }}>
-              <CitationCallout citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} />
+              <CitationCallout citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} isCalloutClosed={closedCitationCallouts?.has(`${messageId ?? ''}:${num}`)} onCloseCallout={onCloseCitationCallout ? () => onCloseCitationCallout(messageId ?? '', num) : undefined} />
             </div>
           ))}
         </>
       );
     },
     hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '17.5px 0' }} />,
-  }), [renderCitationPlaceholder, skipHighlight, runBlueSwoop, isStreaming, citations, onAskFollowUpFromCallout, onViewInDocumentFromCallout, citationViewedInDocument, onCloseDocumentFromCallout, messageId]);
+  }), [renderCitationPlaceholder, skipHighlight, runBlueSwoop, isStreaming, citations, onAskFollowUpFromCallout, onViewInDocumentFromCallout, citationViewedInDocument, onCloseDocumentFromCallout, messageId, closedCitationCallouts, onCloseCitationCallout]);
 
   return (
     <>
@@ -1759,6 +1751,8 @@ function streamingResponseTextAreEqual(
     prev.selectedCitationMessageId === next.selectedCitationMessageId &&
     prev.onRevealComplete === next.onRevealComplete &&
     setsEqual(prev.savedCitationNumbersForMessage, next.savedCitationNumbersForMessage) &&
+    setsEqual(prev.closedCitationCallouts, next.closedCitationCallouts) &&
+    prev.onCloseCitationCallout === next.onCloseCitationCallout &&
     viewedEqual
   );
 }
@@ -2186,7 +2180,11 @@ const CitationCallout: React.FC<{
   /** When true, show "Close document" and call onCloseDocument on click. */
   isViewedInDocument?: boolean;
   onCloseDocument?: () => void;
-}> = ({ citationNumber, citation, onAskFollowUp, onViewInDocument, isViewedInDocument, onCloseDocument }) => {
+  /** When true (from parent), callout was closed by user — stay hidden so clicking the citation link only opens the floating panel. */
+  isCalloutClosed?: boolean;
+  /** Called when user clicks ×; parent can persist closed state so callout does not re-open on citation link click. */
+  onCloseCallout?: () => void;
+}> = ({ citationNumber, citation, onAskFollowUp, onViewInDocument, isViewedInDocument, onCloseDocument, isCalloutClosed, onCloseCallout }) => {
   const raw = (citation?.cited_text ?? citation?.block_content ?? '').trim();
   const text = raw ? sanitizeCitationCalloutText(raw) : '';
   const displayText = text || 'View in document for full source.';
@@ -2207,7 +2205,10 @@ const CitationCallout: React.FC<{
     return c ? { pageImage: c.pageImage, imageWidth: c.imageWidth, imageHeight: c.imageHeight } : null;
   });
   const previewContainerRef = React.useRef<HTMLDivElement>(null);
+  const calloutRootRef = React.useRef<HTMLDivElement>(null);
+  const [inView, setInView] = React.useState(false);
   const [previewSize, setPreviewSize] = React.useState({ width: 400, height: 180 });
+  const [isClosed, setIsClosed] = React.useState(false);
 
   React.useLayoutEffect(() => {
     const el = previewContainerRef.current;
@@ -2220,9 +2221,23 @@ const CitationCallout: React.FC<{
     return () => ro.disconnect();
   }, []);
 
+  // Defer preview load until the callout is in view (reduces work when many citations are off-screen)
   React.useEffect(() => {
-    if (!canShowPreview) {
-      setCachedPageImage(null);
+    const el = calloutRootRef.current;
+    if (!el) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) setInView(true);
+      },
+      { rootMargin: '80px', threshold: 0 }
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, []);
+
+  React.useEffect(() => {
+    if (!canShowPreview || !inView) {
+      if (!canShowPreview) setCachedPageImage(null);
       return;
     }
     const cacheKey = `hover-${docId}-${pageNum}`;
@@ -2237,7 +2252,7 @@ const CitationCallout: React.FC<{
       setCachedPageImage({ pageImage: entry.pageImage, imageWidth: entry.imageWidth, imageHeight: entry.imageHeight });
     });
     return () => { cancelled = true; };
-  }, [canShowPreview, docId, pageNum]);
+  }, [canShowPreview, docId, pageNum, inView]);
 
   const transform = React.useMemo(() => {
     if (!cachedPageImage || !hasBbox || !bbox) {
@@ -2276,48 +2291,85 @@ const CitationCallout: React.FC<{
     }
   }, []);
 
-  return (
-    <div
-      role="region"
-      aria-label={`Citation ${citationNumber} excerpt`}
-      data-citation-callout={citationNumber}
-      onWheel={handleWheel}
+  const rootProps = {
+    role: 'region' as const,
+    'aria-label': `Citation ${citationNumber} excerpt`,
+    'data-citation-callout': citationNumber,
+    onWheel: handleWheel,
+  };
+
+  const closeButtonPadding = 10;
+  const closeButton = (
+    <button
+      type="button"
+      onClick={(e) => {
+        e.stopPropagation();
+        onCloseCallout?.();
+        if (!onCloseCallout) setIsClosed(true);
+      }}
+      aria-label="Close citation"
       style={{
-        display: 'block',
-        width: '100%',
-        maxWidth: '100%',
-        minWidth: 0,
-        boxSizing: 'border-box',
-        marginTop: '8.8px',
-        marginBottom: '17.5px',
-        padding: '13.1px 15.2px',
-        backgroundColor: 'transparent',
+        position: 'absolute',
+        top: closeButtonPadding,
+        right: closeButtonPadding,
+        zIndex: 2,
+        width: 28,
+        height: 28,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: 0,
         border: 'none',
-        borderRadius: '8px',
-        fontSize: '15.2px',
-        lineHeight: '1.7',
-        color: text ? '#374151' : '#6b7280',
-        fontFamily: 'Inter, system-ui, sans-serif',
-        wordWrap: 'break-word',
-        overflowWrap: 'break-word',
-        whiteSpace: 'pre-wrap',
-        overflow: 'hidden',
+        borderRadius: 6,
+        backgroundColor: 'transparent',
+        color: 'rgba(0,0,0,0.28)',
+        cursor: 'pointer',
+        fontSize: '20px',
+        lineHeight: 0,
+        fontFamily: 'inherit',
+        transition: 'color 0.15s ease, background-color 0.15s ease',
+      }}
+      onMouseEnter={(e) => {
+        const el = e.currentTarget as HTMLElement;
+        el.style.color = 'rgba(0,0,0,0.5)';
+        el.style.backgroundColor = 'rgba(0,0,0,0.06)';
+      }}
+      onMouseLeave={(e) => {
+        const el = e.currentTarget as HTMLElement;
+        el.style.color = 'rgba(0,0,0,0.28)';
+        el.style.backgroundColor = 'transparent';
       }}
     >
-      {hasCalloutCard && (
-        <div
-          style={{
-            display: 'flex',
-            flexDirection: 'column',
-            width: '100%',
-            minWidth: 0,
-            borderRadius: 12,
-            overflow: 'hidden',
-            border: '1px solid #e5e7eb',
-            boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
-            marginTop: 0,
-          }}
-        >
+      <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%', height: '100%', lineHeight: 0 }} aria-hidden>×</span>
+    </button>
+  );
+
+  const effectivelyClosed = isCalloutClosed ?? isClosed;
+  if (effectivelyClosed) return null;
+
+  if (hasCalloutCard) {
+    return (
+      <div
+        ref={calloutRootRef}
+        {...rootProps}
+        style={{
+          position: 'relative',
+          display: 'flex',
+          flexDirection: 'column',
+          width: '100%',
+          maxWidth: '100%',
+          minWidth: 0,
+          boxSizing: 'border-box',
+          marginTop: '8.8px',
+          marginBottom: '17.5px',
+          borderRadius: 12,
+          overflow: 'hidden',
+          border: '1px solid #e5e7eb',
+          borderTop: 'none',
+          boxShadow: '0 2px 4px rgba(0,0,0,0.06)',
+        }}
+      >
+          {closeButton}
           {/* Preview area: show placeholder until image is ready so bar renders immediately */}
           {canShowPreview && (
             <div
@@ -2354,6 +2406,19 @@ const CitationCallout: React.FC<{
                   Loading preview…
                 </div>
               )}
+              {/* Gradient fade from preview into document bar */}
+              <div
+                aria-hidden
+                style={{
+                  position: 'absolute',
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                  height: 32,
+                  background: 'linear-gradient(to bottom, transparent, rgba(255,255,255,0.85) 40%, #FFFFFF)',
+                  pointerEvents: 'none',
+                }}
+              />
             </div>
           )}
           {/* Document bar + actions: always visible as soon as we have docId */}
@@ -2367,7 +2432,6 @@ const CitationCallout: React.FC<{
               padding: '8px 12px',
               minHeight: 40,
               backgroundColor: '#FFFFFF',
-              borderTop: canShowPreview ? '1px solid #e5e7eb' : 'none',
             }}
           >
             <div
@@ -2400,16 +2464,17 @@ const CitationCallout: React.FC<{
                   style={{ width: 14, height: 14, objectFit: 'contain' }}
                 />
               </div>
-              <div style={{ minWidth: 0, flex: 1 }}>
+              <div style={{ minWidth: 0, flex: 1, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'nowrap' }}>
                 <div
                   style={{
                     fontWeight: 600,
-                    fontSize: '12px',
+                    fontSize: '11px',
                     color: '#1f2937',
                     lineHeight: 1.25,
                     overflow: 'hidden',
                     textOverflow: 'ellipsis',
                     whiteSpace: 'nowrap',
+                    maxWidth: 140,
                   }}
                 >
                   {displayFilename}
@@ -2418,13 +2483,14 @@ const CitationCallout: React.FC<{
                   style={{
                     fontSize: '11px',
                     color: '#6b7280',
-                    marginTop: 0,
+                    lineHeight: 1.25,
+                    flexShrink: 0,
+                    whiteSpace: 'nowrap',
                   }}
                 >
-                  {displayDocType} · Page {pageNum}
+                  Page {pageNum}
                 </div>
               </div>
-              <ChevronDown style={{ width: 12, height: 12, color: '#9ca3af', flexShrink: 0 }} aria-hidden />
             </div>
             {(onAskFollowUp || onViewInDocument) && (
               <div
@@ -2449,29 +2515,29 @@ const CitationCallout: React.FC<{
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'center',
-                      gap: '4px',
-                      padding: '4px 8px',
-                      fontSize: '11px',
+                      gap: '3px',
+                      padding: '1px 4px',
+                      fontSize: '10px',
                       fontWeight: 400,
                       color: '#374151',
                       backgroundColor: '#FFFFFF',
-                      border: '1px solid #d1d5db',
-                      borderRadius: 6,
+                      border: '1px solid #e5e7eb',
+                      borderRadius: 4,
                       cursor: 'pointer',
                       transition: 'background-color 0.15s ease, box-shadow 0.15s ease',
-                      boxShadow: '0 1px 2px rgba(0,0,0,0.05)',
+                      boxShadow: '0 1px 1px rgba(0,0,0,0.05)',
                       outline: 'none',
                     }}
                     onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#f9fafb'; }}
                     onMouseLeave={(e) => {
                       const el = e.currentTarget as HTMLElement;
                       el.style.backgroundColor = '#FFFFFF';
-                      el.style.boxShadow = '0 1px 2px rgba(0,0,0,0.05)';
+                      el.style.boxShadow = '0 1px 1px rgba(0,0,0,0.05)';
                     }}
-                    onFocus={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = '0 1px 2px rgba(0,0,0,0.05), 0 0 0 2px #0160B2'; }}
-                    onBlur={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = '0 1px 2px rgba(0,0,0,0.05)'; }}
+                    onFocus={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = '0 1px 1px rgba(0,0,0,0.05), 0 0 0 2px #0160B2'; }}
+                    onBlur={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = '0 1px 1px rgba(0,0,0,0.05)'; }}
                   >
-                    <MessageCircle style={{ width: 12, height: 12 }} strokeWidth={2} />
+                    <MessageCircle style={{ width: 10, height: 10 }} strokeWidth={2} />
                     Ask Question
                   </button>
                 )}
@@ -2491,37 +2557,37 @@ const CitationCallout: React.FC<{
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'center',
-                      gap: '4px',
-                      padding: '4px 8px',
-                      fontSize: '11px',
+                      gap: '3px',
+                      padding: '1px 4px',
+                      fontSize: '10px',
                       fontWeight: 500,
                       color: isViewedInDocument ? '#78350F' : '#374151',
                       backgroundColor: isViewedInDocument ? '#F2DEB6' : '#F3F3F3',
-                      border: isViewedInDocument ? '1px solid rgba(244, 192, 133, 0.3)' : 'none',
-                      borderRadius: 6,
+                      border: isViewedInDocument ? '1px solid rgba(244, 192, 133, 0.5)' : '1px solid #e5e7eb',
+                      borderRadius: 4,
                       cursor: 'pointer',
                       transition: 'background-color 0.15s ease, box-shadow 0.15s ease',
-                      boxShadow: '0 1px 2px rgba(0,0,0,0.05)',
+                      boxShadow: '0 1px 1px rgba(0,0,0,0.05)',
                       outline: 'none',
                     }}
                     onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = isViewedInDocument ? '#E8D4A8' : '#E5E5E5'; }}
                     onMouseLeave={(e) => {
                       const el = e.currentTarget as HTMLElement;
                       el.style.backgroundColor = isViewedInDocument ? '#F2DEB6' : '#F3F3F3';
-                      el.style.boxShadow = '0 1px 2px rgba(0,0,0,0.05)';
+                      el.style.boxShadow = '0 1px 1px rgba(0,0,0,0.05)';
                     }}
-                    onFocus={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = isViewedInDocument ? '0 1px 2px rgba(0,0,0,0.05), 0 0 0 2px rgba(120, 53, 15, 0.4)' : '0 1px 2px rgba(0,0,0,0.05), 0 0 0 2px #9ca3af'; }}
-                    onBlur={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = '0 1px 2px rgba(0,0,0,0.05)'; }}
+                    onFocus={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = isViewedInDocument ? '0 1px 1px rgba(0,0,0,0.05), 0 0 0 2px rgba(120, 53, 15, 0.4)' : '0 1px 1px rgba(0,0,0,0.05), 0 0 0 2px #9ca3af'; }}
+                    onBlur={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = '0 1px 1px rgba(0,0,0,0.05)'; }}
                   >
                     {isViewedInDocument ? (
                       <>
-                        <X size={12} style={{ color: '#78350F' }} />
+                        <X size={10} style={{ color: '#78350F' }} />
                         Close document
                       </>
                     ) : (
                       <>
-                        <FileSearchCorner size={12} style={{ color: '#374151' }} />
-                        View in document
+                        <FileSearchCorner size={10} style={{ color: '#374151' }} />
+                        View document
                       </>
                     )}
                   </button>
@@ -2529,8 +2595,42 @@ const CitationCallout: React.FC<{
               </div>
             )}
           </div>
+      {docId && isWordDoc && (
+        <div style={{ marginTop: '8px', fontSize: '13px', color: '#6b7280' }}>
+          Preview not available for Word documents. Use &quot;View in document&quot; to open the file.
         </div>
       )}
+      </div>
+    );
+  }
+
+  return (
+    <div
+      {...rootProps}
+      style={{
+        position: 'relative',
+        display: 'block',
+        width: '100%',
+        maxWidth: '100%',
+        minWidth: 0,
+        boxSizing: 'border-box',
+        marginTop: '8.8px',
+        marginBottom: '17.5px',
+        padding: '13.1px 15.2px',
+        backgroundColor: 'transparent',
+        border: 'none',
+        borderRadius: '8px',
+        fontSize: '15.2px',
+        lineHeight: '1.7',
+        color: text ? '#374151' : '#6b7280',
+        fontFamily: 'Inter, system-ui, sans-serif',
+        wordWrap: 'break-word',
+        overflowWrap: 'break-word',
+        whiteSpace: 'pre-wrap',
+        overflow: 'hidden',
+      }}
+    >
+      {closeButton}
       {docId && isWordDoc && (
         <div style={{ marginTop: '8px', fontSize: '13px', color: '#6b7280' }}>
           Preview not available for Word documents. Use &quot;View in document&quot; to open the file.
@@ -3056,90 +3156,133 @@ const hoverPreviewCache = new globalThis.Map<string, HoverPreviewCacheEntry>();
 // Track in-progress preloads with promises so multiple callers can await the same load
 const hoverPreviewLoadingPromises = new globalThis.Map<string, Promise<HoverPreviewCacheEntry | null>>();
 
-// Preload high-resolution hover preview for a citation
+function getCitationPagePreviewUrl(docId: string, pageNumber: number, width?: number): string {
+  const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
+  const w = width ?? 1200;
+  return `${backendUrl}/api/files/document/${encodeURIComponent(docId)}/page/${pageNumber}/preview?width=${w}`;
+}
+
+/** Fallback: full PDF download + pdf.js render (used when preview API fails). */
+async function preloadHoverPreviewFullPdf(docId: string, pageNumber: number): Promise<HoverPreviewCacheEntry | null> {
+  const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
+  const downloadUrl = `${backendUrl}/api/files/download?document_id=${docId}`;
+  const response = await fetch(downloadUrl, { credentials: 'include' });
+  if (!response.ok) return null;
+  const blob = await response.blob();
+  const arrayBuffer = await blob.arrayBuffer();
+  const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
+  const page = await pdf.getPage(pageNumber || 1);
+  const viewport = page.getViewport({ scale: 1.0 });
+  const targetWidth = 1200;
+  const scale = targetWidth / viewport.width;
+  const scaledViewport = page.getViewport({ scale });
+  const canvas = document.createElement('canvas');
+  canvas.width = scaledViewport.width;
+  canvas.height = scaledViewport.height;
+  const context = canvas.getContext('2d');
+  if (!context) return null;
+  await page.render({
+    canvasContext: context,
+    viewport: scaledViewport,
+    canvas: canvas
+  }).promise;
+  const imageUrl = canvas.toDataURL('image/png');
+  return {
+    pageImage: imageUrl,
+    imageWidth: scaledViewport.width,
+    imageHeight: scaledViewport.height,
+    timestamp: Date.now()
+  };
+}
+
+// Preload high-resolution hover preview for a citation (tries backend page-preview API first, then full PDF)
 const preloadHoverPreview = (docId: string, pageNumber: number): Promise<HoverPreviewCacheEntry | null> => {
   const cacheKey = `hover-${docId}-${pageNumber}`;
-  
-  // Return cached if available
+
   if (hoverPreviewCache.has(cacheKey)) {
     return Promise.resolve(hoverPreviewCache.get(cacheKey)!);
   }
-  
-  // If already loading, return the existing promise so caller can await it
   if (hoverPreviewLoadingPromises.has(cacheKey)) {
     return hoverPreviewLoadingPromises.get(cacheKey)!;
   }
-  
-  // Start new load
+
   const loadPromise = (async (): Promise<HoverPreviewCacheEntry | null> => {
     try {
-      const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
-      const downloadUrl = `${backendUrl}/api/files/download?document_id=${docId}`;
-      
-      const response = await fetch(downloadUrl, { credentials: 'include' });
-      if (!response.ok) {
-        console.warn(`[Hover Preview] Failed to download: ${response.status}`);
-        return null;
+      const previewUrl = getCitationPagePreviewUrl(docId, pageNumber);
+      const response = await fetch(previewUrl, { credentials: 'include' });
+
+      if (response.ok) {
+        const blob = await response.blob();
+        const widthHeader = response.headers.get('X-Image-Width');
+        const heightHeader = response.headers.get('X-Image-Height');
+        let imageWidth: number;
+        let imageHeight: number;
+
+        if (widthHeader != null && heightHeader != null) {
+          const w = parseInt(widthHeader, 10);
+          const h = parseInt(heightHeader, 10);
+          if (!Number.isNaN(w) && !Number.isNaN(h)) {
+            imageWidth = w;
+            imageHeight = h;
+          } else {
+            const dims = await getImageDimensionsFromBlob(blob);
+            imageWidth = dims.width;
+            imageHeight = dims.height;
+          }
+        } else {
+          const dims = await getImageDimensionsFromBlob(blob);
+          imageWidth = dims.width;
+          imageHeight = dims.height;
+        }
+
+        const pageImage = URL.createObjectURL(blob);
+        const entry: HoverPreviewCacheEntry = {
+          pageImage,
+          imageWidth,
+          imageHeight,
+          timestamp: Date.now()
+        };
+        hoverPreviewCache.set(cacheKey, entry);
+        return entry;
       }
-      
-      const blob = await response.blob();
-      const arrayBuffer = await blob.arrayBuffer();
-      
-      // Load PDF
-      const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
-      
-      // Render page at high resolution (600px width)
-      const page = await pdf.getPage(pageNumber || 1);
-      const viewport = page.getViewport({ scale: 1.0 });
-      
-      const targetWidth = 1200; // High resolution for crisp text when zoomed
-      const scale = targetWidth / viewport.width;
-      const scaledViewport = page.getViewport({ scale });
-      
-      // Create canvas for rendering
-      const canvas = document.createElement('canvas');
-      canvas.width = scaledViewport.width;
-      canvas.height = scaledViewport.height;
-      
-      const context = canvas.getContext('2d');
-      if (!context) {
-        return null;
-      }
-      
-      await page.render({
-        canvasContext: context,
-        viewport: scaledViewport,
-        canvas: canvas
-      }).promise;
-      
-      // Convert canvas to high-quality image
-      const imageUrl = canvas.toDataURL('image/png');
-      
-      // Cache with actual dimensions
-      const entry: HoverPreviewCacheEntry = {
-        pageImage: imageUrl,
-        imageWidth: scaledViewport.width,
-        imageHeight: scaledViewport.height,
-        timestamp: Date.now()
-      };
-      
-      hoverPreviewCache.set(cacheKey, entry);
-      console.log(`✅ [Hover Preview] Cached: ${cacheKey} (${entry.imageWidth}x${entry.imageHeight})`);
+
+      // Fallback: full PDF + pdf.js
+      const entry = await preloadHoverPreviewFullPdf(docId, pageNumber);
+      if (entry) hoverPreviewCache.set(cacheKey, entry);
       return entry;
     } catch (error) {
-      console.warn(`[Hover Preview] Failed to preload:`, error);
-      return null;
+      try {
+        const entry = await preloadHoverPreviewFullPdf(docId, pageNumber);
+        if (entry) hoverPreviewCache.set(cacheKey, entry);
+        return entry;
+      } catch (fallbackError) {
+        console.warn('[Hover Preview] Failed to preload:', fallbackError);
+        return null;
+      }
     } finally {
-      // Clean up the loading promise after completion
       hoverPreviewLoadingPromises.delete(cacheKey);
     }
   })();
-  
-  // Store the promise so other callers can await it
+
   hoverPreviewLoadingPromises.set(cacheKey, loadPromise);
-  
   return loadPromise;
 };
+
+function getImageDimensionsFromBlob(blob: Blob): Promise<{ width: number; height: number }> {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(blob);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve({ width: img.naturalWidth, height: img.naturalHeight });
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error('Failed to load image for dimensions'));
+    };
+    img.src = url;
+  });
+}
 
 // Preload BBOX preview when citation context is prepared
 const preloadBboxPreview = async (citationContext: {
@@ -3995,6 +4138,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   } | null>(null);
   // When user clicks "View in document", keep this citation highlighted (blue) in chat while document view is open
   const [citationViewedInDocument, setCitationViewedInDocument] = React.useState<{ messageId: string; citationNumber: string } | null>(null);
+  // Citation callouts closed by user (×) — key: `${messageId}:${citationNumber}`; so clicking the citation link only opens the floating panel, not the callout
+  const [closedCitationCallouts, setClosedCitationCallouts] = React.useState<Set<string>>(() => new Set());
+  const handleCloseCitationCallout = React.useCallback((messageId: string, citationNumber: string) => {
+    setClosedCitationCallouts((prev) => {
+      const next = new Set(prev);
+      next.add(`${messageId}:${citationNumber}`);
+      return next;
+    });
+  }, []);
   // Ref so citation click handler always sees current state (StreamingResponseTextMemo doesn't re-render when callback changes)
   const isDocumentPreviewOpenRef = React.useRef(false);
   // When panel opens and hover cache is empty, we preload and store here so the panel can show the image
@@ -5681,19 +5833,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     await handleDownloadResponseAsDocxForMessage(lastResponseForDownload.text, lastResponseForDownload.id);
   }, [lastResponseForDownload, handleDownloadResponseAsDocxForMessage]);
   // Preload citation previews when messages have citations (so pop-up loads fast on first click)
-  React.useEffect(() => {
-    const messages = chatMessages || [];
-    for (const msg of messages) {
-      if (!msg.citations || typeof msg.citations !== 'object') continue;
-      for (const cit of Object.values(msg.citations) as any[]) {
-        const cDocId = cit?.doc_id ?? cit?.document_id;
-        const pageNum = cit?.page ?? cit?.page_number ?? cit?.bbox?.page;
-        if (cDocId && pageNum) {
-          preloadHoverPreview(cDocId, pageNum).catch(() => {});
-        }
-      }
-    }
-  }, [chatMessages]);
+  // Full-PDF preload for View document is triggered when stream completes (see stream-complete handler), not on every message change
   // Persistent sessionId for conversation continuity (reused across all messages in this chat session)
   const [sessionId] = React.useState<string>(() => `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`);
   
@@ -8070,6 +8210,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 
                 // Wait for queue to finish processing, then set final text
                 const finalizeText = () => {
+                  playCompletionSound();
                 // Use displayedText as source of truth - it was pre-completed during streaming
                 // This ensures text doesn't change when streaming completes (prevents "click" effect)
                 // Fallback to data.summary only if displayedText is empty
@@ -8673,10 +8814,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   original_filename: citation.data.original_filename, // Include filename for preloading
                   cited_text: citation.data.cited_text
                 };
-                // Preload citation preview so pop-up loads fast when user clicks
-                if (docId && pageNum) {
-                  preloadHoverPreview(docId, pageNum).catch(() => {});
-                }
                 // Always accumulate citations in buffer (for inactive chats)
                 if (queryChatId) {
                   const bufferedState = getBufferedState(queryChatId);
@@ -8690,7 +8827,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 if (docId) {
                   // Use the shared preload function (handles deduplication)
                   preloadDocumentById(docId, citation.data.original_filename);
-                          
+                  // Preload the one cited page for the inline callout so preview shows as soon as the answer renders
+                  const pageForPreview = citation.data.page ?? citation.data.page_number ?? 1;
+                  const fn = (citation.data.original_filename ?? '').toLowerCase();
+                  if (pageForPreview && !fn.endsWith('.docx') && !fn.endsWith('.doc')) {
+                    preloadHoverPreview(docId, pageForPreview);
+                  }
                           // OPTIMIZATION: Aggressively pre-render citation pages immediately
                           // Since probability of clicking citations is extremely high, start pre-rendering ASAP
                           if (citation.data.page && preloadPdfPage && getCachedPdfDocument) {
@@ -10538,6 +10680,35 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             
             // Track accumulated citations for real-time updates
             const accumulatedCitations: Record<string, CitationDataType> = {};
+            const preloadingDocsInitial = new Set<string>();
+            const preloadDocumentByIdInitial = (docId: string, filename?: string) => {
+              const isCached = previewFiles.some(f => f.id === docId);
+              if (isCached || preloadingDocsInitial.has(docId)) return;
+              preloadingDocsInitial.add(docId);
+              (async () => {
+                try {
+                  const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
+                  const response = await fetch(`${backendUrl}/api/files/download?document_id=${docId}`, { credentials: 'include' });
+                  if (!response.ok) {
+                    preloadingDocsInitial.delete(docId);
+                    return;
+                  }
+                  const blob = await response.blob();
+                  const file = new File([blob], filename || 'document.pdf', { type: blob.type || 'application/pdf' });
+                  const fileData: FileAttachmentData = {
+                    id: docId,
+                    file,
+                    name: filename || 'document.pdf',
+                    type: blob.type || 'application/pdf',
+                    size: blob.size
+                  };
+                  preloadFile(fileData);
+                  preloadingDocsInitial.delete(docId);
+                } catch {
+                  preloadingDocsInitial.delete(docId);
+                }
+              })();
+            };
             
             await backendApi.queryDocumentsStreamFetch(
               queryText,
@@ -10586,6 +10757,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 
                 // Wait for queue to finish processing, then set final text
                 const finalizeText = () => {
+                  playCompletionSound();
                   // Citation context is cleared by parent (MainContent) after query
                 // Use displayedText as source of truth - it was pre-completed during streaming
                 // This ensures text doesn't change when streaming completes (prevents "click" effect)
@@ -10602,6 +10774,14 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   summary: finalText.substring(0, 100),
                   documentsFound: data.relevant_documents?.length || 0,
                     citations: Object.keys(mergedCitations).length
+                });
+                // Full-PDF preload for "View document" so it opens instantly
+                const seenDocsInitial = new Set<string>();
+                Object.values(mergedCitations).forEach((cit: CitationDataType) => {
+                  if (cit?.doc_id && !seenDocsInitial.has(cit.doc_id)) {
+                    seenDocsInitial.add(cit.doc_id);
+                    preloadDocumentByIdInitial(cit.doc_id, cit.original_filename ?? (cit as any).filename);
+                  }
                 });
                 
                 // Hide bot status overlay when streaming completes
@@ -10812,9 +10992,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   original_filename: citation.data.original_filename,
                   cited_text: citation.data.cited_text
                 };
-                // Preload citation preview so pop-up loads fast when user clicks
+                // Preload the cited page so the callout preview is ready when the answer renders
                 if (docId && pageNum) {
-                  preloadHoverPreview(docId, pageNum).catch(() => {});
+                  const fn = (citation.data.original_filename ?? '').toLowerCase();
+                  if (!fn.endsWith('.docx') && !fn.endsWith('.doc')) {
+                    preloadHoverPreview(docId, pageNum);
+                  }
                 }
               },
               undefined, // onExecutionEvent
@@ -12216,6 +12399,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               
               // Wait for queue to finish processing, then set final text
               const finalizeText = () => {
+                playCompletionSound();
               // Use displayedText as source of truth - it was pre-completed during streaming
               // This ensures text doesn't change when streaming completes (prevents "click" effect)
               // Fallback to data.summary only if displayedText is empty
@@ -12234,6 +12418,14 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   citationKeys: Object.keys(mergedCitations),
                   chatIsActive,
                   queryChatId
+                });
+                // Full-PDF preload for "View document" so it opens instantly
+                const seenDocs = new Set<string>();
+                Object.values(mergedCitations).forEach((cit: CitationDataType) => {
+                  if (cit?.doc_id && !seenDocs.has(cit.doc_id)) {
+                    seenDocs.add(cit.doc_id);
+                    preloadDocumentById(cit.doc_id, cit.original_filename ?? (cit as any).filename);
+                  }
                 });
                 
                 // Get the most up-to-date reasoning steps
@@ -12751,6 +12943,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               // Preload document in background (no state update, always happens)
               if (docId) {
                 preloadDocumentById(docId, citation.data.original_filename);
+                // Preload the one cited page so the callout preview is ready when the answer renders
+                const pageForPreview = citation.data.page ?? citation.data.page_number ?? 1;
+                const fn = (citation.data.original_filename ?? '').toLowerCase();
+                if (pageForPreview && !fn.endsWith('.docx') && !fn.endsWith('.doc')) {
+                  preloadHoverPreview(docId, pageForPreview);
+                }
               }
             },
             undefined, // onExecutionEvent
@@ -13235,6 +13433,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     }
   }, [isChatOnlyViewHere, isEmptyChat, isFullscreenMode, shouldExpand]);
 
+  // Auto-focus the chat input when we enter the new-chat (centered empty) section so the caret is already bouncing.
+  React.useEffect(() => {
+    if (!isVisible || !useCenteredEmptyState) return;
+    const t = setTimeout(() => {
+      inputRef.current?.focus();
+    }, 150);
+    return () => clearTimeout(t);
+  }, [isVisible, useCenteredEmptyState]);
+
   // Personalized empty-state title: "Hey {name}, What can I help you with today?" only when name is known (avoids flashing "Hey there" then "Hey Admin" when userData loads late)
   const emptyStateTitleMessage = useMemo(
     () =>
@@ -13525,9 +13732,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 title={copiedQueryId === finalKey ? 'Copied!' : 'Copy'}
               >
                 {copiedQueryId === finalKey ? (
-                  <Check size={15} />
+                  <Check size={18} />
                 ) : (
-                  <Copy size={15} />
+                  <Copy size={18} />
                 )}
               </motion.button>
             )}
@@ -13711,6 +13918,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 }}
                 citationViewedInDocument={citationViewedInDocument}
                 onCloseDocumentFromCallout={closeExpandedCardView}
+                closedCitationCallouts={closedCitationCallouts}
+                onCloseCitationCallout={handleCloseCitationCallout}
               />
             </div>
           )}
@@ -13733,7 +13942,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '3px', border: 'none', background: 'none', cursor: 'pointer', color: copiedResponseId === finalKey ? '#10B981' : '#9CA3AF' }}
                 title={copiedResponseId === finalKey ? 'Copied!' : 'Copy'}
               >
-                {copiedResponseId === finalKey ? <Check size={13} /> : <Copy size={13} />}
+                {copiedResponseId === finalKey ? <Check size={18} /> : <Copy size={18} />}
               </button>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
@@ -13743,7 +13952,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '3px', border: 'none', background: 'none', cursor: 'pointer', color: '#9CA3AF' }}
                     title="Download"
                   >
-                    <Download size={13} />
+                    <Download size={18} />
                   </button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="start" sideOffset={4} onClick={(e) => e.stopPropagation()} style={{ width: '220px', borderRadius: '10px', overflow: 'hidden', padding: 0 }}>
@@ -13812,7 +14021,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 }}
                 title="Thumbs up"
               >
-                <ThumbsUp size={13} />
+                <ThumbsUp size={18} />
               </button>
               {!likedResponseIds.has(finalKey) && (
                 <button
@@ -13825,7 +14034,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   }}
                   title="Thumbs down"
                 >
-                  <ThumbsDown size={13} />
+                  <ThumbsDown size={18} />
                 </button>
               )}
               {sources.count > 0 && (
@@ -15019,8 +15228,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   flexDirection: 'column',
                   justifyContent: 'flex-start',
                   alignItems: 'center',
-                  // Reduce padding for narrow panels
-                  padding: actualPanelWidth < 320 ? '0 12px' : '0 32px',
+                  // Reduce padding for narrow panels; 48px = 32 + 16 extra so bar sits slightly inward (matches SearchBar)
+                  padding: actualPanelWidth < 320 ? '0 20px' : '0 48px',
                   paddingTop: '26vh', // Y position of new-chat bar (increase to move down, decrease to move up)
                   minWidth: '200px', // Allow narrower layouts
                   position: 'relative',
@@ -15104,22 +15313,20 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       onDragLeave={handleDragLeave}
                       onDrop={handleDrop}
                       style={{
-                        background: isDragOver ? 'rgba(59, 130, 246, 0.1)' : 'rgba(255, 255, 255, 0.72)',
-                        backdropFilter: isDragOver ? 'none' : 'blur(16px) saturate(160%)',
-                        WebkitBackdropFilter: isDragOver ? 'none' : 'blur(16px) saturate(160%)',
+                        background: isDragOver ? 'rgba(59, 130, 246, 0.1)' : '#ffffff',
                         border: isDragOver ? '2px dashed rgba(59, 130, 246, 0.75)' : '1px solid #E0E0E0',
                         boxShadow: isDragOver ? '0 0 0 1px rgba(59, 130, 246, 0.25)' : '0 1px 3px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.02)',
                         position: 'relative',
-                        paddingTop: '12px',
+                        paddingTop: '16px',
                         paddingBottom: '12px',
                         paddingRight: '12px',
-                        paddingLeft: '12px',
+                        paddingLeft: '16px',
                         overflow: 'hidden',
                         width: '100%',
                         height: 'auto',
                         minHeight: '160px',
                         boxSizing: 'border-box',
-                        borderRadius: '14px',
+                        borderRadius: '28px',
                         transition: isDragOver ? 'background-color 0.08s ease-out, border-color 0.08s ease-out, box-shadow 0.08s ease-out' : 'background-color 0.2s ease-in-out, border-color 0.2s ease-in-out, box-shadow 0.2s ease-in-out',
                       }}
                     >
@@ -15168,8 +15375,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       <div
                         ref={atMentionAnchorRef}
                         className="flex items-start w-full"
-                        style={{ minHeight: '100px', height: 'auto', width: '100%', marginBottom: '16px', flexShrink: 0 }}
-                      >
+                        style={{ minHeight: '100px', height: 'auto', width: '100%', marginBottom: '22px', flexShrink: 0 }}
+                    >
                         <div
                           className="flex-1 relative flex items-start w-full"
                           style={{ overflow: 'visible', minHeight: '100px', width: '100%', minWidth: '0' }}
@@ -15177,6 +15384,25 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           onBlur={() => setIsFocused(false)}
                           onClick={(e) => e.stopPropagation()}
                         >
+                          {(segmentInput.getPlainText().trim() !== '' || propertyAttachments.length > 0 || atMentionDocumentChips.length > 0 || attachedFiles.length > 0) && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                clearInputAndChips();
+                                clearPropertyAttachments();
+                                setAttachedFiles([]);
+                                attachedFilesRef.current = [];
+                                inputRef.current?.focus();
+                              }}
+                              className="absolute right-2 top-[11px] -translate-y-1/2 flex items-center justify-center w-6 h-6 text-gray-400 hover:text-gray-600 transition-colors z-10"
+                              title="Clear query"
+                              aria-label="Clear query"
+                            >
+                              <X className="w-5 h-5" strokeWidth={2} />
+                            </button>
+                          )}
                           <SegmentInput
                             ref={inputRef}
                             segments={segmentInput.segments}
@@ -15203,18 +15429,20 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             removeChipAtSegmentIndex={segmentInput.removeChipAtIndex}
                             restoreSelectionRef={restoreSelectionRef}
                             placeholder="Ask anything..."
+                            placeholderFontSize="16.38px"
                             disabled={isSubmitted}
                             style={{
                               width: '100%',
+                              height: '100px', // Fixed height so bar doesn't grow when typing (content scrolls inside)
                               minHeight: '100px',
                               maxHeight: '120px',
                               overflowY: 'auto',
                               overflowX: 'hidden',
-                              lineHeight: '22px',
-                              paddingTop: '0px',
+                              lineHeight: '20px',
+                              paddingTop: '12px',
                               paddingBottom: '4px',
-                              paddingRight: '12px',
-                              paddingLeft: '6px',
+                              paddingRight: '36px',
+                              paddingLeft: '14px',
                               color: segmentInput.getPlainText() ? '#333333' : undefined,
                               boxSizing: 'border-box',
                             }}
@@ -15270,18 +15498,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               width: '100%',
                               minWidth: '0',
                               minHeight: isVeryNarrowEmpty ? 'auto' : '24px',
-                              overflow: 'hidden' // Prevent visual overflow while measuring
+                              overflow: 'hidden', // Prevent visual overflow while measuring
+                              marginTop: '-4px',
                             }}
                           >
-                            {/* Left side: Mode Selector + Model Selector */}
+                            {/* Left side: Plus (Attach dropdown), Mode Selector + Model Selector */}
                             <div className="flex items-center gap-1" style={{ flexShrink: 1, minWidth: 0, overflow: 'hidden' }}>
-                              <ModeSelector compact={isVeryNarrowEmpty || buttonCollapseLevel >= 2} />
-                              {/* Hide model selector when very narrow */}
-                              {!isVeryNarrowEmpty && <ModelSelector compact={showModelIconOnly} />}
-                            </div>
-
-                            {/* Right side: Tools (Search the web, Map), WebSearchPill when on, Attach, Voice, Send */}
-                            <div className={`flex items-center gap-1.5 ${isVeryNarrowEmpty ? 'flex-wrap justify-end' : ''}`} style={{ flexShrink: 0 }}>
                               <input
                                 ref={fileInputRef}
                                 type="file"
@@ -15290,82 +15512,58 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                 className="hidden"
                                 accept="image/*,.pdf,.doc,.docx"
                               />
-                              {buttonCollapseLevel < 3 && (
-                                <>
-                                  {isWebSearchEnabled && (
-                                    <WebSearchPill onDismiss={() => setIsWebSearchEnabled(false)} />
-                                  )}
-                                  <ChatBarToolsDropdown
-                                    compact={showMapIconOnly}
-                                    items={[
-                                      {
-                                        id: 'web-search',
-                                        icon: Globe,
-                                        label: 'Search the web',
-                                        onClick: () => setIsWebSearchEnabled((prev) => !prev),
-                                      },
-                                      ...(onMapToggle
-                                        ? [{
-                                            id: 'map',
-                                            icon: Map,
-                                            label: 'Map',
-                                            onClick: () => onMapToggle(),
-                                          }]
-                                        : []),
-                                    ]}
-                                  />
-                                </>
+                              <ChatBarAttachDropdown
+                                onAttachClick={() => fileInputRef.current?.click()}
+                                toolsItems={buttonCollapseLevel < 3 ? [
+                                  {
+                                    id: 'web-search',
+                                    icon: Globe,
+                                    label: 'Search the web',
+                                    onClick: () => setIsWebSearchEnabled((prev) => !prev),
+                                  },
+                                  ...(onMapToggle ? [{
+                                    id: 'map',
+                                    icon: Map,
+                                    label: 'Map',
+                                    onClick: () => onMapToggle(),
+                                  }] : []),
+                                ] : []}
+                              />
+                              <ModeSelector compact={true} className="mr-2" />
+                              {/* Hide model selector when very narrow */}
+                              {!isVeryNarrowEmpty && <ModelSelector compact={true} />}
+                            </div>
+
+                            {/* Right side: WebSearchPill when on, Voice, Send */}
+                            <div className={`flex items-center gap-1.5 ${isVeryNarrowEmpty ? 'flex-wrap justify-end' : ''}`} style={{ flexShrink: 0 }}>
+                              {buttonCollapseLevel < 3 && isWebSearchEnabled && (
+                                <WebSearchPill onDismiss={() => setIsWebSearchEnabled(false)} />
                               )}
-                              {/* Attach button - second to collapse to icon (matches ChatBarToolsDropdown) */}
-                              <button
-                                type="button"
-                                onClick={() => fileInputRef.current?.click()}
-                                className="flex items-center gap-1.5 text-gray-900 transition-colors focus:outline-none outline-none"
-                                style={{
-                                  backgroundColor: '#FFFFFF',
-                                  border: '1px solid rgba(229, 231, 235, 0.6)',
-                                  borderRadius: '12px',
-                                  transition: 'background-color 0.2s ease, border-color 0.2s ease',
-                                  height: '24px',
-                                  minHeight: '24px',
-                                  paddingLeft: showAttachIconOnly ? '6px' : '8px',
-                                  paddingRight: showAttachIconOnly ? '6px' : '8px',
-                                }}
-                                onMouseEnter={(e) => {
-                                  e.currentTarget.style.backgroundColor = '#F5F5F5';
-                                }}
-                                onMouseLeave={(e) => {
-                                  e.currentTarget.style.backgroundColor = '#FFFFFF';
-                                }}
-                                title="Attach file"
-                              >
-                                <Paperclip className="w-3.5 h-3.5" strokeWidth={1.5} />
-                                {!showAttachIconOnly && <span className="text-xs font-medium">Attach</span>}
-                              </button>
-                              
-                              {/* Voice button - third to collapse to icon, then hide at high collapse level */}
+                              {/* Voice button - third to collapse to icon, then hide at high collapse level (matches SearchBar) */}
                               {!hideVoice && (
                                 <button
                                   type="button"
-                                  className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-gray-900 focus:outline-none outline-none"
+                                  onClick={() => {}}
+                                  className="flex items-center justify-center text-gray-900 transition-colors focus:outline-none outline-none mr-2"
                                   style={{
-                                    backgroundColor: '#ECECEC',
-                                    transition: 'background-color 0.15s ease',
-                                    height: '22px',
-                                    minHeight: '22px',
-                                    fontSize: '12px',
-                                    padding: showVoiceIconOnly ? '4px 8px' : undefined
+                                    backgroundColor: '#F3F3F3',
+                                    transition: 'background-color 0.2s ease',
+                                    width: '32px',
+                                    height: '32px',
+                                    minWidth: '32px',
+                                    minHeight: '32px',
+                                    padding: '6px',
+                                    borderRadius: '50%'
                                   }}
                                   onMouseEnter={(e) => {
-                                    e.currentTarget.style.backgroundColor = '#E0E0E0';
+                                    e.currentTarget.style.backgroundColor = '#EBEBEB';
                                   }}
                                   onMouseLeave={(e) => {
-                                    e.currentTarget.style.backgroundColor = '#ECECEC';
+                                    e.currentTarget.style.backgroundColor = '#F3F3F3';
                                   }}
                                   title="Voice input"
                                 >
-                                  <AudioLines className="w-3.5 h-3.5" strokeWidth={1.5} />
-                                  {!showVoiceIconOnly && <span className="text-xs font-medium">Voice</span>}
+                                  <AudioLines className="w-5 h-5" strokeWidth={1.5} />
                                 </button>
                               )}
                               
@@ -15376,16 +15574,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                 key="send-button-empty"
                                 type="submit" 
                                 onClick={handleSubmit} 
-                                initial={{ opacity: 0, scale: 0.8 }}
+                                initial={{ opacity: 1, scale: 1 }}
                                 animate={{ opacity: 1, scale: 1, backgroundColor: '#4A4A4A' }}
-                                exit={{ opacity: 0, scale: 0.8 }}
-                                transition={{ duration: 0.15, ease: [0.16, 1, 0.3, 1] }}
+                                exit={{ opacity: 1, scale: 1 }}
+                                transition={{ duration: 0 }}
                                 className={`flex items-center justify-center relative focus:outline-none outline-none ${!isSubmitted ? '' : 'cursor-not-allowed'}`}
                                 style={{
-                                  width: '24px',
-                                  height: '24px',
-                                  minWidth: '24px',
-                                  minHeight: '24px',
+                                  width: '32px',
+                                  height: '32px',
+                                  minWidth: '32px',
+                                  minHeight: '32px',
                                   borderRadius: '50%',
                                   flexShrink: 0
                                 }}
@@ -15400,7 +15598,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                   className="absolute inset-0 flex items-center justify-center"
                                   style={{ pointerEvents: 'none' }}
                                 >
-                                  <ArrowUp className="w-4 h-4" strokeWidth={2.5} style={{ color: '#ffffff' }} />
+                                  <ArrowUp className="w-5 h-5" strokeWidth={2.5} style={{ color: '#ffffff' }} />
                                 </motion.div>
                               </motion.button>
                             )}
@@ -15446,8 +15644,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   <div style={{ 
                     width: '100%', 
                     maxWidth: '680px', // Match chat bar max width (640px inner + 40px padding = 680px)
-                    paddingLeft: actualPanelWidth < 320 ? '12px' : '32px',
-                    paddingRight: actualPanelWidth < 320 ? '12px' : '32px',
+                    paddingLeft: actualPanelWidth < 320 ? '20px' : '48px',
+                    paddingRight: actualPanelWidth < 320 ? '20px' : '48px',
                     margin: '0 auto' // Center the content wrapper
                   }}>
                   <div ref={contentWrapperRef} className="flex flex-col" style={{ minHeight: '100%', gap: '16px', width: '100%' }}>
@@ -15773,7 +15971,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 style={{ 
                 backgroundColor: citationClickPanel ? 'transparent' : '#FCFCF9',
                 paddingTop: '12px', 
-                paddingBottom: '32px', 
+                paddingBottom: `${INPUT_BAR_SPACE_BELOW_PANEL}px`, 
                 paddingLeft: '0', // Remove left padding - centering handled by form
                 paddingRight: '0', // Remove right padding - centering handled by form
                 position: 'relative', 
@@ -15919,8 +16117,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   alignItems: 'center',
                   position: 'relative',
                   margin: '-10px',
-                  paddingLeft: actualPanelWidth < 320 ? '12px' : '32px',
-                  paddingRight: actualPanelWidth < 320 ? '12px' : '32px',
+                  paddingLeft: actualPanelWidth < 320 ? '20px' : '48px',
+                  paddingRight: actualPanelWidth < 320 ? '20px' : '48px',
                   pointerEvents: 'auto'
                 }}
                   onDragOver={handleDragOver}
@@ -15953,36 +16151,36 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     onDrop={handleDrop}
                     style={{
                       background: isDragOver ? 'rgba(59, 130, 246, 0.1)' : '#ffffff',
-                      backdropFilter: isDragOver ? 'none' : 'blur(16px) saturate(160%)',
-                      WebkitBackdropFilter: isDragOver ? 'none' : 'blur(16px) saturate(160%)',
                       border: isDragOver ? '2px dashed rgba(59, 130, 246, 0.75)' : '1px solid #E0E0E0',
                       boxShadow: isDragOver 
                         ? '0 0 0 1px rgba(59, 130, 246, 0.25)' 
                         : '0 1px 3px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.02)',
                       position: 'relative',
-                      paddingTop: '10px',
-                      paddingBottom: '10px',
-                      paddingRight: '12px',
-                      paddingLeft: '12px',
-                      overflow: 'hidden',
+                      paddingTop: '16px',
+                      paddingBottom: '12px',
+                      paddingRight: '16px',
+                      paddingLeft: '16px',
+                      overflow: 'visible',
                       width: '100%',
                       height: 'auto',
-                      minHeight: '44px',
+                      minHeight: 'fit-content',
                       boxSizing: 'border-box',
-                      borderRadius: '14px',
+                      borderRadius: '28px',
                       transition: isDragOver ? 'background-color 0.08s ease-out, border-color 0.08s ease-out, box-shadow 0.08s ease-out' : 'background-color 0.2s ease-in-out, border-color 0.2s ease-in-out, box-shadow 0.2s ease-in-out',
                       zIndex: citationClickPanel ? 10051 : 2,
                     }}
                   >
-                  {/* Input row - match SearchBar: gap for spacing to icons */}
+                  {/* Input row - fixed height so bar bottom never moves when typing */}
                   <div 
                     className="relative flex flex-col w-full" 
                     style={{ 
-                      height: 'auto', 
-                      minHeight: '24px',
+                      height: 'auto',
+                      minHeight: '28px',
                       width: '100%',
                       minWidth: '0',
-                      gap: '8px'
+                      gap: '2px',
+                      flexShrink: 0,
+                      overflow: 'visible',
                     }}
                   >
                     {/* File Attachments Display - Above textarea */}
@@ -15997,7 +16195,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             duration: 0.1,
                             ease: "easeOut"
                           }}
-                          style={{ height: 'auto', marginBottom: '12px' }}
+                          style={{ maxHeight: '52px', overflowY: 'auto', marginBottom: '12px', flexShrink: 0 }}
                           className="flex flex-wrap gap-2 justify-start"
                           layout={false}
                         >
@@ -16030,19 +16228,38 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       )}
                     </AnimatePresence>
                     
-                    {/* SegmentInput + @ context - chips only inline (no row above, matches SearchBar) */}
+                    {/* SegmentInput + @ context - fixed height so bar bottom never moves */}
                     <div
                       className="flex items-start w-full"
-                      style={{ minHeight: '24px', maxHeight: '220px', height: 'auto', width: '100%', marginTop: '0px', marginBottom: '0px', flexShrink: 0, overflow: 'hidden' }}
+                      style={{ height: 'auto', minHeight: '28px', width: '100%', marginBottom: '6px', flexShrink: 0 }}
                     >
                       <div
                         ref={atMentionAnchorRef}
                         className="flex-1 relative flex items-start w-full"
-                        style={{ overflow: 'visible', minHeight: '24px', maxHeight: '200px', width: '100%', minWidth: '0', alignSelf: 'flex-start' }}
+                        style={{ overflow: 'visible', height: 'auto', minHeight: '28px', width: '100%', minWidth: '0', flexShrink: 0 }}
                         onFocus={() => setIsFocused(true)}
                         onBlur={() => setIsFocused(false)}
                         onClick={(e) => e.stopPropagation()}
                       >
+                        {(segmentInput.getPlainText().trim() !== '' || propertyAttachments.length > 0 || atMentionDocumentChips.length > 0 || attachedFiles.length > 0) && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                clearInputAndChips();
+                                clearPropertyAttachments();
+                                setAttachedFiles([]);
+                                attachedFilesRef.current = [];
+                                inputRef.current?.focus();
+                              }}
+                            className="absolute right-2 top-[11px] -translate-y-1/2 flex items-center justify-center w-6 h-6 text-gray-400 hover:text-gray-600 transition-colors z-10"
+                            title="Clear query"
+                            aria-label="Clear query"
+                          >
+                            <X className="w-5 h-5" strokeWidth={2} />
+                          </button>
+                        )}
                         <SegmentInput
                           ref={inputRef}
                           segments={segmentInput.segments}
@@ -16069,18 +16286,20 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           removeChipAtSegmentIndex={segmentInput.removeChipAtIndex}
                           restoreSelectionRef={restoreSelectionRef}
                           placeholder="Ask anything..."
+                          placeholderFontSize="16.38px"
                           disabled={isSubmitted}
                           style={{
                             width: '100%',
-                            minHeight: '24px',
-                            maxHeight: '200px',
+                            height: '36px', // Fixed height so bar doesn't grow when typing (content scrolls inside)
+                            minHeight: '28px',
+                            maxHeight: '120px',
                             overflowY: 'auto',
                             overflowX: 'hidden',
                             lineHeight: '20px',
-                            paddingTop: '0px',
-                            paddingBottom: '3px',
-                            paddingRight: '12px',
-                            paddingLeft: '6px',
+                            paddingTop: '12px',
+                            paddingBottom: '4px',
+                            paddingRight: '36px',
+                            paddingLeft: '14px',
                             color: segmentInput.getPlainText() ? '#333333' : undefined,
                             boxSizing: 'border-box',
                           }}
@@ -16221,12 +16440,55 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           style={{
                             width: '100%',
                             minWidth: '0',
-                            minHeight: isVeryNarrow ? 'auto' : '32px',
-                            overflow: 'hidden' // Prevent visual overflow while measuring
+                            height: isVeryNarrow ? 'auto' : '36px',
+                            minHeight: isVeryNarrow ? 'auto' : '36px',
+                            flexShrink: 0,
+                            overflow: 'hidden', // Prevent visual overflow while measuring
+                            marginTop: '-4px',
                           }}
                         >
-                          {/* Left Icons: Mode Selector and Model Selector */}
+                          {/* Left Icons: Plus (Attach dropdown), Mode Selector and Model Selector */}
                           <div className={`flex items-center gap-1 ${isVeryNarrow ? 'justify-start' : ''}`} style={{ flexShrink: 1, minWidth: 0, overflow: 'hidden' }}>
+                            <ChatBarAttachDropdown
+                              onAttachClick={() => fileInputRef.current?.click()}
+                              toolsItems={buttonCollapseLevel < 3 ? [
+                                {
+                                  id: 'web-search',
+                                  icon: Globe,
+                                  label: 'Search the web',
+                                  onClick: () => setIsWebSearchEnabled((prev) => !prev),
+                                },
+                                ...(onMapToggle ? [{
+                                  id: 'map',
+                                  icon: Map,
+                                  label: 'Map',
+                                  onClick: () => {
+                                    if (currentChatId && expandedCardViewDoc) {
+                                      const bufferedState = getBufferedState(currentChatId);
+                                      bufferedState.documentPreview = {
+                                        docId: expandedCardViewDoc.docId,
+                                        filename: expandedCardViewDoc.filename,
+                                        highlight: expandedCardViewDoc.highlight ? {
+                                          fileId: expandedCardViewDoc.highlight.fileId,
+                                          bbox: expandedCardViewDoc.highlight.bbox,
+                                          doc_id: expandedCardViewDoc.highlight.doc_id,
+                                          block_id: expandedCardViewDoc.highlight.block_id || '',
+                                          block_content: expandedCardViewDoc.highlight.block_content,
+                                          original_filename: expandedCardViewDoc.highlight.original_filename
+                                        } : undefined
+                                      };
+                                    }
+                                    if (onMinimize && chatMessages.length > 0) {
+                                      if (expandedCardViewDoc) closeExpandedCardView();
+                                      onMinimize(chatMessages);
+                                    } else {
+                                      if (expandedCardViewDoc) closeExpandedCardView();
+                                      onMapToggle();
+                                    }
+                                  },
+                                }] : []),
+                              ] : []}
+                            />
                             {/* Mode Selector Dropdown */}
                             {/* - Fullscreen: normal size text (no props)
                                 - Expanded split (wider): small text (small={true})
@@ -16248,13 +16510,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               
                               return (
                                 <>
-                                  <ModeSelector 
-                                    compact={isCompact}
-                                    small={isSmall}
-                                    large={isOpeningRender}
-                                  />
+<ModeSelector compact={true} className="mr-2" />
                                   {/* Hide model selector when very narrow to save space */}
-                                  {!isVeryNarrow && <ModelSelector compact={showModelIconOnly} />}
+                                  {!isVeryNarrow && <ModelSelector compact={true} />}
                                 </>
                               );
                             })()}
@@ -16345,113 +16603,39 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                 className="ml-1 p-0.5 text-gray-400 hover:text-red-500 transition-colors"
                                 title="Clear document selection"
                               >
-                                <X className="w-3.5 h-3.5" strokeWidth={2} />
+                                <X className="w-5 h-5" strokeWidth={2} />
                               </button>
                             )}
                           </div>
                         )}
-                        {/* Tools dropdown: Search the web, Map; WebSearchPill when on */}
-                        {buttonCollapseLevel < 3 && (
-                          <>
-                            {isWebSearchEnabled && (
-                              <WebSearchPill onDismiss={() => setIsWebSearchEnabled(false)} />
-                            )}
-                            <ChatBarToolsDropdown
-                              compact={showMapIconOnly}
-                              items={[
-                                {
-                                  id: 'web-search',
-                                  icon: Globe,
-                                  label: 'Search the web',
-                                  onClick: () => setIsWebSearchEnabled((prev) => !prev),
-                                },
-                                ...(onMapToggle
-                                  ? [{
-                                      id: 'map',
-                                      icon: Map,
-                                      label: 'Map',
-                                      onClick: () => {
-                                        if (currentChatId && expandedCardViewDoc) {
-                                          const bufferedState = getBufferedState(currentChatId);
-                                          bufferedState.documentPreview = {
-                                            docId: expandedCardViewDoc.docId,
-                                            filename: expandedCardViewDoc.filename,
-                                            highlight: expandedCardViewDoc.highlight ? {
-                                              fileId: expandedCardViewDoc.highlight.fileId,
-                                              bbox: expandedCardViewDoc.highlight.bbox,
-                                              doc_id: expandedCardViewDoc.highlight.doc_id,
-                                              block_id: expandedCardViewDoc.highlight.block_id || '',
-                                              block_content: expandedCardViewDoc.highlight.block_content,
-                                              original_filename: expandedCardViewDoc.highlight.original_filename
-                                            } : undefined
-                                          };
-                                        }
-                                        if (onMinimize && chatMessages.length > 0) {
-                                          if (expandedCardViewDoc) closeExpandedCardView();
-                                          onMinimize(chatMessages);
-                                        } else {
-                                          if (expandedCardViewDoc) closeExpandedCardView();
-                                          onMapToggle();
-                                        }
-                                      },
-                                    }]
-                                  : []),
-                              ]}
-                            />
-                          </>
+                        {buttonCollapseLevel < 3 && isWebSearchEnabled && (
+                          <WebSearchPill onDismiss={() => setIsWebSearchEnabled(false)} />
                         )}
-                        {/* Attach button - second to collapse to icon (matches ChatBarToolsDropdown) */}
-                        <div className="flex items-center gap-1">
-                          <button
-                            type="button"
-                            onClick={() => fileInputRef.current?.click()}
-                            className="flex items-center gap-1.5 text-gray-900 transition-colors focus:outline-none outline-none"
-                            style={{
-                              backgroundColor: '#FFFFFF',
-                              border: '1px solid rgba(229, 231, 235, 0.6)',
-                              borderRadius: '12px',
-                              transition: 'background-color 0.2s ease, border-color 0.2s ease',
-                              height: '24px',
-                              minHeight: '24px',
-                              paddingLeft: showAttachIconOnly ? '6px' : '8px',
-                              paddingRight: showAttachIconOnly ? '6px' : '8px',
-                            }}
-                            onMouseEnter={(e) => {
-                              e.currentTarget.style.backgroundColor = '#F5F5F5';
-                            }}
-                            onMouseLeave={(e) => {
-                              e.currentTarget.style.backgroundColor = '#FFFFFF';
-                            }}
-                            title="Attach file"
-                          >
-                            <Paperclip className="w-3.5 h-3.5" strokeWidth={1.5} />
-                            {!showAttachIconOnly && <span className="text-xs font-medium">Attach</span>}
-                          </button>
-                        </div>
-                        {/* Voice button - third to collapse to icon, then hide */}
+                        {/* Voice button - third to collapse to icon, then hide (matches SearchBar) */}
                         {!hideVoice && (
                           <button
                             type="button"
-                            className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-gray-900 focus:outline-none outline-none"
+                            onClick={() => {}}
+                            className="flex items-center justify-center text-gray-900 transition-colors focus:outline-none outline-none mr-2"
                             style={{
-                              backgroundColor: '#ECECEC',
-                              transition: 'background-color 0.15s ease',
-                              willChange: 'background-color',
-                              height: '22px',
-                              minHeight: '22px',
-                              fontSize: '12px',
-                              padding: showVoiceIconOnly ? '4px 8px' : undefined
+                              backgroundColor: '#F3F3F3',
+                              transition: 'background-color 0.2s ease',
+                              width: '32px',
+                              height: '32px',
+                              minWidth: '32px',
+                              minHeight: '32px',
+                              padding: '6px',
+                              borderRadius: '50%'
                             }}
                             onMouseEnter={(e) => {
-                              e.currentTarget.style.backgroundColor = '#E0E0E0';
+                              e.currentTarget.style.backgroundColor = '#EBEBEB';
                             }}
                             onMouseLeave={(e) => {
-                              e.currentTarget.style.backgroundColor = '#ECECEC';
+                              e.currentTarget.style.backgroundColor = '#F3F3F3';
                             }}
                             title="Voice input"
                           >
-                            <AudioLines className="w-3.5 h-3.5" strokeWidth={1.5} />
-                            {!showVoiceIconOnly && <span className="text-xs font-medium">Voice</span>}
+                            <AudioLines className="w-5 h-5" strokeWidth={1.5} />
                           </button>
                         )}
                         
@@ -16475,12 +16659,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                   layout={false}
                                   className="flex items-center justify-center relative focus:outline-none outline-none"
                                   style={{
-                                    width: '22px',
-                                    height: '22px',
-                                    minWidth: '22px',
-                                    minHeight: '22px',
-                                    maxWidth: '22px',
-                                    maxHeight: '22px',
+                                    width: '28px',
+                                    height: '28px',
+                                    minWidth: '28px',
+                                    minHeight: '28px',
+                                    maxWidth: '28px',
+                                    maxHeight: '28px',
                                     borderRadius: '50%',
                                     border: 'none',
                                     backgroundColor: '#6E6E6E',
@@ -16493,7 +16677,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                   title="Stop generating"
                                 >
                                   <svg 
-                                    className="w-2.5 h-2.5" 
+                                    className="w-3.5 h-3.5" 
                                     viewBox="0 0 10 10" 
                                     fill="none" 
                                     xmlns="http://www.w3.org/2000/svg"
@@ -16520,15 +16704,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                   onClick={handleSubmit} 
                                   initial={{ opacity: 1, scale: 1, backgroundColor: '#4A4A4A' }}
                                   animate={{ opacity: 1, scale: 1, backgroundColor: '#4A4A4A' }}
-                                  exit={{ opacity: 0 }}
+                                  exit={{ opacity: 1, scale: 1 }}
                                   transition={{ duration: 0 }}
                                   layout={false}
                                   className={`flex items-center justify-center relative focus:outline-none outline-none ${!isSubmitted ? '' : 'cursor-not-allowed'}`}
                                   style={{
-                                    width: '22px',
-                                    height: '22px',
-                                    minWidth: '22px',
-                                    minHeight: '22px',
+                                    width: '28px',
+                                    height: '28px',
+                                    minWidth: '28px',
+                                    minHeight: '28px',
                                     borderRadius: '50%',
                                     flexShrink: 0
                                   }}

@@ -8232,6 +8232,101 @@ def download_file():
         logger.error(f"Error in download_file endpoint: {e}")
         return jsonify({'error': str(e)}), 500
 
+
+@views.route('/api/files/document/<document_id>/page/<int:page_number>/preview', methods=['GET'])
+@login_required
+def document_page_preview(document_id, page_number):
+    """Serve a single PDF page as PNG for citation previews. Same auth as download_file."""
+    try:
+        from .services.supabase_document_service import SupabaseDocumentService
+        import boto3
+        from botocore.exceptions import ClientError
+        import io
+
+        if not document_id or page_number < 1:
+            return jsonify({'error': 'document_id and page_number (>= 1) required'}), 400
+
+        doc_service = SupabaseDocumentService()
+        document = doc_service.get_document_by_id(document_id)
+        if not document:
+            return jsonify({'error': 'Document not found'}), 404
+
+        business_uuid_str = _ensure_business_uuid()
+        if not business_uuid_str:
+            return jsonify({'error': 'User not associated with a business'}), 400
+        if str(document.get('business_uuid')) != business_uuid_str:
+            return jsonify({'error': 'Unauthorized'}), 403
+
+        s3_path = document.get('s3_path')
+        if not s3_path:
+            return jsonify({'error': 'Document has no s3_path'}), 404
+
+        try:
+            s3_client = boto3.client(
+                's3',
+                aws_access_key_id=os.environ['AWS_ACCESS_KEY_ID'],
+                aws_secret_access_key=os.environ['AWS_SECRET_ACCESS_KEY'],
+                region_name=os.environ.get('AWS_DEFAULT_REGION', 'us-east-1')
+            )
+            bucket_name = os.environ['S3_UPLOAD_BUCKET']
+            response = s3_client.get_object(Bucket=bucket_name, Key=s3_path)
+            file_content = response['Body'].read()
+        except ClientError as e:
+            error_code = e.response.get('Error', {}).get('Code', '')
+            if error_code in ('NoSuchKey', '404', 'NotFound'):
+                logger.warning("Page preview: file not found in S3: %s", s3_path)
+                return jsonify({'error': 'File not found'}), 404
+            logger.error("Page preview: S3 error: %s", e)
+            return jsonify({'error': 'Failed to download file'}), 500
+
+        target_width = request.args.get('width', 1200, type=int)
+        target_width = max(200, min(2400, target_width))
+
+        try:
+            import fitz
+        except ImportError:
+            logger.error("Page preview: PyMuPDF (fitz) not installed")
+            return jsonify({'error': 'Preview not available'}), 503
+
+        doc = None
+        try:
+            doc = fitz.open(stream=file_content, filetype="pdf")
+            page_count = len(doc)
+            if page_number > page_count:
+                return jsonify({'error': 'Page number out of range'}), 404
+            page = doc[page_number - 1]
+            rect = page.rect
+            scale = target_width / rect.width if rect.width else 1.0
+            matrix = fitz.Matrix(scale, scale)
+            pix = page.get_pixmap(matrix=matrix, alpha=False)
+            w, h = pix.width, pix.height
+            try:
+                from PIL import Image
+                img = Image.frombytes("RGB", (w, h), pix.samples)
+                buf = io.BytesIO()
+                img.save(buf, format="PNG")
+                png_bytes = buf.getvalue()
+            except ImportError:
+                return jsonify({'error': 'Preview not available (PIL required)'}), 503
+        finally:
+            if doc is not None:
+                doc.close()
+
+        return Response(
+            png_bytes,
+            mimetype='image/png',
+            headers={
+                'Content-Type': 'image/png',
+                'X-Image-Width': str(w),
+                'X-Image-Height': str(h),
+                'Cache-Control': 'private, max-age=300',
+            }
+        )
+    except Exception as e:
+        logger.error("Error in document_page_preview: %s", e)
+        return jsonify({'error': 'Failed to generate preview'}), 500
+
+
 @views.route('/api/property-matching/reviews', methods=['GET'])
 @login_required
 def get_pending_property_reviews():

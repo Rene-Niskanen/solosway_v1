@@ -45,6 +45,8 @@ export interface SegmentInputProps {
   restoreSelectionRef?: React.MutableRefObject<(() => void) | null>;
   /** Optional bottom padding for the scroll wrapper (only when maxHeight is used). Set e.g. "14px" for side-panel chat so long messages don't sit right above the buttons; omit for dashboard/map chat. */
   scrollWrapperPaddingBottom?: string;
+  /** Optional font size for placeholder text only (e.g. "18.2px" for 30% larger). Does not affect typed input fontSize. */
+  placeholderFontSize?: string;
 }
 
 export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputProps>(function SegmentInput({
@@ -68,6 +70,7 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
   onKeyDown: externalOnKeyDown,
   restoreSelectionRef,
   scrollWrapperPaddingBottom,
+  placeholderFontSize,
 }, ref) {
   const internalRef = React.useRef<HTMLDivElement>(null);
   const scrollWrapperRef = React.useRef<HTMLDivElement>(null);
@@ -212,15 +215,20 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
     };
   }, [restoreSelectionRef, restoreSelectionToCursor]);
 
-  // Restore selection after segments/cursor change (always sync so caret is correct after chip insert, etc.)
+  // Restore selection after segments/cursor change so caret is correct (matches old behavior from d41a1a5d).
+  // When input is empty, skip so we don't trigger scroll-into-view on every re-render (placeholder glitch).
+  // Empty case: selection is restored in onFocus and in the layout effect when isFocused (effect lives below).
+  const isInputEmpty = segments.length === 0 || (segments.length === 1 && isTextSegment(segments[0]) && segments[0].value === "");
   React.useLayoutEffect(() => {
+    if (isInputEmpty) return;
     restoreSelectionToCursor();
-  }, [segments, cursor, restoreSelectionToCursor]);
+  }, [segments, cursor, restoreSelectionToCursor, isInputEmpty]);
 
-  // Keep the caret in view when typing: scroll the scroll wrapper so the cursor stays visible
+  // Keep the caret in view when typing: scroll the scroll wrapper so the cursor stays visible.
+  // Skip when input is empty (single empty segment) so we don't scroll the placeholder on unrelated re-renders.
+  const hasContent = segments.length > 1 || (segments.length === 1 && isTextSegment(segments[0]) && segments[0].value.length > 0);
   React.useLayoutEffect(() => {
-    if (!scrollWrapperRef.current || !internalRef.current) return;
-    const wrapper = scrollWrapperRef.current;
+    if (!hasContent || !scrollWrapperRef.current || !internalRef.current) return;
     const raf = requestAnimationFrame(() => {
       const sel = window.getSelection();
       if (!sel || sel.rangeCount === 0) return;
@@ -233,7 +241,7 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
       }
     });
     return () => cancelAnimationFrame(raf);
-  }, [segments, cursor]);
+  }, [segments, cursor, hasContent]);
 
   const handleKeyDown = React.useCallback(
     (e: React.KeyboardEvent) => {
@@ -387,14 +395,23 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
     segments.length === 0 ||
     (segments.length === 1 && isTextSegment(segments[0]) && segments[0].value === "");
   const [isFocused, setIsFocused] = React.useState(false);
-  const showPlaceholderOverlay = isEmpty && placeholder && !isFocused;
-  const showPlaceholderInSpan = isEmpty && placeholder && isFocused;
+  // Single container for placeholder: always use overlay when empty so there's no shift between overlay and in-span
+  const showPlaceholderOverlay = isEmpty && !!placeholder;
+  const showPlaceholderInSpan = false;
   const [spellCheckAfterSpace, setSpellCheckAfterSpace] = React.useState(false);
   const spellCheck = !isFocused || spellCheckAfterSpace;
 
-  // contentEditable ignores maxHeight/overflow in many browsers; use a scroll wrapper so the wrapper scrolls
+  // contentEditable ignores maxHeight/overflow in many browsers; use a scroll wrapper so the wrapper scrolls.
+  // When style.height is set, lock the wrapper to that height (height + minHeight + maxHeight) so it never grows and content scrolls inside.
   const scrollWrapperStyle = style?.maxHeight != null ? {
-    maxHeight: style.maxHeight,
+    ...(style?.height != null
+      ? {
+          height: style.height,
+          minHeight: style.height,
+          maxHeight: style.height,
+          flexShrink: 0,
+        }
+      : { maxHeight: style.maxHeight }),
     overflowY: style.overflowY ?? "auto",
     overflowX: style.overflowX ?? "hidden",
     width: style.width ?? "100%",
@@ -402,47 +419,73 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
     WebkitOverflowScrolling: "touch" as const,
     scrollbarWidth: "thin" as const,
     scrollbarColor: "rgba(0,0,0,0.08) transparent",
+    scrollbarGutter: "stable" as const,
     ...(scrollWrapperPaddingBottom != null && { paddingBottom: scrollWrapperPaddingBottom }),
   } : undefined;
   const editableStyle: React.CSSProperties | undefined = scrollWrapperStyle
     ? (() => {
         const s = style ?? {};
-        const { maxHeight, overflowY, overflowX, ...rest } = s;
+        const { maxHeight, overflowY, overflowX, height, ...rest } = s;
         return { ...rest, width: rest.width ?? "100%" };
       })()
     : style;
 
+  // Single source of truth for spacing so overlay and contentEditable never drift (avoids placeholder glitch)
+  const effectiveFontSize = placeholderFontSize ?? style?.fontSize ?? "14px";
+  const effectiveLineHeight = style?.lineHeight ?? (placeholderFontSize ? "28px" : "22px");
+  const placeholderLeftInsetPx = 18;
+  const effectivePadding: React.CSSProperties = {
+    padding: style?.padding ?? 0,
+    ...(style?.paddingLeft != null && {
+      paddingLeft: `${(typeof style.paddingLeft === "number" ? style.paddingLeft : parseFloat(String(style.paddingLeft)) || 0) + placeholderLeftInsetPx}px`,
+    }),
+    ...(style?.paddingLeft == null && { paddingLeft: `${placeholderLeftInsetPx}px` }),
+    ...(style?.paddingRight != null && { paddingRight: style.paddingRight }),
+    ...(style?.paddingTop != null && { paddingTop: style.paddingTop }),
+    ...(style?.paddingBottom != null && { paddingBottom: style.paddingBottom }),
+    // Only add default extra top padding when parent didn't pass paddingTop, so parent can control spacing and overlay/editable stay in sync
+    ...(placeholderFontSize != null && style?.paddingTop == null && { paddingTop: "8px" }),
+  };
+
+  // Placeholder overlay: no extra left padding; effectivePadding already insets content so placeholder and typed text align.
+  const overlayStyle: React.CSSProperties = {
+    position: "absolute" as const,
+    left: 0,
+    top: 0,
+    right: 0,
+    bottom: 0,
+    padding: 0,
+    fontSize: effectiveFontSize,
+    lineHeight: effectiveLineHeight,
+    color: "#BABABA",
+    pointerEvents: "none" as const,
+    whiteSpace: "pre-wrap" as const,
+    wordWrap: "break-word" as const,
+  };
+
+  // When focusing while empty, restore selection so the caret (blinking line) appears immediately.
+  const handleFocus = React.useCallback(() => {
+    setIsFocused(true);
+    setSpellCheckAfterSpace(false);
+    if (isEmpty) {
+      requestAnimationFrame(() => restoreSelectionToCursor());
+    }
+  }, [isEmpty, restoreSelectionToCursor]);
+
+  // When empty and we become focused, run restoreSelectionToCursor so the caret shows (old d41a1a5d behavior).
+  // Effect runs after focus so segmentRefs are mounted; dependency on isFocused ensures it runs when panel auto-focuses.
+  React.useLayoutEffect(() => {
+    if (!isEmpty || !isFocused) return;
+    restoreSelectionToCursor();
+  }, [isEmpty, isFocused, restoreSelectionToCursor]);
+
+  const rootStyle: React.CSSProperties =
+    style?.height != null && scrollWrapperStyle != null
+      ? { position: "relative", height: style.height, minHeight: style.height, flexShrink: 0, ...(style?.width != null ? { width: style.width } : {}) }
+      : { position: "relative", ...(style?.width != null ? { width: style.width } : {}) };
+
   return (
-    <div style={{ position: "relative", ...(style?.width != null ? { width: style.width } : {}) }}>
-      {/* When not focused: placeholder as overlay. Match contentEditable padding, fontSize and lineHeight so placeholder doesn't shift on focus/blur. */}
-      {showPlaceholderOverlay && (
-        <div
-          aria-hidden
-          style={{
-            position: "absolute",
-            left: 0,
-            top: 0,
-            right: 0,
-            bottom: 0,
-            fontSize: "14px",
-            lineHeight: "22px",
-            padding: 0,
-            ...(style?.fontSize != null && { fontSize: style.fontSize }),
-            ...(style?.lineHeight != null && { lineHeight: style.lineHeight }),
-            ...(style?.padding != null && { padding: style.padding }),
-            ...(style?.paddingLeft != null && { paddingLeft: style.paddingLeft }),
-            ...(style?.paddingRight != null && { paddingRight: style.paddingRight }),
-            ...(style?.paddingTop != null && { paddingTop: style.paddingTop }),
-            ...(style?.paddingBottom != null && { paddingBottom: style.paddingBottom }),
-            color: "#BABABA",
-            pointerEvents: "none",
-            whiteSpace: "pre-wrap",
-            wordWrap: "break-word",
-          }}
-        >
-          {placeholder}
-        </div>
-      )}
+    <div style={rootStyle}>
       {scrollWrapperStyle ? (
         <>
           <style>{`.segment-input-scroll::-webkit-scrollbar { width: 6px; }
@@ -459,21 +502,19 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
             tabIndex={0}
             className={className ? `focus:outline-none focus:ring-0 ${className}` : "focus:outline-none focus:ring-0"}
             style={{
+              position: "relative",
               outline: "none",
               minHeight: "22px",
-              fontSize: "14px",
-              lineHeight: "22px",
-              padding: "0",
               wordWrap: "break-word",
               whiteSpace: "pre-wrap",
               WebkitTapHighlightColor: "transparent",
               ...editableStyle,
+              fontSize: effectiveFontSize,
+              lineHeight: effectiveLineHeight,
+              ...effectivePadding,
             }}
             spellCheck={spellCheck}
-            onFocus={() => {
-              setIsFocused(true);
-              setSpellCheckAfterSpace(false);
-            }}
+            onFocus={handleFocus}
             onBlur={() => setIsFocused(false)}
             onMouseDown={handleMouseDown}
             onKeyDown={handleKeyDown}
@@ -487,6 +528,11 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
               }
             }}
           >
+            {showPlaceholderOverlay && (
+              <div aria-hidden contentEditable={false} suppressContentEditableWarning style={overlayStyle}>
+                {placeholder}
+              </div>
+            )}
         {segments.map((seg, i) => {
         if (isTextSegment(seg)) {
           const isOnlyEmpty = segments.length === 1 && seg.value === "";
@@ -500,13 +546,18 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
               data-segment-index={i}
               style={
                 isOnlyEmpty && showPlaceholderOverlay
-                  ? { display: "inline-block", minWidth: "100%", color: "transparent" }
+                  ? { display: "inline-block", minWidth: "100%", color: "rgba(186,186,186,0.01)" }
                   : showPlaceholderHere
-                    ? { display: "inline-block", minWidth: "100%", color: "#BABABA" }
+                    ? {
+                        display: "inline-block",
+                        minWidth: "100%",
+                        color: "#BABABA",
+                        ...(placeholderFontSize != null && { fontSize: effectiveFontSize }),
+                      }
                     : undefined
               }
             >
-              {showPlaceholderHere ? placeholder : seg.value}
+              {(isOnlyEmpty && showPlaceholderOverlay) || showPlaceholderHere ? placeholder : seg.value}
             </span>
           );
         }
@@ -552,21 +603,19 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
         tabIndex={0}
         className={className ? `focus:outline-none focus:ring-0 ${className}` : "focus:outline-none focus:ring-0"}
         style={{
+          position: "relative",
           outline: "none",
           minHeight: "22px",
-          fontSize: "14px",
-          lineHeight: "22px",
-          padding: "0",
           wordWrap: "break-word",
           whiteSpace: "pre-wrap",
           WebkitTapHighlightColor: "transparent",
           ...style,
+          fontSize: effectiveFontSize,
+          lineHeight: effectiveLineHeight,
+          ...effectivePadding,
         }}
         spellCheck={spellCheck}
-        onFocus={() => {
-          setIsFocused(true);
-          setSpellCheckAfterSpace(false);
-        }}
+        onFocus={handleFocus}
         onBlur={() => setIsFocused(false)}
         onMouseDown={handleMouseDown}
         onKeyDown={handleKeyDown}
@@ -580,6 +629,11 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
           }
         }}
       >
+        {showPlaceholderOverlay && (
+          <div aria-hidden contentEditable={false} suppressContentEditableWarning style={overlayStyle}>
+            {placeholder}
+          </div>
+        )}
         {segments.map((seg, i) => {
         if (isTextSegment(seg)) {
           const isOnlyEmpty = segments.length === 1 && seg.value === "";
@@ -593,13 +647,18 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
               data-segment-index={i}
               style={
                 isOnlyEmpty && showPlaceholderOverlay
-                  ? { display: "inline-block", minWidth: "100%", color: "transparent" }
+                  ? { display: "inline-block", minWidth: "100%", color: "rgba(186,186,186,0.01)" }
                   : showPlaceholderHere
-                    ? { display: "inline-block", minWidth: "100%", color: "#BABABA" }
+                    ? {
+                        display: "inline-block",
+                        minWidth: "100%",
+                        color: "#BABABA",
+                        ...(placeholderFontSize != null && { fontSize: effectiveFontSize }),
+                      }
                     : undefined
               }
             >
-              {showPlaceholderHere ? placeholder : seg.value}
+              {(isOnlyEmpty && showPlaceholderOverlay) || showPlaceholderHere ? placeholder : seg.value}
             </span>
           );
         }

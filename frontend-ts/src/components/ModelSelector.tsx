@@ -56,16 +56,16 @@ export function ModelSelector({ className, compact = false }: ModelSelectorProps
 
   const displayLabel = compact ? currentModel.shortLabel : currentModel.label;
   const textSize = '13px';
-  const buttonHeight = '24px';
+  const buttonHeight = compact ? '32px' : '28px';
   const miniModelId: LLMModel = 'gpt-4o-mini';
   const miniTriggerColor = '#7F7F7F';
   const miniMenuColor = '#0F0F0F';
   
   // Icon-only mode styling
   const showText = !compact;
-  const iconSize = compact ? "w-3.5 h-3.5" : "w-3 h-3";
-  const gapClass = showText ? 'gap-1' : '';
-  const paddingClass = compact ? 'px-1.5 py-0.5' : 'px-2.5 py-1';
+  const iconSize = compact ? "w-[18px] h-[18px]" : "w-3 h-3";
+  const gapClass = showText ? 'gap-1' : compact ? 'gap-0.5' : '';
+  const paddingClass = compact ? 'p-0 justify-center' : 'px-2.5 py-1';
 
   return (
     <DropdownMenu
@@ -94,7 +94,7 @@ export function ModelSelector({ className, compact = false }: ModelSelectorProps
             minHeight: buttonHeight,
             whiteSpace: 'nowrap',
             flexShrink: 1,
-            minWidth: compact ? '24px' : '60px',
+            minWidth: compact ? '36px' : '60px',
             overflow: 'hidden',
           }}
         >
@@ -164,9 +164,7 @@ export function ModelSelector({ className, compact = false }: ModelSelectorProps
               >
                 {modelOption.label}
               </span>
-              <div style={{ width: '14px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                {isSelected && <Check className="w-3 h-3" strokeWidth={2.5} style={{ opacity: 0.7 }} />}
-              </div>
+              {isSelected && <Check className="w-6 h-6 flex-shrink-0" strokeWidth={2.5} style={{ opacity: 0.7 }} />}
             </DropdownMenuItem>
           );
         })}
