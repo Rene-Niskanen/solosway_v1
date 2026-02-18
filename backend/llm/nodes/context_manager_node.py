@@ -59,6 +59,11 @@ async def context_manager_node(state: MainWorkflowState) -> MainWorkflowState:
         logger.debug(f"[CONTEXT_MGR] Only {len(messages)} messages - no summarization needed")
         return {}
     
+    # Fast path: very short conversations are under 8k; skip token count
+    if len(messages) <= 8:
+        logger.debug(f"[CONTEXT_MGR] Only {len(messages)} messages - skip token count")
+        return {}
+    
     # Estimate token count (1 token ≈ 4 characters)
     total_tokens = sum(
         len(str(msg.content)) // 4 

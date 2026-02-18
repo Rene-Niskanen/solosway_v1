@@ -23,6 +23,8 @@ class GraphRunner:
         self._ready_error: Optional[BaseException] = None
         self._graph: Any = None
         self._checkpointer: Any = None
+        # Lock: only one stream runs on the runner at a time; others fall back to per-request loop
+        self._stream_lock = threading.Lock()
 
     def start(self) -> None:
         """Start the background runner thread (idempotent)."""
@@ -85,6 +87,17 @@ class GraphRunner:
     def get_checkpointer(self) -> Any:
         self.wait_ready()
         return self._checkpointer
+
+    def try_acquire_stream(self) -> bool:
+        """Acquire the stream lock (non-blocking). Call release_stream() when done."""
+        return self._stream_lock.acquire(blocking=False)
+
+    def release_stream(self) -> None:
+        """Release the stream lock after streaming finishes."""
+        try:
+            self._stream_lock.release()
+        except RuntimeError:
+            pass  # Lock was not held (e.g. already released)
 
     def run_query_sync(self, initial_state: dict, thread_id: Optional[str]) -> dict:
         """

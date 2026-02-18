@@ -91,6 +91,7 @@ def get_usage_for_api(
     plan_override: str | None = None,
     billing_cycle_start_override: str | None = None,
     billing_cycle_end_override: str | None = None,
+    period_start_utc_override: datetime | None = None,
 ) -> Dict[str, Any]:
     """
     Build the usage payload for GET /api/usage.
@@ -98,6 +99,8 @@ def get_usage_for_api(
     When billing_cycle_*_override are provided (subscription period from start/switch),
     usage = pages from documents created in [period_start, min(now, period_end)] so
     usage is tracked only within the current plan period until it ends.
+    When period_start_utc_override is provided (e.g. from subscription_period_started_at),
+    usage is counted from that exact moment so 0/500 right after a plan change.
     """
     plan = (
         plan_override
@@ -106,21 +109,25 @@ def get_usage_for_api(
     )
     monthly_limit = TIER_LIMITS.get(plan, TIER_LIMITS[DEFAULT_TIER])
 
-    if billing_cycle_end_override and billing_cycle_start_override:
-        billing_cycle_start = billing_cycle_start_override
+    if billing_cycle_end_override and (billing_cycle_start_override or period_start_utc_override is not None):
         billing_cycle_end = billing_cycle_end_override
         # Count usage only within this subscription period (from start/switch until now or period end)
         try:
-            start_date = datetime.strptime(billing_cycle_start_override, "%Y-%m-%d").date()
             end_date = datetime.strptime(billing_cycle_end_override, "%Y-%m-%d").date()
-            period_start_utc = datetime(
-                start_date.year, start_date.month, start_date.day, 0, 0, 0, tzinfo=timezone.utc
-            )
             period_end_utc = datetime(
                 end_date.year, end_date.month, end_date.day, 23, 59, 59, tzinfo=timezone.utc
             ) + timedelta(seconds=1)
             now_utc = datetime.now(timezone.utc)
             end_cap = min(now_utc, period_end_utc)
+            if period_start_utc_override is not None:
+                period_start_utc = period_start_utc_override
+                billing_cycle_start = period_start_utc_override.date().strftime("%Y-%m-%d")
+            else:
+                start_date = datetime.strptime(billing_cycle_start_override, "%Y-%m-%d").date()
+                period_start_utc = datetime(
+                    start_date.year, start_date.month, start_date.day, 0, 0, 0, tzinfo=timezone.utc
+                )
+                billing_cycle_start = billing_cycle_start_override
             pages_used = get_pages_used_in_period(business_uuid, period_start_utc, end_cap)
         except (ValueError, TypeError) as e:
             logger.warning("Invalid billing_cycle dates, falling back to calendar month: %s", e)

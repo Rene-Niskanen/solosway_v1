@@ -381,7 +381,9 @@ class BackendApiService {
     // PLAN UPDATE: Existing plan content for updates (when user provides follow-up)
     existingPlan?: string,
     // STREAMED TITLE: Chat title streamed from backend (so everything shown to user is streamed)
-    onTitleChunk?: (token: string) => void
+    onTitleChunk?: (token: string) => void,
+    // NEW CHAT: Skip checkpoint load on backend when true (first message of new chat)
+    isNewChat?: boolean
   ): Promise<void> {
     const baseUrl = this.baseUrl || BACKEND_URL;
     const url = `${baseUrl}/api/llm/query/stream`;
@@ -398,7 +400,8 @@ class BackendApiService {
       isAgentMode: isAgentMode ?? false, // AGENT MODE: Pass to backend for tool binding
       model: model || 'gpt-4o-mini', // MODEL SELECTION: User-selected LLM model
       planMode: planMode ?? false, // PLAN MODE: Generate plan before execution
-      existingPlan: existingPlan || undefined // PLAN UPDATE: Existing plan for follow-up updates
+      existingPlan: existingPlan || undefined, // PLAN UPDATE: Existing plan for follow-up updates
+      isNewChat: isNewChat ?? false // Skip checkpoint load when true (first message of new chat)
     };
     
     if (import.meta.env.DEV) {

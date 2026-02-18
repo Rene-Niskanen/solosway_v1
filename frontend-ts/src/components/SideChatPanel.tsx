@@ -875,7 +875,6 @@ const StreamingResponseText: React.FC<{
           const pos = revealPositionRef.current;
           const currentLine = Math.min(Math.floor(pos), newCount - 1);
           const rect = lineRects[currentLine];
-          // Use full line bottom so we never cut through a line vertically (avoids mid-word cutoff)
           const revealedBottom = rect.top + rect.height;
           wrapperRef.current.style.height = `${topPadding + Math.ceil(revealedBottom)}px`;
           wrapperRef.current.style.overflow = 'hidden';
@@ -891,7 +890,6 @@ const StreamingResponseText: React.FC<{
       const pos = revealPositionRef.current;
       const currentLine = Math.min(Math.floor(pos), newCount - 1);
       const rect = lineRects[currentLine];
-      // Use full line bottom so we never cut through a line vertically (avoids mid-word cutoff)
       const revealedBottom = rect.top + rect.height;
       wrapperRef.current.style.height = `${topPadding + Math.ceil(revealedBottom)}px`;
       wrapperRef.current.style.overflow = 'hidden';
@@ -909,11 +907,11 @@ const StreamingResponseText: React.FC<{
     if (revealRunningRef.current || !wrapperRef.current) return;
     revealRunningRef.current = true;
     const wrapper = wrapperRef.current;
-    const SPEED = 0.055;
-    const MAX_STEP = 0.28;
-    const SMOOTH = 0.14;
-    const MIN_STEP = 0.005;
-    const MAX_STEP_FIRST_LINES = 0.035;
+    const SPEED = 0.028;
+    const MAX_STEP = 0.11;
+    const SMOOTH = 0.07;
+    const MIN_STEP = 0.003;
+    const MAX_STEP_FIRST_LINES = 0.018;
     const FIRST_LINES_COUNT = 3;
 
     const tick = () => {
@@ -944,13 +942,11 @@ const StreamingResponseText: React.FC<{
         const topPadding = 4;
         const currentLineIdx = Math.min(Math.floor(pos), rects.length - 1, overlayCount - 1);
         const rect = rects[currentLineIdx];
-        // Use full line bottom so we never cut through a line vertically (avoids mid-word cutoff)
         const revealedBottom = rect.top + rect.height;
         wrapper.style.height = `${topPadding + Math.ceil(revealedBottom)}px`;
         wrapper.style.overflow = 'hidden';
       }
 
-      // Keep scroll in sync with reveal so the user always sees the revealed content (not just at 100%)
       if (streamingRef.current || pos < target - 0.001) {
         onTextUpdateRef.current?.();
       }
@@ -976,19 +972,25 @@ const StreamingResponseText: React.FC<{
   React.useLayoutEffect(() => {
     if (!text || !textContainerRef.current) return;
     if (skipRevealAnimation) return;
+    if (!isStreaming) return;
     const grew = text.length > prevTextLenRef.current;
     prevTextLenRef.current = text.length;
     if (grew && !overlayRevealDoneRef.current) {
       setShowOverlay(true);
       measureLines();
-      // Deferred re-measure so blur overlay gets line rects even if DOM wasn't ready on first run
-      // (e.g. after citation placeholders or markdown commit; prevents "lost" blur during streaming)
-      const raf = requestAnimationFrame(() => {
+      // Deferred re-measure so blur overlay gets line rects when DOM is ready (don't cancel so it always runs)
+      requestAnimationFrame(() => {
         requestAnimationFrame(measureLines);
       });
-      return () => cancelAnimationFrame(raf);
     }
-  }, [text, measureLines, skipRevealAnimation]);
+  }, [text, measureLines, skipRevealAnimation, isStreaming]);
+
+  // Fallback: when overlay is shown but we have no lines yet (DOM wasn't ready), re-measure until we get lines or give up
+  React.useLayoutEffect(() => {
+    if (!showOverlay || lines.length > 0 || !text || !isStreaming || overlayRevealDoneRef.current) return;
+    const t = setTimeout(measureLines, 50);
+    return () => clearTimeout(t);
+  }, [showOverlay, lines.length, text, isStreaming, measureLines]);
 
   React.useEffect(() => {
     const el = textContainerRef.current;
@@ -1539,13 +1541,12 @@ const StreamingResponseText: React.FC<{
                 key={i}
                 style={{
                   position: 'absolute',
-                  left: 0,
+                  left: `calc(var(--line-${i}, 0) * 100%)`,
                   top: line.top,
                   right: 0,
                   height: line.height,
-                  // Gradient: transparent at left (clip boundary = soft edge so we don't cut words), solid on right (cover unrevealed text)
-                  background: 'linear-gradient(to right, transparent 0%, rgba(252,252,249,0.12) 15%, rgba(252,252,249,0.5) 35%, rgba(252,252,249,0.9) 55%, #FCFCF9 75%, #FCFCF9 100%)',
-                  clipPath: `inset(0 0 0 calc(var(--line-${i}, 0) * 100%))`,
+                  // Right side solid (cover unrevealed text), left side blur/fade (soft edge at reveal boundary so we don't cut words)
+                  background: 'linear-gradient(to right, transparent 0%, rgba(252,252,249,0.08) 15%, rgba(252,252,249,0.4) 35%, rgba(252,252,249,0.85) 55%, #FCFCF9 75%, #FCFCF9 100%)',
                   pointerEvents: 'none',
                   filter: 'blur(0.5px)',
                   WebkitFilter: 'blur(0.5px)',
@@ -6770,7 +6771,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 }
               },
               true, // planMode
-              isFollowUpQuery ? currentPlanContent : undefined // existingPlan for updates - use captured value
+              isFollowUpQuery ? currentPlanContent : undefined, // existingPlan for updates - use captured value
+              undefined, // onTitleChunk
+              false // isNewChat (plan mode does not use checkpoint)
             );
           } catch (error) {
             console.error('📋 [PLAN_MODE] Failed to generate plan:', error);
@@ -8520,7 +8523,13 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               // onThinkingComplete: Finalize thinking content
               (fullThinking: string) => {
                 console.log('🧠 Extended thinking complete:', fullThinking.length, 'chars');
-              }
+              },
+              undefined, // onPlanChunk
+              undefined, // onPlanComplete
+              false, // planMode
+              undefined, // existingPlan
+              undefined, // onTitleChunk (main query path uses title from onComplete)
+              messageHistory.length === 0 // isNewChat: skip checkpoint load for first message
             );
           } catch (error: any) {
             isProcessingQueryRef.current = false;
@@ -8742,6 +8751,13 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         });
       }
     }
+    // Keep auto-scroll on while the latest message is streaming so we always follow the streamed response
+    if (hasLoadingMessage) {
+      const lastMsg = chatMessages[chatMessages.length - 1];
+      if (lastMsg?.isLoading && lastMsg?.text) {
+        autoScrollEnabledRef.current = true;
+      }
+    }
     
     // When loading completes, do a final scroll so the full response is visible above the chat bar
     if (prevLoadingRef.current && !hasLoadingMessage) {
@@ -8766,6 +8782,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       if (cancelled) return;
       const el = contentAreaRef.current;
       if (!el) {
+        rafId = requestAnimationFrame(tick);
+        return;
+      }
+      if (!autoScrollEnabledRef.current) {
         rafId = requestAnimationFrame(tick);
         return;
       }
@@ -10385,7 +10405,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               (token: string) => {
                 setIsTitleStreaming(true);
                 setStreamedTitle(prev => prev + token);
-              }
+              },
+              true // isNewChat (this path uses empty messageHistory [])
             );
             
             // Clear abort controller and processing flag on completion
@@ -10935,7 +10956,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               }
             },
             true, // planMode
-            isFollowUpQuery ? currentPlanContent : undefined // existingPlan for updates - use captured value
+            isFollowUpQuery ? currentPlanContent : undefined, // existingPlan for updates - use captured value
+            undefined, // onTitleChunk
+            false // isNewChat (plan mode does not use checkpoint)
           );
         } catch (error) {
           console.error('📋 [PLAN_MODE] Failed to generate plan:', error);
@@ -12367,7 +12390,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             (token: string) => {
               setIsTitleStreaming(true);
               setStreamedTitle(prev => prev + token);
-            }
+            },
+            messageHistory.length === 0 // isNewChat: skip checkpoint load for first message
           );
           
           // Clear abort controller and processing flag on completion

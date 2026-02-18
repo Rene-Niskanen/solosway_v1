@@ -663,6 +663,7 @@ def query_documents_stream():
         property_id = data.get('propertyId')
         document_ids = data.get('documentIds') or data.get('document_ids', [])  # NEW: Get attached document IDs
         message_history = data.get('messageHistory', [])
+        is_new_chat = data.get('isNewChat', False)  # Skip checkpoint load when true (first message of new chat)
         
         # NEW: Use SessionManager to generate thread_id for LangGraph checkpointer
         # This ensures consistent session identification between frontend and backend
@@ -1095,10 +1096,13 @@ def query_documents_stream():
                 if action_intent['wants_action']:
                     logger.info(f"🎯 [ACTION_INTENT] Detected action intent: {action_intent}")
                 
-                async def run_and_stream():
-                    """Run LangGraph and stream the final summary with reasoning steps"""
+                async def run_and_stream(runner_graph=None, runner_checkpointer=None):
+                    """Run LangGraph and stream the final summary with reasoning steps.
+                    When runner_graph and runner_checkpointer are provided (from GraphRunner), reuse them
+                    instead of building a new graph/checkpointer for this loop.
+                    """
                     try:
-                        logger.info("🟡 [STREAM] run_and_stream() async function started")
+                        logger.info("🟡 [STREAM] run_and_stream() async function started (runner_graph=%s)", runner_graph is not None)
                         # Yield immediately so the client gets feedback while we build the graph (reduces perceived latency)
                         if effective_document_ids:
                             # Include first document's filename so UI shows real name instead of "Document"
@@ -1126,41 +1130,48 @@ def query_documents_stream():
                         else:
                             yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'preparing', 'action_type': 'planning', 'message': 'Preparing...', 'details': {}, 'timestamp': time.time()})}\n\n"
                         
-                        # Create a new checkpointer and graph for current event loop.
-                        # This avoids "Lock bound to different event loop" errors.
-                        # All checkpointers use the same database, so conversation_history is still shared.
-                        graph = None
-                        checkpointer = None
-                        try:
-                            from backend.llm.runtime.graph_runner import graph_runner
-                            # Check if GraphRunner has a checkpointer (to know if checkpointing is available)
-                            has_checkpointer = graph_runner.get_checkpointer() is not None
-                            if has_checkpointer:
-                                # Create a new checkpointer for this event loop (shares same DB, different instance)
+                        # Use runner's graph/checkpointer when provided; otherwise create for current event loop.
+                        if runner_graph is not None and runner_checkpointer is not None:
+                            graph = runner_graph
+                            checkpointer = runner_checkpointer
+                            timing.mark("graph_built")
+                            logger.info("🟡 [STREAM] Using GraphRunner graph and checkpointer (reuse)")
+                        else:
+                            # Create a new checkpointer and graph for current event loop.
+                            # This avoids "Lock bound to different event loop" errors.
+                            # All checkpointers use the same database, so conversation_history is still shared.
+                            graph = None
+                            checkpointer = None
+                            try:
+                                from backend.llm.runtime.graph_runner import graph_runner
+                                # Check if GraphRunner has a checkpointer (to know if checkpointing is available)
+                                has_checkpointer = graph_runner.get_checkpointer() is not None
+                                if has_checkpointer:
+                                    # Create a new checkpointer for this event loop (shares same DB, different instance)
+                                    from backend.llm.graphs.main_graph import build_main_graph, create_checkpointer_for_current_loop
+                                    checkpointer = await create_checkpointer_for_current_loop()
+                                    if checkpointer:
+                                        graph, _ = await build_main_graph(use_checkpointer=True, checkpointer_instance=checkpointer)
+                                        logger.info("🟡 [STREAM] Created new checkpointer for current loop (shares DB with GraphRunner)")
+                                    else:
+                                        graph, _ = await build_main_graph(use_checkpointer=False)
+                                        logger.info("🟡 [STREAM] Failed to create checkpointer, using stateless graph")
+                                else:
+                                    # No checkpointer available, create stateless graph
+                                    from backend.llm.graphs.main_graph import build_main_graph
+                                    graph, _ = await build_main_graph(use_checkpointer=False)
+                                    logger.info("🟡 [STREAM] GraphRunner has no checkpointer, using stateless graph")
+                                timing.mark("checkpointer_created")
+                                timing.mark("graph_built")
+                            except Exception as runner_err:
+                                logger.warning(f"🟡 [STREAM] GraphRunner unavailable, falling back to legacy per-request graph: {runner_err}")
                                 from backend.llm.graphs.main_graph import build_main_graph, create_checkpointer_for_current_loop
                                 checkpointer = await create_checkpointer_for_current_loop()
-                                if checkpointer:
-                                    graph, _ = await build_main_graph(use_checkpointer=True, checkpointer_instance=checkpointer)
-                                    logger.info("🟡 [STREAM] Created new checkpointer for current loop (shares DB with GraphRunner)")
-                                else:
-                                    graph, _ = await build_main_graph(use_checkpointer=False)
-                                    logger.info("🟡 [STREAM] Failed to create checkpointer, using stateless graph")
+                                timing.mark("checkpointer_created")
+                            if checkpointer:
+                                graph, _ = await build_main_graph(use_checkpointer=True, checkpointer_instance=checkpointer)
                             else:
-                                # No checkpointer available, create stateless graph
-                                from backend.llm.graphs.main_graph import build_main_graph
                                 graph, _ = await build_main_graph(use_checkpointer=False)
-                                logger.info("🟡 [STREAM] GraphRunner has no checkpointer, using stateless graph")
-                            timing.mark("checkpointer_created")
-                            timing.mark("graph_built")
-                        except Exception as runner_err:
-                            logger.warning(f"🟡 [STREAM] GraphRunner unavailable, falling back to legacy per-request graph: {runner_err}")
-                            from backend.llm.graphs.main_graph import build_main_graph, create_checkpointer_for_current_loop
-                            checkpointer = await create_checkpointer_for_current_loop()
-                            timing.mark("checkpointer_created")
-                        if checkpointer:
-                            graph, _ = await build_main_graph(use_checkpointer=True, checkpointer_instance=checkpointer)
-                        else:
-                            graph, _ = await build_main_graph(use_checkpointer=False)
                             timing.mark("graph_built")
                             logger.info("🟡 [STREAM] Using per-request graph and checkpointer")
                         
@@ -1188,7 +1199,7 @@ def query_documents_stream():
                         loaded_conversation_history = []
                         existing_state = None
                         try:
-                            if checkpointer:
+                            if not is_new_chat and checkpointer:
                                 existing_state = await graph.aget_state(config_dict)
                                 if existing_state and existing_state.values:
                                     conv_history = existing_state.values.get('conversation_history', [])
@@ -2938,11 +2949,46 @@ def query_documents_stream():
                 
                 # Create a queue to pass chunks from async to sync
                 from queue import Queue
+                import asyncio  # In scope for run_and_stream in both runner and fallback paths
                 chunk_queue = Queue()
                 error_occurred = threading.Event()
                 error_message = [None]
                 # Signal for stream thread to stop when client disconnects (e.g. pause/stop)
                 client_disconnected = threading.Event()
+                
+                # Use GraphRunner when free (reuse graph + checkpointer); otherwise fall back to per-request loop
+                use_runner = False
+                try:
+                    from backend.llm.runtime.graph_runner import graph_runner
+                    if graph_runner.try_acquire_stream():
+                        gr_graph = graph_runner.get_graph()
+                        gr_checkpointer = graph_runner.get_checkpointer()
+                        if gr_graph is not None and gr_checkpointer is not None:
+                            use_runner = True
+                            async def consume_into_queue():
+                                try:
+                                    async for chunk in run_and_stream(gr_graph, gr_checkpointer):
+                                        chunk_queue.put(chunk)
+                                except Exception as ex:
+                                    logger.error("🟠 [STREAM] Error in runner stream: %s", ex, exc_info=True)
+                                    error_occurred.set()
+                                    error_message[0] = str(ex)
+                                    chunk_queue.put(f"data: {json.dumps({'type': 'error', 'message': str(ex)})}\n\n")
+                                finally:
+                                    graph_runner.release_stream()
+                                    chunk_queue.put(None)
+                            asyncio.run_coroutine_threadsafe(consume_into_queue(), graph_runner._loop)
+                            logger.info("🟠 [STREAM] Using GraphRunner loop for stream")
+                        else:
+                            graph_runner.release_stream()
+                except Exception as e:
+                    if use_runner:
+                        try:
+                            graph_runner.release_stream()
+                        except Exception:
+                            pass
+                    use_runner = False
+                    logger.debug("🟠 [STREAM] Not using GraphRunner: %s", e)
                 
                 def run_async_gen():
                     """Run the async generator in a separate thread with its own event loop"""
@@ -3046,10 +3092,11 @@ def query_documents_stream():
                     finally:
                         chunk_queue.put(None)  # Signal completion
                 
-                # Start async generator in a separate thread
-                thread = threading.Thread(target=run_async_gen, daemon=True)
-                thread.start()
-                logger.info("🟠 [STREAM] Thread started")
+                # Start async generator in a separate thread only when not using GraphRunner
+                if not use_runner:
+                    thread = threading.Thread(target=run_async_gen, daemon=True)
+                    thread.start()
+                    logger.info("🟠 [STREAM] Thread started (per-request loop)")
                 
                 # Yield chunks from queue
                 while True:
@@ -6351,19 +6398,27 @@ def get_usage():
         billing_cycle_start_override = None
         billing_cycle_end_override = None
         period_end = getattr(current_user, 'subscription_period_ends_at', None)
+        period_started_at = getattr(current_user, 'subscription_period_started_at', None)
         today_utc = datetime.now(timezone.utc).date()
+        now_utc = datetime.now(timezone.utc)
         if not period_end:
             period_end = today_utc + timedelta(days=30)
             current_user.subscription_period_ends_at = period_end
+            current_user.subscription_period_started_at = now_utc
             db.session.commit()
         elif period_end < today_utc:
             period_end = today_utc + timedelta(days=30)
             current_user.subscription_period_ends_at = period_end
+            current_user.subscription_period_started_at = now_utc
             db.session.commit()
+        period_start_utc_override = None
         if period_end:
-            start = period_end - timedelta(days=30)
-            billing_cycle_start_override = start.strftime("%Y-%m-%d")
             billing_cycle_end_override = period_end.strftime("%Y-%m-%d")
+            if period_started_at is not None:
+                period_start_utc_override = period_started_at
+            else:
+                start = period_end - timedelta(days=30)
+                billing_cycle_start_override = start.strftime("%Y-%m-%d")
         data = get_usage_for_api(
             business_uuid_str,
             user_id=current_user.id,
@@ -6371,6 +6426,7 @@ def get_usage():
             plan_override=plan,
             billing_cycle_start_override=billing_cycle_start_override,
             billing_cycle_end_override=billing_cycle_end_override,
+            period_start_utc_override=period_start_utc_override,
         )
         return jsonify({'success': True, 'data': data})
     except Exception as e:
@@ -6400,8 +6456,10 @@ def update_plan():
         current = getattr(current_user, 'subscription_tier', None)
         if current == plan:
             return jsonify({'success': True, 'plan': plan}), 200
+        now_utc = datetime.now(timezone.utc)
         current_user.subscription_tier = plan
-        current_user.subscription_period_ends_at = (datetime.now(timezone.utc).date() + timedelta(days=30))
+        current_user.subscription_period_ends_at = (now_utc.date() + timedelta(days=30))
+        current_user.subscription_period_started_at = now_utc  # so usage is 0/500 from this moment
         db.session.commit()
         return jsonify({'success': True, 'plan': plan}), 200
     except Exception as e:
