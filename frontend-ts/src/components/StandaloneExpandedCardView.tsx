@@ -1474,7 +1474,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
       data-agent-sidebar-width={agentSidebarWidth}
       initial={false}
       animate={{ opacity: 1, scale: 1 }}
-      exit={{ opacity: 0, transition: { duration: 0.12 } }}
+      exit={{ opacity: 0, transition: { duration: 0 } }}
       transition={{ duration: 0 }}
       className={isFullscreen ? `fixed inset-0 flex flex-col ${initialFullscreen ? 'z-[100010]' : 'z-[10000]'}` : "flex flex-col z-[9999]"}
       style={{

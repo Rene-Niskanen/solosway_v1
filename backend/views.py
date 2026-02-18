@@ -748,6 +748,8 @@ def query_documents_stream():
                     logger.error("❌ [STREAM] No business_id found")
                     yield f"data: {json.dumps({'type': 'error', 'message': 'User not associated with a business'})}\n\n"
                     return
+                # Yield immediately so client gets feedback before Supabase/state work (reduces perceived hang)
+                yield f"data: {json.dumps({'type': 'status', 'message': 'Searching documents...'})}\n\n"
             except Exception as early_error:
                 # If error occurs before first yield, yield error immediately
                 logger.error(f"❌ [STREAM] Early error in generate_stream: {early_error}")
@@ -835,27 +837,30 @@ def query_documents_stream():
                 # Only set document_ids when request provided them (attachment or property). Otherwise leave unset so checkpoint keeps previous turn’s document_ids for follow-ups.
                 if effective_document_ids is not None and (not isinstance(effective_document_ids, list) or len(effective_document_ids) > 0):
                     initial_state["document_ids"] = effective_document_ids
-                # #region agent log
-                try:
-                    import json as json_module
-                    with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
-                        f.write(json_module.dumps({
-                            'sessionId': 'debug-session',
-                            'runId': 'run1',
-                            'hypothesisId': 'A',
-                            'location': 'views.py:433',
-                            'message': 'Initial state document_ids check',
-                            'data': {
-                                'document_ids': document_ids,
-                                'document_ids_type': type(document_ids).__name__,
-                                'document_ids_len': len(document_ids) if document_ids else 0,
-                                'document_ids_is_none': document_ids is None,
-                                'document_ids_bool': bool(document_ids),
-                                'query': query[:50]
-                            },
-                            'timestamp': int(__import__('time').time() * 1000)
-                        }) + '\n')
-                except: pass
+                # #region agent log (only when DEBUG_STREAM_LOG=1 to avoid sync I/O on every request)
+                if os.environ.get("DEBUG_STREAM_LOG"):
+                    try:
+                        import json as json_module
+                        _debug_log_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), '.cursor', 'debug.log')
+                        with open(_debug_log_path, 'a') as f:
+                            f.write(json_module.dumps({
+                                'sessionId': 'debug-session',
+                                'runId': 'run1',
+                                'hypothesisId': 'A',
+                                'location': 'views.py:433',
+                                'message': 'Initial state document_ids check',
+                                'data': {
+                                    'document_ids': document_ids,
+                                    'document_ids_type': type(document_ids).__name__,
+                                    'document_ids_len': len(document_ids) if document_ids else 0,
+                                    'document_ids_is_none': document_ids is None,
+                                    'document_ids_bool': bool(document_ids),
+                                    'query': query[:50]
+                                },
+                                'timestamp': int(__import__('time').time() * 1000)
+                            }) + '\n')
+                    except Exception:
+                        pass
                 # #endregion
                 logger.info(
                     f"🟢 [STREAM] Initial state built: query='{query[:30]}...', "
@@ -863,9 +868,7 @@ def query_documents_stream():
                     f"document_ids={len(document_ids) if document_ids else 0}"
                 )
                 
-                # Send initial status and FIRST reasoning step immediately
-                logger.info("🟢 [STREAM] Yielding initial status message")
-                yield f"data: {json.dumps({'type': 'status', 'message': 'Searching documents...'})}\n\n"
+                # Initial status already yielded after business_id (so client gets first byte before Supabase)
                 
                 # Generate and stream chat title from query (so everything shown to user is streamed)
                 def generate_chat_title_from_query(q: str) -> str:
@@ -1101,32 +1104,14 @@ def query_documents_stream():
                     When runner_graph and runner_checkpointer are provided (from GraphRunner), reuse them
                     instead of building a new graph/checkpointer for this loop.
                     """
+                    import asyncio
                     try:
                         logger.info("🟡 [STREAM] run_and_stream() async function started (runner_graph=%s)", runner_graph is not None)
-                        # Yield immediately so the client gets feedback while we build the graph (reduces perceived latency)
+                        # Yield immediately so the client gets feedback (don't block on get_document/Supabase)
                         if effective_document_ids:
-                            # Include first document's filename so UI shows real name instead of "Document"
-                            reading_details = {}
-                            try:
-                                from backend.services.document_storage_service import DocumentStorageService
-                                doc_storage = DocumentStorageService()
-                                first_id = effective_document_ids[0]
-                                ok, doc, _ = doc_storage.get_document(first_id, business_id)
-                                if ok and doc:
-                                    fn = (doc.get('original_filename') or '').strip()
-                                    if fn:
-                                        display_fn = fn[:32] + '...' if len(fn) > 35 else fn
-                                        reading_details = {
-                                            'filename': fn,
-                                            'doc_metadata': {
-                                                'doc_id': first_id,
-                                                'original_filename': fn,
-                                                'classification_type': doc.get('classification_type') or 'Document',
-                                            },
-                                        }
-                            except Exception as e:
-                                logger.debug(f"Could not resolve filename for reading step: {e}")
-                            yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'reading_documents', 'action_type': 'reading', 'message': 'Reading selected documents...', 'details': reading_details, 'timestamp': time.time()})}\n\n"
+                            # Yield first so client sees "Reading..." without waiting for Supabase
+                            yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'reading_documents', 'action_type': 'reading', 'message': 'Reading selected documents...', 'details': {}, 'timestamp': time.time()})}\n\n"
+                            # get_document no longer blocks first byte; filename could be fetched later if needed for UI
                         else:
                             yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'preparing', 'action_type': 'planning', 'message': 'Preparing...', 'details': {}, 'timestamp': time.time()})}\n\n"
                         
@@ -1149,7 +1134,11 @@ def query_documents_stream():
                                 if has_checkpointer:
                                     # Create a new checkpointer for this event loop (shares same DB, different instance)
                                     from backend.llm.graphs.main_graph import build_main_graph, create_checkpointer_for_current_loop
-                                    checkpointer = await create_checkpointer_for_current_loop()
+                                    try:
+                                        checkpointer = await asyncio.wait_for(create_checkpointer_for_current_loop(), timeout=15)
+                                    except asyncio.TimeoutError:
+                                        logger.warning("🟡 [STREAM] Checkpointer creation timed out (15s), using stateless graph")
+                                        checkpointer = None
                                     if checkpointer:
                                         graph, _ = await build_main_graph(use_checkpointer=True, checkpointer_instance=checkpointer)
                                         logger.info("🟡 [STREAM] Created new checkpointer for current loop (shares DB with GraphRunner)")
@@ -1166,7 +1155,11 @@ def query_documents_stream():
                             except Exception as runner_err:
                                 logger.warning(f"🟡 [STREAM] GraphRunner unavailable, falling back to legacy per-request graph: {runner_err}")
                                 from backend.llm.graphs.main_graph import build_main_graph, create_checkpointer_for_current_loop
-                                checkpointer = await create_checkpointer_for_current_loop()
+                                try:
+                                    checkpointer = await asyncio.wait_for(create_checkpointer_for_current_loop(), timeout=15)
+                                except asyncio.TimeoutError:
+                                    logger.warning("🟡 [STREAM] Checkpointer creation timed out (15s), using stateless graph")
+                                    checkpointer = None
                                 timing.mark("checkpointer_created")
                             if checkpointer:
                                 graph, _ = await build_main_graph(use_checkpointer=True, checkpointer_instance=checkpointer)
@@ -1200,7 +1193,11 @@ def query_documents_stream():
                         existing_state = None
                         try:
                             if not is_new_chat and checkpointer:
-                                existing_state = await graph.aget_state(config_dict)
+                                try:
+                                    existing_state = await asyncio.wait_for(graph.aget_state(config_dict), timeout=8)
+                                except asyncio.TimeoutError:
+                                    logger.warning("🟡 [STREAM] aget_state timed out (8s), treating as new session")
+                                    existing_state = None
                                 if existing_state and existing_state.values:
                                     conv_history = existing_state.values.get('conversation_history', [])
                                     prev_docs = existing_state.values.get('relevant_documents', [])
@@ -1887,27 +1884,30 @@ def query_documents_stream():
                                                             (citation.get('cited_text') or '')[:100]
                                                         )
                                                     
-                                                    # #region agent log
-                                                    try:
-                                                        import json as json_module
-                                                        with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
-                                                            f.write(json_module.dumps({
-                                                                'sessionId': 'debug-session',
-                                                                'runId': 'run1',
-                                                                'hypothesisId': 'D',
-                                                                'location': 'views.py:815',
-                                                                'message': 'Backend sending citation to frontend',
-                                                                'data': {
-                                                                    'citation_number': citation_num_str,
-                                                                    'cited_text': citation.get('cited_text', ''),
-                                                                    'block_id': block_id,
-                                                                    'bbox': citation_bbox,
-                                                                    'page': citation_page,
-                                                                    'doc_id': citation_data.get('doc_id', '')[:8] if citation_data.get('doc_id') else 'UNKNOWN'
-                                                                },
-                                                                'timestamp': int(__import__('time').time() * 1000)
-                                                            }) + '\n')
-                                                    except: pass
+                                                    # #region agent log (only when DEBUG_STREAM_LOG=1)
+                                                    if os.environ.get("DEBUG_STREAM_LOG"):
+                                                        try:
+                                                            import json as json_module
+                                                            _dlp = os.path.join(os.path.dirname(os.path.dirname(__file__)), '.cursor', 'debug.log')
+                                                            with open(_dlp, 'a') as f:
+                                                                f.write(json_module.dumps({
+                                                                    'sessionId': 'debug-session',
+                                                                    'runId': 'run1',
+                                                                    'hypothesisId': 'D',
+                                                                    'location': 'views.py:815',
+                                                                    'message': 'Backend sending citation to frontend',
+                                                                    'data': {
+                                                                        'citation_number': citation_num_str,
+                                                                        'cited_text': citation.get('cited_text', ''),
+                                                                        'block_id': block_id,
+                                                                        'bbox': citation_bbox,
+                                                                        'page': citation_page,
+                                                                        'doc_id': citation_data.get('doc_id', '')[:8] if citation_data.get('doc_id') else 'UNKNOWN'
+                                                                    },
+                                                                    'timestamp': int(__import__('time').time() * 1000)
+                                                                }) + '\n')
+                                                        except Exception:
+                                                            pass
                                                     # #endregion
                                                     
                                                     # Stream citation event

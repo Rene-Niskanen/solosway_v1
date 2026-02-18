@@ -5928,7 +5928,7 @@ export const MainContent = ({
             key={`doc-preview-${activeChatId ?? 'none'}-${expandedCardViewDoc.docId}`}
             initial={false}
             animate={{ opacity: 1 }}
-            exit={{ opacity: 0, transition: { duration: 0.12 } }}
+            exit={{ opacity: 0, transition: { duration: 0 } }}
             transition={{ duration: 0 }}
             style={{ position: 'fixed', inset: 0, pointerEvents: 'none' }}
           >

@@ -107,7 +107,12 @@ async def create_checkpointer_for_current_loop():
         import asyncio
         from backend.services.supabase_client_factory import get_supabase_db_url_for_checkpointer
         db_url = get_supabase_db_url_for_checkpointer()  # Use session pooler for checkpointer
-        
+        # Add connect_timeout so we don't hang indefinitely if DB is unreachable/slow
+        if '?' not in db_url:
+            db_url = f"{db_url}?connect_timeout=10"
+        elif 'connect_timeout' not in db_url:
+            db_url = f"{db_url}&connect_timeout=10"
+
         try:
             raw_checkpointer = await AsyncPostgresSaver.from_conn_string(
                 db_url,
