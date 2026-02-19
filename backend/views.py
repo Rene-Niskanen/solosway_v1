@@ -43,6 +43,40 @@ def _strip_intent_fragment_from_response(text):
     return stripped
 
 
+def _get_search_corpus_type_counts(business_id):
+    """
+    Return counts of searchable documents by file type for the business (all extensions).
+    Used to show accurate document-type mix in the 'Searching' reasoning step carousel.
+    Returns e.g. {'pdf': 50, 'docx': 1, 'txt': 2} — every extension seen in the corpus.
+    """
+    if not business_id:
+        return {}
+    try:
+        supabase = get_supabase_client()
+        result = (
+            supabase.table('documents')
+            .select('original_filename')
+            .eq('business_uuid', str(business_id))
+            .eq('status', 'completed')
+            .execute()
+        )
+        rows = result.data or []
+        counts = {}
+        for row in rows:
+            fn = (row.get('original_filename') or '').strip()
+            if not fn:
+                continue
+            ext = fn.rsplit('.', 1)[-1].lower() if '.' in fn else 'other'
+            if ext and ext != 'other':
+                counts[ext] = counts.get(ext, 0) + 1
+            else:
+                counts['other'] = counts.get('other', 0) + 1
+        return counts
+    except Exception as e:
+        logging.getLogger(__name__).warning("Could not get search corpus type counts: %s", e)
+        return {}
+
+
 def _citation_numbers_in_response(response_text):
     """Return set of citation numbers (as str) that actually appear in the response text.
     Only documents cited in the response should be shown as sources.
@@ -871,19 +905,25 @@ def query_documents_stream():
                 
                 # Initial status already yielded after business_id (so client gets first byte before Supabase)
                 
-                # Generate and stream chat title from query (so everything shown to user is streamed)
+                # Generate and stream chat title from query (KeyBERT when available, else heuristic)
                 def generate_chat_title_from_query(q: str) -> str:
-                    """Generate a short chat title from the user query (mirrors frontend logic)."""
+                    """Generate a short chat title from the user query. Uses KeyBERT for accuracy when enabled."""
                     if not q or not (q := q.strip()):
                         return "New chat"
-                    # Extract topic: look for "of X" / "for X" or capitalized words
+                    try:
+                        from backend.llm.utils.entity_extraction import get_title_from_query
+                        keybert_title = get_title_from_query(q, max_length=50)
+                        if keybert_title:
+                            return keybert_title
+                    except Exception:
+                        pass
+                    # Fallback: "of X" / "for X" or capitalized words
                     q_lower = q.lower()
                     title = None
                     for sep in (" of ", " for "):
                         if sep in q_lower:
                             parts = q_lower.split(sep, 1)
                             if len(parts) == 2 and parts[1].strip():
-                                # Take 1-2 words from the part after of/for
                                 words = parts[1].strip().split()[:2]
                                 title = " ".join(w.title() for w in words)
                                 break
@@ -1183,8 +1223,8 @@ def query_documents_stream():
                                     "endpoint": "stream"
                                 }
                             },
-                            # Allow planner->executor->evaluator refinement loops (up to 3) without hitting limit
-                            "recursion_limit": 50,
+                            # Allow planner->executor->evaluator refinement loops and long summarisation flows
+                            "recursion_limit": 100,
                         }
                         
                         # Check for existing session state (follow-up detection)
@@ -1210,13 +1250,90 @@ def query_documents_stream():
                         except Exception as state_err:
                             logger.warning(f"Could not check existing state: {state_err}")
                         
-                        # Cache-first for follow-ups: reuse execution_results from checkpoint to skip planner+executor
+                        # Cache-first only when fast classifier says same-doc follow-up (else run planner for new question)
                         if is_followup and existing_state is not None and getattr(existing_state, "values", None):
                             cached_results = existing_state.values.get("execution_results") or []
                             if cached_results and len(cached_results) > 0:
-                                initial_state["use_cached_results"] = True
-                                initial_state["execution_results"] = list(cached_results)  # copy, do not mutate checkpoint
-                                logger.info(f"🟢 [STREAM] Cache-first: reusing {len(cached_results)} execution_results from checkpoint (skipping planner+executor)")
+                                from backend.llm.utils.follow_up_classifier import classify_follow_up, should_use_paste_plus_docs
+                                try:
+                                    classification = await asyncio.wait_for(
+                                        classify_follow_up(
+                                            current_query=query,
+                                            conversation_history=loaded_conversation_history,
+                                            execution_results=cached_results,
+                                            has_attachment=bool(attachment_context and isinstance(attachment_context, dict) and attachment_context.get("texts")),
+                                        ),
+                                        timeout=4.0,
+                                    )
+                                    if classification == "same_doc_follow_up":
+                                        from backend.llm.utils.follow_up_classifier import (
+                                            extract_document_ids_from_results,
+                                            current_query_mentions_different_document_from_results,
+                                        )
+                                        # Deterministic check: if query names a different doc (e.g. "Nzohe lease") than
+                                        # previous turn (e.g. Banda Lane), do not reuse cache
+                                        if current_query_mentions_different_document_from_results(query, cached_results):
+                                            initial_state["document_ids"] = []
+                                            initial_state["use_cached_results"] = False
+                                            initial_state["execution_results"] = []
+                                            logger.info("🟡 [STREAM] Same-doc overridden: query mentions different document (running planner)")
+                                        else:
+                                            same_doc_ids = extract_document_ids_from_results(cached_results)
+                                            if same_doc_ids:
+                                                # Try cache first: if we have full-doc chunks cached, search in-memory and skip DB
+                                                from backend.llm.utils.doc_chunk_cache import (
+                                                    get_cached_chunks,
+                                                    run_in_memory_retrieval,
+                                                    build_execution_results_from_chunks,
+                                                    schedule_prime as schedule_doc_chunk_prime,
+                                                )
+                                                cached_chunks = get_cached_chunks(session_id, same_doc_ids) if session_id else None
+                                                if cached_chunks:
+                                                    top_chunks = run_in_memory_retrieval(query, cached_chunks, top_k=12)
+                                                    exec_results = build_execution_results_from_chunks(top_chunks)
+                                                    initial_state["use_cached_results"] = True
+                                                    initial_state["execution_results"] = exec_results
+                                                    logger.info(f"🟢 [STREAM] Same-doc follow-up: cache hit for {len(same_doc_ids)} doc(s), using {len(top_chunks)} chunks from cache")
+                                                else:
+                                                    initial_state["document_ids"] = same_doc_ids
+                                                    logger.info(f"🟢 [STREAM] Same-doc follow-up: scoping to {len(same_doc_ids)} doc(s), will re-run retrieval for current query")
+                                                    schedule_doc_chunk_prime(session_id, same_doc_ids)
+                                            else:
+                                                initial_state["use_cached_results"] = True
+                                                initial_state["execution_results"] = list(cached_results)
+                                                logger.info(f"🟢 [STREAM] Same-doc follow-up: no doc IDs in cache, reusing {len(cached_results)} execution_results")
+                                    elif classification == "paste_and_docs":
+                                        # Only set use_paste_plus_docs when classifier is paste_and_docs AND attachment_context
+                                        # is present with content; otherwise set paste_requested_but_missing (see should_use_paste_plus_docs).
+                                        if should_use_paste_plus_docs(classification, attachment_context):
+                                            initial_state["use_paste_plus_docs"] = True
+                                            logger.info("🟡 [STREAM] Classifier=paste_and_docs: running planner with paste+docs context")
+                                        else:
+                                            initial_state["paste_requested_but_missing"] = True
+                                            logger.info("🟡 [STREAM] Classifier=paste_and_docs but no attachment_context; treating as new question (docs only)")
+                                    else:
+                                        # NEW_QUESTION: clear document scope and stale cache so planner runs fresh retrieval (e.g. Banda Lane after Nzohe lease)
+                                        initial_state["document_ids"] = []
+                                        initial_state["use_cached_results"] = False
+                                        initial_state["execution_results"] = []
+                                        logger.info(f"🟡 [STREAM] Cache-first skipped: classifier={classification} (running planner)")
+                                    # If we did not set use_cached_results=True above, ensure checkpoint cannot leak old results into this turn
+                                    if initial_state.get("use_cached_results") is not True:
+                                        initial_state["use_cached_results"] = False
+                                        initial_state["execution_results"] = []
+                                except asyncio.TimeoutError:
+                                    logger.warning("🟡 [STREAM] Follow-up classifier timed out; skipping cache-first")
+                                    initial_state["use_cached_results"] = False
+                                    initial_state["execution_results"] = []
+                                except Exception as classifier_err:
+                                    logger.warning("🟡 [STREAM] Follow-up classifier error; skipping cache-first: %s", classifier_err)
+                                    initial_state["use_cached_results"] = False
+                                    initial_state["execution_results"] = []
+                        # Ensure we never leak previous turn's execution_results when not doing same-doc follow-up
+                        # (e.g. follow-up with no cached results, or first message in thread)
+                        if initial_state.get("use_cached_results") is not True:
+                            initial_state["use_cached_results"] = False
+                            initial_state["execution_results"] = []
                         
                         # WORKAROUND: If checkpointer unavailable, try to use messageHistory from request
                         # This is a temporary solution until checkpointer is properly configured
@@ -1284,6 +1401,7 @@ def query_documents_stream():
                         first_token_sent_marked = False  # For PERF timing: mark first token sent once
                         streamed_summary = None  # Store the exact summary that was streamed to ensure consistency
                         memory_storage_scheduled = False  # Track if Mem0 memory storage has been scheduled for this request
+                        doc_chunk_cache_prime_scheduled = False  # Fire-and-forget prime of doc chunks for same-doc follow-ups
                         
                         # Execute graph with error handling for connection timeouts during execution
                         # Since we create a new graph for the current loop, we can use astream_events directly
@@ -1335,21 +1453,23 @@ def query_documents_stream():
                                             # Emit only one searching step per request to avoid duplicate
                                             if not searching_step_emitted:
                                                 searching_step_emitted = True
-                                                # Use the label from the executor ("Finding {intent}", "Scanning selected document", or legacy "Searching for ...")
-                                                if is_chip_query:
-                                                    search_message = 'Scanning selected document'
-                                                else:
-                                                    search_message = label_stripped or 'Searching for documents'
+                                                # Carousel reflects actual document types in the user's corpus (PDF/DOCX counts)
+                                                source_count_by_type = _get_search_corpus_type_counts(business_id)
+                                                total_count = sum(source_count_by_type.values())
+                                                details = {}
+                                                if source_count_by_type:
+                                                    details['source_count_by_type'] = source_count_by_type
+                                                    details['source_count'] = total_count
                                                 reasoning_data = {
                                                     'type': 'reasoning_step',
                                                     'step': 'searching_documents',
                                                     'action_type': 'searching',
-                                                    'message': search_message,
+                                                    'message': 'Searching',
                                                     'timestamp': time.time(),
-                                                    'details': {}
+                                                    'details': details
                                                 }
                                                 yield f"data: {json.dumps(reasoning_data)}\n\n"
-                                                logger.info(f"🟡 [REASONING] Emitted searching step (from executor): {search_message}")
+                                                logger.info("🟡 [REASONING] Emitted searching step: Searching (corpus: %s)", source_count_by_type or 'unknown')
                                         elif label and ('Reviewed' in label or 'review' in label.lower()):
                                             # Normal retrieval: skip "Reviewed relevant sections" so steps match (1) Planning (2) Searching for query (3) Found x docs (4) Read
                                             pass
@@ -1547,6 +1667,17 @@ def query_documents_stream():
                                                     did = item.get("document_id") or item.get("doc_id")
                                                     if did:
                                                         doc_ids_with_chunks.add(str(did))
+                                        # Prime doc-chunk cache in background for same-doc follow-ups (fire-and-forget, once per request)
+                                        if not doc_chunk_cache_prime_scheduled and execution_results and chunks_result is not None:
+                                            try:
+                                                from backend.llm.utils.follow_up_classifier import extract_document_ids_from_results
+                                                from backend.llm.utils.doc_chunk_cache import schedule_prime as schedule_doc_chunk_prime
+                                                prime_doc_ids = extract_document_ids_from_results(execution_results)
+                                                if prime_doc_ids and session_id:
+                                                    schedule_doc_chunk_prime(session_id, prime_doc_ids)
+                                                    doc_chunk_cache_prime_scheduled = True
+                                            except Exception as prime_err:
+                                                logger.debug("[STREAM] Doc chunk cache prime skipped: %s", prime_err)
                                         # Only emit once, and only when we have retrieve_chunks so we can filter
                                         if docs_result and not executor_found_docs_emitted and chunks_result is not None:
                                             # Restrict to docs we actually read (have chunks for); preserve order from docs_result
@@ -2023,7 +2154,7 @@ def query_documents_stream():
                                 logger.info("🟡 [STREAM] Retrying without checkpointer (stateless mode)")
                                 # Retry without checkpointer
                                 graph, _ = await build_main_graph(use_checkpointer=False)
-                                config_dict = {"recursion_limit": 50}  # No thread_id needed for stateless mode
+                                config_dict = {"recursion_limit": 100}  # No thread_id needed for stateless mode
                                 event_stream = graph.astream_events(initial_state, config_dict, version="v2")
                                 async for event in event_stream:
                                     event_type = event.get('event')
@@ -3853,7 +3984,8 @@ def query_documents():
                             "query_preview": query[:100] if query else "",  # First 100 chars for context
                             "endpoint": "query"
                         }
-                    }
+                    },
+                    "recursion_limit": 100,
                 }
                 result = await graph.ainvoke(initial_state, config)
                 timing.mark("graph_done")
@@ -3866,7 +3998,7 @@ def query_documents():
                     # Try without checkpointer (will run in stateless mode)
                     logger.info("Retrying query without checkpointer (stateless mode)")
                     graph, _ = await build_main_graph(use_checkpointer=False)
-                    result = await graph.ainvoke(initial_state, {})
+                    result = await graph.ainvoke(initial_state, {"recursion_limit": 100})
                     return result
                 else:
                     raise  # Re-raise if it's a different error

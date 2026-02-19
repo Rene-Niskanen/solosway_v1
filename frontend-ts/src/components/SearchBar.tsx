@@ -22,7 +22,7 @@ import { SegmentInput, type SegmentInputHandle } from './SegmentInput';
 import { getFilteredAtMentionItems, preloadAtMentionCache } from '@/services/atMentionCache';
 import { useSegmentInput, buildInitialSegments } from '@/hooks/useSegmentInput';
 import { isTextSegment, isChipSegment, type QueryContentSegment } from '@/types/segmentInput';
-import { INPUT_BAR_SPACE_BELOW_DASHBOARD } from '@/utils/inputBarPosition';
+import { INPUT_BAR_SPACE_BELOW_DASHBOARD, CHAT_INPUT_MAX_HEIGHT_PX } from '@/utils/inputBarPosition';
 
 export interface SearchBarProps {
   className?: string;
@@ -723,7 +723,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
           // Constrain to viewport height minus safe margins (container padding, icons, spacing)
           const maxHeight = isDashboardView
             ? 160
-            : Math.min(350, typeof window !== 'undefined' ? window.innerHeight - 200 : 350);
+            : Math.min(CHAT_INPUT_MAX_HEIGHT_PX, typeof window !== 'undefined' ? window.innerHeight - 200 : CHAT_INPUT_MAX_HEIGHT_PX);
           const newHeight = Math.min(scrollHeight, maxHeight);
           el.style.height = `${newHeight}px`;
           // Always allow scrolling when content exceeds maxHeight
@@ -802,7 +802,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
           // Constrain to viewport height minus safe margins (container padding, icons, spacing)
           const maxHeight = isDashboardView
             ? 160
-            : Math.min(350, typeof window !== 'undefined' ? window.innerHeight - 260 : 350);
+            : Math.min(CHAT_INPUT_MAX_HEIGHT_PX, typeof window !== 'undefined' ? window.innerHeight - 260 : CHAT_INPUT_MAX_HEIGHT_PX);
           
           // Only update height if content has grown OR if we need to shrink (deletion)
           // This avoids the expensive height:auto -> measure -> set pattern
@@ -1361,9 +1361,9 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
           ...(isMapVisible
             ? { maxWidth: '100%', minWidth: '0', width: '100%' }
             : {
-                width: 'min(100%, 640px)',
+                width: 'min(100%, 680px)',
                 minWidth: '200px',
-                maxWidth: '640px',
+                maxWidth: '680px',
               }),
           boxSizing: 'border-box',
           position: 'relative',
@@ -1547,9 +1547,8 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                     disabled={isSubmitted}
                     style={{
                       width: '100%',
-                      height: '36px',
                       minHeight: '28px',
-                      maxHeight: contextConfig.position === "bottom" && !isMapVisible ? 'calc(100vh - 200px)' : isMapVisible ? '120px' : isDashboardView ? '160px' : '350px',
+                      maxHeight: contextConfig.position === "bottom" && !isMapVisible ? `${CHAT_INPUT_MAX_HEIGHT_PX}px` : isMapVisible ? '120px' : isDashboardView ? '160px' : `${CHAT_INPUT_MAX_HEIGHT_PX}px`,
                       overflowY: 'auto',
                       overflowX: 'hidden',
                       lineHeight: '20px',

@@ -91,6 +91,9 @@ source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 
 # Install Python dependencies
 pip install -r requirements.txt
+
+# Install spaCy English model (for entity-gated document retrieval)
+python -m spacy download en_core_web_sm
 ```
 
 ### 3. Frontend Setup

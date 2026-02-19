@@ -14,7 +14,7 @@ import { AtMentionPopover, type AtMentionItem } from './AtMentionPopover';
 import { getFilteredAtMentionItems, preloadAtMentionCache } from '@/services/atMentionCache';
 import { useSegmentInput, buildInitialSegments } from '@/hooks/useSegmentInput';
 import { isTextSegment, isChipSegment, type QueryContentSegment } from '@/types/segmentInput';
-import { INPUT_BAR_SPACE_BELOW_MAP_LARGE, getInputBarFixedContainerStyles } from '@/utils/inputBarPosition';
+import { INPUT_BAR_SPACE_BELOW_MAP_LARGE, getInputBarFixedContainerStyles, CHAT_INPUT_MAX_HEIGHT_PX } from '@/utils/inputBarPosition';
 
 interface MapChatBarProps {
   onQuerySubmit?: (query: string, options?: { contentSegments?: QueryContentSegment[] }) => void;
@@ -447,9 +447,8 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
                   disabled={isSubmitted}
                   style={{
                     width: '100%',
-                    height: '36px', // Fixed height so bar doesn't grow when typing (content scrolls inside)
                     minHeight: '28px',
-                    maxHeight: '120px',
+                    maxHeight: `${CHAT_INPUT_MAX_HEIGHT_PX}px`,
                     overflowY: 'auto',
                     overflowX: 'hidden',
                     lineHeight: '20px',

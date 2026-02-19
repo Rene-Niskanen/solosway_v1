@@ -48,6 +48,7 @@ from backend.llm.prompts.no_results import (
     get_responder_no_chunks_human_prompt,
 )
 from backend.llm.utils.workspace_context import build_workspace_context
+from backend.llm.prompts.human_templates import format_attachment_context
 from backend.services.supabase_client_factory import get_supabase_client
 
 # Import from new citation architecture modules
@@ -563,6 +564,9 @@ _BLOCK_ID_NO_PARENS = re.compile(r'\s+(BLOCK_CITE_ID_\d+)\b')
 
 # Max blocks per doc in the prompt metadata table (avoids token overflow; resolution still uses full table)
 MAX_BLOCKS_PER_DOC_IN_PROMPT = 500
+
+# Max characters for pasted/attachment context in paste+docs path (avoids token overflow)
+MAX_PASTE_CONTEXT_CHARS = 12000
 
 
 def _resolve_block_id_to_metadata(
@@ -2060,11 +2064,14 @@ async def generate_conversational_answer_with_citations(
     is_first_message: bool = False,
     user_id: Optional[str] = None,
     workspace_section: str = "",
+    paste_context: str = "",
 ) -> Tuple[str, str]:
     """
     Generate conversational answer with citation instructions (jan28th-style).
     The LLM sees content with <BLOCK id="BLOCK_CITE_ID_N"> and must cite as [ID: X](BLOCK_CITE_ID_N).
     Also chooses personality for this turn and returns (personality_id, answer_text).
+    When paste_context is non-empty (paste+other-docs path), the LLM gets pasted/attached content
+    plus retrieved document content; cite only the document content (block IDs).
     """
     # Temperature 0.38: slight increase for more natural variation; revert if responses become inconsistent or repetitive (see plan: conversational responses).
     llm = ChatOpenAI(
@@ -2102,21 +2109,34 @@ Is this the first message in the conversation? {is_first_message}
 
     system_prompt = SystemMessage(content=system_content)
 
-    human_message = HumanMessage(content=f"""
-**User Question:**
-{user_query}
+    paste_section = ""
+    if paste_context and paste_context.strip():
+        paste_section = f"""
+**Pasted/attached content (use for context; cite only the document content below with block IDs):**
+{paste_context.strip()}
 
-**Document content (each fact is inside a <BLOCK id="..."> tag):**
+"""
+    doc_section = f"""**Document content from search (each fact is inside a <BLOCK id="..."> tag):**
 
 {formatted_chunks}
 {metadata_section}
-
-**Instructions:**
-- Answer based on the content above. For each fact you use, cite it as [ID: X](BLOCK_CITE_ID_N) where the block id is from the <BLOCK> whose content actually contains that fact (e.g. the block with "56" and "D" for EPC current rating).
+"""
+    instructions = "- Answer based on the content above. For each fact you use, cite it as [ID: X](BLOCK_CITE_ID_N) where the block id is from the <BLOCK> whose content actually contains that fact (e.g. the block with \"56\" and \"D\" for EPC current rating)."
+    if paste_section:
+        instructions = "- Use both the pasted/attached content and the document content from search. For facts from the pasted content, explain in your own words (no citation). For facts from the document content, cite as [ID: X](BLOCK_CITE_ID_N). " + instructions
+    instructions += """
 - **Place each citation immediately after the fact it supports**, not at the end of the sentence (e.g. "...payment stablecoins are not considered securities [ID: 1](BLOCK_CITE_ID_5), amending various acts..." not "...to reflect this [ID: 1](BLOCK_CITE_ID_5).").
 - **In bullet lists:** put each citation at the end of the bullet it supports (e.g. "- Incredible Location [ID: 1](BLOCK_CITE_ID_1)"), never all citations at the end of the last bullet.
 - Put any closing or follow-up only at the very end after a blank line; never at the start or after the first heading.
 - Explain in a clear, conversational way; use Markdown where it helps readability. Be accurate.
+"""
+
+    human_message = HumanMessage(content=f"""
+**User Question:**
+{user_query}
+{paste_section}{doc_section}
+**Instructions:**
+{instructions}
 """)
 
     logger.info(
@@ -2152,6 +2172,7 @@ async def generate_answer_with_direct_citations(
     is_first_message: bool = False,
     user_id: Optional[str] = None,
     workspace_section: str = "",
+    paste_context: str = "",
 ) -> Tuple[str, List[Dict[str, Any]], str]:
     """
     Generate answer using direct citation system with short IDs.
@@ -2197,6 +2218,7 @@ async def generate_answer_with_direct_citations(
             is_first_message=is_first_message,
             user_id=user_id,
             workspace_section=workspace_section,
+            paste_context=paste_context,
         )
         logger.info(f"[DIRECT_CITATIONS] LLM response generated ({len(llm_response)} chars), personality_id={personality_id}")
 
@@ -2361,6 +2383,14 @@ async def responder_node(state: MainWorkflowState, runnable_config=None) -> Main
         # Generate answer with direct citations (includes personality selection in same LLM call)
         try:
             workspace_section, derived_document_ids = _build_responder_workspace_section(state, execution_results)
+            paste_context_str = ""
+            if state.get("use_paste_plus_docs") and state.get("attachment_context"):
+                paste_context_str = format_attachment_context(state["attachment_context"])
+                if len(paste_context_str) > MAX_PASTE_CONTEXT_CHARS:
+                    paste_context_str = paste_context_str[:MAX_PASTE_CONTEXT_CHARS] + "\n\n... [pasted content truncated for length]"
+                    logger.info(f"[RESPONDER] Paste+docs path: truncated pasted context to {MAX_PASTE_CONTEXT_CHARS} chars")
+                else:
+                    logger.info(f"[RESPONDER] Paste+docs path: including {len(paste_context_str)} chars of pasted/attachment context")
             logger.info(f"[RESPONDER] Generating answer with direct citation system...")
             formatted_answer, citations, personality_id = await generate_answer_with_direct_citations(
                 user_query, execution_results,
@@ -2368,8 +2398,11 @@ async def responder_node(state: MainWorkflowState, runnable_config=None) -> Main
                 is_first_message=is_first_message,
                 user_id=state.get("user_id"),
                 workspace_section=workspace_section,
+                paste_context=paste_context_str,
             )
             formatted_answer = ensure_main_tags_when_missing(formatted_answer, user_query)
+            if state.get("paste_requested_but_missing"):
+                formatted_answer = "You asked to use pasted content, but no attachment was included with this message. Below is an answer based on the documents I found.\n\n" + formatted_answer
 
             logger.info(f"[RESPONDER] ✅ Answer generated ({len(formatted_answer)} chars) with {len(citations)} citations, personality_id={personality_id}")
 

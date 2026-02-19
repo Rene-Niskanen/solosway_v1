@@ -372,6 +372,11 @@ async def planner_node(state: MainWorkflowState, runnable_config=None) -> MainWo
         or property_id
     )
     if not has_document_scope:
+        # When router sends us back after "no results", we must increment refinement count so the loop eventually stops
+        is_refinement = state.get("execution_plan") is not None
+        if is_refinement:
+            plan_refinement_count += 1
+            logger.info("[PLANNER] Refining plan (attempt %s/3) for query: '%s...'", plan_refinement_count, (user_query or "")[:80])
         user_query_stripped = (user_query or "").strip() or "Search documents"
         execution_plan = _canonical_two_step_plan(user_query_stripped)
         logger.info("[PLANNER] No scope: injected fixed 2-step plan (no LLM)")

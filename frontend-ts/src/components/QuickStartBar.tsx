@@ -688,16 +688,20 @@ export const QuickStartBar: React.FC<QuickStartBarProps> = ({
     <>
       <style>{`
         .quick-start-search-input::placeholder {
-          color: rgba(107, 114, 128, 0.7);
+          color: #8F8F8F;
+          font-weight: 400;
         }
         .quick-start-search-input::-webkit-input-placeholder {
-          color: rgba(107, 114, 128, 0.7);
+          color: #8F8F8F;
+          font-weight: 400;
         }
         .quick-start-search-input::-moz-placeholder {
-          color: rgba(107, 114, 128, 0.7);
+          color: #8F8F8F;
+          font-weight: 400;
         }
         .quick-start-search-input:-ms-input-placeholder {
-          color: rgba(107, 114, 128, 0.7);
+          color: #8F8F8F;
+          font-weight: 400;
         }
         @keyframes spin {
           from {

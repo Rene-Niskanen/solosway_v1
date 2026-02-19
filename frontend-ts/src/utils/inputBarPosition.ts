@@ -17,6 +17,9 @@ export const INPUT_BAR_SPACE_BELOW_PANEL = 48;
 /** Shared width constraints for the fixed input bar container. */
 export const INPUT_BAR_CONTAINER_WIDTH = 'clamp(400px, 85vw, 650px)';
 
+/** Max height (px) for chat input before it becomes scrollable. ~10 lines at 20px line-height. */
+export const CHAT_INPUT_MAX_HEIGHT_PX = 200;
+
 export interface InputBarFixedContainerOptions {
   /** Override left (e.g. '50%' or 'calc(50vw + 116px)'). */
   left?: string;

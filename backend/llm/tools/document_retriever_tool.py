@@ -10,11 +10,118 @@ improved recall, especially for exact matches like parcel numbers, plot IDs, etc
 
 from typing import List, Dict, Optional, Literal
 import logging
+import os
+import json
 from pydantic import BaseModel, Field
 from langchain_core.tools import StructuredTool
 from backend.services.supabase_client_factory import get_supabase_client
 
 logger = logging.getLogger(__name__)
+
+# Default patterns that indicate a summary is about another property/location (not the query entity).
+# Override via entity_gate_config.json "conflicting_location_patterns".
+_DEFAULT_CONFLICTING_LOCATION_PATTERNS = [
+    "dik dik",
+    "dik dik lane",
+    "nzohe",
+    "2327/30",
+    "l.r. no: 2327",
+    "3 dik dik",
+    "langata",
+    "mellifera",
+    "carlos espindola",
+    "martin wainaina",
+]
+
+# Tokens we do NOT count as "entity in summary" - they're too generic (e.g. "lane" appears in "Dik Dik Lane").
+# Only distinctive tokens (e.g. "banda", "nzohe") should require presence in summary.
+_GENERIC_ENTITY_TOKENS = frozenset({
+    "lane", "road", "street", "property", "no", "block", "the", "offer", "lease",
+    "agreement", "document", "file", "sale", "purchase", "valuation", "letter",
+})
+
+
+def _get_conflicting_location_patterns() -> List[str]:
+    """Load conflicting_location_patterns from entity_gate_config.json or return default list."""
+    try:
+        config_dir = os.path.join(os.path.dirname(__file__), "..", "config")
+        path = os.path.join(config_dir, "entity_gate_config.json")
+        if os.path.isfile(path):
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict) and "conflicting_location_patterns" in data:
+                patterns = data["conflicting_location_patterns"]
+                if isinstance(patterns, list) and patterns:
+                    return [str(p).strip().lower() for p in patterns if p]
+    except Exception as e:
+        logger.debug("Could not load conflicting_location_patterns: %s", e)
+    return list(_DEFAULT_CONFLICTING_LOCATION_PATTERNS)
+
+
+def _entity_mentioned_in_summary(summary: str, gate_phrases: List[str]) -> bool:
+    """
+    True if the summary contains the asked-for entity. Uses full phrases and
+    distinctive tokens only (not generic words like "lane" that appear in "Dik Dik Lane").
+    """
+    if not gate_phrases or not (summary or "").strip():
+        return False
+    summary_lower = (summary or "").strip().lower()
+    for phrase in gate_phrases:
+        phrase_lower = (phrase or "").strip().lower()
+        if phrase_lower and phrase_lower in summary_lower:
+            return True
+        for token in phrase_lower.split():
+            if len(token) >= 2 and token not in _GENERIC_ENTITY_TOKENS and token in summary_lower:
+                return True
+    return False
+
+
+def _summary_clearly_about_another_property(summary: str, gate_phrases: List[str]) -> bool:
+    """
+    Return True if the summary is clearly about another property:
+    (1) No entity in summary but other address in summary -> exclude.
+    (2) Both entity and other address in summary but other address dominates (first or more often) -> exclude.
+    """
+    if not gate_phrases:
+        return False
+    summary_lower = (summary or "").strip().lower()
+    if not summary_lower:
+        return False
+    patterns = _get_conflicting_location_patterns()
+    other_address_in_summary = any(p in summary_lower for p in patterns)
+    entity_in_summary = _entity_mentioned_in_summary(summary, gate_phrases)
+    if not other_address_in_summary:
+        return False
+    if not entity_in_summary:
+        return True
+    # Both entity and other address: exclude if other address dominates (appears first or more often)
+    entity_first_pos = len(summary_lower)
+    for phrase in gate_phrases:
+        phrase_lower = (phrase or "").strip().lower()
+        if phrase_lower and phrase_lower in summary_lower:
+            entity_first_pos = min(entity_first_pos, summary_lower.index(phrase_lower))
+        for token in phrase_lower.split():
+            if len(token) >= 2 and token not in _GENERIC_ENTITY_TOKENS and token in summary_lower:
+                entity_first_pos = min(entity_first_pos, summary_lower.index(token))
+    other_first_pos = len(summary_lower)
+    for p in patterns:
+        if p in summary_lower:
+            other_first_pos = min(other_first_pos, summary_lower.index(p))
+    # If other address appears before entity, or we have multiple other-address hits and few entity hits, treat as wrong doc
+    if other_first_pos < entity_first_pos:
+        return True
+    other_count = sum(1 for p in patterns if p in summary_lower)
+    entity_count = 0
+    for phrase in gate_phrases:
+        phrase_lower = (phrase or "").strip().lower()
+        if phrase_lower:
+            entity_count += summary_lower.count(phrase_lower)
+        for token in phrase_lower.split():
+            if len(token) >= 2 and token not in _GENERIC_ENTITY_TOKENS:
+                entity_count += summary_lower.count(token)
+    if other_count > entity_count:
+        return True
+    return False
 
 
 class DocumentRetrievalInput(BaseModel):
@@ -57,6 +164,7 @@ def retrieve_documents(
     search_goal: Optional[str] = None,
     property_id: Optional[str] = None,
     document_ids: Optional[List[str]] = None,
+    user_query_for_entity: Optional[str] = None,
 ) -> List[Dict]:
     """
     Retrieve the most relevant documents for a query.
@@ -286,8 +394,8 @@ def retrieve_documents(
                 'filename': doc.get('original_filename', 'unknown'),
                 'document_type': doc.get('classification_type'),
                 'vector_score': float(doc.get('similarity', 0.0)),
-                'keyword_score': 0.0
-                # Summary removed - LLM must retrieve chunks to get content
+                'keyword_score': 0.0,
+                'summary_text': ''  # Filled from keyword_results when present; used for entity gating
             }
         
         # 5. Add keyword matches with quality-based scoring
@@ -336,8 +444,9 @@ def retrieve_documents(
                 keyword_score = 0.2  # Fallback for any match
             
             if doc_id in vector_results_dict:
-                # Document found in both searches - boost keyword score
+                # Document found in both searches - boost keyword score and store summary for entity gating
                 vector_results_dict[doc_id]['keyword_score'] = min(1.0, keyword_score + 0.1)  # Small boost
+                vector_results_dict[doc_id]['summary_text'] = (doc.get('summary_text') or '').lower()
                 logger.debug(f"   Document {doc_id[:8]} keyword match: {match_quality} (score: {vector_results_dict[doc_id]['keyword_score']:.2f})")
             else:
                 # New document from keyword search only
@@ -346,8 +455,8 @@ def retrieve_documents(
                     'filename': doc.get('original_filename', 'unknown'),
                     'document_type': doc.get('classification_type'),
                     'vector_score': 0.0,
-                    'keyword_score': keyword_score
-                    # Summary removed - LLM must retrieve chunks to get content
+                    'keyword_score': keyword_score,
+                    'summary_text': (doc.get('summary_text') or '').lower()
                 }
                 logger.debug(f"   Document {doc_id[:8]} keyword-only match: {match_quality} (score: {keyword_score:.2f})")
         
@@ -391,31 +500,84 @@ def retrieve_documents(
                 'document_type': doc_data['document_type'],
                 'score': round(combined_score, 4),
                 'vector_score': round(doc_data['vector_score'], 4),
-                'keyword_score': round(doc_data['keyword_score'], 4)
-                # Summary removed - LLM must retrieve chunks to get content
+                'keyword_score': round(doc_data['keyword_score'], 4),
+                'summary_text': (doc_data.get('summary_text') or '')
             })
         
-        # 6b. ENTITY-MATCH BOOST: When the query names a specific offer/property (e.g. "Banda Lane offer"),
-        # boost documents whose filename contains that entity so they rank above generic guides.
-        # This prevents generic docs (e.g. kenya-buying-guide) from outranking the actual offer letter.
-        _query_lower = query.lower().strip()
-        _words = [w for w in _query_lower.split() if w]
-        _phrases = set()
-        for i in range(len(_words)):
-            for n in (2, 3):
-                if i + n <= len(_words):
-                    _phrases.add(' '.join(_words[i:i + n]))
-        _stopwords = {'what', 'how', 'when', 'where', 'which', 'who', 'the', 'a', 'an', 'is', 'are', 'in', 'on', 'at', 'to', 'for', 'of', 'or', 'and', 'required', 'deposit', 'upfront', 'payment'}
-        _entity_phrases = [p for p in _phrases if not p.split()[0] in _stopwords and len(p) >= 5]
-        ENTITY_BOOST = 0.28
-        for r in results:
-            _fn = (r.get('filename') or '').lower().replace('_', ' ').replace('-', ' ')
-            if any(_phrase in _fn for _phrase in _entity_phrases):
-                r['score'] = round(r['score'] + ENTITY_BOOST, 4)
-                logger.debug(f"   Entity boost +{ENTITY_BOOST} for {r.get('filename', '')[:40]} (query phrase in filename)")
+        # 6b. Entity-aware filtering: one gate + wrong-property exclusion (only when query is about a specific entity)
+        from backend.llm.utils.entity_extraction import get_entity_gate_phrases
+        entity_query = (user_query_for_entity or query or "").strip()
+        gate_phrases = get_entity_gate_phrases(entity_query) if entity_query else []
+        
+        # Fetch summaries for all results (needed for entity and wrong-property checks)
+        missing_summary_ids = [r['document_id'] for r in results if not (r.get('summary_text') or '').strip()]
+        if missing_summary_ids:
+            try:
+                summary_resp = supabase.table('documents').select('id, summary_text').in_('id', missing_summary_ids[:50]).execute()
+                for row in (summary_resp.data or []):
+                    doc_id = str(row.get('id', ''))
+                    summary = (row.get('summary_text') or '').lower()
+                    for r in results:
+                        if r.get('document_id') == doc_id:
+                            r['summary_text'] = summary
+                            break
+            except Exception as e:
+                logger.debug("   Could not fetch missing summaries: %s", e)
+        
+        if gate_phrases:
+            # Boost docs that mention the entity in filename (helps ranking)
+            ENTITY_BOOST = 0.28
+            for r in results:
+                _fn = (r.get('filename') or '').lower().replace('_', ' ').replace('-', ' ')
+                if any(_phrase in _fn for _phrase in gate_phrases):
+                    r['score'] = round(r['score'] + ENTITY_BOOST, 4)
+            
+            # Single gate: keep only docs whose summary mentions the entity (distinctive token, e.g. "banda").
+            # No "filename or summary" – summary is source of truth so we don't surface wrong property.
+            results_before = list(results)
+            results = [r for r in results if _entity_mentioned_in_summary(r.get('summary_text', ''), gate_phrases)]
+            if not results and results_before:
+                logger.warning(
+                    "   Entity-in-summary would leave 0 docs; relaxing (keeping %d). Prefer adding summaries to docs.",
+                    len(results_before),
+                )
+                results = results_before
+            elif len(results) < len(results_before):
+                logger.info(
+                    "   Entity-in-summary: kept %d docs (dropped %d with no entity in summary)",
+                    len(results),
+                    len(results_before) - len(results),
+                )
+            
+            if not results:
+                logger.warning("   No documents mention the asked-for entity (e.g. %s). Returning empty list.", gate_phrases[:3])
+                return []
+            
+            # Exclude docs clearly about another property (other address in summary, entity absent or dominated)
+            results_before_excl = list(results)
+            results = [r for r in results if not _summary_clearly_about_another_property(r.get('summary_text', ''), gate_phrases)]
+            excluded_count = len(results_before_excl) - len(results)
+            if excluded_count > 0:
+                for r in results_before_excl:
+                    if r not in results and _summary_clearly_about_another_property(r.get('summary_text', ''), gate_phrases):
+                        logger.info("   Excluded doc %s (%s): wrong property", (r.get('document_id') or '')[:8], (r.get('filename') or '')[:50])
+                if not results:
+                    logger.warning("   Wrong-property exclusion would leave 0 docs; relaxing.")
+                    results = results_before_excl
+                else:
+                    logger.info("   Wrong-property exclusion: removed %d doc(s), kept %d", excluded_count, len(results))
+            
+            # Rank docs with entity in summary above any that slipped through (e.g. after relaxation)
+            ENTITY_IN_SUMMARY_BOOST = 0.15
+            for r in results:
+                if _entity_mentioned_in_summary(r.get('summary_text', ''), gate_phrases):
+                    r['score'] = round(r['score'] + ENTITY_IN_SUMMARY_BOOST, 4)
         
         # Sort by combined score (descending)
         results.sort(key=lambda x: x['score'], reverse=True)
+        # Remove summary_text from results so it is not sent to the agent (used only for entity gating)
+        for r in results:
+            r.pop('summary_text', None)
 
         # 6c. SCOPE FILTER: When user has scope (property_id or document_ids), restrict to in-scope docs only
         if document_ids and len(document_ids) > 0:
@@ -436,15 +598,16 @@ def retrieve_documents(
             except Exception as e:
                 logger.warning("   Scope filter (property_id) failed: %s", e)
         
-        # 7. GUARDRAIL: Adaptive threshold based on query specificity
-        # Use planner/LLM-provided query_type only; no code heuristic (prompt is source of truth)
-        if query_type and (query_type or '').lower() in ["broad", "specific"]:
+        # 7. GUARDRAIL: Adaptive threshold. Use stricter (specific) when we have entity gate phrases.
+        if gate_phrases:
+            is_broad_query = False
+            logger.debug("   Entity-specific query: using specific threshold")
+        elif query_type and (query_type or '').lower() in ["broad", "specific"]:
             is_broad_query = ((query_type or '').lower() == "broad")
             logger.debug(f"   Using planner query_type: {query_type}")
         else:
-            # Default to broad for better recall when query_type missing (e.g. planner did not set it)
             is_broad_query = True
-            logger.debug("   No valid query_type from planner; defaulting to broad")
+            logger.debug("   No query_type; defaulting to broad")
         
         # 7b. Minimum combined score and minimum vector score (reduce irrelevant docs)
         MIN_COMBINED_SCORE_SPECIFIC = 0.30  # Slightly relaxed so queries like "value of highlands" still return a doc

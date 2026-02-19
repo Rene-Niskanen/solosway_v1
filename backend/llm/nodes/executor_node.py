@@ -467,6 +467,7 @@ async def executor_node(state: MainWorkflowState, runnable_config=None) -> MainW
                 business_id=business_id,
                 property_id=state.get("property_id"),
                 document_ids=_doc_ids,
+                user_query_for_entity=user_query or None,
             )
             
         elif action == "retrieve_chunks":
@@ -486,6 +487,7 @@ async def executor_node(state: MainWorkflowState, runnable_config=None) -> MainW
                             business_id=business_id,
                             property_id=state.get("property_id"),
                             document_ids=state.get("document_ids"),
+                            user_query_for_entity=user_query or None,
                         )
                         if docs:
                             doc_ids = [d.get("document_id") for d in docs if d.get("document_id")]

@@ -3,10 +3,12 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { StackedDocumentPreviews } from './DocumentPreviewCard';
 import { LLMContextViewer } from './LLMContextViewer';
 import { generateAnimatePresenceKey, generateUniqueKey } from '../utils/keyGenerator';
-import { Search, SearchCheck, TextSearch, ScanText, BookOpenCheck, FileQuestion, Sparkle, TextSelect, Play, FolderOpen, MapPin, Highlighter, Infinity } from 'lucide-react';
+import { Search, SearchCheck, TextSearch, ScanText, BookOpenCheck, FileQuestion, Sparkle, Play, FolderOpen, MapPin, Highlighter, Infinity } from 'lucide-react';
 import { FileChoiceStep, ResponseModeChoice } from './FileChoiceStep';
 import { FileAttachmentData } from './FileAttachment';
 import { ThinkingBlock, isTrivialThinkingContent } from './ThinkingBlock';
+import { SearchingSourcesCarousel } from './SearchingSourcesCarousel';
+import { SEARCHING_CAROUSEL_TYPES } from '../constants/documentTypes';
 import OrbitProgress from 'react-loading-indicators/OrbitProgress';
 import { useModel } from '../contexts/ModelContext';
 import * as pdfjs from 'pdfjs-dist';
@@ -69,6 +71,9 @@ export interface ReasoningStep {
     tool_input?: Record<string, any>;   // Tool input parameters
     tool_output?: Record<string, any>;  // Tool output/results
     status?: 'running' | 'complete' | 'error' | 'read' | 'reading';  // Execution status (includes legacy reading statuses)
+    // Searching step: optional source types for carousel (PDF/Word icons)
+    source_types?: ('pdf' | 'docx')[];
+    source_count?: number;
     [key: string]: any;
   };
   timestamp?: number;
@@ -675,7 +680,8 @@ const StepRenderer: React.FC<{
   const detailColor = thoughtCompleted ? FAINT_COLOR : DETAIL_COLOR;
   const actionStyle: React.CSSProperties = {
     color: actionColor,
-    fontWeight: 500
+    fontWeight: 500,
+    fontSize: '13.1px'
   };
 
   const targetStyle: React.CSSProperties = {
@@ -838,25 +844,30 @@ const StepRenderer: React.FC<{
       );
     
     case 'searching': {
-      // Lowercase first letter of query after intro so "Locating Who..." → "Locating who...". Filler words are stripped backend-side via reasoning_phrases.json.
-      const rawMsg = step.message || '';
-      const introMatch = rawMsg.match(/^(Locating|Finding|Searching for|Preparing)\s+([A-Z])(.*)$/);
-      const searchingDisplayMessage = introMatch
-        ? introMatch[1] + ' ' + introMatch[2].toLowerCase() + introMatch[3]
-        : rawMsg;
-      // Entire "Searching for value" (or whatever the message is) gets flowing gradient animation
-      // Animation stops when next step (exploring/analyzing/reading) appears OR when loading completes OR when response text starts
+      // Show "Searching" with files we're going to read rotating (from exploring step); once reading steps appear, this step is hidden
       const nextStep = stepIndex < allSteps.length - 1 ? allSteps[stepIndex + 1] : null;
       const isSearchingActive = isLoading && !hasResponseText && (!nextStep || nextStep.action_type === 'searching');
+      const sourceCountByType = step.details?.source_count_by_type as { pdf?: number; docx?: number } | undefined;
+      const sourceTypes = (step.details?.source_types ?? []).filter((t): t is 'pdf' | 'docx' =>
+        SEARCHING_CAROUSEL_TYPES.includes(t)
+      );
+      const exploringStep = allSteps.find((s) => s.action_type === 'exploring');
+      const docPreviews = (exploringStep?.details?.doc_previews ?? []) as Array<{ original_filename?: string | null; classification_type?: string | null }>;
 
       return (
-        <span style={{ display: 'inline-flex', alignItems: 'flex-start', gap: '6px' }}>
-          <TextSelect style={{ width: '14px', height: '14px', color: actionColor, flexShrink: 0, marginTop: '1px' }} />
-              {isSearchingActive ? (
-              <span className="searching-shimmer-active">{searchingDisplayMessage}</span>
-            ) : (
-              <span style={actionStyle}>{searchingDisplayMessage}</span>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
+          {isSearchingActive ? (
+            <span className="searching-shimmer-active">Searching</span>
+          ) : (
+            <span style={actionStyle}>Searching</span>
           )}
+          <SearchingSourcesCarousel
+            sourceTypes={sourceTypes.length > 0 ? sourceTypes : undefined}
+            sourceCountByType={sourceCountByType}
+            docPreviews={docPreviews.length > 0 ? docPreviews : undefined}
+            isActive={isSearchingActive}
+            sourceCount={step.details?.source_count}
+          />
         </span>
       );
     }
@@ -1433,8 +1444,16 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
       const collapsed = [firstSearching, firstNoRelevant].filter((s): s is ReasoningStep => !!s);
       return collapsed.length > 0 ? collapsed : list.slice(0, 2);
     }
+    // Hide "Searching" once we have reading steps: show only Found + Read... (searching step disappears, reading steps appear)
+    if (list.some(s => s.action_type === 'reading')) {
+      list = list.filter(s => s.action_type !== 'searching');
+    }
+    // UX: When thought is completed (collapsed trace), also hide searching so we show Found + reading list only
+    if (thoughtCompleted) {
+      list = list.filter(s => s.action_type !== 'searching');
+    }
     return list;
-  }, [filteredSteps, isNoResultsResponse]);
+  }, [filteredSteps, isNoResultsResponse, thoughtCompleted]);
 
   // Preload document covers IMMEDIATELY when documents are found (optimized for instant thumbnail loading)
   // Runs whenever steps change (during and after loading) so thumbnails are ready the moment the card opens
@@ -1875,7 +1894,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
                   ease: [0.16, 1, 0.3, 1] // Smooth ease-out (Cursor-style)
                 }}
                 style={{
-                  fontSize: '12px',
+                  fontSize: '13.1px',
                   color: DETAIL_COLOR,
                   padding: '2px 0',
                   lineHeight: 1.4,
@@ -1939,7 +1958,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
               <div
                 key={finalStepKey}
                 style={{
-                  fontSize: '12px',
+                  fontSize: '13.1px',
                   color: DETAIL_COLOR,
                   padding: '2px 0',
                   lineHeight: 1.4,
@@ -1982,7 +2001,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
             {isPlanningActive ? (
               <PlanningIndicator />
             ) : (
-              <div style={{ fontSize: '12px', color: ACTION_COLOR, fontWeight: 500 }}>
+              <div style={{ fontSize: '13.1px', color: ACTION_COLOR, fontWeight: 500 }}>
                 Planning next moves
               </div>
             )}

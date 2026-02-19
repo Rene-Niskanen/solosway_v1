@@ -248,6 +248,10 @@ function transformAllDocumentsToData(allDocs: any[]): DocumentData[] {
 // Fixed number of files shown in the project section file bar (no scroll)
 const FILES_BAR_COUNT = 8;
 
+// Padding from sidebar: left needs more space so Files/Projects don’t feel cramped
+const CONTENT_PADDING_LEFT_PX = 40;
+const CONTENT_PADDING_OTHER_PX = 24;
+
 interface ProjectsPageProps {
   onCreateProject: () => void;
   sidebarWidth?: number;
@@ -730,12 +734,15 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
       <div 
         className="w-full min-h-full flex flex-col box-border"
         style={{ 
-          padding: '24px',
+          paddingTop: `${CONTENT_PADDING_OTHER_PX}px`,
+          paddingRight: `${CONTENT_PADDING_OTHER_PX}px`,
+          paddingBottom: `${CONTENT_PADDING_OTHER_PX}px`,
+          paddingLeft: `${CONTENT_PADDING_LEFT_PX}px`,
         }}
       >
         {/* Project Cards Section - hidden when "See All Files" is active */}
         {!showAllFiles && (
-          <div style={{ marginTop: '24px', width: '100%', maxWidth: '100%', minWidth: 0 }}>
+          <div style={{ marginTop: `${CONTENT_PADDING_OTHER_PX}px`, width: '100%', maxWidth: '100%', minWidth: 0, paddingLeft: 0 }}>
             <div 
               className="grid justify-start w-full"
               style={{ 
@@ -810,6 +817,7 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
             style={{
               paddingBottom: showAllFiles ? 0 : '32px',
               marginLeft: 0,
+              paddingLeft: 0,
               marginTop: showAllFiles ? 8 : 0,
               width: '100%',
               maxWidth: '100%',
@@ -818,7 +826,7 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
             }}
           >
             {!showAllFiles && (
-              <div className="flex items-center justify-between gap-2 mb-2" style={{ marginLeft: '0' }}>
+              <div className="flex items-center justify-between gap-2 mb-2" style={{ marginLeft: 0, paddingLeft: 0 }}>
                 <span className="text-[12px] font-normal text-[#666]" style={{ opacity: allDocuments.length ? 1 : 0.6 }}>Files</span>
               </div>
             )}
@@ -827,6 +835,7 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
               compact
               scrollable={true}
               showAllMode={showAllFiles}
+              alignLeftWithContainer={true}
             />
           </div>
         )}

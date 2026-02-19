@@ -251,6 +251,10 @@ export interface CitationClickPanelProps {
   onAskFollowUp: () => void;
   onSaveCitation?: () => void;
   onClose: () => void;
+  /** When true, show View document + Ask follow up (and Save if provided) in the panel overlay. Use for the click-on-citation popup; leave false for inline callouts. */
+  showFullActions?: boolean;
+  /** When provided, show this in the cited-text container (same text as the run highlighted in the message for this citation). */
+  messageCitedExcerpt?: string;
 }
 
 export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
@@ -261,6 +265,8 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
   onAskFollowUp,
   onSaveCitation,
   onClose,
+  showFullActions = false,
+  messageCitedExcerpt: messageCitedExcerptProp,
 }) => {
   const maxHeightPx = typeof window !== "undefined" ? (window.innerHeight * PANEL_MAX_HEIGHT_VH) / 100 : 500;
   const position = clampPanelPosition(anchorRect, PANEL_WIDTH, Math.min(ESTIMATED_PANEL_HEIGHT, maxHeightPx));
@@ -276,6 +282,7 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
   const previewContainerRef = React.useRef<HTMLDivElement>(null);
   const [previewSize, setPreviewSize] = React.useState({ width: PANEL_WIDTH, height: 280 });
   const [debugExpanded, setDebugExpanded] = React.useState(false);
+  const [isPreviewHovered, setIsPreviewHovered] = React.useState(false);
   const debug = citationData.debug;
 
   React.useLayoutEffect(() => {
@@ -500,9 +507,11 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
         </div>
       )}
 
-      {/* Content: scrollable with hidden scrollbar; buttons overlay on top of document */}
+      {/* Content: scrollable with hidden scrollbar; buttons overlay on top of document; Ask follow up shows on hover */}
       <div
         ref={previewContainerRef}
+        onMouseEnter={() => setIsPreviewHovered(true)}
+        onMouseLeave={() => setIsPreviewHovered(false)}
         style={{
           width: "100%",
           flex: "1 1 0%",
@@ -551,7 +560,7 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
           </div>
         )}
 
-        {/* Buttons overlay - on top of document area, no solid white strip */}
+        {/* Buttons overlay: full (View document, Ask follow up, Save) when showFullActions (popup); otherwise Ask follow up on hover only (callout) */}
         <div
           style={{
             position: "absolute",
@@ -561,92 +570,97 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
             padding: "10px 16px 12px",
             display: "flex",
             justifyContent: "space-between",
+            alignItems: "center",
             gap: "10px",
+            flexWrap: "wrap",
             background: "linear-gradient(to top, rgba(255,255,255,0.92) 0%, rgba(255,255,255,0.5) 35%, transparent 55%)",
             pointerEvents: "none",
             zIndex: 10,
           }}
         >
-          <button
-            type="button"
-            onClick={onAskFollowUp}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: "5px",
-              padding: "6px 12px",
-              fontSize: "12px",
-              fontWeight: 400,
-              color: "#374151",
-              backgroundColor: "#FFFFFF",
-              border: "1px solid #d1d5db",
-              borderRadius: "6px",
-              cursor: "pointer",
-              transition: "background-color 0.08s ease",
-              boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
-              pointerEvents: "auto",
-            }}
-            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = "#f9fafb"; }}
-            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = "#FFFFFF"; }}
-          >
-            <MessageCircle style={{ width: 14, height: 14 }} strokeWidth={2} />
-            Ask follow up
-          </button>
-          <button
-            type="button"
-            onClick={onViewInDocument}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: "5px",
-              padding: "6px 12px",
-              fontSize: "12px",
-              fontWeight: 400,
-              color: "#374151",
-              backgroundColor: "#FFFFFF",
-              border: "1px solid #d1d5db",
-              borderRadius: "6px",
-              cursor: "pointer",
-              transition: "background-color 0.08s ease",
-              boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
-              pointerEvents: "auto",
-            }}
-            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = "#f9fafb"; }}
-            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = "#FFFFFF"; }}
-          >
-            <FileSearchCorner size={14} />
-            View in document
-          </button>
-          {onSaveCitation && (
-            <button
-              type="button"
-              onClick={onSaveCitation}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: "5px",
-                padding: "6px 12px",
-                fontSize: "12px",
-                fontWeight: 400,
-                color: "#374151",
-                backgroundColor: "#FFFFFF",
-                border: "1px solid #d1d5db",
-                borderRadius: "6px",
-                cursor: "pointer",
-                transition: "background-color 0.08s ease",
-                boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
-                pointerEvents: "auto",
-              }}
-              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = "#f9fafb"; }}
-              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = "#FFFFFF"; }}
-            >
-              <Save size={14} strokeWidth={2} />
-              Save
-            </button>
-          )}
+          <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", pointerEvents: "auto" }}>
+            {showFullActions && (
+              <button
+                type="button"
+                onClick={onViewInDocument}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: "5px",
+                  padding: "6px 12px",
+                  fontSize: "12px",
+                  fontWeight: 400,
+                  color: "#374151",
+                  backgroundColor: "#FFFFFF",
+                  border: "1px solid #d1d5db",
+                  borderRadius: "6px",
+                  cursor: "pointer",
+                  transition: "background-color 0.08s ease",
+                  boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
+                }}
+                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = "#f9fafb"; }}
+                onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = "#FFFFFF"; }}
+              >
+                <FileSearchCorner style={{ width: 14, height: 14 }} strokeWidth={2} />
+                View document
+              </button>
+            )}
+            {(showFullActions || isPreviewHovered) && (
+              <button
+                type="button"
+                onClick={onAskFollowUp}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: "5px",
+                  padding: "6px 12px",
+                  fontSize: "12px",
+                  fontWeight: 400,
+                  color: "#374151",
+                  backgroundColor: "#FFFFFF",
+                  border: "1px solid #d1d5db",
+                  borderRadius: "6px",
+                  cursor: "pointer",
+                  transition: "background-color 0.08s ease",
+                  boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
+                }}
+                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = "#f9fafb"; }}
+                onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = "#FFFFFF"; }}
+              >
+                <MessageCircle style={{ width: 14, height: 14 }} strokeWidth={2} />
+                Ask follow up
+              </button>
+            )}
+            {onSaveCitation && (showFullActions || isPreviewHovered) && (
+              <button
+                type="button"
+                onClick={onSaveCitation}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: "5px",
+                  padding: "6px 12px",
+                  fontSize: "12px",
+                  fontWeight: 400,
+                  color: "#374151",
+                  backgroundColor: "#FFFFFF",
+                  border: "1px solid #d1d5db",
+                  borderRadius: "6px",
+                  cursor: "pointer",
+                  transition: "background-color 0.08s ease",
+                  boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
+                }}
+                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = "#f9fafb"; }}
+                onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = "#FFFFFF"; }}
+              >
+                <Save size={14} strokeWidth={2} />
+                Save citation
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </div>

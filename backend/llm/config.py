@@ -19,6 +19,8 @@ class LLMConfig(BaseSettings):
     openai_model: str = os.environ.get('OPENAI_MODEL', 'gpt-4o-mini')
     # Planner uses a fast model by default to reduce main-path latency (two sequential LLM calls).
     openai_planner_model: str = os.environ.get('OPENAI_PLANNER_MODEL', 'gpt-4o-mini')
+    # Follow-up classifier: fast model for same-doc vs new-question (cache-first decision).
+    openai_followup_classifier_model: str = os.environ.get('OPENAI_FOLLOWUP_CLASSIFIER_MODEL', 'gpt-4o-mini')
     # Using text-embedding-3-small for speed + HNSW compatibility (1536 dimensions)
     openai_embedding_model: str = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
     

@@ -1186,7 +1186,7 @@ const LocationPickerModal: React.FC<{
                     }, 200);
                   }}
                   placeholder="Search for a location..."
-                  className="flex-1 min-w-0 h-full bg-transparent text-sm pl-0 text-neutral-600 placeholder:text-neutral-400 placeholder:font-normal font-medium outline-none"
+                  className="flex-1 min-w-0 h-full bg-transparent text-sm pl-0 text-neutral-600 placeholder:text-[#8F8F8F] placeholder:font-normal font-medium outline-none"
                 />
                 {isLoadingSuggestions && (
                   <div className="flex-shrink-0">

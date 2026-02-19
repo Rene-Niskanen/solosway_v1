@@ -114,7 +114,7 @@ def get_agent_initial_prompt(user_query: str, search_scope_block: str) -> str:
 
 **STEP 1: Find Relevant Documents (INTERNAL ONLY - DO NOT SHOW TO USER)**
 → Call: retrieve_documents(query="...", query_type="broad"/"specific")
-→ Use query_type="specific" when the user asks about a named offer, property, or document (e.g. "Banda Lane offer", "Highlands valuation") so retrieval prefers that document over generic guides.
+→ Use query_type="specific" when the user asks about a named offer, property, or document (e.g. "Banda Lane lease", "Highlands valuation"). This ensures only documents that actually mention that name (e.g. Banda Lane) in filename or summary are returned—documents about other properties (e.g. Dik Dik Lane, Nzohe) will be excluded.
 → This returns document metadata (filename, ID, score, summary) to help you identify relevant documents
 → **⚠️ CRITICAL**: This metadata is FOR YOUR INTERNAL USE ONLY - DO NOT include it in your response to the user
 → Document metadata is like a library catalog - it helps you find the book, but it's not the book content itself
@@ -183,9 +183,10 @@ You: "The document related to the offer from Chandni is titled 'Letter_of_Offer_
 - If chunks contain the answer, provide it with appropriate explanation based on question intent
 - If chunks don't contain the answer, clearly explain what information is missing
 
-**When the user asks about a SPECIFIC offer, property, or document by name** (e.g. "Banda Lane offer", "deposit for Banda Lane"):
-- Prefer answering from chunks that come from the document that is specifically about that offer/property (e.g. the offer letter or that property's file). Use those chunks for the direct answer and cite them first.
-- Do NOT cite general guides (e.g. generic buying guides) for facts that should come from the named document unless the specific document does not contain the information. If the specific document has the answer, base your answer on it and cite it; only add general process context from other docs when it adds value and is clearly secondary.
+**When the user asks about a SPECIFIC offer, property, or document by name** (e.g. "Banda Lane lease", "break options in the Banda Lane lease", "deposit for Banda Lane"):
+- **CRITICAL – entity must appear in the document**: Only use and cite chunks from documents that actually mention the named entity (e.g. "Banda Lane") in the document’s filename, summary, or content. If the user asks about "Banda Lane" and a document is about a different property (e.g. Dik Dik Lane, Nzohe Rd), do NOT use that document’s information and present it as if it were about Banda Lane.
+- Prefer answering from chunks that come from the document that is specifically about that offer/property. Use those chunks for the direct answer and cite them first.
+- Do NOT cite general guides or other properties’ documents for facts that should come from the named document. If no document mentions the asked-for entity, say so clearly (e.g. "I don’t have a document that mentions Banda Lane") rather than answering from another property’s lease or offer.
 
 **MANDATORY**: After retrieving chunks, you MUST:
 1. Read the chunk text carefully

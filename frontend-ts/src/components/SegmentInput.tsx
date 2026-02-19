@@ -458,7 +458,8 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
     paddingLeft: "8px",
     fontSize: effectiveFontSize,
     lineHeight: effectiveLineHeight,
-    color: "#CACACA",
+    color: "#8F8F8F",
+    fontWeight: 400,
     pointerEvents: "none" as const,
     whiteSpace: "pre-wrap" as const,
     wordWrap: "break-word" as const,
@@ -566,12 +567,13 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
               data-segment-index={i}
               style={{
                 ...(isOnlyEmpty && showPlaceholderOverlay
-                  ? { display: "inline-block", minWidth: "100%", color: "rgba(202,202,202,0.01)" }
+                  ? { display: "inline-block", minWidth: "100%", color: "rgba(143,143,143,0.01)" }
                   : showPlaceholderHere
                     ? {
                         display: "inline-block",
                         minWidth: "100%",
-                        color: "#CACACA",
+                        color: "#8F8F8F",
+                        fontWeight: 400,
                         ...(placeholderFontSize != null && { fontSize: effectiveFontSize }),
                       }
                     : {}),
@@ -670,12 +672,13 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
               data-segment-index={i}
               style={{
                 ...(isOnlyEmpty && showPlaceholderOverlay
-                  ? { display: "inline-block", minWidth: "100%", color: "rgba(202,202,202,0.01)" }
+                  ? { display: "inline-block", minWidth: "100%", color: "rgba(143,143,143,0.01)" }
                   : showPlaceholderHere
                     ? {
                         display: "inline-block",
                         minWidth: "100%",
-                        color: "#CACACA",
+                        color: "#8F8F8F",
+                        fontWeight: 400,
                         ...(placeholderFontSize != null && { fontSize: effectiveFontSize }),
                       }
                     : {}),

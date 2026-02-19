@@ -56,9 +56,9 @@ export function ChatBarAttachDropdown({
         style={{
           backgroundColor: "#FFFFFF",
           border: "1px solid rgba(229, 231, 235, 0.8)",
-          borderRadius: "10px",
+          borderRadius: "8px",
           boxShadow: "0 3px 10px rgba(0, 0, 0, 0.1)",
-          minWidth: "153px",
+          minWidth: "132px",
           zIndex: 10002,
         }}
       >
@@ -66,15 +66,15 @@ export function ChatBarAttachDropdown({
           onClick={() => onAttachClick()}
           onMouseEnter={() => setHoveredId("attach")}
           onMouseLeave={() => setHoveredId(null)}
-          className="flex items-center gap-1.5 cursor-pointer rounded-[5px] px-1.5 py-1.5"
+          className="flex items-center gap-1 cursor-pointer rounded-[4px] px-1.5 py-1"
           style={{
             backgroundColor: hoveredId === "attach" ? "rgba(0, 0, 0, 0.05)" : "transparent",
             color: "#1f2937",
-            fontSize: "11px",
+            fontSize: "10px",
             fontWeight: 400,
           }}
         >
-          <Paperclip className="w-5 h-5 flex-shrink-0 text-gray-900" strokeWidth={1.5} />
+          <Paperclip className="w-4 h-4 flex-shrink-0 text-gray-900" strokeWidth={1.5} />
           <span className="flex-1">Attach</span>
         </DropdownMenuItem>
         {toolsItems.length > 0 && (
@@ -89,18 +89,18 @@ export function ChatBarAttachDropdown({
                   onClick={() => item.onClick()}
                   onMouseEnter={() => setHoveredId(item.id)}
                   onMouseLeave={() => setHoveredId(null)}
-                  className="flex items-center gap-1.5 cursor-pointer rounded-[5px] px-1.5 py-1.5"
+                  className="flex items-center gap-1 cursor-pointer rounded-[4px] px-1.5 py-1"
                   style={{
                     backgroundColor: isHovered ? "rgba(0, 0, 0, 0.05)" : "transparent",
                     color: "#1f2937",
-                    fontSize: "11px",
+                    fontSize: "10px",
                     fontWeight: 400,
                   }}
                 >
-                  <Icon className="w-5 h-5 flex-shrink-0 text-gray-900" strokeWidth={1.5} />
+                  <Icon className="w-4 h-4 flex-shrink-0 text-gray-900" strokeWidth={1.5} />
                   <span className="flex-1">{item.label}</span>
                   {item.badge != null && (
-                    <span className="text-gray-500" style={{ fontSize: "9px" }}>{item.badge}</span>
+                    <span className="text-gray-500" style={{ fontSize: "8px" }}>{item.badge}</span>
                   )}
                 </DropdownMenuItem>
               );

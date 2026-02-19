@@ -31,6 +31,8 @@ interface RecentDocumentsSectionProps {
   scrollable?: boolean;
   /** When true, show all documents in a wrapping grid at the top (See All Files mode) */
   showAllMode?: boolean;
+  /** When true (e.g. on Projects page), use no left padding in showAllMode so content aligns with sibling sections */
+  alignLeftWithContainer?: boolean;
 }
 
 const CARD_WIDTH_COMPACT = 128;
@@ -44,6 +46,7 @@ export const RecentDocumentsSection: React.FC<RecentDocumentsSectionProps> = ({
   compact = false,
   scrollable = true,
   showAllMode = false,
+  alignLeftWithContainer = false,
 }) => {
   const { openExpandedCardView } = usePreview();
 
@@ -74,6 +77,7 @@ export const RecentDocumentsSection: React.FC<RecentDocumentsSectionProps> = ({
           gap: ALL_FILES_GRID_GAP,
           padding: ALL_FILES_GRID_PADDING,
           paddingBottom: ALL_FILES_GRID_PADDING + 8,
+          ...(alignLeftWithContainer && { paddingLeft: 0 }),
           width: '100%',
           maxWidth: '100%',
           boxSizing: 'border-box',

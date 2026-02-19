@@ -120,6 +120,8 @@ class MainWorkflowState(TypedDict, total=False):
     current_step_index: int  # Which step executor is on (default: 0)
     execution_results: List[Dict[str, Any]]  # Results from each executed step
     use_cached_results: Optional[bool]  # When True, skip planner+executor and use execution_results from checkpoint (cache-first for follow-ups)
+    use_paste_plus_docs: Optional[bool]  # When True, use pasted/attachment context together with other documents (classifier=PASTE_AND_DOCS)
+    paste_requested_but_missing: Optional[bool]  # When True, classifier said paste_and_docs but no attachment_context; responder may prepend explanation
     plan_refinement_count: int  # Track how many times plan has been refined (circuit breaker, default: 0, max: 3)
     prior_turn_content: Optional[str]  # Previous assistant answer when use_prior_context (for refine/format)
     format_instruction: Optional[str]  # User-requested output format (e.g. "one concise paragraph")
