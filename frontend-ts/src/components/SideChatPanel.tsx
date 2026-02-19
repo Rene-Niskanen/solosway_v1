@@ -9372,14 +9372,20 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   // Don't update message text here - finalizeText() will handle it with data.summary
                 }
                 
+                // Drain blockQueue into displayedText so finalizeText has full content (fixes truncation on Accept)
+                while (blockQueue.length > 0) {
+                  const b = blockQueue.shift();
+                  if (b) displayedText += b;
+                }
+                
                 // Wait for queue to finish processing, then set final text
                 const finalizeText = () => {
                   playCompletionSound();
                 // Use displayedText as source of truth - it was pre-completed during streaming
                 // This ensures text doesn't change when streaming completes (prevents "click" effect)
-                // Fallback to data.summary only if displayedText is empty
+                // Use longer of displayedText vs accumulatedText as safety net so we never persist shortened content
                   // CRITICAL: Ensure we always have text to display
-                  const rawText = displayedText || data?.summary || accumulatedText || "";
+                  const rawText = (displayedText.length >= accumulatedText.length ? displayedText : accumulatedText) || data?.summary || "";
                   const finalText = rawText.trim() 
                     ? cleanResponseText(rawText) 
                     : (data?.summary?.trim() || "I couldn't find any documents matching your query. Please try rephrasing or check if documents are available.");
@@ -13552,13 +13558,19 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 }
               }
               
+              // Drain blockQueue into displayedText so finalizeText has full content (fixes truncation on Accept)
+              while (blockQueue.length > 0) {
+                const b = blockQueue.shift();
+                if (b) displayedText += b;
+              }
+              
               // Wait for queue to finish processing, then set final text
               const finalizeText = () => {
                 playCompletionSound();
               // Use displayedText as source of truth - it was pre-completed during streaming
               // This ensures text doesn't change when streaming completes (prevents "click" effect)
-              // Fallback to data.summary only if displayedText is empty
-                const finalText = cleanResponseText(displayedText || data.summary || accumulatedText || "");
+              // Use longer of displayedText vs accumulatedText as safety net so we never persist shortened content
+                const finalText = cleanResponseText((displayedText.length >= accumulatedText.length ? displayedText : accumulatedText) || data.summary || "");
               
                 // Merge accumulated citations with any from backend complete message; ensure doc_id set from document_id
                 const mergedRaw = { ...accumulatedCitations, ...(data.citations || {}) };

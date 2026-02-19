@@ -15,8 +15,9 @@ const originalCreateElement = React.createElement;
     const key = props.key;
     
     // Check for empty keys - ONLY for AnimatePresence children (motion.div, div, etc.)
-    // Skip icon elements (path, rect, etc.) as they're from third-party libraries
-    const isIconElement = typeof type === 'string' && (type === 'path' || type === 'rect' || type === 'circle' || type === 'g');
+    // Skip icon/SVG primitive elements (path, line, rect, etc.) as they're from third-party icon libraries
+    const svgPrimitives = ['path', 'rect', 'circle', 'g', 'line', 'polygon', 'polyline', 'ellipse', 'defs', 'use'];
+    const isIconElement = typeof type === 'string' && svgPrimitives.includes(type);
     
     if (!isIconElement) {
       if (key === null || key === undefined || key === '' || (typeof key === 'string' && key.trim().length === 0)) {
