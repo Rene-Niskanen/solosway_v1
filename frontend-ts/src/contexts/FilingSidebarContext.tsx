@@ -29,6 +29,9 @@ interface FilingSidebarContextType {
   // Files are currently uploading (for sidebar Files button spinner)
   isFilesUploading: boolean;
   setFilesUploading: (uploading: boolean) => void;
+  /** Current document list from the file sidebar (for Searching carousel to rotate through) */
+  sidebarDocuments: Array<{ id: string; original_filename?: string }>;
+  setSidebarDocuments: (docs: Array<{ id: string; original_filename?: string }>) => void;
 }
 
 const FilingSidebarContext = createContext<FilingSidebarContextType | undefined>(undefined);
@@ -44,6 +47,7 @@ export const FilingSidebarProvider: React.FC<{ children: React.ReactNode }> = ({
   const [uploadOverlayOpen, setUploadOverlayOpen] = useState<boolean>(false);
   const [initialPendingFiles, setInitialPendingFiles] = useState<File[] | null>(null);
   const [isFilesUploading, setFilesUploading] = useState<boolean>(false);
+  const [sidebarDocuments, setSidebarDocuments] = useState<Array<{ id: string; original_filename?: string }>>([]);
 
   const openSidebar = useCallback(() => {
     setIsOpen(true);
@@ -166,6 +170,8 @@ export const FilingSidebarProvider: React.FC<{ children: React.ReactNode }> = ({
     setInitialPendingFiles,
     isFilesUploading,
     setFilesUploading,
+    sidebarDocuments,
+    setSidebarDocuments,
   };
 
   return (

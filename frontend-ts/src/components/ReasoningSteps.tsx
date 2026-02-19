@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { StackedDocumentPreviews } from './DocumentPreviewCard';
 import { LLMContextViewer } from './LLMContextViewer';
 import { generateAnimatePresenceKey, generateUniqueKey } from '../utils/keyGenerator';
-import { Search, SearchCheck, TextSearch, ScanText, BookOpenCheck, FileQuestion, Sparkle, Play, FolderOpen, MapPin, Highlighter, Infinity } from 'lucide-react';
+import { TextSearch, ScanText, BookOpenCheck, FileQuestion, Play, FolderOpen, MapPin, Highlighter, Infinity } from 'lucide-react';
 import { FileChoiceStep, ResponseModeChoice } from './FileChoiceStep';
 import { FileAttachmentData } from './FileAttachment';
 import { ThinkingBlock, isTrivialThinkingContent } from './ThinkingBlock';
@@ -11,6 +11,7 @@ import { SearchingSourcesCarousel } from './SearchingSourcesCarousel';
 import { SEARCHING_CAROUSEL_TYPES } from '../constants/documentTypes';
 import OrbitProgress from 'react-loading-indicators/OrbitProgress';
 import { useModel } from '../contexts/ModelContext';
+import { useFilingSidebar } from '../contexts/FilingSidebarContext';
 import * as pdfjs from 'pdfjs-dist';
 
 // Import worker for PDF.js (same as DocumentPreviewCard)
@@ -256,7 +257,7 @@ interface ReasoningStepsProps {
   skipAnimations?: boolean; // Skip animations when restoring a chat (instant display)
   /** When true, collapse to max 2 steps (first searching + first "No relevant") for display */
   isNoResultsResponse?: boolean;
-  /** When true, steps are shown under the thought dropdown after completion - use faint font for "Found X relevant document:" and document names */
+  /** When true, steps are shown under the thought dropdown after completion - use faint font for "Analysing X documents:" and document names */
   thoughtCompleted?: boolean;
 }
 
@@ -674,8 +675,9 @@ const StepRenderer: React.FC<{
   allReadingComplete?: boolean; // All reading steps have completed
   hasResponseText?: boolean; // Stop animations when response text has started
   model?: 'gpt-4o-mini' | 'gpt-4o' | 'claude-sonnet' | 'claude-opus';
-  thoughtCompleted?: boolean; // When true, use faint font for "Found X relevant documents:" and document names
+  thoughtCompleted?: boolean; // When true, use faint font for "Analysing X documents:" and document names
 }> = ({ step, allSteps, stepIndex, isLoading, readingStepIndex = 0, isLastReadingStep = false, totalReadingSteps = 0, onDocumentClick, shownDocumentsRef, allReadingComplete = false, hasResponseText = false, model = 'gpt-4o-mini', thoughtCompleted = false }) => {
+  const { sidebarDocuments } = useFilingSidebar();
   const actionColor = thoughtCompleted ? FAINT_COLOR : ACTION_COLOR;
   const detailColor = thoughtCompleted ? FAINT_COLOR : DETAIL_COLOR;
   const actionStyle: React.CSSProperties = {
@@ -716,22 +718,10 @@ const StepRenderer: React.FC<{
     const isRunning = toolStatus === 'running';
     const isError = toolStatus === 'error';
     
-    // Icon based on tool type
-    const ToolIcon = () => {
-      if (toolName === 'search_documents') {
-        return <Search style={{ width: '14px', height: '14px', color: actionColor, flexShrink: 0, marginTop: '4px' }} />;
-      } else if (toolName === 'read_document' || toolName === 'read_multiple_documents') {
-        return <BookOpenCheck style={{ width: '14px', height: '14px', color: actionColor, flexShrink: 0, marginTop: '2px' }} />;
-      } else if (toolName === 'planning' || toolName === 'generate_answer') {
-        return <Sparkle style={{ width: '14px', height: '14px', color: actionColor, flexShrink: 0, marginTop: '2px' }} />;
-      }
-      return <Play style={{ width: '14px', height: '14px', color: actionColor, flexShrink: 0, marginTop: '2px' }} />;
-    };
-    
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: '6px' }}>
-          {isRunning ? (
+          {isRunning && (
             <div style={{ width: '14px', height: '14px', flexShrink: 0, marginTop: '2px' }}>
               <div className="reasoning-loading-spinner" style={{
                 width: '14px',
@@ -741,8 +731,6 @@ const StepRenderer: React.FC<{
                 borderRadius: '50%'
               }} />
             </div>
-          ) : (
-            <ToolIcon />
           )}
           <span style={{ color: isError ? '#ef4444' : detailColor, fontWeight: 500 }}>
             {step.message}
@@ -774,12 +762,21 @@ const StepRenderer: React.FC<{
     );
   }
 
-  // Component for "Found X documents:" (no animation). Use single ":" (avoid "::" if prefix already has colon).
+  // Component for "Analysing X documents:" or legacy "Found X documents:" (no animation). Use single ":" (avoid "::" if prefix already has colon).
   const FoundDocumentsText: React.FC<{ prefix: string; actionStyle: React.CSSProperties; detailColor?: string }> = ({ prefix, actionStyle, detailColor: detailColorProp }) => {
     const color = detailColorProp ?? detailColor;
+    const analysingMatch = prefix.match(/^(Analysing)\s+(.+)$/);
     const foundMatch = prefix.match(/^(Found)\s+(.+)$/);
     const ensureSingleColon = (s: string) => (s.trimEnd().endsWith(':') ? s.trimEnd() : `${s.trimEnd()}:`);
 
+    if (analysingMatch) {
+      return (
+        <span>
+          <span style={actionStyle}>{analysingMatch[1]}</span>
+          <span style={{ color, fontWeight: 500 }}> {ensureSingleColon(analysingMatch[2])}</span>
+        </span>
+      );
+    }
     if (foundMatch) {
       return (
         <span>
@@ -787,11 +784,10 @@ const StepRenderer: React.FC<{
           <span style={{ color, fontWeight: 500 }}> {ensureSingleColon(foundMatch[2])}</span>
         </span>
       );
-    } else {
-      return (
-        <span style={actionStyle}>{ensureSingleColon(prefix)}</span>
-      );
     }
+    return (
+      <span style={actionStyle}>{ensureSingleColon(prefix)}</span>
+    );
   };
 
   switch (step.action_type) {
@@ -814,7 +810,7 @@ const StepRenderer: React.FC<{
       return <span style={{ display: 'none' }} aria-hidden />;
 
     case 'exploring':
-      // "Found 1 relevant document:" or "Found 15 relevant sections:" - text only, no document cards here.
+      // "Analysing 1 document:" or "Analysing 15 sections:" (or legacy "Found ...") - text only, no document cards here.
       // Document preview cards appear only under the "Reading [filename]" step.
       // Use same colour for whole phrase (no different colour for the number).
       const isSectionsStep = step.message.toLowerCase().includes('section');
@@ -829,11 +825,25 @@ const StepRenderer: React.FC<{
         prefix = step.message.substring(0, colonIndex);
       }
 
+      // Only show "Analysing X documents" step when more than one document
+      const isAnalysingOneDocument = /^Analysing\s+1\s+document\s*:?$/i.test(prefix.trim());
+      if (isAnalysingOneDocument) {
+        return <span style={{ display: 'none' }} aria-hidden />;
+      }
+
+      const nextStepExploring = stepIndex < allSteps.length - 1 ? allSteps[stepIndex + 1] : null;
+      const isExploringActive = isLoading && !hasResponseText && (!nextStepExploring || nextStepExploring.action_type === 'exploring');
+      const isAnalysingPrefix = /^Analysing\s+/i.test(prefix);
+      const ensureColon = (s: string) => (s.trimEnd().endsWith(':') ? s.trimEnd() : `${s.trimEnd()}:`);
+
       return (
         <div>
-          <div className="found-reveal-text" style={{ display: 'flex', alignItems: 'flex-start', gap: '6px', position: 'relative', zIndex: 1 }}>
-            <SearchCheck style={{ width: '14px', height: '14px', color: foundActionColor, flexShrink: 0, marginTop: '0px' }} />
-            <FoundDocumentsText prefix={prefix} actionStyle={foundActionStyle} detailColor={foundDetailColor} />
+          <div className="found-reveal-text" style={{ display: 'flex', alignItems: 'flex-start', position: 'relative', zIndex: 1 }}>
+            {isAnalysingPrefix && isExploringActive ? (
+              <span className="ranking-shimmer-active">{ensureColon(prefix)}</span>
+            ) : (
+              <FoundDocumentsText prefix={prefix} actionStyle={foundActionStyle} detailColor={foundDetailColor} />
+            )}
           </div>
           {!isSectionsStep && !isNoResultsStep && !(step.details?.doc_previews?.length) ? (
             <div style={{ marginTop: '2px', paddingLeft: '0', color: foundDetailColor, fontStyle: 'italic', fontSize: '12px' }}>
@@ -844,7 +854,7 @@ const StepRenderer: React.FC<{
       );
     
     case 'searching': {
-      // Show "Searching" with files we're going to read rotating (from exploring step); once reading steps appear, this step is hidden
+      // Show "Searching" with files rotating from the file sidebar (or exploring step fallback); once reading steps appear, this step is hidden
       const nextStep = stepIndex < allSteps.length - 1 ? allSteps[stepIndex + 1] : null;
       const isSearchingActive = isLoading && !hasResponseText && (!nextStep || nextStep.action_type === 'searching');
       const sourceCountByType = step.details?.source_count_by_type as { pdf?: number; docx?: number } | undefined;
@@ -852,7 +862,11 @@ const StepRenderer: React.FC<{
         SEARCHING_CAROUSEL_TYPES.includes(t)
       );
       const exploringStep = allSteps.find((s) => s.action_type === 'exploring');
-      const docPreviews = (exploringStep?.details?.doc_previews ?? []) as Array<{ original_filename?: string | null; classification_type?: string | null }>;
+      const exploringPreviews = (exploringStep?.details?.doc_previews ?? []) as Array<{ original_filename?: string | null; classification_type?: string | null }>;
+      // Prefer file sidebar list so carousel rotates through whatever is in the sidebar
+      const docPreviews = sidebarDocuments.length > 0
+        ? sidebarDocuments.map((d) => ({ original_filename: d.original_filename ?? undefined }))
+        : exploringPreviews;
 
       return (
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
@@ -1452,6 +1466,15 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
     if (thoughtCompleted) {
       list = list.filter(s => s.action_type !== 'searching');
     }
+    // Only show "Analysing X documents" exploring step when more than one document
+    const isAnalysingOneDocumentStep = (s: ReasoningStep) => {
+      if (s.action_type !== 'exploring') return false;
+      const msg = s.message || '';
+      const colonIdx = msg.indexOf(': ');
+      const prefix = colonIdx > -1 ? msg.substring(0, colonIdx) : msg;
+      return /^Analysing\s+1\s+document\s*:?$/i.test(prefix.trim());
+    };
+    list = list.filter(s => !isAnalysingOneDocumentStep(s));
     return list;
   }, [filteredSteps, isNoResultsResponse, thoughtCompleted]);
 
@@ -2263,7 +2286,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
           }
         }
         
-        /* Smooth blur reveal animation for "Found X documents:" - reveals icon and text together from left to right */
+        /* Smooth blur reveal animation for "Analysing X documents:" - reveals icon and text together from left to right */
         .found-reveal-text {
           position: relative;
           display: inline-flex;

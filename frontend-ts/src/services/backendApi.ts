@@ -530,7 +530,7 @@ class BackendApiService {
                   }
                   break;
                 case 'documents_found':
-                  onStatus?.(`Found ${data.count} relevant document(s)`);
+                  onStatus?.(`Analysing ${data.count} document(s)`);
                   break;
                 case 'agent_action':
                   // AGENT-NATIVE: Handle agent actions (open_document, highlight_bbox, navigate_to_property, save_to_writing)

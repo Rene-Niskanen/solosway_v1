@@ -905,19 +905,22 @@ def query_documents_stream():
                 
                 # Initial status already yielded after business_id (so client gets first byte before Supabase)
                 
-                # Generate and stream chat title from query (KeyBERT when available, else heuristic)
+                # Generate and stream chat title from query.
+                # Use heuristic-only in stream path to avoid blocking on KeyBERT (1–3s on first load).
+                # Set USE_KEYBERT_CHAT_TITLE=1 to use KeyBERT for titles (adds latency).
                 def generate_chat_title_from_query(q: str) -> str:
-                    """Generate a short chat title from the user query. Uses KeyBERT for accuracy when enabled."""
+                    """Generate a short chat title from the user query. Heuristic by default for low latency."""
                     if not q or not (q := q.strip()):
                         return "New chat"
-                    try:
-                        from backend.llm.utils.entity_extraction import get_title_from_query
-                        keybert_title = get_title_from_query(q, max_length=50)
-                        if keybert_title:
-                            return keybert_title
-                    except Exception:
-                        pass
-                    # Fallback: "of X" / "for X" or capitalized words
+                    if os.environ.get("USE_KEYBERT_CHAT_TITLE", "").strip() in ("1", "true", "yes"):
+                        try:
+                            from backend.llm.utils.entity_extraction import get_title_from_query
+                            keybert_title = get_title_from_query(q, max_length=50)
+                            if keybert_title:
+                                return keybert_title
+                        except Exception:
+                            pass
+                    # Heuristic: "of X" / "for X" or capitalized words (fast, no model load)
                     q_lower = q.lower()
                     title = None
                     for sep in (" of ", " for "):
@@ -1647,7 +1650,7 @@ def query_documents_stream():
                                                 logger.info(f"📂 [EARLY_PREP] Emitted prepare_document for {first_doc.get('doc_id', '')[:8]}...")
                                     
                                     elif node_name == "executor" and not is_fast_path:
-                                        # Planner/Executor path: emit "Found N relevant document(s):" + "Reading" only for
+                                        # Planner/Executor path: emit "Analysing N document(s):" + "Reading" only for
                                         # documents we actually read (have chunks for). Wait until we have retrieve_chunks
                                         # result so we don't show docs we never read.
                                         state_data = state_update or output or event_data
@@ -1708,7 +1711,7 @@ def query_documents_stream():
                                                 logger.debug("🟡 [REASONING] No documents had chunks; skipping found_documents + reading steps")
                                             else:
                                                 doc_word = "document" if doc_count == 1 else "documents"
-                                                message = f'Found {doc_count} relevant {doc_word}:'
+                                                message = f'Analysing {doc_count} {doc_word}:'
                                                 if reading_timestamp is None:
                                                     reading_timestamp = time.time() + 0.1
                                                 reasoning_data = {
@@ -2222,7 +2225,7 @@ def query_documents_stream():
                                                     reading_timestamp = time.time() + 0.1  # Slightly after "Found documents", before "Analyzing"
                                                 
                                                 # Create found_documents step with exploring action_type
-                                                message = f'Found {doc_count} document{"s" if doc_count > 1 else ""}'
+                                                message = f'Analysing {doc_count} document{"s" if doc_count > 1 else ""}'
                                                 if doc_names:
                                                     message += f': {", ".join(doc_names[:3])}'
                                                     if doc_count > 3:

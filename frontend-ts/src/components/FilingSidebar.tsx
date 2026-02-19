@@ -223,6 +223,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
     initialPendingFiles,
     setInitialPendingFiles,
     setFilesUploading,
+    setSidebarDocuments,
   } = useFilingSidebar();
   const { getAllPropertyHubs } = useBackendApi();
 
@@ -646,6 +647,11 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
 
     fetchData();
   }, [isOpen, viewMode, selectedPropertyId]);
+
+  // Sync current document list to context so Searching carousel can rotate through file-sidebar docs
+  useEffect(() => {
+    setSidebarDocuments(documents.map((d) => ({ id: d.id, original_filename: d.original_filename })));
+  }, [documents, setSidebarDocuments]);
 
   // When sidebar opens with files from the upload overlay, merge them into pending files
   useEffect(() => {

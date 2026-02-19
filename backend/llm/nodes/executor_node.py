@@ -574,12 +574,12 @@ async def executor_node(state: MainWorkflowState, runnable_config=None) -> MainW
             if action == "retrieve_docs":
                 if result_count > 0:
                     emitter.emit_reasoning(
-                        label=f"Found {result_count} relevant document{'' if result_count == 1 else 's'}",
+                        label=f"Analysing {result_count} document{'' if result_count == 1 else 's'}",
                         detail=None
                     )
                 else:
                     emitter.emit_reasoning(
-                        label="No relevant documents found",
+                        label="No documents found",
                         detail="Trying alternative search terms"
                     )
             elif action == "retrieve_chunks":

@@ -1,12 +1,11 @@
-import React, { useEffect, useRef, useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { motion } from 'framer-motion';
 import { SEARCHING_CAROUSEL_TYPES } from '../constants/documentTypes';
 
 const CIRCLE_SIZE_PX = 20;
 const OVERLAP_PX = 10;
-const VISIBLE_COUNT = 3; // Only show 3 icons at a time; rotate through the list
+const VISIBLE_COUNT = 3; // Only show 3 icons at a time; rotate by replacing, no slide
 const CONTAINER_WIDTH_PX = CIRCLE_SIZE_PX + OVERLAP_PX * (VISIBLE_COUNT - 1);
-const SLOT_WIDTH_PX = CIRCLE_SIZE_PX - OVERLAP_PX;
 const CYCLE_INTERVAL_MS = 480;
 const FAST_CYCLE_INTERVAL_MS = 360;
 
@@ -98,56 +97,44 @@ export function SearchingSourcesCarousel({
     [sourceTypes]
   );
 
-  // Ordered list of files we're going to read (from exploring step); only allowed types (e.g. PDF only)
+  // Ordered list of files we're going to read (from file sidebar or exploring step).
+  // Ensure at least 9 items so the step interval visibly rotates; repeat short lists.
   const typesList = useMemo(() => {
+    let list: string[];
     if (docPreviews && docPreviews.length > 0) {
-      return typesListFromDocPreviews(docPreviews, allowedTypes);
+      list = typesListFromDocPreviews(docPreviews, allowedTypes);
+      // Repeat so we have enough slots for visible rotation (otherwise 1–3 docs look static)
+      while (list.length < 9) list = list.concat(list);
+      if (list.length > 30) list = list.slice(0, 30);
+    } else {
+      const n = Math.min(Math.max(sourceCount ?? 0, 9), 30);
+      list = [];
+      for (let i = 0; i < n; i++) list.push(allowedTypes[i % allowedTypes.length]);
+      if (list.length === 0) list = [...allowedTypes, ...allowedTypes, ...allowedTypes];
     }
-    return [...allowedTypes, ...allowedTypes, ...allowedTypes];
-  }, [docPreviews, allowedTypes]);
+    return list;
+  }, [docPreviews, allowedTypes, sourceCount]);
 
   const [step, setStep] = useState(0);
-  const stepRef = useRef(0);
-  const [slideOffset, setSlideOffset] = useState(0);
   const L = typesList.length;
 
-  // Only 4 items: current window of 3 + next one for the slide. Viewport shows 3 at a time.
+  // Exactly 3 items: no slide, so the one that "leaves" is hidden (removed), not moved — never looks like 4.
   const stripList = useMemo(() => {
     if (L === 0) return [];
-    return [0, 1, 2, 3].map((i) => typesList[(step + i) % L]);
+    return [0, 1, 2].map((i) => typesList[(step + i) % L]);
   }, [typesList, step, L]);
 
-  const maxStep = L;
-
   useEffect(() => {
-    if (!isActive || maxStep === 0) return;
+    if (!isActive || L === 0) return;
     const interval =
       (sourceCount != null && sourceCount > 5) ? FAST_CYCLE_INTERVAL_MS : CYCLE_INTERVAL_MS;
-    const id = setInterval(() => {
-      if (stepRef.current >= maxStep) {
-        stepRef.current = 0;
-        setStep(0);
-        setSlideOffset(0);
-      } else {
-        // Slide left by one slot so the next icon appears
-        setSlideOffset(-SLOT_WIDTH_PX);
-      }
-    }, interval);
+    const id = setInterval(() => setStep((s) => (s + 1) % L), interval);
     return () => clearInterval(id);
-  }, [isActive, maxStep, sourceCount]);
+  }, [isActive, L, sourceCount]);
 
   useEffect(() => {
-    stepRef.current = 0;
     setStep(0);
-    setSlideOffset(0);
   }, [typesList]);
-
-  const handleSlideComplete = () => {
-    if (slideOffset !== -SLOT_WIDTH_PX || maxStep === 0) return;
-    stepRef.current = stepRef.current + 1;
-    setStep(stepRef.current);
-    setSlideOffset(0);
-  };
 
   return (
     <span
@@ -164,17 +151,15 @@ export function SearchingSourcesCarousel({
       }}
     >
       <motion.span
+        key={step}
+        initial={{ opacity: 0.85 }}
+        animate={{ opacity: 1 }}
+        transition={{ duration: 0.2 }}
         style={{
           display: 'inline-flex',
           alignItems: 'center',
           flexShrink: 0,
         }}
-        animate={{ x: slideOffset }}
-        transition={{
-          duration: slideOffset === 0 ? 0 : 0.3,
-          ease: 'easeOut',
-        }}
-        onAnimationComplete={handleSlideComplete}
       >
         {stripList.map((type, i) => (
           <span

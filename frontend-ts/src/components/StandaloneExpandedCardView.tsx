@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Maximize, Maximize2, Minimize2, ZoomIn, ZoomOut, ChevronDown, ChevronUp, Download, SquareDashedMousePointer } from 'lucide-react';
+import { X, Maximize, Maximize2, Minimize2, ZoomIn, ZoomOut, ChevronDown, ChevronUp, Download } from 'lucide-react';
 import { usePreview } from '../contexts/PreviewContext';
 import { backendApi } from '../services/backendApi';
 import { useFilingSidebar } from '../contexts/FilingSidebarContext';
@@ -1699,27 +1699,6 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
             >
               <Download className="w-4 h-4 text-[#666]" strokeWidth={1.75} />
             </motion.button>
-            {/* 50/50 snap button - when in split view, snap split back to equal */}
-            {!isFullscreen && onSnapTo50 && (
-              <motion.button
-                onClick={onSnapTo50}
-                whileHover={{ backgroundColor: '#f0f0f0' }}
-                whileTap={{ backgroundColor: '#e8e8e8' }}
-                className="flex items-center justify-center rounded-full border border-gray-300/80 bg-white transition-all duration-150 flex-shrink-0"
-                style={{
-                  padding: '5px',
-                  height: '28px',
-                  width: '28px',
-                  minHeight: '28px',
-                  minWidth: '28px',
-                  cursor: 'pointer',
-                  marginRight: '8px',
-                }}
-                title="Snap to 50/50 split"
-              >
-                <SquareDashedMousePointer className="w-4 h-4 text-[#666]" strokeWidth={1.5} />
-              </motion.button>
-            )}
             {/* Fullscreen button - only when allowFullscreen is true (hidden in 50/50 layout) */}
             {allowFullscreen && (
             <motion.button

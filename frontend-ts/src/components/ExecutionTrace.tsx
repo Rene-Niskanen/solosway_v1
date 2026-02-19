@@ -90,6 +90,12 @@ export const ExecutionTrace: React.FC<ExecutionTraceProps> = ({ events, isLoadin
       return { action: 'Plan', rest: description.substring(5) };
     }
     
+    // Handle "Analysing X document(s)" or "Analysing X document(s):" (exploring step)
+    const analysingDocsMatch = description.match(/^Analysing (\d+) documents?/i);
+    if (analysingDocsMatch) {
+      return { action: 'Analysing', rest: `${analysingDocsMatch[1]} document${analysingDocsMatch[1] === '1' ? '' : 's'}` };
+    }
+    
     // Handle "Found X documents for '...'"
     const foundDocsMatch = description.match(/^Found (\d+) documents? for '(.+)'$/i);
     if (foundDocsMatch) {
@@ -251,10 +257,13 @@ export const ExecutionTrace: React.FC<ExecutionTraceProps> = ({ events, isLoadin
       const { action } = parseDescription(event.description, event);
       
       // Count document retrievals (files) - handle both reasoning events and legacy format
-      if (action === 'Found' && (event.type === 'retrieve_docs' || event.metadata?.reasoning)) {
-        const match = event.description.match(/Found (\d+) (?:relevant )?documents?/i);
-        if (match) {
-          fileCount += parseInt(match[1]);
+      const analysingMatch = event.description.match(/Analysing (\d+) documents?/i);
+      const foundMatch = event.description.match(/Found (\d+) (?:relevant )?documents?/i);
+      if ((action === 'Analysing' || action === 'Found') && (event.type === 'retrieve_docs' || event.metadata?.reasoning)) {
+        if (analysingMatch) {
+          fileCount += parseInt(analysingMatch[1]);
+        } else if (foundMatch) {
+          fileCount += parseInt(foundMatch[1]);
         } else if (action === 'Found') {
           fileCount += 1;
         }

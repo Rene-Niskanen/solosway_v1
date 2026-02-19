@@ -197,6 +197,8 @@ const ESTIMATED_PANEL_HEIGHT = 460;
 /**
  * Position panel near the clicked citation with a consistent GAP above or below.
  * Prefers opening upward; opens below when there isn’t enough room above.
+ * Keeps the panel entirely to the right or left of the citation so it never covers
+ * the cited text or the citation marker.
  */
 function clampPanelPosition(
   anchorRect: DOMRect,
@@ -206,41 +208,45 @@ function clampPanelPosition(
   const vw = typeof window !== "undefined" ? window.innerWidth : 1200;
   const vh = typeof window !== "undefined" ? window.innerHeight : 800;
 
-  // Align panel's left edge with citation's left edge (bottom-left of panel near citation)
-  let left = anchorRect.left;
-  if (left + panelWidth > vw - VIEWPORT_MARGIN) {
-    left = vw - panelWidth - VIEWPORT_MARGIN;
+  // Place panel entirely right or left of citation so it never covers the cited text or marker
+  let left = anchorRect.right + GAP;
+  if (left + panelWidth <= vw - VIEWPORT_MARGIN) {
+    if (left < VIEWPORT_MARGIN) left = VIEWPORT_MARGIN;
+  } else {
+    left = anchorRect.left - panelWidth - GAP;
+    if (left >= VIEWPORT_MARGIN) {
+      // fits on the left
+    } else {
+      left = anchorRect.left > vw / 2 ? VIEWPORT_MARGIN : vw - panelWidth - VIEWPORT_MARGIN;
+    }
   }
-  if (left < VIEWPORT_MARGIN) left = VIEWPORT_MARGIN;
 
-  // Prefer above: panel bottom = citation top - GAP (same gap as below)
+  // Prefer below: panel top = citation bottom + GAP so the panel never covers the cited text or markers
+  const topIfBelow = anchorRect.bottom + GAP;
+  const fitsBelow = topIfBelow + panelHeight <= vh - VIEWPORT_MARGIN;
+  let openAbove = false;
+
+  if (fitsBelow) {
+    let top = topIfBelow;
+    if (top < VIEWPORT_MARGIN) top = VIEWPORT_MARGIN;
+    return { left, top, openAbove: false };
+  }
+
+  // Not enough room below: open above (panel bottom = citation top - GAP)
   const topIfAbove = anchorRect.top - GAP - panelHeight;
-  let openAbove = topIfAbove >= VIEWPORT_MARGIN;
-
-  if (!openAbove) {
-    // Not enough room above: open below with same GAP (panel top = citation bottom + GAP)
-    let top = anchorRect.bottom + GAP;
-    if (top + panelHeight > vh - VIEWPORT_MARGIN) {
-      top = vh - panelHeight - VIEWPORT_MARGIN;
-    }
-    if (top < VIEWPORT_MARGIN) top = VIEWPORT_MARGIN;
-    return { left, top, openAbove: false };
+  if (topIfAbove >= VIEWPORT_MARGIN) {
+    let bottom = vh - (anchorRect.top - GAP);
+    bottom = Math.max(VIEWPORT_MARGIN, Math.min(bottom, vh - panelHeight - VIEWPORT_MARGIN));
+    return { left, bottom, openAbove: true };
   }
 
-  // Open above: position by bottom so gap is always GAP (panel height doesn't affect gap)
-  let bottom = vh - (anchorRect.top - GAP);
-  const topOfPanel = vh - bottom - panelHeight;
-  if (topOfPanel < VIEWPORT_MARGIN) {
-    // Not enough room above; switch to below
-    let top = anchorRect.bottom + GAP;
-    if (top + panelHeight > vh - VIEWPORT_MARGIN) {
-      top = vh - panelHeight - VIEWPORT_MARGIN;
-    }
-    if (top < VIEWPORT_MARGIN) top = VIEWPORT_MARGIN;
-    return { left, top, openAbove: false };
+  // Neither fits well: clamp below to viewport
+  let top = anchorRect.bottom + GAP;
+  if (top + panelHeight > vh - VIEWPORT_MARGIN) {
+    top = vh - panelHeight - VIEWPORT_MARGIN;
   }
-  bottom = Math.max(VIEWPORT_MARGIN, Math.min(bottom, vh - panelHeight - VIEWPORT_MARGIN));
-  return { left, bottom, openAbove: true };
+  if (top < VIEWPORT_MARGIN) top = VIEWPORT_MARGIN;
+  return { left, top, openAbove: false };
 }
 
 export interface CitationClickPanelProps {

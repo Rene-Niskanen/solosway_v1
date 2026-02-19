@@ -5,7 +5,7 @@ import { useMemo } from "react";
 import { createPortal, flushSync } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { generateAnimatePresenceKey, generateConditionalKey, generateUniqueKey } from '../utils/keyGenerator';
-import { ChevronLeft, ChevronRight, ChevronDown, ChevronUp, ArrowUp, Mic, Map, Globe, X, SquareDashedMousePointer, Scan, Fullscreen, PanelLeftOpen, PanelRightClose, PictureInPicture2, Trash2, CreditCard, MoveDiagonal, Square, Files, Image as ImageIcon, File as FileIcon, FileCheck, Minimize, Minimize2, Workflow, Home, Brain, AudioLines, MessageCircle, MessageCircleDashed, Copy, Search, MessageSquare, Pencil, Check, Highlighter, SlidersHorizontal, BookOpen, Download, ThumbsUp, ThumbsDown, Link2, Star, FolderPlus, FileSearchCorner, Undo2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, ChevronDown, ChevronUp, ArrowUp, Mic, Map, Globe, X, SquareDashedMousePointer, Scan, Fullscreen, PanelLeftOpen, PanelRightClose, PictureInPicture2, Trash2, CreditCard, MoveDiagonal, Square, Files, Image as ImageIcon, File as FileIcon, FileCheck, Minimize, Minimize2, Workflow, Home, Brain, AudioLines, MessageCircle, MessageCircleDashed, Copy, Search, MessageSquare, Pencil, Check, Highlighter, SlidersHorizontal, BookOpen, Download, ThumbsUp, ThumbsDown, Link2, Star, FolderPlus, Undo2 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { FileAttachment, FileAttachmentData } from './FileAttachment';
 import { PropertyAttachmentData } from './PropertyAttachment';
@@ -658,7 +658,7 @@ const OrangeCitationSwoopHighlight: React.FC<{ children: React.ReactNode }> = ({
         background: linear-gradient(90deg, #F5EBD9 0%, #F5EBD9 100%);
         background-repeat: no-repeat;
         background-size: 0% 100%;
-        animation: orange-citation-swoop 0.55s cubic-bezier(0.22, 1, 0.36, 1) 0.2s forwards;
+        animation: orange-citation-swoop 0.22s cubic-bezier(0.22, 1, 0.36, 1) 0.04s forwards;
       }
       @keyframes orange-citation-swoop {
         to {
@@ -683,7 +683,7 @@ const BlueCitedTextHighlight: React.FC<{
 }> = ({ children, citationNumber, skipAnimation = false, onBlueMounted }) => {
   React.useEffect(() => {
     if (!skipAnimation && citationNumber != null && onBlueMounted) {
-      const t = setTimeout(() => onBlueMounted(citationNumber), 420);
+      const t = setTimeout(() => onBlueMounted(citationNumber), 180);
       return () => clearTimeout(t);
     }
   }, [skipAnimation, citationNumber, onBlueMounted]);
@@ -724,7 +724,7 @@ const BlueCitedTextHighlight: React.FC<{
           background: linear-gradient(90deg, #DBEAFE 0%, #DBEAFE 100%);
           background-repeat: no-repeat;
           background-size: 0% 100%;
-          animation: blue-citation-swoop 0.32s cubic-bezier(0.33, 1, 0.68, 1) 0.06s forwards;
+          animation: blue-citation-swoop 0.16s cubic-bezier(0.33, 1, 0.68, 1) 0s forwards;
         }
         @keyframes blue-citation-swoop {
           to {
@@ -766,6 +766,7 @@ const GreenCitedTextHighlight: React.FC<{ children: React.ReactNode }> = ({ chil
 // Use class so .cited-highlight-formatting strong/em are forced bold/italic inside the container.
 const CitedTextContainer: React.FC<{ children: React.ReactNode }> = ({ children }) => (
   <span
+    data-cited-text-block
     className="cited-highlight-formatting"
     style={{
       display: 'inline',
@@ -827,9 +828,11 @@ const StreamingResponseText: React.FC<{
   showReviewNextOnly?: boolean;
   /** When false, do not show any in-response citation callouts (previous response when there is a new one). */
   showInResponseCitationCallouts?: boolean;
+  /** When false, do not show document preview bar or Accept/View bar below citations (citation numbers in text remain). */
+  showCitationPreviewBar?: boolean;
   /** Citation numbers (e.g. "1", "2") that user rejected — that cited text and marker are omitted from the response. */
   rejectedCitationNumbers?: Set<string>;
-}> = ({ text, isStreaming, citations, handleCitationClick, renderTextWithCitations, onTextUpdate, messageId, skipHighlight, showCitations = true, orangeCitationNumbers, greenCitationNumbers, selectedCitationNumber, selectedCitationMessageId, skipHighlightSwoop = false, skipRevealAnimation = false, onRevealComplete, savedCitationNumbersForMessage, onAskFollowUpFromCallout, onViewInDocumentFromCallout, citationViewedInDocument, onCloseDocumentFromCallout, orderedCitationNumbersForMessage, isCitationBarActive = true, currentCitationIndex = 0, acceptedCitationIndices, showReviewNextOnly = false, showInResponseCitationCallouts = true, rejectedCitationNumbers }) => {
+}> = ({ text, isStreaming, citations, handleCitationClick, renderTextWithCitations, onTextUpdate, messageId, skipHighlight, showCitations = true, orangeCitationNumbers, greenCitationNumbers, selectedCitationNumber, selectedCitationMessageId, skipHighlightSwoop = false, skipRevealAnimation = false, onRevealComplete, savedCitationNumbersForMessage, onAskFollowUpFromCallout, onViewInDocumentFromCallout, citationViewedInDocument, onCloseDocumentFromCallout, orderedCitationNumbersForMessage, isCitationBarActive = true, currentCitationIndex = 0, acceptedCitationIndices, showReviewNextOnly = false, showInResponseCitationCallouts = true, showCitationPreviewBar = true, rejectedCitationNumbers }) => {
   const [shouldAnimate, setShouldAnimate] = React.useState(false);
   const hasAnimatedRef = React.useRef(false);
   const hasSwoopedBlueRef = React.useRef(false);
@@ -850,6 +853,7 @@ const StreamingResponseText: React.FC<{
   const revealPositionRef = React.useRef(0);
   const revealTargetRef = React.useRef(0);
   const lineRectsRef = React.useRef<LineRect[]>([]);
+  const calloutRectsRef = React.useRef<{ top: number; bottom: number; left: number; right: number }[]>([]);
   const overlayCountRef = React.useRef(0);
   const revealRafRef = React.useRef<number>();
   const revealRunningRef = React.useRef(false);
@@ -905,12 +909,19 @@ const StreamingResponseText: React.FC<{
   }, [skipRevealAnimation, text, messageId]);
 
   // When streaming ends, smoothly expand the wrapper to full height (no layout "click") then clear and call onRevealComplete.
+  // Also handle mount/remount with isStreaming already false (e.g. parent re-render replaced list) so feedback bar still shows.
   const prevIsStreamingRef = React.useRef(isStreaming);
   React.useEffect(() => {
     const wasStreaming = prevIsStreamingRef.current;
     prevIsStreamingRef.current = isStreaming;
-    if (!wasStreaming || isStreaming) return;
+    const transitionedToDone = wasStreaming && !isStreaming;
+    const alreadyDoneOnMount = !wasStreaming && !isStreaming && !!text;
+    if (!transitionedToDone && !alreadyDoneOnMount) return;
     if (skipRevealAnimation) return;
+    if (alreadyDoneOnMount) {
+      if (messageId) onRevealCompleteRef.current?.(messageId);
+      return;
+    }
     if (revealRafRef.current) {
       cancelAnimationFrame(revealRafRef.current);
       revealRafRef.current = undefined;
@@ -951,7 +962,7 @@ const StreamingResponseText: React.FC<{
       for (let i = 0; i < n; i++) wrapper.style.removeProperty(`--line-${i}`);
     }
     if (messageId) onRevealCompleteRef.current?.(messageId);
-  }, [isStreaming, messageId]);
+  }, [isStreaming, messageId, text]);
 
   const onTextUpdateRef = React.useRef(onTextUpdate);
   onTextUpdateRef.current = onTextUpdate;
@@ -971,6 +982,18 @@ const StreamingResponseText: React.FC<{
     range.selectNodeContents(container);
     const rects = range.getClientRects();
     const containerRect = container.getBoundingClientRect();
+    // Rects for citation callouts (container coords) so overlay can skip them and show callouts instantly
+    const calloutRects: { top: number; bottom: number; left: number; right: number }[] = [];
+    container.querySelectorAll('[data-citation-callout]').forEach((el) => {
+      const r = (el as HTMLElement).getBoundingClientRect();
+      calloutRects.push({
+        top: r.top - containerRect.top,
+        bottom: r.bottom - containerRect.top,
+        left: r.left - containerRect.left,
+        right: r.right - containerRect.left,
+      });
+    });
+    calloutRectsRef.current = calloutRects;
     const LINE_HEIGHT_PX = 23.88; // 24 * 0.995 (-0.5% non-title)
     const MAX_ONE_LINE_PX = LINE_HEIGHT_PX * 1.4;
 
@@ -1076,11 +1099,11 @@ const StreamingResponseText: React.FC<{
     if (revealRunningRef.current || !wrapperRef.current) return;
     revealRunningRef.current = true;
     const wrapper = wrapperRef.current;
-    const SPEED = 0.028;
-    const MAX_STEP = 0.11;
-    const SMOOTH = 0.07;
-    const MIN_STEP = 0.003;
-    const MAX_STEP_FIRST_LINES = 0.018;
+    const SPEED = 0.012;
+    const MAX_STEP = 0.048;
+    const SMOOTH = 0.035;
+    const MIN_STEP = 0.0012;
+    const MAX_STEP_FIRST_LINES = 0.008;
     const FIRST_LINES_COUNT = 3;
 
     const tick = () => {
@@ -1458,10 +1481,37 @@ const StreamingResponseText: React.FC<{
     return nodesToAdd.length > 0 ? nodesToAdd : [<React.Fragment key={keyPrefix}>{part}</React.Fragment>];
   };
 
+  // Explode one strong/em element so citation placeholders become sibling segments; then the full
+  // run before a citation (including preceding paragraph text) gets the highlight, not just the inline phrase.
+  const explodeInlineByCitation = (child: React.ReactElement, tag: 'strong' | 'em'): (string | React.ReactElement)[] => {
+    const childChildren = (child.props as any)?.children;
+    const out: (string | React.ReactElement)[] = [];
+    const pushPart = (part: string, key: string) => {
+      if (part.startsWith('%%CITATION_')) out.push(part);
+      else if (part) out.push(React.createElement(tag, { key, ...(tag === 'strong' ? { style: { fontWeight: 600, wordWrap: 'break-word', overflowWrap: 'break-word', wordBreak: 'break-word' } } : { style: { fontStyle: 'italic', wordWrap: 'break-word', overflowWrap: 'break-word', wordBreak: 'break-word' } }) }, part));
+    };
+    let partIndex = 0;
+    React.Children.forEach(childChildren, (c) => {
+      if (typeof c === 'string') {
+        c.split(citationPlaceholderRe).forEach((part) => {
+          pushPart(part, `inline-cit-${partIndex++}`);
+        });
+      } else if (React.isValidElement(c)) {
+        const grandChildren = (c.props as any)?.children;
+        if (typeof grandChildren === 'string' && grandChildren.includes('%%CITATION_')) {
+          grandChildren.split(citationPlaceholderRe).forEach((part) => pushPart(part, `inline-cit-${partIndex++}`));
+        } else {
+          out.push(React.createElement(tag, { key: `inline-el-${partIndex++}`, ...(tag === 'strong' ? { style: { fontWeight: 600, wordWrap: 'break-word', overflowWrap: 'break-word', wordBreak: 'break-word' } } : { style: { fontStyle: 'italic', wordWrap: 'break-word', overflowWrap: 'break-word', wordBreak: 'break-word' } }) }, c));
+        }
+      }
+    });
+    return out;
+  };
+
   // Flatten children into a list of segments (strings split by citation placeholder, elements as-is)
   // so we can treat the full run before each citation as "cited text" for orange highlight.
   // Recurse into element children so citations inside e.g. <li><p>...</p></li> are found (for callout placement).
-  // Preserve strong/em so bold/italic formatting is not lost when wrapping cited runs.
+  // For strong/em, explode by citation so placeholders are siblings and the full sentence gets the highlight.
   const flattenSegments = (nodes: React.ReactNode): (string | React.ReactElement)[] => {
     const out: (string | React.ReactElement)[] = [];
     React.Children.forEach(nodes, (child) => {
@@ -1469,10 +1519,15 @@ const StreamingResponseText: React.FC<{
         child.split(citationPlaceholderRe).forEach((part) => out.push(part));
       } else if (React.isValidElement(child)) {
         const childChildren = (child.props as any)?.children;
-        const tag = child.type as string;
-        const preserveInline = tag === 'strong' || tag === 'em';
+        const tag = child.type;
+        const isIntrinsicStrongOrEm = tag === 'strong' || tag === 'em';
+        const isCustomComponent = typeof tag === 'function';
+        const preserveInline = isIntrinsicStrongOrEm || isCustomComponent;
         if (childChildren !== undefined && !preserveInline) {
           out.push(...flattenSegments(childChildren));
+        } else if (isIntrinsicStrongOrEm && (tag === 'strong' || tag === 'em')) {
+          // So the full run before the citation (e.g. whole sentence) gets the white highlight, not just the bold phrase
+          out.push(...explodeInlineByCitation(child, tag as 'strong' | 'em'));
         } else {
           out.push(child);
         }
@@ -1515,7 +1570,8 @@ const StreamingResponseText: React.FC<{
           const processed = childChildren !== undefined
             ? processChildrenWithCitations(childChildren)
             : (seg.props as any)?.children;
-          content.push(React.cloneElement(seg, { key: `${keyPrefix}-el${segIndex}-${i}`, children: processed } as any));
+          // Preserve original props (e.g. style={{ fontWeight: 600 }} on strong) so default bold/italic is not lost when cloning
+          content.push(React.cloneElement(seg, { ...(seg.props as object), key: `${keyPrefix}-el${segIndex}-${i}`, children: processed } as any));
         }
       });
       // Use content as-is so ** and * formatting is preserved (titles, key facts stay bold). Same when highlighted or not so formatting stays constant when clicking/unclicking citations.
@@ -1617,16 +1673,28 @@ const StreamingResponseText: React.FC<{
     return processFlattenedWithCitations(segments, keyPrefix);
   };
 
-  // Collect citation numbers in document order for a block (used to render inline callouts below the block).
+  // Deeply collect citation numbers in document order (recurse into all elements so we find
+  // citations inside list items, strong/em, and any nested structure — ensures document preview
+  // bar / callouts render for every block type including bullet points).
   const collectCitationNumbersInOrder = (nodes: React.ReactNode): string[] => {
-    const segments = flattenSegments(nodes);
     const nums: string[] = [];
-    for (const seg of segments) {
-      if (typeof seg === 'string' && seg.startsWith('%%CITATION_')) {
-        const n = citationNumFromPlaceholder(seg);
-        if (n) nums.push(n);
-      }
-    }
+    const visit = (node: React.ReactNode) => {
+      React.Children.forEach(node, (child) => {
+        if (typeof child === 'string') {
+          const parts = child.split(citationPlaceholderRe);
+          for (const p of parts) {
+            if (typeof p === 'string' && p.startsWith('%%CITATION_')) {
+              const n = citationNumFromPlaceholder(p);
+              if (n) nums.push(n);
+            }
+          }
+        } else if (React.isValidElement(child)) {
+          const c = (child.props as { children?: React.ReactNode })?.children;
+          if (c !== undefined) visit(c);
+        }
+      });
+    };
+    visit(nodes);
     return nums;
   };
 
@@ -1678,11 +1746,12 @@ const StreamingResponseText: React.FC<{
   }, [text, citations]);
 
   // When citation bar is active we show only one callout, placed below the block where that citation appears (not at bottom of response)
-  const citationBarMode = showInResponseCitationCallouts && isCitationBarActive && (orderedCitationNumbersForMessage?.length ?? 0) > 0;
+  const citationBarMode = showCitationPreviewBar && showInResponseCitationCallouts && isCitationBarActive && (orderedCitationNumbersForMessage?.length ?? 0) > 0;
   const currentCitationNum = citationBarMode && orderedCitationNumbersForMessage && currentCitationIndex >= 0 && currentCitationIndex < orderedCitationNumbersForMessage.length
     ? orderedCitationNumbersForMessage[currentCitationIndex]
     : null;
-  const showCurrentCallout = citationBarMode && !showReviewNextOnly && currentCitationNum != null && !acceptedCitationIndices?.has(currentCitationIndex);
+  // Show callout for current citation whenever it's selected (e.g. via arrow nav), even if previously accepted, so the preview bar appears when going back to accepted citations
+  const showCurrentCallout = citationBarMode && !showReviewNextOnly && currentCitationNum != null;
   const calloutRenderedForCurrentRef = React.useRef(false);
   if (citationBarMode) calloutRenderedForCurrentRef.current = false;
   // Markdown components: memoized so identity is stable when only citation selection/saved changes (prevents CitationLink remount → flash)
@@ -1741,7 +1810,7 @@ const StreamingResponseText: React.FC<{
               wordBreak: 'break-word'
             }}>{processChildrenWithCitationsFlattened(children ?? null, 'p')}</p>
           )}
-          {showInResponseCitationCallouts && !citationBarMode && citationNumbers.filter(showCalloutForNum).map((num, i) => (
+          {showCitationPreviewBar && showInResponseCitationCallouts && !citationBarMode && citationNumbers.filter(showCalloutForNum).map((num, i) => (
             <div key={`callout-p-${i}-${num}`} style={{ width: '100%', maxWidth: '100%', minWidth: 0, boxSizing: 'border-box' }}>
               <CitationCallout key={`callout-${messageId ?? ''}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumber[num]} />
             </div>
@@ -1763,7 +1832,7 @@ const StreamingResponseText: React.FC<{
             overflowWrap: 'break-word',
             wordBreak: 'break-word'
           }}>{processChildrenWithCitationsFlattened(children ?? null, 'h1')}</h1>
-          {showInResponseCitationCallouts && !citationBarMode && citationNumbers.filter(showCalloutForNum).map((num, i) => (
+          {showCitationPreviewBar && showInResponseCitationCallouts && !citationBarMode && citationNumbers.filter(showCalloutForNum).map((num, i) => (
             <CitationCallout key={`callout-${messageId ?? ''}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumber[num]} />
           ))}
           {citationBarMode && renderSingleCalloutIfHere(citationNumbers, 'h1')}
@@ -1783,7 +1852,7 @@ const StreamingResponseText: React.FC<{
             overflowWrap: 'break-word',
             wordBreak: 'break-word'
           }}>{processChildrenWithCitationsFlattened(children ?? null, 'h2')}</h2>
-          {showInResponseCitationCallouts && !citationBarMode && citationNumbers.filter(showCalloutForNum).map((num, i) => (
+          {showCitationPreviewBar && showInResponseCitationCallouts && !citationBarMode && citationNumbers.filter(showCalloutForNum).map((num, i) => (
             <div key={`callout-h2-${i}-${num}`} style={{ width: '100%', maxWidth: '100%', minWidth: 0, boxSizing: 'border-box' }}>
               <CitationCallout key={`callout-${messageId ?? ''}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumber[num]} />
             </div>
@@ -1805,7 +1874,7 @@ const StreamingResponseText: React.FC<{
             overflowWrap: 'break-word',
             wordBreak: 'break-word'
           }}>{processChildrenWithCitationsFlattened(children ?? null, 'h3')}</h3>
-          {showInResponseCitationCallouts && !citationBarMode && citationNumbers.filter(showCalloutForNum).map((num, i) => (
+          {showCitationPreviewBar && showInResponseCitationCallouts && !citationBarMode && citationNumbers.filter(showCalloutForNum).map((num, i) => (
             <div key={`callout-h3-${i}-${num}`} style={{ width: '100%', maxWidth: '100%', minWidth: 0, boxSizing: 'border-box' }}>
               <CitationCallout key={`callout-${messageId ?? ''}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumber[num]} />
             </div>
@@ -1844,7 +1913,7 @@ const StreamingResponseText: React.FC<{
           wordBreak: 'break-word'
         }}>
           {processChildrenWithCitationsFlattened(children ?? null, 'li')}
-          {showInResponseCitationCallouts && !citationBarMode && citationNumbers.filter(showCalloutForNum).map((num, i) => (
+          {showCitationPreviewBar && showInResponseCitationCallouts && !citationBarMode && citationNumbers.filter(showCalloutForNum).map((num, i) => (
             <div key={`callout-li-${i}-${num}`} style={{ width: '100%', maxWidth: '100%', minWidth: 0, boxSizing: 'border-box' }}>
               <CitationCallout key={`callout-${messageId ?? ''}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumber[num]} />
             </div>
@@ -1896,7 +1965,7 @@ const StreamingResponseText: React.FC<{
             overflowWrap: 'break-word',
             wordBreak: 'break-word'
           }}>{processChildrenWithCitationsFlattened(children ?? null, 'blockquote')}</blockquote>
-          {showInResponseCitationCallouts && !citationBarMode && citationNumbers.filter(showCalloutForNum).map((num, i) => (
+          {showCitationPreviewBar && showInResponseCitationCallouts && !citationBarMode && citationNumbers.filter(showCalloutForNum).map((num, i) => (
             <div key={`callout-blockquote-${i}-${num}`} style={{ width: '100%', maxWidth: '100%', minWidth: 0, boxSizing: 'border-box' }}>
               <CitationCallout key={`callout-${messageId ?? ''}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumber[num]} />
             </div>
@@ -1906,7 +1975,7 @@ const StreamingResponseText: React.FC<{
       );
     },
     hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '17.5px 0' }} />,
-  }; }, [renderCitationPlaceholder, skipHighlight, runBlueSwoop, isStreaming, citations, citedExcerptByNumber, onAskFollowUpFromCallout, onViewInDocumentFromCallout, citationViewedInDocument, onCloseDocumentFromCallout, messageId, citationBarMode, isCitationBarActive, orderedCitationNumbersForMessage, currentCitationIndex, acceptedCitationIndices, showReviewNextOnly, showCurrentCallout, currentCitationNum, showInResponseCitationCallouts, blueCitationNumbers, orangeCitationNumbers, greenCitationNumbers, blueAnimatedCitationNumbers, rejectedCitationNumbers]);
+  }; }, [renderCitationPlaceholder, skipHighlight, runBlueSwoop, isStreaming, citations, citedExcerptByNumber, onAskFollowUpFromCallout, onViewInDocumentFromCallout, citationViewedInDocument, onCloseDocumentFromCallout, messageId, citationBarMode, isCitationBarActive, orderedCitationNumbersForMessage, currentCitationIndex, acceptedCitationIndices, showReviewNextOnly, showCurrentCallout, currentCitationNum, showInResponseCitationCallouts, showCitationPreviewBar, blueCitationNumbers, orangeCitationNumbers, greenCitationNumbers, blueAnimatedCitationNumbers, rejectedCitationNumbers]);
 
   return (
     <>
@@ -1979,7 +2048,15 @@ const StreamingResponseText: React.FC<{
           font-style: italic !important;
         }
       `}</style>
-      <div ref={wrapperRef} style={{ position: 'relative' }}>
+      <div
+        ref={wrapperRef}
+        style={{
+          position: 'relative',
+          // Clip from first frame when streaming so title/heading is not visible before blur overlay (stream everything including title)
+          ...(isStreaming && text ? { overflow: 'hidden' as const } : {}),
+          ...(isStreaming && text && lines.length === 0 ? { height: 0, minHeight: 0 } : {}),
+        }}
+      >
         <div
           ref={textContainerRef}
           className="streaming-response-text"
@@ -2005,25 +2082,32 @@ const StreamingResponseText: React.FC<{
         </div>
         {!skipRevealAnimation && showOverlay && lines.length > 0 && (
           <div style={{ position: 'absolute', left: 0, top: 0, right: 0, bottom: 0, pointerEvents: 'none' }}>
-            {lines.map((line, i) => (
-              <div
-                key={i}
-                style={{
-                  position: 'absolute',
-                  left: `calc(var(--line-${i}, 0) * 100%)`,
-                  top: line.top,
-                  right: 0,
-                  height: line.height,
-                  // Right side solid (cover unrevealed text), left side blur/fade (soft edge at reveal boundary so we don't cut words)
-                  background: 'linear-gradient(to right, transparent 0%, rgba(252,252,249,0.08) 15%, rgba(252,252,249,0.4) 35%, rgba(252,252,249,0.85) 55%, #FCFCF9 75%, #FCFCF9 100%)',
-                  pointerEvents: 'none',
-                  filter: 'blur(0.5px)',
-                  WebkitFilter: 'blur(0.5px)',
-                  isolation: 'isolate',
-                  overflow: 'hidden',
-                }}
-              />
-            ))}
+            {lines.map((line, i) => {
+              const lineBottom = line.top + line.height;
+              const overlapsCallout = calloutRectsRef.current.some(
+                (c) => line.top < c.bottom && lineBottom > c.top
+              );
+              if (overlapsCallout) return null;
+              return (
+                <div
+                  key={i}
+                  style={{
+                    position: 'absolute',
+                    left: `calc(var(--line-${i}, 0) * 100%)`,
+                    top: line.top,
+                    right: 0,
+                    height: line.height,
+                    // Right side solid (cover unrevealed text), left side blur/fade (soft edge at reveal boundary so we don't cut words)
+                    background: 'linear-gradient(to right, transparent 0%, rgba(252,252,249,0.08) 15%, rgba(252,252,249,0.4) 35%, rgba(252,252,249,0.85) 55%, #FCFCF9 75%, #FCFCF9 100%)',
+                    pointerEvents: 'none',
+                    filter: 'blur(0.5px)',
+                    WebkitFilter: 'blur(0.5px)',
+                    isolation: 'isolate',
+                    overflow: 'hidden',
+                  }}
+                />
+              );
+            })}
           </div>
         )}
       </div>
@@ -2080,6 +2164,7 @@ function streamingResponseTextAreEqual(
     prev.isCitationBarActive === next.isCitationBarActive &&
     prev.showReviewNextOnly === next.showReviewNextOnly &&
     prev.showInResponseCitationCallouts === next.showInResponseCitationCallouts &&
+    prev.showCitationPreviewBar === next.showCitationPreviewBar &&
     setsEqualNumber(prev.acceptedCitationIndices, next.acceptedCitationIndices)
   );
 }
@@ -2130,7 +2215,7 @@ const PropertyImageThumbnail: React.FC<{ property: PropertyData }> = ({ property
           alignItems: 'center',
           justifyContent: 'center'
         }}>
-          <Home className="w-4 h-4" style={{ color: '#6B7280' }} strokeWidth={2} />
+          <Home className="w-5 h-5" style={{ color: '#6B7280' }} strokeWidth={2} />
         </div>
       )}
     </div>
@@ -2479,8 +2564,35 @@ const CitationLink: React.FC<{
           // Hide preview on click
           setShowPreview(false);
           if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
-          const rect = e.currentTarget.getBoundingClientRect();
-          onClick(citationData, rect, citationNumber);
+          let blockRect = e.currentTarget.getBoundingClientRect();
+          // Use anchor rect that includes the white highlight so the panel is positioned below the full block (highlight + citation buttons) and never overlaps the cited text
+          let anchorRect: DOMRect = blockRect;
+          let el: Element | null = e.currentTarget.previousElementSibling;
+          while (el) {
+            if (el.hasAttribute('data-cited-text-block')) {
+              const highlightRect = el.getBoundingClientRect();
+              const left = Math.min(blockRect.left, highlightRect.left);
+              const top = Math.min(blockRect.top, highlightRect.top);
+              const right = Math.max(blockRect.right, highlightRect.right);
+              const bottom = Math.max(blockRect.bottom, highlightRect.bottom);
+              anchorRect = new DOMRect(left, top, right - left, bottom - top);
+              break;
+            }
+            // Adjacent citation button (e.g. "5" then "6") — extend rect to include it
+            if (el.classList?.contains('citation-link-btn')) {
+              const r = el.getBoundingClientRect();
+              const left = Math.min(blockRect.left, r.left);
+              const top = Math.min(blockRect.top, r.top);
+              const right = Math.max(blockRect.right, r.right);
+              const bottom = Math.max(blockRect.bottom, r.bottom);
+              anchorRect = new DOMRect(left, top, right - left, bottom - top);
+              blockRect = anchorRect;
+              el = el.previousElementSibling;
+              continue;
+            }
+            break;
+          }
+          onClick(citationData, anchorRect, citationNumber);
         }}
         style={{
           display: 'inline-flex',
@@ -2576,6 +2688,33 @@ function renderExcerptWithFormatting(text: string): React.ReactNode {
   return parts.length > 0 ? <>{parts}</> : text;
 }
 
+/** Wraps a message block and reports when it is in view; used so citation bar can show when scrolling back to accepted messages. */
+const CitationMessageVisibility: React.FC<{
+  messageId: string;
+  onVisibilityChange: (messageId: string, inView: boolean) => void;
+  observe: boolean;
+  children: React.ReactNode;
+}> = ({ messageId, onVisibilityChange, observe, children }) => {
+  const ref = React.useRef<HTMLDivElement>(null);
+  React.useEffect(() => {
+    if (!observe) return;
+    const el = ref.current;
+    if (!el) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          onVisibilityChange(messageId, entry.isIntersecting);
+        });
+      },
+      { root: null, rootMargin: '0px', threshold: 0.1 }
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [messageId, onVisibilityChange, observe]);
+  if (!observe) return <>{children}</>;
+  return <div ref={ref} style={{ minHeight: 1 }}>{children}</div>;
+};
+
 /** Inline citation callout: gray box with cited excerpt and optional document preview (same as citation panel). */
 const CitationCallout: React.FC<{
   citationNumber: string;
@@ -2634,6 +2773,8 @@ const CitationCallout: React.FC<{
   const NARROW_CALLOUT_WIDTH = 380;
   /** When hideBarActions, Ask Question is shown only on card hover. */
   const [isCardHovered, setIsCardHovered] = React.useState(false);
+  const hoverEnterTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hoverLeaveTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Keep local closed state in sync with parent (so close persists across parent re-renders)
   React.useEffect(() => {
@@ -2643,12 +2784,20 @@ const CitationCallout: React.FC<{
   React.useLayoutEffect(() => {
     const el = previewContainerRef.current;
     if (!el) return;
+    let rafId: number | null = null;
     const ro = new ResizeObserver(() => {
-      setPreviewSize({ width: el.offsetWidth, height: el.offsetHeight });
+      if (rafId !== null) return;
+      rafId = requestAnimationFrame(() => {
+        rafId = null;
+        setPreviewSize({ width: el.offsetWidth, height: el.offsetHeight });
+      });
     });
     ro.observe(el);
     setPreviewSize({ width: el.offsetWidth, height: el.offsetHeight });
-    return () => ro.disconnect();
+    return () => {
+      if (rafId !== null) cancelAnimationFrame(rafId);
+      ro.disconnect();
+    };
   }, []);
 
   // Shrink action buttons to icon-only when callout (chat bar) is narrow
@@ -2663,7 +2812,7 @@ const CitationCallout: React.FC<{
     return () => ro.disconnect();
   }, []);
 
-  // Defer preview load until the callout is in view (reduces work when many citations are off-screen)
+  // Track in-view for potential future use (e.g. prefetch prioritization)
   React.useEffect(() => {
     const el = calloutRootRef.current;
     if (!el) return;
@@ -2677,9 +2826,10 @@ const CitationCallout: React.FC<{
     return () => io.disconnect();
   }, []);
 
+  // Load preview as soon as callout can show it (don't wait for inView) so preview appears quickly when preload already ran during streaming
   React.useEffect(() => {
-    if (!canShowPreview || !inView) {
-      if (!canShowPreview) setCachedPageImage(null);
+    if (!canShowPreview) {
+      setCachedPageImage(null);
       return;
     }
     const cacheKey = `hover-${docId}-${pageNum}`;
@@ -2694,7 +2844,7 @@ const CitationCallout: React.FC<{
       setCachedPageImage({ pageImage: entry.pageImage, imageWidth: entry.imageWidth, imageHeight: entry.imageHeight });
     });
     return () => { cancelled = true; };
-  }, [canShowPreview, docId, pageNum, inView]);
+  }, [canShowPreview, docId, pageNum]);
 
   const transform = React.useMemo(() => {
     if (!cachedPageImage || !hasBbox || !bbox) {
@@ -2746,6 +2896,31 @@ const CitationCallout: React.FC<{
     onCloseCallout?.();
   }, [onCloseCallout]);
 
+  const HOVER_SHOW_MS = 120;
+  const HOVER_HIDE_MS = 150;
+  const handleCardHoverEnter = React.useCallback(() => {
+    if (hoverLeaveTimeoutRef.current) {
+      clearTimeout(hoverLeaveTimeoutRef.current);
+      hoverLeaveTimeoutRef.current = null;
+    }
+    hoverEnterTimeoutRef.current = setTimeout(() => {
+      requestAnimationFrame(() => setIsCardHovered(true));
+    }, HOVER_SHOW_MS);
+  }, []);
+  const handleCardHoverLeave = React.useCallback(() => {
+    if (hoverEnterTimeoutRef.current) {
+      clearTimeout(hoverEnterTimeoutRef.current);
+      hoverEnterTimeoutRef.current = null;
+    }
+    hoverLeaveTimeoutRef.current = setTimeout(() => {
+      requestAnimationFrame(() => setIsCardHovered(false));
+    }, HOVER_HIDE_MS);
+  }, []);
+  React.useEffect(() => () => {
+    if (hoverEnterTimeoutRef.current) clearTimeout(hoverEnterTimeoutRef.current);
+    if (hoverLeaveTimeoutRef.current) clearTimeout(hoverLeaveTimeoutRef.current);
+  }, []);
+
   const effectivelyClosed = isCalloutClosed || isClosed;
   if (effectivelyClosed) return null;
 
@@ -2758,8 +2933,6 @@ const CitationCallout: React.FC<{
       <div
         ref={calloutRootRef}
         {...rootProps}
-        onMouseEnter={hideBarActions ? () => setIsCardHovered(true) : undefined}
-        onMouseLeave={hideBarActions ? () => setIsCardHovered(false) : undefined}
         style={{
           position: 'relative',
           display: 'flex',
@@ -2775,8 +2948,300 @@ const CitationCallout: React.FC<{
           border: '1px solid #e5e7eb',
           borderTop: 'none',
           boxShadow: '0 2px 4px rgba(0,0,0,0.06)',
+          contain: 'layout',
         }}
       >
+          {/* Hover perimeter: only the bbox preview + bar area triggers show/hide of the bar (avoids glitchy enter/leave) */}
+          <div
+            style={{ display: 'flex', flexDirection: 'column', width: '100%', minWidth: 0 }}
+            onMouseEnter={hideBarActions ? handleCardHoverEnter : undefined}
+            onMouseLeave={hideBarActions ? handleCardHoverLeave : undefined}
+          >
+          {/* When hideBarActions + preview: bar is always in DOM as overlay with opacity transition (0 layout reflow / jitter) */}
+          {hideBarActions && canShowPreview ? (
+            <div style={{ position: 'relative', width: '100%', height: 180, minHeight: 180, flexShrink: 0 }}>
+              <div
+                ref={previewContainerRef}
+                style={{
+                  width: '100%',
+                  height: 180,
+                  minHeight: 180,
+                  position: 'relative',
+                  overflow: 'hidden',
+                  backgroundColor: '#f9fafb',
+                }}
+              >
+                {showPreviewImage ? (
+                  <CitationPagePreviewContent
+                    cachedPageImage={cachedPageImage!}
+                    transform={transform}
+                    showBbox={true}
+                    className="citation-callout-preview-scroll"
+                    disableScroll
+                  />
+                ) : (
+                  <div
+                    style={{
+                      width: '100%',
+                      height: '100%',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      color: '#9ca3af',
+                      fontSize: '12px',
+                    }}
+                  >
+                    Loading preview…
+                  </div>
+                )}
+                <div
+                  aria-hidden
+                  style={{
+                    position: 'absolute',
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    height: 2,
+                    background: 'linear-gradient(to bottom, transparent, rgba(255,255,255,0.85) 40%, #FFFFFF)',
+                    pointerEvents: 'none',
+                  }}
+                />
+              </div>
+              {/* Bar overlay: always in DOM, opacity transition only — no mount/unmount, no reflow */}
+              <div
+                style={{
+                  position: 'absolute',
+                  bottom: 0,
+                  left: 0,
+                  right: 0,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 12,
+                  padding: '8px 12px',
+                  minHeight: 40,
+                  backgroundColor: '#FFFFFF',
+                  boxShadow: '0 -1px 3px rgba(0,0,0,0.06)',
+                  opacity: isCardHovered ? 1 : 0,
+                  pointerEvents: isCardHovered ? 'auto' : 'none',
+                  transition: 'opacity 0.12s ease-out',
+                  willChange: 'opacity',
+                }}
+              >
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                minWidth: 0,
+                flex: 1,
+              }}
+            >
+              <div
+                style={{
+                  width: 24,
+                  height: 24,
+                  borderRadius: 6,
+                  backgroundColor: '#FFFFFF',
+                  border: '1px solid rgba(0,0,0,0.08)',
+                  boxShadow: '0 1px 2px rgba(0,0,0,0.06)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  flexShrink: 0,
+                  overflow: 'hidden',
+                }}
+              >
+                <img
+                  src="/PDF.png"
+                  alt=""
+                  style={{ width: 14, height: 14, objectFit: 'contain' }}
+                />
+              </div>
+              <div style={{ minWidth: 0, flex: 1, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'nowrap' }}>
+                <div
+                  style={{
+                    fontWeight: 600,
+                    fontSize: '11px',
+                    color: '#1f2937',
+                    lineHeight: 1.25,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                    maxWidth: 140,
+                  }}
+                >
+                  {displayFilename}
+                </div>
+                <div
+                  style={{
+                    fontSize: '11px',
+                    color: '#6b7280',
+                    lineHeight: 1.25,
+                    flexShrink: 0,
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  Page {pageNum}
+                </div>
+              </div>
+            </div>
+            {hasAnyAction && (
+              <div
+                role="group"
+                aria-label="Citation actions"
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  flexShrink: 0,
+                }}
+              >
+                {showAskQuestion && (
+                  <button
+                    type="button"
+                    title="Ask Question"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      (e.currentTarget as HTMLElement).blur();
+                      onAskFollowUp();
+                    }}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: compactActions ? 0 : 4.4,
+                      padding: compactActions ? 6 : '3.3px 6.6px',
+                      minHeight: 26,
+                      fontSize: '12px',
+                      lineHeight: 1,
+                      fontWeight: 500,
+                      color: '#374151',
+                      backgroundColor: '#FFFFFF',
+                      border: '1px solid #e5e7eb',
+                      borderRadius: 5.5,
+                      cursor: 'pointer',
+                      transition: 'background-color 0.15s ease, box-shadow 0.15s ease',
+                      boxShadow: '0 1px 1px rgba(0,0,0,0.05)',
+                      outline: 'none',
+                    }}
+                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#f9fafb'; }}
+                    onMouseLeave={(e) => {
+                      const el = e.currentTarget as HTMLElement;
+                      el.style.backgroundColor = '#FFFFFF';
+                      el.style.boxShadow = '0 1px 1px rgba(0,0,0,0.05)';
+                    }}
+                    onFocus={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = '0 1px 1px rgba(0,0,0,0.05), 0 0 0 2px #0160B2'; }}
+                    onBlur={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = '0 1px 1px rgba(0,0,0,0.05)'; }}
+                  >
+                    <MessageCircle style={{ width: compactActions ? 14 : 11, height: compactActions ? 14 : 11 }} strokeWidth={2} />
+                    {!compactActions && 'Ask Question'}
+                  </button>
+                )}
+                {showViewDocument && (
+                  <button
+                    type="button"
+                    title={isViewedInDocument ? 'Close' : 'View'}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      (e.currentTarget as HTMLElement).blur();
+                      if (isViewedInDocument && onCloseDocument) {
+                        onCloseDocument();
+                      } else if (onViewInDocument) {
+                        onViewInDocument();
+                      }
+                    }}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: compactActions ? 0 : '3px',
+                      padding: compactActions ? 6 : '1px 4px',
+                      fontSize: '11px',
+                      fontWeight: 600,
+                      color: isViewedInDocument ? '#5c2e0a' : '#374151',
+                      backgroundColor: isViewedInDocument ? '#D4B88A' : '#FFFFFF',
+                      border: isViewedInDocument ? '1px solid rgba(180, 140, 80, 0.55)' : '1px solid #e5e7eb',
+                      borderRadius: 4,
+                      cursor: 'pointer',
+                      transition: 'background-color 0.15s ease, box-shadow 0.15s ease',
+                      boxShadow: '0 1px 1px rgba(0,0,0,0.05)',
+                      outline: 'none',
+                    }}
+                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = isViewedInDocument ? '#C4A87A' : '#f9fafb'; }}
+                    onMouseLeave={(e) => {
+                      const el = e.currentTarget as HTMLElement;
+                      el.style.backgroundColor = isViewedInDocument ? '#D4B88A' : '#FFFFFF';
+                      el.style.boxShadow = '0 1px 1px rgba(0,0,0,0.05)';
+                    }}
+                    onFocus={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = isViewedInDocument ? '0 1px 1px rgba(0,0,0,0.05), 0 0 0 2px rgba(92, 46, 10, 0.45)' : '0 1px 1px rgba(0,0,0,0.05), 0 0 0 2px #9ca3af'; }}
+                    onBlur={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = '0 1px 1px rgba(0,0,0,0.05)'; }}
+                  >
+                    {isViewedInDocument ? (
+                      <>
+                        <X size={14} style={{ color: '#5c2e0a' }} />
+                        {!compactActions && 'Close'}
+                      </>
+                    ) : (
+                      'View'
+                    )}
+                  </button>
+                )}
+                {showAccept && (
+                    <button
+                    type="button"
+                    title="Accept"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      (e.currentTarget as HTMLElement).blur();
+                      handleClose();
+                    }}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: compactActions ? 0 : '3px',
+                      padding: compactActions ? 6 : '1px 4px',
+                      fontSize: '11px',
+                      fontWeight: 500,
+                      color: '#1f2937',
+                      backgroundColor: '#EBF1DE',
+                      border: '1px solid #e5e7eb',
+                      borderRadius: 4,
+                      cursor: 'pointer',
+                      transition: 'background-color 0.15s ease, box-shadow 0.15s ease',
+                      boxShadow: '0 1px 1px rgba(0,0,0,0.05)',
+                      outline: 'none',
+                    }}
+                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#E0E8D4'; }}
+                    onMouseLeave={(e) => {
+                      const el = e.currentTarget as HTMLElement;
+                      el.style.backgroundColor = '#EBF1DE';
+                      el.style.boxShadow = '0 1px 1px rgba(0,0,0,0.05)';
+                    }}
+                    onFocus={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = '0 1px 1px rgba(0,0,0,0.05), 0 0 0 2px #9ca3af'; }}
+                    onBlur={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = '0 1px 1px rgba(0,0,0,0.05)'; }}
+                  >
+                    {compactActions ? (
+                      <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 18, height: 18 }}>
+                        <Check size={12} strokeWidth={3.25} style={{ color: '#1f2937' }} />
+                      </span>
+                    ) : (
+                      <>
+                        <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 18, height: 18, marginRight: 6 }}>
+                          <Check size={12} strokeWidth={3.25} style={{ color: '#1f2937' }} />
+                        </span>
+                        Accept
+                      </>
+                    )}
+                  </button>
+                )}
+              </div>
+            )}
+              </div>
+            </div>
+          ) : (
+            <>
           {/* Preview area: show placeholder until image is ready so bar renders immediately */}
           {canShowPreview && (
             <div
@@ -2821,14 +3286,15 @@ const CitationCallout: React.FC<{
                   left: 0,
                   right: 0,
                   bottom: 0,
-                  height: 16,
+                  height: 2,
                   background: 'linear-gradient(to bottom, transparent, rgba(255,255,255,0.85) 40%, #FFFFFF)',
                   pointerEvents: 'none',
                 }}
               />
             </div>
           )}
-          {/* Document bar + actions: always visible as soon as we have docId */}
+          {/* Document bar + actions: when hideBarActions, show only on hover over bbox area (or always if no preview) */}
+          {(!hideBarActions || isCardHovered || !canShowPreview) && (
           <div
             style={{
               flexShrink: 0,
@@ -2923,14 +3389,16 @@ const CitationCallout: React.FC<{
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'center',
-                      gap: compactActions ? 0 : '3px',
-                      padding: compactActions ? 6 : '1px 4px',
-                      fontSize: '11px',
+                      gap: compactActions ? 0 : 4.4,
+                      padding: compactActions ? 6 : '3.3px 6.6px',
+                      minHeight: 26,
+                      fontSize: '12px',
+                      lineHeight: 1,
                       fontWeight: 500,
                       color: '#374151',
                       backgroundColor: '#FFFFFF',
                       border: '1px solid #e5e7eb',
-                      borderRadius: 4,
+                      borderRadius: 5.5,
                       cursor: 'pointer',
                       transition: 'background-color 0.15s ease, box-shadow 0.15s ease',
                       boxShadow: '0 1px 1px rgba(0,0,0,0.05)',
@@ -2945,14 +3413,14 @@ const CitationCallout: React.FC<{
                     onFocus={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = '0 1px 1px rgba(0,0,0,0.05), 0 0 0 2px #0160B2'; }}
                     onBlur={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = '0 1px 1px rgba(0,0,0,0.05)'; }}
                   >
-                    <MessageCircle style={{ width: 10, height: 10 }} strokeWidth={2} />
+                    <MessageCircle style={{ width: compactActions ? 14 : 11, height: compactActions ? 14 : 11 }} strokeWidth={2} />
                     {!compactActions && 'Ask Question'}
                   </button>
                 )}
                 {showViewDocument && (
                   <button
                     type="button"
-                    title={isViewedInDocument ? 'Close document' : 'View document'}
+                    title={isViewedInDocument ? 'Close' : 'View'}
                     onClick={(e) => {
                       e.stopPropagation();
                       (e.currentTarget as HTMLElement).blur();
@@ -2969,35 +3437,32 @@ const CitationCallout: React.FC<{
                       gap: compactActions ? 0 : '3px',
                       padding: compactActions ? 6 : '1px 4px',
                       fontSize: '11px',
-                      fontWeight: 500,
-                      color: isViewedInDocument ? '#78350F' : '#374151',
-                      backgroundColor: isViewedInDocument ? '#F2DEB6' : '#FFFFFF',
-                      border: isViewedInDocument ? '1px solid rgba(244, 192, 133, 0.6)' : '1px solid #e5e7eb',
+                      fontWeight: 600,
+                      color: isViewedInDocument ? '#5c2e0a' : '#374151',
+                      backgroundColor: isViewedInDocument ? '#D4B88A' : '#FFFFFF',
+                      border: isViewedInDocument ? '1px solid rgba(180, 140, 80, 0.55)' : '1px solid #e5e7eb',
                       borderRadius: 4,
                       cursor: 'pointer',
                       transition: 'background-color 0.15s ease, box-shadow 0.15s ease',
                       boxShadow: '0 1px 1px rgba(0,0,0,0.05)',
                       outline: 'none',
                     }}
-                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = isViewedInDocument ? '#E8D4A8' : '#f9fafb'; }}
+                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = isViewedInDocument ? '#C4A87A' : '#f9fafb'; }}
                     onMouseLeave={(e) => {
                       const el = e.currentTarget as HTMLElement;
-                      el.style.backgroundColor = isViewedInDocument ? '#F2DEB6' : '#FFFFFF';
+                      el.style.backgroundColor = isViewedInDocument ? '#D4B88A' : '#FFFFFF';
                       el.style.boxShadow = '0 1px 1px rgba(0,0,0,0.05)';
                     }}
-                    onFocus={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = isViewedInDocument ? '0 1px 1px rgba(0,0,0,0.05), 0 0 0 2px rgba(120, 53, 15, 0.4)' : '0 1px 1px rgba(0,0,0,0.05), 0 0 0 2px #9ca3af'; }}
+                    onFocus={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = isViewedInDocument ? '0 1px 1px rgba(0,0,0,0.05), 0 0 0 2px rgba(92, 46, 10, 0.45)' : '0 1px 1px rgba(0,0,0,0.05), 0 0 0 2px #9ca3af'; }}
                     onBlur={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = '0 1px 1px rgba(0,0,0,0.05)'; }}
                   >
                     {isViewedInDocument ? (
                       <>
-                        <X size={10} style={{ color: '#78350F' }} />
-                        {!compactActions && 'Close document'}
+                        <X size={14} style={{ color: '#5c2e0a' }} />
+                        {!compactActions && 'Close'}
                       </>
                     ) : (
-                      <>
-                        <FileSearchCorner size={10} style={{ color: '#374151' }} />
-                        {!compactActions && 'View document'}
-                      </>
+                      'View'
                     )}
                   </button>
                 )}
@@ -3037,13 +3502,13 @@ const CitationCallout: React.FC<{
                     onBlur={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = '0 1px 1px rgba(0,0,0,0.05)'; }}
                   >
                     {compactActions ? (
-                      <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 14, height: 14 }}>
-                        <Check size={8} strokeWidth={3.25} style={{ color: '#1f2937' }} />
+                      <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 18, height: 18 }}>
+                        <Check size={12} strokeWidth={3.25} style={{ color: '#1f2937' }} />
                       </span>
                     ) : (
                       <>
-                        <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 14, height: 14, marginRight: 6 }}>
-                          <Check size={8} strokeWidth={3.25} style={{ color: '#1f2937' }} />
+                        <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 18, height: 18, marginRight: 6 }}>
+                          <Check size={12} strokeWidth={3.25} style={{ color: '#1f2937' }} />
                         </span>
                         Accept
                       </>
@@ -3052,6 +3517,10 @@ const CitationCallout: React.FC<{
                 )}
               </div>
             )}
+          </div>
+          )}
+            </>
+          )}
           </div>
       {docId && isWordDoc && (
         <div style={{ marginTop: '8px', fontSize: '13px', color: '#6b7280' }}>
@@ -3130,9 +3599,9 @@ const CitationCallout: React.FC<{
             onBlur={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = '0 1px 1px rgba(0,0,0,0.05)'; }}
           >
             <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 14, height: 14, marginRight: 6 }}>
-              <Check size={8} strokeWidth={3.25} style={{ color: '#1f2937' }} />
-            </span>
-            Accept
+<Check size={12} strokeWidth={3.25} style={{ color: '#1f2937' }} />
+                        </span>
+                        Accept
           </button>
         </div>
       )}
@@ -4695,6 +5164,20 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   const [citationReviewJustRejected, setCitationReviewJustRejected] = React.useState(false);
   /** Message IDs for which the user has finished review (e.g. accepted last citation) — bar is hidden for these. */
   const [citationReviewCompletedForMessageIds, setCitationReviewCompletedForMessageIds] = React.useState<globalThis.Set<string>>(() => new globalThis.Set());
+  const citationReviewCompletedForMessageIdsRef = React.useRef(citationReviewCompletedForMessageIds);
+  React.useEffect(() => {
+    citationReviewCompletedForMessageIdsRef.current = citationReviewCompletedForMessageIds;
+  }, [citationReviewCompletedForMessageIds]);
+  /** Message IDs (with citations) currently in view — used to show citation bar when scrolling back to accepted messages; only one bar open at a time. */
+  const [citationMessagesInView, setCitationMessagesInView] = React.useState<globalThis.Set<string>>(() => new globalThis.Set());
+  const handleCitationVisibilityChange = React.useCallback((messageId: string, inView: boolean) => {
+    setCitationMessagesInView((prev) => {
+      const next = new globalThis.Set(prev);
+      if (inView) next.add(messageId);
+      else next.delete(messageId);
+      return next;
+    });
+  }, []);
   // Ref so citation click handler always sees current state (StreamingResponseTextMemo doesn't re-render when callback changes)
   const isDocumentPreviewOpenRef = React.useRef(false);
   // When panel opens and hover cache is empty, we preload and store here so the panel can show the image
@@ -5389,6 +5872,21 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   React.useEffect(() => {
     localStorage.setItem('showCitations', JSON.stringify(showCitations));
   }, [showCitations]);
+
+  // State for citation preview bar toggle (document preview + Accept/View bar) - persisted to localStorage
+  const [showCitationPreviewBar, setShowCitationPreviewBar] = React.useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('showCitationPreviewBar');
+      if (saved === null) return true; // Default ON
+      const parsed = JSON.parse(saved);
+      return parsed === true;
+    } catch {
+      return true;
+    }
+  });
+  React.useEffect(() => {
+    localStorage.setItem('showCitationPreviewBar', JSON.stringify(showCitationPreviewBar));
+  }, [showCitationPreviewBar]);
 
   // Top fade overlay when content is scrolled (show when scrollTop > 1)
   const [showTopBlur, setShowTopBlur] = React.useState(false);
@@ -6225,8 +6723,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   const selectedDocumentIdsRef = React.useRef(selectedDocumentIds);
   selectedDocumentIdsRef.current = selectedDocumentIds;
   
-  // Filing sidebar integration
-  const { toggleSidebar: toggleFilingSidebar, isOpen: isFilingSidebarOpen, isResizing: isFilingSidebarResizing, width: filingSidebarWidth } = useFilingSidebar();
+  // Filing sidebar integration (sidebarDocuments used by Searching carousel; prime when searching and empty)
+  const { toggleSidebar: toggleFilingSidebar, isOpen: isFilingSidebarOpen, isResizing: isFilingSidebarResizing, width: filingSidebarWidth, sidebarDocuments, setSidebarDocuments } = useFilingSidebar();
   // Note: useChatPanel hook is declared earlier in the component for use in width calculations
   
   // Agent mode (reader vs agent vs plan)
@@ -6356,6 +6854,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     responseStartedAt?: number;
     /** When response generation finished (ms); used for "Thought Xs" duration. */
     responseCompletedAt?: number;
+    /** When false, response is still streaming (used for blur reveal); set true only in finalize/onComplete. */
+    responseStreamComplete?: boolean;
   }
   
   const [submittedQueries, setSubmittedQueries] = React.useState<SubmittedQuery[]>([]);
@@ -6364,10 +6864,29 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   const isNewChatSection = chatMessages.length === 0;
   // CRITICAL: Ref to track current chatMessages for streaming callbacks (avoids stale closure issues)
   const chatMessagesRef = React.useRef<ChatMessage[]>([]);
+  // Ref to hold latest reasoning steps for the current loading message (avoids losing "Summarising content" when stream end runs before state commit)
+  const loadingReasoningStepsRef = React.useRef<ReasoningStep[]>([]);
   // Keep ref in sync with state
   React.useEffect(() => {
     chatMessagesRef.current = chatMessages;
   }, [chatMessages]);
+
+  // Prime file-sidebar document list when Searching is shown and sidebar list is empty (so carousel rotates through docs)
+  const hasSearchingStep = chatMessages.some((m) => m.isLoading && (m.reasoningSteps ?? []).some((s) => s.action_type === 'searching'));
+  React.useEffect(() => {
+    if (!hasSearchingStep || sidebarDocuments.length > 0) return;
+    let cancelled = false;
+    backendApi.getAllDocuments().then((response) => {
+      if (cancelled || !response?.success) return;
+      const data = response.data;
+      const raw = Array.isArray(data) ? data : data?.data?.documents ?? data?.documents ?? data?.data ?? [];
+      const docs = Array.isArray(raw) ? raw : [];
+      const list = docs.map((d: { id?: string; original_filename?: string }) => ({ id: d.id ?? '', original_filename: d.original_filename }));
+      if (!cancelled && list.length > 0) setSidebarDocuments(list);
+    });
+    return () => { cancelled = true; };
+  }, [hasSearchingStep, sidebarDocuments.length, setSidebarDocuments]);
+
   const lastResponseForDownload = React.useMemo(() => {
     const responses = chatMessages.filter((m) => m.type === 'response' && m.text?.trim());
     return responses.length > 0 ? responses[responses.length - 1] : null;
@@ -6879,7 +7398,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       return;
     }
     // Don't re-open the bar for this message if user already finished review (e.g. accepted last citation)
-    if (citationReviewCompletedForMessageIds.has(latestMessageId)) {
+    if (citationReviewCompletedForMessageIdsRef.current.has(latestMessageId)) {
       setCitationReviewMessageId(null);
       citationReviewMessageIdRef.current = null;
       return;
@@ -6895,7 +7414,42 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     } else {
       setCitationReviewCurrentIndex((prev) => (prev >= ordered.length ? Math.max(0, ordered.length - 1) : prev));
     }
-  }, [currentChatId, chatMessages, citationReviewCompletedForMessageIds]);
+  }, [currentChatId, chatMessages]);
+
+  // When scroll position changes, show citation bar for the message in view (so going back to accepted messages shows the bar); only one at a time; when leaving an accepted message, bar closes again
+  React.useEffect(() => {
+    if (citationMessagesInView.size === 0) {
+      setCitationReviewMessageId(null);
+      citationReviewMessageIdRef.current = null;
+      return;
+    }
+    const list = Array.isArray(chatMessages) ? chatMessages : [];
+    const current = citationReviewMessageIdRef.current;
+    if (current != null && citationMessagesInView.has(current)) {
+      return;
+    }
+    const last = [...list].reverse().find((m: { type?: string }) => m.type !== 'query');
+    const latestKey = last ? ((last as { id?: string }).id ?? `msg-${list.indexOf(last)}`) : null;
+    let bestId: string | null = null;
+    list.forEach((m) => {
+      const id = (m as { id?: string }).id ?? `msg-${list.indexOf(m)}`;
+      if (citationMessagesInView.has(id) && (m as { type?: string }).type !== 'query' && (m as { text?: string }).text) {
+        bestId = id;
+      }
+    });
+    if (bestId != null) {
+      if (citationReviewCompletedForMessageIdsRef.current.has(bestId) && bestId === latestKey) {
+        setCitationReviewMessageId(null);
+        citationReviewMessageIdRef.current = null;
+        return;
+      }
+      citationReviewMessageIdRef.current = bestId;
+      setCitationReviewMessageId(bestId);
+    } else {
+      citationReviewMessageIdRef.current = null;
+      setCitationReviewMessageId(null);
+    }
+  }, [citationMessagesInView, chatMessages]);
 
   // ========== CHAT STATE STORE INTEGRATION ==========
   // Wrapper: Open document with per-chat isolation (writes to ChatStateStore)
@@ -8306,6 +8860,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           type: 'response',
           text: '',
           isLoading: true,
+          responseStreamComplete: false,
           reasoningSteps: [], // Initialize empty array for reasoning steps
           citations: {}, // Initialize empty object for citations
           responseStartedAt: Date.now()
@@ -8315,6 +8870,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           persistedChatMessagesRef.current = updated;
           return updated;
         });
+        loadingReasoningStepsRef.current = []; // Reset so completion can use ref for full step list (incl. Summarising content)
         
         // Call LLM API to query documents (same logic as handleSubmit)
         (async () => {
@@ -8894,6 +9450,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           type: 'response',
                           text: finalText || 'Response received',
                           isLoading: false,
+                          responseStreamComplete: true,
                           reasoningSteps: [],
                           citations: finalCitations
                         };
@@ -8912,14 +9469,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         type: 'response',
                         text: finalText || 'Response received', // Ensure text is never empty
                         isLoading: false,
+                        responseStreamComplete: true,
                         reasoningSteps: existingMessage?.reasoningSteps || [], // Preserve reasoning steps
                         citations: finalCitations, // Use final citations (normalized to string keys)
                         responseStartedAt: existingMessage?.responseStartedAt,
                         responseCompletedAt: existingMessage?.responseCompletedAt ?? Date.now()
                       };
                       
-                      const updated = prev.map(msg => 
-                        msg.id === loadingResponseId 
+                      const updated = prev.map(msg =>
+                        msg.id === loadingResponseId
                           ? responseMessage
                           : msg
                       );
@@ -8958,6 +9516,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       type: 'response',
                       text: finalText || 'Response received',
                       isLoading: false,
+                      responseStreamComplete: true,
                       reasoningSteps: existingMessage?.reasoningSteps || [],
                       citations: finalCitations,
                       responseStartedAt: existingMessage?.responseStartedAt,
@@ -9140,6 +9699,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   type: 'response',
                   text: errorText,
                     isLoading: false,
+                    responseStreamComplete: true,
                     reasoningSteps: existingMessage?.reasoningSteps || [], // Preserve reasoning steps
                   responseStartedAt: existingMessage?.responseStartedAt,
                   responseCompletedAt: existingMessage?.responseCompletedAt ?? Date.now()
@@ -9164,6 +9724,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     type: 'response',
                     text: errorText,
                     isLoading: false,
+                    responseStreamComplete: true,
                     reasoningSteps: existingMessage?.reasoningSteps || [],
                     responseStartedAt: existingMessage?.responseStartedAt,
                     responseCompletedAt: existingMessage?.responseCompletedAt ?? Date.now()
@@ -10829,6 +11390,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 type: 'response',
                 text: '',
                 isLoading: true,
+                responseStreamComplete: false,
                 responseStartedAt: Date.now()
               };
               const messagesWithLoading = [...restoredMessages, loadingMessage];
@@ -11084,6 +11646,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           type: 'response',
           text: '',
           isLoading: true,
+          responseStreamComplete: false,
           reasoningSteps: [], // Initialize empty array for reasoning steps
           citations: {}, // Initialize empty object for citations
           responseStartedAt: Date.now()
@@ -11093,6 +11656,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           persistedChatMessagesRef.current = updated;
           return updated;
         });
+        loadingReasoningStepsRef.current = [];
         
         // Call LLM API for initial query
         (async () => {
@@ -11386,14 +11950,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   type: 'response',
                   text: finalText,
                     isLoading: false,
+                    responseStreamComplete: true,
                     reasoningSteps: existingMessage?.reasoningSteps || [], // Preserve reasoning steps
                       citations: mergedCitations, // Merged citations applied once
                     responseStartedAt: existingMessage?.responseStartedAt,
                     responseCompletedAt: existingMessage?.responseCompletedAt ?? Date.now()
                 };
                 
-                  const updated = prev.map(msg => 
-                    msg.id === loadingResponseId 
+                  const updated = prev.map(msg =>
+                    msg.id === loadingResponseId
                       ? responseMessage
                       : msg
                   );
@@ -11453,6 +12018,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   type: 'response',
                   text: errorText,
                     isLoading: false,
+                    responseStreamComplete: true,
                     reasoningSteps: existingMessage?.reasoningSteps || [], // Preserve reasoning steps
                   responseStartedAt: existingMessage?.responseStartedAt,
                   responseCompletedAt: existingMessage?.responseCompletedAt ?? Date.now()
@@ -11787,6 +12353,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               type: 'response',
               text: `Sorry, I encountered an error while processing your query. Please try again or contact support if the issue persists. Error: ${error instanceof Error ? error.message : 'Unknown error'}`,
                 isLoading: false,
+                responseStreamComplete: true,
                 reasoningSteps: existingMessage?.reasoningSteps || [] // Preserve reasoning steps
             };
             
@@ -12559,6 +13126,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         type: 'response',
         text: '',
         isLoading: true,
+        responseStreamComplete: false,
         reasoningSteps: [], // Initialize empty array for reasoning steps
         responseStartedAt: Date.now()
       };
@@ -12567,6 +13135,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         persistedChatMessagesRef.current = updated;
         return updated;
       });
+      loadingReasoningStepsRef.current = [];
       
       // Initialize reasoning steps tracking for this query
       currentQueryIdRef.current = loadingResponseId;
@@ -13015,13 +13584,13 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 });
                 
                 // Get the most up-to-date reasoning steps
-                // For active chats, always use the current chatMessages state (most up-to-date)
+                // For active chats: use ref (updated on every onReasoningStep) so we don't lose "Summarising content" if stream end runs before state commit
                 // For inactive chats, use buffered state
                 let latestReasoningSteps: ReasoningStep[] = [];
                 if (chatIsActive) {
-                  // Active chat - use current UI state (most reliable)
                   const activeMessage = chatMessages.find(msg => msg.id === loadingResponseId);
-                  latestReasoningSteps = activeMessage?.reasoningSteps || [];
+                  const refSteps = loadingReasoningStepsRef.current;
+                  latestReasoningSteps = (refSteps?.length ? refSteps : activeMessage?.reasoningSteps) || [];
                 } else if (queryChatId) {
                   // Inactive chat - use buffered state
                   const bufferedState = getBufferedState(queryChatId);
@@ -13056,14 +13625,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       type: 'response',
                       text: finalText,
                       isLoading: false,
+                      responseStreamComplete: true,
                       reasoningSteps: latestReasoningSteps.length > 0 ? latestReasoningSteps : (existingMessage?.reasoningSteps || []), // Preserve reasoning steps
                       citations: mergedCitations, // Merged citations applied once
                       responseStartedAt: existingMessage?.responseStartedAt,
                       responseCompletedAt: existingMessage?.responseCompletedAt ?? Date.now()
                     };
                     
-                    const updated = prev.map(msg => 
-                      msg.id === loadingResponseId 
+                    const updated = prev.map(msg =>
+                      msg.id === loadingResponseId
                         ? responseMessage
                         : msg
                     );
@@ -13081,6 +13651,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     type: 'response',
                     text: finalText,
                     isLoading: false,
+                    responseStreamComplete: true,
                     reasoningSteps: latestReasoningSteps.length > 0 ? latestReasoningSteps : (existingMessage?.reasoningSteps || []),
                     citations: mergedCitations,
                     responseStartedAt: existingMessage?.responseStartedAt,
@@ -13088,7 +13659,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   };
                   
                   // Update buffered messages
-                  const updatedMessages = bufferedState.messages.map(msg => 
+                  const updatedMessages = bufferedState.messages.map(msg =>
                     msg.id === loadingResponseId ? responseMessage : msg
                   );
                   if (!updatedMessages.find(msg => msg.id === loadingResponseId)) {
@@ -13234,13 +13805,14 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     type: 'response',
                     text: errorText,
                     isLoading: false,
+                    responseStreamComplete: true,
                     reasoningSteps: existingMessage?.reasoningSteps || [], // Preserve reasoning steps
                     responseStartedAt: existingMessage?.responseStartedAt,
                     responseCompletedAt: existingMessage?.responseCompletedAt ?? Date.now()
                   };
-                  
-                  const updated = prev.map(msg => 
-                    msg.id === loadingResponseId 
+
+                  const updated = prev.map(msg =>
+                    msg.id === loadingResponseId
                       ? errorMessage
                       : msg
                   );
@@ -13267,12 +13839,13 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   type: 'response',
                   text: errorText,
                   isLoading: false,
+                  responseStreamComplete: true,
                   reasoningSteps: existingMessage?.reasoningSteps || [],
                   responseStartedAt: existingMessage?.responseStartedAt,
                   responseCompletedAt: existingMessage?.responseCompletedAt ?? Date.now()
                 };
-                
-                const updatedMessages = bufferedState.messages.map(msg => 
+
+                const updatedMessages = bufferedState.messages.map(msg =>
                   msg.id === loadingResponseId ? errorMessage : msg
                 );
                 if (!updatedMessages.find(msg => msg.id === loadingResponseId)) {
@@ -13366,7 +13939,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         return msg;
                       }
                       
-                      return { ...msg, reasoningSteps: [...existingSteps, newStep] };
+                      const newSteps = [...existingSteps, newStep];
+                      loadingReasoningStepsRef.current = newSteps;
+                      return { ...msg, reasoningSteps: newSteps };
                     }
                     return msg;
                   });
@@ -14288,9 +14863,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       const hasCurrentStreamFinished = !message.isLoading;
       const revealEndedOrRestored = revealEndedForResponseIdRef.current.has(finalKey) || isRestored;
       const showFeedbackBar = message.text && hasCurrentStreamFinished && revealEndedOrRestored && (isLatestAssistantMessage || showBarForResponseId === finalKey);
+      const hasCitationsForBar = !!(message.text && getOrderedCitationNumbersFromMessageText(message.text).length > 0);
       return (
-        <div
+        <CitationMessageVisibility
           key={finalKey}
+          messageId={finalKey}
+          onVisibilityChange={handleCitationVisibilityChange}
+          observe={hasCitationsForBar}
+        >
+        <div
           onMouseEnter={() => {
             if (message.type === 'query' || !message.text) return;
             if (feedbackBarHoverLeaveRef.current) {
@@ -14394,7 +14975,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             }}>
               <StreamingResponseTextMemo
                 text={message.text}
-                isStreaming={message.isLoading || false}
+                isStreaming={message.isLoading || message.responseStreamComplete === false}
                 citations={message.citations}
                 handleCitationClick={(data: CitationDataType, anchorRect?: DOMRect, citationNumber?: string) => handleUserCitationClick(data, anchorRect, message.text, finalKey, citationNumber)}
                 renderTextWithCitations={renderTextWithCitations}
@@ -14405,7 +14986,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 orangeCitationNumbers={orangeCitationNumbersByMessage.get(message.id ?? finalKey)}
                 greenCitationNumbers={(() => {
                   if (citationReviewShowReviewNextOnly) return undefined;
-                  const orderedForReview = isLatestAssistantMessage && citationReviewMessageId === finalKey ? getOrderedCitationNumbersFromMessageText(message.text ?? '') : [];
+                  const orderedForReview = citationReviewMessageId === finalKey ? getOrderedCitationNumbersFromMessageText(message.text ?? '') : [];
                   const currentReviewCitationNum = citationReviewMessageId === finalKey && orderedForReview.length > 0 && citationReviewCurrentIndex >= 0 && citationReviewCurrentIndex < orderedForReview.length ? orderedForReview[citationReviewCurrentIndex] : null;
                   if (currentReviewCitationNum == null) return undefined;
                   const set = new Set<string>();
@@ -14420,10 +15001,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   // Child only calls this when reveal (and stream-done) has finished; always record so feedback bar can show (avoid stale message.isLoading closure)
                   revealEndedForResponseIdRef.current.add(id);
                   setRevealCompleteTick((t) => t + 1);
-                  requestAnimationFrame(() => {
-                    requestAnimationFrame(() => scrollToBottom(true));
-                  });
-                  setTimeout(() => scrollToBottom(true), 100);
+                  // Do not auto-scroll when response finishes; respect user scroll position.
                 }}
                 savedCitationNumbersForMessage={undefined}
                 onAskFollowUpFromCallout={(msgId, citationNumber, citationData) => {
@@ -14467,12 +15045,13 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 }}
                 citationViewedInDocument={citationViewedInDocument}
                 onCloseDocumentFromCallout={closeExpandedCardView}
-                orderedCitationNumbersForMessage={isLatestAssistantMessage ? (() => { const o = getOrderedCitationNumbersFromMessageText(message.text ?? ''); return o.length > 0 ? o : undefined; })() : undefined}
+                orderedCitationNumbersForMessage={citationReviewMessageId === finalKey ? (() => { const o = getOrderedCitationNumbersFromMessageText(message.text ?? ''); return o.length > 0 ? o : undefined; })() : undefined}
                 isCitationBarActive={citationReviewMessageId === finalKey}
                 currentCitationIndex={citationReviewMessageId === finalKey ? citationReviewCurrentIndex : 0}
                 acceptedCitationIndices={citationReviewMessageId === finalKey ? citationReviewAcceptedIndices : (citationAcceptedByMessageId[finalKey] ?? undefined)}
                 showReviewNextOnly={citationReviewMessageId === finalKey ? citationReviewShowReviewNextOnly : false}
-                showInResponseCitationCallouts={isLatestAssistantMessage}
+                showInResponseCitationCallouts={citationReviewMessageId === finalKey}
+                showCitationPreviewBar={showCitationPreviewBar}
                 rejectedCitationNumbers={rejectedCitationNumbersByMessage.get(message.id ?? finalKey)}
               />
             </div>
@@ -14480,8 +15059,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           {/* Feedback bar slot: reserve space as soon as stream ends so layout never jumps; bar fades in when reveal completes */}
           {message.text && hasCurrentStreamFinished && (
             <motion.div
-              initial={{ opacity: 0, height: 28, marginTop: 8 }}
-              animate={revealEndedOrRestored && showFeedbackBar ? { opacity: 1, height: 28, marginTop: 8 } : { opacity: 0, height: 28, marginTop: 8 }}
+              initial={{ opacity: 0, height: 24, marginTop: 6 }}
+              animate={revealEndedOrRestored && showFeedbackBar ? { opacity: 1, height: 24, marginTop: 6 } : { opacity: 0, height: 24, marginTop: 6 }}
               transition={{ duration: 0.38, ease: [0.22, 0.61, 0.36, 1] }}
               style={{ overflow: 'hidden', pointerEvents: revealEndedOrRestored ? 'auto' : 'none' }}
             >
@@ -14489,24 +15068,24 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 const sources = getSourcesFromReadingStepsOrCitations(message);
                 const isSourcesOpen = sourcesDropdownMessageId === finalKey;
                 return (
-            <div className="feedback-action-bar-enter" style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', color: '#6b7280', fontSize: '12px', fontFamily: 'inherit' }}>
+            <div className="feedback-action-bar-enter" style={{ display: 'flex', alignItems: 'center', gap: '5px', flexWrap: 'wrap', color: '#6b7280', fontSize: '11px', fontFamily: 'inherit' }}>
               <button
                 type="button"
                 onClick={(e) => { e.stopPropagation(); handleCopyResponse(message.text || '', finalKey); }}
-                style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '3px', border: 'none', background: 'none', cursor: 'pointer', color: copiedResponseId === finalKey ? '#10B981' : '#9CA3AF' }}
+                style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '2px', border: 'none', background: 'none', cursor: 'pointer', color: copiedResponseId === finalKey ? '#10B981' : '#9CA3AF' }}
                 title={copiedResponseId === finalKey ? 'Copied!' : 'Copy'}
               >
-                {copiedResponseId === finalKey ? <Check size={18} /> : <Copy size={18} />}
+                {copiedResponseId === finalKey ? <Check size={14} /> : <Copy size={14} />}
               </button>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <button
                     type="button"
                     onClick={(e) => e.stopPropagation()}
-                    style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '3px', border: 'none', background: 'none', cursor: 'pointer', color: '#9CA3AF' }}
+                    style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '2px', border: 'none', background: 'none', cursor: 'pointer', color: '#9CA3AF' }}
                     title="Download"
                   >
-                    <Download size={18} />
+                    <Download size={14} />
                   </button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="start" sideOffset={4} onClick={(e) => e.stopPropagation()} style={{ width: '220px', borderRadius: '10px', overflow: 'hidden', padding: 0 }}>
@@ -14554,7 +15133,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     onMouseEnter={(e) => { (e.currentTarget as HTMLDivElement).style.background = '#f9fafb'; }}
                     onMouseLeave={(e) => { (e.currentTarget as HTMLDivElement).style.background = ''; }}
                   >
-                    <FileIcon size={12} style={{ flexShrink: 0, color: '#9ca3af' }} />
+                    <FileIcon size={14} style={{ flexShrink: 0, color: '#9ca3af' }} />
                     <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>Text file (.txt)</span>
                   </DropdownMenuItem>
                 </DropdownMenuContent>
@@ -14569,26 +15148,26 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 }}
                 className={shimmerTickMessageId === finalKey ? 'feedback-tick-shimmer' : undefined}
                 style={{
-                  display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '5px', border: 'none', borderRadius: '5px', cursor: 'pointer',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '3px', border: 'none', borderRadius: '4px', cursor: 'pointer',
                   backgroundColor: likedResponseIds.has(finalKey) ? 'rgba(34, 197, 94, 0.12)' : 'transparent',
                   color: likedResponseIds.has(finalKey) ? '#16a34a' : '#9CA3AF'
                 }}
                 title="Thumbs up"
               >
-                <ThumbsUp size={18} />
+                <ThumbsUp size={14} />
               </button>
               {!likedResponseIds.has(finalKey) && (
                 <button
                   type="button"
                   onClick={(e) => { e.stopPropagation(); handleThumbsDownResponse(finalKey); openFeedbackModal(finalKey, message.text || ''); }}
                   style={{
-                    display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '5px', border: 'none', borderRadius: '5px', cursor: 'pointer',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '3px', border: 'none', borderRadius: '4px', cursor: 'pointer',
                     backgroundColor: dislikedResponseIds.has(finalKey) ? '#E5E7EB' : 'transparent',
                     color: dislikedResponseIds.has(finalKey) ? '#374151' : '#9CA3AF'
                   }}
                   title="Thumbs down"
                 >
-                  <ThumbsDown size={18} />
+                  <ThumbsDown size={14} />
                 </button>
               )}
               {sources.count > 0 && (
@@ -14600,17 +15179,17 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     style={{
                       display: 'flex', alignItems: 'center', gap: '5px',
                       padding: '2px 8px', border: '1px solid rgba(0,0,0,0.08)', cursor: 'pointer',
-                      borderRadius: '9999px', backgroundColor: 'rgba(255,255,255,0.6)',
+                      borderRadius: '9999px', backgroundColor: 'transparent',
                       color: '#374151', fontSize: '12px',
                     }}
                   >
-                    <Link2 size={12} style={{ flexShrink: 0, color: '#374151' }} />
-                    <span>Sources</span>
-                    <ChevronDown size={12} style={{ flexShrink: 0, color: '#374151', transition: 'transform 0.15s ease', transform: isSourcesOpen ? 'rotate(180deg)' : 'rotate(0deg)' }} />
+                    <Link2 size={10} style={{ flexShrink: 0, color: '#374151', background: 'none' }} />
+                    <span style={{ background: 'none' }}>Sources</span>
+                    <ChevronDown size={14} style={{ flexShrink: 0, color: '#374151', transition: 'transform 0.15s ease', transform: isSourcesOpen ? 'rotate(180deg)' : 'rotate(0deg)', background: 'none' }} />
                   </button>
                 </PopoverTrigger>
-                <PopoverContent className="p-0" align="start" sideOffset={4} style={{ width: '240px', borderRadius: '10px', overflow: 'hidden', zIndex: 1 }}>
-                  <div style={{ display: 'flex', flexDirection: 'column' }}>
+                <PopoverContent className="p-0 bg-transparent border-0 shadow-none" align="start" sideOffset={4} style={{ width: '240px', borderRadius: '10px', overflow: 'hidden', zIndex: 1, background: 'transparent' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', background: 'none' }}>
                     {sources.items.map((item, idx) => {
                         const rawName = item.filename || `Document ${item.docId.slice(0, 8)}`;
                         const isPDF = rawName.toLowerCase().endsWith('.pdf');
@@ -14640,13 +15219,13 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               transition: 'background 0.1s ease',
                             }}
                             title={rawName}
-                            onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = '#f9fafb'; }}
+                            onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'none'; }}
                             onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'none'; }}
                           >
                             {isPDF ? (
                               <img src="/PDF.png" alt="PDF" style={{ width: 12, height: 12, flexShrink: 0, objectFit: 'contain' }} />
                             ) : (
-                              <Files size={12} style={{ flexShrink: 0, color: '#9ca3af' }} />
+                              <Files size={14} style={{ flexShrink: 0, color: '#9ca3af' }} />
                             )}
                             <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{truncatedName}</span>
                           </button>
@@ -14662,9 +15241,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             </motion.div>
           )}
         </div>
+        </CitationMessageVisibility>
       );
     }).filter(Boolean);
-  }, [chatMessages, showReasoningTrace, showHighlight, showCitations, expandedThoughtMessageIds, toggleThoughtExpanded, restoredMessageIdsRef, reopenNoAnimationTick, handleUserCitationClick, onOpenProperty, scrollToBottom, expandedCardViewDoc, propertyAttachments, orangeCitationNumbersByMessage, citationClickPanel, citationViewedInDocument, currentChatId, skipSwoopForChatId, revealCompleteTick, likedResponseIds, dislikedResponseIds, copiedResponseId, shimmerTickMessageId, sourcesDropdownMessageId, showBarForResponseId, handleThumbsUpResponse, handleThumbsDownResponse, handleCopyResponse, handleDownloadResponse, handleDownloadResponseAsDocxForMessage, openCitationInDocumentView, openFeedbackModal, isBotPaused, citationReviewMessageId, citationReviewCurrentIndex, citationReviewAcceptedIndices, citationReviewShowReviewNextOnly, rejectedCitationNumbersByMessage]);
+  }, [chatMessages, showReasoningTrace, showHighlight, showCitations, showCitationPreviewBar, expandedThoughtMessageIds, toggleThoughtExpanded, restoredMessageIdsRef, reopenNoAnimationTick, handleUserCitationClick, onOpenProperty, scrollToBottom, expandedCardViewDoc, propertyAttachments, orangeCitationNumbersByMessage, citationClickPanel, citationViewedInDocument, currentChatId, skipSwoopForChatId, revealCompleteTick, likedResponseIds, dislikedResponseIds, copiedResponseId, shimmerTickMessageId, sourcesDropdownMessageId, showBarForResponseId, handleThumbsUpResponse, handleThumbsDownResponse, handleCopyResponse, handleDownloadResponse, handleDownloadResponseAsDocxForMessage, openCitationInDocumentView, openFeedbackModal, isBotPaused, citationReviewMessageId, citationReviewCurrentIndex, citationReviewAcceptedIndices, citationReviewShowReviewNextOnly, rejectedCitationNumbersByMessage, handleCitationVisibilityChange]);
 
   return (
     <>
@@ -14748,11 +15328,20 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 requestAnimationFrame(() => restoreSelectionRef.current?.());
               });
             }}
-            onSaveCitation={citationExport && citationClickPanel.messageId != null && citationClickPanel.citationNumber != null ? async () => {
-              const ok = await saveCitationForDocx(citationClickPanel.messageId!, citationClickPanel.citationNumber!, citationClickPanel.citationData as CitationData & { document_id?: string; bbox?: { left: number; top: number; width: number; height: number } });
-              setCitationClickPanel(null);
-              if (ok) showCitationSavedFeedbackOnce();
-              else toast({ title: 'Could not save citation', description: 'Try again or open the document view to save from there.', variant: 'destructive' });
+            onSaveCitation={citationClickPanel.messageId != null && citationClickPanel.citationNumber != null ? async () => {
+              if (citationExport?.setCitationExportData) {
+                const ok = await saveCitationForDocx(citationClickPanel.messageId!, citationClickPanel.citationNumber!, citationClickPanel.citationData as CitationData & { document_id?: string; bbox?: { left: number; top: number; width: number; height: number } });
+                setCitationClickPanel(null);
+                if (ok) showCitationSavedFeedbackOnce();
+                else toast({ title: 'Could not save citation', description: 'Try again or open the document view to save from there.', variant: 'destructive' });
+              } else {
+                openCitationInDocumentView(citationClickPanel.citationData, false);
+                const viewed = citationClickPanel.messageId != null && citationClickPanel.citationNumber != null ? { messageId: citationClickPanel.messageId, citationNumber: citationClickPanel.citationNumber } : null;
+                setCitationViewedInDocument(viewed);
+                if (currentChatId && viewed) setDocumentViewedCitation(currentChatId, viewed);
+                setCitationClickPanel(null);
+                toast({ title: 'Open document view to save citation', description: 'Use the document view to add this citation to your export.', variant: 'default' });
+              }
             } : undefined}
             onClose={() => setCitationClickPanel(null)}
           />,
@@ -15146,7 +15735,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         backgroundColor: 'rgba(0, 0, 0, 0.02)'
                       }}
                     >
-                      <PanelRightClose className="w-4 h-4 text-[#666] scale-x-[-1]" strokeWidth={1.75} />
+                      <PanelRightClose className="w-5 h-5 text-[#666] scale-x-[-1]" strokeWidth={1.75} />
                       {actualPanelWidth >= 750 && (
                         <span className="text-[13px] font-normal text-[#666]">Close</span>
                       )}
@@ -15176,7 +15765,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         backgroundColor: 'rgba(0, 0, 0, 0.02)'
                       }}
                     >
-                      <Minimize2 className="w-4 h-4 text-[#666]" strokeWidth={1.75} />
+                      <Minimize2 className="w-5 h-5 text-[#666]" strokeWidth={1.75} />
                       {actualPanelWidth >= 750 && (
                         <span className="text-[13px] font-normal text-[#666]">Minimise</span>
                       )}
@@ -15205,7 +15794,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         backgroundColor: 'rgba(0, 0, 0, 0.02)'
                       }}
                     >
-                      <MoveDiagonal className="w-4 h-4 text-[#666]" strokeWidth={1.75} />
+                      <MoveDiagonal className="w-5 h-5 text-[#666]" strokeWidth={1.75} />
                       {actualPanelWidth >= 750 && (
                         <span className="text-[13px] font-normal text-[#666]">Expand</span>
                       )}
@@ -15235,7 +15824,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           setViewOptionsOpen((prev) => !prev);
                         }}
                       >
-                        <PictureInPicture2 className="w-4 h-4 text-[#666] flex-shrink-0" strokeWidth={1.75} />
+                        <PictureInPicture2 className="w-5 h-5 text-[#666] flex-shrink-0" strokeWidth={1.75} />
                         {actualPanelWidth >= 750 && (
                           <span className="text-[13px] font-normal text-[#666]">View</span>
                         )}
@@ -15267,7 +15856,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             }}
                             className="flex items-center gap-2 w-full rounded-sm px-2 py-2 text-left hover:bg-[#f5f5f5] text-[12px] text-[#374151]"
                           >
-                            <PanelLeftOpen className="w-4 h-4 text-[#666] flex-shrink-0 scale-x-[-1]" strokeWidth={1.75} />
+                            <PanelLeftOpen className="w-5 h-5 text-[#666] flex-shrink-0 scale-x-[-1]" strokeWidth={1.75} />
                             Sidebar
                           </button>
                         )}
@@ -15281,7 +15870,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             }}
                             className="flex items-center gap-2 w-full rounded-sm px-2 py-2 text-left hover:bg-[#f5f5f5] text-[12px] text-[#374151]"
                           >
-                            <Files className="w-4 h-4 text-[#666] flex-shrink-0" strokeWidth={1.75} />
+                            <Files className="w-5 h-5 text-[#666] flex-shrink-0" strokeWidth={1.75} />
                             Files
                           </button>
                         )}
@@ -15295,7 +15884,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             }}
                             className="flex items-center gap-2 w-full rounded-sm px-2 py-2 text-left hover:bg-[#f5f5f5] text-[12px] text-[#374151]"
                           >
-                            <Minimize2 className="w-4 h-4 text-[#666] flex-shrink-0" strokeWidth={1.75} />
+                            <Minimize2 className="w-5 h-5 text-[#666] flex-shrink-0" strokeWidth={1.75} />
                             Minimise
                           </button>
                         ) : (
@@ -15308,7 +15897,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             }}
                             className="flex items-center gap-2 w-full rounded-sm px-2 py-2 text-left hover:bg-[#f5f5f5] text-[12px] text-[#374151]"
                           >
-                            <MoveDiagonal className="w-4 h-4 text-[#666] flex-shrink-0" strokeWidth={1.75} />
+                            <MoveDiagonal className="w-5 h-5 text-[#666] flex-shrink-0" strokeWidth={1.75} />
                             Expand
                           </button>
                         )}
@@ -15324,9 +15913,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           className="flex items-center gap-2 w-full rounded-sm px-2 py-2 text-left hover:bg-[#f5f5f5] text-[12px] text-[#374151]"
                         >
                           {isBrowserFullscreen ? (
-                            <Minimize className="w-4 h-4 text-[#666] flex-shrink-0" strokeWidth={1.75} />
+                            <Minimize className="w-5 h-5 text-[#666] flex-shrink-0" strokeWidth={1.75} />
                           ) : (
-                            <Fullscreen className="w-4 h-4 text-[#666] flex-shrink-0" strokeWidth={1.75} />
+                            <Fullscreen className="w-5 h-5 text-[#666] flex-shrink-0" strokeWidth={1.75} />
                           )}
                           {isBrowserFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
                         </button>
@@ -15353,7 +15942,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     <div className="flex items-center gap-2.5 max-w-[220px] mr-1 ml-16 py-1">
                       {isEditingTitle ? (
                         <>
-                          <MessageSquare className="w-4 h-4 text-gray-300 flex-shrink-0" style={{ pointerEvents: 'none' }} />
+                          <MessageSquare className="w-5 h-5 text-gray-300 flex-shrink-0" style={{ pointerEvents: 'none' }} />
                           <div className="flex-1 min-w-0 max-w-[160px]">
                             <input
                               type="text"
@@ -15384,24 +15973,24 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               className="flex items-center gap-2 rounded-md px-3 py-2.5 text-left hover:bg-gray-100/80 transition-colors min-w-0 max-w-full border-0 bg-transparent"
                               style={{ minHeight: '34px' }}
                             >
-                              <MessageSquare className="w-[19px] h-[19px] text-gray-300 flex-shrink-0" style={{ pointerEvents: 'none' }} />
+                              <MessageSquare className="w-5 h-5 text-gray-300 flex-shrink-0" style={{ pointerEvents: 'none' }} />
                               <span className="text-[14px] font-normal text-slate-600 truncate flex-1 min-w-0 text-left">
                                 {isTitleStreaming ? streamedTitle : (chatTitle || 'New chat')}
                               </span>
-                              <ChevronDown className="w-[19px] h-[19px] text-gray-400 flex-shrink-0 ml-0.5" />
+                              <ChevronDown className="w-5 h-5 text-gray-400 flex-shrink-0 ml-0.5" />
                             </button>
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="start" sideOffset={4} onClick={(e) => e.stopPropagation()} className="min-w-[180px] rounded-lg shadow-lg border bg-white py-1">
                             <DropdownMenuItem onClick={(e) => { e.stopPropagation(); if (starredToastTimeoutRef.current) clearTimeout(starredToastTimeoutRef.current); setShowStarredToast(true); starredToastTimeoutRef.current = setTimeout(() => { setShowStarredToast(false); starredToastTimeoutRef.current = null; }, 3000); }} className="flex items-center gap-2 cursor-pointer text-[13px] font-normal text-[#666] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#666]">
-                              <Star className="w-4 h-4 text-[#666]" />
+                              <Star className="w-5 h-5 text-[#666]" />
                               Star
                             </DropdownMenuItem>
                             <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleToggleEdit(); }} className="flex items-center gap-2 cursor-pointer text-[13px] font-normal text-[#666] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#666]">
-                              <Pencil className="w-4 h-4 text-[#666]" />
+                              <Pencil className="w-5 h-5 text-[#666]" />
                               Rename
                             </DropdownMenuItem>
                             <DropdownMenuItem onClick={(e) => { e.stopPropagation(); toast({ title: 'Add to project', description: 'Add to project coming soon.' }); }} className="flex items-center gap-2 cursor-pointer text-[13px] font-normal text-[#666] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#666]">
-                              <FolderPlus className="w-4 h-4 text-[#666]" />
+                              <FolderPlus className="w-5 h-5 text-[#666]" />
                               Add to project
                             </DropdownMenuItem>
                             <DropdownMenuSeparator className="my-1 bg-gray-200" />
@@ -15415,7 +16004,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               }}
                               className="flex items-center gap-2 cursor-pointer text-[13px] font-normal text-red-600 hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-red-600"
                             >
-                              <Trash2 className="w-4 h-4 text-red-600" />
+                              <Trash2 className="w-5 h-5 text-red-600" />
                               Delete
                             </DropdownMenuItem>
                           </DropdownMenuContent>
@@ -15454,24 +16043,24 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             className="flex items-center gap-2 rounded-md px-3 py-2.5 text-left hover:bg-gray-100/80 transition-colors min-w-0 max-w-full border-0 bg-transparent"
                             style={{ minHeight: '34px' }}
                           >
-                            <MessageSquare className="w-[19px] h-[19px] text-gray-300 flex-shrink-0" />
+                            <MessageSquare className="w-5 h-5 text-gray-300 flex-shrink-0" />
                             <span className="text-[14px] font-normal text-slate-600 truncate flex-1 min-w-0 text-left">
                               {isTitleStreaming ? streamedTitle : (chatTitle || 'New chat')}
                             </span>
-                            <ChevronDown className="w-[19px] h-[19px] text-gray-400 flex-shrink-0 ml-0.5" />
+                            <ChevronDown className="w-5 h-5 text-gray-400 flex-shrink-0 ml-0.5" />
                           </button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="start" sideOffset={4} onClick={(e) => e.stopPropagation()} className="min-w-[180px] rounded-lg shadow-lg border bg-white py-1">
                           <DropdownMenuItem onClick={(e) => { e.stopPropagation(); if (starredToastTimeoutRef.current) clearTimeout(starredToastTimeoutRef.current); setShowStarredToast(true); starredToastTimeoutRef.current = setTimeout(() => { setShowStarredToast(false); starredToastTimeoutRef.current = null; }, 3000); }} className="flex items-center gap-2 cursor-pointer text-[13px] font-normal text-[#666] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#666]">
-                            <Star className="w-4 h-4 text-[#666]" />
+                            <Star className="w-5 h-5 text-[#666]" />
                             Star
                           </DropdownMenuItem>
                           <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleToggleEdit(); }} className="flex items-center gap-2 cursor-pointer text-[13px] font-normal text-[#666] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#666]">
-                            <Pencil className="w-4 h-4 text-[#666]" />
+                            <Pencil className="w-5 h-5 text-[#666]" />
                             Rename
                           </DropdownMenuItem>
                           <DropdownMenuItem onClick={(e) => { e.stopPropagation(); toast({ title: 'Add to project', description: 'Add to project coming soon.' }); }} className="flex items-center gap-2 cursor-pointer text-[13px] font-normal text-[#666] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#666]">
-                            <FolderPlus className="w-4 h-4 text-[#666]" />
+                            <FolderPlus className="w-5 h-5 text-[#666]" />
                             Add to project
                           </DropdownMenuItem>
                           <DropdownMenuSeparator className="my-1 bg-gray-200" />
@@ -15485,7 +16074,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             }}
                             className="flex items-center gap-2 cursor-pointer text-[13px] font-normal text-red-600 hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-red-600"
                           >
-                            <Trash2 className="w-4 h-4 text-red-600" />
+                            <Trash2 className="w-5 h-5 text-red-600" />
                             Delete
                           </DropdownMenuItem>
                         </DropdownMenuContent>
@@ -15522,7 +16111,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         backgroundColor: 'rgba(0, 0, 0, 0.02)'
                       }}
                     >
-                      <ChevronLeft className="w-3.5 h-3.5 text-[#666]" strokeWidth={1.75} />
+                      <ChevronLeft className="w-4 h-4 text-[#666]" strokeWidth={1.75} />
                       <span className="text-[12px] font-normal text-[#666]">Back</span>
                     </button>
                   )}
@@ -15556,11 +16145,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   >
                     {isChatPanelOpen ? (
                       <PanelRightClose
-                        className="w-4 h-4 text-[#666] flex-shrink-0"
+                        className="w-5 h-5 text-[#666] flex-shrink-0"
                         strokeWidth={1.75}
                       />
                     ) : (
-                      <img src={agentIcon} alt="Agents" className="w-4 h-4 flex-shrink-0" aria-hidden />
+                      <img src={agentIcon} alt="Agents" className="w-5 h-5 flex-shrink-0" aria-hidden />
                     )}
                     {actualPanelWidth >= 750 && (
                       <span className="text-[13px] font-normal text-[#666]">
@@ -15577,7 +16166,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         type="button"
                         aria-haspopup="true"
                         aria-expanded={displayOptionsOpen}
-                        title="Response – reasoning trace, answer highlight, and citations"
+                        title="Response – reasoning trace, highlight key points, and citations"
                         className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1.5' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150 cursor-pointer border-none`}
                         style={{
                           padding: actualPanelWidth >= 750 ? '7px 11px' : '6px',
@@ -15595,7 +16184,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           setDisplayOptionsOpen((prev) => !prev);
                         }}
                       >
-                        <SlidersHorizontal className="w-4 h-4 text-[#666] flex-shrink-0" strokeWidth={1.75} />
+                        <SlidersHorizontal className="w-5 h-5 text-[#666] flex-shrink-0" strokeWidth={1.75} />
                         {actualPanelWidth >= 750 && (
                           <span className="text-[13px] font-normal text-[#666]">Response</span>
                         )}
@@ -15613,7 +16202,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       <div className="flex flex-col gap-3">
                         <div className="flex items-center justify-between gap-3">
                           <div className="flex items-center gap-2 min-w-0">
-                            <Brain className="w-4 h-4 text-[#666] flex-shrink-0" strokeWidth={1.75} />
+                            <Brain className="w-5 h-5 text-[#666] flex-shrink-0" strokeWidth={1.75} />
                             <span className="text-[12px] text-[#374151]">Reasoning trace</span>
                           </div>
                           <button
@@ -15633,8 +16222,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         </div>
                         <div className="flex items-center justify-between gap-3">
                           <div className="flex items-center gap-2 min-w-0">
-                            <Highlighter className="w-4 h-4 text-[#666] flex-shrink-0" strokeWidth={1.75} />
-                            <span className="text-[12px] text-[#374151]">Answer highlight</span>
+                            <Highlighter className="w-5 h-5 text-[#666] flex-shrink-0" strokeWidth={1.75} />
+                            <span className="text-[12px] text-[#374151]">Highlight Key Points</span>
                           </div>
                           <button
                             type="button"
@@ -15653,7 +16242,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         </div>
                         <div className="flex items-center justify-between gap-3">
                           <div className="flex items-center gap-2 min-w-0">
-                            <BookOpen className="w-4 h-4 text-[#666] flex-shrink-0" strokeWidth={1.75} />
+                            <BookOpen className="w-5 h-5 text-[#666] flex-shrink-0" strokeWidth={1.75} />
                             <span className="text-[12px] text-[#374151]">Citations</span>
                           </div>
                           <button
@@ -15668,6 +16257,26 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           >
                             <span className={`absolute top-0.5 left-0.5 w-3 h-3 bg-white rounded-full shadow-sm transition-transform ${
                               showCitations ? 'translate-x-3' : 'translate-x-0'
+                            }`} />
+                          </button>
+                        </div>
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <PanelLeftOpen className="w-5 h-5 text-[#666] flex-shrink-0" strokeWidth={1.75} />
+                            <span className="text-[12px] text-[#374151]">Citation preview & actions</span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setShowCitationPreviewBar(!showCitationPreviewBar);
+                            }}
+                            className={`relative w-7 h-4 flex-shrink-0 rounded-full transition-colors ${
+                              showCitationPreviewBar ? 'bg-[#1f2937]' : 'bg-[#d1d5db]'
+                            }`}
+                          >
+                            <span className={`absolute top-0.5 left-0.5 w-3 h-3 bg-white rounded-full shadow-sm transition-transform ${
+                              showCitationPreviewBar ? 'translate-x-3' : 'translate-x-0'
                             }`} />
                           </button>
                         </div>
@@ -15739,7 +16348,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       backgroundColor: 'rgba(0, 0, 0, 0.02)'
                     }}
                   >
-                    <X className="w-4 h-4 text-[#666]" strokeWidth={1.75} />
+                    <X className="w-5 h-5 text-[#666]" strokeWidth={1.75} />
                   </button>
                 </div>
               </div>
@@ -16655,15 +17264,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     isPaused={isBotPaused}
                     onPauseToggle={handlePauseToggle}
                   />
-                  {/* Citation bar strip: only for latest response (by position); never for previous response when a new one exists */}
+                  {/* Citation bar strip: for the single message currently "active" (in view or latest); when scrolling back to an accepted message, bar appears; when leaving, it closes again */}
                   {(() => {
-                    const revMsg = [...chatMessages].reverse().find((m) => m.type !== 'query');
+                    if (!showCitationPreviewBar) return null;
+                    if (!citationReviewMessageId) return null;
+                    const revMsg = chatMessages.find((m) => ((m as { id?: string }).id ?? `msg-${chatMessages.indexOf(m)}`) === citationReviewMessageId);
                     if (!revMsg || !revMsg.text) return null;
                     const orderedForBar = getOrderedCitationNumbersFromMessageText(revMsg.text);
                     if (orderedForBar.length === 0) return null;
                     const reviewMsgId = (revMsg as { id?: string }).id ?? `msg-${chatMessages.indexOf(revMsg)}`;
-                    if (reviewMsgId !== latestAssistantMessageKey) return null;
-                    if (citationReviewCompletedForMessageIds.has(reviewMsgId)) return null;
                     const stateApplies = citationReviewMessageId === reviewMsgId;
                     const effectiveIndex = stateApplies ? citationReviewCurrentIndex : 0;
                     const effectiveShowReviewNext = stateApplies ? citationReviewShowReviewNextOnly : false;
@@ -16672,30 +17281,30 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     const currentNum = orderedForBar[Math.min(effectiveIndex, total - 1)];
                     const citationData = revMsg?.citations?.[currentNum];
                     const canViewDoc = !!citationData && (citationData.doc_id ?? (citationData as any).document_id);
-                    const barBtn = { display: 'flex' as const, alignItems: 'center' as const, justifyContent: 'center' as const, gap: 4, padding: '3px 6px', fontSize: '11px', border: '1px solid #e5e7eb', borderRadius: 5, cursor: 'pointer' as const, boxShadow: '0 1px 1px rgba(0,0,0,0.05)', outline: 'none' as const, minHeight: 24 };
+                    const barBtn = { display: 'flex' as const, alignItems: 'center' as const, justifyContent: 'center' as const, gap: 4.4, padding: '3.3px 6.6px', fontSize: '12px', lineHeight: 1, border: '1px solid #e5e7eb', borderRadius: 5.5, cursor: 'pointer' as const, boxShadow: '0 1px 1px rgba(0,0,0,0.05)', outline: 'none' as const, minHeight: 26 };
                     return (
                       <div
                         className="flex items-center justify-center gap-2 flex-shrink-0"
-                        style={{ marginBottom: '8px', marginLeft: '8px', marginRight: '8px', width: '100%', position: 'relative' as const, zIndex: 10 }}
+                        style={{ marginBottom: '8.8px', marginLeft: '8.8px', marginRight: '8.8px', width: '100%', position: 'relative' as const, zIndex: 10, gap: '8.8px' }}
                         onClick={(e) => e.stopPropagation()}
                       >
                         {/* Always show counter + arrows so Accept/Review next stay in same place (no cursor move) */}
-                        <div className="flex items-center gap-0.5" style={{ ...barBtn, color: '#6b7280', backgroundColor: 'transparent', border: 'none', boxShadow: 'none', minHeight: 24 }}>
-                          <span style={{ minWidth: '28px', textAlign: 'center', fontSize: '11px' }}>{effectiveIndex + 1} of {total}</span>
-                          <button type="button" aria-label="Previous citation" disabled={effectiveIndex <= 0} onClick={(e) => { e.preventDefault(); e.stopPropagation(); setCitationReviewCurrentIndex((i) => Math.max(0, i - 1)); }} style={{ display: 'flex', padding: 3, border: 'none', background: 'none', cursor: effectiveIndex <= 0 ? 'default' : 'pointer', color: effectiveIndex <= 0 ? '#d1d5db' : '#6b7280' }}><ChevronUp size={12} /></button>
-                          <button type="button" aria-label="Next citation" disabled={effectiveIndex >= total - 1} onClick={(e) => { e.preventDefault(); e.stopPropagation(); setCitationReviewCurrentIndex((i) => Math.min(total - 1, i + 1)); }} style={{ display: 'flex', padding: 3, border: 'none', background: 'none', cursor: effectiveIndex >= total - 1 ? 'default' : 'pointer', color: effectiveIndex >= total - 1 ? '#d1d5db' : '#6b7280' }}><ChevronDown size={12} /></button>
+                        <div className="flex items-center gap-0.5" style={{ ...barBtn, color: '#6b7280', backgroundColor: 'transparent', border: 'none', boxShadow: 'none', minHeight: 26 }}>
+                          <span style={{ minWidth: '31px', textAlign: 'center', fontSize: '12px' }}>{effectiveIndex + 1} of {total}</span>
+                          <button type="button" aria-label="Previous citation" disabled={effectiveIndex <= 0} onClick={(e) => { e.preventDefault(); e.stopPropagation(); setCitationReviewCurrentIndex((i) => Math.max(0, i - 1)); }} style={{ display: 'flex', padding: 3.3, border: 'none', background: 'none', cursor: effectiveIndex <= 0 ? 'default' : 'pointer', color: effectiveIndex <= 0 ? '#d1d5db' : '#6b7280' }}><ChevronUp size={16} /></button>
+                          <button type="button" aria-label="Next citation" disabled={effectiveIndex >= total - 1} onClick={(e) => { e.preventDefault(); e.stopPropagation(); setCitationReviewCurrentIndex((i) => Math.min(total - 1, i + 1)); }} style={{ display: 'flex', padding: 3.3, border: 'none', background: 'none', cursor: effectiveIndex >= total - 1 ? 'default' : 'pointer', color: effectiveIndex >= total - 1 ? '#d1d5db' : '#6b7280' }}><ChevronDown size={16} /></button>
                         </div>
                         {canViewDoc && (
-                          <button type="button" title="View document" onClick={(e) => { e.preventDefault(); e.stopPropagation(); citationData && openCitationInDocumentView(citationData as CitationData, false); }} style={{ ...barBtn, fontWeight: 400, color: '#374151', backgroundColor: '#FFFFFF' }} onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#f9fafb'; }} onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#FFFFFF'; }}>
-                            <FileSearchCorner size={10} style={{ color: '#374151' }} />
-                            View document
+                          <button type="button" title="View" onClick={(e) => { e.preventDefault(); e.stopPropagation(); citationData && openCitationInDocumentView(citationData as CitationData, false); }} style={{ ...barBtn, fontWeight: 600, color: '#374151', backgroundColor: '#FFFFFF' }} onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#f9fafb'; }} onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#FFFFFF'; }}>
+                            View
                           </button>
                         )}
-                        {/* Accept/Reject vs Review next + Undo (after Reject) vs Review next only (after Accept) */}
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 200 }}>
+                        {/* Accept/Reject only when this message is not yet completed; when revisiting an accepted message, show only counter + View document */}
+                        {!citationReviewCompletedForMessageIds.has(reviewMsgId) && (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6.6, minWidth: 220 }}>
                           {effectiveShowReviewNext && effectiveJustRejected ? (
                             <>
-                              <button type="button" title="Review Next" onClick={(e) => {
+                              <button type="button" title="Review Next Source" onClick={(e) => {
                                 e.preventDefault();
                                 e.stopPropagation();
                                 setCitationReviewJustRejected(false);
@@ -16710,8 +17319,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                   setCitationReviewShowReviewNextOnly(false);
                                   setCitationReviewCurrentIndex(next);
                                 }
-                              }} style={{ ...barBtn, fontWeight: 500, color: '#3B3B3B', backgroundColor: '#E5E5E5', border: '1px solid #d4d4d4', boxShadow: '0 1px 1px rgba(0,0,0,0.05)' }} onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#F0F0F0'; }} onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#E5E5E5'; }}>
-                                Review Next
+                              }} style={{ ...barBtn, fontWeight: 500, color: '#3B3B3B', backgroundColor: '#F0F0F0', border: '1px solid #d4d4d4', boxShadow: '0 1px 1px rgba(0,0,0,0.05)' }} onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#E5E5E5'; }} onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#F0F0F0'; }}>
+                                Review Next Source
                               </button>
                               <button type="button" title="Undo reject – restore this part of the response" onClick={(e) => {
                                 e.preventDefault();
@@ -16730,12 +17339,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                 setCitationReviewJustRejected(false);
                                 setCitationReviewShowReviewNextOnly(false);
                               }} style={{ ...barBtn, fontWeight: 500, color: '#64748b', backgroundColor: '#f1f5f9', border: '1px solid #e2e8f0', boxShadow: '0 1px 1px rgba(0,0,0,0.05)' }} onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#e2e8f0'; }} onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#f1f5f9'; }}>
-                                <Undo2 size={10} style={{ marginRight: 4 }} />
+                                <Undo2 size={15} style={{ marginRight: 4.4 }} />
                                 Undo
                               </button>
                             </>
                           ) : effectiveShowReviewNext && effectiveIndex < total - 1 ? (
-                            <button type="button" title="Review Next" onClick={(e) => {
+                            <button type="button" title="Review Next Source" onClick={(e) => {
                               e.preventDefault();
                               e.stopPropagation();
                               const next = effectiveIndex + 1;
@@ -16749,8 +17358,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                 setCitationReviewShowReviewNextOnly(false);
                                 setCitationReviewCurrentIndex(next);
                               }
-                            }} style={{ ...barBtn, fontWeight: 500, color: '#3B3B3B', backgroundColor: '#E5E5E5', border: '1px solid #d4d4d4', boxShadow: '0 1px 1px rgba(0,0,0,0.05)' }} onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#F0F0F0'; }} onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#E5E5E5'; }}>
-                              Review Next
+                            }} style={{ ...barBtn, fontWeight: 500, color: '#3B3B3B', backgroundColor: '#F0F0F0', border: '1px solid #d4d4d4', boxShadow: '0 1px 1px rgba(0,0,0,0.05)' }} onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#E5E5E5'; }} onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#F0F0F0'; }}>
+                              Review Next Source
                             </button>
                           ) : (
                             <>
@@ -16777,9 +17386,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                   setCitationReviewJustRejected(false);
                                 }
                               }} style={{ ...barBtn, fontWeight: 500, color: '#374151', backgroundColor: '#ffffff', border: '1px solid #e2e8f0', boxShadow: '0 1px 1px rgba(0,0,0,0.05)' }} onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#f1f5f9'; }} onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#ffffff'; }}>
-                                <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 14, height: 14, borderRadius: '50%', border: '1px solid rgba(100, 116, 139, 0.5)', marginRight: 6 }}>
-                                  <X size={8} strokeWidth={3.25} style={{ color: '#64748b' }} />
-                                </span>
                                 Reject
                               </button>
                               <button type="button" title="Accept Citation" onClick={(e) => {
@@ -16802,14 +17408,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                   setCitationReviewShowReviewNextOnly(true);
                                 }
                               }} style={{ ...barBtn, fontWeight: 600, color: '#2a8f56', backgroundColor: '#E5F5E0', border: '1px solid rgba(60, 179, 113, 0.22)', boxShadow: '0 1px 1px rgba(0,0,0,0.05)' }} onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#DDF0D8'; }} onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#E5F5E0'; }}>
-                                <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 14, height: 14, borderRadius: '50%', border: '1px solid rgba(60, 179, 113, 0.5)', marginRight: 6 }}>
-                                  <Check size={8} strokeWidth={3.25} style={{ color: '#2a8f56' }} />
-                                </span>
                                 Accept
                               </button>
                             </>
                           )}
                         </div>
+                        )}
                       </div>
                     );
                   })()}
@@ -17270,11 +17874,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               }
                             >
                               {selectedDocumentIds.size > 0 ? (
-                                <Scan className="w-3.5 h-3.5" strokeWidth={1.5} />
+                                <Scan className="w-4 h-4" strokeWidth={1.5} />
                               ) : isDocumentSelectionMode ? (
-                                <Scan className="w-3.5 h-3.5" strokeWidth={1.5} />
+                                <Scan className="w-4 h-4" strokeWidth={1.5} />
                               ) : (
-                                <SquareDashedMousePointer className="w-3.5 h-3.5" strokeWidth={1.5} />
+                                <SquareDashedMousePointer className="w-4 h-4" strokeWidth={1.5} />
                               )}
                               {selectedDocumentIds.size > 0 && (
                                 <span className="absolute -top-1 -right-1 w-4 h-4 bg-green-500 text-white text-[10px] font-semibold rounded-full flex items-center justify-center">
