@@ -2066,6 +2066,8 @@ async def generate_conversational_answer_with_citations(
     user_id: Optional[str] = None,
     workspace_section: str = "",
     paste_context: str = "",
+    short_id_lookup: Optional[Dict[str, Dict[str, Any]]] = None,
+    on_citation_resolved: Optional[Any] = None,
 ) -> Tuple[str, str]:
     """
     Generate conversational answer with citation instructions (jan28th-style).
@@ -2131,6 +2133,11 @@ Is this the first message in the conversation? {is_first_message}
 - Put any closing or follow-up only at the very end after a blank line; never at the start or after the first heading.
 - Explain in a clear, conversational way; use Markdown where it helps readability. Be accurate.
 """
+    # Streaming path: require first line PERSONALITY_ID=<id> so we can parse without structured output
+    personality_ids_list = ", ".join(sorted(VALID_PERSONALITY_IDS))
+    instructions += f"""
+- **Response format:** Start your reply with exactly one line: PERSONALITY_ID=<id> where <id> is one of: {personality_ids_list}. Then two newlines, then your full answer (with citations as above).
+"""
 
     human_message = HumanMessage(content=f"""
 **User Question:**
@@ -2145,6 +2152,60 @@ Is this the first message in the conversation? {is_first_message}
         f"({len(formatted_chunks.split('[SOURCE_ID:')) - 1} source groups)"
     )
     structured_llm = llm.with_structured_output(PersonalityResponse)
+
+    def _parse_personality_and_response(full_content: str) -> Tuple[str, str]:
+        """Parse PERSONALITY_ID from first line and return (personality_id, answer_text)."""
+        content = (full_content or "").strip()
+        personality_id = DEFAULT_PERSONALITY_ID
+        answer_text = content
+        if content:
+            parts = content.split("\n\n", 1)
+            first_line = (parts[0] or "").strip()
+            if first_line.upper().startswith("PERSONALITY_ID="):
+                raw_id = first_line[15:].strip().lower()
+                if raw_id in VALID_PERSONALITY_IDS:
+                    personality_id = raw_id
+                answer_text = (parts[1] if len(parts) > 1 else "").strip()
+            elif "\n" in content:
+                first_line_only = content.split("\n", 1)[0].strip()
+                if first_line_only.upper().startswith("PERSONALITY_ID="):
+                    raw_id = first_line_only[15:].strip().lower()
+                    if raw_id in VALID_PERSONALITY_IDS:
+                        personality_id = raw_id
+                    answer_text = content.split("\n", 1)[1].strip() if "\n" in content else ""
+        return personality_id, _strip_mid_response_generic_closings(answer_text)
+
+    try:
+        full_content = ""
+        emitted_citation_positions: set = set()  # (start, end) for idempotency
+        next_citation_number = 1
+        async for chunk in llm.astream([system_prompt, human_message]):
+            if hasattr(chunk, "content") and chunk.content:
+                full_content += chunk.content
+                # Incremental citation emission: run extraction on buffer and emit new citations
+                if on_citation_resolved and short_id_lookup is not None and metadata_lookup_tables is not None:
+                    try:
+                        citations_incremental = extract_citations_with_positions(
+                            full_content, short_id_lookup, metadata_lookup_tables
+                        )
+                        citations_incremental.sort(key=lambda c: c.get("position", 0))
+                        for c in citations_incremental:
+                            pos_key = (c.get("position", 0), c.get("end_position", 0))
+                            if pos_key not in emitted_citation_positions:
+                                emitted_citation_positions.add(pos_key)
+                                c["citation_number"] = next_citation_number
+                                next_citation_number += 1
+                                event = _citation_to_stream_event(c)
+                                on_citation_resolved(event)
+                    except Exception as inc_err:
+                        logger.debug("[RESPONDER] Incremental citation extraction: %s", inc_err)
+        if full_content.strip():
+            personality_id, answer_text = _parse_personality_and_response(full_content)
+            logger.info(f"[RESPONDER] Streamed response; chose personality_id={personality_id}")
+            return personality_id, answer_text
+    except Exception as stream_err:
+        logger.warning(f"[RESPONDER] Streaming failed, falling back to structured invoke: {stream_err}")
+
     try:
         parsed = await structured_llm.ainvoke([system_prompt, human_message])
         personality_id = (
@@ -2158,12 +2219,31 @@ Is this the first message in the conversation? {is_first_message}
         return personality_id, answer_text
     except Exception as e:
         logger.warning(f"[RESPONDER] Structured output failed, using default personality: {e}")
-        # Fallback: invoke without structured output and return default personality
         fallback_llm = ChatOpenAI(model=config.openai_model, temperature=0.38, max_tokens=4096)
         response = await fallback_llm.ainvoke([system_prompt, human_message])
         answer_text = response.content if hasattr(response, 'content') and response.content else ""
         answer_text = _strip_mid_response_generic_closings(answer_text)
         return DEFAULT_PERSONALITY_ID, answer_text
+
+
+def _citation_to_stream_event(citation: Dict[str, Any]) -> Dict[str, Any]:
+    """Build a citation event dict for SSE (same shape as views.py)."""
+    citation_bbox = citation.get("bbox")
+    citation_page = citation.get("page_number", 0)
+    if citation_bbox and isinstance(citation_bbox, dict):
+        citation_bbox = citation_bbox.copy()
+        citation_bbox["page"] = citation_bbox.get("page", citation_page)
+    citation_data = {
+        "doc_id": citation.get("doc_id", ""),
+        "document_id": citation.get("doc_id", ""),
+        "page": citation_page,
+        "bbox": citation_bbox,
+        "method": citation.get("method", "block-id-lookup"),
+        "block_id": citation.get("block_id"),
+        "cited_text": citation.get("cited_text", ""),
+        "original_filename": citation.get("original_filename", ""),
+    }
+    return {"type": "citation", "citation_number": citation.get("citation_number"), "data": citation_data}
 
 
 async def generate_answer_with_direct_citations(
@@ -2174,6 +2254,7 @@ async def generate_answer_with_direct_citations(
     user_id: Optional[str] = None,
     workspace_section: str = "",
     paste_context: str = "",
+    citation_events_buffer: Optional[List] = None,
 ) -> Tuple[str, List[Dict[str, Any]], str]:
     """
     Generate answer using direct citation system with short IDs.
@@ -2213,6 +2294,12 @@ async def generate_answer_with_direct_citations(
 
         # Step 3: Generate LLM response (with personality selection)
         logger.info(f"[DIRECT_CITATIONS] Generating LLM response with block-id citation instructions...")
+        on_citation_resolved = None
+        if citation_events_buffer is not None:
+            def _on_citation(citation_event: Dict[str, Any]) -> None:
+                citation_events_buffer.append(citation_event)
+
+            on_citation_resolved = _on_citation
         personality_id, llm_response = await generate_conversational_answer_with_citations(
             user_query, formatted_chunks, metadata_lookup_tables,
             previous_personality=previous_personality,
@@ -2220,6 +2307,8 @@ async def generate_answer_with_direct_citations(
             user_id=user_id,
             workspace_section=workspace_section,
             paste_context=paste_context,
+            short_id_lookup=short_id_lookup,
+            on_citation_resolved=on_citation_resolved,
         )
         logger.info(f"[DIRECT_CITATIONS] LLM response generated ({len(llm_response)} chars), personality_id={personality_id}")
 
@@ -2394,6 +2483,16 @@ async def responder_node(state: MainWorkflowState, runnable_config=None) -> Main
                 else:
                     logger.info(f"[RESPONDER] Paste+docs path: including {len(paste_context_str)} chars of pasted/attachment context")
             logger.info(f"[RESPONDER] Generating answer with direct citation system...")
+            # Use shared store key so we get the same buffer as views (config may be deep-copied by LangGraph)
+            _configurable = (runnable_config or {}).get("configurable") or {}
+            _buffer_key = _configurable.get("citation_events_buffer_key") or (runnable_config or {}).get("citation_events_buffer_key")
+            citation_events_buffer = None
+            if _buffer_key:
+                try:
+                    from backend.llm.citation_stream_buffers import get_buffer
+                    citation_events_buffer = get_buffer(_buffer_key)
+                except Exception:
+                    pass
             formatted_answer, citations, personality_id = await generate_answer_with_direct_citations(
                 user_query, execution_results,
                 previous_personality=previous_personality,
@@ -2401,6 +2500,7 @@ async def responder_node(state: MainWorkflowState, runnable_config=None) -> Main
                 user_id=state.get("user_id"),
                 workspace_section=workspace_section,
                 paste_context=paste_context_str,
+                citation_events_buffer=citation_events_buffer,
             )
             formatted_answer = ensure_main_tags_when_missing(formatted_answer, user_query)
             if state.get("paste_requested_but_missing"):

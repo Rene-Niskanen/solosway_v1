@@ -43,6 +43,21 @@ def _strip_intent_fragment_from_response(text):
     return stripped
 
 
+def _normalize_id_citations_to_brackets(text):
+    """Replace any remaining 'ID: N' or 'ID: N.' with '[N]'; also fix bare 'N , N , N' (LLM sometimes outputs citation numbers without brackets)."""
+    if not text or not isinstance(text, str):
+        return text or ""
+    # Match "ID: N" or "ID: N." or "ID: N," (optional bold/surrounding punctuation)
+    text = re.sub(r"\bID:\s*(\d+)\b", r"[\1]", text, flags=re.IGNORECASE)
+    # Fix bare repeated citation numbers "2 , 2 , 2" or "2, 2, 2" -> "[2], [2], [2]" (LLM sometimes omits brackets)
+    def _replace_bare_repeated(m):
+        num = m.group(1)
+        count = len(m.group(0).split(","))
+        return ", ".join([f"[{num}]"] * count)
+    text = re.sub(r"\b(\d+)\s*,\s*\1(?:\s*,\s*\1)*\b", _replace_bare_repeated, text)
+    return text
+
+
 def _get_search_corpus_type_counts(business_id):
     """
     Return counts of searchable documents by file type for the business (all extensions).
@@ -1218,6 +1233,11 @@ def query_documents_stream():
                         # Build config with metadata for LangSmith tracing
                         # Use user_id from initial_state (already captured before async context)
                         user_id_from_state = initial_state.get("user_id", "anonymous")
+                        # Mutable list for incremental citation events: responder appends during stream; we drain and yield each event.
+                        # Use shared store key so responder gets the same list (config may be deep-copied by LangGraph).
+                        citation_events_buffer = []
+                        from backend.llm.citation_stream_buffers import register_buffer, unregister_buffer
+                        citation_buffer_key = register_buffer(citation_events_buffer)
                         config_dict = {
                             "configurable": {
                                 "thread_id": session_id,
@@ -1227,7 +1247,8 @@ def query_documents_stream():
                                     "business_id": str(business_id) if business_id else "unknown",
                                     "query_preview": query[:100] if query else "",  # First 100 chars for context
                                     "endpoint": "stream"
-                                }
+                                },
+                                "citation_events_buffer_key": citation_buffer_key,
                             },
                             # Allow planner->executor->evaluator refinement loops and long summarisation flows
                             "recursion_limit": 100,
@@ -1405,6 +1426,9 @@ def query_documents_stream():
                         final_result = None
                         summary_already_streamed = False  # Track if we've already streamed the summary
                         first_token_sent_marked = False  # For PERF timing: mark first token sent once
+                        inside_responder = False  # True while we're inside the responder node (for forwarding LLM tokens)
+                        responder_stream_buffer = ""  # Buffer to strip PERSONALITY_ID=...\n\n prefix before forwarding
+                        responder_prefix_skipped = False  # True once we've passed the prefix and forward tokens as-is
                         streamed_summary = None  # Store the exact summary that was streamed to ensure consistency
                         memory_storage_scheduled = False  # Track if Mem0 memory storage has been scheduled for this request
                         doc_chunk_cache_prime_scheduled = False  # Fire-and-forget prime of doc chunks for same-doc follow-ups
@@ -1443,6 +1467,11 @@ def query_documents_stream():
                                     )
                                     yield f"data: {json.dumps({'type': 'error', 'message': 'Request timed out. The search is taking too long—please try again or try a simpler query.'})}\n\n"
                                     break
+                                # Drain incremental citation events (responder appends during stream)
+                                if citation_events_buffer:
+                                    for citation_event in citation_events_buffer:
+                                        yield f"data: {json.dumps(citation_event)}\n\n"
+                                    citation_events_buffer.clear()
                                 # NEW: Consume execution events from queue (non-blocking, after each graph event)
                                 execution_events = consume_execution_events()
                                 for exec_event in execution_events:
@@ -1491,6 +1520,58 @@ def query_documents_stream():
                                 if event_type == "on_chain_start":
                                     node_timings[node_name] = time.perf_counter()
                                     timing.mark(f"node_{node_name}_start")
+                                    if node_name == "responder":
+                                        inside_responder = True
+                                        responder_stream_buffer = ""
+                                        responder_prefix_skipped = False
+                                
+                                # Forward LLM stream tokens from the responder so the client sees first token in 1-3s
+                                # Buffer and strip PERSONALITY_ID=...\n\n prefix so it does not leak into the UI
+                                if event_type == "on_chat_model_stream" and inside_responder:
+                                    data = event.get("data", {})
+                                    chunk = data.get("chunk") if isinstance(data, dict) else None
+                                    token_content = None
+                                    if chunk is not None:
+                                        token_content = getattr(chunk, "content", None)
+                                        if token_content is None and isinstance(chunk, dict):
+                                            token_content = chunk.get("content", "")
+                                    if token_content:
+                                        if not first_token_sent_marked:
+                                            timing.mark("first_token_sent")
+                                            first_token_sent_marked = True
+                                            if not is_fast_path and "responder" in node_messages and "responder" not in processed_nodes:
+                                                processed_nodes.add("responder")
+                                                reasoning_data = {
+                                                    'type': 'reasoning_step',
+                                                    'step': 'responder',
+                                                    'action_type': 'analysing',
+                                                    'message': node_messages['responder']['message'],
+                                                    'details': node_messages['responder']['details']
+                                                }
+                                                yield f"data: {json.dumps(reasoning_data)}\n\n"
+                                                logger.info("🟡 [REASONING] ✅ Emitted step: Summarising content (on first LLM token)")
+                                            summary_already_streamed = True
+                                        if not responder_prefix_skipped:
+                                            responder_stream_buffer += token_content
+                                            _max_prefix = 200
+                                            if len(responder_stream_buffer) > _max_prefix:
+                                                responder_prefix_skipped = True
+                                                to_yield = responder_stream_buffer
+                                                responder_stream_buffer = ""
+                                                if to_yield:
+                                                    yield f"data: {json.dumps({'type': 'token', 'token': to_yield})}\n\n"
+                                            else:
+                                                _idx = responder_stream_buffer.find("PERSONALITY_ID=")
+                                                if _idx >= 0:
+                                                    _nn = responder_stream_buffer.find("\n\n", _idx)
+                                                    if _nn >= 0:
+                                                        responder_prefix_skipped = True
+                                                        to_yield = responder_stream_buffer[_nn + 2:].lstrip("\r\n")
+                                                        responder_stream_buffer = ""
+                                                        if to_yield:
+                                                            yield f"data: {json.dumps({'type': 'token', 'token': to_yield})}\n\n"
+                                        else:
+                                            yield f"data: {json.dumps({'type': 'token', 'token': token_content})}\n\n"
                                 
                                 # Capture node start events for reasoning steps - EMIT IMMEDIATELY
                                 # Only emit steps for phases that are actually happening (searching, reading, etc.)
@@ -1528,6 +1609,10 @@ def query_documents_stream():
                                 # Capture node end events to update details and track state
                                 elif event.get("event") == "on_chain_end":
                                     node_name = event.get("name", "")
+                                    if node_name == "responder":
+                                        inside_responder = False
+                                        responder_stream_buffer = ""
+                                        responder_prefix_skipped = False
                                     
                                     # Track node end times and log duration
                                     if node_name in node_timings:
@@ -2152,6 +2237,11 @@ def query_documents_stream():
                                             final_result = {}
                                         final_result.update(output)
                                         logger.info(f"🟢 [STREAM] Captured state from {node_name} output field")
+                            # Final drain: send any citations resolved on the last token(s)
+                            if citation_events_buffer:
+                                for citation_event in citation_events_buffer:
+                                    yield f"data: {json.dumps(citation_event)}\n\n"
+                                citation_events_buffer.clear()
                         except Exception as exec_error:
                             error_msg = str(exec_error)
                             # Handle connection timeout errors during graph execution
@@ -2160,11 +2250,67 @@ def query_documents_stream():
                                 logger.info("🟡 [STREAM] Retrying without checkpointer (stateless mode)")
                                 # Retry without checkpointer
                                 graph, _ = await build_main_graph(use_checkpointer=False)
-                                config_dict = {"recursion_limit": 100}  # No thread_id needed for stateless mode
+                                citation_events_buffer_retry = []
+                                citation_buffer_key_retry = register_buffer(citation_events_buffer_retry)
+                                config_dict = {"recursion_limit": 100, "configurable": {"citation_events_buffer_key": citation_buffer_key_retry}}
                                 event_stream = graph.astream_events(initial_state, config_dict, version="v2")
+                                retry_inside_responder = False
+                                retry_responder_buffer = ""
+                                retry_responder_prefix_skipped = False
                                 async for event in event_stream:
+                                    if citation_events_buffer_retry:
+                                        for citation_event in citation_events_buffer_retry:
+                                            yield f"data: {json.dumps(citation_event)}\n\n"
+                                        citation_events_buffer_retry.clear()
                                     event_type = event.get('event')
                                     node_name = event.get("name", "")
+                                    
+                                    if event_type == "on_chain_start" and node_name == "responder":
+                                        retry_inside_responder = True
+                                        retry_responder_buffer = ""
+                                        retry_responder_prefix_skipped = False
+                                    if event_type == "on_chat_model_stream" and retry_inside_responder:
+                                        data = event.get("data", {})
+                                        chunk = data.get("chunk") if isinstance(data, dict) else None
+                                        token_content = getattr(chunk, "content", None) if chunk is not None else None
+                                        if token_content is None and isinstance(chunk, dict):
+                                            token_content = chunk.get("content", "")
+                                        if token_content:
+                                            if not first_token_sent_marked:
+                                                timing.mark("first_token_sent")
+                                                first_token_sent_marked = True
+                                                if "responder" in node_messages and "responder" not in processed_nodes:
+                                                    processed_nodes.add("responder")
+                                                    reasoning_data = {
+                                                        'type': 'reasoning_step',
+                                                        'step': 'responder',
+                                                        'action_type': 'analysing',
+                                                        'message': node_messages['responder']['message'],
+                                                        'details': node_messages['responder']['details']
+                                                    }
+                                                    yield f"data: {json.dumps(reasoning_data)}\n\n"
+                                                summary_already_streamed = True
+                                            if not retry_responder_prefix_skipped:
+                                                retry_responder_buffer += token_content
+                                                _max = 200
+                                                if len(retry_responder_buffer) > _max:
+                                                    retry_responder_prefix_skipped = True
+                                                    to_yield = retry_responder_buffer
+                                                    retry_responder_buffer = ""
+                                                    if to_yield:
+                                                        yield f"data: {json.dumps({'type': 'token', 'token': to_yield})}\n\n"
+                                                else:
+                                                    _idx = retry_responder_buffer.find("PERSONALITY_ID=")
+                                                    if _idx >= 0:
+                                                        _nn = retry_responder_buffer.find("\n\n", _idx)
+                                                        if _nn >= 0:
+                                                            retry_responder_prefix_skipped = True
+                                                            to_yield = retry_responder_buffer[_nn + 2:].lstrip("\r\n")
+                                                            retry_responder_buffer = ""
+                                                            if to_yield:
+                                                                yield f"data: {json.dumps({'type': 'token', 'token': to_yield})}\n\n"
+                                            else:
+                                                yield f"data: {json.dumps({'type': 'token', 'token': token_content})}\n\n"
                                     
                                     # Capture node start events for reasoning steps - EMIT IMMEDIATELY
                                     if event_type == "on_chain_start":
@@ -2183,6 +2329,10 @@ def query_documents_stream():
                                     # Capture node end events to track state
                                     elif event.get("event") == "on_chain_end":
                                         node_name = event.get("name", "")
+                                        if node_name == "responder":
+                                            retry_inside_responder = False
+                                            retry_responder_buffer = ""
+                                            retry_responder_prefix_skipped = False
                                         event_data = event.get("data", {})
                                         state_update = event_data.get("data", {})
                                         
@@ -2330,9 +2480,22 @@ def query_documents_stream():
                                             if isinstance(output, dict):
                                                 final_result = output
                                                 logger.info(f"🟢 [STREAM] Captured final state from {node_name} output")
+                                        # Final drain for retry path only (36 spaces so "else" below stays with its try)
+                                        try:
+                                            if citation_events_buffer_retry:
+                                                for citation_event in citation_events_buffer_retry:
+                                                    yield f"data: {json.dumps(citation_event)}\n\n"
+                                                citation_events_buffer_retry.clear()
+                                        except NameError:
+                                            pass
                             else:
                                 # Re-raise unexpected errors
                                 raise
+                        finally:
+                            try:
+                                unregister_buffer(citation_buffer_key)
+                            except Exception:
+                                pass
                         
                         # After astream_events completes, the graph has finished executing
                         # Get the final state from checkpointer (fast - graph already executed)
@@ -2408,6 +2571,8 @@ def query_documents_stream():
                         full_summary = _strip_intent_fragment_from_response(full_summary or "")
                         # Move any closing phrase that leaked to the start/middle to the end (never show "feel free to ask" before main content)
                         full_summary = _strip_mid_response_generic_closings(full_summary or "")
+                        # Normalize any remaining "ID: N" to "[N]" so frontend citation buttons match
+                        full_summary = _normalize_id_citations_to_brackets(full_summary or "")
 
                         # --- Mem0: Schedule memory storage (fire-and-forget) ---
                         if not memory_storage_scheduled and full_summary:
@@ -4021,7 +4186,8 @@ def query_documents():
         final_summary = result.get("final_summary", "")
         final_summary = _strip_intent_fragment_from_response(final_summary or "")
         final_summary = _strip_mid_response_generic_closings(final_summary or "")
-        
+        final_summary = _normalize_id_citations_to_brackets(final_summary or "")
+
         # --- Mem0: Schedule memory storage (non-streaming path) ---
         if final_summary:
             try:

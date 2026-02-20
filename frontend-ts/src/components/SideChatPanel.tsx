@@ -1287,8 +1287,28 @@ const StreamingResponseText: React.FC<{
 
   // Single formatted path: when streaming, complete partial markdown so ReactMarkdown always gets valid input (bold, titles as they stream).
   // Pacing (2 words at a time) is done in the parent; child receives already-revealed prefix as text.
+  // When streaming: (1) normalize "ID: N" to "[N]" so citation pills appear as each citation streams in;
+  // (2) strip BLOCK_CITE_ID and CHUNK artifacts so streamed display matches final (no raw IDs or block refs).
   const filteredText = React.useMemo(() => {
     let cleaned = isStreaming ? completeIncompleteMarkdown(text, true) : text;
+    // Always normalize citations so stream→final transition never flashes raw "[1]" or "ID: 1"
+    if (cleaned) {
+      cleaned = cleaned.replace(/\bID:\s*(\d+)\b/gi, '[$1]');
+      cleaned = cleaned.replace(/\[\s*(\d+)\s*\]/g, '[$1]');
+      // Normalize double-bracket citations [[11]] or [[ 11 ]] so they render as pills like [11]
+      cleaned = cleaned.replace(/\[\s*\[?\s*(\d+)\s*\]?\s*\]/g, '[$1]');
+      // Fix bare repeated citation numbers "2 , 2 , 2" -> "[2], [2], [2]" (LLM sometimes omits brackets)
+      cleaned = cleaned.replace(/\b(\d+)\s*,\s*\1(?:\s*,\s*\1)*\b/g, (match) => {
+        const num = match.replace(/\s/g, '').split(',')[0];
+        const count = match.split(',').length;
+        return Array(count).fill(`[${num}]`).join(', ');
+      });
+    }
+    if (isStreaming && cleaned) {
+      cleaned = cleaned.replace(/\s*[\[\(]?BLOCK_CITE_ID_\d+[\]\)]?\s*/g, ' ');
+      cleaned = cleaned.replace(/\[CHUNK:\d+(?::PAGE:\d+)?\]/g, '');
+      cleaned = cleaned.replace(/\[CHUNK:\d*(?::PAGE?:\d*)?$/g, '');
+    }
     const unwantedPhrases = [
       /i will now open the document to show you the source\.?/gi,
       /i will now open the document\.?/gi,
@@ -1335,14 +1355,18 @@ const StreamingResponseText: React.FC<{
   // When showCitations is false, strip citation markers instead of rendering them
   const processCitationsBeforeMarkdown = (text: string): string => {
     if (!showCitations) {
-      // Strip citation markers: [1], [2], and superscript ¹ ² etc.
-      let stripped = text.replace(/\[(\d+)\]/g, '').replace(/[¹²³⁴⁵⁶⁷⁸⁹]+(?:\d+)?/g, '');
+      // Strip citation markers: [1], [2], [[11]], and superscript ¹ ² etc.
+      let stripped = text.replace(/\[\s*(\d+)\s*\]/g, '').replace(/\[\s*\[?\s*(\d+)\s*\]?\s*\]/g, '').replace(/[¹²³⁴⁵⁶⁷⁸⁹]+(?:\d+)?/g, '');
       // Clean up double spaces or space before punctuation left by removal
       stripped = stripped.replace(/\s+\./g, '.').replace(/\s+,/g, ',').replace(/\s{2,}/g, ' ');
       return stripped;
     }
-    // Never return raw text when we might have [1] etc. — always replace with placeholders so we never flash "[1]" during streaming.
-    // When citation data isn't available yet we use PENDING placeholders and render a pill; when it arrives we render CitationLink.
+    // Never return raw text when we might have [1] etc. — always replace with placeholders so we never flash "[1]".
+    // When citation data is available we render CitationLink; when not yet (brief during streaming) we use PENDING and render a minimal placeholder.
+    // Normalize bracket spaces [ 5 ] → [5]; fullwidth ［11］ → [11]; double brackets [[11]] or [[ 11 ]] → [11].
+    let processedText = text.replace(/\[\s*(\d+)\s*\]/g, '[$1]');
+    processedText = processedText.replace(/［(\d+)］/g, '[$1]');
+    processedText = processedText.replace(/\[\s*\[?\s*(\d+)\s*\]?\s*\]/g, '[$1]');
 
     // Map superscript characters to numbers
     const superscriptMap: Record<string, string> = {
@@ -1352,9 +1376,7 @@ const StreamingResponseText: React.FC<{
     
     const superscriptPattern = /[¹²³⁴⁵⁶⁷⁸⁹]+(?:\d+)?/g;
     const bracketPattern = /\[(\d+)\]/g;
-    
-    let processedText = text;
-    
+
     // Process superscript citations
     processedText = processedText.replace(superscriptPattern, (match) => {
       let numStr = '';
@@ -1365,7 +1387,6 @@ const StreamingResponseText: React.FC<{
       if (citData) {
         return `%%CITATION_SUPERSCRIPT_${numStr}%%`;
       }
-      // Always use placeholder for consistent rendering (no visual shift when streaming ends)
       return `%%CITATION_PENDING_${numStr}%%`;
     });
     
@@ -1381,7 +1402,6 @@ const StreamingResponseText: React.FC<{
       if (citData) {
         return `%%CITATION_BRACKET_${num}%%`;
       }
-      // Always use placeholder for consistent rendering (no visual shift when streaming ends)
       return `%%CITATION_PENDING_${num}%%`;
     });
     
@@ -1417,34 +1437,10 @@ const StreamingResponseText: React.FC<{
         if (citData) {
           return <CitationLink key={key} citationNumber={num} citationData={citData} onClick={onClick} isSelected={isCitationSelectedStable(num)} isSaved={isSavedNum(num)} />;
         }
-        // Never show raw "[1]" — render same pill style as CitationLink so citation appears instantly during streaming
+        // Minimal placeholder when citation data not yet available (e.g. brief window during streaming). Citations now arrive incrementally; no fake pill.
         return (
-          <span
-            key={key}
-            aria-label={`Citation ${num} (loading)`}
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              marginLeft: '0.35em',
-              marginRight: '1px',
-              minWidth: '20.9px',
-              height: '20.9px',
-              padding: '0 6.6px',
-              fontSize: '12px',
-              fontWeight: 600,
-              fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-              color: '#9CA3AF',
-              backgroundColor: '#F3F4F6',
-              borderRadius: '6.6px',
-              border: '1px solid #E5E7EB',
-              verticalAlign: 'middle',
-              position: 'relative',
-              top: '-1px',
-              lineHeight: 1,
-            }}
-          >
-            {num}
+          <span key={key} aria-label={`Citation ${num} (loading)`} style={{ color: '#9ca3af', fontSize: '0.9em' }}>
+            [{num}]
           </span>
         );
       }
@@ -5511,6 +5507,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   const perplexityLoadingIdRef = React.useRef<string | null>(null);
   const perplexityStreamEndedRef = React.useRef(false);
   const perplexityFinalizeRef = React.useRef<(() => void) | null>(null);
+  const cleanResponseTextRef = React.useRef<(t: string) => string>((t) => t);
   const PERPLEXITY_CHUNK_MS = 100;
   /** Reveal first N words but preserve original newlines/spacing (no join(' ') so paragraphs stay). */
   const getPrefixUpToWordCount = (text: string, wordCount: number): string => {
@@ -5539,7 +5536,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       perplexityRevealedCountRef.current = Math.min(perplexityRevealedCountRef.current + 2, total);
       const take = perplexityRevealedCountRef.current;
       const prefix = getPrefixUpToWordCount(raw, take);
-      setChatMessages(prev => prev.map(msg => msg.id === lid ? { ...msg, text: prefix } : msg));
+      const cleanedPrefix = cleanResponseTextRef.current(prefix);
+      setChatMessages(prev => prev.map(msg => msg.id === lid ? { ...msg, text: cleanedPrefix } : msg));
       if (perplexityStreamEndedRef.current && (take >= total || total === 0)) {
         if (perplexityRevealIntervalRef.current != null) {
           clearInterval(perplexityRevealIntervalRef.current);
@@ -5744,6 +5742,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     
     return cleaned.trim();
   };
+
+  React.useEffect(() => {
+    cleanResponseTextRef.current = cleanResponseText;
+  }, [cleanResponseText]);
 
   const [inputValue, setInputValue] = React.useState<string>("");
   const [isSubmitted, setIsSubmitted] = React.useState<boolean>(false);
@@ -9759,13 +9761,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 }
                 
                 // Wait for queue to finish processing, then set final text
+                let finalizeTextCalled = false;
                 const finalizeText = () => {
+                  if (finalizeTextCalled) return;
+                  finalizeTextCalled = true;
                   playCompletionSound();
-                // Use displayedText as source of truth - it was pre-completed during streaming
-                // This ensures text doesn't change when streaming completes (prevents "click" effect)
-                // Use longer of displayedText vs accumulatedText as safety net so we never persist shortened content
+                // Prefer data.summary when present so citation format [1], [2] and citations match (no PERSONALITY_ID leak)
+                // Use longer of displayedText vs accumulatedText as fallback so we never persist shortened content
                   // CRITICAL: Ensure we always have text to display
-                  const rawText = (displayedText.length >= accumulatedText.length ? displayedText : accumulatedText) || data?.summary || "";
+                  const rawText = (data?.summary && data.summary.trim()) ? data.summary : ((displayedText.length >= accumulatedText.length ? displayedText : accumulatedText) || "");
                   const finalText = rawText.trim() 
                     ? cleanResponseText(rawText) 
                     : (data?.summary?.trim() || "I couldn't find any documents matching your query. Please try rephrasing or check if documents are available.");
@@ -9783,11 +9787,22 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   
                   // Use citations from complete event, fallback to accumulated citations
                   // Ensure all citation keys are strings and each citation has doc_id set (from document_id if missing)
+                  // If backend sends array (e.g. citations_array), build map by citation_number so [11] in text matches citations["11"]
                   const normalizeCitations = (cits: any): Record<string, CitationDataType> => {
                     if (!cits || typeof cits !== 'object') return {};
                     const normalized: Record<string, CitationDataType> = {};
-                    for (const [key, value] of Object.entries(cits)) {
-                      normalized[String(key)] = normalizeCitationDocId(value) as CitationDataType;
+                    if (Array.isArray(cits)) {
+                      for (const item of cits) {
+                        const num = item?.citation_number ?? item?.id;
+                        if (num != null) {
+                          const key = String(num);
+                          normalized[key] = normalizeCitationDocId(typeof item?.data === 'object' ? item.data : item) as CitationDataType;
+                        }
+                      }
+                    } else {
+                      for (const [key, value] of Object.entries(cits)) {
+                        normalized[String(key)] = normalizeCitationDocId(value) as CitationDataType;
+                      }
                     }
                     return normalized;
                   };
@@ -10011,22 +10026,28 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 }
               };
                 
-                // Wait for queue to finish processing (max 3 seconds), then finalize
+                // Wait for queue to finish processing (max 2s), then finalize. Also run finalize soon after complete so loading clears even if queue never drains.
                 const maxWait = 2000;
                 const checkInterval = 100;
                 let waited = 0;
+                const scheduleFinalize = () => {
+                  if (usePerplexityStyleRef.current) perplexityFinalizeRef.current = () => finalizeText();
+                  else finalizeText();
+                };
                 const checkQueue = setInterval(() => {
                   waited += checkInterval;
                   if (!isProcessingQueue && blockQueue.length === 0 && !tokenBuffer.trim() && !pendingBuffer.trim()) {
                     clearInterval(checkQueue);
-                    if (usePerplexityStyleRef.current) perplexityFinalizeRef.current = () => finalizeText();
-                    else finalizeText();
+                    scheduleFinalize();
                   } else if (waited >= maxWait) {
                     clearInterval(checkQueue);
-                    if (usePerplexityStyleRef.current) perplexityFinalizeRef.current = () => finalizeText();
-                    else finalizeText();
+                    scheduleFinalize();
                   }
                 }, checkInterval);
+                // Ensure we finalize soon when we have summary (fixes loading/pause never disappearing and citations not showing)
+                if (data?.summary?.trim()) {
+                  setTimeout(scheduleFinalize, 180);
+                }
               },
               // onError: Handle errors
               (error: string) => {
@@ -10429,16 +10450,21 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 // Use unified helper for consistent chat active check
                 const chatIsActive = isChatActiveForQuery(queryChatId, savedChatId);
                 if (chatIsActive) {
-                  // Merge with previous citations to avoid overwriting when multiple citations arrive quickly
-                  setChatMessages(prev => {
-                    return prev.map(msg => 
-                      msg.id === loadingResponseId
-                        ? {
-                            ...msg,
-                            citations: { ...(msg.citations || {}), ...accumulatedCitations }
-                          }
-                        : msg
-                    );
+                  // Merge with previous citations to avoid overwriting when multiple citations arrive quickly.
+                  // flushSync so this update commits before we process the next event (e.g. complete). That way
+                  // the same rendering as "at the end" (clickable pills) appears during streaming as soon as
+                  // citation data exists, instead of being batched with the complete event.
+                  flushSync(() => {
+                    setChatMessages(prev => {
+                      return prev.map(msg =>
+                        msg.id === loadingResponseId
+                          ? {
+                              ...msg,
+                              citations: { ...(msg.citations || {}), ...accumulatedCitations }
+                            }
+                          : msg
+                      );
+                    });
                   });
                 }
               },
@@ -12284,13 +12310,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 }
                 
                 // Wait for queue to finish processing, then set final text
+                let finalizeTextCalled2 = false;
                 const finalizeText = () => {
+                  if (finalizeTextCalled2) return;
+                  finalizeTextCalled2 = true;
                   playCompletionSound();
                   // Citation context is cleared by parent (MainContent) after query
-                // Use displayedText as source of truth - it was pre-completed during streaming
-                // This ensures text doesn't change when streaming completes (prevents "click" effect)
-                // Fallback to data.summary only if displayedText is empty
-                  const finalText = cleanResponseText(displayedText || data.summary || accumulatedText || "");
+                // Prefer data.summary when present so citation format [1], [2] and citations match (no PERSONALITY_ID leak)
+                // Fallback to streamed text if backend did not send summary
+                  const finalText = cleanResponseText((data.summary && data.summary.trim()) ? data.summary : (displayedText || accumulatedText || ""));
                   
                   // Merge accumulated citations with any from backend complete message; ensure doc_id set from document_id
                   const mergedRaw = { ...accumulatedCitations, ...(data.citations || {}) };
@@ -12346,22 +12374,25 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 });
                 };
                 
-                // Wait for queue to finish processing (max 2 seconds), then finalize
+                // Wait for queue to finish processing (max 2s), then finalize. Also finalize soon so loading clears.
                 const maxWait = 2000;
                 const checkInterval = 100;
                 let waited = 0;
+                const scheduleFinalize2 = () => {
+                  if (usePerplexityStyleRef.current) perplexityFinalizeRef.current = () => finalizeText();
+                  else finalizeText();
+                };
                 const checkQueue = setInterval(() => {
                   waited += checkInterval;
                   if (!isProcessingQueue && blockQueue.length === 0 && !tokenBuffer.trim() && !pendingBuffer.trim()) {
                     clearInterval(checkQueue);
-                    if (usePerplexityStyleRef.current) perplexityFinalizeRef.current = () => finalizeText();
-                    else finalizeText();
+                    scheduleFinalize2();
                   } else if (waited >= maxWait) {
                     clearInterval(checkQueue);
-                    if (usePerplexityStyleRef.current) perplexityFinalizeRef.current = () => finalizeText();
-                    else finalizeText();
+                    scheduleFinalize2();
                   }
                 }, checkInterval);
+                if (data?.summary?.trim()) setTimeout(scheduleFinalize2, 180);
               },
               // onError: Handle errors
               (error: string) => {
@@ -13913,11 +13944,14 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 if (b) displayedText += b;
               }
               
+              let finalizeTextCalled3 = false;
               const finalizeText = () => {
+                if (finalizeTextCalled3) return;
+                finalizeTextCalled3 = true;
                 playCompletionSound();
-              // This ensures text doesn't change when streaming completes (prevents "click" effect)
-              // Use longer of displayedText vs accumulatedText as safety net so we never persist shortened content
-                const finalText = cleanResponseText((displayedText.length >= accumulatedText.length ? displayedText : accumulatedText) || data.summary || "");
+              // Prefer data.summary when present so citation format [1], [2] and citations match (no PERSONALITY_ID leak)
+              // Use longer of displayedText vs accumulatedText as fallback so we never persist shortened content
+                const finalText = cleanResponseText((data.summary && data.summary.trim()) ? data.summary : ((displayedText.length >= accumulatedText.length ? displayedText : accumulatedText) || ""));
               
                 // Merge accumulated citations with any from backend complete message; ensure doc_id set from document_id
                 const mergedRaw = { ...accumulatedCitations, ...(data.citations || {}) };
@@ -14095,22 +14129,25 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 currentQueryIdRef.current = null;
               };
               
-              // Wait for queue to finish processing (max 2 seconds), then finalize
+              // Wait for queue to finish processing (max 2s), then finalize. Also finalize soon so loading clears.
               const maxWait = 2000;
               const checkInterval = 100;
               let waited = 0;
+              const scheduleFinalize3 = () => {
+                if (usePerplexityStyleRef.current) perplexityFinalizeRef.current = () => finalizeText();
+                else finalizeText();
+              };
               const checkQueue = setInterval(() => {
                 waited += checkInterval;
                 if (!isProcessingQueue && blockQueue.length === 0 && !tokenBuffer.trim() && !pendingBuffer.trim()) {
                   clearInterval(checkQueue);
-                  if (usePerplexityStyleRef.current) perplexityFinalizeRef.current = () => finalizeText();
-                  else finalizeText();
+                  scheduleFinalize3();
                 } else if (waited >= maxWait) {
                   clearInterval(checkQueue);
-                  if (usePerplexityStyleRef.current) perplexityFinalizeRef.current = () => finalizeText();
-                  else finalizeText();
+                  scheduleFinalize3();
                 }
               }, checkInterval);
+              if (data?.summary?.trim()) setTimeout(scheduleFinalize3, 180);
             },
             // onError: Handle errors
             (error: string) => {
