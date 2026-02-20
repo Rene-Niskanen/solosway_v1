@@ -464,6 +464,29 @@ const completeIncompleteMarkdown = (text: string, isStreaming: boolean): string 
   return completed;
 };
 
+/**
+ * Exact match to reworkd/perplexity-style-streaming chunkString.
+ * Only pushes when we have exactly 2 words, so the last odd word is withheld until the next arrives (same speed/feel as repo).
+ * @see https://github.com/reworkd/perplexity-style-streaming/blob/main/src/pages/index.tsx
+ */
+function chunkString(str: string): string[] {
+  if (!str || !str.trim()) return [];
+  const words = str.split(/\s+/).filter(Boolean);
+  const chunks: string[] = [];
+  for (let i = 0; i < words.length; i += 2) {
+    const chunk = words.slice(i, i + 2);
+    if (chunk.length === 2) {
+      chunks.push(chunk.join(' ') + ' ');
+    }
+  }
+  return chunks;
+}
+
+/** Replace citation placeholders with [N] for plain chunk view during streaming. */
+function citationPlaceholdersToBrackets(text: string): string {
+  return text.replace(/%%CITATION_(?:SUPERSCRIPT|BRACKET|PENDING)_(\d+)%%/g, '[$1]');
+}
+
 // Helper to check if text has incomplete markdown that needs completion
 // Returns true if there are unclosed bold (**), italic (*), code blocks (```), or inline code (`)
 const hasIncompleteMarkdown = (text: string): boolean => {
@@ -769,17 +792,16 @@ const CitedTextContainer: React.FC<{ children: React.ReactNode }> = ({ children 
     data-cited-text-block
     className="cited-highlight-formatting"
     style={{
-      display: 'inline',
+      display: 'inline-block',
       margin: 0,
       padding: '2px 6px',
       borderRadius: 6,
       backgroundColor: '#FFFFFF',
       border: '1px solid #e5e7eb',
       boxShadow: '0 2px 4px rgba(0,0,0,0.06)',
-      boxDecorationBreak: 'clone',
-      WebkitBoxDecorationBreak: 'clone',
       lineHeight: 'inherit',
       overflow: 'visible',
+      verticalAlign: 'top',
     }}
   >
     {children}
@@ -832,7 +854,9 @@ const StreamingResponseText: React.FC<{
   showCitationPreviewBar?: boolean;
   /** Citation numbers (e.g. "1", "2") that user rejected — that cited text and marker are omitted from the response. */
   rejectedCitationNumbers?: Set<string>;
-}> = ({ text, isStreaming, citations, handleCitationClick, renderTextWithCitations, onTextUpdate, messageId, skipHighlight, showCitations = true, orangeCitationNumbers, greenCitationNumbers, selectedCitationNumber, selectedCitationMessageId, skipHighlightSwoop = false, skipRevealAnimation = false, onRevealComplete, savedCitationNumbersForMessage, onAskFollowUpFromCallout, onViewInDocumentFromCallout, citationViewedInDocument, onCloseDocumentFromCallout, orderedCitationNumbersForMessage, isCitationBarActive = true, currentCitationIndex = 0, acceptedCitationIndices, showReviewNextOnly = false, showInResponseCitationCallouts = true, showCitationPreviewBar = true, rejectedCitationNumbers }) => {
+  /** When true (default), use Perplexity-style chunked reveal during streaming; when false, use line-by-line overlay. */
+  usePerplexityStyle?: boolean;
+}> = ({ text, isStreaming, citations, handleCitationClick, renderTextWithCitations, onTextUpdate, messageId, skipHighlight, showCitations = true, orangeCitationNumbers, greenCitationNumbers, selectedCitationNumber, selectedCitationMessageId, skipHighlightSwoop = false, skipRevealAnimation = false, onRevealComplete, savedCitationNumbersForMessage, onAskFollowUpFromCallout, onViewInDocumentFromCallout, citationViewedInDocument, onCloseDocumentFromCallout, orderedCitationNumbersForMessage, isCitationBarActive = true, currentCitationIndex = 0, acceptedCitationIndices, showReviewNextOnly = false, showInResponseCitationCallouts = true, showCitationPreviewBar = true, rejectedCitationNumbers, usePerplexityStyle = true }) => {
   const [shouldAnimate, setShouldAnimate] = React.useState(false);
   const hasAnimatedRef = React.useRef(false);
   const hasSwoopedBlueRef = React.useRef(false);
@@ -930,6 +954,11 @@ const StreamingResponseText: React.FC<{
     overlayRevealDoneRef.current = true;
     setShowOverlay(false);
     setLines([]);
+    // Perplexity-style: no line overlay; just call onRevealComplete when stream ends
+    if (usePerplexityStyle) {
+      if (messageId) onRevealCompleteRef.current?.(messageId);
+      return;
+    }
     const wrapper = wrapperRef.current;
     const rects = lineRectsRef.current;
     const n = Math.ceil(revealTargetRef.current);
@@ -962,7 +991,7 @@ const StreamingResponseText: React.FC<{
       for (let i = 0; i < n; i++) wrapper.style.removeProperty(`--line-${i}`);
     }
     if (messageId) onRevealCompleteRef.current?.(messageId);
-  }, [isStreaming, messageId, text]);
+  }, [isStreaming, messageId, text, usePerplexityStyle]);
 
   const onTextUpdateRef = React.useRef(onTextUpdate);
   onTextUpdateRef.current = onTextUpdate;
@@ -1176,6 +1205,7 @@ const StreamingResponseText: React.FC<{
     if (!text || !textContainerRef.current) return;
     if (skipRevealAnimation) return;
     if (!isStreaming) return;
+    if (usePerplexityStyle) return; // Perplexity-style uses chunk animation, not line overlay
     const grew = text.length > prevTextLenRef.current;
     prevTextLenRef.current = text.length;
     if (grew && !overlayRevealDoneRef.current) {
@@ -1186,7 +1216,7 @@ const StreamingResponseText: React.FC<{
         requestAnimationFrame(measureLines);
       });
     }
-  }, [text, measureLines, skipRevealAnimation, isStreaming]);
+  }, [text, measureLines, skipRevealAnimation, isStreaming, usePerplexityStyle]);
 
   // Fallback: when overlay is shown but we have no lines yet (DOM wasn't ready), re-measure until we get lines or give up
   React.useLayoutEffect(() => {
@@ -1218,13 +1248,11 @@ const StreamingResponseText: React.FC<{
   if (!text) {
     return null;
   }
-  
-  // Text is already pre-completed at the streaming layer (extractMarkdownBlocks)
-  // No need for runtime markdown completion - text is always valid markdown
-  // Filter out unwanted phrases about opening documents
+
+  // Single formatted path: when streaming, complete partial markdown so ReactMarkdown always gets valid input (bold, titles as they stream).
+  // Pacing (2 words at a time) is done in the parent; child receives already-revealed prefix as text.
   const filteredText = React.useMemo(() => {
-    let cleaned = text;
-    // Remove phrases about opening documents (case-insensitive)
+    let cleaned = isStreaming ? completeIncompleteMarkdown(text, true) : text;
     const unwantedPhrases = [
       /i will now open the document to show you the source\.?/gi,
       /i will now open the document\.?/gi,
@@ -1240,7 +1268,7 @@ const StreamingResponseText: React.FC<{
       cleaned = cleaned.replace(pattern, '').trim();
     });
     return cleaned;
-  }, [text]);
+  }, [text, isStreaming]);
   
   // Use a stable key - ReactMarkdown will automatically re-render when content changes
   // Changing the key causes expensive remounts which create delays, especially at the end
@@ -1536,13 +1564,14 @@ const StreamingResponseText: React.FC<{
     return out;
   };
 
-  // Process flattened segments: wrap the run before each citation in blue (viewed in doc) or orange (citation-snippet chip)
+  // Process flattened segments: wrap the run before each citation in blue (viewed in doc) or orange (citation-snippet chip).
+  // When highlighted, the citation number is included inside the white container so it appears inside the box.
   const processFlattenedWithCitations = (segments: (string | React.ReactElement)[], keyPrefix: string): React.ReactNode[] => {
     const result: React.ReactNode[] = [];
     let pending: (string | React.ReactElement)[] = [];
     let segIndex = 0;
-    const flushPending = (num: string | null, citKey: string) => {
-      if (pending.length === 0) return;
+    const flushPending = (num: string | null, citKey: string, citationNode: React.ReactNode | null): boolean => {
+      if (pending.length === 0) return false;
       const wrapGreen = num != null && (greenCitationNumbers?.has(num) ?? false);
       const wrapBlue = num != null && (blueCitationNumbers?.has(num) ?? false);
       const wrapOrange = num != null && (orangeCitationNumbers?.has(num) ?? false);
@@ -1574,8 +1603,10 @@ const StreamingResponseText: React.FC<{
           content.push(React.cloneElement(seg, { ...(seg.props as object), key: `${keyPrefix}-el${segIndex}-${i}`, children: processed } as any));
         }
       });
-      // Use content as-is so ** and * formatting is preserved (titles, key facts stay bold). Same when highlighted or not so formatting stays constant when clicking/unclicking citations.
-      const displayContent = content;
+      // When highlighted, include the citation number inside the white container so it appears inside the box
+      const displayContent: React.ReactNode = inHighlight && citationNode != null
+        ? <>{content}{citationNode}</>
+        : content;
       if (wrapGreen) {
         result.push(<CitedTextContainer key={`${keyPrefix}-wrap-${segIndex}-${citKey}`}><GreenCitedTextHighlight key={`${keyPrefix}-green-${segIndex}-${citKey}`}>{displayContent}</GreenCitedTextHighlight></CitedTextContainer>);
       } else if (wrapBlue) {
@@ -1587,6 +1618,7 @@ const StreamingResponseText: React.FC<{
       }
       pending = [];
       segIndex += 1;
+      return inHighlight && citationNode != null;
     };
     segments.forEach((seg, i) => {
       if (typeof seg === 'string' && seg.startsWith('%%CITATION_')) {
@@ -1595,26 +1627,29 @@ const StreamingResponseText: React.FC<{
           pending = [];
           segIndex += 1;
         } else {
-          flushPending(num, seg);
           const citationNode = renderCitationPlaceholder(seg, `${keyPrefix}-cit-${i}-${seg}`);
-          if (citationNode != null) result.push(<React.Fragment key={`${keyPrefix}-cit-${i}`}>{citationNode}</React.Fragment>);
+          const consumed = flushPending(num, seg, citationNode);
+          if (!consumed && citationNode != null) result.push(<React.Fragment key={`${keyPrefix}-cit-${i}`}>{citationNode}</React.Fragment>);
         }
       } else {
         pending.push(seg);
       }
     });
-    flushPending(null, 'end');
+    flushPending(null, 'end', null);
     return result;
   };
 
-  // Helper to process children and replace citation placeholders + MAIN answer placeholders
+  // Helper to process children and replace citation placeholders + MAIN answer placeholders.
+  // When cited text is highlighted, the citation number is included inside the white container.
   const processChildrenWithCitations = (nodes: React.ReactNode): React.ReactNode => {
     return React.Children.map(nodes, child => {
       if (typeof child === 'string') {
         const parts = child.split(citationPlaceholderRe);
         const result: React.ReactNode[] = [];
+        let lastConsumedCitationIndex = -1; // citation at this index was included inside previous container
         parts.forEach((part, idx) => {
           if (part.startsWith('%%CITATION_')) {
+            if (idx === lastConsumedCitationIndex) return; // already inside previous container
             const citNum = citationNumFromPlaceholder(part);
             if (citNum != null && (rejectedCitationNumbers?.has(citNum) ?? false)) {
               // Rejected: omit this citation marker
@@ -1640,8 +1675,11 @@ const StreamingResponseText: React.FC<{
               // Trim cited run so the white highlight container doesn't show leading/trailing space
               const segmentToRender = isBetweenCitations && /^[\s,]*$/.test(part) ? '' : (inHighlight ? part.trim() : part);
               const content = renderStringSegment(segmentToRender, `text-${idx}`);
-              // Use same content (with ** and * from response) whether highlighted or not, so formatting stays constant when clicking/unclicking
-              const displayContent = content;
+              // When highlighted, include the citation number inside the white container
+              const citationNode = nextPart?.startsWith('%%CITATION_') ? renderCitationPlaceholder(nextPart, `cit-${idx + 1}-${nextPart}`) : null;
+              const displayContent = inHighlight && citationNode != null
+                ? <>{content}{citationNode}</>
+                : content;
               if (wrapGreen) {
                 result.push(<CitedTextContainer key={`wrap-${idx}`}><GreenCitedTextHighlight key={`green-${idx}`}>{displayContent}</GreenCitedTextHighlight></CitedTextContainer>);
               } else if (wrapBlue) {
@@ -1651,6 +1689,7 @@ const StreamingResponseText: React.FC<{
               } else {
                 result.push(...content);
               }
+              if (inHighlight && citationNode != null) lastConsumedCitationIndex = idx + 1;
             }
             // When nextCitNum is rejected we omit the text that leads to it
           }
@@ -2052,9 +2091,9 @@ const StreamingResponseText: React.FC<{
         ref={wrapperRef}
         style={{
           position: 'relative',
-          // Clip from first frame when streaming so title/heading is not visible before blur overlay (stream everything including title)
-          ...(isStreaming && text ? { overflow: 'hidden' as const } : {}),
-          ...(isStreaming && text && lines.length === 0 ? { height: 0, minHeight: 0 } : {}),
+          // Line-by-line reveal: clip during stream until overlay is ready. Perplexity-style: never clip so 2-words-at-a-time is visible.
+          ...(isStreaming && text && !usePerplexityStyle ? { overflow: 'hidden' as const } : {}),
+          ...(isStreaming && text && lines.length === 0 && !usePerplexityStyle ? { height: 0, minHeight: 0 } : {}),
         }}
       >
         <div
@@ -2080,7 +2119,7 @@ const StreamingResponseText: React.FC<{
         >
           <ReactMarkdown key={markdownKey} skipHtml={true} components={markdownComponents}>{textWithCitationPlaceholders}</ReactMarkdown>
         </div>
-        {!skipRevealAnimation && showOverlay && lines.length > 0 && (
+        {!skipRevealAnimation && !usePerplexityStyle && showOverlay && lines.length > 0 && (
           <div style={{ position: 'absolute', left: 0, top: 0, right: 0, bottom: 0, pointerEvents: 'none' }}>
             {lines.map((line, i) => {
               const lineBottom = line.top + line.height;
@@ -2165,7 +2204,8 @@ function streamingResponseTextAreEqual(
     prev.showReviewNextOnly === next.showReviewNextOnly &&
     prev.showInResponseCitationCallouts === next.showInResponseCitationCallouts &&
     prev.showCitationPreviewBar === next.showCitationPreviewBar &&
-    setsEqualNumber(prev.acceptedCitationIndices, next.acceptedCitationIndices)
+    setsEqualNumber(prev.acceptedCitationIndices, next.acceptedCitationIndices) &&
+    prev.usePerplexityStyle === next.usePerplexityStyle
   );
 }
 const StreamingResponseTextMemo = React.memo(StreamingResponseText, streamingResponseTextAreEqual);
@@ -5191,6 +5231,64 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   const chatStatusCompletedForResponseIdRef = React.useRef<Set<string>>(new Set());
   // When line-by-line reveal finishes for a message, add its id here so feedback bar can show only after animation
   const revealEndedForResponseIdRef = React.useRef<Set<string>>(new Set());
+  // Perplexity streaming: 2-words-at-a-time reveal driven from parent (single source of truth).
+  const usePerplexityStyleRef = React.useRef(true);
+  const streamingAccumulatedTextRef = React.useRef('');
+  const streamingTextRafScheduledRef = React.useRef(false);
+  const perplexityRevealIntervalRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
+  const perplexityRevealedCountRef = React.useRef(0);
+  const perplexityLoadingIdRef = React.useRef<string | null>(null);
+  const perplexityStreamEndedRef = React.useRef(false);
+  const perplexityFinalizeRef = React.useRef<(() => void) | null>(null);
+  const PERPLEXITY_CHUNK_MS = 100;
+  /** Reveal first N words but preserve original newlines/spacing (no join(' ') so paragraphs stay). */
+  const getPrefixUpToWordCount = (text: string, wordCount: number): string => {
+    if (wordCount <= 0 || !text) return '';
+    let count = 0;
+    let i = 0;
+    const s = text;
+    while (i < s.length && count < wordCount) {
+      while (i < s.length && /\s/.test(s[i])) i++;
+      if (i >= s.length) break;
+      while (i < s.length && !/\s/.test(s[i])) i++;
+      count++;
+    }
+    return s.slice(0, i);
+  };
+  const startPerplexityRevealInterval = React.useCallback(() => {
+    if (perplexityRevealIntervalRef.current != null) return;
+    perplexityRevealedCountRef.current = 0;
+    perplexityStreamEndedRef.current = false;
+    perplexityFinalizeRef.current = null;
+    perplexityRevealIntervalRef.current = setInterval(() => {
+      const lid = perplexityLoadingIdRef.current;
+      const raw = streamingAccumulatedTextRef.current;
+      if (!lid || !raw) return;
+      const total = raw.trim().split(/\s+/).filter(Boolean).length;
+      perplexityRevealedCountRef.current = Math.min(perplexityRevealedCountRef.current + 2, total);
+      const take = perplexityRevealedCountRef.current;
+      const prefix = getPrefixUpToWordCount(raw, take);
+      setChatMessages(prev => prev.map(msg => msg.id === lid ? { ...msg, text: prefix } : msg));
+      if (perplexityStreamEndedRef.current && (take >= total || total === 0)) {
+        if (perplexityRevealIntervalRef.current != null) {
+          clearInterval(perplexityRevealIntervalRef.current);
+          perplexityRevealIntervalRef.current = null;
+        }
+        perplexityLoadingIdRef.current = null;
+        perplexityFinalizeRef.current?.();
+        perplexityFinalizeRef.current = null;
+      }
+    }, PERPLEXITY_CHUNK_MS);
+  }, []);
+  const stopPerplexityRevealInterval = React.useCallback(() => {
+    if (perplexityRevealIntervalRef.current != null) {
+      clearInterval(perplexityRevealIntervalRef.current);
+      perplexityRevealIntervalRef.current = null;
+    }
+    perplexityLoadingIdRef.current = null;
+    perplexityStreamEndedRef.current = false;
+    perplexityFinalizeRef.current = null;
+  }, []);
   const [revealCompleteTick, setRevealCompleteTick] = React.useState(0);
   const { openFeedback: openFeedbackModal } = useFeedbackModal();
   const citationExport = useCitationExportOptional();
@@ -9109,26 +9207,29 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   // This ensures consistent behavior across all queries
                   const cleanedText = cleanResponseText(displayedText);
                   
-                  // CRITICAL: Set isLoading to false as soon as text appears to stop animations immediately
-                  // This ensures spinning animations stop when response text starts displaying
-                  setChatMessages(prev => prev.map(msg => {
-                    if (msg.id === loadingResponseId) {
-                      // If this is the first time we're adding text, set isLoading to false
-                      const wasLoading = msg.isLoading;
-                      const hasTextNow = cleanedText.trim().length > 0;
-                      
-                      if (wasLoading && hasTextNow) {
-                        console.log('✅ SideChatPanel: Response text appeared, setting isLoading to false (query prop path):', {
-                          loadingResponseId,
-                          textLength: cleanedText.length,
-                          textPreview: cleanedText.substring(0, 100)
-                        });
+                  // Perplexity repo method: do not drive streaming message text from block queue (token stream drives it)
+                  if (!usePerplexityStyleRef.current) {
+                    // CRITICAL: Set isLoading to false as soon as text appears to stop animations immediately
+                    // This ensures spinning animations stop when response text starts displaying
+                    setChatMessages(prev => prev.map(msg => {
+                      if (msg.id === loadingResponseId) {
+                        // If this is the first time we're adding text, set isLoading to false
+                        const wasLoading = msg.isLoading;
+                        const hasTextNow = cleanedText.trim().length > 0;
+                        
+                        if (wasLoading && hasTextNow) {
+                          console.log('✅ SideChatPanel: Response text appeared, setting isLoading to false (query prop path):', {
+                            loadingResponseId,
+                            textLength: cleanedText.length,
+                            textPreview: cleanedText.substring(0, 100)
+                          });
+                        }
+                        
+                        return { ...msg, text: cleanedText, isLoading: false, responseCompletedAt: msg.responseCompletedAt ?? Date.now() };
                       }
-                      
-                      return { ...msg, text: cleanedText, isLoading: false, responseCompletedAt: msg.responseCompletedAt ?? Date.now() };
-                    }
-                    return msg;
-                  }));
+                      return msg;
+                    }));
+                  }
                   // Update chat status outside setState updater to avoid "Cannot update component while rendering another" (once per response when text first appears)
                   if (cleanedText.trim().length > 0 && currentChatId && !chatStatusCompletedForResponseIdRef.current.has(loadingResponseId)) {
                     chatStatusCompletedForResponseIdRef.current.add(loadingResponseId);
@@ -9296,13 +9397,20 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               (token: string) => {
                 accumulatedText += token;
                 tokenBuffer += token;
-                
+                streamingAccumulatedTextRef.current = accumulatedText;
+
                 // Check if chat is active before updating UI
                 // CRITICAL: For new chats, currentChatId might not be updated yet (async state)
                 // So we check activeChatIdRef which is set synchronously, or savedChatId for new chats
                 // Also allow updates if we're restoring the same chat that's processing
                 // Use unified helper for consistent chat active check
                 const chatIsActive = isChatActiveForQuery(queryChatId, savedChatId);
+
+                // Perplexity: 2-words-at-a-time driven by parent interval (single source of truth)
+                if (usePerplexityStyleRef.current && chatIsActive && !isBotPausedRef.current) {
+                  perplexityLoadingIdRef.current = loadingResponseId;
+                  startPerplexityRevealInterval();
+                }
                 
                 // Only process tokens if not paused and chat is active
                 if (!isBotPausedRef.current && chatIsActive) {
@@ -9337,11 +9445,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               },
               // onComplete: Final response received - flush buffer and complete animation
               (data: any) => {
-                // Check if chat is active
-                // CRITICAL: For new chats, currentChatId might not be updated yet (async state)
-                // Use unified helper for consistent chat active check
+                if (usePerplexityStyleRef.current) {
+                  perplexityStreamEndedRef.current = true;
+                } else {
+                  stopPerplexityRevealInterval();
+                }
                 const chatIsActive = isChatActiveForQuery(queryChatId, savedChatId);
-                
                 console.log('✅ SideChatPanel: onComplete received:', { 
                   hasData: !!data, 
                   hasSummary: !!data?.summary, 
@@ -9639,10 +9748,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   waited += checkInterval;
                   if (!isProcessingQueue && blockQueue.length === 0 && !tokenBuffer.trim() && !pendingBuffer.trim()) {
                     clearInterval(checkQueue);
-                    finalizeText();
+                    if (usePerplexityStyleRef.current) perplexityFinalizeRef.current = () => finalizeText();
+                    else finalizeText();
                   } else if (waited >= maxWait) {
                     clearInterval(checkQueue);
-                    finalizeText();
+                    if (usePerplexityStyleRef.current) perplexityFinalizeRef.current = () => finalizeText();
+                    else finalizeText();
                   }
                 }, checkInterval);
               },
@@ -11761,44 +11872,33 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   // Add block to displayed text
                   displayedText += block;
                   
-                  // Clean the text (remove EVIDENCE_FEEDBACK tags, etc.) but don't complete markdown here
-                  // Let StreamingResponseText component handle markdown completion based on isStreaming state
-                  // This ensures consistent behavior across all queries
                   const cleanedText = cleanResponseText(displayedText);
-                  
-                  // CRITICAL: Set isLoading to false as soon as text appears to stop animations immediately
-                  // This ensures spinning animations stop when response text starts displaying
-                  setChatMessages(prev => prev.map(msg => {
-                    if (msg.id === loadingResponseId) {
-                      // If this is the first time we're adding text, set isLoading to false
-                      const wasLoading = msg.isLoading;
-                      const hasTextNow = cleanedText.trim().length > 0;
-                      
-                      if (wasLoading && hasTextNow) {
-                        console.log('✅ SideChatPanel: Response text appeared, setting isLoading to false (initial query):', {
-                          loadingResponseId,
-                          textLength: cleanedText.length,
-                          textPreview: cleanedText.substring(0, 100)
-                        });
+                  if (!usePerplexityStyleRef.current) {
+                    // CRITICAL: Set isLoading to false as soon as text appears to stop animations immediately
+                    setChatMessages(prev => prev.map(msg => {
+                      if (msg.id === loadingResponseId) {
+                        const wasLoading = msg.isLoading;
+                        const hasTextNow = cleanedText.trim().length > 0;
+                        if (wasLoading && hasTextNow) {
+                          console.log('✅ SideChatPanel: Response text appeared, setting isLoading to false (initial query):', {
+                            loadingResponseId,
+                            textLength: cleanedText.length,
+                            textPreview: cleanedText.substring(0, 100)
+                          });
+                        }
+                        return { ...msg, text: cleanedText, isLoading: false, responseCompletedAt: msg.responseCompletedAt ?? Date.now() };
                       }
-                      
-                      return { ...msg, text: cleanedText, isLoading: false, responseCompletedAt: msg.responseCompletedAt ?? Date.now() };
-                    }
-                    return msg;
-                  }));
-                  // Update chat status outside setState updater to avoid "Cannot update component while rendering another" (once per response when text first appears)
+                      return msg;
+                    }));
+                  }
                   if (cleanedText.trim().length > 0 && currentChatId && !chatStatusCompletedForResponseIdRef.current.has(loadingResponseId)) {
                     chatStatusCompletedForResponseIdRef.current.add(loadingResponseId);
                     updateChatStatus(currentChatId, 'completed');
                   }
                   
-                  // Determine delay based on block type and size
-                  // Headings: slightly longer delay
-                  // Regular blocks: shorter delay for smooth streaming
                   const isHeading = block.match(/^##+\s+/);
                   const blockSize = block.length;
-                  const delay = isHeading ? 60 : Math.min(40, Math.max(20, blockSize / 3)); // 20-40ms, longer for headings
-                  
+                  const delay = isHeading ? 60 : Math.min(40, Math.max(20, blockSize / 3));
                   setTimeout(processNext, delay);
                 } else {
                   isProcessingQueue = false;
@@ -11808,12 +11908,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               processNext();
             };
             
-            // Process tokens and extract complete blocks
             const processTokensWithDelay = () => {
-              // Extract complete blocks from current buffer
               extractCompleteBlocks();
-              
-              // If we have blocks in queue and not processing, start processing
               if (blockQueue.length > 0 && !isProcessingQueue) {
                 processBlockQueue();
               }
@@ -11870,18 +11966,25 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               propertyId,
               [], // No message history for initial query
               sessionId,
-              // onToken: Buffer tokens until we have complete markdown blocks, then display formatted
+              // onToken: Perplexity 2-words-at-a-time driven by parent interval
               (token: string) => {
                 accumulatedText += token;
                 tokenBuffer += token;
-                
-                // Process tokens to find complete markdown blocks
-                // This allows ReactMarkdown to render formatted output progressively
+                streamingAccumulatedTextRef.current = accumulatedText;
+
+                if (usePerplexityStyleRef.current) {
+                  perplexityLoadingIdRef.current = loadingResponseId;
+                  startPerplexityRevealInterval();
+                }
                 processTokensWithDelay();
               },
               // onComplete: Final response received - flush buffer and complete animation
               (data: any) => {
-                // Apply streamed title from backend (everything shown to user is streamed)
+                if (usePerplexityStyleRef.current) {
+                  perplexityStreamEndedRef.current = true;
+                } else {
+                  stopPerplexityRevealInterval();
+                }
                 if (data?.title && currentChatId) {
                   setChatTitle(data.title);
                   updateChatTitle(currentChatId, data.title);
@@ -11898,16 +12001,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   pendingBuffer = '';
                   tokenBuffer = '';
                   
-                  // Clean the text but don't complete markdown here
-                  // StreamingResponseText will handle completion based on isStreaming state
-                  const cleanedText = cleanResponseText(displayedText);
-                  
-                  // Update with final text
-                  setChatMessages(prev => prev.map(msg => 
-                    msg.id === loadingResponseId 
-                      ? { ...msg, text: cleanedText }
-                      : msg
-                  ));
+                  // Update with final text only when not using Perplexity (finalizeText will set final content in both cases)
+                  if (!usePerplexityStyleRef.current) {
+                    const cleanedText = cleanResponseText(displayedText);
+                    setChatMessages(prev => prev.map(msg => 
+                      msg.id === loadingResponseId 
+                        ? { ...msg, text: cleanedText }
+                        : msg
+                    ));
+                  }
                 }
                 
                 // Wait for queue to finish processing, then set final text
@@ -11981,10 +12083,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   waited += checkInterval;
                   if (!isProcessingQueue && blockQueue.length === 0 && !tokenBuffer.trim() && !pendingBuffer.trim()) {
                     clearInterval(checkQueue);
-                    finalizeText();
+                    if (usePerplexityStyleRef.current) perplexityFinalizeRef.current = () => finalizeText();
+                    else finalizeText();
                   } else if (waited >= maxWait) {
                     clearInterval(checkQueue);
-                    finalizeText();
+                    if (usePerplexityStyleRef.current) perplexityFinalizeRef.current = () => finalizeText();
+                    else finalizeText();
                   }
                 }, checkInterval);
               },
@@ -13240,47 +13344,32 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               // Get next block from queue
               const block = blockQueue.shift();
               if (block) {
-                // Add block to displayed text
                 displayedText += block;
-                
-                // Clean the text (remove EVIDENCE_FEEDBACK tags, etc.) but don't complete markdown here
-                // Let StreamingResponseText component handle markdown completion based on isStreaming state
-                // This ensures consistent behavior across all queries
                 const cleanedText = cleanResponseText(displayedText);
-                
-                // CRITICAL: Set isLoading to false as soon as text appears to stop animations immediately
-                // This ensures spinning animations stop when response text starts displaying
-                setChatMessages(prev => prev.map(msg => {
-                  if (msg.id === loadingResponseId) {
-                    // If this is the first time we're adding text, set isLoading to false
-                    const wasLoading = msg.isLoading;
-                    const hasTextNow = cleanedText.trim().length > 0;
-                    
-                    if (wasLoading && hasTextNow) {
-                      console.log('✅ SideChatPanel: Response text appeared, setting isLoading to false (follow-up query path 2):', {
-                        loadingResponseId,
-                        textLength: cleanedText.length,
-                        textPreview: cleanedText.substring(0, 100)
-                      });
+                if (!usePerplexityStyleRef.current) {
+                  setChatMessages(prev => prev.map(msg => {
+                    if (msg.id === loadingResponseId) {
+                      const wasLoading = msg.isLoading;
+                      const hasTextNow = cleanedText.trim().length > 0;
+                      if (wasLoading && hasTextNow) {
+                        console.log('✅ SideChatPanel: Response text appeared, setting isLoading to false (follow-up query path 2):', {
+                          loadingResponseId,
+                          textLength: cleanedText.length,
+                          textPreview: cleanedText.substring(0, 100)
+                        });
+                      }
+                      return { ...msg, text: cleanedText, isLoading: false, responseCompletedAt: msg.responseCompletedAt ?? Date.now() };
                     }
-                    
-                    return { ...msg, text: cleanedText, isLoading: false, responseCompletedAt: msg.responseCompletedAt ?? Date.now() };
-                  }
-                  return msg;
-                }));
-                // Update chat status outside setState updater to avoid "Cannot update component while rendering another" (once per response when text first appears)
+                    return msg;
+                  }));
+                }
                 if (cleanedText.trim().length > 0 && queryChatId && !chatStatusCompletedForResponseIdRef.current.has(loadingResponseId)) {
                   chatStatusCompletedForResponseIdRef.current.add(loadingResponseId);
                   updateChatStatus(queryChatId, 'completed');
                 }
-                
-                // Determine delay based on block type and size
-                // Headings: slightly longer delay
-                // Regular blocks: shorter delay for smooth streaming
                 const isHeading = block.match(/^##+\s+/);
                 const blockSize = block.length;
-                const delay = isHeading ? 60 : Math.min(40, Math.max(20, blockSize / 3)); // 20-40ms, longer for headings
-                
+                const delay = isHeading ? 60 : Math.min(40, Math.max(20, blockSize / 3));
                 setTimeout(processNext, delay);
               } else {
                 isProcessingQueue = false;
@@ -13290,12 +13379,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             processNext();
           };
           
-          // Process tokens and extract complete blocks
           const processTokensWithDelay = () => {
-            // Extract complete blocks from current buffer
             extractCompleteBlocks();
-            
-            // If we have blocks in queue and not processing, start processing
             if (blockQueue.length > 0 && !isProcessingQueue) {
               processBlockQueue();
             }
@@ -13491,17 +13576,18 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             propertyId,
             messageHistory,
             chatSessionId, // Use chat's sessionId (not component sessionId) for backend isolation
-            // onToken: Buffer tokens until we have complete markdown blocks, then display formatted
+            // onToken: Perplexity 2-words-at-a-time driven by parent interval
             (token: string) => {
               accumulatedText += token;
               tokenBuffer += token;
-              
-              // Use unified helper for consistent chat active check
+              streamingAccumulatedTextRef.current = accumulatedText;
+
               const chatIsActive = isChatActiveForQuery(queryChatId, savedChatId);
-              
+              if (usePerplexityStyleRef.current && chatIsActive) {
+                perplexityLoadingIdRef.current = loadingResponseId;
+                startPerplexityRevealInterval();
+              }
               if (chatIsActive) {
-                // Process tokens to find complete markdown blocks
-                // This allows ReactMarkdown to render formatted output progressively
                 processTokensWithDelay();
               } else if (queryChatId) {
                 // Chat is inactive - buffer the update
@@ -13532,42 +13618,32 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             },
             // onComplete: Final response received - flush buffer and complete animation
             (data: any) => {
-              // Use unified helper for consistent chat active check
+              if (usePerplexityStyleRef.current) {
+                perplexityStreamEndedRef.current = true;
+              } else {
+                stopPerplexityRevealInterval();
+              }
               const chatIsActive = isChatActiveForQuery(queryChatId, savedChatId);
-              
-              // Extract any remaining complete blocks
               extractCompleteBlocks();
-              
-              // Flush any remaining incomplete buffer - add to displayed text
               if (tokenBuffer.trim() || pendingBuffer.trim()) {
                 displayedText += pendingBuffer + tokenBuffer;
                 pendingBuffer = '';
                 tokenBuffer = '';
-                
-                // Clean the text but don't complete markdown here
-                // StreamingResponseText will handle completion based on isStreaming state
-                const cleanedText = cleanResponseText(displayedText);
-                
-                if (chatIsActive) {
-                  // Update with final text (only if active)
+                if (!usePerplexityStyleRef.current && chatIsActive) {
+                  const cleanedText = cleanResponseText(displayedText);
                   setChatMessages(prev => prev.map(msg => 
-                    msg.id === loadingResponseId 
-                      ? { ...msg, text: cleanedText }
-                      : msg
+                    msg.id === loadingResponseId ? { ...msg, text: cleanedText } : msg
                   ));
                 }
               }
               
-              // Drain blockQueue into displayedText so finalizeText has full content (fixes truncation on Accept)
               while (blockQueue.length > 0) {
                 const b = blockQueue.shift();
                 if (b) displayedText += b;
               }
               
-              // Wait for queue to finish processing, then set final text
               const finalizeText = () => {
                 playCompletionSound();
-              // Use displayedText as source of truth - it was pre-completed during streaming
               // This ensures text doesn't change when streaming completes (prevents "click" effect)
               // Use longer of displayedText vs accumulatedText as safety net so we never persist shortened content
                 const finalText = cleanResponseText((displayedText.length >= accumulatedText.length ? displayedText : accumulatedText) || data.summary || "");
@@ -13756,10 +13832,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 waited += checkInterval;
                 if (!isProcessingQueue && blockQueue.length === 0 && !tokenBuffer.trim() && !pendingBuffer.trim()) {
                   clearInterval(checkQueue);
-                  finalizeText();
+                  if (usePerplexityStyleRef.current) perplexityFinalizeRef.current = () => finalizeText();
+                  else finalizeText();
                 } else if (waited >= maxWait) {
                   clearInterval(checkQueue);
-                  finalizeText();
+                  if (usePerplexityStyleRef.current) perplexityFinalizeRef.current = () => finalizeText();
+                  else finalizeText();
                 }
               }, checkInterval);
             },
