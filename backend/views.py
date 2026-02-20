@@ -667,7 +667,10 @@ def query_documents_stream():
     # Wrap everything in try-except to ensure CORS headers are always set
     try:
         logger.info("🔵 [STREAM] Starting request processing")
-        from flask import Response, stream_with_context
+        from flask import Response, stream_with_context, g
+        request_id = getattr(g, "request_id", "") if g else ""
+        if request_id:
+            logger.info("[PERF] request_id=%s /api/llm/query/stream started", request_id)
         # json is already imported at module level (line 23)
         import asyncio
         import time
@@ -3067,8 +3070,11 @@ def query_documents_stream():
                         }
                         yield f"data: {json.dumps(complete_data)}\n\n"
                         timing.mark("complete_sent")
+                        from flask import g as _g
+                        _req_id = getattr(_g, "request_id", "") if _g else ""
                         logger.info("🟣 [PERF][STREAM] %s", json.dumps({
                             "endpoint": "/api/llm/query/stream",
+                            "request_id": _req_id,
                             "session_id": session_id,
                             "doc_ids_count": len(document_ids) if document_ids else 0,
                             "timing": timing.to_ms()

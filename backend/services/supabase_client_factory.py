@@ -21,18 +21,8 @@ SUPABASE_TIMEOUT = httpx.Timeout(
 )
 
 
-@lru_cache(maxsize=1)
-def get_supabase_client() -> Client:
-    """
-    Create (and cache) a Supabase client with shared configuration.
-    Includes timeout settings to prevent long hangs during authentication and queries.
-    
-    The Supabase Python client uses httpx internally. By configuring timeouts, we prevent
-    the 55-second hangs that occur on connection errors.
-
-    Returns:
-        Supabase Client instance configured with service role credentials and timeouts.
-    """
+def _create_supabase_client_impl() -> Client:
+    """Internal: create one Supabase client (used by cached and uncached getters)."""
     # #region agent log
     import json, time
     try:
@@ -119,6 +109,23 @@ def get_supabase_client() -> Client:
         except: pass
         # #endregion
         return client
+
+
+@lru_cache(maxsize=1)
+def get_supabase_client() -> Client:
+    """
+    Create (and cache) a Supabase client with shared configuration.
+    Use this for normal single-threaded or request-scoped usage.
+    """
+    return _create_supabase_client_impl()
+
+
+def create_supabase_client_uncached() -> Client:
+    """
+    Create a new Supabase client every time (no cache).
+    Use this in worker threads so each thread has its own client and avoids shared-state issues.
+    """
+    return _create_supabase_client_impl()
 
 
 def get_supabase_db_url() -> str:

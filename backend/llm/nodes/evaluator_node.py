@@ -13,10 +13,12 @@ import logging
 from backend.llm.types import MainWorkflowState
 from backend.llm.utils.execution_events import ExecutionEvent, ExecutionEventEmitter
 from backend.llm.contracts.validators import validate_evaluator_input
+from backend.llm.utils.node_logging import log_node_perf
 
 logger = logging.getLogger(__name__)
 
 
+@log_node_perf("evaluator")
 async def evaluator_node(state: MainWorkflowState, runnable_config=None) -> MainWorkflowState:
     """
     Evaluator node - evaluates execution and emits evaluation event.

@@ -5,6 +5,15 @@ Coordinates vector/SQL retrieval, document processing, and summarisation.
 NOW WITH STATE PERSISTENCE via PostgreSQL checkpointer for conversation memory.
 """
 
+from pathlib import Path
+# Ensure project-root .env is loaded before we read LANGCHAIN_* (main_graph can be imported before main.py load_dotenv)
+try:
+    from dotenv import load_dotenv
+    _root = Path(__file__).resolve().parents[3]  # backend/llm/graphs -> project root
+    load_dotenv(_root / ".env", override=True)  # override so LangSmith vars always win
+except Exception:
+    pass
+
 from langgraph.graph import StateGraph, START, END
 import logging
 import os
@@ -24,6 +33,10 @@ if not os.getenv("LANGCHAIN_API_KEY") and os.getenv("LANGSMITH_API_KEY"):
     
 if not os.getenv("LANGCHAIN_PROJECT") and os.getenv("LANGSMITH_PROJECT"):
     os.environ["LANGCHAIN_PROJECT"] = os.getenv("LANGSMITH_PROJECT", "")
+
+# EU (or other region) endpoint: if you use eu.smith.langchain.com, set this so traces go to EU API
+if os.getenv("LANGSMITH_ENDPOINT") and not os.getenv("LANGCHAIN_ENDPOINT"):
+    os.environ["LANGCHAIN_ENDPOINT"] = os.getenv("LANGSMITH_ENDPOINT", "")
 
 # Also check for direct LANGCHAIN_* variables (standard naming)
 if os.getenv("LANGCHAIN_TRACING_V2", "").lower() == "true":

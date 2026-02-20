@@ -159,7 +159,26 @@ def create_app():
 
     from .admin import admin
     app.register_blueprint(admin, url_prefix='/')
-    
+
+    # Request timing: log elapsed time per request for performance analysis
+    import time
+    import uuid
+
+    @app.before_request
+    def _request_timing_start():
+        from flask import g
+        g.request_start_time = time.perf_counter()
+        g.request_id = uuid.uuid4().hex[:8]
+
+    @app.after_request
+    def _request_timing_log(response):
+        from flask import g, request
+        if hasattr(g, "request_start_time"):
+            elapsed_ms = max(0, int(round((time.perf_counter() - g.request_start_time) * 1000)))
+            request_id = getattr(g, "request_id", "")
+            logger.info("[PERF] %s %s %s %d ms%s", request.method, request.path, response.status_code, elapsed_ms, f" request_id=%s" % request_id if request_id else "")
+        return response
+
     # Add error handler to ensure CORS headers on all error responses
     # This catches exceptions that escape route-level error handling
     @app.errorhandler(500)

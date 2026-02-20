@@ -17,6 +17,7 @@ from langchain_core.output_parsers import PydanticOutputParser
 from backend.llm.config import config
 from backend.llm.types import MainWorkflowState
 from backend.llm.contracts.validators import validate_planner_output
+from backend.llm.utils.node_logging import log_node_perf
 from backend.llm.prompts.planner import (
     get_planner_system_prompt,
     get_planner_initial_prompt,
@@ -301,6 +302,7 @@ class ExecutionPlanModel(BaseModel):
     format_instruction: Optional[str] = Field(default=None, description="User-requested output format (e.g. one concise paragraph)")
 
 
+@log_node_perf("planner")
 async def planner_node(state: MainWorkflowState, runnable_config=None) -> MainWorkflowState:
     """
     Planner node - generates structured execution plan from user query.

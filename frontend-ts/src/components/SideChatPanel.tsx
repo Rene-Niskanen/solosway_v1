@@ -935,6 +935,12 @@ const StreamingResponseText: React.FC<{
     prevMessageIdForExcerptRef.current = messageId;
   }
 
+  // Track which citation numbers have already had their callout entrance animation (so we don't re-animate on every remount during streaming)
+  const citationEntranceDoneRef = React.useRef<Set<string>>(new Set());
+  React.useEffect(() => {
+    citationEntranceDoneRef.current.clear();
+  }, [messageId]);
+
   React.useEffect(() => {
     streamingRef.current = !!(text && text.length > prevTextLenRef.current) || !!isStreaming;
   }, [text, isStreaming]);
@@ -1845,6 +1851,11 @@ const StreamingResponseText: React.FC<{
     return acc;
   }, [text, citations]);
 
+  // Keep latest excerpt in a ref so markdownComponents can read it without being in deps — avoids remounting
+  // CitationCallout (and re-running its entrance animation) on every stream chunk.
+  const citedExcerptByNumberRef = React.useRef<Record<string, string>>(citedExcerptByNumber);
+  citedExcerptByNumberRef.current = citedExcerptByNumber;
+
   // When citation bar is active we show only one callout, placed below the block where that citation appears (not at bottom of response)
   const citationBarMode = showCitationPreviewBar && showInResponseCitationCallouts && isCitationBarActive && (orderedCitationNumbersForMessage?.length ?? 0) > 0;
   const currentCitationNum = citationBarMode && orderedCitationNumbersForMessage && currentCitationIndex >= 0 && currentCitationIndex < orderedCitationNumbersForMessage.length
@@ -1876,7 +1887,9 @@ const StreamingResponseText: React.FC<{
             isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === currentCitationNum}
             onCloseDocument={onCloseDocumentFromCallout}
             hideBarActions={true}
-            messageCitedExcerpt={citedExcerptByNumber[currentCitationNum]}
+            messageCitedExcerpt={citedExcerptByNumberRef.current[currentCitationNum]}
+            skipEntranceAnimation={citationEntranceDoneRef.current.has(currentCitationNum)}
+            onEntranceComplete={() => citationEntranceDoneRef.current.add(currentCitationNum)}
           />
         </div>
       );
@@ -1912,7 +1925,7 @@ const StreamingResponseText: React.FC<{
           )}
           {showCitationPreviewBar && showInResponseCitationCallouts && !citationBarMode && citationNumbers.filter(showCalloutForNum).map((num, i) => (
             <div key={`callout-p-${i}-${num}`} style={{ width: '100%', maxWidth: '100%', minWidth: 0, boxSizing: 'border-box' }}>
-              <CitationCallout key={`callout-${messageId ?? ''}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumber[num]} />
+              <CitationCallout key={`callout-${messageId ?? ''}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumberRef.current[num]} skipEntranceAnimation={citationEntranceDoneRef.current.has(num)} onEntranceComplete={() => citationEntranceDoneRef.current.add(num)} />
             </div>
           ))}
           {citationBarMode && renderSingleCalloutIfHere(citationNumbers, 'p')}
@@ -1933,7 +1946,7 @@ const StreamingResponseText: React.FC<{
             wordBreak: 'break-word'
           }}>{processChildrenWithCitationsFlattened(children ?? null, 'h1')}</h1>
           {showCitationPreviewBar && showInResponseCitationCallouts && !citationBarMode && citationNumbers.filter(showCalloutForNum).map((num, i) => (
-            <CitationCallout key={`callout-${messageId ?? ''}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumber[num]} />
+            <CitationCallout key={`callout-${messageId ?? ''}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumberRef.current[num]} skipEntranceAnimation={citationEntranceDoneRef.current.has(num)} onEntranceComplete={() => citationEntranceDoneRef.current.add(num)} />
           ))}
           {citationBarMode && renderSingleCalloutIfHere(citationNumbers, 'h1')}
         </>
@@ -1954,7 +1967,7 @@ const StreamingResponseText: React.FC<{
           }}>{processChildrenWithCitationsFlattened(children ?? null, 'h2')}</h2>
           {showCitationPreviewBar && showInResponseCitationCallouts && !citationBarMode && citationNumbers.filter(showCalloutForNum).map((num, i) => (
             <div key={`callout-h2-${i}-${num}`} style={{ width: '100%', maxWidth: '100%', minWidth: 0, boxSizing: 'border-box' }}>
-              <CitationCallout key={`callout-${messageId ?? ''}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumber[num]} />
+              <CitationCallout key={`callout-${messageId ?? ''}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumberRef.current[num]} skipEntranceAnimation={citationEntranceDoneRef.current.has(num)} onEntranceComplete={() => citationEntranceDoneRef.current.add(num)} />
             </div>
           ))}
           {citationBarMode && renderSingleCalloutIfHere(citationNumbers, 'h2')}
@@ -1976,7 +1989,7 @@ const StreamingResponseText: React.FC<{
           }}>{processChildrenWithCitationsFlattened(children ?? null, 'h3')}</h3>
           {showCitationPreviewBar && showInResponseCitationCallouts && !citationBarMode && citationNumbers.filter(showCalloutForNum).map((num, i) => (
             <div key={`callout-h3-${i}-${num}`} style={{ width: '100%', maxWidth: '100%', minWidth: 0, boxSizing: 'border-box' }}>
-              <CitationCallout key={`callout-${messageId ?? ''}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumber[num]} />
+              <CitationCallout key={`callout-${messageId ?? ''}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumberRef.current[num]} skipEntranceAnimation={citationEntranceDoneRef.current.has(num)} onEntranceComplete={() => citationEntranceDoneRef.current.add(num)} />
             </div>
           ))}
           {citationBarMode && renderSingleCalloutIfHere(citationNumbers, 'h3')}
@@ -2015,7 +2028,7 @@ const StreamingResponseText: React.FC<{
           {processChildrenWithCitationsFlattened(children ?? null, 'li')}
           {showCitationPreviewBar && showInResponseCitationCallouts && !citationBarMode && citationNumbers.filter(showCalloutForNum).map((num, i) => (
             <div key={`callout-li-${i}-${num}`} style={{ width: '100%', maxWidth: '100%', minWidth: 0, boxSizing: 'border-box' }}>
-              <CitationCallout key={`callout-${messageId ?? ''}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumber[num]} />
+              <CitationCallout key={`callout-${messageId ?? ''}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumberRef.current[num]} skipEntranceAnimation={citationEntranceDoneRef.current.has(num)} onEntranceComplete={() => citationEntranceDoneRef.current.add(num)} />
             </div>
           ))}
           {citationBarMode && renderSingleCalloutIfHere(citationNumbers, 'li')}
@@ -2067,7 +2080,7 @@ const StreamingResponseText: React.FC<{
           }}>{processChildrenWithCitationsFlattened(children ?? null, 'blockquote')}</blockquote>
           {showCitationPreviewBar && showInResponseCitationCallouts && !citationBarMode && citationNumbers.filter(showCalloutForNum).map((num, i) => (
             <div key={`callout-blockquote-${i}-${num}`} style={{ width: '100%', maxWidth: '100%', minWidth: 0, boxSizing: 'border-box' }}>
-              <CitationCallout key={`callout-${messageId ?? ''}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumber[num]} />
+              <CitationCallout key={`callout-${messageId ?? ''}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumberRef.current[num]} skipEntranceAnimation={citationEntranceDoneRef.current.has(num)} onEntranceComplete={() => citationEntranceDoneRef.current.add(num)} />
             </div>
           ))}
           {citationBarMode && renderSingleCalloutIfHere(citationNumbers, 'blockquote')}
@@ -2075,7 +2088,7 @@ const StreamingResponseText: React.FC<{
       );
     },
     hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '17.5px 0' }} />,
-  }; }, [renderCitationPlaceholder, skipHighlight, runBlueSwoop, isStreaming, citations, citedExcerptByNumber, onAskFollowUpFromCallout, onViewInDocumentFromCallout, citationViewedInDocument, onCloseDocumentFromCallout, messageId, citationBarMode, isCitationBarActive, orderedCitationNumbersForMessage, currentCitationIndex, acceptedCitationIndices, showReviewNextOnly, showCurrentCallout, currentCitationNum, showInResponseCitationCallouts, showCitationPreviewBar, blueCitationNumbers, orangeCitationNumbers, greenCitationNumbers, blueAnimatedCitationNumbers, rejectedCitationNumbers]);
+  }; }, [renderCitationPlaceholder, skipHighlight, runBlueSwoop, isStreaming, citations, onAskFollowUpFromCallout, onViewInDocumentFromCallout, citationViewedInDocument, onCloseDocumentFromCallout, messageId, citationBarMode, isCitationBarActive, orderedCitationNumbersForMessage, currentCitationIndex, acceptedCitationIndices, showReviewNextOnly, showCurrentCallout, currentCitationNum, showInResponseCitationCallouts, showCitationPreviewBar, blueCitationNumbers, orangeCitationNumbers, greenCitationNumbers, blueAnimatedCitationNumbers, rejectedCitationNumbers]);
 
   // Perplexity-style: same structure as markdownComponents (real <p>, <h1>, lists) but block content gets 2-word motion.span wrap so reveal works without flattening layout.
   const perplexityMarkdownComponents = React.useMemo(() => {
@@ -2098,7 +2111,9 @@ const StreamingResponseText: React.FC<{
             isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === currentCitationNum}
             onCloseDocument={onCloseDocumentFromCallout}
             hideBarActions={true}
-            messageCitedExcerpt={citedExcerptByNumber[currentCitationNum]}
+            messageCitedExcerpt={citedExcerptByNumberRef.current[currentCitationNum]}
+            skipEntranceAnimation={citationEntranceDoneRef.current.has(currentCitationNum)}
+            onEntranceComplete={() => citationEntranceDoneRef.current.add(currentCitationNum)}
           />
         </div>
       );
@@ -2136,7 +2151,7 @@ const StreamingResponseText: React.FC<{
           )}
           {showCitationPreviewBar && showInResponseCitationCallouts && !citationBarMode && citationNumbers.filter(showCalloutForNum).map((num, i) => (
             <div key={`callout-p-${i}-${num}`} style={{ width: '100%', maxWidth: '100%', minWidth: 0, boxSizing: 'border-box' }}>
-              <CitationCallout key={`callout-${messageId ?? ''}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumber[num]} />
+              <CitationCallout key={`callout-${messageId ?? ''}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumberRef.current[num]} skipEntranceAnimation={citationEntranceDoneRef.current.has(num)} onEntranceComplete={() => citationEntranceDoneRef.current.add(num)} />
             </div>
           ))}
           {citationBarMode && renderSingleCalloutIfHere(citationNumbers, 'p')}
@@ -2155,7 +2170,7 @@ const StreamingResponseText: React.FC<{
           wordBreak: 'break-word'
         }}>{wrapTwoWordChunksInMotion(processChildrenWithCitationsFlattened(children ?? null, 'h1'), 'h1')}</h1>
         {showCitationPreviewBar && showInResponseCitationCallouts && !citationBarMode && collectCitationNumbersInOrder(children ?? null).filter(showCalloutForNum).map((num, i) => (
-          <CitationCallout key={`callout-${messageId ?? ''}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumber[num]} />
+          <CitationCallout key={`callout-${messageId ?? ''}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumberRef.current[num]} skipEntranceAnimation={citationEntranceDoneRef.current.has(num)} onEntranceComplete={() => citationEntranceDoneRef.current.add(num)} />
         ))}
         {citationBarMode && renderSingleCalloutIfHere(collectCitationNumbersInOrder(children ?? null), 'h1')}
       </>
@@ -2173,7 +2188,7 @@ const StreamingResponseText: React.FC<{
         }}>{wrapTwoWordChunksInMotion(processChildrenWithCitationsFlattened(children ?? null, 'h2'), 'h2')}</h2>
         {showCitationPreviewBar && showInResponseCitationCallouts && !citationBarMode && collectCitationNumbersInOrder(children ?? null).filter(showCalloutForNum).map((num, i) => (
           <div key={`callout-h2-${i}-${num}`} style={{ width: '100%', maxWidth: '100%', minWidth: 0, boxSizing: 'border-box' }}>
-            <CitationCallout key={`callout-${messageId ?? ''}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumber[num]} />
+            <CitationCallout key={`callout-${messageId ?? ''}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumberRef.current[num]} skipEntranceAnimation={citationEntranceDoneRef.current.has(num)} onEntranceComplete={() => citationEntranceDoneRef.current.add(num)} />
           </div>
         ))}
         {citationBarMode && renderSingleCalloutIfHere(collectCitationNumbersInOrder(children ?? null), 'h2')}
@@ -2192,7 +2207,7 @@ const StreamingResponseText: React.FC<{
         }}>{wrapTwoWordChunksInMotion(processChildrenWithCitationsFlattened(children ?? null, 'h3'), 'h3')}</h3>
         {showCitationPreviewBar && showInResponseCitationCallouts && !citationBarMode && collectCitationNumbersInOrder(children ?? null).filter(showCalloutForNum).map((num, i) => (
           <div key={`callout-h3-${i}-${num}`} style={{ width: '100%', maxWidth: '100%', minWidth: 0, boxSizing: 'border-box' }}>
-            <CitationCallout key={`callout-${messageId ?? ''}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumber[num]} />
+            <CitationCallout key={`callout-${messageId ?? ''}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumberRef.current[num]} skipEntranceAnimation={citationEntranceDoneRef.current.has(num)} onEntranceComplete={() => citationEntranceDoneRef.current.add(num)} />
           </div>
         ))}
         {citationBarMode && renderSingleCalloutIfHere(collectCitationNumbersInOrder(children ?? null), 'h3')}
@@ -2213,7 +2228,7 @@ const StreamingResponseText: React.FC<{
           {wrapTwoWordChunksInMotion(processChildrenWithCitationsFlattened(children ?? null, 'li'), 'li')}
           {showCitationPreviewBar && showInResponseCitationCallouts && !citationBarMode && citationNumbers.filter(showCalloutForNum).map((num, i) => (
             <div key={`callout-li-${i}-${num}`} style={{ width: '100%', maxWidth: '100%', minWidth: 0, boxSizing: 'border-box' }}>
-              <CitationCallout key={`callout-${messageId ?? ''}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumber[num]} />
+              <CitationCallout key={`callout-${messageId ?? ''}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumberRef.current[num]} skipEntranceAnimation={citationEntranceDoneRef.current.has(num)} onEntranceComplete={() => citationEntranceDoneRef.current.add(num)} />
             </div>
           ))}
           {citationBarMode && renderSingleCalloutIfHere(citationNumbers, 'li')}
@@ -2235,14 +2250,14 @@ const StreamingResponseText: React.FC<{
           }}>{wrapTwoWordChunksInMotion(processChildrenWithCitationsFlattened(children ?? null, 'blockquote'), 'blockquote')}</blockquote>
           {showCitationPreviewBar && showInResponseCitationCallouts && !citationBarMode && citationNumbers.filter(showCalloutForNum).map((num, i) => (
             <div key={`callout-blockquote-${i}-${num}`} style={{ width: '100%', maxWidth: '100%', minWidth: 0, boxSizing: 'border-box' }}>
-              <CitationCallout key={`callout-${messageId ?? ''}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumber[num]} />
+              <CitationCallout key={`callout-${messageId ?? ''}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumberRef.current[num]} skipEntranceAnimation={citationEntranceDoneRef.current.has(num)} onEntranceComplete={() => citationEntranceDoneRef.current.add(num)} />
             </div>
           ))}
           {citationBarMode && renderSingleCalloutIfHere(citationNumbers, 'blockquote')}
         </>
       );
     },
-  }; }, [markdownComponents, wrapTwoWordChunksInMotion, citations, citedExcerptByNumber, showCitationPreviewBar, showInResponseCitationCallouts, citationBarMode, messageId, onAskFollowUpFromCallout, onViewInDocumentFromCallout, citationViewedInDocument, onCloseDocumentFromCallout, acceptedCitationIndices, orderedCitationNumbersForMessage, showCurrentCallout, currentCitationNum]);
+  }; }, [markdownComponents, wrapTwoWordChunksInMotion, citations, showCitationPreviewBar, showInResponseCitationCallouts, citationBarMode, messageId, onAskFollowUpFromCallout, onViewInDocumentFromCallout, citationViewedInDocument, onCloseDocumentFromCallout, acceptedCitationIndices, orderedCitationNumbersForMessage, showCurrentCallout, currentCitationNum]);
 
   return (
     <>
@@ -3017,7 +3032,11 @@ const CitationCallout: React.FC<{
   hideBarActions?: boolean;
   /** When provided, show this in the cited-text container (same text as the run highlighted in the message for this citation). */
   messageCitedExcerpt?: string;
-}> = ({ citationNumber, citation, onAskFollowUp, onViewInDocument, isViewedInDocument, onCloseDocument, isCalloutClosed, onCloseCallout, hideBarActions, messageCitedExcerpt: messageCitedExcerptProp }) => {
+  /** When true, do not run entrance animation (used during streaming so callouts don't re-animate on every parent re-render). */
+  skipEntranceAnimation?: boolean;
+  /** Called when entrance animation has run (or was skipped). Parent uses this to mark citation so future mounts skip animation. */
+  onEntranceComplete?: () => void;
+}> = ({ citationNumber, citation, onAskFollowUp, onViewInDocument, isViewedInDocument, onCloseDocument, isCalloutClosed, onCloseCallout, hideBarActions, messageCitedExcerpt: messageCitedExcerptProp, skipEntranceAnimation = false, onEntranceComplete }) => {
   const raw = (citation?.cited_text ?? citation?.block_content ?? '').trim();
   const text = raw ? sanitizeCitationCalloutText(raw) : '';
   const fallbackDisplay = text || 'View in document for full source.';
@@ -3165,6 +3184,14 @@ const CitationCallout: React.FC<{
     onWheel: handleWheel,
   };
 
+  const citationCalloutEntrance = skipEntranceAnimation
+    ? { initial: false as const, animate: { opacity: 1, y: 0 } as const, transition: { duration: 0 } as const }
+    : { initial: { opacity: 0, y: 6 } as const, animate: { opacity: 1, y: 0 } as const, transition: { duration: 0.28, ease: [0.25, 0.1, 0.25, 1] as const } };
+  // When skipping entrance, notify parent immediately so future mounts also skip
+  React.useEffect(() => {
+    if (skipEntranceAnimation && onEntranceComplete) onEntranceComplete();
+  }, [skipEntranceAnimation, onEntranceComplete]);
+
   const handleClose = React.useCallback(() => {
     // Commit local close immediately so the callout disappears on next paint (parent update is batched and can be slow)
     flushSync(() => setIsClosed(true));
@@ -3205,9 +3232,13 @@ const CitationCallout: React.FC<{
     const showAccept = !hideBarActions && onCloseCallout;
     const hasAnyAction = showAskQuestion || showViewDocument || showAccept;
     return (
-      <div
+      <motion.div
         ref={calloutRootRef}
         {...rootProps}
+        initial={citationCalloutEntrance.initial}
+        animate={citationCalloutEntrance.animate}
+        transition={citationCalloutEntrance.transition}
+        onAnimationComplete={!skipEntranceAnimation && onEntranceComplete ? () => onEntranceComplete() : undefined}
         style={{
           position: 'relative',
           display: 'flex',
@@ -3802,13 +3833,18 @@ const CitationCallout: React.FC<{
           Preview not available for Word documents. Use &quot;View in document&quot; to open the file.
         </div>
       )}
-      </div>
+      </motion.div>
     );
   }
 
   return (
-    <div
+    <motion.div
+      ref={calloutRootRef}
       {...rootProps}
+      initial={citationCalloutEntrance.initial}
+      animate={citationCalloutEntrance.animate}
+      transition={citationCalloutEntrance.transition}
+      onAnimationComplete={!skipEntranceAnimation && onEntranceComplete ? () => onEntranceComplete() : undefined}
       style={{
         position: 'relative',
         display: 'flex',
@@ -3880,7 +3916,7 @@ const CitationCallout: React.FC<{
           </button>
         </div>
       )}
-    </div>
+    </motion.div>
   );
 };
 
@@ -16610,6 +16646,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   </Popover>
                   )}
                   
+                  {/* Close chat (X): only show when not on opening screen, or when 50/50 with project (property/details or document preview) */}
+                  {(!useCenteredEmptyState || isPropertyDetailsOpen || !!expandedCardViewDoc) && (
                   <button
                     onClick={() => {
                       // CRITICAL: Save chat state before closing (granular restoration)
@@ -16675,6 +16713,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   >
                     <X className="w-5 h-5 text-[#666]" strokeWidth={1.75} />
                   </button>
+                  )}
                 </div>
               </div>
               {/* Chat starred toast - below header buttons, corner of chat */}
@@ -17619,11 +17658,26 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           <button type="button" aria-label="Previous citation" disabled={effectiveIndex <= 0} onClick={(e) => { e.preventDefault(); e.stopPropagation(); setCitationReviewCurrentIndex((i) => Math.max(0, i - 1)); }} style={{ display: 'flex', padding: 3.3, border: 'none', background: 'none', cursor: effectiveIndex <= 0 ? 'default' : 'pointer', color: effectiveIndex <= 0 ? '#d1d5db' : '#6b7280' }}><ChevronUp size={16} /></button>
                           <button type="button" aria-label="Next citation" disabled={effectiveIndex >= total - 1} onClick={(e) => { e.preventDefault(); e.stopPropagation(); setCitationReviewCurrentIndex((i) => Math.min(total - 1, i + 1)); }} style={{ display: 'flex', padding: 3.3, border: 'none', background: 'none', cursor: effectiveIndex >= total - 1 ? 'default' : 'pointer', color: effectiveIndex >= total - 1 ? '#d1d5db' : '#6b7280' }}><ChevronDown size={16} /></button>
                         </div>
-                        {canViewDoc && (
-                          <button type="button" title="View" onClick={(e) => { e.preventDefault(); e.stopPropagation(); citationData && openCitationInDocumentView(citationData as CitationData, false); }} style={{ ...barBtn, fontWeight: 600, color: '#374151', backgroundColor: '#FFFFFF' }} onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#f9fafb'; }} onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#FFFFFF'; }}>
-                            View
-                          </button>
-                        )}
+                        {canViewDoc && (() => {
+                          const isDocOpenForCurrent = !!citationViewedInDocument && citationViewedInDocument.messageId === reviewMsgId && citationViewedInDocument.citationNumber === String(currentNum);
+                          return (
+                            <button
+                              type="button"
+                              title={isDocOpenForCurrent ? 'Close' : 'View'}
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                if (isDocOpenForCurrent) closeExpandedCardView();
+                                else if (citationData) openCitationInDocumentView(citationData as CitationData, false);
+                              }}
+                              style={{ ...barBtn, fontWeight: 600, color: '#374151', backgroundColor: '#FFFFFF' }}
+                              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#f9fafb'; }}
+                              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#FFFFFF'; }}
+                            >
+                              {isDocOpenForCurrent ? 'Close' : 'View'}
+                            </button>
+                          );
+                        })()}
                         {/* Accept/Reject only when this message is not yet completed; when revisiting an accepted message, show only counter + View document */}
                         {!citationReviewCompletedForMessageIds.has(reviewMsgId) && (
                         <div style={{ display: 'flex', alignItems: 'center', gap: 6.6, minWidth: 220 }}>

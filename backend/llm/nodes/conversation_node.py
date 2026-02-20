@@ -21,10 +21,12 @@ from backend.llm.prompts.personality import (
     DEFAULT_PERSONALITY_ID,
 )
 from backend.llm.nodes.responder_node import PersonalityResponse
+from backend.llm.utils.node_logging import log_node_perf
 
 logger = logging.getLogger(__name__)
 
 
+@log_node_perf("conversation")
 async def conversation_node(state: MainWorkflowState) -> MainWorkflowState:
     """
     Generate a conversational reply (no document retrieval).

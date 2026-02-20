@@ -13,11 +13,13 @@ from backend.llm.prompts.context_manager import (
     get_context_summary_prompt,
     get_context_summary_message_content,
 )
+from backend.llm.utils.node_logging import log_node_perf
 import logging
 
 logger = logging.getLogger(__name__)
 
 
+@log_node_perf("context_manager")
 async def context_manager_node(state: MainWorkflowState) -> MainWorkflowState:
     """
     Automatically summarize old messages when token count exceeds 8k.

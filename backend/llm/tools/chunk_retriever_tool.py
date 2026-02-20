@@ -10,12 +10,15 @@ Implements global reranking to prevent context explosion (selects top 8-15 chunk
 
 from typing import List, Dict, Optional, Literal
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from pydantic import BaseModel, Field
 from langchain_core.tools import StructuredTool
-from backend.services.supabase_client_factory import get_supabase_client
+from backend.services.supabase_client_factory import get_supabase_client, create_supabase_client_uncached
 from backend.services.local_embedding_service import get_default_service
 
 logger = logging.getLogger(__name__)
+
+CHUNK_RETRIEVAL_MAX_PARALLEL_DOCS = 6
 
 
 class ChunkRetrievalInput(BaseModel):
@@ -106,6 +109,10 @@ def retrieve_chunks(
         
         logger.info(f"[RETRIEVER] Query profile: {query_profile} (top_k={effective_top_k}, min_score={effective_min_score}, per_doc_limit={per_doc_limit})")
         
+        # Precompute for keyword search (used by per-doc helper)
+        query_lower = query.lower().strip()
+        query_words = [w for w in query_lower.split() if len(w) > 3]
+        
         # 3. Query embedding for vector search (HyDE when enabled; skip for summarize - we fetch all chunks). Keyword search always uses original query.
         query_embedding = None
         if not is_summarize_query:
@@ -137,41 +144,32 @@ def retrieve_chunks(
         
         # 6. Search chunks within each document (HYBRID: Vector + Keyword)
         
-        all_chunks = []
-        document_metadata_cache = {}  # Cache document metadata (filename and classification_type)
-        
-        for doc_id in valid_document_ids:
+        def _chunks_for_one_document(supabase_client, doc_id: str) -> List[Dict]:
+            """Fetch and format chunks for a single document. Returns [] on any exception."""
             try:
                 # 5a. For summarize queries: get ALL chunks directly (bypass vector search)
                 # For normal queries: use vector similarity search
                 if is_summarize_query:
-                    # Summarize: Get ALL chunks directly from database, no similarity filtering
                     logger.debug(f"   Summarize query - getting ALL chunks for document: {doc_id[:8]}...")
-                    direct_query = supabase.table('document_vectors').select(
+                    direct_query = supabase_client.table('document_vectors').select(
                         'id, document_id, chunk_index, chunk_text, chunk_text_clean, page_number, metadata, bbox, blocks'
                     ).eq('document_id', doc_id).order('page_number').order('chunk_index').execute()
                     
                     vector_chunks = direct_query.data or []
-                    # Add a dummy similarity score (1.0) for all chunks since we're not filtering by similarity
                     for chunk in vector_chunks:
                         chunk['similarity'] = 1.0
                     logger.info(f"   ✅ Retrieved {len(vector_chunks)} chunks directly from document {doc_id[:8]} (summarize mode)")
                     if vector_chunks:
-                        # Debug: log first chunk structure
                         first_chunk = vector_chunks[0]
                         logger.info(f"   First chunk keys: {list(first_chunk.keys())}, has 'id': {'id' in first_chunk}, id value: {first_chunk.get('id', 'MISSING')}")
                         logger.info(f"   First chunk sample: {str(first_chunk)[:200]}...")
                     else:
                         logger.error(f"   ⚠️ CRITICAL: No chunks returned from Supabase for document {doc_id[:8]}!")
                 else:
-                    # Normal queries: Vector search within document using match_chunks() RPC
                     logger.debug(f"   Vector search for chunks in document: {doc_id[:8]}...")
-                    
-                    # More permissive threshold for initial retrieval
                     match_threshold = max(0.2, effective_min_score * 0.5)
-                    match_count = effective_top_k * 2  # Get more candidates for reranking
-                    
-                    vector_response = supabase.rpc(
+                    match_count = effective_top_k * 2
+                    vector_response = supabase_client.rpc(
                         'match_chunks',
                         {
                             'query_embedding': query_embedding,
@@ -180,29 +178,21 @@ def retrieve_chunks(
                             'match_count': match_count
                         }
                     ).execute()
-                    
                     vector_chunks = vector_response.data or []
                     logger.debug(f"   Vector search found {len(vector_chunks)} chunks in document {doc_id[:8]}")
                 
-                # 5b. Keyword search on chunk_text for exact matches (complements vector search)
-                # SKIP keyword search for summarize queries (we already have all chunks)
+                # 5b. Keyword search
                 keyword_chunks = []
                 if not is_summarize_query:
                     try:
-                        query_lower = query.lower().strip()
-                        query_words = [w for w in query_lower.split() if len(w) > 3]  # Only words longer than 3 chars
-                        
-                        keyword_query = supabase.table('document_vectors').select(
+                        keyword_query = supabase_client.table('document_vectors').select(
                             'id, document_id, chunk_index, chunk_text, chunk_text_clean, page_number, metadata, bbox, blocks'
                         ).eq('document_id', doc_id)
-                        
-                        # Search in chunk_text
                         or_conditions = [f'chunk_text.ilike.%{query_lower}%', f'chunk_text_clean.ilike.%{query_lower}%']
                         if len(query_words) > 1:
                             for word in query_words:
                                 or_conditions.append(f'chunk_text.ilike.%{word}%')
                                 or_conditions.append(f'chunk_text_clean.ilike.%{word}%')
-                        
                         keyword_query = keyword_query.or_(','.join(or_conditions)).limit(effective_top_k).execute()
                         keyword_chunks = keyword_query.data or []
                         logger.debug(f"   Keyword search found {len(keyword_chunks)} chunks in document {doc_id[:8]}")
@@ -210,47 +200,34 @@ def retrieve_chunks(
                         logger.warning(f"   Keyword search failed for document {doc_id[:8]}: {kw_error}")
                         keyword_chunks = []
                 
-                # 5c. Combine vector and keyword results (deduplicate by chunk_id)
+                # 5c. Combine vector and keyword results
                 chunks_dict = {}
-                vector_chunk_ids = []  # Track chunk IDs from vector search for bbox lookup
+                vector_chunk_ids = []
                 logger.info(f"   Processing {len(vector_chunks)} vector_chunks for document {doc_id[:8]}...")
                 for idx, chunk in enumerate(vector_chunks):
                     chunk_id = str(chunk.get('id', ''))
                     if not chunk_id:
-                        # For summarize queries, chunks might not have id in the response
-                        # Use document_id + chunk_index as fallback identifier
                         chunk_id = f"{doc_id}_{chunk.get('chunk_index', idx)}"
                         logger.info(f"   Chunk {idx} missing 'id', using fallback: {chunk_id[:30]}...")
-                    
-                    # Track if bbox is missing (match_chunks RPC might not return it)
                     if not chunk.get('bbox') or not isinstance(chunk.get('bbox'), dict):
                         vector_chunk_ids.append(chunk_id)
-                    
-                    chunks_dict[chunk_id] = {
-                        **chunk,
-                        'similarity': float(chunk.get('similarity', 1.0))
-                    }
+                    chunks_dict[chunk_id] = {**chunk, 'similarity': float(chunk.get('similarity', 1.0))}
                 logger.info(f"   Added {len(chunks_dict)} chunks to chunks_dict for document {doc_id[:8]}")
                 
-                # 5c.1. Fetch bbox for vector chunks that don't have it (match_chunks RPC might not return bbox)
                 if vector_chunk_ids:
                     try:
                         logger.debug(f"   Fetching bbox for {len(vector_chunk_ids)} vector chunks missing bbox...")
-                        bbox_response = supabase.table('document_vectors').select(
+                        bbox_response = supabase_client.table('document_vectors').select(
                             'id, bbox, blocks'
                         ).in_('id', vector_chunk_ids).execute()
-                        
                         for row in bbox_response.data or []:
                             chunk_id = str(row.get('id'))
                             bbox = row.get('bbox')
                             blocks = row.get('blocks', [])
-                            
                             if chunk_id in chunks_dict:
-                                # Always attach blocks for block-level citations (match_chunks RPC doesn't return them)
                                 if blocks and isinstance(blocks, list):
                                     chunks_dict[chunk_id]['blocks'] = blocks
                                     logger.debug(f"   ✅ Added {len(blocks)} blocks to {chunk_id[:8]}...")
-                                # Prefer chunk-level bbox, fallback to first block's bbox
                                 if isinstance(bbox, dict) and bbox.get('left') is not None:
                                     chunks_dict[chunk_id]['bbox'] = bbox
                                     logger.debug(f"   ✅ Added chunk-level bbox to {chunk_id[:8]}...")
@@ -266,131 +243,95 @@ def retrieve_chunks(
                     except Exception as bbox_fetch_error:
                         logger.warning(f"   Failed to fetch bbox for vector chunks: {bbox_fetch_error}")
                 
-                # Add keyword matches with quality-based scoring (skip for summarize queries)
                 if not is_summarize_query and keyword_chunks:
-                    query_lower = query.lower().strip()
-                    query_words = [w for w in query_lower.split() if len(w) > 3]  # Only words longer than 3 chars
-                    
                     for chunk in keyword_chunks:
                         chunk_id = str(chunk.get('id', ''))
                         chunk_text = (chunk.get('chunk_text', '') or chunk.get('chunk_text_clean', '') or '').lower()
-                        
-                        # Calculate keyword match quality
                         keyword_score = 0.0
                         if query_lower in chunk_text:
-                            keyword_score = 0.7  # Exact match
+                            keyword_score = 0.7
                         elif any(word in chunk_text for word in query_words if len(word) > 3):
                             matched_words = sum(1 for word in query_words if word in chunk_text)
-                            keyword_score = min(0.5, 0.1 * matched_words)  # 0.1 per word, max 0.5
+                            keyword_score = min(0.5, 0.1 * matched_words)
                         else:
-                            keyword_score = 0.2  # Fallback for any match
-                        
+                            keyword_score = 0.2
                         if chunk_id in chunks_dict:
-                            # Found in both: small boost (don't clamp!)
                             original_score = chunks_dict[chunk_id]['similarity']
-                            chunks_dict[chunk_id]['similarity'] = original_score + (keyword_score * 0.1)  # Small boost, no clamping
+                            chunks_dict[chunk_id]['similarity'] = original_score + (keyword_score * 0.1)
                             logger.debug(f"   Chunk {chunk_id[:8]} found in both: vector={original_score:.3f}, boost={keyword_score * 0.1:.3f}")
                         else:
-                            # Keyword-only: use keyword score (not hardcoded 0.6)
-                            chunks_dict[chunk_id] = {
-                                **chunk,
-                                'similarity': keyword_score  # Quality-based, not hardcoded
-                            }
+                            chunks_dict[chunk_id] = {**chunk, 'similarity': keyword_score}
                         logger.debug(f"   Chunk {chunk_id[:8]} keyword-only: score={keyword_score:.3f}")
                 
                 chunks = list(chunks_dict.values())
                 logger.info(f"   Combined: {len(chunks)} unique chunks from document {doc_id[:8]} (vector: {len(vector_chunks)}, keyword: {len(keyword_chunks)}, chunks_dict: {len(chunks_dict)})")
                 
-                # CRITICAL: For summarize queries, ensure we have chunks
                 if is_summarize_query and len(chunks) == 0 and len(vector_chunks) > 0:
                     logger.error(f"   ⚠️ CRITICAL: {len(vector_chunks)} chunks retrieved but 0 chunks in chunks_dict!")
                     if vector_chunks:
                         logger.error(f"   First chunk structure: {list(vector_chunks[0].keys())}")
                         logger.error(f"   First chunk 'id' value: {vector_chunks[0].get('id', 'MISSING')}")
-                    # Fallback: add chunks directly even if they don't have proper IDs
                     for idx, chunk in enumerate(vector_chunks):
                         fallback_id = f"{doc_id}_fallback_{idx}"
-                        chunks_dict[fallback_id] = {
-                            **chunk,
-                            'similarity': float(chunk.get('similarity', 1.0))
-                        }
+                        chunks_dict[fallback_id] = {**chunk, 'similarity': float(chunk.get('similarity', 1.0))}
                     chunks = list(chunks_dict.values())
                     logger.warning(f"   Fallback: Added {len(chunks)} chunks using fallback IDs")
                 
-                # Get document metadata (cache to avoid repeated queries)
-                if doc_id not in document_metadata_cache:
-                    try:
-                        doc_response = supabase.table('documents').select(
-                            'id, original_filename, classification_type'
-                        ).eq('id', doc_id).limit(1).execute()
-                        
-                        if doc_response.data and len(doc_response.data) > 0:
-                            doc_data = doc_response.data[0]
-                            document_metadata_cache[doc_id] = {
-                                'filename': doc_data.get('original_filename', 'unknown'),
-                                'classification_type': doc_data.get('classification_type', 'unknown')
-                            }
-                        else:
-                            document_metadata_cache[doc_id] = {
-                                'filename': 'unknown',
-                                'classification_type': 'unknown'
-                            }
-                            logger.warning(f"   Document {doc_id[:8]} not found in database")
-                    except Exception as e:
-                        logger.warning(f"   Failed to fetch metadata for document {doc_id[:8]}: {e}")
-                        document_metadata_cache[doc_id] = {
-                            'filename': 'unknown',
-                            'classification_type': 'unknown'
+                # Fetch document metadata for this doc only (no shared cache)
+                try:
+                    doc_response = supabase_client.table('documents').select(
+                        'id, original_filename, classification_type'
+                    ).eq('id', doc_id).limit(1).execute()
+                    if doc_response.data and len(doc_response.data) > 0:
+                        doc_data = doc_response.data[0]
+                        doc_metadata = {
+                            'filename': doc_data.get('original_filename', 'unknown'),
+                            'classification_type': doc_data.get('classification_type', 'unknown')
                         }
+                    else:
+                        doc_metadata = {'filename': 'unknown', 'classification_type': 'unknown'}
+                        logger.warning(f"   Document {doc_id[:8]} not found in database")
+                except Exception as e:
+                    logger.warning(f"   Failed to fetch metadata for document {doc_id[:8]}: {e}")
+                    doc_metadata = {'filename': 'unknown', 'classification_type': 'unknown'}
                 
-                doc_metadata = document_metadata_cache[doc_id]
                 doc_filename = doc_metadata.get('filename', 'unknown') if isinstance(doc_metadata, dict) else doc_metadata
                 doc_type = doc_metadata.get('classification_type', 'unknown') if isinstance(doc_metadata, dict) else 'unknown'
                 
-                # 5d. Format chunks with metadata
                 logger.info(f"   Formatting {len(chunks)} chunks for document {doc_id[:8]}...")
+                out = []
                 formatted_count = 0
                 for chunk in chunks:
                     try:
                         chunk_metadata = chunk.get('metadata', {})
                         if isinstance(chunk_metadata, str):
-                            # Handle case where metadata might be a JSON string
                             try:
                                 import json
                                 chunk_metadata = json.loads(chunk_metadata)
-                            except:
+                            except Exception:
                                 chunk_metadata = {}
-                        
-                        # Get chunk_id - use fallback if missing
                         chunk_id = str(chunk.get('id', ''))
                         if not chunk_id:
                             chunk_id = f"{doc_id}_{chunk.get('chunk_index', formatted_count)}"
-                        
-                        # Ensure we have chunk text
                         chunk_text = chunk.get('chunk_text', '') or chunk.get('chunk_text_clean', '')
                         if not chunk_text:
                             logger.warning(f"   Skipping chunk {chunk_id[:20]}... - no chunk text")
                             continue
-                        
                         chunk_bbox = chunk.get('bbox')
-                        # Log bbox status for debugging
                         if not chunk_bbox or not isinstance(chunk_bbox, dict):
                             logger.debug(f"   ⚠️ Chunk {chunk_id[:8]}... has no bbox (type: {type(chunk_bbox)})")
-                        
-                        # Include blocks for block-level citation highlighting (more precise than chunk-level)
                         blocks = chunk.get('blocks', [])
-                        
-                        all_chunks.append({
+                        out.append({
                             'chunk_id': chunk_id,
                             'document_id': doc_id,
                             'document_filename': doc_filename,
-                            'document_type': doc_type,  # Include document type for metadata
+                            'document_type': doc_type,
                             'chunk_index': chunk.get('chunk_index', formatted_count),
                             'chunk_text': chunk.get('chunk_text', ''),
                             'chunk_text_clean': chunk.get('chunk_text_clean', ''),
                             'page_number': chunk.get('page_number', 0),
-                            'bbox': chunk_bbox,  # Chunk-level bbox (fallback)
-                            'blocks': blocks,  # Block-level data for precise citation highlighting
+                            'bbox': chunk_bbox,
+                            'blocks': blocks,
                             'section_title': chunk_metadata.get('section_title') if isinstance(chunk_metadata, dict) else None,
                             'score': round(float(chunk.get('similarity', 1.0)), 4),
                             'metadata': chunk_metadata if isinstance(chunk_metadata, dict) else {}
@@ -399,12 +340,31 @@ def retrieve_chunks(
                     except Exception as format_error:
                         logger.error(f"   Failed to format chunk {formatted_count} from document {doc_id[:8]}: {format_error}", exc_info=True)
                         continue
-                logger.info(f"   ✅ Formatted {formatted_count} chunks for document {doc_id[:8]} (total all_chunks: {len(all_chunks)})")
-                
+                logger.info(f"   ✅ Formatted {formatted_count} chunks for document {doc_id[:8]} (total for doc: {len(out)})")
+                return out
             except Exception as doc_error:
-                # Continue to next document if one fails
                 logger.warning(f"   Failed to retrieve chunks for document {doc_id[:8]}: {doc_error}")
-                continue
+                return []
+        
+        all_chunks = []
+        if len(valid_document_ids) <= 1:
+            logger.info(f"[RETRIEVER] Single document: using sequential path (doc_count=1)")
+            supabase = get_supabase_client()
+            all_chunks = _chunks_for_one_document(supabase, valid_document_ids[0]) or [] if valid_document_ids else []
+        else:
+            logger.info(f"[RETRIEVER] Multiple documents: using parallel path (doc_count={len(valid_document_ids)}, max_workers={min(CHUNK_RETRIEVAL_MAX_PARALLEL_DOCS, len(valid_document_ids))})")
+            def worker(doc_id: str) -> List[Dict]:
+                try:
+                    client = create_supabase_client_uncached()
+                    return _chunks_for_one_document(client, doc_id) or []
+                except Exception as e:
+                    logger.warning(f"   Parallel worker failed for doc {doc_id[:8]}: {e}")
+                    return []
+            max_workers = min(CHUNK_RETRIEVAL_MAX_PARALLEL_DOCS, len(valid_document_ids))
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                results = list(executor.map(worker, valid_document_ids))
+            for chunk_list in results:
+                all_chunks.extend(chunk_list or [])
         
         if not all_chunks:
             logger.warning(f"   No chunks found for query: {query[:50]}...")

@@ -1,5 +1,7 @@
 from dotenv import load_dotenv
-load_dotenv()
+from os import path
+# Load .env from project root (where main.py lives) so LangSmith/tracing vars are always found
+load_dotenv(path.join(path.dirname(path.abspath(__file__)), ".env"))
 
 from backend import create_app
 from backend.models import Document, Property, PropertyDetails, DocumentRelationship

@@ -21,6 +21,7 @@ from langgraph.prebuilt import ToolNode
 
 from backend.llm.types import MainWorkflowState, Citation
 from backend.llm.utils.execution_events import ExecutionEvent, ExecutionEventEmitter
+from backend.llm.utils.node_logging import log_node_perf
 from backend.llm.nodes.agent_node import generate_conversational_answer, extract_chunk_citations_from_messages, get_document_filename
 from backend.llm.contracts.validators import validate_responder_output
 from backend.llm.config import config
@@ -2295,6 +2296,7 @@ async def generate_formatted_answer(
     return _strip_mid_response_generic_closings(answer)
 
 
+@log_node_perf("responder")
 async def responder_node(state: MainWorkflowState, runnable_config=None) -> MainWorkflowState:
     """
     Responder node - generates final answer from execution results.

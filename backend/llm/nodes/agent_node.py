@@ -32,6 +32,7 @@ from backend.llm.prompts.agent import (
 )
 from backend.llm.utils.system_prompts import get_system_prompt
 from backend.llm.utils.workspace_context import build_workspace_context
+from backend.llm.utils.node_logging import log_node_perf
 from backend.llm.tools.document_retriever_tool import create_document_retrieval_tool
 from backend.llm.tools.planning_tool import plan_step
 from backend.llm.tools.citation_mapping import create_chunk_citation_tool
@@ -200,6 +201,7 @@ async def generate_conversational_answer(user_query: str, chunk_text: str) -> st
         return "I encountered an error while generating the answer."
 
 
+@log_node_perf("agent")
 async def agent_node(state: MainWorkflowState, runnable_config=None) -> MainWorkflowState:
     """
     Unified agent - lets LLM see and react to tool results naturally.

@@ -364,7 +364,10 @@ def is_complex_query(query: str, document_ids: List[str]) -> bool:
 # The executor_agent_node function has been removed.
 # If you need to restore it, check git history or restore from backup.
 
+from backend.llm.utils.node_logging import log_node_perf
 
+
+@log_node_perf("executor")
 async def executor_node(state: MainWorkflowState, runnable_config=None) -> MainWorkflowState:
     """
     Executor node - executes next step(s) from execution plan.
