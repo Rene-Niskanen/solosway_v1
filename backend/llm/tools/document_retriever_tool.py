@@ -12,9 +12,10 @@ from typing import List, Dict, Optional, Literal
 import logging
 import os
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pydantic import BaseModel, Field
 from langchain_core.tools import StructuredTool
-from backend.services.supabase_client_factory import get_supabase_client
+from backend.services.supabase_client_factory import get_supabase_client, create_supabase_client_uncached
 
 logger = logging.getLogger(__name__)
 
@@ -231,140 +232,86 @@ def retrieve_documents(
         # HYBRID SEARCH: Vector + Keyword (BM25) + Address/Property + Metadata
         # This is critical for exact matches (parcel numbers, plot IDs, L.R. numbers, addresses)
         
-        # 1. Vector similarity search using match_document_embeddings() SQL function
-        # NOTE: Function renamed from match_documents to avoid conflict with existing function
-        # NOTE: Business filtering happens post-retrieval since RPC doesn't support WHERE clauses
-        logger.debug(f"🔍 Vector search for query: {query[:50]}...")
-        try:
-            # ADAPTIVE THRESHOLD: Adjust based on search_goal and query_type
-            # For "summarize" queries, use very low threshold (document name/type matching, not content similarity)
-            # For other queries, use more lenient threshold than default
-            if search_goal == "summarize":
-                # Summarize queries: very lenient (0.1) - we're matching by document name/type, not content
-                search_threshold = 0.1
-                logger.debug(f"   Summarize query detected - using very lenient threshold: {search_threshold}")
-            elif query_type == "broad":
-                # Broad queries: raised from 0.15 to 0.22 to avoid tangentially related docs
-                search_threshold = 0.22
-                logger.debug(f"   Broad query - using threshold: {search_threshold}")
-            else:
-                # Specific queries: raised from 0.2 to 0.32 so only more similar docs pass (reduces irrelevant retrieval)
-                if min_score is None:
-                    min_score = 0.7  # Default
-                search_threshold = min(min_score, 0.32)
-                logger.debug(f"   Specific query - using threshold: {search_threshold}")
-            
-            vector_response = supabase.rpc(
-                'match_document_embeddings',
-                {
-                    'query_embedding': query_embedding,
-                    'match_threshold': search_threshold,  # Lower threshold for better recall
-                    'match_count': top_k * 3  # Get more for reranking and business filtering
-                }
-            ).execute()
-            
-            vector_results = vector_response.data or []
-            logger.debug(f"   Vector search found {len(vector_results)} documents (threshold: {search_threshold})")
-            
-            # Log sample results for debugging
-            if vector_results:
-                sample = vector_results[0]
-                logger.debug(f"   Sample result: {sample.get('original_filename', 'unknown')[:30]}, similarity: {sample.get('similarity', 0):.3f}")
-        except Exception as e:
-            logger.error(f"Vector search failed: {e}")
-            vector_results = []
-        
-        # 2. Keyword search (BM25/full-text) for exact matches
-        logger.debug(f"🔍 Keyword search for query: {query[:50]}...")
-        keyword_results = []
-        try:
-            # Use ILIKE pattern matching on summary_text and original_filename
-            # This provides keyword matching for exact matches (parcel numbers, plot IDs, etc.)
-            # Note: Full-text search via tsvector is available via GIN index, but Supabase
-            # PostgREST doesn't expose PostgreSQL full-text search operators directly.
-            # ILIKE is the most practical approach for now.
-            
-            # Build keyword search query
-            keyword_query = supabase.table('documents').select(
-                'id, original_filename, classification_type, summary_text, document_summary'
-            )
-            
-            # Filter by business_id if provided (CRITICAL for multi-tenancy)
-            if business_id:
-                try:
-                    from uuid import UUID
-                    UUID(business_id)  # Validate UUID format
-                    keyword_query = keyword_query.eq('business_uuid', business_id)
-                    logger.debug(f"   Filtering by business_uuid: {business_id[:8]}...")
-                except (ValueError, TypeError):
-                    # Not a UUID, try business_id field
-                    keyword_query = keyword_query.eq('business_id', business_id)
-                    logger.debug(f"   Filtering by business_id: {business_id}")
-            
-            # Search for query text in multiple fields:
-            # 1. summary_text (document content summary)
-            # 2. original_filename (filename metadata)
-            # 3. document_summary JSONB (addresses, property names, parties, etc.)
-            # Split query into words for better matching (handles "letter of offer" matching "Letter_of_Offer")
-            if len(query.strip()) > 0:
-                query_lower = query.lower().strip()
-                query_words = [w for w in query_lower.split() if len(w) > 3]  # Only words longer than 3 chars
-                
-                # Build OR conditions for keyword search
-                or_conditions = []
-                
-                # Full query match in summary_text and filename
-                or_conditions.append(f'summary_text.ilike.%{query_lower}%')
-                or_conditions.append(f'original_filename.ilike.%{query_lower}%')
-                
-                # NOTE: JSONB search removed - PostgREST doesn't support ::text cast in OR conditions
-                # The document_summary JSONB content is typically already reflected in summary_text
-                # If JSONB-specific search is needed, we'll need a custom SQL function
-                
-                # Individual word matches (for cases like "letter of offer" matching "Letter_of_Offer",
-                # and "highlands" matching "Highlands_Berden.pdf"). Include even for single-word queries
-                # so that document/property names in the query reliably match filenames.
-                if len(query_words) >= 1:
-                    for word in query_words:
-                        or_conditions.append(f'summary_text.ilike.%{word}%')
-                        or_conditions.append(f'original_filename.ilike.%{word}%')
-                    # Two-word phrase matches for person/entity names in filenames (e.g. "Chandni Solenki" -> Letter_of_Offer_Chandni_Solenki.docx)
-                    for i in range(len(query_words) - 1):
-                        w1, w2 = query_words[i], query_words[i + 1]
-                        if len(w1) > 2 and len(w2) > 2:
-                            phrase_underscore = f"{w1}_{w2}"
-                            or_conditions.append(f'original_filename.ilike.%{phrase_underscore}%')
-                            or_conditions.append(f'summary_text.ilike.%{phrase_underscore}%')
-                
-                # Apply OR conditions
-                if or_conditions:
-                    keyword_query = keyword_query.or_(','.join(or_conditions))
-            
-            # Execute keyword search
-            keyword_response = keyword_query.limit(top_k * 3).execute()  # Get more for business filtering
-            keyword_results = keyword_response.data or []
-            logger.debug(f"   Keyword search found {len(keyword_results)} documents")
-        except Exception as e:
-            logger.warning(f"Keyword search failed (non-fatal): {e}")
-            keyword_results = []
-        
-        # 2b. Fallback: if no keyword results, try simple filename-only search (avoids .or_() issues)
-        # Try longer/more specific words first (e.g. "highlands" before "what") so property/doc names match
-        if not keyword_results and query.strip() and business_id:
+        # 1 & 2. Run vector and keyword search in parallel (same results, lower latency)
+        def _run_vector_search(supabase_client, q_embedding, s_goal, q_type, m_score, t_k):
+            out = []
             try:
-                words = [w for w in query.lower().strip().split() if len(w) > 3]
-                words = sorted(words, key=len, reverse=True)
-                for word in words:
-                    fb = supabase.table('documents').select(
-                        'id, original_filename, classification_type, summary_text, document_summary'
-                    ).eq('business_uuid', business_id).ilike('original_filename', f'%{word}%').limit(top_k * 2).execute()
-                    if fb.data:
-                        keyword_results = fb.data
-                        logger.info(f"   Fallback filename search for %r found {len(keyword_results)} documents", word)
-                        break
+                if s_goal == "summarize":
+                    search_threshold = 0.1
+                elif q_type == "broad":
+                    search_threshold = 0.22
+                else:
+                    m_score = m_score if m_score is not None else 0.7
+                    search_threshold = min(m_score, 0.32)
+                vector_response = supabase_client.rpc(
+                    'match_document_embeddings',
+                    {'query_embedding': q_embedding, 'match_threshold': search_threshold, 'match_count': t_k * 3}
+                ).execute()
+                out = vector_response.data or []
+                logger.debug(f"   Vector search found {len(out)} documents (threshold: {search_threshold})")
             except Exception as e:
-                logger.debug("   Fallback filename search failed: %s", e)
-        
+                logger.error(f"Vector search failed: {e}")
+            return out
+
+        def _run_keyword_search(q, b_id, t_k):
+            out = []
+            try:
+                client = create_supabase_client_uncached()
+                keyword_query = client.table('documents').select(
+                    'id, original_filename, classification_type, summary_text, document_summary'
+                )
+                if b_id:
+                    try:
+                        from uuid import UUID
+                        UUID(b_id)
+                        keyword_query = keyword_query.eq('business_uuid', b_id)
+                    except (ValueError, TypeError):
+                        keyword_query = keyword_query.eq('business_id', b_id)
+                if len((q or '').strip()) > 0:
+                    query_lower = (q or '').lower().strip()
+                    query_words = [w for w in query_lower.split() if len(w) > 3]
+                    or_conditions = [
+                        f'summary_text.ilike.%{query_lower}%',
+                        f'original_filename.ilike.%{query_lower}%',
+                    ]
+                    if len(query_words) >= 1:
+                        for word in query_words:
+                            or_conditions.append(f'summary_text.ilike.%{word}%')
+                            or_conditions.append(f'original_filename.ilike.%{word}%')
+                        for i in range(len(query_words) - 1):
+                            w1, w2 = query_words[i], query_words[i + 1]
+                            if len(w1) > 2 and len(w2) > 2:
+                                phrase_underscore = f"{w1}_{w2}"
+                                or_conditions.append(f'original_filename.ilike.%{phrase_underscore}%')
+                                or_conditions.append(f'summary_text.ilike.%{phrase_underscore}%')
+                    if or_conditions:
+                        keyword_query = keyword_query.or_(','.join(or_conditions))
+                keyword_response = keyword_query.limit(t_k * 3).execute()
+                out = keyword_response.data or []
+                logger.debug(f"   Keyword search found {len(out)} documents")
+                if not out and (q or '').strip() and b_id:
+                    words = [w for w in (q or '').lower().strip().split() if len(w) > 3]
+                    words = sorted(words, key=len, reverse=True)
+                    for word in words:
+                        fb = client.table('documents').select(
+                            'id, original_filename, classification_type, summary_text, document_summary'
+                        ).eq('business_uuid', b_id).ilike('original_filename', f'%{word}%').limit(t_k * 2).execute()
+                        if fb.data:
+                            out = fb.data
+                            logger.info(f"   Fallback filename search for %r found {len(out)} documents", word)
+                            break
+            except Exception as e:
+                logger.warning(f"Keyword search failed (non-fatal): {e}")
+            return out
+
+        logger.debug(f"🔍 Running vector and keyword search in parallel for query: {query[:50]}...")
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            future_vector = executor.submit(_run_vector_search, supabase, query_embedding, search_goal, query_type, min_score, top_k)
+            future_keyword = executor.submit(_run_keyword_search, query, business_id, top_k)
+            vector_results = future_vector.result()
+            keyword_results = future_keyword.result()
+        logger.debug(f"   Parallel search done: vector={len(vector_results)}, keyword={len(keyword_results)}")
+
         # 3. Filter vector results by business_id if provided
         # (RPC function doesn't support WHERE clauses, so filter post-retrieval)
         if business_id:
@@ -642,37 +589,33 @@ def retrieve_documents(
             )
             return []
         
-        # 8. Filter out documents with 0 chunks (unprocessed documents)
+        # 8. Filter out documents with 0 chunks (unprocessed documents) - single batch query
         # CRITICAL: Documents without chunks cannot be used for chunk retrieval
+        doc_ids_to_check = [doc['document_id'] for doc in filtered_results]
         documents_with_chunks = []
-        for doc in filtered_results:
-            doc_id = doc['document_id']
+        if doc_ids_to_check:
             try:
-                # Quick check: see if document has any chunks
-                # Use limit(1) for efficiency - we only need to know if at least one chunk exists
+                # One query: get document_ids that have at least one chunk (build set from rows)
                 chunk_check = supabase.table('document_vectors').select(
-                    'id'
-                ).eq('document_id', doc_id).limit(1).execute()
-                
-                has_chunks = len(chunk_check.data or []) > 0
-                
-                if not has_chunks:
-                    logger.warning(
-                        f"   ⚠️ Document {doc_id[:8]} ({doc.get('filename', 'unknown')}) has 0 chunks - "
-                        f"skipping (unprocessed document)"
-                    )
-                    continue
-                
-                # Document has chunks - include it
-                documents_with_chunks.append(doc)
-                logger.debug(
-                    f"   ✅ Document {doc_id[:8]} ({doc.get('filename', 'unknown')}) has chunks"
-                )
+                    'document_id'
+                ).in_('document_id', doc_ids_to_check).limit(5000)
+                chunk_resp = chunk_check.execute()
+                rows = chunk_resp.data or []
+                doc_ids_with_chunks = set(str(r.get('document_id', '')) for r in rows if r.get('document_id'))
+                for doc in filtered_results:
+                    doc_id = doc['document_id']
+                    if doc_id in doc_ids_with_chunks:
+                        documents_with_chunks.append(doc)
+                        logger.debug(f"   ✅ Document {doc_id[:8]} ({doc.get('filename', 'unknown')}) has chunks")
+                    else:
+                        logger.warning(
+                            f"   ⚠️ Document {doc_id[:8]} ({doc.get('filename', 'unknown')}) has 0 chunks - "
+                            f"skipping (unprocessed document)"
+                        )
             except Exception as e:
-                logger.warning(f"   ⚠️ Error checking chunks for document {doc_id[:8]}: {e}, including anyway")
-                # Include document if check fails (better to try than skip)
-                documents_with_chunks.append(doc)
-        
+                logger.warning(f"   ⚠️ Batch chunk check failed: {e}, including all filtered docs")
+                documents_with_chunks = list(filtered_results)
+
         if not documents_with_chunks:
             logger.warning(
                 f"⚠️ All {len(filtered_results)} documents have 0 chunks (unprocessed). "
