@@ -2149,8 +2149,7 @@ const StreamingResponseText: React.FC<{
           wordBreak: 'break-word'
         }}>
           {processChildrenWithCitationsFlattened(children ?? null, 'li')}
-          {/* Don't render per-item callout cards below each list item — the cited text is already in the bullet with the white highlight; a callout under every bullet duplicates the same content. Use the citation bar (one callout per message) or click the citation number to open the panel. */}
-          {citationBarMode && renderSingleCalloutIfHere(citationNumbers, 'li')}
+          {/* No callout below list items at all — inline highlight in the bullet is the only "more info"; avoid duplicating the same text in a card below. Citation bar callout is shown below other block types (p, h2, etc.) when the current citation is there. */}
         </li>
       );
     },
@@ -2322,8 +2321,7 @@ const StreamingResponseText: React.FC<{
           wordBreak: 'break-word'
         }}>
           {wrapTwoWordChunksInMotion(processChildrenWithCitationsFlattened(children ?? null, 'li'), 'li')}
-          {/* No per-item callout below list items — inline highlight wraps the response text; use citation bar or click citation for "more info". */}
-          {citationBarMode && renderSingleCalloutIfHere(citationNumbers, 'li')}
+          {/* No callout below list items — inline highlight in the bullet only; avoid duplicating text in a card below. */}
         </li>
       );
     },
@@ -3374,8 +3372,8 @@ const CitationCallout: React.FC<{
             onMouseEnter={hideBarActions ? handleCardHoverEnter : undefined}
             onMouseLeave={hideBarActions ? handleCardHoverLeave : undefined}
           >
-          {/* When hideBarActions + preview: bar is always in DOM as overlay with opacity transition (0 layout reflow / jitter) */}
-          {hideBarActions && canShowPreview ? (
+          {/* When hideBarActions: always show preview card area (image or placeholder) so bar has consistent layout */}
+          {hideBarActions ? (
             <div style={{ position: 'relative', width: '100%', height: 180, minHeight: 180, flexShrink: 0 }}>
               <div
                 ref={previewContainerRef}
@@ -3396,7 +3394,7 @@ const CitationCallout: React.FC<{
                     className="citation-callout-preview-scroll"
                     disableScroll
                   />
-                ) : (
+                ) : canShowPreview ? (
                   <div
                     style={{
                       width: '100%',
@@ -3409,6 +3407,20 @@ const CitationCallout: React.FC<{
                     }}
                   >
                     Loading preview…
+                  </div>
+                ) : (
+                  <div
+                    style={{
+                      width: '100%',
+                      height: '100%',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      color: '#9ca3af',
+                      fontSize: '12px',
+                    }}
+                  >
+                    Preview not available for this source
                   </div>
                 )}
                 <div

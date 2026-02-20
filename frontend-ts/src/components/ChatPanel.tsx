@@ -284,7 +284,7 @@ export const ChatPanel = ({
                   placeholder="Search"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full pl-2 pr-14 py-1.5 text-[13px] bg-transparent border-none focus:outline-none placeholder:text-[13px] placeholder:text-[#8F8F8F] placeholder:font-normal"
+                  className="w-full pl-2 pr-14 py-1.5 text-[14px] font-normal bg-transparent border-none focus:outline-none placeholder:text-[14px] placeholder:text-[#8F8F8F] placeholder:font-normal"
                   style={{ color: '#C5C5C5', caretColor: '#C5C5C5' }}
                 />
                 {/* Options (sliders) + Close - Inline with Search Input */}

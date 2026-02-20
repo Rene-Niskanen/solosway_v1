@@ -558,10 +558,10 @@ def format_chunks_with_short_ids(chunks_metadata: List[Dict[str, Any]]) -> Tuple
     return formatted_text, short_id_lookup
 
 
-# Regex for optional (BLOCK_CITE_ID_N) after a citation - used for jan28th-style block-id lookup
-_BLOCK_ID_IN_RESPONSE = re.compile(r'\s*\(\s*(BLOCK_CITE_ID_\d+)\s*\)')
+# Regex for optional (BLOCK_CITE_ID_N) after a citation - used for jan28th-style block-id lookup (case-insensitive so [id: 6](block_cite_id_29) is matched)
+_BLOCK_ID_IN_RESPONSE = re.compile(r'\s*\(\s*(BLOCK_CITE_ID_\d+)\s*\)', re.IGNORECASE)
 # Fallback: block id without parentheses (e.g. [ID: 1] BLOCK_CITE_ID_42)
-_BLOCK_ID_NO_PARENS = re.compile(r'\s+(BLOCK_CITE_ID_\d+)\b')
+_BLOCK_ID_NO_PARENS = re.compile(r'\s+(BLOCK_CITE_ID_\d+)\b', re.IGNORECASE)
 
 # Max blocks per doc in the prompt metadata table (avoids token overflow; resolution still uses full table)
 MAX_BLOCKS_PER_DOC_IN_PROMPT = 500
@@ -602,8 +602,9 @@ def extract_citations_with_positions(
     use short_id_lookup and select best block within the chunk.
     """
     citations = []
-    pattern = r'\[ID:\s*([^\]]+)\]'
-    matches = list(re.finditer(pattern, llm_response))
+    # Case-insensitive so LLM output like [id: 6](block_cite_id_29) is matched and replaced with [1], [2], etc.
+    pattern = re.compile(r'\[ID:\s*([^\]]+)\]', re.IGNORECASE)
+    matches = list(pattern.finditer(llm_response))
 
     logger.info(f"[CITATION_DEBUG] Extracting citations from LLM response ({len(matches)} matches found)")
 
@@ -617,12 +618,12 @@ def extract_citations_with_positions(
         search_span = llm_response[end_position:end_position + 60]
         block_id_match = _BLOCK_ID_IN_RESPONSE.match(search_span)
         if block_id_match:
-            block_id_from_response = block_id_match.group(1)
+            block_id_from_response = block_id_match.group(1).upper()
             end_position = end_position + block_id_match.end()
         else:
             block_id_match = _BLOCK_ID_NO_PARENS.match(search_span)
             if block_id_match:
-                block_id_from_response = block_id_match.group(1)
+                block_id_from_response = block_id_match.group(1).upper()
                 end_position = end_position + block_id_match.end()
         
         # Extract context around the citation to help match to the right block
