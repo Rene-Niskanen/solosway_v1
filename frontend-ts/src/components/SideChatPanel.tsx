@@ -487,6 +487,36 @@ function citationPlaceholdersToBrackets(text: string): string {
   return text.replace(/%%CITATION_(?:SUPERSCRIPT|BRACKET|PENDING)_(\d+)%%/g, '[$1]');
 }
 
+/**
+ * Split string into 2-word chunks as exact substrings (preserves newlines, markdown, spacing).
+ * Each chunk includes the run of whitespace after the second word so spacing isn't lost
+ * when the next chunk is parsed (leading space in the next chunk would be stripped).
+ * @see .cursor/plans/perplexity-single-path-implementation.plan.md
+ */
+function getChunkSubstrings(str: string): string[] {
+  if (!str || !str.trim()) return [];
+  const chunks: string[] = [];
+  let wordCount = 0;
+  let pairStart = 0;
+  let i = 0;
+  const s = str;
+  while (i < s.length) {
+    while (i < s.length && /\s/.test(s[i])) i++;
+    if (i >= s.length) break;
+    while (i < s.length && !/\s/.test(s[i])) i++;
+    wordCount++;
+    if (wordCount === 2) {
+      // Include trailing whitespace in this chunk so spacing/newlines aren't lost (next chunk would trim leading space)
+      while (i < s.length && /\s/.test(s[i])) i++;
+      chunks.push(s.slice(pairStart, i));
+      pairStart = i;
+      wordCount = 0;
+    }
+  }
+  if (wordCount === 1) chunks.push(s.slice(pairStart));
+  return chunks;
+}
+
 // Helper to check if text has incomplete markdown that needs completion
 // Returns true if there are unclosed bold (**), italic (*), code blocks (```), or inline code (`)
 const hasIncompleteMarkdown = (text: string): boolean => {
@@ -1712,6 +1742,37 @@ const StreamingResponseText: React.FC<{
     return processFlattenedWithCitations(segments, keyPrefix);
   };
 
+  // Wrap every 2-word run in motion.span (opacity 0→1) so reveal works inside full document structure.
+  // Input is the already-processed block content (citations resolved). We only wrap string segments; elements (CitationLink, strong) stay as-is.
+  const wrapTwoWordChunksInMotion = React.useCallback((content: React.ReactNode, keyPrefix: string): React.ReactNode => {
+    const items = React.Children.toArray(content);
+    const out: React.ReactNode[] = [];
+    let chunkKey = 0;
+    items.forEach((item) => {
+      if (typeof item === 'string' && item.length > 0) {
+        const words = item.split(/\s+/).filter(Boolean);
+        for (let i = 0; i < words.length; i += 2) {
+          const pair = words.slice(i, i + 2).join(' ');
+          const withTrailingSpace = i + 2 < words.length ? pair + ' ' : pair;
+          out.push(
+            <motion.span
+              key={`${keyPrefix}-w${chunkKey++}`}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={{ duration: 0.75 }}
+              style={{ display: 'inline' }}
+            >
+              {withTrailingSpace}
+            </motion.span>
+          );
+        }
+      } else {
+        out.push(item);
+      }
+    });
+    return out;
+  }, []);
+
   // Deeply collect citation numbers in document order (recurse into all elements so we find
   // citations inside list items, strong/em, and any nested structure — ensures document preview
   // bar / callouts render for every block type including bullet points).
@@ -2016,6 +2077,173 @@ const StreamingResponseText: React.FC<{
     hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '17.5px 0' }} />,
   }; }, [renderCitationPlaceholder, skipHighlight, runBlueSwoop, isStreaming, citations, citedExcerptByNumber, onAskFollowUpFromCallout, onViewInDocumentFromCallout, citationViewedInDocument, onCloseDocumentFromCallout, messageId, citationBarMode, isCitationBarActive, orderedCitationNumbersForMessage, currentCitationIndex, acceptedCitationIndices, showReviewNextOnly, showCurrentCallout, currentCitationNum, showInResponseCitationCallouts, showCitationPreviewBar, blueCitationNumbers, orangeCitationNumbers, greenCitationNumbers, blueAnimatedCitationNumbers, rejectedCitationNumbers]);
 
+  // Perplexity-style: same structure as markdownComponents (real <p>, <h1>, lists) but block content gets 2-word motion.span wrap so reveal works without flattening layout.
+  const perplexityMarkdownComponents = React.useMemo(() => {
+    const showCalloutForNum = (num: string) => {
+      if (acceptedCitationIndices == null) return true;
+      const idx = orderedCitationNumbersForMessage?.indexOf(num) ?? -1;
+      return idx === -1 || !acceptedCitationIndices.has(idx);
+    };
+    const renderSingleCalloutIfHere = (citationNumbers: string[], blockKey: string) => {
+      if (!showCurrentCallout || !currentCitationNum || citationNumbers.indexOf(currentCitationNum) === -1) return null;
+      if (calloutRenderedForCurrentRef.current) return null;
+      calloutRenderedForCurrentRef.current = true;
+      return (
+        <div key={`callout-${blockKey}-${currentCitationNum}`} style={{ width: '100%', maxWidth: '100%', minWidth: 0, boxSizing: 'border-box' }}>
+          <CitationCallout
+            citationNumber={currentCitationNum}
+            citation={citations?.[currentCitationNum]}
+            onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', currentCitationNum, citations?.[currentCitationNum]) : undefined}
+            onViewInDocument={undefined}
+            isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === currentCitationNum}
+            onCloseDocument={onCloseDocumentFromCallout}
+            hideBarActions={true}
+            messageCitedExcerpt={citedExcerptByNumber[currentCitationNum]}
+          />
+        </div>
+      );
+    };
+    return {
+    ...markdownComponents,
+    p: ({ children }: { children?: React.ReactNode }) => {
+      const citationNumbers = collectCitationNumbersInOrder(children ?? null);
+      const blockText = getBlockPlainTextForComparison(children ?? null);
+      const isOnlyCitationExcerpt = citations && blockText.length > 0 && citationNumbers.length > 0 && citationNumbers.some((num) => {
+        const c = citations[num];
+        let excerpt = (c?.cited_text ?? c?.block_content ?? '').replace(/\[id:\s*\d+\]\([^)]*\)/g, '').replace(/\[id:\s*\d+\]\([^)]*$/g, '').replace(/\s+/g, ' ').trim();
+        if (excerpt.length === 0) return false;
+        const blockNorm = normalizeForExcerptMatch(blockText);
+        const excerptNorm = normalizeForExcerptMatch(excerpt);
+        if (blockNorm.length === 0) return true;
+        return blockNorm === excerptNorm || excerptNorm.includes(blockNorm) || blockNorm.includes(excerptNorm);
+      });
+      const shouldShowExcerptThisTime = isOnlyCitationExcerpt && citationNumbers.some((num) => !excerptShownForCitationsRef.current.has(num));
+      if (shouldShowExcerptThisTime) {
+        citationNumbers.forEach((num) => excerptShownForCitationsRef.current.add(num));
+      }
+      const inner = wrapTwoWordChunksInMotion(processChildrenWithCitationsFlattened(children ?? null, 'p'), 'p');
+      return (
+        <>
+          {(!isOnlyCitationExcerpt || shouldShowExcerptThisTime) && (
+            <p style={{
+              margin: '0 0 17.5px 0',
+              textAlign: 'left',
+              lineHeight: '1.7',
+              wordWrap: 'break-word',
+              overflowWrap: 'break-word',
+              wordBreak: 'break-word'
+            }}>{inner}</p>
+          )}
+          {showCitationPreviewBar && showInResponseCitationCallouts && !citationBarMode && citationNumbers.filter(showCalloutForNum).map((num, i) => (
+            <div key={`callout-p-${i}-${num}`} style={{ width: '100%', maxWidth: '100%', minWidth: 0, boxSizing: 'border-box' }}>
+              <CitationCallout key={`callout-${messageId ?? ''}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumber[num]} />
+            </div>
+          ))}
+          {citationBarMode && renderSingleCalloutIfHere(citationNumbers, 'p')}
+        </>
+      );
+    },
+    h1: ({ children }: { children?: React.ReactNode }) => (
+      <>
+        <h1 style={{
+          fontSize: '22px',
+          fontWeight: 600,
+          margin: '15.2px 0 11px 0',
+          color: '#111827',
+          wordWrap: 'break-word',
+          overflowWrap: 'break-word',
+          wordBreak: 'break-word'
+        }}>{wrapTwoWordChunksInMotion(processChildrenWithCitationsFlattened(children ?? null, 'h1'), 'h1')}</h1>
+        {showCitationPreviewBar && showInResponseCitationCallouts && !citationBarMode && collectCitationNumbersInOrder(children ?? null).filter(showCalloutForNum).map((num, i) => (
+          <CitationCallout key={`callout-${messageId ?? ''}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumber[num]} />
+        ))}
+        {citationBarMode && renderSingleCalloutIfHere(collectCitationNumbersInOrder(children ?? null), 'h1')}
+      </>
+    ),
+    h2: ({ children }: { children?: React.ReactNode }) => (
+      <>
+        <h2 style={{
+          fontSize: '19px',
+          fontWeight: 600,
+          margin: '13.1px 0 8.8px 0',
+          color: '#111827',
+          wordWrap: 'break-word',
+          overflowWrap: 'break-word',
+          wordBreak: 'break-word'
+        }}>{wrapTwoWordChunksInMotion(processChildrenWithCitationsFlattened(children ?? null, 'h2'), 'h2')}</h2>
+        {showCitationPreviewBar && showInResponseCitationCallouts && !citationBarMode && collectCitationNumbersInOrder(children ?? null).filter(showCalloutForNum).map((num, i) => (
+          <div key={`callout-h2-${i}-${num}`} style={{ width: '100%', maxWidth: '100%', minWidth: 0, boxSizing: 'border-box' }}>
+            <CitationCallout key={`callout-${messageId ?? ''}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumber[num]} />
+          </div>
+        ))}
+        {citationBarMode && renderSingleCalloutIfHere(collectCitationNumbersInOrder(children ?? null), 'h2')}
+      </>
+    ),
+    h3: ({ children }: { children?: React.ReactNode }) => (
+      <>
+        <h3 style={{
+          fontSize: '16px',
+          fontWeight: 600,
+          margin: '10.9px 0 6.6px 0',
+          color: '#111827',
+          wordWrap: 'break-word',
+          overflowWrap: 'break-word',
+          wordBreak: 'break-word'
+        }}>{wrapTwoWordChunksInMotion(processChildrenWithCitationsFlattened(children ?? null, 'h3'), 'h3')}</h3>
+        {showCitationPreviewBar && showInResponseCitationCallouts && !citationBarMode && collectCitationNumbersInOrder(children ?? null).filter(showCalloutForNum).map((num, i) => (
+          <div key={`callout-h3-${i}-${num}`} style={{ width: '100%', maxWidth: '100%', minWidth: 0, boxSizing: 'border-box' }}>
+            <CitationCallout key={`callout-${messageId ?? ''}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumber[num]} />
+          </div>
+        ))}
+        {citationBarMode && renderSingleCalloutIfHere(collectCitationNumbersInOrder(children ?? null), 'h3')}
+      </>
+    ),
+    li: ({ children }: { children?: React.ReactNode }) => {
+      if (blockWouldBeEmptyAfterRejected(children ?? null)) return null;
+      const citationNumbers = collectCitationNumbersInOrder(children ?? null);
+      return (
+        <li style={{
+          margin: '4.4px 0 4.4px 0',
+          lineHeight: '1.7',
+          paddingLeft: '8.8px',
+          wordWrap: 'break-word',
+          overflowWrap: 'break-word',
+          wordBreak: 'break-word'
+        }}>
+          {wrapTwoWordChunksInMotion(processChildrenWithCitationsFlattened(children ?? null, 'li'), 'li')}
+          {showCitationPreviewBar && showInResponseCitationCallouts && !citationBarMode && citationNumbers.filter(showCalloutForNum).map((num, i) => (
+            <div key={`callout-li-${i}-${num}`} style={{ width: '100%', maxWidth: '100%', minWidth: 0, boxSizing: 'border-box' }}>
+              <CitationCallout key={`callout-${messageId ?? ''}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumber[num]} />
+            </div>
+          ))}
+          {citationBarMode && renderSingleCalloutIfHere(citationNumbers, 'li')}
+        </li>
+      );
+    },
+    blockquote: ({ children }: { children?: React.ReactNode }) => {
+      const citationNumbers = collectCitationNumbersInOrder(children ?? null);
+      return (
+        <>
+          <blockquote style={{
+            borderLeft: '3px solid #d1d5db',
+            paddingLeft: '13.1px',
+            margin: '8.8px 0',
+            color: '#6b7280',
+            wordWrap: 'break-word',
+            overflowWrap: 'break-word',
+            wordBreak: 'break-word'
+          }}>{wrapTwoWordChunksInMotion(processChildrenWithCitationsFlattened(children ?? null, 'blockquote'), 'blockquote')}</blockquote>
+          {showCitationPreviewBar && showInResponseCitationCallouts && !citationBarMode && citationNumbers.filter(showCalloutForNum).map((num, i) => (
+            <div key={`callout-blockquote-${i}-${num}`} style={{ width: '100%', maxWidth: '100%', minWidth: 0, boxSizing: 'border-box' }}>
+              <CitationCallout key={`callout-${messageId ?? ''}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumber[num]} />
+            </div>
+          ))}
+          {citationBarMode && renderSingleCalloutIfHere(citationNumbers, 'blockquote')}
+        </>
+      );
+    },
+  }; }, [markdownComponents, wrapTwoWordChunksInMotion, citations, citedExcerptByNumber, showCitationPreviewBar, showInResponseCitationCallouts, citationBarMode, messageId, onAskFollowUpFromCallout, onViewInDocumentFromCallout, citationViewedInDocument, onCloseDocumentFromCallout, acceptedCitationIndices, orderedCitationNumbersForMessage, showCurrentCallout, currentCitationNum]);
+
   return (
     <>
       <style>{`
@@ -2117,7 +2345,14 @@ const StreamingResponseText: React.FC<{
             boxSizing: 'border-box',
           }}
         >
-          <ReactMarkdown key={markdownKey} skipHtml={true} components={markdownComponents}>{textWithCitationPlaceholders}</ReactMarkdown>
+          {/* Single ReactMarkdown keeps layout (paragraphs, lists, spacing). Perplexity-style: wrap 2-word runs in motion.span inside blocks for 0→1 reveal. */}
+          <ReactMarkdown
+            key={markdownKey}
+            skipHtml
+            components={usePerplexityStyle && !skipRevealAnimation ? perplexityMarkdownComponents : markdownComponents}
+          >
+            {textWithCitationPlaceholders}
+          </ReactMarkdown>
         </div>
         {!skipRevealAnimation && !usePerplexityStyle && showOverlay && lines.length > 0 && (
           <div style={{ position: 'absolute', left: 0, top: 0, right: 0, bottom: 0, pointerEvents: 'none' }}>
