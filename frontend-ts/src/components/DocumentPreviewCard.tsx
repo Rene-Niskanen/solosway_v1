@@ -137,7 +137,6 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({
   const hasCachedThumbnail = !!(initialCache?.thumbnailUrl || (isImage && initialCache?.url));
   
   const [isExpanded, setIsExpanded] = useState(defaultExpanded);
-  const [isHovered, setIsHovered] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string | null>(() =>
     isImage && initialCache?.url ? initialCache.url : null
   );
@@ -311,11 +310,10 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({
   return (
     <>
       <motion.div
+        className={`document-preview-card${isExpanded ? ' document-preview-card--expanded' : ''}`}
         initial={{ opacity: 0, y: 4 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.2, ease: [0.25, 0.1, 0.25, 1] }}
-        onMouseEnter={() => setIsHovered(true)}
-        onMouseLeave={() => setIsHovered(false)}
         style={{
           display: 'flex',
           flexDirection: 'column',
@@ -323,16 +321,17 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({
           width: '100%',
           maxWidth: '320px',
           borderRadius: '6px',
-          border: `1px solid ${isHovered || isExpanded ? 'rgba(0, 0, 0, 0.12)' : 'rgba(0, 0, 0, 0.08)'}`,
+          border: '1px solid rgba(0, 0, 0, 0.08)',
           backgroundColor: 'transparent',
           transition: 'border-color 0.1s ease, box-shadow 0.1s ease',
           overflow: 'hidden',
-          boxShadow: isHovered || isExpanded ? '0 2px 8px rgba(0, 0, 0, 0.04)' : 'none',
+          boxShadow: 'none',
           boxSizing: 'border-box'
         }}
       >
         {/* Collapsible Header Row */}
         <div
+          className="document-preview-card__header"
           onClick={handleToggleExpand}
           style={{
             display: 'flex',
@@ -340,7 +339,7 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({
             gap: '6px',
             padding: '6px 10px',
             cursor: 'pointer',
-            backgroundColor: isHovered && !isExpanded ? 'rgba(0, 0, 0, 0.015)' : 'transparent',
+            backgroundColor: 'transparent',
             transition: 'background-color 0.1s ease',
             userSelect: 'none'
           }}
@@ -412,7 +411,7 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({
               animate={{ height: 'auto', opacity: 1 }}
               exit={{ height: 0, opacity: 0 }}
               transition={{ duration: 0.2, ease: [0.25, 0.1, 0.25, 1] }}
-              style={{ overflow: 'hidden', padding: '0 8px 8px 8px', boxSizing: 'border-box' }}
+              style={{ overflow: 'hidden', padding: '8px 8px 8px 8px', boxSizing: 'border-box' }}
             >
               <div
                 onClick={handleOpenDocument}
@@ -501,6 +500,23 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({
       </motion.div>
       
       <style>{`
+        .document-preview-card {
+          transition: border-color 0.1s ease, box-shadow 0.1s ease;
+        }
+        .document-preview-card:hover,
+        .document-preview-card--expanded {
+          border-color: rgba(0, 0, 0, 0.12);
+          box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+        }
+        .document-preview-card__header {
+          transition: background-color 0.1s ease;
+        }
+        .document-preview-card:hover .document-preview-card__header {
+          background-color: rgba(0, 0, 0, 0.015);
+        }
+        .document-preview-card--expanded .document-preview-card__header {
+          background-color: transparent;
+        }
         @keyframes preview-shimmer {
           0% { background-position: 200% 0; }
           100% { background-position: -200% 0; }

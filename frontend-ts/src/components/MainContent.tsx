@@ -2586,18 +2586,13 @@ export const MainContent = ({
     legacyCloseExpandedCardView();
   }, [activeChatId, closeDocumentForChat, legacyCloseExpandedCardView]);
 
-  // Message whose citations we use for the document preview (nav + highlight). When moving through
-  // citations from a previous response, use that message so the selected citation stays highlighted there.
+  // Message whose citations we use for the document preview (nav + highlight). Always use the
+  // latest response so prev/next go through all citations for this doc and are not limited by
+  // the message the document preview card is on (e.g. a single-citation callout).
   const messageForDocPreview = React.useMemo(() => {
     if (!chatMessages?.length) return null;
-    const docPreview = expandedCardViewDoc as DocumentPreview | null | undefined;
-    const viewedMessageId = docPreview?.viewedCitation?.messageId;
-    if (viewedMessageId) {
-      const msg = chatMessages.find((m: { id?: string }) => m.id === viewedMessageId);
-      if (msg && msg.type === 'response') return msg;
-    }
     return [...chatMessages].reverse().find((m: { type?: string }) => m.type === 'response') ?? null;
-  }, [chatMessages, expandedCardViewDoc]);
+  }, [chatMessages]);
 
   // Citations from the owning message for the open document — so citation nav (prev/next) and highlight stay in that response
   const citationsForDocumentPreview = React.useMemo((): CitationData[] | undefined => {
@@ -5920,6 +5915,7 @@ export const MainContent = ({
               citationsFromLastResponse={citationsForDocumentPreview}
               lastResponseMessageId={messageForDocPreview?.id}
               lastResponseCitations={messageForDocPreview?.citations}
+              viewedCitation={(expandedCardViewDoc as DocumentPreview)?.viewedCitation ?? null}
               onClose={closeExpandedCardView}
               chatPanelWidth={effectiveChatWidthForDocPreview}
               sidebarWidth={(() => {

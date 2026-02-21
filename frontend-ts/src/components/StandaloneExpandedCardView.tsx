@@ -10,7 +10,7 @@ import { useFilingSidebar } from '../contexts/FilingSidebarContext';
 import { useChatPanel } from '../contexts/ChatPanelContext';
 import { CitationActionMenu } from './CitationActionMenu';
 import { useActiveChatState, useChatStateStore } from '../contexts/ChatStateStore';
-import type { CitationData, ChatMessage } from '../contexts/ChatStateStore';
+import type { CitationData, ChatMessage, ViewedCitation } from '../contexts/ChatStateStore';
 import { CHAT_PANEL_WIDTH } from './SideChatPanel';
 
 // PDF.js for canvas-based PDF rendering
@@ -96,6 +96,8 @@ interface StandaloneExpandedCardViewProps {
   lastResponseMessageId?: string;
   /** Last response citations keyed by number (for matching clicked citation to citation number). */
   lastResponseCitations?: Record<string, CitationData>;
+  /** Currently viewed citation (messageId + citationNumber). When set, used to show correct "X of Y" and order in response order. */
+  viewedCitation?: ViewedCitation | null;
 }
 
 export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProps> = ({
@@ -107,6 +109,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
   citationsFromLastResponse,
   lastResponseMessageId,
   lastResponseCitations,
+  viewedCitation,
   chatPanelWidth = 0,
   sidebarWidth = 56,
   onResizeStart,
@@ -273,9 +276,24 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
       return leftA - leftB;
     });
     
-    // Find current citation index (when we have a highlight from clicking a citation)
+    // Find current citation index. When we have response context + viewedCitation from the same
+    // message we're using for the list, use citation number so "X of Y" and prev/next follow response order.
     let currentIndex = 0;
-    if (highlight?.bbox && sorted.length > 0) {
+    if (
+      useLastResponseOrder &&
+      viewedCitation &&
+      lastResponseMessageId &&
+      viewedCitation.messageId === lastResponseMessageId &&
+      lastResponseCitations &&
+      sorted.length > 0
+    ) {
+      const citationNumbersForDoc = Object.entries(lastResponseCitations)
+        .filter(([, c]) => matchDoc(c))
+        .sort(([a], [b]) => parseInt(a, 10) - parseInt(b, 10))
+        .map(([k]) => k);
+      const idx = citationNumbersForDoc.indexOf(viewedCitation.citationNumber);
+      currentIndex = idx >= 0 ? idx : 0;
+    } else if (highlight?.bbox && sorted.length > 0) {
       currentIndex = sorted.findIndex(citation => {
         const citationPage = citation.page || citation.bbox?.page || citation.page_number || 0;
         const citationTop = citation.bbox?.top ?? 0;
@@ -295,13 +313,13 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
       }
       if (currentIndex === -1) currentIndex = 0;
     }
-    
+
     return {
       sortedCitations: sorted,
       currentCitationIndex: currentIndex,
       hasMultipleCitations: sorted.length > 1
     };
-  }, [activeChatState, docId, highlight, citationsFromLastResponse, lastResponseMessageId, lastResponseCitations]);
+  }, [activeChatState, docId, highlight, citationsFromLastResponse, lastResponseMessageId, lastResponseCitations, viewedCitation]);
 
   // Navigate to next citation
   const handleReviewNextCitation = useCallback(() => {
@@ -1871,10 +1889,6 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
                               backgroundColor: 'rgba(188, 212, 235, 0.4)',
                               border: 'none',
                               borderRadius: '2px',
-                              backgroundImage: 'repeating-linear-gradient(90deg, rgba(188, 212, 235, 0.4) 0px, rgba(188, 212, 235, 0.4) 10px, rgba(163, 173, 189, 0.8) 10px, rgba(163, 173, 189, 0.8) 20px), repeating-linear-gradient(0deg, rgba(188, 212, 235, 0.4) 0px, rgba(188, 212, 235, 0.4) 10px, rgba(163, 173, 189, 0.8) 10px, rgba(163, 173, 189, 0.8) 20px), repeating-linear-gradient(90deg, rgba(188, 212, 235, 0.4) 0px, rgba(188, 212, 235, 0.4) 10px, rgba(163, 173, 189, 0.8) 10px, rgba(163, 173, 189, 0.8) 20px), repeating-linear-gradient(0deg, rgba(188, 212, 235, 0.4) 0px, rgba(188, 212, 235, 0.4) 10px, rgba(163, 173, 189, 0.8) 10px, rgba(163, 173, 189, 0.8) 20px)',
-                              backgroundSize: '20px 2px, 2px 20px, 20px 2px, 2px 20px',
-                              backgroundPosition: '0 0, 100% 0, 0 100%, 0 0',
-                              backgroundRepeat: 'repeat-x, repeat-y, repeat-x, repeat-y',
                               pointerEvents: 'auto',
                               cursor: 'pointer',
                               zIndex: 10,

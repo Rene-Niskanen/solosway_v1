@@ -258,6 +258,8 @@ interface ReasoningStepsProps {
   isNoResultsResponse?: boolean;
   /** When true, steps are shown under the thought dropdown after completion - use faint font for "Analysing X documents:" and document names */
   thoughtCompleted?: boolean;
+  /** When true (e.g. expanded Thought dropdown), show all reasoning steps including Searching, Generating response, etc. */
+  showAllStepsInTrace?: boolean;
   /** Shown as the current step without adding to the list (replaced when next step arrives). Enables "Thinking" in parallel. */
   transientStep?: { message: string };
 }
@@ -465,7 +467,7 @@ const ReadingStepWithTransition: React.FC<{
                 initial={{ opacity: 0, y: 2, scale: 0.98 }}
                 animate={hasResponseText ? { opacity: 1, y: 0, scale: 1 } : { opacity: 1, y: 0, scale: 1 }}
                 transition={hasResponseText ? { duration: 0 } : { duration: 0.15, ease: [0.16, 1, 0.3, 1] }} // Instant when response text appears, otherwise faster animation
-      style={{ marginBottom: '2px' }}
+      style={{ marginBottom: '0' }}
     >
       <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
         {/* No icon before label - show "Analysing" then document bubble only */}
@@ -1058,7 +1060,7 @@ const StepRenderer: React.FC<{
       const hasSummarisingStep = allSteps.some(s => s.action_type === 'summarising');
       // Check if "Summarising content" (analysing) step has appeared - stop reading animation and show Read
       const hasPreparingResponseStep = allSteps.some(s =>
-        s.action_type === 'analysing' && /^(Summarising content|Formulating answer|Preparing answer|Preparing response)/i.test((s.message || '').trim())
+        s.action_type === 'analysing' && /^(Summarising content|Formulating answer|Preparing answer|Preparing response|Generating response)/i.test((s.message || '').trim())
       );
       
       // Keep the green animation going on ALL reading steps until response is complete
@@ -1095,19 +1097,27 @@ const StepRenderer: React.FC<{
     case 'analysing':
       // "Analysing" - text only (no icon). "Summarising content" is only shown when we actually start streaming.
       const nextStepAfterAnalyzing = stepIndex < allSteps.length - 1 ? allSteps[stepIndex + 1] : null;
-      const isPreparingResponseMessage = /^(Summarising content|Formulating answer|Preparing answer|Preparing response)$/i.test((step.message || '').trim());
+      const isPreparingResponseMessage = /^(Summarising content|Formulating answer|Preparing answer|Preparing response|Generating response)$/i.test((step.message || '').trim());
       const isRankingActive = !isPreparingResponseMessage && isLoading && !hasResponseText && (!nextStepAfterAnalyzing || nextStepAfterAnalyzing.action_type === 'analysing');
+      const isGeneratingResponseActive =
+        (step.message || '').trim() === 'Generating response' &&
+        isLoading &&
+        !hasResponseText &&
+        (!nextStepAfterAnalyzing || nextStepAfterAnalyzing.action_type === 'analysing');
       
-      // Transform message: show "Analysing" for the analysing step; keep "Summarising content" etc. as-is
+      // Transform message: show "Analysing" for the analysing step; keep "Summarising content" / "Thinking" / "Generating response" etc. as-is
       let fixedMessage = step.message || 'Analysing';
-      if (/^(Summarising content|Formulating answer|Preparing answer|Preparing response)$/i.test((fixedMessage || '').trim())) {
-        fixedMessage = 'Summarising content';
+      if (/^(Summarising content|Formulating answer|Preparing answer|Preparing response|Generating response)$/i.test((fixedMessage || '').trim())) {
+        fixedMessage = (fixedMessage || '').trim() === 'Generating response' ? 'Generating response' : 'Summarising content';
+      } else if ((fixedMessage || '').trim() === 'Thinking') {
+        fixedMessage = 'Thinking';
       } else if (!/^(Summarising content|Formulating answer|Preparing answer|Preparing response)/i.test(fixedMessage.trim())) {
         fixedMessage = 'Analysing';
       }
+      const showShimmer = isRankingActive || isGeneratingResponseActive;
       return (
         <span style={{ display: 'inline-flex', alignItems: 'flex-start' }}>
-          {isRankingActive ? (
+          {showShimmer ? (
             <span className="ranking-shimmer-active">{fixedMessage}</span>
           ) : (
             <span style={actionStyle}>{fixedMessage}</span>
@@ -1384,7 +1394,7 @@ const StepRenderer: React.FC<{
  * Cursor-style compact stacked list of reasoning steps.
  * Always visible (no dropdown), subtle design, fits seamlessly into chat UI.
  */
-export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading, onDocumentClick, hasResponseText = false, isAgentMode = true, skipAnimations = false, isNoResultsResponse = false, thoughtCompleted = false, transientStep }) => {
+export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading, onDocumentClick, hasResponseText = false, isAgentMode = true, skipAnimations = false, isNoResultsResponse = false, thoughtCompleted = false, showAllStepsInTrace = false, transientStep }) => {
   // Get current model from context
   const { model } = useModel();
   
@@ -1562,22 +1572,25 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
       return collapsed.length > 0 ? collapsed : list.slice(0, 2);
     }
     // Hide "Searching" once we have reading steps: show only Found + Read... (searching step disappears, reading steps appear)
-    if (list.some(s => s.action_type === 'reading')) {
+    // When showAllStepsInTrace (e.g. expanded Thought dropdown), keep all steps including Searching
+    if (!showAllStepsInTrace && list.some(s => s.action_type === 'reading')) {
       list = list.filter(s => s.action_type !== 'searching');
     }
     // UX: When thought is completed (collapsed trace), also hide searching so we show Found + reading list only
-    if (thoughtCompleted) {
+    if (thoughtCompleted && !showAllStepsInTrace) {
       list = list.filter(s => s.action_type !== 'searching');
     }
-    // Only show "Analysing X documents" exploring step when more than one document
-    const isAnalysingOneDocumentStep = (s: ReasoningStep) => {
-      if (s.action_type !== 'exploring') return false;
-      const msg = s.message || '';
-      const colonIdx = msg.indexOf(': ');
-      const prefix = colonIdx > -1 ? msg.substring(0, colonIdx) : msg;
-      return /^Analysing\s+1\s+document\s*:?$/i.test(prefix.trim());
-    };
-    list = list.filter(s => !isAnalysingOneDocumentStep(s));
+    // Only show "Analysing X documents" exploring step when more than one document (in live view; show all in full trace)
+    if (!showAllStepsInTrace) {
+      const isAnalysingOneDocumentStep = (s: ReasoningStep) => {
+        if (s.action_type !== 'exploring') return false;
+        const msg = s.message || '';
+        const colonIdx = msg.indexOf(': ');
+        const prefix = colonIdx > -1 ? msg.substring(0, colonIdx) : msg;
+        return /^Analysing\s+1\s+document\s*:?$/i.test(prefix.trim());
+      };
+      list = list.filter(s => !isAnalysingOneDocumentStep(s));
+    }
 
     // When we already show "Analysing N documents:" (exploring) with Reading sub-steps, hide the redundant
     // "Analyzing documents" step (from query_vector_documents: "Analysing N documents for your question")
@@ -1597,18 +1610,60 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
 
     // When we have reading steps, hide the standalone "Analysing" step that would appear below (label is on each reading line)
     // Keep only "Summarising content" / "Formulating answer" / "Preparing answer" / "Preparing response"
-    const isPreparingResponseMessage = (m: string) => /^(Summarising content|Formulating answer|Preparing answer|Preparing response)/i.test(m.trim());
+    const isPreparingResponseMessage = (m: string) => /^(Summarising content|Formulating answer|Preparing answer|Preparing response|Generating response)/i.test(m.trim());
     if (list.some(s => s.action_type === 'reading')) {
       list = list.filter((s) => {
         if (s.action_type !== 'analysing') return true;
         const msg = (s.message || '').trim();
         if (isPreparingResponseMessage(msg)) return true;
+        if (msg === 'Thinking') return true; // Keep "Thinking" step that replaces Analysing block
         return false; // hide all other analysing steps (Analysing, Analysing N documents, etc.)
       });
     }
 
+    // When we have a "Thinking" step that replaces the Analysing + documents block (after chunk retrieval),
+    // remove the exploring step (if present) and its reading steps so only "Thinking" is shown.
+    // When showAllStepsInTrace, keep all steps (Analysing, Reading, Thinking, Generating response) in sequence.
+    if (!showAllStepsInTrace) {
+      const thinkingReplacesIdx = list.findIndex(
+        (s) => s.step === 'thinking_after_chunks' || (s.details as any)?.replaces_analysing === true
+      );
+      if (thinkingReplacesIdx >= 0) {
+        let endBlock = thinkingReplacesIdx - 1;
+        while (endBlock >= 0 && list[endBlock].action_type === 'reading') endBlock--;
+        const isAnalysingDocsExploring = (s: ReasoningStep) =>
+          s.action_type === 'exploring' && /^Analysing\s+\d+\s+documents?\s*:?/i.test((s.message || '').trim());
+        const removeFrom = endBlock >= 0 && isAnalysingDocsExploring(list[endBlock]) ? endBlock : endBlock + 1;
+        if (removeFrom <= thinkingReplacesIdx - 1) {
+          list = [...list.slice(0, removeFrom), list[thinkingReplacesIdx], ...list.slice(thinkingReplacesIdx + 1)];
+        }
+      }
+    }
+
+    // When "Generating response" is present, it replaces "Thinking" (show only one - the current phase)
+    // When showAllStepsInTrace, show both Thinking and Generating response in sequence
+    const hasGeneratingResponse = list.some(
+      (s) => s.step === 'generating_response' || (s.message || '').trim() === 'Generating response'
+    );
+    if (hasGeneratingResponse && !showAllStepsInTrace) {
+      list = list.filter(
+        (s) =>
+          s.step !== 'thinking_after_chunks' &&
+          (s.details as any)?.replaces_analysing !== true &&
+          ((s.message || '').trim() !== 'Thinking' || s.action_type !== 'analysing')
+      );
+    }
+
+    // Hide "Generating response" once response is streaming (prompt was sent; step disappears when first token arrives)
+    // When showAllStepsInTrace (expanded Thought dropdown), keep it so the full trace is visible
+    if (hasResponseText && !showAllStepsInTrace) {
+      list = list.filter(
+        (s) => s.step !== 'generating_response' && (s.message || '').trim() !== 'Generating response'
+      );
+    }
+
     return list;
-  }, [filteredSteps, isNoResultsResponse, thoughtCompleted]);
+  }, [filteredSteps, isNoResultsResponse, thoughtCompleted, hasResponseText, showAllStepsInTrace]);
 
   // When transientStep is set (e.g. "Thinking"), show it as the current step without adding to stored steps (parallel, not sequential)
   const stepsForDisplay = useMemo(() => {
@@ -2063,11 +2118,10 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
     }}>
       {/* Steps stacked vertically - always visible */}
       {isLoading && animatedSteps.length > 0 ? (
-        <AnimatePresence mode="popLayout">
+        <AnimatePresence mode="wait">
           {displayItems.map((displayItem, displayIdx) => {
             const isLastDisplayItem = displayIdx === displayItems.length - 1;
-            let marginBottom = '2px';
-            if (isLastDisplayItem) marginBottom = '0';
+            const marginBottom = isLastDisplayItem ? '0' : '1px';
 
             if (displayItem.kind === 'group') {
               const anim = animatedSteps[displayItem.exploringStepIndex];
@@ -2077,13 +2131,13 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
                   key={groupKey}
                   initial={skipAnimations ? { opacity: 1, y: 0, scale: 1 } : { opacity: 0, y: 2, scale: 0.98 }}
                   animate={{ opacity: 1, y: 0, scale: 1 }}
-                  exit={{ opacity: 0, y: 0, scale: 1 }}
+                  exit={{ opacity: 0, transition: { duration: 0.1 } }}
                   transition={(hasResponseText || skipAnimations) ? { duration: 0 } : { duration: 0.08, delay: anim.delay, ease: [0.16, 1, 0.3, 1] }}
                   style={{
                     fontSize: '13.1px',
                     color: DETAIL_COLOR,
-                    padding: '2px 0',
-                    lineHeight: 1.4,
+                    padding: '0',
+                    lineHeight: 1.35,
                     overflow: 'visible',
                     position: 'relative',
                     marginBottom,
@@ -2123,13 +2177,13 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
                 key={finalStepKey}
                 initial={skipAnimations ? { opacity: 1, y: 0, scale: 1 } : { opacity: 0, y: 2, scale: 0.98 }}
                 animate={{ opacity: 1, y: 0, scale: 1 }}
-                exit={{ opacity: 0, y: 0, scale: 1 }}
+                exit={{ opacity: 0, transition: { duration: 0.1 } }}
                 transition={(hasResponseText || skipAnimations) ? { duration: 0 } : { duration: 0.08, delay: stepDelay, ease: [0.16, 1, 0.3, 1] }}
                 style={{
                   fontSize: '13.1px',
                   color: DETAIL_COLOR,
-                  padding: '2px 0',
-                  lineHeight: 1.4,
+                  padding: '0',
+                  lineHeight: 1.35,
                   overflow: 'visible',
                   position: 'relative',
                   marginBottom,
@@ -2160,7 +2214,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
         <div key="reasoning-steps-static">
           {displayItems.map((displayItem, displayIdx) => {
             const isLastDisplayItem = displayIdx === displayItems.length - 1;
-            const marginBottom = isLastDisplayItem ? '0' : '2px';
+            const marginBottom = isLastDisplayItem ? '0' : '1px';
 
             if (displayItem.kind === 'group') {
               const groupKey = generateAnimatePresenceKey('ReasoningStep', displayItem.exploringStepIndex, displayItem.exploringStep.details?.doc_previews?.length ?? 0, 'exploring-group');
@@ -2170,8 +2224,8 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
                   style={{
                     fontSize: '13.1px',
                     color: DETAIL_COLOR,
-                    padding: '2px 0',
-                    lineHeight: 1.4,
+                    padding: '0',
+                    lineHeight: 1.35,
                     position: 'relative',
                     marginBottom,
                   }}
@@ -2216,8 +2270,8 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
                 style={{
                   fontSize: '13.1px',
                   color: DETAIL_COLOR,
-                  padding: '2px 0',
-                  lineHeight: 1.4,
+                  padding: '0',
+                  lineHeight: 1.35,
                   position: 'relative',
                   marginBottom,
                 }}

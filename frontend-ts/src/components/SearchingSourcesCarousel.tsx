@@ -167,7 +167,7 @@ export function SearchingSourcesCarousel({
             <motion.span
               key={itemKey}
               layout
-              initial={i === 2 ? { opacity: 0, scale: 0.92, x: 3 } : false}
+              initial={i === 2 ? { opacity: 0, scale: 0.92, x: 1 } : false}
               animate={{
                 opacity: 1,
                 scale: 1,

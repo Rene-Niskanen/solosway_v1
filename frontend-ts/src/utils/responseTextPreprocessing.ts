@@ -46,6 +46,14 @@ export function removePeriodAfterBracketCitations(text: string): string {
 }
 
 /**
+ * Convert list items that are only a bold section label (e.g. "- **Parties Involved:**") into
+ * plain bold lines so they render as section titles, not bullets. Handles - * + and optional leading whitespace.
+ */
+export function promoteBoldSectionLabelsFromListItems(text: string): string {
+  return text.replace(/^(\s*)[-*+]\s+(\*\*[^*]+:\*\*\s*)$/gm, '$1$2');
+}
+
+/**
  * Merge consecutive list items that are one logical bullet (e.g. "Windy Ridge: ..." followed by "Asking KES 120 million; sold for ...").
  * The LLM often outputs two "- " lines when they describe the same item; this converts the second into a continuation line
  * so markdown renders a single list item (indented continuation per CommonMark).
@@ -236,7 +244,8 @@ export function prepareResponseTextForDisplay(text: string): string {
   const withMergedHeadings = mergeBoldHeadingWithNextLine(withBold);
   const withMergedOrphans = mergeOrphanLines(withMergedHeadings);
   const withMergedListItems = mergeConsecutiveListItemsAsOne(withMergedOrphans);
-  const withBracketCitations = normalizeCircledCitationsToBracket(withMergedListItems);
+  const withPromotedTitles = promoteBoldSectionLabelsFromListItems(withMergedListItems);
+  const withBracketCitations = normalizeCircledCitationsToBracket(withPromotedTitles);
   return removePeriodAfterBracketCitations(withBracketCitations);
 }
 

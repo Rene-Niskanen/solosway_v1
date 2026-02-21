@@ -59,8 +59,9 @@ export function computeCitationPreviewTransform(
   containerWidth: number,
   containerHeight: number
 ): CitationPreviewTransform {
-  const previewWidth = Math.max(containerWidth, 280);
-  const previewHeight = Math.max(containerHeight, 200);
+  // Use actual container dimensions so the bbox is fully visible (no clipping at bottom/edges)
+  const previewWidth = containerWidth;
+  const previewHeight = containerHeight;
 
   const originalBboxWidth = bbox.width * imageWidth;
   const originalBboxHeight = bbox.height * imageHeight;
@@ -131,7 +132,11 @@ export const CitationPagePreviewContent: React.FC<{
     className={className ?? "citation-panel-preview-scroll"}
     style={{
       position: "absolute",
-      inset: 0,
+      left: "50%",
+      top: "50%",
+      width: "100%",
+      height: "100%",
+      transform: "translate(-50%, -50%)",
       overflow: disableScroll ? "hidden" : "auto",
       scrollbarWidth: "none",
       msOverflowStyle: "none",

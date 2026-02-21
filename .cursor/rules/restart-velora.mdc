@@ -1,0 +1,17 @@
+---
+description: When user says "restart velora go", stop and restart the full Velora stack
+alwaysApply: true
+---
+
+# Restart Velora Go
+
+When the user says **"restart velora go"** (or similar: "restart velora", "restart velora go"):
+
+1. Run the restart script from the **project root** in a **background** terminal:
+   - Command: `./restart-velora-go.sh`
+   - Use a terminal with the project root as the working directory.
+   - The script stops Flask (5001), frontend (5173), and the Celery worker, then runs the same start script as "start velora go". Redis is left running.
+
+2. Tell the user that Velora is restarting and where to open the app (e.g. frontend at http://localhost:5173, API at http://localhost:5001).
+
+Do not run the script in the foreground in a way that blocks the user; use background execution or instruct them to run it in a separate terminal.

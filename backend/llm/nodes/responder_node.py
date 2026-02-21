@@ -111,6 +111,35 @@ _MID_RESPONSE_CLOSING_PATTERNS = [
     ),
 ]
 
+# Closing phrases to strip entirely (never show to user)
+_STRIP_ENTIRELY_CLOSING_PATTERNS = [
+    # "If you need further insights into the comparables or the valuation process, feel free to ask! 😊"
+    re.compile(
+        r"\s*If\s+you\s+need\s+further\s+insights\s+into\s+(?:the\s+)?comparables\s+or\s+(?:the\s+)?valuation\s+process\s*,\s*feel\s+free\s+to\s+ask\!?\s*[😊🙂📄✨\s]*",
+        re.IGNORECASE,
+    ),
+    # "If you have any more questions about the details or next steps, feel free to ask! 😊" (and similar)
+    re.compile(
+        r"\s*If\s+you\s+have\s+any\s+(?:more\s+)?questions\s+about\s+(?:the\s+)?details\s+or\s+next\s+steps\s*,\s*feel\s+free\s+to\s+ask\!?\s*[😊🙂📄✨\s]*",
+        re.IGNORECASE,
+    ),
+    # Any "If you have any [more] questions about [X], feel free to ask! [emojis]"
+    re.compile(
+        r"\s*If\s+you\s+have\s+any\s+(?:more\s+)?questions\s+about\s+[^.!?\n]+,\s*feel\s+free\s+to\s+ask\!?\s*[😊🙂📄✨📋🌳📊💡✅\s]*",
+        re.IGNORECASE,
+    ),
+    # "If you need further details or assistance, feel free to ask!"
+    re.compile(
+        r"\s*If\s+you\s+need\s+further\s+details\s+or\s+assistance\s*,\s*feel\s+free\s+to\s+ask\!?\s*[😊🙂📄✨\s]*",
+        re.IGNORECASE,
+    ),
+    # Generic "feel free to ask" standalone closing line (with optional lead-in)
+    re.compile(
+        r"\s*(?:If\s+you\s+need\s+more\s+details[^.!?\n]*?|Hope\s+that\s+helps\.?)\s*,\s*feel\s+free\s+to\s+ask\!?\s*[😊🙂📄✨\s]*",
+        re.IGNORECASE,
+    ),
+]
+
 
 def _looks_like_closing_line(s: str) -> bool:
     """True if the string looks like a standalone closing/follow-up line (for dedupe when moving to end)."""
@@ -155,6 +184,14 @@ _EMBEDDED_CLOSING_MIDLINE_PATTERNS = [
     re.compile(r",\s*feel\s+free\s+to\s+ask\!?\s*[😊🙂📄✨\s]*(?=\s*\*\*|\s*\[?\d+\]?|\s*£|\s*\d)", re.IGNORECASE),
 ]
 
+# Full closing phrase when it appears in the *middle* of a paragraph (e.g. after "Completion Deadline").
+# Only match when followed by more content (lookahead) so we don't strip a legitimate closing at end.
+_EMBEDDED_CLOSING_MIDLINE_FULL_PHRASE = re.compile(
+    r"\s+If\s+you\s+need\s+further\s+details\s+or\s+assistance\s*,\s*feel\s+free\s+to\s+ask\!?\s*[😊🙂📄✨📋🌳📊💡✅\s]*"
+    r"(?=\s+[A-Z]|\s+The\s+|\s+This\s+|\s+\d|\s*\[)",
+    re.IGNORECASE,
+)
+
 # Parentheticals that are spelled-out amounts from source docs (e.g. "(One Million, Nine Hundred and Fifty Thousand Pounds)")
 # Strip these so they don't leak into the answer.
 _AMOUNT_IN_WORDS_PAREN = re.compile(
@@ -185,6 +222,11 @@ def _strip_embedded_closing_fragments(text: str) -> str:
             for pat in _EMBEDDED_CLOSING_MIDLINE_PATTERNS:
                 para = pat.sub(" ", para)
             para = re.sub(r"  +", " ", para).strip()
+        # Always strip the full "If you need further details or assistance, feel free to ask! 😊" when it appears
+        # in the middle of any paragraph (e.g. "Completion Deadline If you need... The preferred...") — only when
+        # followed by more content, so we don't remove a legitimate closing at end.
+        para = _EMBEDDED_CLOSING_MIDLINE_FULL_PHRASE.sub(" ", para)
+        para = re.sub(r"  +", " ", para).strip()
         out.append(para)
     return "\n\n".join(out)
 
@@ -213,10 +255,24 @@ def _strip_leaked_heading_before_value(text: str) -> str:
     return re.sub(r"(^|\s)Market\s+Value\s+(?=\*\*)", r"\1", text, flags=re.IGNORECASE)
 
 
+def _strip_entirely_closings(text: str) -> str:
+    """Remove closing phrases that should never appear (e.g. comparables/valuation 'feel free to ask')."""
+    if not (text or text.strip()):
+        return text
+    result = text
+    for pat in _STRIP_ENTIRELY_CLOSING_PATTERNS:
+        result = pat.sub("", result)
+    result = re.sub(r"\n{3,}", "\n\n", result).strip()
+    result = re.sub(r"  +", " ", result)
+    return result
+
+
 def _strip_mid_response_generic_closings(text: str) -> str:
     """Move closing phrases that appear in the middle or start of a response to the end (on their own line)."""
     if not (text or text.strip()):
         return text
+    # Remove phrases that must never appear (e.g. "further insights into comparables/valuation... feel free to ask")
+    text = _strip_entirely_closings(text)
     # First: remove closing fragments embedded in headings/mid lines (e.g. "Offer Details for Banda Lane free to ask! 😊")
     result = _strip_embedded_closing_fragments(text)
     changed = True
@@ -244,6 +300,8 @@ def _strip_mid_response_generic_closings(text: str) -> str:
     result = _strip_amount_in_words_parentheticals(result)
     result = _strip_leaked_heading_before_value(result)
     result = re.sub(r"  +", " ", result).strip() if result else result
+    # Remove any "strip entirely" closings that were moved to the end (so they never appear)
+    result = _strip_entirely_closings(result)
     return result
 
 

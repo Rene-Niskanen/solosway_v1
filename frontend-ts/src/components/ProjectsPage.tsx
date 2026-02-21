@@ -251,7 +251,7 @@ const FILES_BAR_COUNT = 8;
 // Padding from sidebar: left needs more space so Files/Projects don’t feel cramped
 // Equal horizontal padding so content isn't cramped against the sidebar; same left/right
 const CONTENT_PADDING_X_PX = 48;
-const CONTENT_PADDING_LEFT_PX = 72; // extra left padding for main content area
+const CONTENT_PADDING_LEFT_PX = 120; // extra left padding for main content area
 const CONTENT_PADDING_Y_PX = 32;
 
 interface ProjectsPageProps {
@@ -736,9 +736,9 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
       <div 
         className="w-full min-h-full flex flex-col box-border"
         style={{ 
-          paddingTop: `${CONTENT_PADDING_Y_PX}px`,
-          paddingRight: `${CONTENT_PADDING_X_PX}px`,
-          paddingBottom: `${CONTENT_PADDING_Y_PX}px`,
+          paddingTop: `${CONTENT_PADDING_LEFT_PX}px`,
+          paddingRight: `${CONTENT_PADDING_LEFT_PX}px`,
+          paddingBottom: `${CONTENT_PADDING_LEFT_PX}px`,
           paddingLeft: `${CONTENT_PADDING_LEFT_PX}px`,
         }}
       >

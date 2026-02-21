@@ -1496,31 +1496,49 @@ def query_documents_stream():
                                 # Only emit steps for phases that are actually happening (searching, reading, etc.)
                                 # Do NOT emit "Summarising content" when responder starts - emit it when we actually start streaming
                                 if event_type == "on_chain_start":
-                                    if is_fast_path and node_name == "handle_citation_query":
-                                        # Citation path: replace "Planning next moves" with "Summarising content"
+                                    # Emit "Searching" as soon as executor starts (first step is document name search)
+                                    if not is_fast_path and node_name == "executor" and not searching_step_emitted:
+                                        searching_step_emitted = True
+                                        source_count_by_type = _get_search_corpus_type_counts(business_id)
+                                        total_count = sum(source_count_by_type.values())
+                                        details = {}
+                                        if source_count_by_type:
+                                            details['source_count_by_type'] = source_count_by_type
+                                            details['source_count'] = total_count
                                         reasoning_data = {
                                             'type': 'reasoning_step',
-                                            'step': 'handle_citation_query',
+                                            'step': 'searching_documents',
+                                            'action_type': 'searching',
+                                            'message': 'Searching',
+                                            'timestamp': time.time(),
+                                            'details': details
+                                        }
+                                        yield f"data: {json.dumps(reasoning_data)}\n\n"
+                                        logger.info("🟡 [REASONING] Emitted searching step (executor start): Searching (corpus: %s)", source_count_by_type or 'unknown')
+                                    if is_fast_path and node_name == "handle_citation_query":
+                                        # Citation path: show "Generating response" when LLM is in action
+                                        reasoning_data = {
+                                            'type': 'reasoning_step',
+                                            'step': 'generating_response',
                                             'action_type': 'analysing',
-                                            'message': 'Summarising content',
+                                            'message': 'Generating response',
                                             'details': {}
                                         }
                                         yield f"data: {json.dumps(reasoning_data)}\n\n"
-                                        logger.info("🟡 [REASONING] ✅ Emitted citation step: Summarising content")
+                                        logger.info("🟡 [REASONING] ✅ Emitted citation step: Generating response")
                                     elif not is_fast_path and node_name in node_messages and node_name not in processed_nodes:
                                         if node_name == "responder":
-                                            # Emit "Thinking" just before we call the LLM for the response (immediate feedback)
+                                            # Emit "Generating response" when prompt is sent to LLM (disappears when streaming starts)
                                             processed_nodes.add(node_name)
-                                            thinking_data = {
+                                            generating_data = {
                                                 'type': 'reasoning_step',
-                                                'step': 'thinking',
+                                                'step': 'generating_response',
                                                 'action_type': 'analysing',
-                                                'message': 'Thinking',
+                                                'message': 'Generating response',
                                                 'details': {}
                                             }
-                                            yield f"data: {json.dumps(thinking_data)}\n\n"
-                                            logger.info("🟡 [REASONING] ✅ Emitted step: Thinking (before LLM response)")
-                                            # "Summarising content" is still emitted when we actually start streaming (first token)
+                                            yield f"data: {json.dumps(generating_data)}\n\n"
+                                            logger.info("🟡 [REASONING] ✅ Emitted step: Generating response (prompt sent to LLM)")
                                         else:
                                             processed_nodes.add(node_name)
                                             reasoning_data = {
@@ -1772,6 +1790,16 @@ def query_documents_stream():
                                                     }
                                                     yield f"data: {json.dumps(reading_data)}\n\n"
                                                 logger.debug(f"🟡 [REASONING] Emitted executor found_documents + {len(doc_previews)} reading steps ({doc_count} docs we read)")
+                                                # After chunk retrieval: emit "Thinking" step that replaces the Analysing + documents block in the UI
+                                                thinking_after_chunks_data = {
+                                                    'type': 'reasoning_step',
+                                                    'step': 'thinking_after_chunks',
+                                                    'action_type': 'analysing',
+                                                    'message': 'Thinking',
+                                                    'timestamp': time.time(),
+                                                    'details': {'replaces_analysing': True}
+                                                }
+                                                yield f"data: {json.dumps(thinking_after_chunks_data)}\n\n"
                                     
                                     elif node_name == "process_documents" and not is_fast_path:
                                         state_data = state_update if state_update else output
@@ -2098,19 +2126,7 @@ def query_documents_stream():
                                             doc_count = len(doc_outputs_from_state) if doc_outputs_from_state else len(relevant_docs_from_state)
                                             yield f"data: {json.dumps({'type': 'documents_found', 'count': doc_count})}\n\n"
                                             
-                                            # Emit "Summarizing content" reasoning step (like Cursor's wand sparkles)
-                                            # Use timestamp to ensure it comes after all reading steps
-                                            summarize_timestamp = time.time()
-                                            summarizing_data = {
-                                                'type': 'reasoning_step',
-                                                'step': 'summarizing_content',
-                                                'action_type': 'summarising',
-                                                'message': 'Summarising content',
-                                                'timestamp': summarize_timestamp,  # After reading steps
-                                                'details': {'documents_processed': doc_count}
-                                            }
-                                            yield f"data: {json.dumps(summarizing_data)}\n\n"
-                                            logger.info("✨ [STREAM] Emitted 'Summarizing content' reasoning step")
+                                            # Do NOT emit "Generating response" here - it was already emitted when responder started; hide it when streaming starts (frontend)
                                             
                                             # AGENT-NATIVE: Agent actions are now emitted from frontend when they actually happen
                                             # This ensures "Opening citation view" appears when document actually opens, not before
@@ -2469,17 +2485,7 @@ def query_documents_stream():
                         else:
                             # Stream the existing summary token by token (simulate streaming for UX)
                             logger.info("🟡 [STREAM] Streaming existing summary (no redundant LLM call)")
-                            # Emit "Summarising content" only when we actually start streaming (so UI shows it as the step happening now, not for the whole LLM call)
-                            summarizing_data = {
-                                'type': 'reasoning_step',
-                                'step': 'summarizing_content',
-                                'action_type': 'analysing',
-                                'message': 'Summarising content',
-                                'timestamp': time.time(),
-                                'details': {}
-                            }
-                            yield f"data: {json.dumps(summarizing_data)}\n\n"
-                            logger.info("✨ [STREAM] Emitted 'Summarising content' reasoning step (at stream start)")
+                            # "Generating response" was already shown when prompt was sent; frontend hides it when streaming starts
                             yield f"data: {json.dumps({'type': 'status', 'message': 'Streaming response...'})}\n\n"
                             
                             # Stream the final response text directly - preserve all formatting
