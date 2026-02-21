@@ -195,22 +195,37 @@ const GAP = 12;
 const VIEWPORT_MARGIN = 8;
 const ESTIMATED_PANEL_HEIGHT = 460;
 
+/** Returns true if two rects overlap (intersect) in 2D. */
+function rectsOverlap(a: DOMRect, b: { left: number; top: number; width: number; height: number }): boolean {
+  return !(a.right <= b.left || b.left + b.width <= a.left || a.bottom <= b.top || b.top + b.height <= a.top);
+}
+
 /**
  * Position panel near the clicked citation with a consistent GAP above or below.
  * Prefers opening upward; opens below when there isn’t enough room above.
  * Places the panel to the right of the anchor (citation + highlighted text) so it
- * never overlaps the blue highlight; if there isn't enough room on the right, clamps to viewport.
+ * would overlap the blue highlight, moves it right so it doesn't; then clamps to viewport.
  */
 function clampPanelPosition(
   anchorRect: DOMRect,
   panelWidth: number,
-  panelHeight: number
+  panelHeight: number,
+  highlightRect?: DOMRect | null
 ): { left: number; top?: number; bottom?: number; openAbove: boolean } {
   const vw = typeof window !== "undefined" ? window.innerWidth : 1200;
   const vh = typeof window !== "undefined" ? window.innerHeight : 800;
+  const avoidRect = highlightRect ?? anchorRect;
 
-  // Horizontal: place panel to the right of the anchor (citation + highlight) so it never overlaps the blue highlight
+  // Horizontal: start with panel to the right of the anchor; if it would overlap the blue highlight, move right
   let left = anchorRect.right + GAP;
+  const topIfBelow = anchorRect.bottom + GAP;
+  const panelBottomIfAbove = anchorRect.top - GAP;
+  const panelTopIfAbove = panelBottomIfAbove - panelHeight;
+  const panelRectAbove = { left, top: panelTopIfAbove, width: panelWidth, height: panelHeight };
+  const panelRectBelow = { left, top: topIfBelow, width: panelWidth, height: panelHeight };
+  if (rectsOverlap(avoidRect, panelRectAbove) || rectsOverlap(avoidRect, panelRectBelow)) {
+    left = Math.max(left, avoidRect.right + GAP);
+  }
   if (left + panelWidth > vw - VIEWPORT_MARGIN) {
     left = vw - panelWidth - VIEWPORT_MARGIN;
   }
@@ -219,7 +234,6 @@ function clampPanelPosition(
   }
 
   // Prefer below: panel top = citation bottom + GAP so the panel never covers the cited text or markers
-  const topIfBelow = anchorRect.bottom + GAP;
   const fitsBelow = topIfBelow + panelHeight <= vh - VIEWPORT_MARGIN;
 
   if (fitsBelow) {
@@ -229,8 +243,6 @@ function clampPanelPosition(
   }
 
   // Consider opening above only if the full panel fits entirely above the anchor (no overlap)
-  const panelBottomIfAbove = anchorRect.top - GAP;
-  const panelTopIfAbove = panelBottomIfAbove - panelHeight;
   const fitsAboveWithoutOverlap = panelTopIfAbove >= VIEWPORT_MARGIN;
 
   if (fitsAboveWithoutOverlap) {
@@ -250,6 +262,8 @@ function clampPanelPosition(
 export interface CitationClickPanelProps {
   citationData: CitationClickPanelData;
   anchorRect: DOMRect;
+  /** When provided, used for the "go right" calculation so the panel does not overlap the blue highlight. */
+  highlightRect?: DOMRect | null;
   cachedPageImage: CachedPageImage | null;
   onViewInDocument: () => void;
   onAskFollowUp: () => void;
@@ -264,6 +278,7 @@ export interface CitationClickPanelProps {
 export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
   citationData,
   anchorRect,
+  highlightRect,
   cachedPageImage,
   onViewInDocument,
   onAskFollowUp,
@@ -273,7 +288,7 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
   messageCitedExcerpt: messageCitedExcerptProp,
 }) => {
   const maxHeightPx = typeof window !== "undefined" ? (window.innerHeight * PANEL_MAX_HEIGHT_VH) / 100 : 500;
-  const position = clampPanelPosition(anchorRect, PANEL_WIDTH, Math.min(ESTIMATED_PANEL_HEIGHT, maxHeightPx));
+  const position = clampPanelPosition(anchorRect, PANEL_WIDTH, Math.min(ESTIMATED_PANEL_HEIGHT, maxHeightPx), highlightRect);
   const { left, top, bottom, openAbove } = position;
 
   const filename = citationData.original_filename || "Document";
@@ -430,6 +445,8 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
             lineHeight: 1,
             cursor: "pointer",
             marginRight: -4,
+            fontFamily: "system-ui, -apple-system, sans-serif",
+            letterSpacing: "-0.01em",
           }}
           onMouseEnter={(e) => {
             e.currentTarget.style.background = "#f3f4f6";
@@ -463,6 +480,8 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
               display: "flex",
               alignItems: "center",
               justifyContent: "space-between",
+              fontFamily: "system-ui, -apple-system, sans-serif",
+              letterSpacing: "-0.01em",
             }}
           >
             Citation debug (bbox choice)
@@ -611,6 +630,8 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
                   boxShadow: "0 1px 1px rgba(0,0,0,0.05)",
                   outline: "none",
                   minHeight: 26,
+                  fontFamily: "system-ui, -apple-system, sans-serif",
+                  letterSpacing: "-0.01em",
                 }}
                 onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = "#E8E8E5"; }}
                 onMouseLeave={(e) => {
@@ -648,6 +669,8 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
                   boxShadow: "0 1px 1px rgba(0,0,0,0.05)",
                   outline: "none",
                   minHeight: 26,
+                  fontFamily: "system-ui, -apple-system, sans-serif",
+                  letterSpacing: "-0.01em",
                 }}
                 onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = "#E8E8E5"; }}
                 onMouseLeave={(e) => {
@@ -685,6 +708,8 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
                   boxShadow: "0 1px 1px rgba(0,0,0,0.05)",
                   outline: "none",
                   minHeight: 26,
+                  fontFamily: "system-ui, -apple-system, sans-serif",
+                  letterSpacing: "-0.01em",
                 }}
                 onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = "#E8E8E5"; }}
                 onMouseLeave={(e) => {

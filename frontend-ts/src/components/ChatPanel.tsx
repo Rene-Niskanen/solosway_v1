@@ -258,10 +258,17 @@ export const ChatPanel = ({
               className={`h-full w-full flex flex-col relative ${className || ''}`}
               style={{ background: 'transparent' }}
             >
-            {/* Header */}
-            <div className="px-4 py-3" style={{ backgroundColor: '#4A4A4A' }}>
+            {/* Header – minimal top padding so search row aligns with SideChatPanel Response button row */}
+            <div
+              className="px-4 flex flex-col"
+              style={{
+                backgroundColor: '#4A4A4A',
+                paddingTop: 10,
+                paddingBottom: 19,
+              }}
+            >
               {archivedChats.length > 0 && (
-                <div className="flex items-center justify-end mb-3">
+                <div className="flex items-center justify-end mb-2">
                   <motion.button
                     onClick={() => setShowArchived(!showArchived)}
                     whileHover={{ scale: 1.05 }}
@@ -276,9 +283,8 @@ export const ChatPanel = ({
                   </motion.button>
                 </div>
               )}
-              
-              {/* Search Input - Minimal Design (32px height to align with Response button in main chat) */}
-              <div className="relative mb-1.5 flex items-center" style={{ minHeight: 32, height: 32 }}>
+              {/* Search Input - 32px height to align with Response button in main chat header */}
+              <div className="relative flex items-center" style={{ minHeight: 32, height: 32 }}>
                 <input
                   type="text"
                   placeholder="Search"
@@ -343,7 +349,10 @@ export const ChatPanel = ({
                   </button>
                 </div>
               </div>
-              
+
+              {/* Spacer so content below sits lower; keeps search row visually aligned with Response button */}
+              <div className="h-3 shrink-0" aria-hidden />
+
               {/* New Agent Button - Full Width */}
               <motion.button 
                 type="button"

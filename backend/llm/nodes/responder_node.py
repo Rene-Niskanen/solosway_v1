@@ -128,6 +128,11 @@ _STRIP_ENTIRELY_CLOSING_PATTERNS = [
         r"\s*If\s+you\s+have\s+any\s+(?:more\s+)?questions\s+about\s+[^.!?\n]+,\s*feel\s+free\s+to\s+ask\!?\s*[😊🙂📄✨📋🌳📊💡✅\s]*",
         re.IGNORECASE,
     ),
+    # "If you have more questions about the commission structure or related fees, feel free to ask! 😊" (no "any")
+    re.compile(
+        r"\s*If\s+you\s+have\s+more\s+questions\s+about\s+[^.!?\n]+,\s*feel\s+free\s+to\s+ask\!?\s*[😊🙂📄✨📋🌳📊💡✅\s]*",
+        re.IGNORECASE,
+    ),
     # "If you need further details or assistance, feel free to ask!"
     re.compile(
         r"\s*If\s+you\s+need\s+further\s+details\s+or\s+assistance\s*,\s*feel\s+free\s+to\s+ask\!?\s*[😊🙂📄✨\s]*",

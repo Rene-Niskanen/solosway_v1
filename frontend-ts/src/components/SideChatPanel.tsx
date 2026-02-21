@@ -757,12 +757,12 @@ const BlueCitedTextHighlight: React.FC<{
         style={{
           display: 'inline',
           margin: 0,
-          padding: '4px 1px',
+          padding: '5px 2px',
           borderRadius: 0,
           boxDecorationBreak: 'clone',
           WebkitBoxDecorationBreak: 'clone',
           backgroundColor: '#DBEAFE',
-          lineHeight: 'inherit',
+          lineHeight: 1.5,
           overflow: 'visible',
         }}
       >
@@ -776,13 +776,13 @@ const BlueCitedTextHighlight: React.FC<{
         .blue-citation-swoop {
           display: inline;
           margin: 0;
-          padding: 3px 0;
+          padding: 5px 2px;
           border-radius: 0;
           box-decoration-break: clone;
           -webkit-box-decoration-break: clone;
           font-weight: inherit;
           font-style: inherit;
-          line-height: inherit;
+          line-height: 1.5;
           overflow: visible;
           background: linear-gradient(90deg, #DBEAFE 0%, #DBEAFE 100%);
           background-repeat: no-repeat;
@@ -806,6 +806,11 @@ const BlueCitedTextHighlight: React.FC<{
           background: transparent !important;
           -webkit-background-clip: unset;
           background-clip: unset;
+        }
+        /* Keep bold/italic within highlight box so background fully covers them */
+        .blue-cited-highlight-bg strong,
+        .blue-cited-highlight-bg em {
+          line-height: inherit;
         }
       `}</style>
       {children}
@@ -855,7 +860,7 @@ const StreamingResponseText: React.FC<{
   text: string;
   isStreaming: boolean;
   citations?: Record<string, any>;
-  handleCitationClick: (citationData: any, anchorRect?: DOMRect, citationNumber?: string) => void;
+  handleCitationClick: (citationData: any, anchorRect?: DOMRect, citationNumber?: string, highlightRect?: DOMRect | null) => void;
   renderTextWithCitations: (text: string, citations: any, handleClick: any, seen: Set<string>) => React.ReactNode;
   onTextUpdate?: () => void;
   messageId?: string; // Unique ID for this message to track animation state
@@ -1423,7 +1428,7 @@ const StreamingResponseText: React.FC<{
     const bracketMatch = placeholder.match(/^%%CITATION_BRACKET_(\d+)%%$/);
     const pendingSuperscriptMatch = placeholder.match(/^%%CITATION_PENDING_(\d+)%%$/);
     const pendingBracketMatch = placeholder.match(/^%%CITATION_PENDING_(\d+)%%$/);
-    const onClick = (data: unknown, anchorRect?: DOMRect, citationNumber?: string) => handleCitationClickRef.current?.(data as any, anchorRect, citationNumber);
+    const onClick = (data: unknown, anchorRect?: DOMRect, citationNumber?: string, highlightRect?: DOMRect | null) => handleCitationClickRef.current?.(data as any, anchorRect, citationNumber, highlightRect);
     const isSavedNum = (num: string) => savedCitationNumbersForMessageRef.current?.has(num) ?? false;
     if (pendingSuperscriptMatch || pendingBracketMatch) {
       const num = pendingSuperscriptMatch?.[1] || pendingBracketMatch?.[1];
@@ -1488,7 +1493,7 @@ const StreamingResponseText: React.FC<{
     const boldSplit = text.split(/\*\*([^*]*)\*\*/g);
     for (let i = 0; i < boldSplit.length; i++) {
       if (i % 2 === 1) {
-        parts.push(<strong key={`b-${keyIdx++}`} style={{ fontWeight: 600 }}>{boldSplit[i]}</strong>);
+        parts.push(<strong key={`b-${keyIdx++}`} style={{ fontWeight: 700 }}>{boldSplit[i]}</strong>);
       } else if (boldSplit[i]) {
         const bit = String(boldSplit[i]);
         const italicSplit = bit.split(/\*([^*]*)\*/g);
@@ -1567,7 +1572,7 @@ const StreamingResponseText: React.FC<{
     const out: (string | React.ReactElement)[] = [];
     const pushPart = (part: string, key: string) => {
       if (part.startsWith('%%CITATION_')) out.push(part);
-      else if (part) out.push(React.createElement(tag, { key, ...(tag === 'strong' ? { style: { fontWeight: 600, wordWrap: 'break-word', overflowWrap: 'break-word', wordBreak: 'break-word' } } : { style: { fontStyle: 'italic', wordWrap: 'break-word', overflowWrap: 'break-word', wordBreak: 'break-word' } }) }, part));
+      else if (part) out.push(React.createElement(tag, { key, ...(tag === 'strong' ? { style: { fontWeight: 700, wordWrap: 'break-word', overflowWrap: 'break-word', wordBreak: 'break-word' } } : { style: { fontStyle: 'italic', wordWrap: 'break-word', overflowWrap: 'break-word', wordBreak: 'break-word' } }) }, part));
     };
     let partIndex = 0;
     React.Children.forEach(childChildren, (c) => {
@@ -1580,7 +1585,7 @@ const StreamingResponseText: React.FC<{
         if (typeof grandChildren === 'string' && grandChildren.includes('%%CITATION_')) {
           grandChildren.split(citationPlaceholderRe).forEach((part) => pushPart(part, `inline-cit-${partIndex++}`));
         } else {
-          out.push(React.createElement(tag, { key: `inline-el-${partIndex++}`, ...(tag === 'strong' ? { style: { fontWeight: 600, wordWrap: 'break-word', overflowWrap: 'break-word', wordBreak: 'break-word' } } : { style: { fontStyle: 'italic', wordWrap: 'break-word', overflowWrap: 'break-word', wordBreak: 'break-word' } }) }, c));
+          out.push(React.createElement(tag, { key: `inline-el-${partIndex++}`, ...(tag === 'strong' ? { style: { fontWeight: 700, wordWrap: 'break-word', overflowWrap: 'break-word', wordBreak: 'break-word' } } : { style: { fontStyle: 'italic', wordWrap: 'break-word', overflowWrap: 'break-word', wordBreak: 'break-word' } }) }, c));
         }
       }
     });
@@ -1928,7 +1933,8 @@ const StreamingResponseText: React.FC<{
     };
     const citationLineBarBlockStyle = { position: 'relative' as const };
     const citationLineBarInlineStyle = { position: 'absolute' as const, left: '-16px', top: 0, bottom: 0, width: '3px', background: '#d1d5db', pointerEvents: 'none' as const, borderRadius: '2px' };
-    const citationLineBarLiBarStyle = { position: 'absolute' as const, left: '-16px', top: 0, bottom: 0, width: '3px', background: '#d1d5db', pointerEvents: 'none' as const, borderRadius: '2px' };
+    /* List items need extra offset so the line stays lef3t of bullet/text (ul/ol + li padding reduce effective space) */
+    const citationLineBarLiBarStyle = { position: 'absolute' as const, left: '-40px', top: 0, bottom: 0, width: '3px', background: '#d1d5db', pointerEvents: 'none' as const, borderRadius: '2px' };
     return {
     p: ({ children }: { children?: React.ReactNode }) => {
       const citationNumbers = collectCitationNumbersInOrder(children ?? null);
@@ -1975,8 +1981,8 @@ const StreamingResponseText: React.FC<{
       return (
         <>
           <h1 style={{
-            fontSize: '22px',
-            fontWeight: 600,
+            fontSize: '38px',
+            fontWeight: 700,
             margin: '15.2px 0 11px 0',
             color: '#111827',
             wordWrap: 'break-word',
@@ -1999,8 +2005,8 @@ const StreamingResponseText: React.FC<{
       return (
         <>
           <h2 style={{
-            fontSize: '19px',
-            fontWeight: 600,
+            fontSize: '26px',
+            fontWeight: 700,
             margin: '13.1px 0 8.8px 0',
             color: '#111827',
             wordWrap: 'break-word',
@@ -2023,8 +2029,8 @@ const StreamingResponseText: React.FC<{
       return (
         <>
           <h3 style={{
-            fontSize: '16px',
-            fontWeight: 600,
+            fontSize: '24px',
+            fontWeight: 700,
             margin: '10.9px 0 6.6px 0',
             color: '#111827',
             wordWrap: 'break-word',
@@ -2090,8 +2096,8 @@ const StreamingResponseText: React.FC<{
     },
     strong: ({ children }: { children?: React.ReactNode }) => {
       const boldContent = (
-        <strong style={{ 
-          fontWeight: 600,
+        <strong style={{
+          fontWeight: 700,
           wordWrap: 'break-word',
           overflowWrap: 'break-word',
           wordBreak: 'break-word'
@@ -2183,7 +2189,8 @@ const StreamingResponseText: React.FC<{
     };
     const citationLineBarBlockStyle = { position: 'relative' as const };
     const citationLineBarInlineStyle = { position: 'absolute' as const, left: '-16px', top: 0, bottom: 0, width: '3px', background: '#d1d5db', pointerEvents: 'none' as const, borderRadius: '2px' };
-    const citationLineBarLiBarStyle = { position: 'absolute' as const, left: '-16px', top: 0, bottom: 0, width: '3px', background: '#d1d5db', pointerEvents: 'none' as const, borderRadius: '2px' };
+    /* List items need extra offset so the line stays left of bullet/text (ul/ol + li padding reduce effective space) */
+    const citationLineBarLiBarStyle = { position: 'absolute' as const, left: '-40px', top: 0, bottom: 0, width: '3px', background: '#d1d5db', pointerEvents: 'none' as const, borderRadius: '2px' };
     return {
     ...markdownComponents,
     p: ({ children }: { children?: React.ReactNode }) => {
@@ -2232,8 +2239,8 @@ const StreamingResponseText: React.FC<{
       return (
       <>
         <h1 style={{
-          fontSize: '22px',
-          fontWeight: 600,
+          fontSize: '38px',
+          fontWeight: 700,
           margin: '15.2px 0 11px 0',
           color: '#111827',
           wordWrap: 'break-word',
@@ -2256,8 +2263,8 @@ const StreamingResponseText: React.FC<{
       return (
       <>
         <h2 style={{
-          fontSize: '19px',
-          fontWeight: 600,
+          fontSize: '26px',
+          fontWeight: 700,
           margin: '13.1px 0 8.8px 0',
           color: '#111827',
           wordWrap: 'break-word',
@@ -2280,8 +2287,8 @@ const StreamingResponseText: React.FC<{
       return (
       <>
         <h3 style={{
-          fontSize: '16px',
-          fontWeight: 600,
+          fontSize: '24px',
+          fontWeight: 700,
           margin: '10.9px 0 6.6px 0',
           color: '#111827',
           wordWrap: 'break-word',
@@ -2407,7 +2414,15 @@ const StreamingResponseText: React.FC<{
         }
         /* Keep default response bold/italic (titles, key facts) so ** and * are always visible */
         .streaming-response-text strong {
-          font-weight: 600 !important;
+          font-weight: 700 !important;
+        }
+        /* Title-like bold only: first strong in first paragraph (e.g. "Valuation Evidence and Comparables") */
+        .streaming-response-text p:first-of-type strong:first-of-type {
+          font-size: 1.35em !important;
+        }
+        /* List subheadings (e.g. "Windy Ridge:") and key figures in bullets – slightly larger */
+        .streaming-response-text li strong {
+          font-size: 1.06em !important;
         }
         .streaming-response-text em {
           font-style: italic !important;
@@ -2417,7 +2432,7 @@ const StreamingResponseText: React.FC<{
         }
         /* Force bold/italic inside citation highlights so parent font-weight does not override */
         .cited-highlight-formatting strong {
-          font-weight: 600 !important;
+          font-weight: 700 !important;
         }
         .cited-highlight-formatting em {
           font-style: italic !important;
@@ -2762,7 +2777,7 @@ function getCitedRunFromMessageText(messageText: string, citationNumber: string)
 const CitationLink: React.FC<{
   citationNumber: string;
   citationData: CitationDataType;
-  onClick: (data: CitationDataType, anchorRect?: DOMRect, citationNumber?: string) => void;
+  onClick: (data: CitationDataType, anchorRect?: DOMRect, citationNumber?: string, highlightRect?: DOMRect | null) => void;
   isSelected?: boolean;
   /** When true (saved for docx export), render link greyer */
   isSaved?: boolean;
@@ -2957,23 +2972,26 @@ const CitationLink: React.FC<{
           let blockRect = e.currentTarget.getBoundingClientRect();
           // Use anchor rect from the full highlighted response text block (not just the citation marker) so the panel appears above/below the text and never overlaps it
           let anchorRect: DOMRect = blockRect;
+          let highlightRectForPanel: DOMRect | undefined;
           const citedBlock = e.currentTarget.closest('[data-cited-text-block]');
           if (citedBlock) {
-            const highlightRect = citedBlock.getBoundingClientRect();
-            const left = Math.min(blockRect.left, highlightRect.left);
-            const top = Math.min(blockRect.top, highlightRect.top);
-            const right = Math.max(blockRect.right, highlightRect.right);
-            const bottom = Math.max(blockRect.bottom, highlightRect.bottom);
+            const hr = citedBlock.getBoundingClientRect();
+            highlightRectForPanel = hr;
+            const left = Math.min(blockRect.left, hr.left);
+            const top = Math.min(blockRect.top, hr.top);
+            const right = Math.max(blockRect.right, hr.right);
+            const bottom = Math.max(blockRect.bottom, hr.bottom);
             anchorRect = new DOMRect(left, top, right - left, bottom - top);
           } else {
             let el: Element | null = e.currentTarget.previousElementSibling;
             while (el) {
               if (el.hasAttribute('data-cited-text-block')) {
-                const highlightRect = el.getBoundingClientRect();
-                const left = Math.min(blockRect.left, highlightRect.left);
-                const top = Math.min(blockRect.top, highlightRect.top);
-                const right = Math.max(blockRect.right, highlightRect.right);
-                const bottom = Math.max(blockRect.bottom, highlightRect.bottom);
+                const hr = el.getBoundingClientRect();
+                highlightRectForPanel = hr;
+                const left = Math.min(blockRect.left, hr.left);
+                const top = Math.min(blockRect.top, hr.top);
+                const right = Math.max(blockRect.right, hr.right);
+                const bottom = Math.max(blockRect.bottom, hr.bottom);
                 anchorRect = new DOMRect(left, top, right - left, bottom - top);
                 break;
               }
@@ -2991,7 +3009,7 @@ const CitationLink: React.FC<{
               break;
             }
           }
-          onClick(citationData, anchorRect, citationNumber);
+          onClick(citationData, anchorRect, citationNumber, highlightRectForPanel);
         }}
         style={{
           display: 'inline-flex',
@@ -3071,7 +3089,7 @@ function renderExcerptWithFormatting(text: string): React.ReactNode {
   const boldSplit = text.split(/\*\*([^*]*)\*\*/g);
   for (let i = 0; i < boldSplit.length; i++) {
     if (i % 2 === 1) {
-      parts.push(<strong key={`eb-${keyIdx++}`} style={{ fontWeight: 600 }}>{boldSplit[i]}</strong>);
+      parts.push(<strong key={`eb-${keyIdx++}`} style={{ fontWeight: 700 }}>{boldSplit[i]}</strong>);
     } else if (boldSplit[i]) {
       const bit = String(boldSplit[i]);
       const italicSplit = bit.split(/\*([^*]*)\*/g);
@@ -3281,6 +3299,7 @@ const CitationCallout: React.FC<{
   const hasCalloutCard = !!docId;
 
   const handleWheel = React.useCallback((e: React.WheelEvent) => {
+    if (e.shiftKey || e.metaKey || e.altKey) return; // Let scroll-container handler cycle cards
     const scrollEl = (e.currentTarget as HTMLElement).closest?.('.sidechat-scroll') as HTMLElement | null;
     if (scrollEl && scrollEl.scrollHeight > scrollEl.clientHeight) {
       scrollEl.scrollTop += e.deltaY;
@@ -5609,6 +5628,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   const [citationClickPanel, setCitationClickPanel] = React.useState<{
     citationData: CitationData;
     anchorRect: DOMRect;
+    highlightRect?: DOMRect | null;
     sourceMessageText?: string;
     messageId?: string;
     citationNumber?: string;
@@ -11169,7 +11189,62 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     requestAnimationFrame(handleScroll);
     return () => contentArea.removeEventListener('scroll', handleScroll);
   }, []);
-  
+
+  // Shift / Command / Alt + wheel over messages: cycle document preview cards instead of scrolling.
+  // Listener is attached directly to the messages scroll container (useLayoutEffect after messages exist)
+  // with passive: false so preventDefault works. No pointer check needed — event is on the container.
+  const shiftScrollCardCooldownRef = React.useRef<number>(0);
+  const SHIFT_SCROLL_COOLDOWN_MS = 180;
+  const hasMessages = chatMessages.length > 0;
+  React.useLayoutEffect(() => {
+    if (!hasMessages) return;
+    const container = document.querySelector<HTMLElement>('[data-sidechat-messages-scroll]');
+    if (!container) return;
+    const handleWheel = (e: WheelEvent) => {
+      const modifierHeld = e.shiftKey || e.metaKey || e.altKey;
+      if (!modifierHeld) return;
+      const el = e.currentTarget as HTMLElement;
+      const cards = Array.from(el.querySelectorAll<HTMLElement>('[data-citation-callout]'));
+      if (cards.length === 0) return;
+      const now = Date.now();
+      if (now < shiftScrollCardCooldownRef.current) {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+      const rect = el.getBoundingClientRect();
+      const visibleCenter = rect.top + rect.height / 2;
+      const cardsWithCenter = cards.map((cardEl) => {
+        const r = cardEl.getBoundingClientRect();
+        return { el: cardEl, centerY: r.top + r.height / 2 };
+      });
+      cardsWithCenter.sort((a, b) => a.centerY - b.centerY);
+      let currentIndex = 0;
+      let bestDist = Infinity;
+      for (let i = 0; i < cardsWithCenter.length; i++) {
+        const dist = Math.abs(cardsWithCenter[i].centerY - visibleCenter);
+        if (dist < bestDist) {
+          bestDist = dist;
+          currentIndex = i;
+        }
+      }
+      const nextIndex = e.deltaY > 0 ? currentIndex + 1 : currentIndex - 1;
+      const clamped = Math.max(0, Math.min(cardsWithCenter.length - 1, nextIndex));
+      const targetCard = cardsWithCenter[clamped].el;
+      const cardRect = targetCard.getBoundingClientRect();
+      const cardCenterInViewport = cardRect.top + cardRect.height / 2;
+      const offsetToCenter = cardCenterInViewport - (rect.top + rect.height / 2);
+      const targetScrollTop = el.scrollTop + offsetToCenter;
+      const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight);
+      el.scrollTop = Math.max(0, Math.min(maxScroll, targetScrollTop));
+      shiftScrollCardCooldownRef.current = now + SHIFT_SCROLL_COOLDOWN_MS;
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    container.addEventListener('wheel', handleWheel, { passive: false });
+    return () => container.removeEventListener('wheel', handleWheel);
+  }, [hasMessages]);
+
   // Main scroll effect - handles all scroll scenarios
   const hasLoadingMessage = chatMessages.some(msg => msg.isLoading);
   const latestMessageText = chatMessages[chatMessages.length - 1]?.text || '';
@@ -11414,7 +11489,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
 
   // User clicked a citation in message text: open doc or show panel (no scroll here — push-down scroll is for streaming only)
   // Citation pop-up and bar only show for the latest response; ignore clicks on citations in older messages
-  const handleUserCitationClick = React.useCallback((data: CitationDataType, anchorRect?: DOMRect, sourceMessageText?: string, messageId?: string, citationNumber?: string) => {
+  const handleUserCitationClick = React.useCallback((data: CitationDataType, anchorRect?: DOMRect, highlightRect?: DOMRect | null, sourceMessageText?: string, messageId?: string, citationNumber?: string) => {
     if (isDocumentPreviewOpenRef.current) {
       // Document preview already open: go straight to this citation in the document view (no panel)
       openCitationInDocumentView(data as CitationData, false);
@@ -11428,7 +11503,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     if (anchorRect != null) {
       const runLength = getCitationAdjacentRunLength(sourceMessageText ?? '', citationNumber ?? '');
       if (runLength > 2) return; // Don't show preview when 3+ citations in a row
-      setCitationClickPanel({ citationData: data as CitationData, anchorRect, sourceMessageText, messageId, citationNumber });
+      setCitationClickPanel({ citationData: data as CitationData, anchorRect, highlightRect, sourceMessageText, messageId, citationNumber });
     }
   }, [openCitationInDocumentView, currentChatId, setDocumentViewedCitation, latestAssistantMessageKey]);
 
@@ -15292,12 +15367,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           >
                             <ReactMarkdown components={{
                               p: ({ children }) => <p style={{ margin: 0, padding: 0, display: 'inline', wordWrap: 'break-word', overflowWrap: 'break-word' }}>{children}</p>,
-                              h1: ({ children }) => <h1 style={{ fontSize: '22px', fontWeight: 600, margin: '15.2px 0 11px 0', display: 'block' }}>{children}</h1>,
-                              h2: () => null, h3: ({ children }) => <h3 style={{ fontSize: '16px', fontWeight: 600, margin: '10.9px 0 6.6px 0' }}>{children}</h3>,
+                              h1: ({ children }) => <h1 style={{ fontSize: '38px', fontWeight: 700, margin: '15.2px 0 11px 0', display: 'block' }}>{children}</h1>,
+                              h2: () => null, h3: ({ children }) => <h3 style={{ fontSize: '24px', fontWeight: 700, margin: '10.9px 0 6.6px 0' }}>{children}</h3>,
                               ul: ({ children }) => <ul style={{ margin: '11px 0', paddingLeft: '24.1px' }}>{children}</ul>,
                               ol: ({ children }) => <ol style={{ margin: '11px 0', paddingLeft: '24.1px' }}>{children}</ol>,
                               li: ({ children }) => <li style={{ margin: '4.4px 0 4.4px 0' }}>{children}</li>,
-                              strong: ({ children }) => <strong style={{ fontWeight: 600 }}>{children}</strong>,
+                              strong: ({ children }) => <strong style={{ fontWeight: 700 }}>{children}</strong>,
                               em: ({ children }) => <em style={{ fontStyle: 'italic' }}>{children}</em>,
                               code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2.2px 5.5px', borderRadius: '4.4px', fontSize: '15.2px', fontFamily: 'monospace' }}>{children}</code>,
                               blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #d1d5db', paddingLeft: '15.3px', margin: '10.9px 0', color: '#6b7280' }}>{children}</blockquote>,
@@ -15388,8 +15463,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         >
                           <ReactMarkdown components={{
                             p: ({ children }) => <p style={{ margin: 0, padding: 0, display: 'inline', wordWrap: 'break-word', overflowWrap: 'break-word' }}>{children}</p>,
-                            h1: ({ children }) => <h1 style={{ fontSize: '22px', fontWeight: 600, margin: '15.2px 0 11px 0', display: 'block' }}>{children}</h1>,
-                            h2: () => null, h3: ({ children }) => <h3 style={{ fontSize: '16px', fontWeight: 600, margin: '10.9px 0 6.6px 0' }}>{children}</h3>,
+                            h1: ({ children }) => <h1 style={{ fontSize: '38px', fontWeight: 700, margin: '15.2px 0 11px 0', display: 'block' }}>{children}</h1>,
+                            h2: () => null, h3: ({ children }) => <h3 style={{ fontSize: '24px', fontWeight: 700, margin: '10.9px 0 6.6px 0' }}>{children}</h3>,
                             ul: ({ children }) => <ul style={{ margin: '11px 0', paddingLeft: '24.1px' }}>{children}</ul>,
                             ol: ({ children }) => <ol style={{ margin: '11px 0', paddingLeft: '24.1px' }}>{children}</ol>,
                             li: ({ children }) => <li style={{ margin: '4.4px 0 4.4px 0' }}>{children}</li>,
@@ -15527,7 +15602,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 text={message.text}
                 isStreaming={message.isLoading || message.responseStreamComplete === false}
                 citations={message.citations}
-                handleCitationClick={(data: CitationDataType, anchorRect?: DOMRect, citationNumber?: string) => handleUserCitationClick(data, anchorRect, message.text, finalKey, citationNumber)}
+                handleCitationClick={(data: CitationDataType, anchorRect?: DOMRect, citationNumber?: string, highlightRect?: DOMRect | null) => handleUserCitationClick(data, anchorRect, highlightRect, message.text, finalKey, citationNumber)}
                 renderTextWithCitations={renderTextWithCitations}
                 onTextUpdate={() => scrollToBottom()}
                 messageId={finalKey}
@@ -15841,6 +15916,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           <CitationClickPanel
             citationData={citationClickPanel.citationData}
             anchorRect={citationClickPanel.anchorRect}
+            highlightRect={citationClickPanel.highlightRect}
             cachedPageImage={cachedPageImage}
             showFullActions={true}
             messageCitedExcerpt={messageCitedExcerpt || undefined}
@@ -17448,6 +17524,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 <div style={{ position: 'relative', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
                 <div 
                   ref={contentAreaRef}
+                  data-sidechat-messages-scroll
                   onClick={(e) => e.stopPropagation()} // Prevent clicks from closing agent sidebar
                   className="flex-1 overflow-y-auto sidechat-scroll" 
                   style={{ 
