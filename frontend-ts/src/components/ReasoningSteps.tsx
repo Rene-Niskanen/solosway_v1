@@ -1014,8 +1014,11 @@ const StepRenderer: React.FC<{
           : undefined;
       const stepStatus = step.details?.status; // 'reading' or 'read' from backend
       
-      // Build filename from multiple sources - original_filename, classification_type, or fallback
-      const rawFilename = step.details?.filename || docMetadata?.original_filename || '';
+      // Build filename from multiple sources - include step.message so @-tagged docs show actual name (not "Document")
+      const fromMessage = (step.message || '').replace(/^Read\s+/i, '').trim();
+      const isGenericSentence = /^(Reading|Searching|Analysing|Using|selected documents)/i.test(fromMessage);
+      const nameFromMessage = fromMessage && fromMessage !== 'Document' && !isGenericSentence ? fromMessage : '';
+      const rawFilename = step.details?.filename || docMetadata?.original_filename || nameFromMessage || '';
       const classificationLabel = docMetadata?.classification_type 
         ? docMetadata.classification_type.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase())
         : '';

@@ -629,6 +629,9 @@ const extractMarkdownBlocks = (combined: string): { completeBlocks: string[], re
 const MAIN_ANSWER_START = '<<<MAIN>>>';
 const MAIN_ANSWER_END = '<<<END_MAIN>>>';
 
+/** Fallback message when we have no info/documents for the user's query. When showing this, we hide reasoning steps so the message appears without the "generating" reasoning UI. */
+const NO_INFO_FALLBACK_MESSAGE = "I couldn't find any documents matching your query. Please try rephrasing or check if documents are available.";
+
 export function parseMainAnswerTags(text: string): { before: string; main: string | null; after: string } | { main: null; fullStrippedText: string } {
   const startIdx = text.indexOf(MAIN_ANSWER_START);
   const endIdx = text.indexOf(MAIN_ANSWER_END);
@@ -1916,9 +1919,9 @@ const StreamingResponseText: React.FC<{
       if (citationBarMode) return currentCitationNum != null && citationNumbers.indexOf(currentCitationNum) !== -1 && !calloutRenderedForCurrentRef.current;
       return citationNumbers.filter(showCalloutForNum).length > 0;
     };
-    const citationLineBarBlockStyle = { position: 'relative' as const, paddingLeft: '14px' };
-    const citationLineBarInlineStyle = { position: 'absolute' as const, left: '-20px', top: 0, bottom: 0, width: '3px', background: '#d1d5db', pointerEvents: 'none' as const, borderRadius: '2px' };
-    const citationLineBarLiBarStyle = { position: 'absolute' as const, left: '-30px', top: 0, bottom: 0, width: '3px', background: '#d1d5db', pointerEvents: 'none' as const, borderRadius: '2px' };
+    const citationLineBarBlockStyle = { position: 'relative' as const };
+    const citationLineBarInlineStyle = { position: 'absolute' as const, left: '-40px', top: 0, bottom: 0, width: '3px', background: '#d1d5db', pointerEvents: 'none' as const, borderRadius: '2px' };
+    const citationLineBarLiBarStyle = { position: 'absolute' as const, left: '-40px', top: 0, bottom: 0, width: '3px', background: '#d1d5db', pointerEvents: 'none' as const, borderRadius: '2px' };
     return {
     p: ({ children }: { children?: React.ReactNode }) => {
       const citationNumbers = collectCitationNumbersInOrder(children ?? null);
@@ -2171,9 +2174,9 @@ const StreamingResponseText: React.FC<{
       if (citationBarMode) return currentCitationNum != null && citationNumbers.indexOf(currentCitationNum) !== -1 && !calloutRenderedForCurrentRef.current;
       return citationNumbers.filter(showCalloutForNum).length > 0;
     };
-    const citationLineBarBlockStyle = { position: 'relative' as const, paddingLeft: '14px' };
-    const citationLineBarInlineStyle = { position: 'absolute' as const, left: '-20px', top: 0, bottom: 0, width: '3px', background: '#d1d5db', pointerEvents: 'none' as const, borderRadius: '2px' };
-    const citationLineBarLiBarStyle = { position: 'absolute' as const, left: '-30px', top: 0, bottom: 0, width: '3px', background: '#d1d5db', pointerEvents: 'none' as const, borderRadius: '2px' };
+    const citationLineBarBlockStyle = { position: 'relative' as const };
+    const citationLineBarInlineStyle = { position: 'absolute' as const, left: '-40px', top: 0, bottom: 0, width: '3px', background: '#d1d5db', pointerEvents: 'none' as const, borderRadius: '2px' };
+    const citationLineBarLiBarStyle = { position: 'absolute' as const, left: '-40px', top: 0, bottom: 0, width: '3px', background: '#d1d5db', pointerEvents: 'none' as const, borderRadius: '2px' };
     return {
     ...markdownComponents,
     p: ({ children }: { children?: React.ReactNode }) => {
@@ -3340,7 +3343,7 @@ const CitationCallout: React.FC<{
           minWidth: 0,
           boxSizing: 'border-box',
           marginTop: '8.8px',
-          marginBottom: '17.5px',
+          marginBottom: '30px',
           borderRadius: 6,
           overflow: 'hidden',
           border: '1px solid #e5e7eb',
@@ -3991,7 +3994,7 @@ const CitationCallout: React.FC<{
         minWidth: 0,
         boxSizing: 'border-box',
         marginTop: '8.8px',
-        marginBottom: '17.5px',
+        marginBottom: '30px',
         padding: '13.1px 15.2px',
         backgroundColor: 'transparent',
         border: 'none',
@@ -9922,7 +9925,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   const rawText = (displayedText.length >= accumulatedText.length ? displayedText : accumulatedText) || data?.summary || "";
                   const finalText = rawText.trim() 
                     ? cleanResponseText(rawText) 
-                    : (data?.summary?.trim() || "I couldn't find any documents matching your query. Please try rephrasing or check if documents are available.");
+                    : (data?.summary?.trim() || NO_INFO_FALLBACK_MESSAGE);
+                  const isNoInfoResponse = finalText === NO_INFO_FALLBACK_MESSAGE;
                   
                   // Log if text is empty to help debug
                   if (!finalText || finalText.trim().length === 0) {
@@ -10010,7 +10014,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         text: finalText || 'Response received', // Ensure text is never empty
                         isLoading: false,
                         responseStreamComplete: true,
-                        reasoningSteps: existingMessage?.reasoningSteps || [], // Preserve reasoning steps
+                        reasoningSteps: isNoInfoResponse ? [] : (existingMessage?.reasoningSteps || []), // Hide reasoning before no-info message
                         citations: finalCitations, // Use final citations (normalized to string keys)
                         responseStartedAt: existingMessage?.responseStartedAt,
                         responseCompletedAt: existingMessage?.responseCompletedAt ?? Date.now()
@@ -10057,7 +10061,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       text: finalText || 'Response received',
                       isLoading: false,
                       responseStreamComplete: true,
-                      reasoningSteps: existingMessage?.reasoningSteps || [],
+                      reasoningSteps: isNoInfoResponse ? [] : (existingMessage?.reasoningSteps || []),
                       citations: finalCitations,
                       responseStartedAt: existingMessage?.responseStartedAt,
                       responseCompletedAt: existingMessage?.responseCompletedAt ?? Date.now()

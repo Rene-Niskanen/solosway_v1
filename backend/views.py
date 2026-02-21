@@ -1720,11 +1720,26 @@ def query_documents_stream():
                                                 # Chunks result was empty list - we "read" no docs
                                                 docs_read = []
                                             executor_found_docs_emitted = True
+                                            # When @-tagged docs have no filename in executor result, look up original_filename from DB
+                                            doc_ids_missing_name = [str(d.get("document_id") or d.get("doc_id") or "") for d in docs_read[:10] if not (d.get("filename") or d.get("original_filename") or "").strip()]
+                                            filename_by_doc_id = {}
+                                            if doc_ids_missing_name and business_id:
+                                                try:
+                                                    name_res = get_supabase_client().table("documents").select("id, original_filename").in_("id", doc_ids_missing_name).eq("business_uuid", str(business_id)).execute()
+                                                    for row in (name_res.data or []):
+                                                        fid = str(row.get("id", ""))
+                                                        if fid:
+                                                            filename_by_doc_id[fid] = (row.get("original_filename") or "").strip() or None
+                                                except Exception as name_err:
+                                                    logger.debug("Lookup document names for reading steps: %s", name_err)
                                             doc_names = []
                                             doc_previews = []
                                             for doc in docs_read[:10]:
                                                 doc_id = doc.get("document_id") or doc.get("doc_id", "")
+                                                doc_id_str = str(doc_id)
                                                 filename = doc.get("filename") or doc.get("original_filename", "") or ""
+                                                if not (filename or "").strip():
+                                                    filename = filename_by_doc_id.get(doc_id_str) or ""
                                                 classification_type = doc.get("document_type") or doc.get("classification_type", "Document") or "Document"
                                                 display_name = (filename[:32] + "...") if len(filename) > 35 else (filename or classification_type.replace("_", " ").title())
                                                 doc_names.append(display_name)
