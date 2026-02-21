@@ -46,6 +46,33 @@ export function removePeriodAfterBracketCitations(text: string): string {
 }
 
 /**
+ * Merge consecutive list items that are one logical bullet (e.g. "Windy Ridge: ..." followed by "Asking KES 120 million; sold for ...").
+ * The LLM often outputs two "- " lines when they describe the same item; this converts the second into a continuation line
+ * so markdown renders a single list item (indented continuation per CommonMark).
+ */
+export function mergeConsecutiveListItemsAsOne(text: string): string {
+  const lines = text.split('\n');
+  const result: string[] = [];
+  const bulletStart = /^\s*([-*+])\s+/;
+  const continuationStart = /^(Asking|Sold|Price|Listed|Sale price|Offers?|KES|USD|EUR|GBP|No firm|Received|Sold for|Asking price)/i;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const prev = result[result.length - 1];
+    const bulletMatch = line.match(bulletStart);
+    const trimmedAfterBullet = bulletMatch ? line.slice(line.indexOf(bulletMatch[0]) + bulletMatch[0].length).trim() : '';
+    const prevTrimmed = prev != null ? prev.trim() : '';
+    const prevIsBullet = prevTrimmed !== '' && bulletStart.test(prevTrimmed);
+    if (bulletMatch && prev != null && prevIsBullet && continuationStart.test(trimmedAfterBullet)) {
+      if (prevTrimmed !== '') result.push('');
+      result.push('    ' + trimmedAfterBullet);
+    } else {
+      result.push(line);
+    }
+  }
+  return result.join('\n');
+}
+
+/**
  * Convert list-like blocks to markdown bullets and bold sub-headings.
  * (1) When a line ends with ":" (e.g. "includes:" or "features:") and is followed by plain lines, prefix those with "- ".
  * (2) When a short standalone line (e.g. "Bathroom", "Kitchen") is followed by plain lines, bold the line and prefix the following lines with "- ".
@@ -199,16 +226,17 @@ export function mergeOrphanLines(text: string): string {
  * Use this before passing text to ReactMarkdown so both SideChatPanel and FloatingChatBubble
  * get the same structure.
  *
- * Deliberately minimal: we balance bold markers, merge orphan fragments, and normalize
- * circled citations — but we do NOT force paragraph breaks after bold labels, auto-convert
- * text to bullet lists, or insert section breaks. Those transforms caused a staggered,
- * over-indented layout. Let the LLM's markdown flow naturally.
+ * Deliberately minimal: we balance bold markers, merge orphan fragments, normalize
+ * circled citations, and merge consecutive list items that are one logical bullet —
+ * but we do NOT force paragraph breaks after bold labels, auto-convert text to bullet
+ * lists, or insert section breaks. Let the LLM's markdown flow naturally.
  */
 export function prepareResponseTextForDisplay(text: string): string {
   const withBold = ensureBalancedBoldForDisplay(text);
   const withMergedHeadings = mergeBoldHeadingWithNextLine(withBold);
   const withMergedOrphans = mergeOrphanLines(withMergedHeadings);
-  const withBracketCitations = normalizeCircledCitationsToBracket(withMergedOrphans);
+  const withMergedListItems = mergeConsecutiveListItemsAsOne(withMergedOrphans);
+  const withBracketCitations = normalizeCircledCitationsToBracket(withMergedListItems);
   return removePeriodAfterBracketCitations(withBracketCitations);
 }
 

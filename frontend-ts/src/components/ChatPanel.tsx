@@ -277,15 +277,15 @@ export const ChatPanel = ({
                 </div>
               )}
               
-              {/* Search Input - Minimal Design */}
-              <div className="relative mb-1.5">
+              {/* Search Input - Minimal Design (32px height to align with Response button in main chat) */}
+              <div className="relative mb-1.5 flex items-center" style={{ minHeight: 32, height: 32 }}>
                 <input
                   type="text"
                   placeholder="Search"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full pl-2 pr-14 py-1.5 text-[13px] bg-transparent border-none focus:outline-none placeholder:text-[13px] placeholder:text-[#8F8F8F] placeholder:font-normal"
-                  style={{ color: '#C5C5C5', caretColor: '#C5C5C5' }}
+                  className="w-full h-full pl-2 pr-14 py-0 text-[13px] bg-transparent border-none focus:outline-none placeholder:text-[13px] placeholder:text-[#8F8F8F] placeholder:font-normal"
+                  style={{ color: '#C5C5C5', caretColor: '#C5C5C5', height: 32, minHeight: 32 }}
                 />
                 {/* Options (sliders) + Close - Inline with Search Input */}
                 <div className="absolute right-1 top-1/2 -translate-y-1/2 flex items-center gap-0.5 z-10">

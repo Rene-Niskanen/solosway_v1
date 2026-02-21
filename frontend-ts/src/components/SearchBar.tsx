@@ -1554,7 +1554,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                       lineHeight: '20px',
                       paddingTop: '12px',
                       paddingBottom: '4px',
-                      paddingRight: '30px',
+                      paddingRight: '40px',
                       paddingLeft: '0px',
                       color: segmentInput.getPlainText() ? '#333333' : undefined,
                       boxSizing: 'border-box',

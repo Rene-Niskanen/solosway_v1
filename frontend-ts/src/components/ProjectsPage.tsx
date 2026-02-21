@@ -249,8 +249,10 @@ function transformAllDocumentsToData(allDocs: any[]): DocumentData[] {
 const FILES_BAR_COUNT = 8;
 
 // Padding from sidebar: left needs more space so Files/Projects don’t feel cramped
-const CONTENT_PADDING_LEFT_PX = 40;
-const CONTENT_PADDING_OTHER_PX = 24;
+// Equal horizontal padding so content isn't cramped against the sidebar; same left/right
+const CONTENT_PADDING_X_PX = 48;
+const CONTENT_PADDING_LEFT_PX = 72; // extra left padding for main content area
+const CONTENT_PADDING_Y_PX = 32;
 
 interface ProjectsPageProps {
   onCreateProject: () => void;
@@ -643,8 +645,8 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
       <div
         className="absolute z-50 flex items-center gap-2"
         style={{
-          top: '24px',
-          right: '24px',
+          top: `${CONTENT_PADDING_Y_PX}px`,
+          right: `${CONTENT_PADDING_X_PX}px`,
           pointerEvents: 'auto',
         }}
       >
@@ -734,15 +736,15 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
       <div 
         className="w-full min-h-full flex flex-col box-border"
         style={{ 
-          paddingTop: `${CONTENT_PADDING_OTHER_PX}px`,
-          paddingRight: `${CONTENT_PADDING_OTHER_PX}px`,
-          paddingBottom: `${CONTENT_PADDING_OTHER_PX}px`,
+          paddingTop: `${CONTENT_PADDING_Y_PX}px`,
+          paddingRight: `${CONTENT_PADDING_X_PX}px`,
+          paddingBottom: `${CONTENT_PADDING_Y_PX}px`,
           paddingLeft: `${CONTENT_PADDING_LEFT_PX}px`,
         }}
       >
         {/* Project Cards Section - hidden when "See All Files" is active */}
         {!showAllFiles && (
-          <div style={{ marginTop: `${CONTENT_PADDING_OTHER_PX}px`, width: '100%', maxWidth: '100%', minWidth: 0, paddingLeft: 0 }}>
+          <div style={{ marginTop: `${CONTENT_PADDING_Y_PX}px`, width: '100%', maxWidth: '100%', minWidth: 0, paddingLeft: 0 }}>
             <div 
               className="grid justify-start w-full"
               style={{ 

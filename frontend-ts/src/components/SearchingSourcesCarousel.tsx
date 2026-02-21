@@ -1,13 +1,17 @@
 import React, { useEffect, useState, useMemo } from 'react';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import { SEARCHING_CAROUSEL_TYPES } from '../constants/documentTypes';
 
 const CIRCLE_SIZE_PX = 20;
-const OVERLAP_PX = 10;
-const VISIBLE_COUNT = 3; // Only show 3 icons at a time; rotate by replacing, no slide
-const CONTAINER_WIDTH_PX = CIRCLE_SIZE_PX + OVERLAP_PX * (VISIBLE_COUNT - 1);
-const CYCLE_INTERVAL_MS = 480;
-const FAST_CYCLE_INTERVAL_MS = 360;
+const OVERLAP_PX = 11; // stacked but not too tight
+const VISIBLE_COUNT = 3;
+// Extra space so enter animation and rightmost icon are never clipped
+const CONTAINER_EXTRA_RIGHT_PX = 18;
+const CONTAINER_WIDTH_PX = CIRCLE_SIZE_PX + OVERLAP_PX * (VISIBLE_COUNT - 1) + CONTAINER_EXTRA_RIGHT_PX;
+const CYCLE_INTERVAL_MS = 520;
+const FAST_CYCLE_INTERVAL_MS = 420;
+const STACK_DURATION_S = 0.4;
+const EASE_SMOOTH = [0.33, 0.84, 0.5, 0.99] as const;
 
 export type SourceType = 'pdf' | 'docx';
 
@@ -118,23 +122,28 @@ export function SearchingSourcesCarousel({
   const [step, setStep] = useState(0);
   const L = typesList.length;
 
-  // Exactly 3 items: no slide, so the one that "leaves" is hidden (removed), not moved — never looks like 4.
+  // Exactly 3 items in the stack; step advances so back disappears and new stacks on
   const stripList = useMemo(() => {
     if (L === 0) return [];
-    return [0, 1, 2].map((i) => typesList[(step + i) % L]);
+    return [0, 1, 2].map((i) => ({ type: typesList[(step + i) % L], key: step + i }));
   }, [typesList, step, L]);
 
   useEffect(() => {
     if (!isActive || L === 0) return;
     const interval =
       (sourceCount != null && sourceCount > 5) ? FAST_CYCLE_INTERVAL_MS : CYCLE_INTERVAL_MS;
-    const id = setInterval(() => setStep((s) => (s + 1) % L), interval);
+    const id = setInterval(() => setStep((s) => s + 1), interval);
     return () => clearInterval(id);
   }, [isActive, L, sourceCount]);
 
   useEffect(() => {
     setStep(0);
   }, [typesList]);
+
+  const transition = {
+    duration: STACK_DURATION_S,
+    ease: EASE_SMOOTH,
+  };
 
   return (
     <span
@@ -145,26 +154,28 @@ export function SearchingSourcesCarousel({
         alignItems: 'center',
         justifyContent: 'flex-start',
         width: CONTAINER_WIDTH_PX,
+        minWidth: CONTAINER_WIDTH_PX,
         height: CIRCLE_SIZE_PX,
         flexShrink: 0,
-        overflow: 'hidden',
+        overflow: 'visible',
+        position: 'relative',
       }}
     >
-      <motion.span
-        key={step}
-        initial={{ opacity: 0.85 }}
-        animate={{ opacity: 1 }}
-        transition={{ duration: 0.2 }}
-        style={{
-          display: 'inline-flex',
-          alignItems: 'center',
-          flexShrink: 0,
-        }}
-      >
-        {stripList.map((type, i) => (
-          <span
-            key={`strip-${step}-${i}`}
-            style={{
+      <span style={{ display: 'inline-flex', alignItems: 'center', position: 'relative', overflow: 'visible' }}>
+        <AnimatePresence initial={false} mode="sync">
+          {stripList.map(({ type, key: itemKey }, i) => (
+            <motion.span
+              key={itemKey}
+              layout
+              initial={i === 2 ? { opacity: 0, scale: 0.92, x: 3 } : false}
+              animate={{
+                opacity: 1,
+                scale: 1,
+                x: 0,
+              }}
+              exit={{ opacity: 0, transition: { duration: 0 } }}
+              transition={transition}
+              style={{
               width: CIRCLE_SIZE_PX,
               height: CIRCLE_SIZE_PX,
               minWidth: CIRCLE_SIZE_PX,
@@ -180,9 +191,10 @@ export function SearchingSourcesCarousel({
             }}
           >
             <CircleIcon type={type} />
-          </span>
+          </motion.span>
         ))}
-      </motion.span>
+        </AnimatePresence>
+      </span>
     </span>
   );
 }

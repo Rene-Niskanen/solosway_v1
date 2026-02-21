@@ -173,12 +173,8 @@ export const CitationPagePreviewContent: React.FC<{
             width: `${Math.min(cachedPageImage.imageWidth, transform.finalBboxWidth)}px`,
             height: `${Math.min(cachedPageImage.imageHeight, transform.finalBboxHeight)}px`,
             backgroundColor: "rgba(188, 212, 235, 0.4)",
-            border: "none",
-            backgroundImage: "repeating-linear-gradient(90deg, rgba(188, 212, 235, 0.4) 0px, rgba(188, 212, 235, 0.4) 10px, rgba(163, 173, 189, 0.8) 10px, rgba(163, 173, 189, 0.8) 20px), repeating-linear-gradient(0deg, rgba(188, 212, 235, 0.4) 0px, rgba(188, 212, 235, 0.4) 10px, rgba(163, 173, 189, 0.8) 10px, rgba(163, 173, 189, 0.8) 20px), repeating-linear-gradient(90deg, rgba(188, 212, 235, 0.4) 0px, rgba(188, 212, 235, 0.4) 10px, rgba(163, 173, 189, 0.8) 10px, rgba(163, 173, 189, 0.8) 20px), repeating-linear-gradient(0deg, rgba(188, 212, 235, 0.4) 0px, rgba(188, 212, 235, 0.4) 10px, rgba(163, 173, 189, 0.8) 10px, rgba(163, 173, 189, 0.8) 20px)",
-            backgroundSize: "20px 2px, 2px 20px, 20px 2px, 2px 20px",
-            backgroundPosition: "0 0, 100% 0, 0 100%, 0 0",
-            backgroundRepeat: "repeat-x, repeat-y, repeat-x, repeat-y",
             borderRadius: "2px",
+            border: "none",
             pointerEvents: "none",
             zIndex: 10,
           }}
@@ -208,23 +204,18 @@ function clampPanelPosition(
   const vw = typeof window !== "undefined" ? window.innerWidth : 1200;
   const vh = typeof window !== "undefined" ? window.innerHeight : 800;
 
-  // Place panel entirely right or left of citation so it never covers the cited text or marker
-  let left = anchorRect.right + GAP;
-  if (left + panelWidth <= vw - VIEWPORT_MARGIN) {
-    if (left < VIEWPORT_MARGIN) left = VIEWPORT_MARGIN;
-  } else {
-    left = anchorRect.left - panelWidth - GAP;
-    if (left >= VIEWPORT_MARGIN) {
-      // fits on the left
-    } else {
-      left = anchorRect.left > vw / 2 ? VIEWPORT_MARGIN : vw - panelWidth - VIEWPORT_MARGIN;
-    }
+  // Horizontal: align panel with anchor (left edge), then clamp to viewport so it never overlaps
+  let left = anchorRect.left;
+  if (left + panelWidth > vw - VIEWPORT_MARGIN) {
+    left = vw - panelWidth - VIEWPORT_MARGIN;
+  }
+  if (left < VIEWPORT_MARGIN) {
+    left = VIEWPORT_MARGIN;
   }
 
   // Prefer below: panel top = citation bottom + GAP so the panel never covers the cited text or markers
   const topIfBelow = anchorRect.bottom + GAP;
   const fitsBelow = topIfBelow + panelHeight <= vh - VIEWPORT_MARGIN;
-  let openAbove = false;
 
   if (fitsBelow) {
     let top = topIfBelow;
@@ -232,15 +223,17 @@ function clampPanelPosition(
     return { left, top, openAbove: false };
   }
 
-  // Not enough room below: open above (panel bottom = citation top - GAP)
-  const topIfAbove = anchorRect.top - GAP - panelHeight;
-  if (topIfAbove >= VIEWPORT_MARGIN) {
-    let bottom = vh - (anchorRect.top - GAP);
-    bottom = Math.max(VIEWPORT_MARGIN, Math.min(bottom, vh - panelHeight - VIEWPORT_MARGIN));
+  // Consider opening above only if the full panel fits entirely above the anchor (no overlap)
+  const panelBottomIfAbove = anchorRect.top - GAP;
+  const panelTopIfAbove = panelBottomIfAbove - panelHeight;
+  const fitsAboveWithoutOverlap = panelTopIfAbove >= VIEWPORT_MARGIN;
+
+  if (fitsAboveWithoutOverlap) {
+    const bottom = vh - panelBottomIfAbove;
     return { left, bottom, openAbove: true };
   }
 
-  // Neither fits well: clamp below to viewport
+  // Not enough room above without overlapping: open below and clamp to viewport
   let top = anchorRect.bottom + GAP;
   if (top + panelHeight > vh - VIEWPORT_MARGIN) {
     top = vh - panelHeight - VIEWPORT_MARGIN;
@@ -355,22 +348,22 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
         zIndex: 10055,
       }}
     >
-      {/* Header */}
+      {/* Header: same layout and styling as citation callout in SideChatPanel (icon + filename + Page N on one row) */}
       <div
         style={{
           flexShrink: 0,
           padding: "8px 16px 6px",
           display: "flex",
-          alignItems: "flex-start",
-          gap: "10px",
+          alignItems: "center",
+          gap: 8,
           borderBottom: "1px solid #f0f0f0",
         }}
       >
         <div
           style={{
-            width: 30,
-            height: 30,
-            borderRadius: "6px",
+            width: 24,
+            height: 24,
+            borderRadius: 6,
             backgroundColor: "#FFFFFF",
             border: "1px solid rgba(0,0,0,0.08)",
             boxShadow: "0 1px 2px rgba(0,0,0,0.06)",
@@ -384,14 +377,14 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
           <img
             src="/PDF.png"
             alt="PDF"
-            style={{ width: 16, height: 16, objectFit: "contain" }}
+            style={{ width: 14, height: 14, objectFit: "contain" }}
           />
         </div>
-        <div style={{ minWidth: 0, flex: 1 }}>
+        <div style={{ minWidth: 0, flex: 1, display: "flex", alignItems: "center", gap: 6, flexWrap: "nowrap" }}>
           <div
             style={{
               fontWeight: 600,
-              fontSize: "12px",
+              fontSize: "11px",
               color: "#1f2937",
               lineHeight: 1.25,
               overflow: "hidden",
@@ -404,8 +397,10 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
           <div
             style={{
               fontSize: "11px",
-              color: "#9ca3af",
-              marginTop: "1px",
+              color: "#6b7280",
+              lineHeight: 1.25,
+              flexShrink: 0,
+              whiteSpace: "nowrap",
             }}
           >
             {displayDocType} · Page {pageNum}
@@ -429,7 +424,6 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
             fontSize: "16px",
             lineHeight: 1,
             cursor: "pointer",
-            marginTop: -2,
             marginRight: -4,
           }}
           onMouseEnter={(e) => {
@@ -566,7 +560,7 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
           </div>
         )}
 
-        {/* Buttons overlay: full (View document, Ask follow up, Save) when showFullActions (popup); otherwise Ask follow up on hover only (callout) */}
+        {/* Buttons overlay: same container/button design as citation bar above chat (View, Accept, Next citation) */}
         <div
           style={{
             position: "absolute",
@@ -584,86 +578,119 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
             zIndex: 10,
           }}
         >
-          <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", pointerEvents: "auto" }}>
+          <div
+            className="flex items-center justify-center gap-2 flex-shrink-0"
+            style={{ gap: "8.8px", flexWrap: "wrap", pointerEvents: "auto" }}
+          >
             {showFullActions && (
               <button
                 type="button"
+                title="View"
                 onClick={onViewInDocument}
                 style={{
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",
-                  gap: "5px",
-                  padding: "6px 12px",
+                  gap: 4.4,
+                  padding: "3.3px 6.6px",
                   fontSize: "12px",
-                  fontWeight: 400,
+                  lineHeight: 1,
+                  fontWeight: 600,
                   color: "#374151",
-                  backgroundColor: "#FFFFFF",
-                  border: "1px solid #d1d5db",
-                  borderRadius: "6px",
+                  backgroundColor: "#ffffff",
+                  border: "1px solid #e5e7eb",
+                  borderRadius: 5.5,
                   cursor: "pointer",
-                  transition: "background-color 0.08s ease",
-                  boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
+                  transition: "background-color 0.15s ease, box-shadow 0.15s ease",
+                  boxShadow: "0 1px 2px rgba(0,0,0,0.08)",
+                  outline: "none",
+                  minHeight: 26,
                 }}
-                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = "#f9fafb"; }}
-                onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = "#FFFFFF"; }}
+                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = "#f3f4f6"; }}
+                onMouseLeave={(e) => {
+                  const el = e.currentTarget as HTMLElement;
+                  el.style.backgroundColor = "#ffffff";
+                  el.style.boxShadow = "0 1px 2px rgba(0,0,0,0.08)";
+                }}
+                onFocus={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = "0 1px 2px rgba(0,0,0,0.08), 0 0 0 2px #fff"; }}
+                onBlur={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = "0 1px 2px rgba(0,0,0,0.08)"; }}
               >
-                <FileSearchCorner style={{ width: 14, height: 14 }} strokeWidth={2} />
-                View document
+                <FileSearchCorner style={{ width: 14, height: 14 }} strokeWidth={2} stroke="currentColor" />
+                View
               </button>
             )}
             {(showFullActions || isPreviewHovered) && (
               <button
                 type="button"
+                title="Ask Follow Up"
                 onClick={onAskFollowUp}
                 style={{
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",
-                  gap: "5px",
-                  padding: "6px 12px",
+                  gap: 4.4,
+                  padding: "3.3px 6.6px",
                   fontSize: "12px",
-                  fontWeight: 400,
+                  lineHeight: 1,
+                  fontWeight: 500,
                   color: "#374151",
-                  backgroundColor: "#FFFFFF",
-                  border: "1px solid #d1d5db",
-                  borderRadius: "6px",
+                  backgroundColor: "#ffffff",
+                  border: "1px solid #e5e7eb",
+                  borderRadius: 5.5,
                   cursor: "pointer",
-                  transition: "background-color 0.08s ease",
-                  boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
+                  transition: "background-color 0.15s ease, box-shadow 0.15s ease",
+                  boxShadow: "0 1px 2px rgba(0,0,0,0.08)",
+                  outline: "none",
+                  minHeight: 26,
                 }}
-                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = "#f9fafb"; }}
-                onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = "#FFFFFF"; }}
+                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = "#f3f4f6"; }}
+                onMouseLeave={(e) => {
+                  const el = e.currentTarget as HTMLElement;
+                  el.style.backgroundColor = "#ffffff";
+                  el.style.boxShadow = "0 1px 2px rgba(0,0,0,0.08)";
+                }}
+                onFocus={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = "0 1px 2px rgba(0,0,0,0.08), 0 0 0 2px #fff"; }}
+                onBlur={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = "0 1px 2px rgba(0,0,0,0.08)"; }}
               >
-                <MessageCircle style={{ width: 14, height: 14 }} strokeWidth={2} />
-                Ask follow up
+                <MessageCircle style={{ width: 14, height: 14 }} strokeWidth={2} stroke="currentColor" />
+                Ask Follow Up
               </button>
             )}
             {onSaveCitation && (showFullActions || isPreviewHovered) && (
               <button
                 type="button"
+                title="Save"
                 onClick={onSaveCitation}
                 style={{
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",
-                  gap: "5px",
-                  padding: "6px 12px",
+                  gap: 4.4,
+                  padding: "3.3px 6.6px",
                   fontSize: "12px",
-                  fontWeight: 400,
+                  lineHeight: 1,
+                  fontWeight: 500,
                   color: "#374151",
-                  backgroundColor: "#FFFFFF",
-                  border: "1px solid #d1d5db",
-                  borderRadius: "6px",
+                  backgroundColor: "#ffffff",
+                  border: "1px solid #e5e7eb",
+                  borderRadius: 5.5,
                   cursor: "pointer",
-                  transition: "background-color 0.08s ease",
-                  boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
+                  transition: "background-color 0.15s ease, box-shadow 0.15s ease",
+                  boxShadow: "0 1px 2px rgba(0,0,0,0.08)",
+                  outline: "none",
+                  minHeight: 26,
                 }}
-                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = "#f9fafb"; }}
-                onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = "#FFFFFF"; }}
+                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = "#f3f4f6"; }}
+                onMouseLeave={(e) => {
+                  const el = e.currentTarget as HTMLElement;
+                  el.style.backgroundColor = "#ffffff";
+                  el.style.boxShadow = "0 1px 2px rgba(0,0,0,0.08)";
+                }}
+                onFocus={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = "0 1px 2px rgba(0,0,0,0.08), 0 0 0 2px #fff"; }}
+                onBlur={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = "0 1px 2px rgba(0,0,0,0.08)"; }}
               >
-                <Save size={14} strokeWidth={2} />
-                Save citation
+                <Save size={14} strokeWidth={2} stroke="currentColor" />
+                Save
               </button>
             )}
           </div>

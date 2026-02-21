@@ -149,7 +149,7 @@ logger = logging.getLogger(__name__)
 
 # Stream response pacing: delay in ms between chunks (0 = no delay); chunk size in characters (smaller = faster first token and more frequent updates)
 STREAM_CHUNK_DELAY_MS = int(os.environ.get("STREAM_CHUNK_DELAY_MS", "0"))
-STREAM_CHUNK_SIZE = int(os.environ.get("STREAM_CHUNK_SIZE", "24"))
+STREAM_CHUNK_SIZE = int(os.environ.get("STREAM_CHUNK_SIZE", "36"))
 
 # ---------------------------------------------------------------------------
 # Performance timing helpers (lightweight, server-side only)
@@ -1508,9 +1508,19 @@ def query_documents_stream():
                                         yield f"data: {json.dumps(reasoning_data)}\n\n"
                                         logger.info("🟡 [REASONING] ✅ Emitted citation step: Summarising content")
                                     elif not is_fast_path and node_name in node_messages and node_name not in processed_nodes:
-                                        # Skip responder: "Summarising content" is emitted when we actually start streaming (first token), not when node starts
                                         if node_name == "responder":
-                                            pass
+                                            # Emit "Thinking" just before we call the LLM for the response (immediate feedback)
+                                            processed_nodes.add(node_name)
+                                            thinking_data = {
+                                                'type': 'reasoning_step',
+                                                'step': 'thinking',
+                                                'action_type': 'analysing',
+                                                'message': 'Thinking',
+                                                'details': {}
+                                            }
+                                            yield f"data: {json.dumps(thinking_data)}\n\n"
+                                            logger.info("🟡 [REASONING] ✅ Emitted step: Thinking (before LLM response)")
+                                            # "Summarising content" is still emitted when we actually start streaming (first token)
                                         else:
                                             processed_nodes.add(node_name)
                                             reasoning_data = {
