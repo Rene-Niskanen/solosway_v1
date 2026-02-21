@@ -198,8 +198,8 @@ const ESTIMATED_PANEL_HEIGHT = 460;
 /**
  * Position panel near the clicked citation with a consistent GAP above or below.
  * Prefers opening upward; opens below when there isn’t enough room above.
- * Keeps the panel entirely to the right or left of the citation so it never covers
- * the cited text or the citation marker.
+ * Places the panel to the right of the anchor (citation + highlighted text) so it
+ * never overlaps the blue highlight; if there isn't enough room on the right, clamps to viewport.
  */
 function clampPanelPosition(
   anchorRect: DOMRect,
@@ -209,8 +209,8 @@ function clampPanelPosition(
   const vw = typeof window !== "undefined" ? window.innerWidth : 1200;
   const vh = typeof window !== "undefined" ? window.innerHeight : 800;
 
-  // Horizontal: align panel with anchor (left edge), then clamp to viewport so it never overlaps
-  let left = anchorRect.left;
+  // Horizontal: place panel to the right of the anchor (citation + highlight) so it never overlaps the blue highlight
+  let left = anchorRect.right + GAP;
   if (left + panelWidth > vw - VIEWPORT_MARGIN) {
     left = vw - panelWidth - VIEWPORT_MARGIN;
   }
@@ -578,7 +578,8 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
             alignItems: "center",
             gap: "10px",
             flexWrap: "wrap",
-            background: "linear-gradient(to top, rgba(255,255,255,0.92) 0%, rgba(255,255,255,0.5) 35%, transparent 55%)",
+            backgroundColor: "#ffffff",
+            borderTop: "1px solid #e5e7eb",
             pointerEvents: "none",
             zIndex: 10,
           }}
@@ -601,24 +602,24 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
                   fontSize: "12px",
                   lineHeight: 1,
                   fontWeight: 600,
-                  color: "#374151",
-                  backgroundColor: "#ffffff",
-                  border: "1px solid #e5e7eb",
+                  color: "#666666",
+                  backgroundColor: "#F2F2EF",
+                  border: "1px solid #d4d4d4",
                   borderRadius: 5.5,
                   cursor: "pointer",
                   transition: "background-color 0.15s ease, box-shadow 0.15s ease",
-                  boxShadow: "0 1px 2px rgba(0,0,0,0.08)",
+                  boxShadow: "0 1px 1px rgba(0,0,0,0.05)",
                   outline: "none",
                   minHeight: 26,
                 }}
-                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = "#f3f4f6"; }}
+                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = "#E8E8E5"; }}
                 onMouseLeave={(e) => {
                   const el = e.currentTarget as HTMLElement;
-                  el.style.backgroundColor = "#ffffff";
-                  el.style.boxShadow = "0 1px 2px rgba(0,0,0,0.08)";
+                  el.style.backgroundColor = "#F2F2EF";
+                  el.style.boxShadow = "0 1px 1px rgba(0,0,0,0.05)";
                 }}
-                onFocus={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = "0 1px 2px rgba(0,0,0,0.08), 0 0 0 2px #fff"; }}
-                onBlur={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = "0 1px 2px rgba(0,0,0,0.08)"; }}
+                onFocus={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = "0 1px 1px rgba(0,0,0,0.05), 0 0 0 2px #fff"; }}
+                onBlur={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = "0 1px 1px rgba(0,0,0,0.05)"; }}
               >
                 <FileSearchCorner style={{ width: 14, height: 14 }} strokeWidth={2} stroke="currentColor" />
                 View
@@ -638,24 +639,24 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
                   fontSize: "12px",
                   lineHeight: 1,
                   fontWeight: 500,
-                  color: "#374151",
-                  backgroundColor: "#ffffff",
-                  border: "1px solid #e5e7eb",
+                  color: "#666666",
+                  backgroundColor: "#F2F2EF",
+                  border: "1px solid #d4d4d4",
                   borderRadius: 5.5,
                   cursor: "pointer",
                   transition: "background-color 0.15s ease, box-shadow 0.15s ease",
-                  boxShadow: "0 1px 2px rgba(0,0,0,0.08)",
+                  boxShadow: "0 1px 1px rgba(0,0,0,0.05)",
                   outline: "none",
                   minHeight: 26,
                 }}
-                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = "#f3f4f6"; }}
+                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = "#E8E8E5"; }}
                 onMouseLeave={(e) => {
                   const el = e.currentTarget as HTMLElement;
-                  el.style.backgroundColor = "#ffffff";
-                  el.style.boxShadow = "0 1px 2px rgba(0,0,0,0.08)";
+                  el.style.backgroundColor = "#F2F2EF";
+                  el.style.boxShadow = "0 1px 1px rgba(0,0,0,0.05)";
                 }}
-                onFocus={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = "0 1px 2px rgba(0,0,0,0.08), 0 0 0 2px #fff"; }}
-                onBlur={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = "0 1px 2px rgba(0,0,0,0.08)"; }}
+                onFocus={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = "0 1px 1px rgba(0,0,0,0.05), 0 0 0 2px #fff"; }}
+                onBlur={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = "0 1px 1px rgba(0,0,0,0.05)"; }}
               >
                 <MessageCircle style={{ width: 14, height: 14 }} strokeWidth={2} stroke="currentColor" />
                 Ask Follow Up
@@ -675,24 +676,24 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
                   fontSize: "12px",
                   lineHeight: 1,
                   fontWeight: 500,
-                  color: "#374151",
-                  backgroundColor: "#ffffff",
-                  border: "1px solid #e5e7eb",
+                  color: "#666666",
+                  backgroundColor: "#F2F2EF",
+                  border: "1px solid #d4d4d4",
                   borderRadius: 5.5,
                   cursor: "pointer",
                   transition: "background-color 0.15s ease, box-shadow 0.15s ease",
-                  boxShadow: "0 1px 2px rgba(0,0,0,0.08)",
+                  boxShadow: "0 1px 1px rgba(0,0,0,0.05)",
                   outline: "none",
                   minHeight: 26,
                 }}
-                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = "#f3f4f6"; }}
+                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = "#E8E8E5"; }}
                 onMouseLeave={(e) => {
                   const el = e.currentTarget as HTMLElement;
-                  el.style.backgroundColor = "#ffffff";
-                  el.style.boxShadow = "0 1px 2px rgba(0,0,0,0.08)";
+                  el.style.backgroundColor = "#F2F2EF";
+                  el.style.boxShadow = "0 1px 1px rgba(0,0,0,0.05)";
                 }}
-                onFocus={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = "0 1px 2px rgba(0,0,0,0.08), 0 0 0 2px #fff"; }}
-                onBlur={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = "0 1px 2px rgba(0,0,0,0.08)"; }}
+                onFocus={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = "0 1px 1px rgba(0,0,0,0.05), 0 0 0 2px #fff"; }}
+                onBlur={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = "0 1px 1px rgba(0,0,0,0.05)"; }}
               >
                 <Save size={14} strokeWidth={2} stroke="currentColor" />
                 Save

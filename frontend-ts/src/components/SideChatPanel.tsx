@@ -725,6 +725,13 @@ const OrangeCitationSwoopHighlight: React.FC<{ children: React.ReactNode }> = ({
         margin: 0;
         display: inline;
       }
+      /* Ensure highlight extends over bold/italic and is not interrupted by inner elements */
+      .orange-citation-swoop strong,
+      .orange-citation-swoop em {
+        background: transparent !important;
+        -webkit-background-clip: unset;
+        background-clip: unset;
+      }
     `}</style>
     {children}
   </span>
@@ -1920,8 +1927,8 @@ const StreamingResponseText: React.FC<{
       return citationNumbers.filter(showCalloutForNum).length > 0;
     };
     const citationLineBarBlockStyle = { position: 'relative' as const };
-    const citationLineBarInlineStyle = { position: 'absolute' as const, left: '-40px', top: 0, bottom: 0, width: '3px', background: '#d1d5db', pointerEvents: 'none' as const, borderRadius: '2px' };
-    const citationLineBarLiBarStyle = { position: 'absolute' as const, left: '-40px', top: 0, bottom: 0, width: '3px', background: '#d1d5db', pointerEvents: 'none' as const, borderRadius: '2px' };
+    const citationLineBarInlineStyle = { position: 'absolute' as const, left: '-16px', top: 0, bottom: 0, width: '3px', background: '#d1d5db', pointerEvents: 'none' as const, borderRadius: '2px' };
+    const citationLineBarLiBarStyle = { position: 'absolute' as const, left: '-16px', top: 0, bottom: 0, width: '3px', background: '#d1d5db', pointerEvents: 'none' as const, borderRadius: '2px' };
     return {
     p: ({ children }: { children?: React.ReactNode }) => {
       const citationNumbers = collectCitationNumbersInOrder(children ?? null);
@@ -2133,7 +2140,7 @@ const StreamingResponseText: React.FC<{
         </>
       );
     },
-    hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '17.5px 0' }} />,
+    hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '6px 0' }} />,
   }; }, [renderCitationPlaceholder, skipHighlight, runBlueSwoop, isStreaming, citations, onAskFollowUpFromCallout, onViewInDocumentFromCallout, citationViewedInDocument, onCloseDocumentFromCallout, onCloseCitationPreviewBar, messageId, citationBarMode, isCitationBarActive, orderedCitationNumbersForMessage, currentCitationIndex, acceptedCitationIndices, showReviewNextOnly, showCurrentCallout, currentCitationNum, showInResponseCitationCallouts, showCitationPreviewBar, blueCitationNumbers, orangeCitationNumbers, greenCitationNumbers, blueAnimatedCitationNumbers, rejectedCitationNumbers]);
 
   // Perplexity-style: same structure as markdownComponents (real <p>, <h1>, lists) but block content gets 2-word motion.span wrap so reveal works without flattening layout.
@@ -2175,8 +2182,8 @@ const StreamingResponseText: React.FC<{
       return citationNumbers.filter(showCalloutForNum).length > 0;
     };
     const citationLineBarBlockStyle = { position: 'relative' as const };
-    const citationLineBarInlineStyle = { position: 'absolute' as const, left: '-40px', top: 0, bottom: 0, width: '3px', background: '#d1d5db', pointerEvents: 'none' as const, borderRadius: '2px' };
-    const citationLineBarLiBarStyle = { position: 'absolute' as const, left: '-40px', top: 0, bottom: 0, width: '3px', background: '#d1d5db', pointerEvents: 'none' as const, borderRadius: '2px' };
+    const citationLineBarInlineStyle = { position: 'absolute' as const, left: '-16px', top: 0, bottom: 0, width: '3px', background: '#d1d5db', pointerEvents: 'none' as const, borderRadius: '2px' };
+    const citationLineBarLiBarStyle = { position: 'absolute' as const, left: '-16px', top: 0, bottom: 0, width: '3px', background: '#d1d5db', pointerEvents: 'none' as const, borderRadius: '2px' };
     return {
     ...markdownComponents,
     p: ({ children }: { children?: React.ReactNode }) => {
@@ -2414,6 +2421,13 @@ const StreamingResponseText: React.FC<{
         }
         .cited-highlight-formatting em {
           font-style: italic !important;
+        }
+        /* Keep highlight continuous: bold/italic and raw markdown (e.g. ] or **) must not interrupt the background */
+        .cited-highlight-formatting strong,
+        .cited-highlight-formatting em {
+          background: transparent !important;
+          -webkit-background-clip: unset;
+          background-clip: unset;
         }
       `}</style>
       <div
@@ -3520,19 +3534,19 @@ const CitationCallout: React.FC<{
                       fontSize: '12px',
                       lineHeight: 1,
                       fontWeight: 500,
-                      color: '#374151',
-                      backgroundColor: '#FFFFFF',
-                      border: '1px solid #e5e7eb',
+                      color: '#666666',
+                      backgroundColor: '#F2F2EF',
+                      border: '1px solid #d4d4d4',
                       borderRadius: 5.5,
                       cursor: 'pointer',
                       transition: 'background-color 0.15s ease, box-shadow 0.15s ease',
                       boxShadow: '0 1px 1px rgba(0,0,0,0.05)',
                       outline: 'none',
                     }}
-                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#f9fafb'; }}
+                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#E8E8E5'; }}
                     onMouseLeave={(e) => {
                       const el = e.currentTarget as HTMLElement;
-                      el.style.backgroundColor = '#FFFFFF';
+                      el.style.backgroundColor = '#F2F2EF';
                       el.style.boxShadow = '0 1px 1px rgba(0,0,0,0.05)';
                     }}
                     onFocus={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = '0 1px 1px rgba(0,0,0,0.05), 0 0 0 2px #0160B2'; }}
@@ -3563,19 +3577,19 @@ const CitationCallout: React.FC<{
                       padding: compactActions ? 6 : '1px 4px',
                       fontSize: '11px',
                       fontWeight: 600,
-                      color: isViewedInDocument ? '#5c2e0a' : '#374151',
-                      backgroundColor: isViewedInDocument ? '#D4B88A' : '#FFFFFF',
-                      border: isViewedInDocument ? '1px solid rgba(180, 140, 80, 0.55)' : '1px solid #e5e7eb',
+                      color: isViewedInDocument ? '#5c2e0a' : '#666666',
+                      backgroundColor: isViewedInDocument ? '#D4B88A' : '#F2F2EF',
+                      border: isViewedInDocument ? '1px solid rgba(180, 140, 80, 0.55)' : '1px solid #d4d4d4',
                       borderRadius: 4,
                       cursor: 'pointer',
                       transition: 'background-color 0.15s ease, box-shadow 0.15s ease',
                       boxShadow: '0 1px 1px rgba(0,0,0,0.05)',
                       outline: 'none',
                     }}
-                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = isViewedInDocument ? '#C4A87A' : '#f9fafb'; }}
+                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = isViewedInDocument ? '#C4A87A' : '#E8E8E5'; }}
                     onMouseLeave={(e) => {
                       const el = e.currentTarget as HTMLElement;
-                      el.style.backgroundColor = isViewedInDocument ? '#D4B88A' : '#FFFFFF';
+                      el.style.backgroundColor = isViewedInDocument ? '#D4B88A' : '#F2F2EF';
                       el.style.boxShadow = '0 1px 1px rgba(0,0,0,0.05)';
                     }}
                     onFocus={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = isViewedInDocument ? '0 1px 1px rgba(0,0,0,0.05), 0 0 0 2px rgba(92, 46, 10, 0.45)' : '0 1px 1px rgba(0,0,0,0.05), 0 0 0 2px #9ca3af'; }}
@@ -3802,19 +3816,19 @@ const CitationCallout: React.FC<{
                       fontSize: '12px',
                       lineHeight: 1,
                       fontWeight: 500,
-                      color: '#374151',
-                      backgroundColor: '#FFFFFF',
-                      border: '1px solid #e5e7eb',
+                      color: '#666666',
+                      backgroundColor: '#F2F2EF',
+                      border: '1px solid #d4d4d4',
                       borderRadius: 5.5,
                       cursor: 'pointer',
                       transition: 'background-color 0.15s ease, box-shadow 0.15s ease',
                       boxShadow: '0 1px 1px rgba(0,0,0,0.05)',
                       outline: 'none',
                     }}
-                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#f9fafb'; }}
+                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#E8E8E5'; }}
                     onMouseLeave={(e) => {
                       const el = e.currentTarget as HTMLElement;
-                      el.style.backgroundColor = '#FFFFFF';
+                      el.style.backgroundColor = '#F2F2EF';
                       el.style.boxShadow = '0 1px 1px rgba(0,0,0,0.05)';
                     }}
                     onFocus={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = '0 1px 1px rgba(0,0,0,0.05), 0 0 0 2px #0160B2'; }}
@@ -3845,19 +3859,19 @@ const CitationCallout: React.FC<{
                       padding: compactActions ? 6 : '1px 4px',
                       fontSize: '11px',
                       fontWeight: 600,
-                      color: isViewedInDocument ? '#5c2e0a' : '#374151',
-                      backgroundColor: isViewedInDocument ? '#D4B88A' : '#FFFFFF',
-                      border: isViewedInDocument ? '1px solid rgba(180, 140, 80, 0.55)' : '1px solid #e5e7eb',
+                      color: isViewedInDocument ? '#5c2e0a' : '#666666',
+                      backgroundColor: isViewedInDocument ? '#D4B88A' : '#F2F2EF',
+                      border: isViewedInDocument ? '1px solid rgba(180, 140, 80, 0.55)' : '1px solid #d4d4d4',
                       borderRadius: 4,
                       cursor: 'pointer',
                       transition: 'background-color 0.15s ease, box-shadow 0.15s ease',
                       boxShadow: '0 1px 1px rgba(0,0,0,0.05)',
                       outline: 'none',
                     }}
-                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = isViewedInDocument ? '#C4A87A' : '#f9fafb'; }}
+                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = isViewedInDocument ? '#C4A87A' : '#E8E8E5'; }}
                     onMouseLeave={(e) => {
                       const el = e.currentTarget as HTMLElement;
-                      el.style.backgroundColor = isViewedInDocument ? '#D4B88A' : '#FFFFFF';
+                      el.style.backgroundColor = isViewedInDocument ? '#D4B88A' : '#F2F2EF';
                       el.style.boxShadow = '0 1px 1px rgba(0,0,0,0.05)';
                     }}
                     onFocus={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = isViewedInDocument ? '0 1px 1px rgba(0,0,0,0.05), 0 0 0 2px rgba(92, 46, 10, 0.45)' : '0 1px 1px rgba(0,0,0,0.05), 0 0 0 2px #9ca3af'; }}
@@ -7895,8 +7909,14 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       return;
     }
     const latestMessageId = lastAssistantByPosition.id ?? `msg-${list.indexOf(lastAssistantByPosition)}`;
-    // When the latest (by position) has no text yet (new empty assistant), don't clear — leave previous message's state so its callouts stay closed
+    // When the latest (by position) has no text yet (new query / new empty assistant), clear citation review so the previous response's document preview bar hides and we focus on the new query only
     if (!lastAssistantByPosition.text) {
+      setCitationReviewMessageId(null);
+      citationReviewMessageIdRef.current = null;
+      setCitationReviewCurrentIndex(0);
+      setCitationReviewAcceptedIndices(new Set());
+      setCitationReviewShowReviewNextOnly(false);
+      setCitationReviewJustRejected(false);
       return;
     }
     // Latest has text: when switching to a different message, reset so new response callouts open; previous message is no longer "citation active" so its callouts stay closed
@@ -15281,7 +15301,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               em: ({ children }) => <em style={{ fontStyle: 'italic' }}>{children}</em>,
                               code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2.2px 5.5px', borderRadius: '4.4px', fontSize: '15.2px', fontFamily: 'monospace' }}>{children}</code>,
                               blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #d1d5db', paddingLeft: '15.3px', margin: '10.9px 0', color: '#6b7280' }}>{children}</blockquote>,
-                              hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '19.7px 0' }} />,
+                              hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '6px 0' }} />,
                             }}>{segText}</ReactMarkdown>
                           </span>
                         );
@@ -15377,7 +15397,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             em: ({ children }) => <em style={{ fontStyle: 'italic' }}>{children}</em>,
                             code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2.2px 5.5px', borderRadius: '4.4px', fontSize: '15.2px', fontFamily: 'monospace' }}>{children}</code>,
                             blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #d1d5db', paddingLeft: '15.3px', margin: '10.9px 0', color: '#6b7280' }}>{children}</blockquote>,
-                            hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '19.7px 0' }} />,
+                            hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '6px 0' }} />,
                           }}>{truncatedText}</ReactMarkdown>
                         </span>
                       ) : null}
@@ -17949,9 +17969,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                     if (isDocOpenForCurrent) closeExpandedCardView();
                                     else if (citationData) openCitationInDocumentView(citationData as CitationData, false);
                                   }}
-                                  style={{ ...barBtn, fontWeight: 600, color: '#374151', backgroundColor: '#FFFFFF' }}
-                                  onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#f9fafb'; }}
-                                  onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#FFFFFF'; }}
+                                  style={{ ...barBtn, fontWeight: 600, color: '#666666', backgroundColor: '#F2F2EF', border: '1px solid #d4d4d4', boxShadow: '0 1px 1px rgba(0,0,0,0.05)' }}
+                                  onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#E8E8E5'; }}
+                                  onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#F2F2EF'; }}
                                 >
                                   {isDocOpenForCurrent ? 'Close' : 'View'}
                                 </button>
@@ -17979,7 +17999,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                   setCitationReviewShowReviewNextOnly(false);
                                   setCitationReviewCurrentIndex(next);
                                 }
-                              }} style={{ ...barBtn, fontWeight: 500, color: '#3B3B3B', backgroundColor: '#F0F0F0', border: '1px solid #d4d4d4', boxShadow: '0 1px 1px rgba(0,0,0,0.05)' }} onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#EBEBEB'; }} onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#F0F0F0'; }}>
+                              }} style={{ ...barBtn, fontWeight: 500, color: '#666666', backgroundColor: '#F2F2EF', border: '1px solid #d4d4d4', boxShadow: '0 1px 1px rgba(0,0,0,0.05)' }} onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#E8E8E5'; }} onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#F2F2EF'; }}>
                                 Review Next Source
                               </button>
                               <button type="button" title="Undo reject – restore this part of the response" onClick={(e) => {
@@ -18039,7 +18059,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                 setCitationReviewShowReviewNextOnly(false);
                                 setCitationReviewCurrentIndex(next);
                               }
-                            }} style={{ ...barBtn, fontWeight: 500, color: '#3B3B3B', backgroundColor: '#F0F0F0', border: '1px solid #d4d4d4', boxShadow: '0 1px 1px rgba(0,0,0,0.05)' }} onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#EBEBEB'; }} onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#F0F0F0'; }}>
+                            }} style={{ ...barBtn, fontWeight: 500, color: '#666666', backgroundColor: '#F2F2EF', border: '1px solid #d4d4d4', boxShadow: '0 1px 1px rgba(0,0,0,0.05)' }} onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#E8E8E5'; }} onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#F2F2EF'; }}>
                               Review Next Source
                             </button>
                             <button
