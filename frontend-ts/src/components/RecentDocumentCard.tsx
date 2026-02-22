@@ -29,6 +29,8 @@ interface RecentDocumentCardProps {
   onClick?: () => void;
   /** When true, use smaller card size (e.g. projects page files area) */
   compact?: boolean;
+  /** When true, hint browser to load this thumbnail with higher priority (first few cards) */
+  priority?: boolean;
 }
 
 // ==================== UNIFIED THUMBNAIL CACHE ====================
@@ -36,8 +38,8 @@ interface RecentDocumentCardProps {
 const thumbnailDataUrlCache = new Map<string, string>();
 const renderingInProgress = new Set<string>();
 
-// Concurrency limit: max N thumbnail renders at a time so first cards appear quickly
-const MAX_CONCURRENT_THUMBNAILS = 3;
+// Concurrency limit: run many thumbnails in parallel so they all load quickly
+const MAX_CONCURRENT_THUMBNAILS = 10;
 let activeThumbnailRenders = 0;
 const thumbnailQueue: Array<() => void> = [];
 
@@ -81,9 +83,9 @@ const isPdfDocument = (doc: DocumentData): boolean => {
 };
 
 // Render PDF first page to a data URL using pdf.js
-// Smaller target (200px) and lower JPEG quality for faster render and smaller payload; still sharp at card size
-const PDF_THUMB_TARGET_WIDTH = 200;
-const PDF_THUMB_JPEG_QUALITY = 0.82;
+// Smaller target and lower quality for faster render; still looks good at card size
+const PDF_THUMB_TARGET_WIDTH = 140;
+const PDF_THUMB_JPEG_QUALITY = 0.68;
 
 const renderPdfThumbnail = async (url: string, targetWidth: number = PDF_THUMB_TARGET_WIDTH): Promise<string> => {
   const loadingTask = pdfjsLib.getDocument({
@@ -115,18 +117,37 @@ const renderPdfThumbnail = async (url: string, targetWidth: number = PDF_THUMB_T
   return canvas.toDataURL('image/jpeg', PDF_THUMB_JPEG_QUALITY);
 };
 
-// Render image to a data URL (for caching)
+// Max dimension for image thumbnails - keeps data URL small and decode fast
+const IMAGE_THUMB_MAX_SIZE = 200;
+
+// Render image to a data URL at card size (smaller payload = faster decode/paint)
 const renderImageThumbnail = async (url: string): Promise<string> => {
   const response = await fetch(url, { credentials: 'include' });
   if (!response.ok) throw new Error('Fetch failed');
   const blob = await response.blob();
-  
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onloadend = () => resolve(reader.result as string);
-    reader.onerror = reject;
-    reader.readAsDataURL(blob);
-  });
+  const bitmap = await createImageBitmap(blob);
+  const w = bitmap.width;
+  const h = bitmap.height;
+  const scale = Math.min(IMAGE_THUMB_MAX_SIZE / w, IMAGE_THUMB_MAX_SIZE / h, 1);
+  const tw = Math.round(w * scale);
+  const th = Math.round(h * scale);
+  const canvas = document.createElement('canvas');
+  canvas.width = tw;
+  canvas.height = th;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    bitmap.close();
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result as string);
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+  }
+  ctx.drawImage(bitmap, 0, 0, tw, th);
+  bitmap.close();
+  const dataUrl = canvas.toDataURL('image/jpeg', 0.82);
+  return dataUrl;
 };
 
 // Main function to render and cache a thumbnail (works for both PDFs and images)
@@ -189,23 +210,38 @@ const getCachedThumbnail = (docId: string): string | null => {
 };
 
 /** Max documents to preload upfront; rest load when their card enters viewport */
-export const PRELOAD_THUMBNAIL_LIMIT = 6;
+export const PRELOAD_THUMBNAIL_LIMIT = 8;
+
+/** Cache key used by ProjectsPage – must match so we can warmup from cache at dashboard start */
+const PROJECTS_PAGE_CACHE_KEY = 'projectsPage_propertyHubsCache';
+
+/** Call as soon as the dashboard mounts (e.g. DashboardLayout) to start loading thumbnails from cache before ProjectsPage renders. */
+export const warmupDashboardThumbnailsFromCache = (): void => {
+  try {
+    const raw = localStorage.getItem(PROJECTS_PAGE_CACHE_KEY);
+    if (!raw) return;
+    const data = JSON.parse(raw) as { documents?: DocumentData[]; timestamp?: number };
+    const docs = data?.documents;
+    if (Array.isArray(docs) && docs.length > 0) {
+      preloadDocumentThumbnails(docs, PRELOAD_THUMBNAIL_LIMIT);
+    }
+  } catch {
+    // ignore
+  }
+};
 
 // Export preload function for parent components (only first N to avoid slow initial load)
+// All preloads start immediately so thumbnails fill in as fast as possible
 export const preloadDocumentThumbnails = (documents: DocumentData[], limit?: number): void => {
   const cap = limit ?? PRELOAD_THUMBNAIL_LIMIT;
   const toPreload = documents.slice(0, cap);
-  
-  toPreload.forEach(doc => {
+
+  toPreload.forEach((doc) => {
     if (isThumbnailCached(doc.id)) return;
-    
     const url = doc.cover_image_url || doc.first_page_image_url || getDownloadUrl(doc);
     if (!url) return;
-    
     const isPdf = isPdfDocument(doc);
-    renderAndCacheThumbnail(doc.id, url, isPdf).catch(() => {
-      // Silently fail - component will show fallback
-    });
+    renderAndCacheThumbnail(doc.id, url, isPdf).catch(() => {});
   });
 };
 
@@ -215,7 +251,7 @@ const CARD_HEIGHT = 240;
 const COMPACT_WIDTH = 128;
 const COMPACT_HEIGHT = 168;
 
-export const RecentDocumentCard: React.FC<RecentDocumentCardProps> = React.memo(({ document, onClick, compact = false }) => {
+export const RecentDocumentCard: React.FC<RecentDocumentCardProps> = React.memo(({ document, onClick, compact = false, priority = false }) => {
   const width = compact ? COMPACT_WIDTH : CARD_WIDTH;
   const height = compact ? COMPACT_HEIGHT : CARD_HEIGHT;
   // Check both caches for instant display (local thumbnailDataUrlCache + shared __preloadedDocumentCovers)
@@ -366,12 +402,14 @@ export const RecentDocumentCard: React.FC<RecentDocumentCardProps> = React.memo(
                 <div className="h-1.5 bg-gray-100 rounded w-9/12 mb-1" />
               </div>
             ) : thumbnailUrl ? (
-              // Cached thumbnail - async decode so it doesn't block main thread
+              // Cached thumbnail - async decode; priority hint for first cards
               <img 
                 src={thumbnailUrl}
                 alt={document.original_filename}
                 className="w-full h-full object-cover object-top"
                 decoding="async"
+                loading={priority ? "eager" : "lazy"}
+                fetchPriority={priority ? "high" : "auto"}
               />
             ) : (
               // Fallback: Text placeholder

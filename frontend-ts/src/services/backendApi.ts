@@ -860,6 +860,44 @@ class BackendApiService {
     return this.fetchApi<UsageResponse>('/api/usage', { method: 'GET' });
   }
 
+  /**
+   * Get USER.md (user context) for the current user and business.
+   * Returns content or null if not set.
+   */
+  async getBootstrapUserContext(): Promise<{
+    success: boolean;
+    content?: string | null;
+    error?: string;
+  }> {
+    const res = await this.fetchApi<{ content?: string | null }>('/api/bootstrap/user-context', {
+      method: 'GET',
+    });
+    if (res.success && res.data !== undefined) {
+      return { success: true, content: res.data.content ?? null };
+    }
+    return {
+      success: false,
+      error: (res as { error?: string }).error || 'Failed to load',
+    };
+  }
+
+  /**
+   * Save USER.md (user context) for the current user and business.
+   */
+  async putBootstrapUserContext(content: string): Promise<{ success: boolean; error?: string }> {
+    const res = await this.fetchApi<{ success?: boolean }>('/api/bootstrap/user-context', {
+      method: 'PUT',
+      body: JSON.stringify({ content }),
+    });
+    if (res.success) {
+      return { success: true };
+    }
+    return {
+      success: false,
+      error: (res as { error?: string }).error || 'Failed to save',
+    };
+  }
+
   /** Update subscription tier (personal, professional, business). No billing; for testing you can switch back and forth. */
   async updatePlan(plan: string): Promise<ApiResponse<{ plan: string }>> {
     return this.fetchApi<{ plan: string }>('/api/usage/plan', {

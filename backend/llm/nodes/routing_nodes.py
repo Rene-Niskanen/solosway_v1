@@ -977,6 +977,13 @@ def _strip_velora_greeting(query: str) -> str:
     ).strip()
     return cleaned
 
+# USER.md / user context / profile: route to agent (has read/write_workspace_file tools)
+_USER_CONTEXT_PHRASES = ("user.md", "user md", "user context", "my profile")
+_USER_CONTEXT_ACTION_RE = re.compile(
+    r"\b(set|update|change|write|edit|put|save|read)\s+(?:me\s+|my\s+)?(?:user\.md|user\s+md|user\s+context|profile)\b",
+    re.IGNORECASE,
+)
+
 # Keywords that signal the query is about documents / real-estate data
 _DOC_KEYWORDS = frozenset({
     # document types
@@ -999,23 +1006,58 @@ _DOC_KEYWORDS = frozenset({
 
 async def classify_intent(state: MainWorkflowState) -> str:
     """
-    Classify user message as 'conversation' or 'document'.
+    Classify user message as 'conversation', 'user_context', or 'document'.
 
-    VERY conservative: defaults to 'document' so retrieval is never skipped
-    by accident. Only obvious greetings / personal chat goes to 'conversation'.
+    - user_context: user asks to read/update USER.md or profile → route to agent (has workspace file tools).
+    - conversation: obvious greetings / personal chat.
+    - document: everything else (default); retrieval is never skipped by accident.
 
     No LLM call — pure heuristic for speed and reliability.
     """
     document_ids = state.get("document_ids") or []
+    user_query = (state.get("user_query") or "").strip()
+
+    # ── Rule 0: Follow-up to assistant's request for content (e.g. USER.md) → user_context ──
+    # When the assistant asked "Could you please provide the content...?" and the user replied
+    # with that content (e.g. "Make it say im a property developer"), route to agent so we
+    # use write_workspace_file instead of document search.
+    messages = state.get("messages") or []
+    if isinstance(messages, list):
+        if len(messages) >= 2:
+            from backend.llm.utils.agent_turn_context import last_turn_was_request_for_user_content
+            if last_turn_was_request_for_user_content(messages):
+                logger.info(
+                    "[CLASSIFY] user_context follow-up (last AI asked for content, messages) -> user_context (query: '%s')",
+                    user_query[:60],
+                )
+                return "user_context"
+        # Fallback: conversation_history (e.g. when checkpoint has history but messages not merged)
+        conv_hist = state.get("conversation_history") or []
+        if isinstance(conv_hist, list) and len(conv_hist) > 0:
+            from backend.llm.utils.agent_turn_context import AI_REQUESTED_CONTENT_PHRASES
+            last_summary = (conv_hist[-1].get("summary") or "").strip().lower()
+            if last_summary and any(p in last_summary for p in AI_REQUESTED_CONTENT_PHRASES):
+                logger.info(
+                    "[CLASSIFY] user_context follow-up (last summary asked for content) -> user_context (query: '%s')",
+                    user_query[:60],
+                )
+                return "user_context"
 
     # ── Rule 1: files attached → always document ──
     if document_ids:
         logger.info("[CLASSIFY] document_ids present -> document")
         return "document"
 
-    user_query = (state.get("user_query") or "").strip()
     query_lower = user_query.lower().strip("!?.,' ")
     property_id = state.get("property_id")
+
+    # ── Rule 1b: USER.md / user context / profile → agent (has read/write_workspace_file) ──
+    if any(phrase in query_lower for phrase in _USER_CONTEXT_PHRASES):
+        logger.info("[CLASSIFY] user_context phrase -> user_context (query: '%s')", user_query[:60])
+        return "user_context"
+    if _USER_CONTEXT_ACTION_RE.search(query_lower):
+        logger.info("[CLASSIFY] user_context action -> user_context (query: '%s')", user_query[:60])
+        return "user_context"
 
     # ── Rule 2: conversation cues (checked even when property is selected) ──
     # Obvious greetings/personal chat → conversation so "how are you?" doesn't trigger doc search.

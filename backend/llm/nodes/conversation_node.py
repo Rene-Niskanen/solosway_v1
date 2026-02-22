@@ -12,6 +12,7 @@ from langchain_openai import ChatOpenAI
 from backend.llm.config import config
 from backend.llm.types import MainWorkflowState
 from backend.llm.prompts.conversation import format_memories_section
+from backend.llm.bootstrap.loaders import BootstrapScope, get_bootstrap_context
 from backend.llm.prompts.system_builder import build_system_content
 from backend.llm.utils.workspace_context import build_workspace_context
 from backend.llm.prompts.personality import (
@@ -84,6 +85,15 @@ async def conversation_node(state: MainWorkflowState) -> MainWorkflowState:
         memories_section=memories_section,
         workspace_section=workspace_section,
     )
+    project_context = get_bootstrap_context(
+        BootstrapScope(
+            user_id=state.get("user_id") or "anonymous",
+            business_id=state.get("business_id") or "",
+        ),
+        config,
+    )
+    if project_context:
+        system_content = system_content + "\n\n" + project_context
     system_msg = SystemMessage(content=system_content)
 
     # --- Build human message (just the user query) ---

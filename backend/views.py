@@ -442,6 +442,75 @@ def get_performance_metrics():
         )), 500
 
 
+@views.route('/api/bootstrap/user-context', methods=['GET'])
+@login_required
+def get_bootstrap_user_context():
+    """Get USER.md content for current user and business. Returns { content: string | null }."""
+    business_id = _ensure_business_uuid()
+    if not business_id:
+        return jsonify({'error': 'User is not associated with a business'}), 400
+    user_id = str(current_user.id)
+    try:
+        supabase = get_supabase_client()
+        result = (
+            supabase.table('velora_bootstrap_files')
+            .select('content')
+            .eq('business_id', business_id)
+            .eq('user_id', user_id)
+            .eq('name', 'USER.md')
+            .limit(1)
+            .execute()
+        )
+        if not result.data or len(result.data) == 0:
+            return jsonify({'content': None}), 200
+        content = result.data[0].get('content')
+        if content is None or (isinstance(content, str) and not content.strip()):
+            return jsonify({'content': None}), 200
+        return jsonify({'content': content if isinstance(content, str) else str(content)}), 200
+    except Exception as e:
+        logger.warning('[BOOTSTRAP] get_bootstrap_user_context failed: %s', e)
+        return jsonify({'content': None}), 200
+
+
+@views.route('/api/bootstrap/user-context', methods=['PUT'])
+@login_required
+def put_bootstrap_user_context():
+    """Save USER.md content for current user and business. Body: { \"content\": \"...\" }."""
+    business_id = _ensure_business_uuid()
+    if not business_id:
+        return jsonify({'error': 'User is not associated with a business'}), 400
+    body = request.get_json(silent=True)
+    if not body or not isinstance(body, dict):
+        return jsonify({'error': 'Missing or invalid body: expected { "content": "..." }'}), 400
+    if 'content' not in body:
+        return jsonify({'error': 'Missing or invalid body: expected { "content": "..." }'}), 400
+    content = body['content']
+    if not isinstance(content, str):
+        return jsonify({'error': 'content must be a string'}), 400
+    from backend.llm.bootstrap.constants import DEFAULT_BOOTSTRAP_TOTAL_MAX_CHARS
+    if len(content) > DEFAULT_BOOTSTRAP_TOTAL_MAX_CHARS:
+        return jsonify({
+            'error': f'content exceeds maximum length ({DEFAULT_BOOTSTRAP_TOTAL_MAX_CHARS} characters)'
+        }), 400
+    user_id = str(current_user.id)
+    try:
+        supabase = get_supabase_client()
+        supabase.table('velora_bootstrap_files').upsert(
+            {
+                'business_id': business_id,
+                'user_id': user_id,
+                'name': 'USER.md',
+                'content': content,
+                'updated_at': datetime.now(timezone.utc).isoformat(),
+            },
+            on_conflict='business_id,user_id,name',
+        ).execute()
+        return jsonify({'success': True}), 200
+    except Exception as e:
+        logger.exception('[BOOTSTRAP] put_bootstrap_user_context failed')
+        return jsonify({'error': 'Failed to save'}), 500
+
+
 @views.route('/api/projects', methods=['GET', 'OPTIONS'])
 def get_projects():
     """Minimal projects endpoint so frontend does not hit CORS on missing route. Returns empty list."""

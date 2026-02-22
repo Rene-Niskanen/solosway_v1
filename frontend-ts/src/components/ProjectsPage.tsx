@@ -16,12 +16,18 @@
  */
 
 import * as React from "react";
-import { FolderClosed, ChevronDown, ChevronUp, Trash2, Plus } from "lucide-react";
+import { FolderClosed, ChevronDown, ChevronUp, Trash2, Plus, Menu, Bold, Italic, AlignLeft, AlignCenter, AlignRight } from "lucide-react";
 import { backendApi } from "@/services/backendApi";
 import { ProjectGlassCard } from "./ProjectGlassCard";
 import { RecentDocumentsSection } from "./RecentDocumentsSection";
 import { preloadDocumentThumbnails, PRELOAD_THUMBNAIL_LIMIT } from "./RecentDocumentCard";
 import { preloadDocumentCovers as preloadDocumentCoversUtil } from "@/utils/preloadDocumentCovers";
+import {
+  Dialog,
+  DialogContent,
+  DialogTitle,
+} from "./ui/dialog";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 
 // Properties = Projects (same concept, different naming)
 // Backend uses "Property", UI displays as "Project"
@@ -280,11 +286,133 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
   const [documentsLoaded, setDocumentsLoaded] = React.useState(!!cachedData);
   const [error, setError] = React.useState<string | null>(null);
   const [, setCoversLoaded] = React.useState(0); // Trigger re-render when covers load
+  const [userContextEditorOpen, setUserContextEditorOpen] = React.useState(false);
+  const [userContextContent, setUserContextContent] = React.useState("");
+  const [userContextLoadError, setUserContextLoadError] = React.useState<string | null>(null);
+  const [userContextSaveError, setUserContextSaveError] = React.useState<string | null>(null);
+  const [userContextLoading, setUserContextLoading] = React.useState(false);
+  const [userContextSaving, setUserContextSaving] = React.useState(false);
+  const [userContextAlignment, setUserContextAlignment] = React.useState<'left' | 'center' | 'right'>('left');
+  const [userContextBlockType, setUserContextBlockType] = React.useState<string>('paragraph');
+  const userContextTextareaRef = React.useRef<HTMLTextAreaElement>(null);
 
   // Preload document covers (images + PDF thumbnails) via shared util so cards render instantly
   const preloadDocumentCovers = React.useCallback((docs: DocumentData[]) => {
     preloadDocumentCoversUtil(docs as any, () => setCoversLoaded(v => v + 1));
   }, []);
+
+  // Load USER.md content when editor opens
+  React.useEffect(() => {
+    if (!userContextEditorOpen) return;
+    setUserContextLoadError(null);
+    setUserContextLoading(true);
+    backendApi.getBootstrapUserContext().then((res) => {
+      setUserContextLoading(false);
+      if (res.success) {
+        setUserContextContent(res.content ?? "");
+      } else {
+        setUserContextLoadError(res.error ?? "Failed to load");
+      }
+    });
+  }, [userContextEditorOpen]);
+
+  // Focus textarea when dialog is open and content loaded so it's instantly editable
+  React.useEffect(() => {
+    if (!userContextEditorOpen || userContextLoading) return;
+    const t = setTimeout(() => userContextTextareaRef.current?.focus(), 0);
+    return () => clearTimeout(t);
+  }, [userContextEditorOpen, userContextLoading]);
+
+  const handleSaveUserContext = React.useCallback(() => {
+    setUserContextSaveError(null);
+    setUserContextSaving(true);
+    backendApi.putBootstrapUserContext(userContextContent).then((res) => {
+      setUserContextSaving(false);
+      if (res.success) {
+        setUserContextEditorOpen(false);
+      } else {
+        setUserContextSaveError(res.error ?? "Failed to save");
+      }
+    });
+  }, [userContextContent]);
+
+  // Toolbar helpers for USER.md editor (markdown at cursor/selection)
+  const getLineStart = (ta: HTMLTextAreaElement) => {
+    const pos = ta.selectionStart;
+    const text = ta.value;
+    let start = pos;
+    while (start > 0 && text[start - 1] !== '\n') start--;
+    return start;
+  };
+
+  const insertAtLineStart = React.useCallback((prefix: string) => {
+    const ta = userContextTextareaRef.current;
+    if (!ta) return;
+    const start = getLineStart(ta);
+    const next = start + prefix.length;
+    setUserContextContent((prev) => prev.slice(0, start) + prefix + prev.slice(start));
+    setTimeout(() => {
+      userContextTextareaRef.current?.focus();
+      userContextTextareaRef.current?.setSelectionRange(next, next);
+    }, 0);
+    setUserContextBlockType('paragraph');
+  }, []);
+
+  const wrapSelection = React.useCallback((prefix: string, suffix: string) => {
+    const ta = userContextTextareaRef.current;
+    if (!ta) return;
+    const { selectionStart: s, selectionEnd: e } = ta;
+    const text = userContextContent;
+    const selected = text.slice(s, e);
+    // Toggle off (case 1): selection is already wrapped (starts with prefix, ends with suffix)
+    if (
+      selected.length >= prefix.length + suffix.length &&
+      selected.startsWith(prefix) &&
+      selected.endsWith(suffix)
+    ) {
+      const inner = selected.slice(prefix.length, selected.length - suffix.length);
+      const newContent = text.slice(0, s) + inner + text.slice(e);
+      const newEnd = s + inner.length;
+      setUserContextContent(newContent);
+      setTimeout(() => {
+        userContextTextareaRef.current?.focus();
+        userContextTextareaRef.current?.setSelectionRange(s, newEnd);
+      }, 0);
+      return;
+    }
+    // Toggle off (case 2): selection is the inner part only (prefix immediately before, suffix immediately after)
+    if (
+      s >= prefix.length &&
+      e + suffix.length <= text.length &&
+      text.slice(s - prefix.length, s) === prefix &&
+      text.slice(e, e + suffix.length) === suffix
+    ) {
+      const newContent = text.slice(0, s - prefix.length) + selected + text.slice(e + suffix.length);
+      const newStart = s - prefix.length;
+      const newEnd = newStart + selected.length;
+      setUserContextContent(newContent);
+      setTimeout(() => {
+        userContextTextareaRef.current?.focus();
+        userContextTextareaRef.current?.setSelectionRange(newStart, newEnd);
+      }, 0);
+      return;
+    }
+    // Toggle on: wrap selection
+    const newContent = text.slice(0, s) + prefix + text.slice(s, e) + suffix + text.slice(e);
+    const newEnd = s + prefix.length + (e - s);
+    setUserContextContent(newContent);
+    setTimeout(() => {
+      userContextTextareaRef.current?.focus();
+      userContextTextareaRef.current?.setSelectionRange(s + prefix.length, newEnd);
+    }, 0);
+  }, [userContextContent]);
+
+  const handleParagraphSelect = React.useCallback((value: string) => {
+    if (value === 'heading1') insertAtLineStart('# ');
+    else if (value === 'heading2') insertAtLineStart('## ');
+    else if (value === 'bullet') insertAtLineStart('- ');
+    setUserContextBlockType('paragraph');
+  }, [insertAtLineStart]);
 
   // Files bar shows first FILES_BAR_COUNT; cache for initial load
   React.useEffect(() => {
@@ -734,7 +862,7 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
       </div>
 
       <div 
-        className="w-full min-h-full flex flex-col box-border"
+        className={`w-full flex flex-col box-border ${showAllFiles ? 'h-full min-h-0' : 'min-h-full'}`}
         style={{ 
           paddingTop: `${CONTENT_PADDING_LEFT_PX}px`,
           paddingRight: `${CONTENT_PADDING_LEFT_PX}px`,
@@ -759,6 +887,51 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
                 pointerEvents: 'auto',
               }}
             >
+              {/* USER.md card - same layout as project cards */}
+              <div
+                role="button"
+                tabIndex={0}
+                onClick={() => setUserContextEditorOpen(true)}
+                onKeyDown={(e) => e.key === "Enter" && setUserContextEditorOpen(true)}
+                className="cursor-pointer flex flex-col items-center w-full h-full min-w-0"
+                style={{
+                  borderRadius: "12px",
+                  border: "2px solid transparent",
+                  padding: "12px",
+                  boxSizing: "border-box",
+                  position: "relative",
+                  height: "100%",
+                }}
+              >
+                <div
+                  className="relative overflow-hidden flex items-center justify-center flex-shrink-0"
+                  style={{ width: "140px", height: "122px" }}
+                >
+                  <img
+                    src="/user.md.png"
+                    alt="USER.md"
+                    className="pointer-events-none"
+                    style={{ display: "block", width: "80%", height: "80%", objectFit: "contain" }}
+                    draggable={false}
+                  />
+                </div>
+                <p
+                  className="text-center w-full mt-2 px-1 min-w-0"
+                  style={{
+                    fontSize: "13px",
+                    fontWeight: 500,
+                    color: "#1F2937",
+                    lineHeight: 1.3,
+                    minWidth: 0,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                  title="USER.md"
+                >
+                  USER.md
+                </p>
+              </div>
               {properties.map(property => (
                 <ProjectGlassCard 
                   key={property.id} 
@@ -841,6 +1014,89 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
             />
           </div>
         )}
+
+        {/* USER.md editor modal — same UI/spacing as SearchOrStartChatModal */}
+        <Dialog open={userContextEditorOpen} onOpenChange={(open) => !open && setUserContextEditorOpen(false)}>
+          <DialogContent
+            className="p-0 gap-0 overflow-hidden border-0 bg-white shadow-xl max-h-[92vh] min-w-0 max-w-4xl w-[min(900px,calc(100vw-32px))] rounded-xl flex flex-col duration-0 data-[state=open]:animate-none data-[state=closed]:animate-none"
+            style={{ boxShadow: "0 4px 24px rgba(0,0,0,0.08)" }}
+            overlayClassName="bg-black/10 data-[state=open]:animate-none data-[state=closed]:animate-none"
+            closeClassName="!top-3"
+          >
+            <DialogTitle className="sr-only">User context (USER.md)</DialogTitle>
+            {/* Toolbar row — pr-16 reserves space for dialog close (X) so Save doesn't overlap */}
+            <div className="flex shrink-0 items-center gap-3 pl-10 pr-16 py-4 rounded-t-xl">
+              <div className="flex items-center gap-3 flex-1 min-w-0">
+                <button type="button" className="p-1.5 rounded-lg hover:bg-gray-200 text-neutral-600" aria-label="Menu">
+                  <Menu className="h-4 w-4" />
+                </button>
+                <span className="text-[13px] font-normal text-gray-900 truncate">User context (USER.md)</span>
+              </div>
+              <div className="flex items-center gap-0.5 flex-shrink-0">
+                <Select value={userContextBlockType} onValueChange={handleParagraphSelect}>
+                  <SelectTrigger className="w-[120px] h-8 border-0 bg-transparent shadow-none gap-1 text-[13px] font-normal text-gray-700 hover:bg-gray-200 rounded-lg" hideIcon>
+                    <SelectValue placeholder="Paragraph" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="paragraph">Paragraph</SelectItem>
+                    <SelectItem value="heading1">Heading 1</SelectItem>
+                    <SelectItem value="heading2">Heading 2</SelectItem>
+                    <SelectItem value="bullet">Bullet list</SelectItem>
+                  </SelectContent>
+                </Select>
+                <button type="button" className="p-1.5 rounded-lg hover:bg-gray-200 text-neutral-600" aria-label="Bold" onClick={() => wrapSelection('**', '**')}>
+                  <Bold className="h-4 w-4" />
+                </button>
+                <button type="button" className="p-1.5 rounded-lg hover:bg-gray-200 text-neutral-600" aria-label="Italic" onClick={() => wrapSelection('*', '*')}>
+                  <Italic className="h-4 w-4" />
+                </button>
+                <button type="button" className={`p-1.5 rounded-lg ${userContextAlignment === 'left' ? 'bg-gray-200 text-gray-800' : 'hover:bg-gray-200 text-neutral-600'}`} aria-label="Align left" onClick={() => setUserContextAlignment('left')}>
+                  <AlignLeft className="h-4 w-4" />
+                </button>
+                <button type="button" className={`p-1.5 rounded-lg ${userContextAlignment === 'center' ? 'bg-gray-200 text-gray-800' : 'hover:bg-gray-200 text-neutral-600'}`} aria-label="Align center" onClick={() => setUserContextAlignment('center')}>
+                  <AlignCenter className="h-4 w-4" />
+                </button>
+                <button type="button" className={`p-1.5 rounded-lg ${userContextAlignment === 'right' ? 'bg-gray-200 text-gray-800' : 'hover:bg-gray-200 text-neutral-600'}`} aria-label="Align right" onClick={() => setUserContextAlignment('right')}>
+                  <AlignRight className="h-4 w-4" />
+                </button>
+              </div>
+              <div className="flex items-center gap-2 flex-shrink-0 pl-2">
+                <button
+                  type="button"
+                  className="px-3 py-1.5 rounded-lg text-[13px] font-normal text-neutral-800 bg-white border border-gray-200 hover:bg-gray-50 disabled:opacity-50 disabled:pointer-events-none transition-colors"
+                  onClick={handleSaveUserContext}
+                  disabled={userContextLoading || userContextSaving}
+                >
+                  {userContextSaving ? "Saving…" : "Save"}
+                </button>
+              </div>
+            </div>
+            {/* Content area — textarea is always visible and focused when dialog opens so it's instantly editable */}
+            <div className="flex-1 min-h-0 overflow-y-auto py-4 px-4">
+              <p className="text-[15px] text-gray-500 mb-3">
+                This text is shown to Velora so it can personalize responses. You can also ask Velora to update it in chat.
+              </p>
+              {userContextLoading && <p className="text-[13px] text-gray-500">Loading…</p>}
+              {userContextLoadError && (
+                <p className="text-[13px] text-destructive mb-2" role="alert">{userContextLoadError}</p>
+              )}
+              <textarea
+                ref={userContextTextareaRef}
+                className={`min-h-[280px] w-full p-4 rounded-lg border border-gray-200 bg-white text-[13px] font-normal text-gray-900 placeholder:text-neutral-400 resize-y outline-none focus:ring-2 focus:ring-gray-200 focus:border-gray-300 ${userContextAlignment === 'center' ? 'text-center' : userContextAlignment === 'right' ? 'text-right' : 'text-left'}`}
+                placeholder="e.g. I'm a commercial property solicitor. Focus on lease reviews and rent schedules."
+                value={userContextContent}
+                onChange={(e) => setUserContextContent(e.target.value)}
+                disabled={userContextLoading}
+              />
+              <p className="text-[11px] text-gray-500 mt-2">
+                {userContextContent.length.toLocaleString()} / 150,000 characters
+              </p>
+              {userContextSaveError && (
+                <p className="text-[13px] text-destructive mt-2" role="alert">{userContextSaveError}</p>
+              )}
+            </div>
+          </DialogContent>
+        </Dialog>
       </div>
     </div>
   );

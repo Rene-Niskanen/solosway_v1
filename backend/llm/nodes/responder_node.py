@@ -44,6 +44,7 @@ from backend.llm.utils.personality_prompts import (
 )
 from backend.llm.tools.citation_mapping import create_chunk_citation_tool, _narrow_bbox_to_cited_line
 from backend.llm.prompts.conversation import format_memories_section
+from backend.llm.bootstrap.loaders import BootstrapScope, get_bootstrap_context
 from backend.llm.prompts.system_builder import build_system_content
 from backend.llm.prompts.no_results import (
     get_responder_no_chunks_system_prompt,
@@ -2168,6 +2169,18 @@ Is this the first message in the conversation? {is_first_message}
         system_content = get_responder_block_citation_system_content(personality_context)
         if workspace_section:
             system_content = system_content + "\n\n" + workspace_section
+
+    project_context = ""
+    if state is not None:
+        project_context = get_bootstrap_context(
+            BootstrapScope(
+                user_id=state.get("user_id") or "anonymous",
+                business_id=state.get("business_id") or "",
+            ),
+            config,
+        )
+    if project_context:
+        system_content = system_content + "\n\n" + project_context
 
     # --- Mem0 memory injection (Phase 2) ---
     if getattr(config, "mem0_enabled", False):

@@ -398,12 +398,18 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
     # Create tools for agent
     from backend.llm.tools.document_retriever_tool import create_document_retrieval_tool
     from backend.llm.tools.chunk_retriever_tool import create_chunk_retrieval_tool
-    
+    from backend.llm.tools.workspace_file_tool import (
+        create_read_workspace_file_tool,
+        create_write_workspace_file_tool,
+    )
+
     retrieval_tools = [
         create_document_retrieval_tool(),
         create_chunk_retrieval_tool(),
+        create_read_workspace_file_tool(),
+        create_write_workspace_file_tool(),
     ]
-    
+
     # Add execution-aware tools node with retry policy for execution failures
     # NEW: ExecutionAwareToolNode wraps ToolNode to emit execution events
     execution_aware_tool_node = ExecutionAwareToolNode(tools=retrieval_tools)
@@ -583,6 +589,9 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
         intent = await classify_intent(state)
         if intent == "conversation":
             return "conversation"
+        if intent == "user_context":
+            logger.info("[GRAPH] user_context: routing to agent (USER.md read/write)")
+            return "user_context"
         # Document intent: check cache-first, then simple path, else full planner
         if state.get("use_cached_results") and state.get("execution_results"):
             logger.info("[GRAPH] document_cached: routing to responder (cache-first)")
@@ -597,12 +606,13 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
         after_context_manager,
         {
             "conversation": "conversation",
+            "user_context": "agent",
             "document_cached": "responder",
             "document_simple": "simple_plan",
             "document": "planner",
         }
     )
-    logger.debug("Conditional: context_manager -> [conversation|document_cached|document_simple|document]")
+    logger.debug("Conditional: context_manager -> [conversation|user_context|document_cached|document_simple|document]")
 
     # Conversation → END (single LLM call, no retrieval)
     builder.add_edge("conversation", END)

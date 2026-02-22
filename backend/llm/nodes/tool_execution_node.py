@@ -74,6 +74,9 @@ class ExecutionAwareToolNode:
                 elif name == "retrieve_chunks":
                     if business_id is not None:
                         args["business_id"] = business_id
+                elif name == "read_workspace_file" or name == "write_workspace_file":
+                    args["user_id"] = state.get("user_id") or "anonymous"
+                    args["business_id"] = state.get("business_id") or ""
                 injected_tool_calls.append({**tool_call, "args": args})
             # Build new last message with injected args (preserve message class and id)
             try:
@@ -108,6 +111,10 @@ class ExecutionAwareToolNode:
                     doc_ids = tool_args.get('document_ids', [])
                     query = tool_args.get('query', '')[:50]
                     description = f"Retrieved chunks from {len(doc_ids)} document(s) for '{query}{'...' if len(tool_args.get('query', '')) > 50 else ''}'"
+                elif tool_name == "read_workspace_file":
+                    description = "Read USER.md"
+                elif tool_name == "write_workspace_file":
+                    description = "Updated USER.md"
                 else:
                     description = f"Executing {tool_name}"
                 

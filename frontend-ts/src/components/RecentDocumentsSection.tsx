@@ -84,12 +84,13 @@ export const RecentDocumentsSection: React.FC<RecentDocumentsSectionProps> = ({
           pointerEvents: 'auto',
         }}
       >
-        {documents.map(doc => (
+        {documents.map((doc, index) => (
           <div key={doc.id} style={{ flexShrink: 0, width: cardWidth }}>
             <RecentDocumentCard
               document={doc}
               onClick={() => handleDocumentClick(doc)}
               compact={compact}
+              priority={index < 2}
             />
           </div>
         ))}
@@ -123,12 +124,13 @@ export const RecentDocumentsSection: React.FC<RecentDocumentsSectionProps> = ({
           overflowX: scrollable ? 'auto' : 'hidden',
         }}
       >
-        {documents.map(doc => (
+        {documents.map((doc, index) => (
           <div key={doc.id} style={{ flexShrink: 0, width: cardWidth }}>
             <RecentDocumentCard
               document={doc}
               onClick={() => handleDocumentClick(doc)}
               compact={compact}
+              priority={index < 2}
             />
           </div>
         ))}

@@ -24,6 +24,7 @@ from backend.llm.prompts.planner import (
     get_planner_followup_prompt,
     REFINE_HINT,
 )
+from backend.llm.bootstrap.loaders import BootstrapScope, get_bootstrap_context
 from backend.llm.utils.workspace_context import build_workspace_context, get_document_ids_for_property
 
 logger = logging.getLogger(__name__)
@@ -421,6 +422,15 @@ async def planner_node(state: MainWorkflowState, runnable_config=None) -> MainWo
         logger.warning("[PLANNER] build_workspace_context failed: %s", e)
     if workspace_section:
         planner_base = planner_base + "\n\n" + workspace_section
+    project_context = get_bootstrap_context(
+        BootstrapScope(
+            user_id=state.get("user_id") or "anonymous",
+            business_id=state.get("business_id") or "",
+        ),
+        config,
+    )
+    if project_context:
+        planner_base = planner_base + "\n\n" + project_context
     system_prompt = SystemMessage(content=planner_base)
 
     is_refine_format = _matches_any(user_query, REFINE_PATTERNS)

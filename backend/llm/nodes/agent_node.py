@@ -30,12 +30,17 @@ from backend.llm.prompts.agent import (
     get_agent_chip_user_prompt,
     get_agent_initial_prompt,
 )
+from backend.llm.bootstrap.loaders import BootstrapScope, get_bootstrap_context
 from backend.llm.utils.system_prompts import get_system_prompt
 from backend.llm.utils.workspace_context import build_workspace_context
 from backend.llm.utils.node_logging import log_node_perf
 from backend.llm.tools.document_retriever_tool import create_document_retrieval_tool
 from backend.llm.tools.planning_tool import plan_step
 from backend.llm.tools.citation_mapping import create_chunk_citation_tool
+from backend.llm.tools.workspace_file_tool import (
+    create_read_workspace_file_tool,
+    create_write_workspace_file_tool,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -331,6 +336,17 @@ The user has attached a **property** (e.g. a property pin or project). You must 
                     system_prompt = SystemMessage(
                         content=system_prompt.content + "\n\n" + workspace_section
                     )
+                project_context = get_bootstrap_context(
+                    BootstrapScope(
+                        user_id=state.get("user_id") or "anonymous",
+                        business_id=state.get("business_id") or "",
+                    ),
+                    config,
+                )
+                if project_context:
+                    system_prompt = SystemMessage(
+                        content=system_prompt.content + "\n\n" + project_context
+                    )
         except Exception as e:
             logger.warning("[AGENT_NODE] build_workspace_context failed: %s", e)
 
@@ -352,6 +368,33 @@ The user has attached a **property** (e.g. a property pin or project). You must 
                 content_preview = f"{len(msg.tool_calls)} tool call(s)"
             
             logger.info(f"  [{i}] {msg_type}: {content_preview}")
+
+        # Follow-up: assistant asked for content (e.g. USER.md); user's message is that content.
+        # Prepend turn context so the agent uses write_workspace_file instead of searching documents.
+        from backend.llm.utils.agent_turn_context import (
+            last_turn_was_request_for_user_content,
+            AGENT_TURN_CONTEXT_USER_REPLYING_WITH_CONTENT,
+        )
+        if last_turn_was_request_for_user_content(messages):
+            logger.info("[AGENT_NODE] Turn context: user replying with content (e.g. USER.md) -> prepend instruction")
+            first = messages[0]
+            existing_system_content = None
+            if hasattr(first, "__class__") and first.__class__.__name__ == "SystemMessage" and hasattr(first, "content"):
+                existing_system_content = first.content or ""
+            elif isinstance(first, dict) and (first.get("type") or first.get("__class__") or "").lower() in ("system", "systemmessage"):
+                existing_system_content = first.get("content") or ""
+            if existing_system_content is not None:
+                new_system = SystemMessage(
+                    content=AGENT_TURN_CONTEXT_USER_REPLYING_WITH_CONTENT + existing_system_content
+                )
+                messages = [new_system] + list(messages)[1:]
+            else:
+                # No system message at head; add one with turn context + full system prompt
+                system_prompt = get_system_prompt('analyze')
+                new_system = SystemMessage(
+                    content=AGENT_TURN_CONTEXT_USER_REPLYING_WITH_CONTENT + (system_prompt.content or "")
+                )
+                messages = [new_system] + list(messages)
     
     # Build tools list - include plan_step for visible intent sharing
     retrieval_tools = [
@@ -363,7 +406,12 @@ The user has attached a **property** (e.g. a property pin or project). You must 
     citation_tool = create_chunk_citation_tool()
     
     # Add plan_step as the first tool (optional, agent decides when to use it)
-    all_tools = [plan_step] + list(retrieval_tools) + [citation_tool]
+    all_tools = (
+        [plan_step]
+        + list(retrieval_tools)
+        + [citation_tool]
+        + [create_read_workspace_file_tool(), create_write_workspace_file_tool()]
+    )
     logger.info(f"[AGENT_NODE] Agent has {len(all_tools)} tools available (including plan_step and chunk citation tool)")
     
     # Create LLM with tools bound

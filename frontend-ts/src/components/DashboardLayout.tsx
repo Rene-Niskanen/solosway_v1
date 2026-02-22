@@ -10,6 +10,7 @@ import { ChatHistoryProvider, useChatHistory } from './ChatHistoryContext';
 import { ChatReturnNotification } from './ChatReturnNotification';
 import { backendApi } from '@/services/backendApi';
 import { preloadAtMentionCache } from '@/services/atMentionCache';
+import { warmupDashboardThumbnailsFromCache } from './RecentDocumentCard';
 import { FilingSidebarProvider, useFilingSidebar } from '../contexts/FilingSidebarContext';
 import { ChatPanelProvider, useChatPanel } from '../contexts/ChatPanelContext';
 import { ProjectsProvider } from '../contexts/ProjectsContext';
@@ -54,6 +55,11 @@ const DashboardLayoutContent = ({
   // Preload @ mention cache (properties + documents) so popover shows results instantly
   React.useEffect(() => {
     preloadAtMentionCache().catch(() => {});
+  }, []);
+
+  // Start loading document thumbnails from cache as soon as dashboard mounts (before ProjectsPage renders)
+  React.useEffect(() => {
+    warmupDashboardThumbnailsFromCache();
   }, []);
 
   // Load saved background on mount - check for custom uploaded background first
