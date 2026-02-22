@@ -94,6 +94,13 @@ const DashboardLayoutContent = ({
     };
   }, []);
 
+  // Open search modal when e.g. Cmd+K is pressed ("Choose project" uses openChooseProjectModal and ChooseProjectModal in MainContent)
+  React.useEffect(() => {
+    const handler = () => setSearchModalOpen(true);
+    window.addEventListener('openSearchModal', handler);
+    return () => window.removeEventListener('openSearchModal', handler);
+  }, []);
+
   // Get background image URL based on selected background
   // Returns null for default-background (which uses solid color instead)
   const getBackgroundImage = () => {

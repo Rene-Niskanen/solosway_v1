@@ -11,7 +11,7 @@ import { useChatPanel } from '../contexts/ChatPanelContext';
 import { CitationActionMenu } from './CitationActionMenu';
 import { useActiveChatState, useChatStateStore } from '../contexts/ChatStateStore';
 import type { CitationData, ChatMessage, ViewedCitation } from '../contexts/ChatStateStore';
-import { CHAT_PANEL_WIDTH } from './SideChatPanel';
+import { CHAT_PANEL_WIDTH } from './chatPanelConstants';
 
 // PDF.js for canvas-based PDF rendering
 import * as pdfjs from 'pdfjs-dist';

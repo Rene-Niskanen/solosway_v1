@@ -28,6 +28,8 @@ export type SearchModalItem =
 export interface SearchOrStartChatModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** When 'projects', open directly into the Projects list view (e.g. from "Choose project" button) */
+  initialView?: 'search' | 'projects';
   onNewChat: () => void;
   onNewChatWithQuery?: (query: string) => void;
   onChatSelect: (chatId: string) => void;
@@ -62,6 +64,7 @@ function formatRecentMeta(timestamp: string): string {
 export function SearchOrStartChatModal({
   open,
   onOpenChange,
+  initialView,
   onNewChat,
   onNewChatWithQuery,
   onChatSelect,
@@ -262,6 +265,14 @@ export function SearchOrStartChatModal({
     }
   }, [open]);
 
+  // When opening with initialView='projects', show the projects list immediately
+  React.useEffect(() => {
+    if (open && initialView === 'projects') {
+      setShowProjectsView(true);
+      setQuery("");
+    }
+  }, [open, initialView]);
+
   React.useEffect(() => {
     if (open) {
       const t = setTimeout(() => inputRef.current?.focus(), 50);
@@ -384,7 +395,7 @@ export function SearchOrStartChatModal({
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder={showProjectsView ? "Search projects" : showFilesView ? "Search files" : chatsAndProjectsOnly ? "Search chats and projects" : "Search or start a chat"}
-            className="flex-1 min-w-0 h-full bg-transparent text-sm pl-0 text-neutral-600 placeholder:text-neutral-400 placeholder:font-normal font-medium outline-none"
+            className="flex-1 min-w-0 h-full bg-transparent text-sm pl-0 text-neutral-600 placeholder:text-neutral-400 placeholder:font-light font-medium outline-none"
             aria-label="Search or start a chat"
           />
         </div>

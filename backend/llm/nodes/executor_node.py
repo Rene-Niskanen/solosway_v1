@@ -298,8 +298,9 @@ def resolve_step_references(step: ExecutionStep, execution_results: List[Dict[st
                         logger.warning(f"[RESOLVE] Skipping invalid document_id placeholder: {doc_id_ref[:50]}...")
         
         if resolved_ids:
-            resolved_step["document_ids"] = resolved_ids
-            logger.debug(f"[RESOLVE] Resolved document_ids: {len(resolved_ids)} IDs")
+            # Deduplicate while preserving order (e.g. from multiple <from_step_X> refs in 3-step similar-property flow)
+            resolved_step["document_ids"] = list(dict.fromkeys(resolved_ids))
+            logger.debug(f"[RESOLVE] Resolved document_ids: {len(resolved_step['document_ids'])} IDs")
         else:
             resolved_step["document_ids"] = None
             logger.warning(f"[RESOLVE] No document IDs resolved, setting to None")
@@ -461,14 +462,22 @@ async def executor_node(state: MainWorkflowState, runnable_config=None) -> MainW
         action = resolved_step["action"]
         
         if action == "retrieve_docs":
-            _doc_ids = state.get("document_ids")
-            _doc_ids = [str(d) for d in _doc_ids] if isinstance(_doc_ids, list) and _doc_ids else None
+            # When scope is "broad" (e.g. similar property / comparables), do not inject attachment scope
+            use_broad = (resolved_step.get("scope") or "").strip().lower() == "broad"
+            if use_broad:
+                _doc_ids = None
+                _property_id = None
+                logger.info("[EXECUTOR] retrieve_docs with scope=broad (no property/document scope)")
+            else:
+                _doc_ids = state.get("document_ids")
+                _doc_ids = [str(d) for d in _doc_ids] if isinstance(_doc_ids, list) and _doc_ids else None
+                _property_id = state.get("property_id")
             user_query = state.get("user_query") or ""
             query = _focus_for_document_search(user_query) or (resolved_step.get("query") or "").strip()
             result = retrieve_documents(
                 query=query,
                 business_id=business_id,
-                property_id=state.get("property_id"),
+                property_id=_property_id,
                 document_ids=_doc_ids,
                 user_query_for_entity=user_query or None,
             )

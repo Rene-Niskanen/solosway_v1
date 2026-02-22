@@ -173,6 +173,7 @@ Rules:
 - Prefer direct phrasing over formal filler.
 - Prefer active voice where natural.
 - Avoid over-explaining.
+- **Do not put a colon after a value or duration in the middle of a sentence.** Write "This period is for one year, and it is renewable" not "This period is for one year:" on one line and ", and it is renewable" on the next. Colons are only for standalone section headings (e.g. **Lease Start and End Dates:**); never after figures, dates, durations, or amounts in running prose—they break the sentence and formatting.
 
 """ + EMOJI_USAGE_RULES + """
 

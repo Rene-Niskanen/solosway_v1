@@ -4,6 +4,62 @@ Queries are grouped by document. Use for retrieval and chat testing.
 
 ---
 
+## Documents in database
+
+Actual list from Supabase (run `python scripts/list_document_filenames.py` to refresh).
+
+### Property / deal documents (have dedicated query sections below)
+
+| Document / entity | Filenames |
+|-------------------|-----------|
+| **Banda Lane** | `Offer_letter_for_Banda_Lane_Final-1.pdf`, `Letter_of_Offer_Chandni_Solenki_on_Banda_Lane.docx` |
+| **24 Rudthorpe Road** | `Offer_letter_for_24_Rudthorpe_Road_Final-1.pdf`, `24_Rudthorpe_Road_-_Inventory_22-07-2024_an9SoYL_1.pdf` |
+| **Koch Sales** | `Koch_Sales_Market_Appraisal_-_2023.pdf` |
+| **Knight Frank** | `Knight_Frank_Residential_Letting_Agreement_-_2024_-_Updated.pdf`, `Knight_Frank_Residential_Letting_Agreement_-_2024_-_March_24.pdf`, `Knight_Frank_Non-Exclusive_Agency_Sales_Agreement_-_2024_-_Mar24.pdf`, `Knight_Frank_Joint_Agency_Sales_Agreement_-_2024_-_Mar24.pdf` |
+| **Nzohe LR 1160 750** | `Fully_Signed_Lease_Agreement_Nzohe_LR_1160_750_28TH_FEB_2023.pdf` |
+| **Kenyajui / Espindola Mellifera** | `LEASE_AGREEMENT_BETWEEN_KENYAJUI__ESPINDOLA_MELLIFERA.pdf`, `LEASE_AGREEMENT_BETWEEN_KENYAJUI__ESPINDOLA_MELLIFERA.doc` |
+| **Highlands Berden Bishops Stortford** | `Highlands_Berden_Bishops_Stortford_CM23_1AB_-_Final_2.pdf` |
+| **Mbagathi Ridge No 10 Karen** | `Mbagathi_Ridge_No_10_Karen_Particulars.pdf` |
+| **Development property** | `valuation-of-development-property---first-edition.pdf`, `Valuation_of_development_property_ready_for_approvals.pdf` |
+
+### Other documents in database (no dedicated query section)
+
+- `VAL_T_-_GENEVA_AIRPORT_TRANSFER.pdf`
+- `EGYPT_AIR_KENYA.pdf`
+- `FTNEA2023001.pdf`
+- `Valuation_Report_Framework_2025.pdf`
+- `Red-Book-Global-Standards-incorporating-IVS.pdf`
+- `kenya-buying-guide-residential-10853.pdf`
+- `Fidelo_inspection_check_list.pdf`
+- `Boarding_Pass_Geneva_Updated.pdf`
+- `Merlin_House_Site_Visit_Photos.pdf`
+- `Stable_Coin_Bill_US_2025.pdf`
+- `End_of_Tenancy_check_list_-_WW_1.pdf`
+- `WINKWORTH_CONTRACTOR_LIST.pdf`
+- `startup_technical_guide_ai_agents_final.pdf`
+- `Responsible_use_of_AI_v3_consultation_final.pdf`
+
+### Fake / sample queries for other documents (test retrieval)
+
+Use these to check that the system can find and answer from the “other” docs.
+
+- **Geneva airport transfer:** What does the Geneva airport transfer document say about pickup time or cost? Where is the transfer to and from?
+- **Egypt Air Kenya:** What flight or route does the Egypt Air Kenya document cover? Is there a booking reference or date?
+- **FTNEA2023001:** What is document FTNEA2023001 about? Who issued it and when?
+- **Valuation Report Framework 2025:** What does the 2025 valuation report framework require or recommend? What sections or standards does it define?
+- **Red Book / IVS:** What are the Red Book or IVS global standards for valuation? What does the document say about methodology?
+- **Kenya buying guide residential:** What does the Kenya residential buying guide say about stamp duty or foreign buyers? What are the main steps for buying in Kenya?
+- **Fidelo inspection checklist:** What items are on the Fidelo inspection check list? Who uses it and when?
+- **Boarding pass Geneva:** What flight or date is on the Geneva boarding pass? Who is the passenger?
+- **Merlin House site visit:** What does the Merlin House site visit document show? What condition or features are mentioned?
+- **Stable Coin Bill US 2025:** What does the US 2025 stablecoin bill propose? Who is responsible for oversight?
+- **End of tenancy checklist WW:** What is on the Winkworth end of tenancy check list? What does the tenant need to do before handover?
+- **Winkworth contractor list:** What contractors are on the Winkworth list? What trades or services do they cover?
+- **Startup technical guide AI agents:** What does the startup technical guide say about building AI agents? What stack or architecture does it recommend?
+- **Responsible use of AI consultation:** What does the responsible use of AI consultation document recommend? What risks or principles does it mention?
+
+---
+
 ## Favourite queries
 
 - What is the offer value or price for Banda Lane?
@@ -228,6 +284,52 @@ Queries are grouped by document. Use for retrieval and chat testing.
 - What is the target or achievable value in the development property valuation?
 - What planning status or consent does the development property valuation assume?
 - What risks or caveats does the development property valuation mention?
+
+---
+
+## Queries targeting other documents (24 Rudthorpe Road, Highlands Berden, Kenyajui, Mbagathi Ridge, development)
+
+Use these to test retrieval and answers against documents other than Banda Lane, Koch Sales, Knight Frank and Nzohe.
+
+### 24 Rudthorpe Road
+- What evidence or comparables back up the 24 Rudthorpe Road sale price?
+- Is there a completion deadline in the 24 Rudthorpe Road paperwork?
+- What fee or commission does the 24 Rudthorpe Road sale involve?
+- When does the 24 Rudthorpe Road offer expire and who drafted it?
+- What fixtures and fittings are included at 24 Rudthorpe Road and what state are they in?
+- What yield or investment return is implied by the 24 Rudthorpe Road figures?
+
+### Highlands Berden Bishops Stortford (valuation)
+- What evidence or comparables back up the Highlands Berden valuation?
+- Is there an effective date or deadline in the Highlands Berden report?
+- What fee or basis does the Highlands Berden valuer use?
+- When was the Highlands Berden valuation produced and who drafted it?
+- What is the property address and tenure in the Highlands Berden paperwork?
+- What yield or investment return does the Highlands Berden valuation suggest?
+
+### Kenyajui / Espindola Mellifera (lease)
+- What evidence or guarantees back up the Kenyajui Espindola Mellifera lease?
+- Is there a break or completion deadline in the Kenyajui lease?
+- What fee, deposit or commission is mentioned in the Kenyajui Espindola Mellifera lease?
+- When does the Kenyajui lease start and end and who drafted it?
+- When does the Kenyajui Espindola Mellifera lease run until?
+- What yield, rent or investment return does the Kenyajui lease suggest?
+
+### Mbagathi Ridge No 10 Karen
+- What evidence or comparables support the Mbagathi Ridge No 10 Karen asking price?
+- Is there a deadline or listing period for Mbagathi Ridge No 10 Karen?
+- What fee or commission applies to a sale of Mbagathi Ridge No 10 Karen?
+- When was the Mbagathi Ridge Karen particulars drafted and by whom?
+- What are the key terms—freehold/leasehold, size, location—for Mbagathi Ridge No 10 Karen?
+- What yield or investment angle does the Mbagathi Ridge Karen marketing suggest?
+
+### Development property (valuation)
+- What evidence or comparables back up the development property valuation?
+- Is there a planning or completion deadline in the development valuation?
+- What fee or valuation basis does the development property report use?
+- When was the development property valuation produced and who drafted it?
+- What GDV or end value does the development property valuation suggest?
+- What yield or investment return does the development valuation suggest?
 
 ---
 

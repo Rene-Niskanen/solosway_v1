@@ -1619,29 +1619,14 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
         if (s.action_type !== 'analysing') return true;
         const msg = (s.message || '').trim();
         if (isPreparingResponseMessage(msg)) return true;
-        if (msg === 'Thinking') return true; // Keep "Thinking" step that replaces Analysing block
+        if (msg === 'Thinking') return true; // Keep "Thinking" step (shown after Analysing + reading)
         return false; // hide all other analysing steps (Analysing, Analysing N documents, etc.)
       });
     }
 
-    // When we have a "Thinking" step that replaces the Analysing + documents block (after chunk retrieval),
-    // remove the exploring step (if present) and its reading steps so only "Thinking" is shown.
-    // When showAllStepsInTrace, keep all steps (Analysing, Reading, Thinking, Generating response) in sequence.
-    if (!showAllStepsInTrace) {
-      const thinkingReplacesIdx = list.findIndex(
-        (s) => s.step === 'thinking_after_chunks' || (s.details as any)?.replaces_analysing === true
-      );
-      if (thinkingReplacesIdx >= 0) {
-        let endBlock = thinkingReplacesIdx - 1;
-        while (endBlock >= 0 && list[endBlock].action_type === 'reading') endBlock--;
-        const isAnalysingDocsExploring = (s: ReasoningStep) =>
-          s.action_type === 'exploring' && /^Analysing\s+\d+\s+documents?\s*:?/i.test((s.message || '').trim());
-        const removeFrom = endBlock >= 0 && isAnalysingDocsExploring(list[endBlock]) ? endBlock : endBlock + 1;
-        if (removeFrom <= thinkingReplacesIdx - 1) {
-          list = [...list.slice(0, removeFrom), list[thinkingReplacesIdx], ...list.slice(thinkingReplacesIdx + 1)];
-        }
-      }
-    }
+    // Previously we removed "Analysing N documents" + reading steps when a "Thinking" step replaced them,
+    // which made the sequence jump from Searching → Thinking → Generating response and hid the Analysing step.
+    // We now keep the full sequence: Searching → Analysing N documents → (reading) → Thinking → Generating response.
 
     // When "Generating response" is present, it replaces "Thinking" (show only one - the current phase)
     // When showAllStepsInTrace, show both Thinking and Generating response in sequence
@@ -1853,6 +1838,82 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
     }
     return items;
   }, [stepsForDisplay]);
+
+  // Single-step-at-a-time: show only the current phase (1=Planning, 2=Searching, 3=Analysing, 4=Thinking, 5=Generating response)
+  // When we have both Analysing and Thinking steps, show Analysing first for a minimum time so the user sees documents, then Thinking.
+  type Phase = 1 | 2 | 3 | 4 | 5;
+  const [phase3ShownAt, setPhase3ShownAt] = useState<number | null>(null);
+  const ANALYSING_MIN_MS = 2200; // Show "Analysing documents" at least this long before switching to Thinking
+
+  const currentPhaseAndItem = useMemo((): { phase: Phase; displayItem: DisplayItem | null; displayIdx: number } => {
+    if (!stepsForDisplay || stepsForDisplay.length === 0) {
+      return { phase: 1, displayItem: null, displayIdx: 0 };
+    }
+    const hasGenerating = stepsForDisplay.some(
+      (s) => s.step === 'generating_response' || (s.message || '').trim() === 'Generating response'
+    );
+    const hasThinking = stepsForDisplay.some(
+      (s) =>
+        s.step === 'thinking_after_chunks' ||
+        ((s.message || '').trim() === 'Thinking' && s.action_type === 'analysing')
+    );
+    const hasAnalysing =
+      stepsForDisplay.some(
+        (s) =>
+          s.action_type === 'exploring' &&
+          /^Analysing\s+\d+\s+documents?\s*:?/i.test((s.message || '').trim())
+      ) || stepsForDisplay.some((s) => s.action_type === 'reading');
+    const hasSearching = stepsForDisplay.some((s) => s.action_type === 'searching');
+
+    // When we have both Analysing and Thinking, show Analysing first for ANALYSING_MIN_MS, then Thinking
+    let phase: Phase = 1;
+    if (hasGenerating) phase = 5;
+    else if (hasThinking && (!hasAnalysing || (phase3ShownAt !== null && Date.now() - phase3ShownAt >= ANALYSING_MIN_MS)))
+      phase = 4;
+    else if (hasAnalysing) phase = 3;
+    else if (hasSearching) phase = 2;
+
+    if (phase === 1) {
+      return { phase: 1, displayItem: null, displayIdx: 0 };
+    }
+
+    const isGeneratingStep = (s: ReasoningStep) =>
+      s.step === 'generating_response' || (s.message || '').trim() === 'Generating response';
+    const isThinkingStep = (s: ReasoningStep) =>
+      s.step === 'thinking_after_chunks' ||
+      ((s.message || '').trim() === 'Thinking' && s.action_type === 'analysing');
+    const isAnalysingExploring = (s: ReasoningStep) =>
+      s.action_type === 'exploring' &&
+      /^Analysing\s+\d+\s+documents?\s*:?/i.test((s.message || '').trim());
+
+    for (let idx = 0; idx < displayItems.length; idx++) {
+      const item = displayItems[idx];
+      if (phase === 5 && item.kind === 'single' && isGeneratingStep(item.step)) {
+        return { phase: 5, displayItem: item, displayIdx: idx };
+      }
+      if (phase === 4 && item.kind === 'single' && isThinkingStep(item.step)) {
+        return { phase: 4, displayItem: item, displayIdx: idx };
+      }
+      if (phase === 3) {
+        if (item.kind === 'group') return { phase: 3, displayItem: item, displayIdx: idx };
+        if (item.kind === 'single' && (isAnalysingExploring(item.step) || item.step.action_type === 'reading')) {
+          return { phase: 3, displayItem: item, displayIdx: idx };
+        }
+      }
+      if (phase === 2 && item.kind === 'single' && item.step.action_type === 'searching') {
+        return { phase: 2, displayItem: item, displayIdx: idx };
+      }
+    }
+    return { phase: 1, displayItem: null, displayIdx: 0 };
+  }, [stepsForDisplay, displayItems, phase3ShownAt]);
+
+  // Record when we first show Analysing (phase 3) so we keep it visible for ANALYSING_MIN_MS before switching to Thinking
+  useEffect(() => {
+    if (!stepsForDisplay || stepsForDisplay.length === 0) setPhase3ShownAt(null);
+  }, [stepsForDisplay]);
+  useEffect(() => {
+    if (currentPhaseAndItem.phase === 3 && phase3ShownAt === null) setPhase3ShownAt(Date.now());
+  }, [currentPhaseAndItem.phase, phase3ShownAt]);
 
   const [documentsDropdownStepKey, setDocumentsDropdownStepKey] = useState<string | null>(null);
   
@@ -2119,19 +2180,39 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
       contain: 'layout style',
       minHeight: '1px' // Prevent collapse
     }}>
-      {/* Steps stacked vertically - always visible */}
-      {isLoading && animatedSteps.length > 0 ? (
+      {/* Single step at a time when loading: (1) Planning (2) Searching (3) Analysing (4) Thinking (5) Generating response */}
+      {isLoading && (currentPhaseAndItem.phase === 1 || currentPhaseAndItem.displayItem) ? (
         <AnimatePresence mode="wait">
-          {displayItems.map((displayItem, displayIdx) => {
-            const isLastDisplayItem = displayIdx === displayItems.length - 1;
-            const marginBottom = isLastDisplayItem ? '0' : '1px';
+          {currentPhaseAndItem.phase === 1 && !currentPhaseAndItem.displayItem ? (
+            <motion.div
+              key="phase-1-planning"
+              initial={skipAnimations ? { opacity: 1 } : { opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0, transition: { duration: 0.1 } }}
+              transition={{ duration: 0.15, ease: [0.16, 1, 0.3, 1] }}
+              style={{
+                fontSize: '13.1px',
+                color: DETAIL_COLOR,
+                padding: '0',
+                lineHeight: 1.35,
+                overflow: 'visible',
+                position: 'relative',
+                contain: 'layout style',
+              }}
+            >
+              <PlanningIndicator />
+            </motion.div>
+          ) : currentPhaseAndItem.displayItem ? (() => {
+            const displayItem = currentPhaseAndItem.displayItem;
+            const animIdx = displayItem.kind === 'group' ? displayItem.exploringStepIndex : displayItem.stepIndex;
+            const anim = animatedSteps[animIdx];
+            if (!anim) return null;
 
             if (displayItem.kind === 'group') {
-              const anim = animatedSteps[displayItem.exploringStepIndex];
               const groupKey = anim.stepKey + '-group';
               return (
                 <motion.div
-                  key={groupKey}
+                  key={`phase-${currentPhaseAndItem.phase}`}
                   initial={skipAnimations ? { opacity: 1, y: 0, scale: 1 } : { opacity: 0, y: 2, scale: 0.98 }}
                   animate={{ opacity: 1, y: 0, scale: 1 }}
                   exit={{ opacity: 0, transition: { duration: 0.1 } }}
@@ -2143,7 +2224,6 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
                     lineHeight: 1.35,
                     overflow: 'visible',
                     position: 'relative',
-                    marginBottom,
                     contain: 'layout style',
                   }}
                 >
@@ -2172,12 +2252,10 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
               );
             }
 
-            const anim = animatedSteps[displayItem.stepIndex];
-            const { step, stepKey: finalStepKey, delay: stepDelay, readingIndex: currentReadingIndex, isLastReadingStep, stepIndex: idx } = anim;
-
+            const { step, delay: stepDelay, readingIndex: currentReadingIndex, isLastReadingStep, stepIndex: idx } = anim;
             return (
               <motion.div
-                key={finalStepKey}
+                key={`phase-${currentPhaseAndItem.phase}`}
                 initial={skipAnimations ? { opacity: 1, y: 0, scale: 1 } : { opacity: 0, y: 2, scale: 0.98 }}
                 animate={{ opacity: 1, y: 0, scale: 1 }}
                 exit={{ opacity: 0, transition: { duration: 0.1 } }}
@@ -2189,7 +2267,6 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
                   lineHeight: 1.35,
                   overflow: 'visible',
                   position: 'relative',
-                  marginBottom,
                   contain: 'layout style',
                 }}
               >
@@ -2210,10 +2287,10 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
                 />
               </motion.div>
             );
-          })}
+          })() : null}
         </AnimatePresence>
       ) : (
-        // When not loading (trace mode), render display items (groups exploring + reading into dropdown)
+        // When not loading (trace mode), render all steps
         <div key="reasoning-steps-static">
           {displayItems.map((displayItem, displayIdx) => {
             const isLastDisplayItem = displayIdx === displayItems.length - 1;

@@ -5,9 +5,10 @@ import { useMemo } from "react";
 import { createPortal, flushSync } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { generateAnimatePresenceKey, generateConditionalKey, generateUniqueKey } from '../utils/keyGenerator';
-import { ChevronLeft, ChevronRight, ChevronDown, ChevronUp, ArrowUp, Mic, Map, Globe, X, SquareDashedMousePointer, Scan, Fullscreen, PanelLeftOpen, PanelRightClose, PictureInPicture2, Trash2, CreditCard, MoveDiagonal, Square, Files, Image as ImageIcon, File as FileIcon, FileCheck, Minimize, Minimize2, Workflow, Home, Brain, AudioLines, MessageCircle, MessageCircleDashed, Copy, Search, MessageSquare, Pencil, Check, Highlighter, SlidersHorizontal, Book, BookOpen, Download, ThumbsUp, ThumbsDown, Link2, Star, FolderPlus, Undo2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, ChevronDown, ChevronUp, ArrowUp, Mic, Map, Globe, X, SquareDashedMousePointer, Scan, Fullscreen, PanelLeftOpen, PanelRightClose, PictureInPicture2, Trash2, CreditCard, MoveDiagonal, Square, Files, Image as ImageIcon, File as FileIcon, FileText, FileCheck, Minimize, Minimize2, Workflow, Home, Brain, AudioLines, MessageCircle, MessageCircleDashed, Copy, Search, MessageSquare, Pencil, Check, Highlighter, SlidersHorizontal, Book, BookOpen, Download, ThumbsUp, ThumbsDown, Link2, Star, FolderPlus, FolderOpen, Undo2 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { FileAttachment, FileAttachmentData } from './FileAttachment';
+import { PropertyPillChip } from './PropertyPillChip';
 import { PropertyAttachmentData } from './PropertyAttachment';
 import { AtMentionChip } from './AtMentionChip';
 import { toast } from "@/hooks/use-toast";
@@ -52,7 +53,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { getFilteredAtMentionItems, preloadAtMentionCache } from '@/services/atMentionCache';
 import { SegmentInput, type SegmentInputHandle } from './SegmentInput';
 import { useSegmentInput, buildInitialSegments } from '@/hooks/useSegmentInput';
-import { isTextSegment, isChipSegment, contentSegmentsToLinkedQuery, segmentsToLinkedQuery, type QueryContentSegment, type ChipSegment } from '@/types/segmentInput';
+import { isTextSegment, isChipSegment, contentSegmentsToLinkedQuery, segmentsToLinkedQuery, type QueryContentSegment, type ChipSegment, type TextSegment } from '@/types/segmentInput';
 import { CitationClickPanel, computeCitationPreviewTransform, CitationPagePreviewContent, type CachedPageImage } from './CitationClickPanel';
 import { useFeedbackModal } from '../contexts/FeedbackModalContext';
 import { useCitationExportOptional } from '../contexts/CitationExportContext';
@@ -60,6 +61,7 @@ import { buildDocxMarkdownWithCitationImages, cropPageImageToBbox } from '../uti
 import { convertMarkdownToDocx, downloadDocx } from '@mohtasham/md-to-docx';
 import { playCompletionSound } from '../utils/playCompletionSound';
 import { INPUT_BAR_SPACE_BELOW_PANEL, CHAT_INPUT_MAX_HEIGHT_PX } from '@/utils/inputBarPosition';
+import { CHAT_PANEL_WIDTH } from './chatPanelConstants';
 
 /** Strip HTML/SVG tags from query string so submitted text never includes e.g. <svg /> from icons. */
 function stripHtmlFromQuery(s: string): string {
@@ -111,20 +113,8 @@ function getSourcesFromReadingStepsOrCitations(message: { reasoningSteps?: Reaso
   return getUniqueSourcesFromCitations(message.citations);
 }
 
-// ============================================================================
-// CHAT PANEL WIDTH CONSTANTS
-// Single source of truth for all width values used in chat panel calculations
-// ============================================================================
-export const CHAT_PANEL_WIDTH = {
-  /** Default collapsed width (px) */
-  COLLAPSED: 382.5,
-  /** Expanded width as viewport percentage */
-  EXPANDED_VW: 42.5,
-  /** Minimum width during navigation tasks (px) */
-  NAV_MIN: 380,
-  /** Minimum width for document preview when open (px) - matches chat collapsed width */
-  DOC_PREVIEW_MIN: 380,
-} as const;
+// Re-export for consumers that still import from SideChatPanel
+export { CHAT_PANEL_WIDTH };
 
 /** Width of the toggle + resize rail on the left edge of the agent sidebar (ChatPanel). Must match MainContent AGENT_TOGGLE_RAIL_WIDTH. */
 const AGENT_SIDEBAR_RAIL_WIDTH = 12;
@@ -190,10 +180,13 @@ export function calculateChatPanelWidth(params: WidthCalculationParams): WidthCa
   const shouldUse50Percent = isDocumentPreviewOpen || isPropertyDetailsOpen;
 
   // PRIORITY 1: User has manually resized the panel (only when agent sidebar is closed; when open, one sticky boundary)
+  // Clamp so projects (left) side never goes below PROJECTS_MIN
   if (draggedWidth !== null && !isChatPanelOpen) {
+    const maxChatFromProjectsMin = availableWidth - CHAT_PANEL_WIDTH.PROJECTS_MIN;
+    const clampedWidth = Math.min(draggedWidth, maxChatFromProjectsMin);
     return {
-      widthPx: draggedWidth,
-      widthCss: `${draggedWidth}px`,
+      widthPx: clampedWidth,
+      widthCss: `${clampedWidth}px`,
     };
   }
 
@@ -1516,6 +1509,11 @@ const StreamingResponseText: React.FC<{
     return m ? m[1]! : null;
   };
 
+  // Sentinel so citation highlight only wraps text in the same block (paragraph/heading) as the citation, not previous blocks like titles.
+  const BLOCK_BOUNDARY = Symbol('BLOCK_BOUNDARY');
+  const isBlockTag = (tag: unknown): boolean =>
+    tag === 'p' || tag === 'div' || tag === 'h1' || tag === 'h2' || tag === 'h3' || tag === 'h4' || tag === 'h5' || tag === 'h6' || tag === 'li' || tag === 'blockquote';
+
   // Citations to highlight in blue: "viewed in document" and the one selected in the citation panel (so user sees which text the citation refers to)
   const blueCitationNumbers = React.useMemo(() => {
     const set = new Set<string>();
@@ -1597,8 +1595,10 @@ const StreamingResponseText: React.FC<{
   // so we can treat the full run before each citation as "cited text" for orange highlight.
   // Recurse into element children so citations inside e.g. <li><p>...</p></li> are found (for callout placement).
   // For strong/em, explode by citation so placeholders are siblings and the full sentence gets the highlight.
-  const flattenSegments = (nodes: React.ReactNode): (string | React.ReactElement)[] => {
-    const out: (string | React.ReactElement)[] = [];
+  // After each block-level element (p, div, h1–h6, li, blockquote) we push BLOCK_BOUNDARY so the highlight
+  // only wraps text in the same block as the citation, not previous blocks (e.g. titles).
+  const flattenSegments = (nodes: React.ReactNode): (string | React.ReactElement | symbol)[] => {
+    const out: (string | React.ReactElement | symbol)[] = [];
     React.Children.forEach(nodes, (child) => {
       if (typeof child === 'string') {
         child.split(citationPlaceholderRe).forEach((part) => out.push(part));
@@ -1610,11 +1610,16 @@ const StreamingResponseText: React.FC<{
         const preserveInline = isIntrinsicStrongOrEm || isCustomComponent;
         if (childChildren !== undefined && !preserveInline) {
           out.push(...flattenSegments(childChildren));
+          if (isBlockTag(tag)) out.push(BLOCK_BOUNDARY);
         } else if (isIntrinsicStrongOrEm && (tag === 'strong' || tag === 'em')) {
           // So the full run before the citation (e.g. whole sentence) gets the white highlight, not just the bold phrase
           out.push(...explodeInlineByCitation(child, tag as 'strong' | 'em'));
         } else {
           out.push(child);
+          // Don't pull a title-like heading (e.g. "Offer Expiration The offer for:") into the same highlight as the following paragraph
+          if (tag === 'strong' && childChildren !== undefined && strongLooksLikeTitle(flattenStrongChildrenToText(childChildren))) {
+            out.push(BLOCK_BOUNDARY);
+          }
         }
       }
     });
@@ -1623,7 +1628,7 @@ const StreamingResponseText: React.FC<{
 
   // Process flattened segments: wrap the run before each citation in blue (viewed in doc) or orange (citation-snippet chip).
   // When highlighted, the citation number is included inside the white container so it appears inside the box.
-  const processFlattenedWithCitations = (segments: (string | React.ReactElement)[], keyPrefix: string): React.ReactNode[] => {
+  const processFlattenedWithCitations = (segments: (string | React.ReactElement | symbol)[], keyPrefix: string): React.ReactNode[] => {
     const result: React.ReactNode[] = [];
     let pending: (string | React.ReactElement)[] = [];
     let segIndex = 0;
@@ -1684,6 +1689,10 @@ const StreamingResponseText: React.FC<{
       return inHighlight && citationNode != null;
     };
     segments.forEach((seg, i) => {
+      if (seg === BLOCK_BOUNDARY) {
+        flushPending(null, 'boundary', null);
+        return;
+      }
       if (typeof seg === 'string' && seg.startsWith('%%CITATION_')) {
         const num = citationNumFromPlaceholder(seg);
         if (num != null && (rejectedCitationNumbers?.has(num) ?? false)) {
@@ -1695,7 +1704,7 @@ const StreamingResponseText: React.FC<{
           if (!consumed && citationNode != null) result.push(<React.Fragment key={`${keyPrefix}-cit-${i}`}>{citationNode}</React.Fragment>);
         }
       } else {
-        pending.push(seg);
+        pending.push(seg as string | React.ReactElement);
       }
     });
     flushPending(null, 'end', null);
@@ -1774,6 +1783,38 @@ const StreamingResponseText: React.FC<{
   const processChildrenWithCitationsFlattened = (nodes: React.ReactNode, keyPrefix: string): React.ReactNode => {
     const segments = flattenSegments(nodes);
     return processFlattenedWithCitations(segments, keyPrefix);
+  };
+
+  // Flatten strong/bold children to plain text (for title heuristic: avoid treating dates as section titles).
+  const flattenStrongChildrenToText = (nodes: React.ReactNode): string => {
+    let out = '';
+    React.Children.forEach(nodes, (child) => {
+      if (typeof child === 'string') out += child;
+      else if (React.isValidElement(child) && (child.props as { children?: React.ReactNode })?.children !== undefined)
+        out += flattenStrongChildrenToText((child.props as { children: React.ReactNode }).children);
+    });
+    return out.replace(/\s+/g, ' ').trim();
+  };
+  // True if bold text looks like a section title (e.g. "Commission Fee", "Payment Terms"), not inline emphasis (e.g. "3%:", "10% - 30%:", "Kshs. 500,000,000").
+  const strongLooksLikeTitle = (text: string): boolean => {
+    if (!text || text.length > 45) return false;
+    // Dates: ordinal + month + year, or year, or numeric date
+    if (/\d{1,2}(st|nd|rd|th)\s+(january|february|march|april|may|june|july|august|september|october|november|december)/i.test(text)) return false;
+    if (/\b(19|20)\d{2}\b/.test(text)) return false; // 4-digit year
+    if (/^\d{1,4}[\/\-\.]\d{1,4}([\/\-\.]\d{1,4})?$/.test(text)) return false; // e.g. 20/03/2023
+    // Percentages or number ranges used as inline emphasis (e.g. "3%:", "10% - 30%:")
+    if (/%/.test(text)) return false;
+    // Sentence fragment or clause (e.g. "3% of the total sale price of the property plus applicable VAT thereon.")
+    if (text.trimEnd().endsWith('.')) return false;
+    // Starts with digit (e.g. "3%:" or "10% - 30%:")
+    if (/^\d/.test(text.trim())) return false;
+    // Clause-like phrase (e.g. "X of the Y" inside a sentence)
+    if (/\bof the\b/i.test(text)) return false;
+    // Monetary amounts / numbers: currency symbol (£ $ €) or abbrev (e.g. Kshs., USD, GBP) or predominantly digits/commas — inline emphasis, not a title
+    if (/^[£$€]\s*[\d,.\s]+$/.test(text.trim())) return false; // e.g. £1,950,000
+    if (/^(?:Kshs\.?|USD|GBP|EUR|KES|etc\.?)\s*[\d,.\s]+$/i.test(text.trim())) return false;
+    if (/^[\d,\s.]+$/.test(text.replace(/\s/g, ''))) return false; // e.g. 500,000,000
+    return true;
   };
 
   // Wrap every 2-word run in motion.span with 0→1 blur reveal (blurred to sharp) so each streaming block appears with a smooth blur reveal.
@@ -1960,13 +2001,14 @@ const StreamingResponseText: React.FC<{
           {(!isOnlyCitationExcerpt || shouldShowExcerptThisTime) && (
             <p style={{
               margin: '0 0 17.5px 0',
+              padding: 0,
               textAlign: 'left',
-              lineHeight: '1.7',
+              lineHeight: 0,
               wordWrap: 'break-word',
               overflowWrap: 'break-word',
               wordBreak: 'break-word',
               ...(showBar ? citationLineBarBlockStyle : {}),
-            }}>{showBar && <span aria-hidden style={citationLineBarInlineStyle} />}{processChildrenWithCitationsFlattened(children ?? null, 'p')}</p>
+            }}><span style={{ display: 'block', lineHeight: '1.7' }}>{showBar && <span aria-hidden style={citationLineBarInlineStyle} />}{processChildrenWithCitationsFlattened(children ?? null, 'p')}</span></p>
           )}
           {showCitationPreviewBar && showInResponseCitationCallouts && !citationBarMode && citationNumbers.filter(showCalloutForNum).map((num, i) => (
             <div key={`callout-p-${i}-${num}`} style={{ width: '100%', maxWidth: '100%', minWidth: 0, boxSizing: 'border-box' }}>
@@ -2097,9 +2139,15 @@ const StreamingResponseText: React.FC<{
       );
     },
     strong: ({ children }: { children?: React.ReactNode }) => {
+      const strongText = flattenStrongChildrenToText(children ?? null);
+      const isTitle = strongLooksLikeTitle(strongText);
+      const hasColon = strongText.trimEnd().endsWith(':');
+      const titleClass = isTitle
+        ? (hasColon ? 'response-strong response-strong-title response-strong-title-has-colon' : 'response-strong response-strong-title')
+        : 'response-strong';
       const boldContent = (
         <strong
-          className="response-strong"
+          className={titleClass}
           style={{
             wordWrap: 'break-word',
             overflowWrap: 'break-word',
@@ -2220,13 +2268,14 @@ const StreamingResponseText: React.FC<{
           {(!isOnlyCitationExcerpt || shouldShowExcerptThisTime) && (
             <p style={{
               margin: '0 0 17.5px 0',
+              padding: 0,
               textAlign: 'left',
-              lineHeight: '1.7',
+              lineHeight: 0,
               wordWrap: 'break-word',
               overflowWrap: 'break-word',
               wordBreak: 'break-word',
               ...(showBar ? citationLineBarBlockStyle : {}),
-            }}>{showBar && <span aria-hidden style={citationLineBarInlineStyle} />}{inner}</p>
+            }}><span style={{ display: 'block', lineHeight: '1.7' }}>{showBar && <span aria-hidden style={citationLineBarInlineStyle} />}{inner}</span></p>
           )}
           {showCitationPreviewBar && showInResponseCitationCallouts && !citationBarMode && citationNumbers.filter(showCalloutForNum).map((num, i) => (
             <div key={`callout-p-${i}-${num}`} style={{ width: '100%', maxWidth: '100%', minWidth: 0, boxSizing: 'border-box' }}>
@@ -2416,15 +2465,29 @@ const StreamingResponseText: React.FC<{
           margin-top: 4.4px !important;
           margin-bottom: 4.4px !important;
         }
-        /* Default for all strong (list labels, inline bold) */
+        /* Single size for all bold (inline and section titles); no larger size for first strong */
         .streaming-response-text .response-strong,
         .streaming-response-text strong {
           font-size: 1.08em !important;
           font-weight: 600 !important;
         }
-        /* Section title: first strong in first paragraph (e.g. "Inventory Overview") – larger */
-        .streaming-response-text > p:first-of-type .response-strong:first-of-type {
-          font-size: 1.35em !important;
+        /* Section-title strong (e.g. "Offer Expiration", "Drafting Firm") – on its own line; colon added in JS when not already present */
+        .streaming-response-text p > .response-strong-title:first-child,
+        .streaming-response-text p > span:first-child + .response-strong-title,
+        .streaming-response-text p > span:first-child + span .response-strong-title:first-child,
+        .streaming-response-text p span > .response-strong-title {
+          display: block !important;
+          margin-bottom: 0.2em;
+        }
+        .streaming-response-text p > .response-strong-title:first-child:not(.response-strong-title-has-colon)::after,
+        .streaming-response-text p > span:first-child + .response-strong-title:not(.response-strong-title-has-colon)::after,
+        .streaming-response-text p > span:first-child + span .response-strong-title:first-child:not(.response-strong-title-has-colon)::after,
+        .streaming-response-text p span > .response-strong-title:not(.response-strong-title-has-colon)::after {
+          content: ':';
+        }
+        /* Paragraph that is only a section title (e.g. "Assumptions:") – minimal gap so it doesn't stack with the strong's margin and next p's margin */
+        .streaming-response-text p:has(> span > .response-strong-title:only-child) {
+          margin-bottom: 0 !important;
         }
         /* Headings inside list items must not use huge title sizes – treat as list-item labels */
         .streaming-response-text li h1,
@@ -2448,6 +2511,21 @@ const StreamingResponseText: React.FC<{
         }
         .cited-highlight-formatting em {
           font-style: italic !important;
+        }
+        /* Inside cited text, treat title-style strong as regular bold (no block, no colon, no larger font). Specificity must match .streaming-response-text p span > .response-strong-title (0,3,2) so this wins. */
+        .streaming-response-text p span.cited-highlight-formatting .response-strong-title,
+        .streaming-response-text p span.cited-highlight-formatting .response-strong-title-has-colon,
+        .streaming-response-text p [data-cited-text-block] .response-strong-title,
+        .streaming-response-text p [data-cited-text-block] .response-strong-title-has-colon {
+          display: inline !important;
+          font-size: inherit !important;
+          margin-bottom: 0 !important;
+        }
+        .streaming-response-text p span.cited-highlight-formatting .response-strong-title::after,
+        .streaming-response-text p span.cited-highlight-formatting .response-strong-title-has-colon::after,
+        .streaming-response-text p [data-cited-text-block] .response-strong-title::after,
+        .streaming-response-text p [data-cited-text-block] .response-strong-title-has-colon::after {
+          content: none !important;
         }
         /* Keep highlight continuous: bold/italic and raw markdown (e.g. ] or **) must not interrupt the background */
         .cited-highlight-formatting strong,
@@ -3035,7 +3113,7 @@ const CitationLink: React.FC<{
           fontSize: '11px',
           fontWeight: 500,
           fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-          borderRadius: 4,
+          borderRadius: 6,
           border: '1px solid #E5E7EB',
           cursor: 'pointer',
           verticalAlign: 'middle',
@@ -3389,7 +3467,7 @@ const CitationCallout: React.FC<{
           minWidth: 0,
           boxSizing: 'border-box',
           marginTop: '8.8px',
-          marginBottom: '30px',
+          marginBottom: '12px',
           borderRadius: 6,
           overflow: 'hidden',
           border: '1px solid #e5e7eb',
@@ -4004,7 +4082,7 @@ const CitationCallout: React.FC<{
                       el.style.backgroundColor = 'transparent';
                     }}
                   >
-                    <ChevronDown size={18} strokeWidth={2.5} />
+                    <ChevronDown size={18} strokeWidth={1.25} />
                   </button>
                 )}
               </div>
@@ -4040,7 +4118,7 @@ const CitationCallout: React.FC<{
         minWidth: 0,
         boxSizing: 'border-box',
         marginTop: '8.8px',
-        marginBottom: '30px',
+        marginBottom: '12px',
         padding: '13.1px 15.2px',
         backgroundColor: 'transparent',
         border: 'none',
@@ -4538,22 +4616,61 @@ const QueryAttachment: React.FC<{ attachment: FileAttachmentData }> = ({ attachm
     );
   }
   
-  // For non-image files, show file name with icon
+  // For non-image files, match FileAttachment composer style: file-type icon + name + type label
+  const isPDF = attachment.type === 'application/pdf' || (attachment.name && attachment.name.toLowerCase().endsWith('.pdf'));
+  const isDOCX = attachment.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
+    attachment.type === 'application/msword' ||
+    (attachment.name && (attachment.name.toLowerCase().endsWith('.docx') || attachment.name.toLowerCase().endsWith('.doc')));
+  const getFileTypeLabel = (type: string): string => {
+    if (type.includes('pdf')) return 'PDF';
+    if (type.includes('word') || type.includes('document')) return 'DOC';
+    if (type.includes('excel') || type.includes('spreadsheet')) return 'XLS';
+    if (type.includes('image')) return 'IMG';
+    if (type.includes('text')) return 'TXT';
+    return 'FILE';
+  };
+  const formatFileName = (name: string): string => {
+    if (name.length > 24) {
+      const ext = name.split('.').pop();
+      const base = name.substring(0, name.lastIndexOf('.'));
+      return `${base.substring(0, 21)}...${ext ? '.' + ext : ''}`;
+    }
+    return name;
+  };
   return (
     <div
       style={{
-        fontSize: '14.2px',
-        color: '#6B7280',
-        backgroundColor: '#F3F4F6',
-        padding: '3.3px 8.8px',
-        borderRadius: '5.5px',
+        fontSize: '12px',
+        color: '#111',
+        backgroundColor: '#fff',
+        border: '1px solid #E5E7EB',
+        padding: '4px 8px',
+        borderRadius: '6px',
         display: 'inline-flex',
         alignItems: 'center',
-        gap: '6.6px'
+        gap: '6px',
+        boxShadow: '0 1px 2px rgba(0,0,0,0.05)'
       }}
+      title={attachment.name}
     >
-      <span>📎</span>
-      <span>{attachment.name}</span>
+      {isDOCX ? (
+        <img src="/word.png" alt="Word" style={{ width: 18, height: 18, objectFit: 'contain', flexShrink: 0 }} />
+      ) : (
+        <div style={{
+          width: 18, height: 18, borderRadius: 4, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+          backgroundColor: isPDF ? '#dc2626' : '#6B7280'
+        }}>
+          <FileText style={{ width: 12, height: 12, color: '#fff' }} strokeWidth={2} />
+        </div>
+      )}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 0, minWidth: 0 }}>
+        <span style={{ fontWeight: 600, color: '#111', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {formatFileName(attachment.name)}
+        </span>
+        <span style={{ fontSize: '10px', color: '#6B7280' }}>
+          {getFileTypeLabel(attachment.type)}
+        </span>
+      </div>
     </div>
   );
 };
@@ -5424,6 +5541,8 @@ interface SideChatPanelProps {
   onSidebarToggle?: () => void; // Callback for toggling sidebar
   onOpenProperty?: (address: string | null, coordinates?: { lat: number; lng: number } | null, propertyId?: string | number, navigationOnly?: boolean) => void; // Callback for opening property card
   initialAttachedFiles?: FileAttachmentData[]; // Initial file attachments to restore
+  /** Called after initial attachments have been consumed (query sent) so parent can clear pending state and input clears. */
+  onInitialAttachmentsConsumed?: () => void;
   onChatWidthChange?: (width: number) => void; // Callback when chat panel width changes (for map resizing)
   isPropertyDetailsOpen?: boolean; // Whether PropertyDetailsPanel is currently open
   shouldExpand?: boolean; // Whether chat should be expanded (for Analyse mode)
@@ -5551,6 +5670,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   onSidebarToggle,
   onOpenProperty,
   initialAttachedFiles,
+  onInitialAttachmentsConsumed,
   onChatWidthChange,
   isPropertyDetailsOpen = false, // Default to false
   shouldExpand = false, // Default to false
@@ -6802,12 +6922,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       // Clamp to min/max bounds
       // If document preview is open, cap max width to leave room for it
       // Must account for: left gap (12px) + min doc preview width (380px) + right gap (12px) = 404px
+      // Also cap max so the projects (left) side never goes below PROJECTS_MIN
       const isDocPreviewOpen = !!resizeDocPreviewRef.current;
       const minWidth = CHAT_PANEL_WIDTH.COLLAPSED;
       const docPreviewTotalSpace = CHAT_PANEL_WIDTH.DOC_PREVIEW_MIN + 24; // min width + gaps
-      const maxWidth = isDocPreviewOpen 
-        ? availableWidth - docPreviewTotalSpace 
+      const maxWidthFromDocPreview = isDocPreviewOpen
+        ? availableWidth - docPreviewTotalSpace
         : availableWidth;
+      const maxWidthFromProjectsMin = availableWidth - CHAT_PANEL_WIDTH.PROJECTS_MIN;
+      const maxWidth = Math.min(maxWidthFromDocPreview, maxWidthFromProjectsMin);
       const targetWidth = Math.min(Math.max(cursorDistanceFromLeft, minWidth), maxWidth);
       
       // Apply the width immediately based on cursor position
@@ -6860,12 +6983,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     // Allow dragging to the edge of the screen (only account for sidebar width)
     // BUT if document preview is open, cap max width to leave room for document preview
     // Must account for: left gap (12px) + min doc preview width (380px) + right gap (12px) = 404px
+    // Also cap max so the projects (left) side never goes below PROJECTS_MIN
     const isDocPreviewOpen = !!legacyExpandedCardViewDoc;
     const baseMaxWidth = window.innerWidth - sidebarWidth;
     const docPreviewTotalSpace = CHAT_PANEL_WIDTH.DOC_PREVIEW_MIN + 24; // min width + gaps (12px left + 12px right)
-    const maxWidth = isDocPreviewOpen 
-      ? baseMaxWidth - docPreviewTotalSpace 
+    const maxWidthFromDocPreview = isDocPreviewOpen
+      ? baseMaxWidth - docPreviewTotalSpace
       : baseMaxWidth;
+    const maxWidthFromProjectsMin = baseMaxWidth - CHAT_PANEL_WIDTH.PROJECTS_MIN;
+    const maxWidth = Math.min(maxWidthFromDocPreview, maxWidthFromProjectsMin);
 
     // Find the document preview element for direct DOM manipulation
     // This ensures both panels resize together with zero lag
@@ -7753,12 +7879,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   } = usePropertySelection();
 
   const initialSegments = React.useMemo(
-    () =>
-      buildInitialSegments(
-        '',
-        propertyAttachments.map((a) => ({ id: a.id, label: a.address, payload: a.property })),
-        atMentionDocumentChips
-      ),
+    () => buildInitialSegments('', [], atMentionDocumentChips),
     []
   );
   const segmentInput = useSegmentInput({
@@ -7793,11 +7914,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     const applyChipAndOpen = () => {
       if (cancelled) return;
       setAtMentionDocumentChips((prev) => (prev.some((d) => d.id === chip.id) ? prev : [...prev, chip]));
-      // Chip + pre-arranged space(s) so the caret is not touching the chip
-      const props = propertyAttachments.map((a) => ({ id: a.id, label: a.address, payload: a.property }));
+      // Document chip only in segments; property chips shown in row above
       const spaceAfterChip = '  '; // two spaces so there's a clear gap before the caret
       const segmentsWithSpace = [
-        ...buildInitialSegments('', props, [chip]),
+        ...buildInitialSegments('', [], [chip]),
         { type: 'text' as const, value: spaceAfterChip },
       ];
       const cursorAtEnd = { segmentIndex: segmentsWithSpace.length - 1, offset: spaceAfterChip.length };
@@ -7885,7 +8005,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     return () => { cancelled = true; };
   }, [atMentionOpen, atAnchorIndex, segmentInput.segments]);
 
-  // Handle property selection
+  // Handle property selection (property shown in row above input, not in segments)
   const handlePropertySelect = React.useCallback((property: PropertyData) => {
     addPropertyAttachment(property);
     setShowPropertySearchPopup(false);
@@ -7893,10 +8013,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     setPropertySearchQuery("");
     const newInput = segmentInput.getPlainText().replace(/@property\s+/i, '').trim();
     setInputValue(newInput);
-    segmentInput.setSegments(
-      buildInitialSegments(newInput, propertyAttachments.map((a) => ({ id: a.id, label: a.address, payload: a.property })), atMentionDocumentChips)
-    );
-  }, [addPropertyAttachment, segmentInput, propertyAttachments, atMentionDocumentChips]);
+    segmentInput.setSegments(buildInitialSegments(newInput, [], atMentionDocumentChips));
+  }, [addPropertyAttachment, segmentInput, atMentionDocumentChips]);
   
   // Use chat history context
   const { addChatToHistory, getChatById, updateChatTitle, updateChatStatus, updateChatDescription, updateChatInHistory, chatHistory, saveChatState, removeChatFromHistory } = useChatHistory();
@@ -9075,8 +9193,13 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       });
     }
     
-    if (query && query.trim() && query !== lastProcessedQueryRef.current && !isProcessingQueryRef.current && !isActuallySwitchingChats && !alreadyProcessedForThisChat && !isRestoringDifferentChat) {
-      const queryText = query.trim();
+    // Allow processing when there is query text OR when there are attachments (e.g. user sent only a document from dashboard)
+    const hasQueryText = !!(query && query.trim());
+    const hasAttachments = (initialAttachedFiles?.length ?? 0) > 0 || attachedFiles.length > 0;
+    // When query is empty, lastProcessedQueryRef is init to '' so query !== lastProcessedQueryRef would be false; allow run when we have attachments
+    const queryIsNew = hasQueryText ? query !== lastProcessedQueryRef.current : (hasAttachments || query !== lastProcessedQueryRef.current);
+    if ((hasQueryText || hasAttachments) && queryIsNew && !isProcessingQueryRef.current && !isActuallySwitchingChats && !alreadyProcessedForThisChat && !isRestoringDifferentChat) {
+      const queryText = (query && query.trim()) ? query.trim() : '';
       
       // PLAN MODE: Intercept query and show plan viewer instead of normal flow
       if (isPlanModeRef.current) {
@@ -9473,6 +9596,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           return updated;
         });
         loadingReasoningStepsRef.current = []; // Reset so completion can use ref for full step list (incl. Summarising content)
+        
+        // Clear attachments from input so they don't persist after send (same as handleSubmit path)
+        setAttachedFiles([]);
+        attachedFilesRef.current = [];
+        onInitialAttachmentsConsumed?.();
         
         // Call LLM API to query documents (same logic as handleSubmit)
         (async () => {
@@ -11128,13 +11256,13 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       // Level 2 (all icons): ModeSelector(40) + Model(40) + Web(28) + Map(30) + Attach(26) + Voice(30) + gaps ≈ 220px
       // Level 3 (hide Voice): ModeSelector(40) + Model(40) + Web(28) + Map(30) + Attach(26) + gaps ≈ 180px
       
-      // Use effective button row width for thresholds
-      if (effectiveWidth < 200) {
+      // Use effective button row width for thresholds (generous "small" so we switch to icon-only before it feels cramped)
+      if (effectiveWidth < 320) {
         setButtonCollapseLevel(3); // Hide Voice, very compact
-      } else if (effectiveWidth < 280) {
+      } else if (effectiveWidth < 400) {
         setButtonCollapseLevel(2); // All buttons icon-only including Model/Mode
-      } else if (effectiveWidth < 380) {
-        setButtonCollapseLevel(1); // Map, Attach, Voice icons only
+      } else if (effectiveWidth < 500) {
+        setButtonCollapseLevel(1); // Map, Attach, Voice icons only; Files/sources and Choose project icon-only
       } else {
         setButtonCollapseLevel(0); // All labels shown
       }
@@ -12013,11 +12141,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               const restored = chat.savedState.inputValue;
               setInputValue(restored);
               segmentInput.setSegments(
-                buildInitialSegments(
-                  restored,
-                  propertyAttachments.map((a) => ({ id: a.id, label: a.address, payload: a.property })),
-                  atMentionDocumentChips
-                )
+                buildInitialSegments(restored, [], atMentionDocumentChips)
               );
             }
             if (chat.savedState.attachedFiles && chat.savedState.attachedFiles.length > 0) {
@@ -15595,9 +15719,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 >
                   <span>{getThoughtDurationLabel(message.reasoningSteps, message)}</span>
                   {expandedThoughtMessageIds.has(finalKey) ? (
-                    <ChevronUp style={{ width: '14px', height: '14px', flexShrink: 0 }} />
+                    <ChevronUp style={{ width: '12px', height: '12px', flexShrink: 0 }} />
                   ) : (
-                    <ChevronDown style={{ width: '14px', height: '14px', flexShrink: 0 }} />
+                    <ChevronDown style={{ width: '12px', height: '12px', flexShrink: 0 }} />
                   )}
                 </button>
                 {expandedThoughtMessageIds.has(finalKey) && (
@@ -15725,7 +15849,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '2px', border: 'none', background: 'none', cursor: 'pointer', color: copiedResponseId === finalKey ? '#10B981' : '#9CA3AF' }}
                 title={copiedResponseId === finalKey ? 'Copied!' : 'Copy'}
               >
-                {copiedResponseId === finalKey ? <Check size={18} /> : <Copy size={18} />}
+                {copiedResponseId === finalKey ? <Check size={14} /> : <Copy size={14} />}
               </button>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
@@ -15735,7 +15859,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '2px', border: 'none', background: 'none', cursor: 'pointer', color: '#9CA3AF' }}
                     title="Download"
                   >
-                    <Download size={18} />
+                    <Download size={14} />
                   </button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="start" sideOffset={4} onClick={(e) => e.stopPropagation()} style={{ width: '220px', borderRadius: '10px', overflow: 'hidden', padding: 0 }}>
@@ -15783,7 +15907,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     onMouseEnter={(e) => { (e.currentTarget as HTMLDivElement).style.background = '#f9fafb'; }}
                     onMouseLeave={(e) => { (e.currentTarget as HTMLDivElement).style.background = ''; }}
                   >
-                    <FileIcon size={18} style={{ flexShrink: 0, color: '#9ca3af' }} />
+                    <FileIcon size={14} style={{ flexShrink: 0, color: '#9ca3af' }} />
                     <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>Text file (.txt)</span>
                   </DropdownMenuItem>
                 </DropdownMenuContent>
@@ -15804,7 +15928,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 }}
                 title="Thumbs up"
               >
-                <ThumbsUp size={18} />
+                <ThumbsUp size={14} />
               </button>
               {!likedResponseIds.has(finalKey) && (
                 <button
@@ -15817,7 +15941,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   }}
                   title="Thumbs down"
                 >
-                  <ThumbsDown size={18} />
+                  <ThumbsDown size={14} />
                 </button>
               )}
               {sources.count > 0 && (
@@ -15833,9 +15957,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       color: '#374151', fontSize: '12px',
                     }}
                   >
-                    <Link2 size={14} style={{ flexShrink: 0, color: '#374151', background: 'none' }} />
+                    <Link2 size={12} style={{ flexShrink: 0, color: '#374151', background: 'none' }} />
                     <span style={{ background: 'none' }}>Sources</span>
-                    <ChevronDown size={18} style={{ flexShrink: 0, color: '#374151', transition: 'transform 0.15s ease', transform: isSourcesOpen ? 'rotate(180deg)' : 'rotate(0deg)', background: 'none' }} />
+                    <ChevronDown size={14} style={{ flexShrink: 0, color: '#374151', transition: 'transform 0.15s ease', transform: isSourcesOpen ? 'rotate(180deg)' : 'rotate(0deg)', background: 'none' }} />
                   </button>
                 </PopoverTrigger>
                 <PopoverContent className="p-0 bg-transparent border-0 shadow-none" align="start" sideOffset={4} style={{ width: '240px', borderRadius: '10px', zIndex: 1, background: 'transparent' }}>
@@ -15882,7 +16006,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             {isPDF ? (
                               <img src="/PDF.png" alt="PDF" style={{ width: 12, height: 12, flexShrink: 0, objectFit: 'contain' }} />
                             ) : (
-                              <Files size={18} style={{ flexShrink: 0, color: '#9ca3af' }} />
+                              <Files size={14} style={{ flexShrink: 0, color: '#9ca3af' }} />
                             )}
                             <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{truncatedName}</span>
                           </button>
@@ -16328,7 +16452,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 flex: 1,
               }}
             >
-            {/* Header - Fixed at top; when scrolled (showTopBlur) uses backdrop blur + chat tint so content underneath is frosted */}
+            {/* Header - Fixed at top; when scrolled (showTopBlur) uses backdrop blur + chat tint so content underneath is frosted. Slightly less top padding in new-chat so the button bar sits a bit higher and aligns with active chat. */}
             <div 
               className="pr-4 pl-6" 
               style={{ 
@@ -16340,7 +16464,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 zIndex: 10002,
                 flexShrink: 0,
                 pointerEvents: 'auto',
-                paddingTop: '15px',
+                paddingTop: '18px',
                 paddingBottom: '19px',
                 isolation: 'isolate'
               }}
@@ -16369,7 +16493,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 }}
               >
                 <div className="flex items-center space-x-2 min-w-0" data-view-dropdown-ignore>
-                  {/* View dropdown: Sidebar, Files, New chat, Fullscreen. Close sidebar only when big (full) sidebar is open, not when small/icons-only. */}
+                  {/* View dropdown: Sidebar, Files, New chat, Fullscreen. Close sidebar only when big (full) sidebar is open, not when small/icons-only. Same styling in all contexts so positioning matches fullscreen property vs map/search. */}
                   {isMainSidebarOpen && !isSidebarIconsOnly && (
                     <button
                       onClick={(e) => {
@@ -16378,24 +16502,22 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         setViewOptionsOpen(false);
                         if (onSidebarToggle) onSidebarToggle();
                       }}
-                      className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1.5' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150`}
+                      className={`flex items-center ${isPropertyDetailsOpen ? 'justify-center' : actualPanelWidth >= 750 ? 'gap-1.5' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150 cursor-pointer border-none`}
                       title="Close sidebar"
                       type="button"
                       style={{
-                        padding: actualPanelWidth >= 750 ? '7px 11px' : '6px',
+                        padding: isPropertyDetailsOpen ? '6px' : actualPanelWidth >= 750 ? '7px 11px' : '6px',
                         height: '32px',
                         minHeight: '32px',
-                        border: 'none',
                         position: 'relative',
                         zIndex: 10001,
                         pointerEvents: 'auto',
-                        cursor: 'pointer',
                         backgroundColor: 'rgba(0, 0, 0, 0.02)'
                       }}
                     >
-                      <PanelRightClose className="w-6 h-6 text-[#666] scale-x-[-1]" strokeWidth={2} />
-                      {actualPanelWidth >= 750 && (
-                        <span className="text-[13px] font-normal text-[#666]">Close</span>
+                      <PanelRightClose className="w-5 h-5 text-[#666] scale-x-[-1] flex-shrink-0" strokeWidth={1.25} />
+                      {!isPropertyDetailsOpen && actualPanelWidth >= 750 && (
+                        <span className="text-[13px] font-normal text-[#666] whitespace-nowrap">Close</span>
                       )}
                     </button>
                   )}
@@ -16423,7 +16545,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         backgroundColor: 'rgba(0, 0, 0, 0.02)'
                       }}
                     >
-                      <Minimize2 className="w-6 h-6 text-[#666]" strokeWidth={2} />
+                      <Minimize2 className="w-5 h-5 text-[#666]" strokeWidth={1.25} />
                       {actualPanelWidth >= 750 && (
                         <span className="text-[13px] font-normal text-[#666]">Minimise</span>
                       )}
@@ -16452,7 +16574,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         backgroundColor: 'rgba(0, 0, 0, 0.02)'
                       }}
                     >
-                      <MoveDiagonal className="w-6 h-6 text-[#666]" strokeWidth={2} />
+                      <MoveDiagonal className="w-5 h-5 text-[#666]" strokeWidth={1.25} />
                       {actualPanelWidth >= 750 && (
                         <span className="text-[13px] font-normal text-[#666]">Expand</span>
                       )}
@@ -16482,7 +16604,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           setViewOptionsOpen((prev) => !prev);
                         }}
                       >
-                        <PictureInPicture2 className="w-6 h-6 text-[#666] flex-shrink-0" strokeWidth={2} />
+                        <PictureInPicture2 className="w-6 h-6 text-[#666] flex-shrink-0" strokeWidth={1.25} />
                         {actualPanelWidth >= 750 && (
                           <span className="text-[13px] font-normal text-[#666]">{viewOptionsOpen ? 'Close' : 'View'}</span>
                         )}
@@ -16500,10 +16622,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           e.preventDefault();
                         }
                       }}
-                      className="min-w-[200px] w-auto rounded-lg border border-gray-200 bg-white p-3 shadow-md"
+                      className="min-w-[165px] w-auto rounded-md border border-gray-200 bg-white p-2 shadow-md"
                       onOpenAutoFocus={(e) => e.preventDefault()}
                     >
-                      <div className="flex flex-col gap-1">
+                      <div className="flex flex-col gap-0.5">
                         {!isMainSidebarOpen && (
                           <button
                             type="button"
@@ -16512,9 +16634,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               setViewOptionsOpen(false);
                               if (onSidebarToggle) onSidebarToggle();
                             }}
-                            className="flex items-center gap-2 w-full rounded-sm px-2 py-2 text-left hover:bg-[#f5f5f5] text-[12px] text-[#374151]"
+                            className="flex items-center gap-2 w-full rounded-sm px-2 py-2 text-left hover:bg-[#f5f5f5] text-[13px] font-normal text-[#374151]"
                           >
-                            <PanelLeftOpen className="w-6 h-6 text-[#666] flex-shrink-0 scale-x-[-1]" strokeWidth={2} />
+                            <PanelLeftOpen className="w-6 h-6 text-[#666] flex-shrink-0 scale-x-[-1]" strokeWidth={1.25} />
                             Sidebar
                           </button>
                         )}
@@ -16526,9 +16648,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               setViewOptionsOpen(false);
                               toggleFilingSidebar();
                             }}
-                            className="flex items-center gap-2 w-full rounded-sm px-2 py-2 text-left hover:bg-[#f5f5f5] text-[12px] text-[#374151]"
+                            className="flex items-center gap-2 w-full rounded-sm px-2 py-2 text-left hover:bg-[#f5f5f5] text-[13px] font-normal text-[#374151]"
                           >
-                            <Files className="w-6 h-6 text-[#666] flex-shrink-0" strokeWidth={2} />
+                            <Files className="w-6 h-6 text-[#666] flex-shrink-0" strokeWidth={1.25} />
                             Files
                           </button>
                         )}
@@ -16540,9 +16662,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               setViewOptionsOpen(false);
                               handleMinimiseChat();
                             }}
-                            className="flex items-center gap-2 w-full rounded-sm px-2 py-2 text-left hover:bg-[#f5f5f5] text-[12px] text-[#374151]"
+                            className="flex items-center gap-2 w-full rounded-sm px-2 py-2 text-left hover:bg-[#f5f5f5] text-[13px] font-normal text-[#374151]"
                           >
-                            <Minimize2 className="w-6 h-6 text-[#666] flex-shrink-0" strokeWidth={2} />
+                            <Minimize2 className="w-6 h-6 text-[#666] flex-shrink-0" strokeWidth={1.25} />
                             Minimise
                           </button>
                         ) : (
@@ -16553,9 +16675,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               setViewOptionsOpen(false);
                               handleExpandChat();
                             }}
-                            className="flex items-center gap-2 w-full rounded-sm px-2 py-2 text-left hover:bg-[#f5f5f5] text-[12px] text-[#374151]"
+                            className="flex items-center gap-2 w-full rounded-sm px-2 py-2 text-left hover:bg-[#f5f5f5] text-[13px] font-normal text-[#374151]"
                           >
-                            <MoveDiagonal className="w-6 h-6 text-[#666] flex-shrink-0" strokeWidth={2} />
+                            <MoveDiagonal className="w-6 h-6 text-[#666] flex-shrink-0" strokeWidth={1.25} />
                             Expand
                           </button>
                         )}
@@ -16568,12 +16690,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             void toggleBrowserFullscreen();
                             setViewOptionsOpen(false);
                           }}
-                          className="flex items-center gap-2 w-full rounded-sm px-2 py-2 text-left hover:bg-[#f5f5f5] text-[12px] text-[#374151]"
+                          className="flex items-center gap-2 w-full rounded-sm px-2 py-2 text-left hover:bg-[#f5f5f5] text-[13px] font-normal text-[#374151]"
                         >
                           {isBrowserFullscreen ? (
-                            <Minimize className="w-6 h-6 text-[#666] flex-shrink-0" strokeWidth={2} />
+                            <Minimize className="w-6 h-6 text-[#666] flex-shrink-0" strokeWidth={1.25} />
                           ) : (
-                            <Fullscreen className="w-6 h-6 text-[#666] flex-shrink-0" strokeWidth={2} />
+                            <Fullscreen className="w-6 h-6 text-[#666] flex-shrink-0" strokeWidth={1.25} />
                           )}
                           {isBrowserFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
                         </button>
@@ -16585,7 +16707,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               setViewOptionsOpen(false);
                               handleNewChatClick();
                             }}
-                            className="flex items-center gap-2 w-full rounded-sm px-2 py-2 text-left hover:bg-[#f5f5f5] text-[12px] text-[#374151]"
+                            className="flex items-center gap-2 w-full rounded-sm px-2 py-2 text-left hover:bg-[#f5f5f5] text-[13px] font-normal text-[#374151]"
                           >
                             <img src="/newchat1.png" alt="" className="h-6 w-6 flex-shrink-0 object-contain" />
                             New chat
@@ -16600,7 +16722,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     <div className="flex items-center gap-2.5 max-w-[220px] mr-1 ml-16 py-1">
                       {isEditingTitle ? (
                         <>
-                          <MessageSquare className="w-6 h-6 text-gray-300 flex-shrink-0" style={{ pointerEvents: 'none' }} strokeWidth={2} />
+                          <MessageSquare className="w-6 h-6 text-gray-300 flex-shrink-0" style={{ pointerEvents: 'none' }} strokeWidth={1.25} />
                           <div className="flex-1 min-w-0 max-w-[160px]">
                             <input
                               type="text"
@@ -16628,27 +16750,27 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             <button
                               type="button"
                               onClick={(e) => e.stopPropagation()}
-                              className="flex items-center gap-2 rounded-md px-3 py-2.5 text-left hover:bg-gray-100/80 transition-colors min-w-0 max-w-full border-0 bg-transparent"
-                              style={{ minHeight: '34px' }}
+                              className="flex items-center gap-2 rounded-md text-left hover:bg-gray-100/80 transition-colors min-w-0 max-w-full border-0 bg-transparent"
+                              style={{ padding: '7px 11px', height: '32px', minHeight: '32px' }}
                             >
-                              <MessageSquare className="w-6 h-6 text-gray-300 flex-shrink-0" style={{ pointerEvents: 'none' }} strokeWidth={2} />
+                              <MessageSquare className="w-6 h-6 text-gray-300 flex-shrink-0" style={{ pointerEvents: 'none' }} strokeWidth={1.25} />
                               <span className="text-[14px] font-normal text-slate-600 truncate flex-1 min-w-0 text-left">
                                 {isTitleStreaming ? streamedTitle : (chatTitle || 'New chat')}
                               </span>
-                              <ChevronDown className="w-6 h-6 text-gray-400 flex-shrink-0 ml-0.5" strokeWidth={2} />
+                              <ChevronDown className="w-6 h-6 text-gray-400 flex-shrink-0 ml-0.5" strokeWidth={1.25} />
                             </button>
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="start" sideOffset={4} onClick={(e) => e.stopPropagation()} className="min-w-[180px] rounded-lg shadow-lg border bg-white py-1">
                             <DropdownMenuItem onClick={(e) => { e.stopPropagation(); if (starredToastTimeoutRef.current) clearTimeout(starredToastTimeoutRef.current); setShowStarredToast(true); starredToastTimeoutRef.current = setTimeout(() => { setShowStarredToast(false); starredToastTimeoutRef.current = null; }, 3000); }} className="flex items-center gap-2 cursor-pointer text-[13px] font-normal text-[#666] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#666]">
-                              <Star className="w-6 h-6 text-[#666]" strokeWidth={2} />
+                              <Star className="w-6 h-6 text-[#666]" strokeWidth={1.25} />
                               Star
                             </DropdownMenuItem>
                             <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleToggleEdit(); }} className="flex items-center gap-2 cursor-pointer text-[13px] font-normal text-[#666] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#666]">
-                              <Pencil className="w-6 h-6 text-[#666]" strokeWidth={2} />
+                              <Pencil className="w-6 h-6 text-[#666]" strokeWidth={1.25} />
                               Rename
                             </DropdownMenuItem>
                             <DropdownMenuItem onClick={(e) => { e.stopPropagation(); toast({ title: 'Add to project', description: 'Add to project coming soon.' }); }} className="flex items-center gap-2 cursor-pointer text-[13px] font-normal text-[#666] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#666]">
-                              <FolderPlus className="w-6 h-6 text-[#666]" strokeWidth={2} />
+                              <FolderPlus className="w-6 h-6 text-[#666]" strokeWidth={1.25} />
                               Add to project
                             </DropdownMenuItem>
                             <DropdownMenuSeparator className="my-1 bg-gray-200" />
@@ -16662,7 +16784,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               }}
                               className="flex items-center gap-2 cursor-pointer text-[13px] font-normal text-red-600 hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-red-600"
                             >
-                              <Trash2 className="w-6 h-6 text-red-600" strokeWidth={2} />
+                              <Trash2 className="w-6 h-6 text-red-600" strokeWidth={1.25} />
                               Delete
                             </DropdownMenuItem>
                           </DropdownMenuContent>
@@ -16698,27 +16820,27 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           <button
                             type="button"
                             onClick={(e) => e.stopPropagation()}
-                            className="flex items-center gap-2 rounded-md px-3 py-2.5 text-left hover:bg-gray-100/80 transition-colors min-w-0 max-w-full border-0 bg-transparent"
-                            style={{ minHeight: '34px' }}
+                            className="flex items-center gap-2 rounded-md text-left hover:bg-gray-100/80 transition-colors min-w-0 max-w-full border-0 bg-transparent"
+                            style={{ padding: '7px 11px', height: '32px', minHeight: '32px' }}
                           >
-                            <MessageSquare className="w-6 h-6 text-gray-300 flex-shrink-0" strokeWidth={2} />
+                            <MessageSquare className="w-6 h-6 text-gray-300 flex-shrink-0" strokeWidth={1.25} />
                             <span className="text-[14px] font-normal text-slate-600 truncate flex-1 min-w-0 text-left">
                               {isTitleStreaming ? streamedTitle : (chatTitle || 'New chat')}
                             </span>
-                            <ChevronDown className="w-6 h-6 text-gray-400 flex-shrink-0 ml-0.5" strokeWidth={2} />
+                            <ChevronDown className="w-6 h-6 text-gray-400 flex-shrink-0 ml-0.5" strokeWidth={1.25} />
                           </button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="start" sideOffset={4} onClick={(e) => e.stopPropagation()} className="min-w-[180px] rounded-lg shadow-lg border bg-white py-1">
                           <DropdownMenuItem onClick={(e) => { e.stopPropagation(); if (starredToastTimeoutRef.current) clearTimeout(starredToastTimeoutRef.current); setShowStarredToast(true); starredToastTimeoutRef.current = setTimeout(() => { setShowStarredToast(false); starredToastTimeoutRef.current = null; }, 3000); }} className="flex items-center gap-2 cursor-pointer text-[13px] font-normal text-[#666] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#666]">
-                            <Star className="w-6 h-6 text-[#666]" strokeWidth={2} />
+                            <Star className="w-6 h-6 text-[#666]" strokeWidth={1.25} />
                             Star
                           </DropdownMenuItem>
                           <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleToggleEdit(); }} className="flex items-center gap-2 cursor-pointer text-[13px] font-normal text-[#666] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#666]">
-                            <Pencil className="w-6 h-6 text-[#666]" strokeWidth={2} />
+                            <Pencil className="w-6 h-6 text-[#666]" strokeWidth={1.25} />
                             Rename
                           </DropdownMenuItem>
                           <DropdownMenuItem onClick={(e) => { e.stopPropagation(); toast({ title: 'Add to project', description: 'Add to project coming soon.' }); }} className="flex items-center gap-2 cursor-pointer text-[13px] font-normal text-[#666] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#666]">
-                            <FolderPlus className="w-6 h-6 text-[#666]" strokeWidth={2} />
+                            <FolderPlus className="w-6 h-6 text-[#666]" strokeWidth={1.25} />
                             Add to project
                           </DropdownMenuItem>
                           <DropdownMenuSeparator className="my-1 bg-gray-200" />
@@ -16732,7 +16854,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             }}
                             className="flex items-center gap-2 cursor-pointer text-[13px] font-normal text-red-600 hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-red-600"
                           >
-                            <Trash2 className="w-6 h-6 text-red-600" strokeWidth={2} />
+                            <Trash2 className="w-6 h-6 text-red-600" strokeWidth={1.25} />
                             Delete
                           </DropdownMenuItem>
                         </DropdownMenuContent>
@@ -16769,7 +16891,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         backgroundColor: 'rgba(0, 0, 0, 0.02)'
                       }}
                     >
-                      <ChevronLeft className="w-5 h-5 text-[#666]" strokeWidth={2} />
+                      <ChevronLeft className="w-5 h-5 text-[#666]" strokeWidth={1.25} />
                       <span className="text-[12px] font-normal text-[#666]">Back</span>
                     </button>
                   )}
@@ -16822,7 +16944,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1.5' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150 cursor-pointer border-none`}
                           style={buttonStyle}
                         >
-                          <Book className="w-5 h-5 text-[#666] flex-shrink-0" strokeWidth={2} />
+                          <Book className="w-5 h-5 text-[#666] flex-shrink-0" strokeWidth={1.25} />
                           {actualPanelWidth >= 750 && (
                             <span className="text-[13px] font-normal text-[#666]">Close</span>
                           )}
@@ -16866,7 +16988,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1.5' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150 cursor-pointer border-none`}
                         style={buttonStyle}
                       >
-<BookOpen className="w-5 h-5 text-[#666] flex-shrink-0" strokeWidth={2} />
+<BookOpen className="w-5 h-5 text-[#666] flex-shrink-0" strokeWidth={1.25} />
                           {actualPanelWidth >= 750 && (
                             <span className="text-[13px] font-normal text-[#666]">Open</span>
                         )}
@@ -16906,10 +17028,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       <PanelRightClose
                         size={20}
                         className="w-5 h-5 text-[#666] flex-shrink-0"
-                        strokeWidth={2}
+                        strokeWidth={1.25}
                       />
                     ) : (
-                      <img src={agentIcon} alt="Agents" className="w-6 h-6 flex-shrink-0" aria-hidden />
+                      <img src={agentIcon} alt="Agents" className="h-5 w-5 object-contain flex-shrink-0" aria-hidden />
                     )}
                     {actualPanelWidth >= 750 && (
                       <span className="text-[13px] font-normal text-[#666] text-left whitespace-nowrap">
@@ -16944,7 +17066,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           setDisplayOptionsOpen((prev) => !prev);
                         }}
                       >
-                        <SlidersHorizontal className="w-5 h-5 text-[#666] flex-shrink-0" strokeWidth={2} />
+                        <SlidersHorizontal className="w-5 h-5 text-[#666] flex-shrink-0" strokeWidth={1.25} />
                         {actualPanelWidth >= 750 && (
                           <span className="text-[13px] font-normal text-[#666]">Response</span>
                         )}
@@ -16962,7 +17084,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       <div className="flex flex-col gap-3">
                         <div className="flex items-center justify-between gap-3">
                           <div className="flex items-center gap-2 min-w-0">
-                            <Brain className="w-5 h-5 text-[#666] flex-shrink-0" strokeWidth={2} />
+                            <Brain className="w-5 h-5 text-[#666] flex-shrink-0" strokeWidth={1.25} />
                             <span className="text-[12px] text-[#374151]">Reasoning trace</span>
                           </div>
                           <button
@@ -16971,18 +17093,18 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               e.stopPropagation();
                               flushSync(() => setShowReasoningTrace((prev) => !prev));
                             }}
-                            className={`relative w-7 h-4 flex-shrink-0 rounded-full transition-colors ${
+                            className={`relative w-6 h-3 flex-shrink-0 rounded-sm transition-colors ${
                               showReasoningTrace ? 'bg-[#1f2937]' : 'bg-[#d1d5db]'
                             }`}
                           >
-                            <span className={`absolute top-0.5 left-0.5 w-3 h-3 bg-white rounded-full shadow-sm transition-transform ${
+                            <span className={`absolute top-0.5 left-0.5 w-2 h-2 bg-white rounded-sm shadow-sm transition-transform ${
                               showReasoningTrace ? 'translate-x-3' : 'translate-x-0'
                             }`} />
                           </button>
                         </div>
                         <div className="flex items-center justify-between gap-3">
                           <div className="flex items-center gap-2 min-w-0">
-                            <Highlighter className="w-5 h-5 text-[#666] flex-shrink-0" strokeWidth={2} />
+                            <Highlighter className="w-5 h-5 text-[#666] flex-shrink-0" strokeWidth={1.25} />
                             <span className="text-[12px] text-[#374151]">Highlight Key Points</span>
                           </div>
                           <button
@@ -16991,18 +17113,18 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               e.stopPropagation();
                               setShowHighlight(!showHighlight);
                             }}
-                            className={`relative w-7 h-4 flex-shrink-0 rounded-full transition-colors ${
+                            className={`relative w-6 h-3 flex-shrink-0 rounded-sm transition-colors ${
                               showHighlight ? 'bg-[#1f2937]' : 'bg-[#d1d5db]'
                             }`}
                           >
-                            <span className={`absolute top-0.5 left-0.5 w-3 h-3 bg-white rounded-full shadow-sm transition-transform ${
+                            <span className={`absolute top-0.5 left-0.5 w-2 h-2 bg-white rounded-sm shadow-sm transition-transform ${
                               showHighlight ? 'translate-x-3' : 'translate-x-0'
                             }`} />
                           </button>
                         </div>
                         <div className="flex items-center justify-between gap-3">
                           <div className="flex items-center gap-2 min-w-0">
-                            <BookOpen className="w-5 h-5 text-[#666] flex-shrink-0" strokeWidth={2} />
+                            <BookOpen className="w-5 h-5 text-[#666] flex-shrink-0" strokeWidth={1.25} />
                             <span className="text-[12px] text-[#374151]">Citations</span>
                           </div>
                           <button
@@ -17011,18 +17133,18 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               e.stopPropagation();
                               setShowCitations(!showCitations);
                             }}
-                            className={`relative w-7 h-4 flex-shrink-0 rounded-full transition-colors ${
+                            className={`relative w-6 h-3 flex-shrink-0 rounded-sm transition-colors ${
                               showCitations ? 'bg-[#1f2937]' : 'bg-[#d1d5db]'
                             }`}
                           >
-                            <span className={`absolute top-0.5 left-0.5 w-3 h-3 bg-white rounded-full shadow-sm transition-transform ${
+                            <span className={`absolute top-0.5 left-0.5 w-2 h-2 bg-white rounded-sm shadow-sm transition-transform ${
                               showCitations ? 'translate-x-3' : 'translate-x-0'
                             }`} />
                           </button>
                         </div>
                         <div className="flex items-center justify-between gap-3">
                           <div className="flex items-center gap-2 min-w-0">
-                            <PanelLeftOpen className="w-5 h-5 text-[#666] flex-shrink-0" strokeWidth={2} />
+                            <PanelLeftOpen className="w-5 h-5 text-[#666] flex-shrink-0" strokeWidth={1.25} />
                             <span className="text-[12px] text-[#374151]">Citation preview & actions</span>
                           </div>
                           <button
@@ -17031,11 +17153,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               e.stopPropagation();
                               setShowCitationPreviewBar(!showCitationPreviewBar);
                             }}
-                            className={`relative w-7 h-4 flex-shrink-0 rounded-full transition-colors ${
+                            className={`relative w-6 h-3 flex-shrink-0 rounded-sm transition-colors ${
                               showCitationPreviewBar ? 'bg-[#1f2937]' : 'bg-[#d1d5db]'
                             }`}
                           >
-                            <span className={`absolute top-0.5 left-0.5 w-3 h-3 bg-white rounded-full shadow-sm transition-transform ${
+                            <span className={`absolute top-0.5 left-0.5 w-2 h-2 bg-white rounded-sm shadow-sm transition-transform ${
                               showCitationPreviewBar ? 'translate-x-3' : 'translate-x-0'
                             }`} />
                           </button>
@@ -17110,7 +17232,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       backgroundColor: 'rgba(0, 0, 0, 0.02)'
                     }}
                   >
-                    <X className="w-6 h-6 text-[#666]" strokeWidth={2} />
+                    <X className="w-5 h-5 text-[#666]" strokeWidth={1.25} />
                   </button>
                   )}
                 </div>
@@ -17162,7 +17284,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   alignItems: 'center',
                   // Reduce padding for narrow panels; 48px = 32 + 16 extra so bar sits slightly inward (matches SearchBar)
                   padding: actualPanelWidth < 320 ? '0 20px' : '0 48px',
-                  paddingTop: '26vh', // Y position of new-chat bar (increase to move down, decrease to move up)
+                  paddingTop: '34vh', // Y position of new-chat bar – lower to align with chat interface bar feel (increase to move down, decrease to move up)
                   minWidth: '200px', // Allow narrower layouts
                   position: 'relative',
                   overflowX: 'hidden'
@@ -17262,7 +17384,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         transition: isDragOver ? 'background-color 0.08s ease-out, border-color 0.08s ease-out, box-shadow 0.08s ease-out' : 'background-color 0.2s ease-in-out, border-color 0.2s ease-in-out, box-shadow 0.2s ease-in-out',
                       }}
                     >
-                      {/* File Attachments Display */}
+                      {/* File Attachments Display - above input (same placement as SideChatPanel scroll layout) */}
                       <AnimatePresence mode="wait">
                         {attachedFiles.length > 0 && (
                           <motion.div 
@@ -17302,6 +17424,31 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           </motion.div>
                         )}
                       </AnimatePresence>
+                      {/* Property attachments - same row placement as file attachments (above input) */}
+                      <AnimatePresence mode="wait">
+                        {propertyAttachments.length > 0 && (
+                          <motion.div
+                            key="property-attachments-empty"
+                            initial={false}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            transition={{ duration: 0.1, ease: "easeOut" }}
+                            style={{ height: 'auto', marginBottom: '12px' }}
+                            className="flex flex-wrap gap-2 justify-start"
+                            layout={false}
+                          >
+                            {propertyAttachments.map((a) => (
+                              <PropertyPillChip
+                                key={a.id}
+                                label={a.address}
+                                title={a.address}
+                                documentCount={(a.property as { documentCount?: number; document_count?: number })?.documentCount ?? (a.property as { document_count?: number })?.document_count}
+                                onRemove={() => removePropertyAttachment(a.id)}
+                              />
+                            ))}
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
                       
                       {/* SegmentInput + @ context - chips only inline (no row above, matches SearchBar) */}
                       <div
@@ -17332,7 +17479,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               title="Clear query"
                               aria-label="Clear query"
                             >
-                              <X className="w-6 h-6" strokeWidth={2} />
+                              <X className="w-6 h-6" strokeWidth={1.25} />
                             </button>
                           )}
                           <SegmentInput
@@ -17433,8 +17580,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               marginTop: '-4px',
                             }}
                           >
-                            {/* Left: Plus (Attach dropdown) only */}
-                            <div className="flex items-center gap-1" style={{ flexShrink: 1, minWidth: 0, overflow: 'hidden' }}>
+                            {/* Left: Files and sources + Choose project */}
+                            <div className="flex items-center gap-0.5" style={{ flexShrink: 1, minWidth: 0, overflow: 'hidden' }}>
                               <input
                                 ref={fileInputRef}
                                 type="file"
@@ -17445,6 +17592,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               />
                               <ChatBarAttachDropdown
                                 onAttachClick={() => fileInputRef.current?.click()}
+                                compact={showAttachIconOnly}
                                 toolsItems={buttonCollapseLevel < 3 ? [
                                   {
                                     id: 'web-search',
@@ -17452,14 +17600,32 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                     label: 'Search the web',
                                     onClick: () => setIsWebSearchEnabled((prev) => !prev),
                                   },
-                                  ...(onMapToggle ? [{
-                                    id: 'map',
-                                    icon: Map,
-                                    label: 'Map',
-                                    onClick: () => onMapToggle(),
-                                  }] : []),
                                 ] : []}
                               />
+                              {buttonCollapseLevel < 3 && (
+                                <button
+                                  type="button"
+                                  onClick={() => window.dispatchEvent(new CustomEvent('openChooseProjectModal'))}
+                                  className="flex items-center justify-center gap-1.5 text-gray-700 transition-colors focus:outline-none outline-none rounded-md"
+                                  style={{
+                                    backgroundColor: 'rgba(0, 0, 0, 0.02)',
+                                    border: 'none',
+                                    height: '26px',
+                                    minHeight: '26px',
+                                    paddingLeft: showAttachIconOnly ? '4px' : '6px',
+                                    paddingRight: showAttachIconOnly ? '4px' : '6px',
+                                    marginLeft: 0,
+                                    marginRight: '4px',
+                                    borderRadius: '6px',
+                                    fontWeight: 400,
+                                    fontSize: '14px',
+                                  }}
+                                  title="Choose project"
+                                >
+                                  <FolderOpen className="w-4 h-4 flex-shrink-0" strokeWidth={1.25} />
+                                  {!showAttachIconOnly && <span className="whitespace-nowrap">Choose project</span>}
+                                </button>
+                              )}
                             </div>
 
                             {/* Right: Mode, Model, Voice, WebSearchPill, Send */}
@@ -17482,7 +17648,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                   }}
                                   title="Voice input"
                                 >
-                                  <AudioLines className="w-6 h-6 text-gray-900" strokeWidth={1.5} />
+                                  <AudioLines className="w-6 h-6 text-gray-900" strokeWidth={1.25} />
                                 </button>
                               )}
                               {buttonCollapseLevel < 3 && isWebSearchEnabled && (
@@ -17526,7 +17692,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                   className="absolute inset-0 flex items-center justify-center"
                                   style={{ pointerEvents: 'none' }}
                                 >
-                                  <ArrowUp className="w-6 h-6" strokeWidth={2.5} style={{ color: '#ffffff' }} />
+                                  <ArrowUp className="w-6 h-6" strokeWidth={1.25} style={{ color: '#ffffff' }} />
                                 </motion.div>
                               </motion.button>
                             )}
@@ -17952,7 +18118,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           flexShrink: 0
                         }}
                       >
-                        <ChevronDown size={18} strokeWidth={2} style={{ flexShrink: 0, display: 'block', margin: 'auto' }} />
+                        <ChevronDown size={18} strokeWidth={1.25} style={{ flexShrink: 0, display: 'block', margin: 'auto' }} />
                       </button>
                     </div>
                   )}
@@ -18072,9 +18238,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                     if (isDocOpenForCurrent) closeExpandedCardView();
                                     else if (citationData) openCitationInDocumentView(citationData as CitationData, false);
                                   }}
-                                  style={{ ...barBtn, fontWeight: 600, color: '#666666', backgroundColor: '#F2F2EF', border: '1px solid #d4d4d4', boxShadow: '0 1px 1px rgba(0,0,0,0.05)' }}
-                                  onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#E8E8E5'; }}
-                                  onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#F2F2EF'; }}
+                                  style={{ ...barBtn, fontWeight: 600, color: '#666666', backgroundColor: '#ffffff', border: '1px solid #d4d4d4', boxShadow: '0 1px 1px rgba(0,0,0,0.05)' }}
+                                  onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#f5f5f5'; }}
+                                  onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#ffffff'; }}
                                 >
                                   {isDocOpenForCurrent ? 'Close' : 'View'}
                                 </button>
@@ -18143,7 +18309,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                 onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#E8E8E5'; }}
                                 onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#F2F2EF'; }}
                               >
-                                <ChevronDown size={18} strokeWidth={2.5} />
+                                <ChevronDown size={18} strokeWidth={1.25} />
                               </button>
                             </>
                           ) : effectiveShowReviewNext && effectiveIndex < total - 1 ? (
@@ -18178,11 +18344,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                 setCitationReviewShowReviewNextOnly(false);
                                 setCitationReviewJustRejected(false);
                               }}
-                              style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 26, height: 26, padding: 0, border: '1px solid #d4d4d4', borderRadius: 5.5, cursor: 'pointer', color: '#666666', backgroundColor: '#F2F2EF', boxShadow: '0 1px 1px rgba(0,0,0,0.05)', outline: 'none' }}
-                              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#E8E8E5'; }}
-                              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#F2F2EF'; }}
+                              style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 26, height: 26, padding: 0, border: '1px solid #d4d4d4', borderRadius: 5.5, cursor: 'pointer', color: '#666666', backgroundColor: '#ffffff', boxShadow: '0 1px 1px rgba(0,0,0,0.05)', outline: 'none' }}
+                              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#f5f5f5'; }}
+                              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#ffffff'; }}
                             >
-                              <ChevronDown size={18} strokeWidth={2.5} />
+                              <ChevronDown size={18} strokeWidth={1.25} />
                             </button>
                             </>
                           ) : (
@@ -18211,7 +18377,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                   setCitationReviewShowReviewNextOnly(false);
                                   setCitationReviewJustRejected(false);
                                 }
-                              }} style={{ ...barBtn, fontWeight: 500, color: '#666666', backgroundColor: '#F2F2EF', border: '1px solid #d4d4d4', boxShadow: '0 1px 1px rgba(0,0,0,0.05)' }} onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#E8E8E5'; }} onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#F2F2EF'; }}>
+                              }} style={{ ...barBtn, fontWeight: 500, color: '#666666', backgroundColor: '#ffffff', border: '1px solid #d4d4d4', boxShadow: '0 1px 1px rgba(0,0,0,0.05)' }} onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#f5f5f5'; }} onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#ffffff'; }}>
                                 Reject
                               </button>
                               <button type="button" title="Accept Citation" onClick={(e) => {
@@ -18249,11 +18415,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                   setCitationReviewShowReviewNextOnly(false);
                                   setCitationReviewJustRejected(false);
                                 }}
-                                style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 26, height: 26, padding: 0, border: '1px solid #d4d4d4', borderRadius: 5.5, cursor: 'pointer', color: '#666666', backgroundColor: '#F2F2EF', boxShadow: '0 1px 1px rgba(0,0,0,0.05)', outline: 'none' }}
-                                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#E8E8E5'; }}
-                                onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#F2F2EF'; }}
+                                style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 26, height: 26, padding: 0, border: '1px solid #d4d4d4', borderRadius: 5.5, cursor: 'pointer', color: '#666666', backgroundColor: '#ffffff', boxShadow: '0 1px 1px rgba(0,0,0,0.05)', outline: 'none' }}
+                                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#f5f5f5'; }}
+                                onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#ffffff'; }}
                               >
-                                <ChevronDown size={18} strokeWidth={2.5} />
+                                <ChevronDown size={18} strokeWidth={1.25} />
                               </button>
                             </>
                           )}
@@ -18374,6 +18540,31 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         </motion.div>
                       )}
                     </AnimatePresence>
+                    {/* Property attachments - same placement as file attachments (above input) */}
+                    <AnimatePresence mode="wait">
+                      {propertyAttachments.length > 0 && (
+                        <motion.div
+                          key="property-attachments"
+                          initial={false}
+                          animate={{ opacity: 1 }}
+                          exit={{ opacity: 0 }}
+                          transition={{ duration: 0.1, ease: "easeOut" }}
+                          style={{ maxHeight: '52px', overflowY: 'auto', marginBottom: '12px', flexShrink: 0 }}
+                          className="flex flex-wrap gap-2 justify-start"
+                          layout={false}
+                        >
+                          {propertyAttachments.map((a) => (
+                            <PropertyPillChip
+                              key={a.id}
+                              label={a.address}
+                              title={a.address}
+                              documentCount={(a.property as { documentCount?: number; document_count?: number })?.documentCount ?? (a.property as { document_count?: number })?.document_count}
+                              onRemove={() => removePropertyAttachment(a.id)}
+                            />
+                          ))}
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
                     
                     {/* SegmentInput + @ context - fixed height so bar bottom never moves */}
                     <div
@@ -18404,7 +18595,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             title="Clear query"
                             aria-label="Clear query"
                           >
-                            <X className="w-6 h-6" strokeWidth={2} />
+                            <X className="w-6 h-6" strokeWidth={1.25} />
                           </button>
                         )}
                         <SegmentInput
@@ -18593,10 +18784,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             marginTop: '-4px',
                           }}
                         >
-                          {/* Left: Plus (Attach dropdown) only */}
-                          <div className={`flex items-center gap-1 ${isVeryNarrow ? 'justify-start' : ''}`} style={{ flexShrink: 1, minWidth: 0, overflow: 'hidden' }}>
+                          {/* Left: Files and sources + Choose project */}
+                          <div className={`flex items-center gap-0.5 ${isVeryNarrow ? 'justify-start' : ''}`} style={{ flexShrink: 1, minWidth: 0, overflow: 'hidden' }}>
                             <ChatBarAttachDropdown
                               onAttachClick={() => fileInputRef.current?.click()}
+                              compact={showAttachIconOnly}
                               toolsItems={buttonCollapseLevel < 3 ? [
                                 {
                                   id: 'web-search',
@@ -18604,37 +18796,32 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                   label: 'Search the web',
                                   onClick: () => setIsWebSearchEnabled((prev) => !prev),
                                 },
-                                ...(onMapToggle ? [{
-                                  id: 'map',
-                                  icon: Map,
-                                  label: 'Map',
-                                  onClick: () => {
-                                    if (currentChatId && expandedCardViewDoc) {
-                                      const bufferedState = getBufferedState(currentChatId);
-                                      bufferedState.documentPreview = {
-                                        docId: expandedCardViewDoc.docId,
-                                        filename: expandedCardViewDoc.filename,
-                                        highlight: expandedCardViewDoc.highlight ? {
-                                          fileId: expandedCardViewDoc.highlight.fileId,
-                                          bbox: expandedCardViewDoc.highlight.bbox,
-                                          doc_id: expandedCardViewDoc.highlight.doc_id,
-                                          block_id: expandedCardViewDoc.highlight.block_id || '',
-                                          block_content: expandedCardViewDoc.highlight.block_content,
-                                          original_filename: expandedCardViewDoc.highlight.original_filename
-                                        } : undefined
-                                      };
-                                    }
-                                    if (onMinimize && chatMessages.length > 0) {
-                                      if (expandedCardViewDoc) closeExpandedCardView();
-                                      onMinimize(chatMessages);
-                                    } else {
-                                      if (expandedCardViewDoc) closeExpandedCardView();
-                                      onMapToggle();
-                                    }
-                                  },
-                                }] : []),
                               ] : []}
                             />
+                            {buttonCollapseLevel < 3 && (
+                              <button
+                                type="button"
+                                onClick={() => window.dispatchEvent(new CustomEvent('openChooseProjectModal'))}
+                                className="flex items-center justify-center gap-1.5 text-gray-700 transition-colors focus:outline-none outline-none rounded-md"
+                                style={{
+                                  backgroundColor: 'rgba(0, 0, 0, 0.02)',
+                                  border: 'none',
+                                  height: '26px',
+                                  minHeight: '26px',
+                                  paddingLeft: showAttachIconOnly ? '4px' : '6px',
+                                  paddingRight: showAttachIconOnly ? '4px' : '6px',
+                                  marginLeft: 0,
+                                  marginRight: '4px',
+                                  borderRadius: '6px',
+                                  fontWeight: 400,
+                                  fontSize: '14px',
+                                }}
+                                title="Choose project"
+                              >
+                                <FolderOpen className="w-4 h-4 flex-shrink-0" strokeWidth={1.25} />
+                                {!showAttachIconOnly && <span className="whitespace-nowrap">Choose project</span>}
+                              </button>
+                            )}
                           </div>
 
                           {/* Right: Mode, Model, Voice, Document Selection, WebSearchPill, Send */}
@@ -18669,7 +18856,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             }}
                             title="Voice input"
                           >
-                            <AudioLines className="w-6 h-6 text-gray-900" strokeWidth={1.5} />
+                            <AudioLines className="w-6 h-6 text-gray-900" strokeWidth={1.25} />
                           </button>
                         )}
                         
@@ -18679,7 +18866,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             <button
                               type="button"
                               onClick={handleOpenDocumentSelection}
-                              className={`flex items-center gap-1.5 transition-colors relative focus:outline-none outline-none ${
+                              className={`flex items-center justify-center transition-colors relative focus:outline-none outline-none ${
                                 selectedDocumentIds.size > 0
                                   ? 'text-green-500 hover:text-green-600'
                                   : isDocumentSelectionMode
@@ -18687,28 +18874,13 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                     : 'text-gray-900 hover:text-gray-700'
                               }`}
                               style={{
-                                backgroundColor: selectedDocumentIds.size > 0
-                                  ? 'rgb(240, 253, 244)'
-                                  : isDocumentSelectionMode
-                                    ? 'rgb(239, 246, 255)'
-                                    : '#FFFFFF',
-                                border: '1px solid rgba(229, 231, 235, 0.6)',
-                                borderRadius: '12px',
-                                transition: 'background-color 0.2s ease, border-color 0.2s ease',
+                                backgroundColor: 'transparent',
+                                border: 'none',
                                 height: '24px',
                                 minHeight: '24px',
-                                paddingLeft: '6px',
-                                paddingRight: '6px',
-                              }}
-                              onMouseEnter={(e) => {
-                                if (selectedDocumentIds.size === 0 && !isDocumentSelectionMode) {
-                                  e.currentTarget.style.backgroundColor = '#F5F5F5';
-                                }
-                              }}
-                              onMouseLeave={(e) => {
-                                if (selectedDocumentIds.size === 0 && !isDocumentSelectionMode) {
-                                  e.currentTarget.style.backgroundColor = '#FFFFFF';
-                                }
+                                width: '24px',
+                                minWidth: '24px',
+                                padding: '0',
                               }}
                               title={
                                 selectedDocumentIds.size > 0
@@ -18719,11 +18891,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               }
                             >
                               {selectedDocumentIds.size > 0 ? (
-                                <Scan className="w-5 h-5" strokeWidth={1.5} />
+                                <Scan className="w-5 h-5" strokeWidth={1.25} />
                               ) : isDocumentSelectionMode ? (
-                                <Scan className="w-5 h-5" strokeWidth={1.5} />
+                                <Scan className="w-5 h-5" strokeWidth={1.25} />
                               ) : (
-                                <SquareDashedMousePointer className="w-5 h-5" strokeWidth={1.5} />
+                                <SquareDashedMousePointer className="w-5 h-5" strokeWidth={1.25} />
                               )}
                               {selectedDocumentIds.size > 0 && (
                                 <span className="absolute -top-1 -right-1 w-4 h-4 bg-green-500 text-white text-[10px] font-semibold rounded-full flex items-center justify-center">
@@ -18743,7 +18915,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                 className="ml-1 p-0.5 text-gray-400 hover:text-red-500 transition-colors"
                                 title="Clear document selection"
                               >
-                                <X className="w-6 h-6" strokeWidth={2} />
+                                <X className="w-6 h-6" strokeWidth={1.25} />
                               </button>
                             )}
                           </div>
@@ -18837,7 +19009,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                     className="absolute inset-0 flex items-center justify-center"
                                     style={{ pointerEvents: 'none' }}
                                   >
-                                    <ArrowUp className="w-6 h-6" strokeWidth={2.5} style={{ color: '#ffffff' }} />
+                                    <ArrowUp className="w-6 h-6" strokeWidth={1.25} style={{ color: '#ffffff' }} />
                                   </motion.div>
                                 </motion.button>
                               );

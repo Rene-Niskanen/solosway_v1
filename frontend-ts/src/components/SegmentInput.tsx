@@ -4,6 +4,7 @@ import * as React from "react";
 import type { Segment, TextSegment, ChipSegment } from "@/types/segmentInput";
 import { isTextSegment, isChipSegment } from "@/types/segmentInput";
 import { AtMentionChip } from "./AtMentionChip";
+import { PropertyPillChip } from "./PropertyPillChip";
 
 export interface SegmentInputHandle {
   getRectForPlainOffset: (plainOffset: number) => DOMRect | null;
@@ -459,7 +460,7 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
     fontSize: effectiveFontSize,
     lineHeight: effectiveLineHeight,
     color: "#8F8F8F",
-    fontWeight: 400,
+    fontWeight: 300,
     pointerEvents: "none" as const,
     whiteSpace: "pre-wrap" as const,
     wordWrap: "break-word" as const,
@@ -573,7 +574,7 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
                         display: "inline-block",
                         minWidth: "100%",
                         color: "#8F8F8F",
-                        fontWeight: 400,
+                        fontWeight: 300,
                         ...(placeholderFontSize != null && { fontSize: effectiveFontSize }),
                       }
                     : {}),
@@ -585,6 +586,29 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
           );
         }
         if (isChipSegment(seg)) {
+          const removeProp =
+            removeChipAtSegmentIndex ? () => removeChipAtSegmentIndex(i) : seg.kind === "property" ? () => onRemovePropertyChip?.(seg.id) : undefined;
+          const removeDoc =
+            removeChipAtSegmentIndex ? () => removeChipAtSegmentIndex(i) : seg.kind === "document" ? () => onRemoveDocumentChip?.(seg.id) : undefined;
+          if (seg.kind === "property") {
+            return (
+              <span
+                key={`c-${i}`}
+                ref={(el) => {
+                  segmentRefs.current[i] = el;
+                }}
+                data-segment-index={i}
+                contentEditable={false}
+                style={{ display: "inline-flex", verticalAlign: "middle" }}
+              >
+                <PropertyPillChip
+                  label={seg.label}
+                  onRemove={removeProp}
+                  title={seg.label}
+                />
+              </span>
+            );
+          }
           return (
             <span
               key={`c-${i}`}
@@ -599,13 +623,7 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
                 type={seg.kind}
                 label={seg.label}
                 onRemove={
-                  removeChipAtSegmentIndex
-                    ? () => removeChipAtSegmentIndex(i)
-                    : seg.kind === "citation_snippet"
-                      ? undefined
-                      : seg.kind === "property"
-                        ? () => onRemovePropertyChip?.(seg.id)
-                        : () => onRemoveDocumentChip?.(seg.id)
+                  seg.kind === "citation_snippet" ? undefined : seg.kind === "document" ? removeDoc : undefined
                 }
               />
             </span>
@@ -678,7 +696,7 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
                         display: "inline-block",
                         minWidth: "100%",
                         color: "#8F8F8F",
-                        fontWeight: 400,
+                        fontWeight: 300,
                         ...(placeholderFontSize != null && { fontSize: effectiveFontSize }),
                       }
                     : {}),
@@ -690,6 +708,29 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
           );
         }
         if (isChipSegment(seg)) {
+          const removeProp =
+            removeChipAtSegmentIndex ? () => removeChipAtSegmentIndex(i) : seg.kind === "property" ? () => onRemovePropertyChip?.(seg.id) : undefined;
+          const removeDoc =
+            removeChipAtSegmentIndex ? () => removeChipAtSegmentIndex(i) : seg.kind === "document" ? () => onRemoveDocumentChip?.(seg.id) : undefined;
+          if (seg.kind === "property") {
+            return (
+              <span
+                key={`c-${i}`}
+                ref={(el) => {
+                  segmentRefs.current[i] = el;
+                }}
+                data-segment-index={i}
+                contentEditable={false}
+                style={{ display: "inline-flex", verticalAlign: "middle" }}
+              >
+                <PropertyPillChip
+                  label={seg.label}
+                  onRemove={removeProp}
+                  title={seg.label}
+                />
+              </span>
+            );
+          }
           return (
             <span
               key={`c-${i}`}
@@ -704,13 +745,7 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
                 type={seg.kind}
                 label={seg.label}
                 onRemove={
-                  removeChipAtSegmentIndex
-                    ? () => removeChipAtSegmentIndex(i)
-                    : seg.kind === "citation_snippet"
-                      ? undefined
-                      : seg.kind === "property"
-                        ? () => onRemovePropertyChip?.(seg.id)
-                        : () => onRemoveDocumentChip?.(seg.id)
+                  seg.kind === "citation_snippet" ? undefined : seg.kind === "document" ? removeDoc : undefined
                 }
               />
             </span>

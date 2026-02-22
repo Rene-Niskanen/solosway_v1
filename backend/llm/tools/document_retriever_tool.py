@@ -579,7 +579,8 @@ def retrieve_documents(
         for r in results:
             r.pop('summary_text', None)
 
-        # 6c. SCOPE FILTER: When user has scope (property_id or document_ids), restrict to in-scope docs only
+        # 6c. SCOPE FILTER: When user has scope (property_id or document_ids), restrict to in-scope docs only.
+        # A step with scope=broad (similar property/comparables) passes no property_id/document_ids here.
         if document_ids and len(document_ids) > 0:
             allowed_ids = set(str(d) for d in document_ids if d)
             results = [r for r in results if r.get('document_id') in allowed_ids]

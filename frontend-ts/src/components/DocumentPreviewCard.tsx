@@ -28,6 +28,8 @@ interface DocumentPreviewCardProps {
 
 // PDF icon from public assets (replaces lucide FileText for PDFs)
 const PDF_ICON_SRC = '/PDF.png';
+// Word document icon from public assets
+const WORD_ICON_SRC = '/word.png';
 
 // Get file icon based on extension or classification type - refined minimal icons
 const getFileIcon = (filename: string | null | undefined, size: number = 14, classificationType?: string) => {
@@ -56,7 +58,15 @@ const getFileIcon = (filename: string | null | undefined, size: number = 14, cla
     return pdfIcon;
   }
   if (['doc', 'docx'].includes(ext)) {
-    return <FileText size={size} style={style} />;
+    return (
+      <img
+        src={WORD_ICON_SRC}
+        alt="Word"
+        width={size}
+        height={size}
+        style={{ objectFit: 'contain', display: 'block' }}
+      />
+    );
   }
   if (['xls', 'xlsx', 'csv'].includes(ext)) {
     return <FileSpreadsheet size={size} style={style} />;

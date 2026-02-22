@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { X, ChevronDown, ChevronUp } from "lucide-react";
+import { X, ChevronDown, ChevronUp, FileText } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { FileAttachmentData } from './FileAttachment';
 import { PropertyAttachmentData } from './PropertyAttachment';
@@ -184,21 +184,61 @@ const QueryAttachment: React.FC<{ attachment: FileAttachmentData }> = ({ attachm
     );
   }
   
+  // For non-image files, match FileAttachment composer style: file-type icon + name + type label
+  const isPDF = attachment.type === 'application/pdf' || (attachment.name && attachment.name.toLowerCase().endsWith('.pdf'));
+  const isDOCX = attachment.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
+    attachment.type === 'application/msword' ||
+    (attachment.name && (attachment.name.toLowerCase().endsWith('.docx') || attachment.name.toLowerCase().endsWith('.doc')));
+  const getFileTypeLabel = (type: string): string => {
+    if (type.includes('pdf')) return 'PDF';
+    if (type.includes('word') || type.includes('document')) return 'DOC';
+    if (type.includes('excel') || type.includes('spreadsheet')) return 'XLS';
+    if (type.includes('image')) return 'IMG';
+    if (type.includes('text')) return 'TXT';
+    return 'FILE';
+  };
+  const formatFileName = (name: string): string => {
+    if (name.length > 24) {
+      const ext = name.split('.').pop();
+      const base = name.substring(0, name.lastIndexOf('.'));
+      return `${base.substring(0, 21)}...${ext ? '.' + ext : ''}`;
+    }
+    return name;
+  };
   return (
     <div
       style={{
-        fontSize: '9px',
-        color: '#6B7280',
-        backgroundColor: '#F3F4F6',
-        padding: '2px 4px',
-        borderRadius: '3px',
+        fontSize: '11px',
+        color: '#111',
+        backgroundColor: '#fff',
+        border: '1px solid #E5E7EB',
+        padding: '3px 6px',
+        borderRadius: '5px',
         display: 'inline-flex',
         alignItems: 'center',
-        gap: '3px'
+        gap: '5px',
+        boxShadow: '0 1px 2px rgba(0,0,0,0.05)'
       }}
+      title={attachment.name}
     >
-      <span>📎</span>
-      <span>{attachment.name}</span>
+      {isDOCX ? (
+        <img src="/word.png" alt="Word" style={{ width: 16, height: 16, objectFit: 'contain', flexShrink: 0 }} />
+      ) : (
+        <div style={{
+          width: 16, height: 16, borderRadius: 3, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+          backgroundColor: isPDF ? '#dc2626' : '#6B7280'
+        }}>
+          <FileText style={{ width: 10, height: 10, color: '#fff' }} strokeWidth={2} />
+        </div>
+      )}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 0, minWidth: 0 }}>
+        <span style={{ fontWeight: 600, color: '#111', fontSize: '11px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {formatFileName(attachment.name)}
+        </span>
+        <span style={{ fontSize: '9px', color: '#6B7280' }}>
+          {getFileTypeLabel(attachment.type)}
+        </span>
+      </div>
     </div>
   );
 };

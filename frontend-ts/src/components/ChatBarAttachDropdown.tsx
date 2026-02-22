@@ -6,7 +6,6 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import type { ChatBarToolsDropdownItem } from "./ChatBarToolsDropdown";
@@ -15,12 +14,15 @@ export interface ChatBarAttachDropdownProps {
   onAttachClick: () => void;
   /** Optional tools items (e.g. Search the web, Map) to show below Attach in the same menu */
   toolsItems?: ChatBarToolsDropdownItem[];
+  /** When true, show only the + icon (no "Files and sources" label) for narrow chat bars */
+  compact?: boolean;
   className?: string;
 }
 
 export function ChatBarAttachDropdown({
   onAttachClick,
   toolsItems = [],
+  compact = false,
   className,
 }: ChatBarAttachDropdownProps) {
   const [hoveredId, setHoveredId] = React.useState<string | null>(null);
@@ -30,22 +32,24 @@ export function ChatBarAttachDropdown({
       <DropdownMenuTrigger asChild>
         <button
           type="button"
-          className={`flex items-center justify-center text-gray-900 transition-colors focus:outline-none outline-none rounded-full ${className || ""}`}
+          className={`flex items-center justify-center gap-1.5 text-gray-700 transition-colors focus:outline-none outline-none rounded-md ${className || ""}`}
           style={{
-            backgroundColor: "transparent",
+            backgroundColor: "rgba(0, 0, 0, 0.02)",
             border: "none",
-            height: "32px",
-            minHeight: "32px",
-            width: "32px",
-            minWidth: "32px",
-            padding: 0,
-            marginRight: "12px",
+            height: "26px",
+            minHeight: "26px",
+            paddingLeft: compact ? "4px" : "6px",
+            paddingRight: compact ? "4px" : "6px",
+            marginRight: "4px",
             marginLeft: 0,
-            borderRadius: "50%",
+            borderRadius: "6px",
+            fontWeight: 400,
+            fontSize: "14px",
           }}
-          title="Attach"
+          title="Files and sources"
         >
-          <Plus className="w-[22px] h-[22px]" strokeWidth={2.5} />
+          <Plus className="w-4 h-4 flex-shrink-0" strokeWidth={1.25} />
+          {!compact && <span className="whitespace-nowrap">Files and sources</span>}
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent
@@ -69,17 +73,16 @@ export function ChatBarAttachDropdown({
           className="flex items-center gap-1.5 cursor-pointer rounded-[4px] px-1.5 py-1"
           style={{
             backgroundColor: hoveredId === "attach" ? "rgba(0, 0, 0, 0.05)" : "transparent",
-            color: "#1f2937",
-            fontSize: "11px",
+            color: "#4b5563",
+            fontSize: "14px",
             fontWeight: 400,
           }}
         >
-          <Paperclip className="w-4 h-4 flex-shrink-0 text-gray-900" strokeWidth={2} />
+          <Paperclip className="w-4 h-4 flex-shrink-0 text-gray-600" strokeWidth={1.5} />
           <span className="flex-1">Attach</span>
         </DropdownMenuItem>
         {toolsItems.length > 0 && (
           <>
-            <DropdownMenuSeparator className="mx-1" />
             {toolsItems.map((item) => {
               const Icon = item.icon;
               const isHovered = hoveredId === item.id;
@@ -92,12 +95,12 @@ export function ChatBarAttachDropdown({
                   className="flex items-center gap-1.5 cursor-pointer rounded-[4px] px-1.5 py-1"
                   style={{
                     backgroundColor: isHovered ? "rgba(0, 0, 0, 0.05)" : "transparent",
-                    color: "#1f2937",
+                    color: "#4b5563",
                     fontSize: "11px",
                     fontWeight: 400,
                   }}
                 >
-                  <Icon className="w-4 h-4 flex-shrink-0 text-gray-900" strokeWidth={2} />
+                  <Icon className="w-4 h-4 flex-shrink-0 text-gray-600" strokeWidth={1.5} />
                   <span className="flex-1">{item.label}</span>
                   {item.badge != null && (
                     <span className="text-gray-500" style={{ fontSize: "9px" }}>{item.badge}</span>

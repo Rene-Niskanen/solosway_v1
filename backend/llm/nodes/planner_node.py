@@ -184,6 +184,7 @@ def _plan_dict_to_execution_plan(plan_dict: Any) -> dict:
                 "id": step.id,
                 "action": step.action,
                 "query": step.query,
+                **({"scope": step.scope} if getattr(step, "scope", None) else {}),
                 "document_ids": step.document_ids,
                 "reasoning_label": step.reasoning_label,
                 "reasoning_detail": step.reasoning_detail,
@@ -200,11 +201,15 @@ def _normalize_two_step_plan(execution_plan: dict) -> dict:
     Ensure a 2-step plan is exactly: (1) retrieve_docs, (2) retrieve_chunks.
     If the LLM returns two retrieve_docs steps (causing two "Searching for" in the UI),
     convert the second to retrieve_chunks so we show one search then "Found N docs" / "Reading".
+    Do NOT normalize 3-step plans (scoped + broad + chunks for similar property/comparables).
     """
     steps = execution_plan.get("steps") or []
     if len(steps) != 2:
         return execution_plan
     first, second = steps[0], steps[1]
+    # Preserve 3-step similar-property pattern: two retrieve_docs (second may have scope "broad") + retrieve_chunks
+    if second.get("scope") == "broad":
+        return execution_plan
     if (first.get("action") == "retrieve_docs" and second.get("action") == "retrieve_docs"):
         logger.info(
             "[PLANNER] Normalizing plan: second step was retrieve_docs (would show two 'Searching for'); converting to retrieve_chunks"
@@ -290,6 +295,7 @@ class ExecutionStepModel(BaseModel):
     id: str = Field(description="Unique step identifier (e.g., 'search_docs', 'search_chunks')")
     action: str = Field(description="Action type: 'retrieve_docs' or 'retrieve_chunks'")
     query: str = Field(description="Search query - MUST be the user's query, passed through unchanged")
+    scope: Optional[str] = Field(default=None, description="For retrieve_docs only: 'scoped' (default) or 'broad'. Use 'broad' only for similar-property/comparables second search so system searches all documents.")
     document_ids: Optional[List[str]] = Field(default=None, description="Document IDs for retrieve_chunks (use '<from_step_X>' to reference previous steps)")
     reasoning_label: str = Field(description="Human-readable action label for user (e.g., 'Searched documents')")
     reasoning_detail: Optional[str] = Field(default=None, description="Optional clarification for user")
@@ -298,7 +304,7 @@ class ExecutionStepModel(BaseModel):
 class ExecutionPlanModel(BaseModel):
     """Pydantic model for execution plan"""
     objective: str = Field(description="High-level goal of the plan")
-    steps: list[ExecutionStepModel] = Field(description="Ordered list of execution steps (0, 1, or 2)")
+    steps: list[ExecutionStepModel] = Field(description="Ordered list of execution steps (0, 1, 2, or 3)")
     use_prior_context: bool = Field(default=False, description="True when user asks to restructure/format prior answer")
     format_instruction: Optional[str] = Field(default=None, description="User-requested output format (e.g. one concise paragraph)")
 

@@ -507,8 +507,8 @@ def put_bootstrap_user_context():
         ).execute()
         return jsonify({'success': True}), 200
     except Exception as e:
-        logger.exception('[BOOTSTRAP] put_bootstrap_user_context failed')
-        return jsonify({'error': 'Failed to save'}), 500
+        logger.exception('[BOOTSTRAP] put_bootstrap_user_context failed: %s', e)
+        return jsonify({'error': f'Failed to save: {e}'}), 500
 
 
 @views.route('/api/projects', methods=['GET', 'OPTIONS'])
@@ -830,7 +830,14 @@ def query_documents_stream():
             f"Attachment Context: {attachment_info}"
         )
         
-        if not query:
+        # Allow empty query when user sent only attachments (e.g. "what does this say?" implied)
+        has_attachment_content = (
+            attachment_context
+            and isinstance(attachment_context, dict)
+            and attachment_context.get('texts')
+            and any(len(str(t).strip()) > 0 for t in attachment_context.get('texts', []))
+        )
+        if not query and not has_attachment_content:
             response = jsonify({
                 'success': False,
                 'error': 'Query is required'
@@ -839,6 +846,8 @@ def query_documents_stream():
             response.headers.add('Access-Control-Allow-Credentials', 'true')
             response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
             return response, 400
+        if not query and has_attachment_content:
+            query = 'Summarize or tell me what you can infer from the attached document(s).'
         
         def generate_stream():
             """Generator function for SSE streaming"""
@@ -885,8 +894,9 @@ def query_documents_stream():
                     except Exception as e:
                         logger.warning(f"⚠️ [STREAM] Could not find document for property {property_id}: {e}")
                 
-                # When request sent no document_ids but we resolved one from property_id, pass it to the graph
-                effective_document_ids = document_ids if document_ids else ([document_id] if document_id else None)
+                # When request has property_id but no document_ids: leave effective_document_ids unset so
+                # retrieval is scoped by property_id to all docs for that project (not a single doc).
+                effective_document_ids = document_ids if document_ids else None
 
                 # Scope resolution: when user sent document_ids but no property_id, resolve property_id from first document
                 resolved_property_id = None
@@ -1496,7 +1506,8 @@ def query_documents_stream():
                             return events_yielded
                         
                         # Timeout per graph event so a stuck node (e.g. executor retrieval) doesn't hang forever
-                        GRAPH_EVENT_TIMEOUT = 120  # seconds
+                        # 300s allows long retrieval/thinking; proxies may still close earlier (e.g. 60s)
+                        GRAPH_EVENT_TIMEOUT = 300  # seconds
                         try:
                             event_stream = graph.astream_events(initial_state, config_dict, version="v2")
                             stream_iter = event_stream.__aiter__()

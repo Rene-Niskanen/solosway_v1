@@ -133,8 +133,41 @@ export interface CreateProjectData {
   message_count?: number;
 }
 
+/** Normalized project list item for Choose Project modal (and cache) */
+export interface PropertyHubListItem {
+  id: string;
+  label: string;
+  imageUrl?: string;
+  documentCount?: number;
+}
+
+const PROPERTY_HUBS_CACHE_TTL_MS = 2 * 60 * 1000; // 2 minutes
+
+function normalizePropertyHubsResponse(raw: unknown): PropertyHubListItem[] {
+  const hubs = Array.isArray(raw)
+    ? raw
+    : raw && typeof raw === 'object'
+      ? (raw as any).data ?? (raw as any).property_hubs ?? (raw as any).properties ?? []
+      : [];
+  return (Array.isArray(hubs) ? hubs : []).map((hub: any) => {
+    const property = hub.property || hub;
+    const details = hub.property_details || {};
+    const id = property?.id ?? hub.id;
+    const label =
+      property?.formatted_address || property?.normalized_address || property?.address || 'Project';
+    const imageUrl = details.primary_image_url || property?.primary_image_url;
+    const documentCount =
+      hub.summary?.document_count ??
+      hub.document_count ??
+      hub.documentCount ??
+      (Array.isArray(hub.documents) ? hub.documents.length : undefined);
+    return { id: String(id), label, imageUrl, documentCount };
+  });
+}
+
 class BackendApiService {
   private baseUrl: string;
+  private _propertyHubsListCache: { list: PropertyHubListItem[]; timestamp: number } | null = null;
 
   constructor() {
     this.baseUrl = BACKEND_URL;
@@ -611,15 +644,22 @@ class BackendApiService {
         return; // Silently return on abort
       }
       
-      // Handle incomplete chunked encoding gracefully (network interruption)
+      // Handle incomplete chunked encoding and timeouts with user-friendly messages
       const errorMessage = error instanceof Error ? error.message : String(error);
-      const isNetworkError = errorMessage.includes('ERR_INCOMPLETE_CHUNKED_ENCODING') || 
+      const isNetworkError = errorMessage.includes('ERR_INCOMPLETE_CHUNKED_ENCODING') ||
                             errorMessage.includes('Failed to fetch') ||
                             errorMessage.includes('network error');
-      
+      const isTimeoutError = errorMessage.includes('Operation timed out') ||
+                             errorMessage.includes('timed out') ||
+                             errorMessage.includes('SSL SYSCALL') ||
+                             errorMessage.includes('consuming input failed');
+
       if (isNetworkError) {
         console.warn('⚠️ backendApi: Network error during streaming (connection interrupted):', errorMessage);
         onError('Connection interrupted. Please try again.');
+      } else if (isTimeoutError) {
+        console.warn('⚠️ backendApi: Stream timeout:', errorMessage);
+        onError('The request took too long and the connection timed out. Try again or use a simpler query.');
       } else {
         console.error('❌ backendApi: Error in queryDocumentsStreamFetch:', {
           error: errorMessage,
@@ -745,9 +785,40 @@ class BackendApiService {
    * Property Hub API Methods (New)
    */
   async getAllPropertyHubs(): Promise<ApiResponse<any[]>> {
-    return this.fetchApi<any[]>('/api/property-hub', {
+    const res = await this.fetchApi<any[]>('/api/property-hub', {
       method: 'GET',
     });
+    if (res.success && res.data != null) {
+      this._propertyHubsListCache = {
+        list: normalizePropertyHubsResponse(res.data),
+        timestamp: Date.now(),
+      };
+    }
+    return res;
+  }
+
+  /**
+   * Preload property hubs for the Choose Project modal. Call when dashboard loads
+   * so the list is ready when the user clicks "Choose project".
+   */
+  async preloadPropertyHubs(): Promise<void> {
+    const res = await this.getAllPropertyHubs();
+    if (res.success) {
+      // Cache already set by getAllPropertyHubs
+      return;
+    }
+    // On failure, leave existing cache as-is (don't clear)
+  }
+
+  /**
+   * Return cached project list for instant display in Choose Project modal.
+   * Returns null if cache is empty or stale (older than TTL).
+   */
+  getCachedPropertyHubsList(): PropertyHubListItem[] | null {
+    const cache = this._propertyHubsListCache;
+    if (!cache) return null;
+    if (Date.now() - cache.timestamp > PROPERTY_HUBS_CACHE_TTL_MS) return null;
+    return cache.list;
   }
 
   /**

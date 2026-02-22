@@ -12,6 +12,7 @@ class ExecutionStep(TypedDict, total=False):
     action: Literal["retrieve_docs", "retrieve_chunks", "query_db", "analyze"]  # Action type
     query: Optional[str]  # For search/retrieve actions
     query_type: Optional[Literal["broad", "specific"]]  # For retrieve_docs
+    scope: Optional[Literal["scoped", "broad"]]  # For retrieve_docs: "broad" = do not inject property_id/document_ids (search all)
     document_ids: Optional[List[str]]  # For retrieve_chunks (populated from previous steps)
     reasoning_label: Optional[str]  # NEW: User-facing reasoning label (e.g., "Checked letter of offer")
     reasoning_detail: Optional[str]  # NEW: User-facing reasoning detail (e.g., "Looking for vendor agent information")

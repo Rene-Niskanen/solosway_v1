@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { File, X, Upload, FileText, Image as ImageIcon, ArrowUp, CheckSquare, Square, Trash2, Search, Maximize2, Minimize2, Building2, ChevronLeft, ChevronRight, Plus, RefreshCw, Loader2, ChevronDown, Files, SquareDashedMousePointer } from 'lucide-react';
+import { File, X, Upload, FileText, Image as ImageIcon, ArrowUp, CheckSquare, Square, Trash2, Search, Maximize2, Minimize2, Building2, ChevronLeft, ChevronRight, Plus, RefreshCw, Loader2, ChevronDown, Files } from 'lucide-react';
 import { useBackendApi } from './BackendApi';
 import { backendApi } from '../services/backendApi';
 import { usePreview } from '../contexts/PreviewContext';
@@ -2594,23 +2594,6 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                 )}
               </div>
               <div className="flex items-center gap-2">
-              {chatPanelWidth > 0 && onSnapTo50 && (
-                <button
-                  onClick={onSnapTo50}
-                  className="flex items-center justify-center rounded-full border border-gray-300/80 bg-white hover:bg-gray-50 transition-all duration-150 flex-shrink-0"
-                  style={{
-                    padding: '5px',
-                    height: '28px',
-                    width: '28px',
-                    minHeight: '28px',
-                    minWidth: '28px',
-                    cursor: 'pointer',
-                  }}
-                  title="Snap to 50/50 split"
-                >
-                  <SquareDashedMousePointer className="w-4 h-4 text-[#666]" strokeWidth={1.5} />
-                </button>
-              )}
               <button
                 onClick={onClose}
                 className="p-2 hover:bg-gray-50 rounded-lg text-gray-400 hover:text-gray-600 transition-colors"
@@ -2625,11 +2608,6 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
             {/* Header Area - Clean & Minimal (documents only) */}
             <div className="px-6 bg-[#FCFCF9]" style={{ borderTop: 'none' }}>
               <div className="flex items-center gap-3">
-                <div className="flex items-center gap-2 text-xs text-gray-400">
-                  <span>Documents</span>
-                  <span className="font-medium">{filteredDocuments.length}</span>
-                </div>
-
                 <>
                     <div className="relative flex-1 group">
                       <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400 group-focus-within:text-blue-500 transition-colors" />
@@ -2638,7 +2616,8 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                         placeholder="Search documents..."
                         value={filesSearchQuery}
                         onChange={(e) => setFilesSearchQuery(e.target.value)}
-                        className="w-full bg-gray-50 hover:bg-gray-100 focus:bg-white border border-gray-200 focus:border-blue-500 rounded-lg py-1.5 pl-9 pr-3 text-xs text-gray-900 placeholder-gray-400 focus:outline-none transition-all h-8"
+                        className="w-full bg-white border border-gray-200 text-[13px] text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-0 focus:border-blue-500 rounded-lg py-1.5 pl-9 pr-3 h-8"
+                        style={{ borderRadius: '8px', WebkitTapHighlightColor: 'transparent', boxShadow: 'none' }}
                   />
                           </div>
                 

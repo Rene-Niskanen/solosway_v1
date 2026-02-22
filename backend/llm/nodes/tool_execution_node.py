@@ -67,16 +67,19 @@ class ExecutionAwareToolNode:
                 if name == "retrieve_documents":
                     if business_id is not None:
                         args["business_id"] = business_id
-                    if property_id is not None:
-                        args["property_id"] = property_id
-                    if document_ids is not None:
-                        args["document_ids"] = document_ids
+                    # When agent requests scope "broad" (e.g. similar property), do not inject attachment scope
+                    if (args.get("scope") or "").strip().lower() != "broad":
+                        if property_id is not None:
+                            args["property_id"] = property_id
+                        if document_ids is not None:
+                            args["document_ids"] = document_ids
                 elif name == "retrieve_chunks":
                     if business_id is not None:
                         args["business_id"] = business_id
                 elif name == "read_workspace_file" or name == "write_workspace_file":
-                    args["user_id"] = state.get("user_id") or "anonymous"
-                    args["business_id"] = state.get("business_id") or ""
+                    args["user_id"] = str(state.get("user_id") or "anonymous")
+                    raw_bid = state.get("business_id")
+                    args["business_id"] = str(raw_bid).strip() if raw_bid else ""
                 injected_tool_calls.append({**tool_call, "args": args})
             # Build new last message with injected args (preserve message class and id)
             try:

@@ -29,12 +29,13 @@ DialogOverlay.displayName = DialogPrimitive.Overlay.displayName;
 type DialogContentProps = React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content> & {
   overlayClassName?: string;
   closeClassName?: string;
+  hideClose?: boolean;
 };
 
 const DialogContent = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Content>,
   DialogContentProps
->(({ className, overlayClassName, closeClassName, children, ...props }, ref) => (
+>(({ className, overlayClassName, closeClassName, hideClose, children, ...props }, ref) => (
   <DialogPortal>
     <DialogOverlay className={overlayClassName} />
     <DialogPrimitive.Content
@@ -46,10 +47,12 @@ const DialogContent = React.forwardRef<
       {...props}
     >
       {children}
-      <DialogPrimitive.Close className={cn("absolute right-4 top-4 flex h-10 w-10 items-center justify-center rounded-md opacity-70 ring-offset-background transition-colors duration-150 data-[state=open]:bg-accent data-[state=open]:text-muted-foreground hover:opacity-100 hover:bg-muted hover:scale-105 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none", closeClassName)}>
-        <span className="text-2xl font-extralight leading-none" aria-hidden>×</span>
-        <span className="sr-only">Close</span>
-      </DialogPrimitive.Close>
+      {!hideClose && (
+        <DialogPrimitive.Close className={cn("absolute right-4 top-4 inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-md opacity-70 ring-offset-background transition-colors duration-150 data-[state=open]:bg-accent data-[state=open]:text-muted-foreground hover:opacity-100 hover:bg-muted hover:scale-105 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none", closeClassName)}>
+          <span className="inline-flex items-center justify-center text-2xl font-extralight leading-[0]" aria-hidden>×</span>
+          <span className="sr-only">Close</span>
+        </DialogPrimitive.Close>
+      )}
     </DialogPrimitive.Content>
   </DialogPortal>
 ));

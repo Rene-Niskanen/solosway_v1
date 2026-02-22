@@ -36,6 +36,14 @@ class WriteWorkspaceFileInput(BaseModel):
     business_id: Optional[str] = Field(default=None, description="Injected by system")
 
 
+def _normalize_business_id(business_id: Optional[str]) -> str:
+    """Return a string UUID for DB use, or empty string. Caller must check before using."""
+    if business_id is None:
+        return ""
+    s = str(business_id).strip()
+    return s if s else ""
+
+
 def read_workspace_file_impl(
     file_name: str,
     user_id: Optional[str] = None,
@@ -45,7 +53,9 @@ def read_workspace_file_impl(
     if file_name not in WORKSPACE_FILE_ALLOWLIST:
         return f"[error] Only USER.md is supported. Requested: {file_name}."
     user_id = user_id or "anonymous"
-    business_id = business_id or ""
+    business_id = _normalize_business_id(business_id)
+    if not business_id:
+        return "[error] Session missing business context. Please refresh the page and try again."
     try:
         from backend.services.supabase_client_factory import get_supabase_client
         supabase = get_supabase_client()
@@ -79,7 +89,9 @@ def write_workspace_file_impl(
     if file_name not in WORKSPACE_FILE_ALLOWLIST:
         return "[error] Only USER.md is supported."
     user_id = user_id or "anonymous"
-    business_id = business_id or ""
+    business_id = _normalize_business_id(business_id)
+    if not business_id:
+        return "[error] Session missing business context. Please refresh the page and try again."
     truncated = content
     if len(truncated) > DEFAULT_BOOTSTRAP_TOTAL_MAX_CHARS:
         truncated = truncated[:DEFAULT_BOOTSTRAP_TOTAL_MAX_CHARS]

@@ -31,7 +31,8 @@ import { StandaloneExpandedCardView } from './StandaloneExpandedCardView';
 import { AgentTaskOverlay } from './AgentTaskOverlay';
 import { RecentProjectsSection } from './RecentProjectsSection';
 import { NewPropertyPinWorkflow } from './NewPropertyPinWorkflow';
-import { SideChatPanel, SideChatPanelRef, CHAT_PANEL_WIDTH } from './SideChatPanel';
+import { SideChatPanel, SideChatPanelRef } from './SideChatPanel';
+import { CHAT_PANEL_WIDTH } from './chatPanelConstants';
 import { FloatingChatBubble } from './FloatingChatBubble';
 import { QuickStartBar } from './QuickStartBar';
 import { FilingSidebarProvider, useFilingSidebar } from '../contexts/FilingSidebarContext';
@@ -48,6 +49,8 @@ import {
 } from '@/utils/inputBarPosition';
 import { useChatHistory } from './ChatHistoryContext';
 import { useBrowserFullscreen } from '../contexts/BrowserFullscreenContext';
+import { usePropertySelection } from '../contexts/PropertySelectionContext';
+import { ChooseProjectModal } from './ChooseProjectModal';
 import type { QueryContentSegment } from '@/types/segmentInput';
 import {
   Select,
@@ -1186,7 +1189,7 @@ const LocationPickerModal: React.FC<{
                     }, 200);
                   }}
                   placeholder="Search for a location..."
-                  className="flex-1 min-w-0 h-full bg-transparent text-sm pl-0 text-neutral-600 placeholder:text-[#8F8F8F] placeholder:font-normal font-medium outline-none"
+                  className="flex-1 min-w-0 h-full bg-transparent text-sm pl-0 text-neutral-600 placeholder:text-[#8F8F8F] placeholder:font-light font-medium outline-none"
                 />
                 {isLoadingSuggestions && (
                   <div className="flex-shrink-0">
@@ -2215,6 +2218,9 @@ export const MainContent = ({
   const [hasActiveChat, setHasActiveChat] = React.useState<boolean>(false); // Track if there's an active chat query running
   const [resetWidthForDocPreviewTrigger, setResetWidthForDocPreviewTrigger] = React.useState<number>(0); // Increment to force 50/50 when opening file from search modal
   const [chatBarGlowTrigger, setChatBarGlowTrigger] = React.useState<number>(0); // Timestamp to trigger chat bar border glow after query submit (dashboard/map)
+  const [chooseProjectModalOpen, setChooseProjectModalOpen] = React.useState<boolean>(false);
+
+  const { addPropertyAttachment } = usePropertySelection();
 
   // Browser Fullscreen API - shared state so all fullscreen buttons show "Exit" when active
   const { isBrowserFullscreen, toggleBrowserFullscreen } = useBrowserFullscreen();
@@ -3856,6 +3862,53 @@ export const MainContent = ({
     window.addEventListener('searchModalSelectProject', handler);
     return () => window.removeEventListener('searchModalSelectProject', handler);
   }, []);
+
+  // Preload property hubs as soon as dashboard loads so "Choose project" modal opens with list ready
+  React.useEffect(() => {
+    backendApi.preloadPropertyHubs();
+  }, []);
+
+  // Open Choose Project modal when "Choose project" is clicked from chat bar (attach flow; do not navigate)
+  React.useEffect(() => {
+    const handler = () => setChooseProjectModalOpen(true);
+    window.addEventListener('openChooseProjectModal', handler);
+    return () => window.removeEventListener('openChooseProjectModal', handler);
+  }, []);
+
+  const handleChooseProjectSelect = React.useCallback(
+    (project: { id: string; label: string; imageUrl?: string; documentCount?: number }) => {
+      const id = project.id;
+      const label = project.label || 'Project';
+      const imageUrl = project.imageUrl || '';
+      const documentCount = project.documentCount;
+      const minimalProperty = {
+        id: id as unknown as number,
+        address: label,
+        postcode: '',
+        property_type: '',
+        bedrooms: 0,
+        bathrooms: 0,
+        price: 0,
+        square_feet: 0,
+        days_on_market: 0,
+        latitude: 0,
+        longitude: 0,
+        summary: '',
+        features: '',
+        condition: 0,
+        similarity: 0,
+        image: imageUrl,
+        primary_image_url: imageUrl,
+        formatted_address: label,
+        normalized_address: label,
+        agent: { name: '', company: '' },
+        ...(documentCount != null && { documentCount, document_count: documentCount }),
+      } as any;
+      addPropertyAttachment(minimalProperty);
+      setChooseProjectModalOpen(false);
+    },
+    [addPropertyAttachment]
+  );
 
   // When user clicks a file in the search modal: open 50/50 document preview + chat
   React.useEffect(() => {
@@ -5631,6 +5684,10 @@ export const MainContent = ({
             ? pendingSideChatAttachmentsRef.current 
             : (pendingSideChatAttachments.length > 0 ? pendingSideChatAttachments : undefined)
         }
+        onInitialAttachmentsConsumed={() => {
+          pendingSideChatAttachmentsRef.current = [];
+          setPendingSideChatAttachments([]);
+        }}
         isPropertyDetailsOpen={isPropertyDetailsOpen}
         shouldExpand={shouldExpandChat}
         prefer50SplitOnMap={mapChatOpenAs50Split}
@@ -6162,6 +6219,12 @@ export const MainContent = ({
         onActiveChatChange={handleActiveChatChange}
         onOpenChatHistory={onOpenChatHistory}
         userFirstName={userData == null ? undefined : (userData.first_name?.trim() || 'there')}
+      />
+
+      <ChooseProjectModal
+        open={chooseProjectModalOpen}
+        onOpenChange={setChooseProjectModalOpen}
+        onSelectProject={handleChooseProjectSelect}
       />
     </div>
   );

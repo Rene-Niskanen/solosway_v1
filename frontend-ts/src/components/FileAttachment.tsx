@@ -225,10 +225,10 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
             e.stopPropagation();
             onRemove(attachment.id);
           }}
-          className="absolute bottom-1 right-1 w-5 h-5 rounded-full bg-black/70 flex items-center justify-center flex-shrink-0 hover:bg-black transition-colors"
+          className="absolute bottom-1 right-1 w-6 h-6 flex items-center justify-center flex-shrink-0 text-gray-400 hover:text-gray-600 transition-colors"
           title="Remove file"
         >
-          <X className="w-3 h-3 text-white" strokeWidth={2.5} />
+          <X className="w-4 h-4" strokeWidth={2.5} />
         </button>
       </motion.div>
     );
@@ -242,7 +242,7 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       transition={{ duration: 0.1, ease: "easeOut" }}
-      className="relative bg-white rounded-lg border border-gray-200 px-2.5 py-2 shadow-sm cursor-pointer hover:border-gray-300 hover:shadow-md transition-all duration-100"
+      className="relative bg-white rounded-lg border border-gray-200 px-2.5 py-2 cursor-pointer hover:border-gray-300 transition-all duration-100"
       style={{ 
         width: 'auto',
         height: 'auto',
@@ -260,10 +260,14 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
       title={`Drag to delete or click to open ${attachment.name}`}
     >
       <div className="flex items-center gap-2" style={{ width: 'auto', flexShrink: 0 }}>
-        {/* File Icon - Red for PDF, Blue for DOCX, Gray for others */}
-        <div className={`w-6 h-6 ${isPDF ? 'bg-red-500' : isDOCX ? 'bg-blue-500' : 'bg-gray-500'} rounded flex items-center justify-center flex-shrink-0`}>
-          <FileText className="w-4 h-4 text-white" strokeWidth={2} />
-        </div>
+        {/* File Icon - PDF image, Word image for DOCX, Gray FileText for others */}
+        {isDOCX ? (
+          <img src="/word.png" alt="Word" className="w-6 h-6 rounded object-contain flex-shrink-0" />
+        ) : (
+          <div className={`w-6 h-6 ${isPDF ? 'bg-red-500' : 'bg-gray-500'} rounded flex items-center justify-center flex-shrink-0`}>
+            <FileText className="w-4 h-4 text-white" strokeWidth={2} />
+          </div>
+        )}
         
         {/* File Info */}
         <div className="flex flex-col" style={{ width: 'auto', flexShrink: 0 }}>
@@ -290,17 +294,17 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
           </div>
         </div>
         
-        {/* Remove Button - Black circular X */}
+        {/* Remove Button - X only, no background */}
         <button
           type="button"
           onClick={(e) => {
             e.stopPropagation();
             onRemove(attachment.id);
           }}
-          className="w-4 h-4 rounded-full bg-black flex items-center justify-center flex-shrink-0 hover:bg-gray-800 transition-colors ml-2"
+          className="w-6 h-6 flex items-center justify-center flex-shrink-0 text-gray-400 hover:text-gray-600 transition-colors ml-2"
           title="Remove file"
         >
-          <X className="w-2.5 h-2.5 text-white" strokeWidth={2.5} />
+          <X className="w-4 h-4" strokeWidth={2.5} />
         </button>
       </div>
     </motion.div>

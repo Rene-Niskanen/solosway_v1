@@ -1704,7 +1704,7 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
       return <ImageIcon className="text-gray-600" style={iconStyle} />;
     }
     if (fileType.includes('word') || fileType.includes('document')) {
-      return <FileText className="text-gray-600" style={iconStyle} />;
+      return <img src="/word.png" alt="Word" style={{ ...iconStyle, objectFit: 'contain' }} />;
     }
     return <Globe className="text-gray-600" style={iconStyle} />;
   };
@@ -2008,7 +2008,7 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
                           return <ImageIcon className={`flex-shrink-0 ${iconColor}`} style={iconStyle} />;
                         }
                         if (tabFile.type.includes('word') || tabFile.type.includes('document') || tabFile.name?.toLowerCase().endsWith('.docx') || tabFile.name?.toLowerCase().endsWith('.doc')) {
-                          return <FileText className={`flex-shrink-0 ${iconColor}`} style={iconStyle} />;
+                          return <img src="/word.png" alt="Word" style={{ ...iconStyle, objectFit: 'contain' }} />;
                         }
                         return <Globe className={`flex-shrink-0 ${iconColor}`} style={iconStyle} />;
                       })()}

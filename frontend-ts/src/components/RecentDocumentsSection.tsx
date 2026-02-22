@@ -114,6 +114,7 @@ export const RecentDocumentsSection: React.FC<RecentDocumentsSectionProps> = ({
         style={{
           gap,
           paddingBottom: compact ? 4 : 8,
+          paddingLeft: 0,
           ...(scrollable && {
             scrollbarWidth: 'thin',
             scrollbarColor: 'rgba(255, 255, 255, 0.25) transparent',

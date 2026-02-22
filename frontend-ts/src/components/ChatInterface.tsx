@@ -1253,7 +1253,7 @@ const ChatInterface = forwardRef<{ handleFileDrop: (file: File) => void }, ChatI
                       }
                     }} 
                     placeholder="Ask anything..." 
-                    className="w-full bg-transparent focus:outline-none text-base font-normal text-gray-900 placeholder:text-gray-500 placeholder:text-[20.8px] resize-none [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-gray-300 [&::-webkit-scrollbar-thumb]:rounded-full"
+                    className="w-full bg-transparent focus:outline-none text-base font-normal text-gray-900 placeholder:text-gray-500 placeholder:text-[20.8px] placeholder:font-light resize-none [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-gray-300 [&::-webkit-scrollbar-thumb]:rounded-full"
                     style={{
                       minHeight: '24px',
                       maxHeight: '350px',

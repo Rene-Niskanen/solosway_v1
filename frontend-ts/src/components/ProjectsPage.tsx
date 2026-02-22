@@ -16,7 +16,9 @@
  */
 
 import * as React from "react";
-import { FolderClosed, ChevronDown, ChevronUp, Trash2, Plus, Menu, Bold, Italic, AlignLeft, AlignCenter, AlignRight } from "lucide-react";
+import { marked } from "marked";
+import TurndownService from "turndown";
+import { FolderClosed, ChevronDown, ChevronUp, Trash2, Plus, Bold, Italic, AlignLeft, AlignCenter, AlignRight } from "lucide-react";
 import { backendApi } from "@/services/backendApi";
 import { ProjectGlassCard } from "./ProjectGlassCard";
 import { RecentDocumentsSection } from "./RecentDocumentsSection";
@@ -24,6 +26,7 @@ import { preloadDocumentThumbnails, PRELOAD_THUMBNAIL_LIMIT } from "./RecentDocu
 import { preloadDocumentCovers as preloadDocumentCoversUtil } from "@/utils/preloadDocumentCovers";
 import {
   Dialog,
+  DialogClose,
   DialogContent,
   DialogTitle,
 } from "./ui/dialog";
@@ -290,129 +293,142 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
   const [userContextContent, setUserContextContent] = React.useState("");
   const [userContextLoadError, setUserContextLoadError] = React.useState<string | null>(null);
   const [userContextSaveError, setUserContextSaveError] = React.useState<string | null>(null);
-  const [userContextLoading, setUserContextLoading] = React.useState(false);
   const [userContextSaving, setUserContextSaving] = React.useState(false);
   const [userContextAlignment, setUserContextAlignment] = React.useState<'left' | 'center' | 'right'>('left');
   const [userContextBlockType, setUserContextBlockType] = React.useState<string>('paragraph');
-  const userContextTextareaRef = React.useRef<HTMLTextAreaElement>(null);
+  const userContextEditorRef = React.useRef<HTMLDivElement>(null);
+  const userContextLastSyncedRef = React.useRef<string>("");
+
+  const turndownRef = React.useRef<TurndownService | null>(null);
+  if (!turndownRef.current) turndownRef.current = new TurndownService({ headingStyle: "atx", bulletListMarker: "-" });
 
   // Preload document covers (images + PDF thumbnails) via shared util so cards render instantly
   const preloadDocumentCovers = React.useCallback((docs: DocumentData[]) => {
     preloadDocumentCoversUtil(docs as any, () => setCoversLoaded(v => v + 1));
   }, []);
 
-  // Load USER.md content when editor opens
+  // Preload USER.md on mount so the editor opens with content ready (no loading state)
   React.useEffect(() => {
-    if (!userContextEditorOpen) return;
     setUserContextLoadError(null);
-    setUserContextLoading(true);
     backendApi.getBootstrapUserContext().then((res) => {
-      setUserContextLoading(false);
       if (res.success) {
         setUserContextContent(res.content ?? "");
       } else {
         setUserContextLoadError(res.error ?? "Failed to load");
       }
     });
+  }, []);
+
+  // When editor opens, refresh content in background (silent; no loading state)
+  React.useEffect(() => {
+    if (!userContextEditorOpen) return;
+    backendApi.getBootstrapUserContext().then((res) => {
+      if (res.success) {
+        setUserContextContent(res.content ?? "");
+        setUserContextLoadError(null);
+      }
+    });
   }, [userContextEditorOpen]);
 
-  // Focus textarea when dialog is open and content loaded so it's instantly editable
-  React.useEffect(() => {
-    if (!userContextEditorOpen || userContextLoading) return;
-    const t = setTimeout(() => userContextTextareaRef.current?.focus(), 0);
-    return () => clearTimeout(t);
-  }, [userContextEditorOpen, userContextLoading]);
+  // Move caret to the start of the contenteditable so cursor appears before placeholder text
+  const setUserContextCaretToStart = React.useCallback(() => {
+    const el = userContextEditorRef.current;
+    if (!el) return;
+    const sel = window.getSelection();
+    if (!sel) return;
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    range.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(range);
+  }, []);
 
-  const handleSaveUserContext = React.useCallback(() => {
+  // Sync external markdown (e.g. from API when dialog opens) into the WYSIWYG contenteditable
+  React.useEffect(() => {
+    if (!userContextEditorOpen || !userContextEditorRef.current) return;
+    if (userContextContent === userContextLastSyncedRef.current) return;
+    const el = userContextEditorRef.current;
+    const content = userContextContent;
+    Promise.resolve(marked(content || "")).then((html: string) => {
+      if (el && userContextLastSyncedRef.current !== content) {
+        el.innerHTML = typeof html === "string" ? html : "";
+        el.toggleAttribute("data-empty", !(content || "").trim());
+        userContextLastSyncedRef.current = content;
+        setUserContextCaretToStart();
+      }
+    }).catch(() => {
+      if (el) {
+        el.textContent = content;
+        userContextLastSyncedRef.current = content;
+        setUserContextCaretToStart();
+      }
+    });
+  }, [userContextEditorOpen, userContextContent, setUserContextCaretToStart]);
+
+  // Focus editor when dialog opens and place caret at start (before placeholder)
+  React.useEffect(() => {
+    if (!userContextEditorOpen) return;
+    const t = setTimeout(() => {
+      const el = userContextEditorRef.current;
+      if (el) {
+        el.focus();
+        setUserContextCaretToStart();
+      }
+    }, 0);
+    return () => clearTimeout(t);
+  }, [userContextEditorOpen, setUserContextCaretToStart]);
+
+  const handleSaveUserContext = React.useCallback((closeAfterSave: boolean) => {
     setUserContextSaveError(null);
     setUserContextSaving(true);
     backendApi.putBootstrapUserContext(userContextContent).then((res) => {
       setUserContextSaving(false);
-      if (res.success) {
+      if (res.success && closeAfterSave) {
         setUserContextEditorOpen(false);
-      } else {
+      } else if (!res.success) {
         setUserContextSaveError(res.error ?? "Failed to save");
       }
+    }).catch((err) => {
+      setUserContextSaving(false);
+      setUserContextSaveError(err instanceof Error ? err.message : "Failed to save");
     });
   }, [userContextContent]);
 
-  // Toolbar helpers for USER.md editor (markdown at cursor/selection)
-  const getLineStart = (ta: HTMLTextAreaElement) => {
-    const pos = ta.selectionStart;
-    const text = ta.value;
-    let start = pos;
-    while (start > 0 && text[start - 1] !== '\n') start--;
-    return start;
-  };
-
-  const insertAtLineStart = React.useCallback((prefix: string) => {
-    const ta = userContextTextareaRef.current;
-    if (!ta) return;
-    const start = getLineStart(ta);
-    const next = start + prefix.length;
-    setUserContextContent((prev) => prev.slice(0, start) + prefix + prev.slice(start));
-    setTimeout(() => {
-      userContextTextareaRef.current?.focus();
-      userContextTextareaRef.current?.setSelectionRange(next, next);
-    }, 0);
-    setUserContextBlockType('paragraph');
+  // Toolbar helpers for USER.md WYSIWYG editor (contenteditable; sync to markdown on input)
+  const syncEditorToMarkdown = React.useCallback(() => {
+    const el = userContextEditorRef.current;
+    if (!el || !turndownRef.current) return;
+    const isEmpty = !el.innerText || el.innerText.trim() === "";
+    el.toggleAttribute("data-empty", isEmpty);
+    try {
+      const md = turndownRef.current.turndown(el.innerHTML) || "";
+      userContextLastSyncedRef.current = md;
+      setUserContextContent(md);
+    } catch {
+      userContextLastSyncedRef.current = el.innerText || "";
+      setUserContextContent(userContextLastSyncedRef.current);
+    }
   }, []);
 
-  const wrapSelection = React.useCallback((prefix: string, suffix: string) => {
-    const ta = userContextTextareaRef.current;
-    if (!ta) return;
-    const { selectionStart: s, selectionEnd: e } = ta;
-    const text = userContextContent;
-    const selected = text.slice(s, e);
-    // Toggle off (case 1): selection is already wrapped (starts with prefix, ends with suffix)
-    if (
-      selected.length >= prefix.length + suffix.length &&
-      selected.startsWith(prefix) &&
-      selected.endsWith(suffix)
-    ) {
-      const inner = selected.slice(prefix.length, selected.length - suffix.length);
-      const newContent = text.slice(0, s) + inner + text.slice(e);
-      const newEnd = s + inner.length;
-      setUserContextContent(newContent);
-      setTimeout(() => {
-        userContextTextareaRef.current?.focus();
-        userContextTextareaRef.current?.setSelectionRange(s, newEnd);
-      }, 0);
-      return;
-    }
-    // Toggle off (case 2): selection is the inner part only (prefix immediately before, suffix immediately after)
-    if (
-      s >= prefix.length &&
-      e + suffix.length <= text.length &&
-      text.slice(s - prefix.length, s) === prefix &&
-      text.slice(e, e + suffix.length) === suffix
-    ) {
-      const newContent = text.slice(0, s - prefix.length) + selected + text.slice(e + suffix.length);
-      const newStart = s - prefix.length;
-      const newEnd = newStart + selected.length;
-      setUserContextContent(newContent);
-      setTimeout(() => {
-        userContextTextareaRef.current?.focus();
-        userContextTextareaRef.current?.setSelectionRange(newStart, newEnd);
-      }, 0);
-      return;
-    }
-    // Toggle on: wrap selection
-    const newContent = text.slice(0, s) + prefix + text.slice(s, e) + suffix + text.slice(e);
-    const newEnd = s + prefix.length + (e - s);
-    setUserContextContent(newContent);
-    setTimeout(() => {
-      userContextTextareaRef.current?.focus();
-      userContextTextareaRef.current?.setSelectionRange(s + prefix.length, newEnd);
-    }, 0);
-  }, [userContextContent]);
+  const applyFormat = React.useCallback((command: string, value?: string) => {
+    const el = userContextEditorRef.current;
+    if (!el) return;
+    el.focus();
+    document.execCommand(command, false, value ?? "");
+    syncEditorToMarkdown();
+  }, [syncEditorToMarkdown]);
 
   const handleParagraphSelect = React.useCallback((value: string) => {
-    if (value === 'heading1') insertAtLineStart('# ');
-    else if (value === 'heading2') insertAtLineStart('## ');
-    else if (value === 'bullet') insertAtLineStart('- ');
-    setUserContextBlockType('paragraph');
-  }, [insertAtLineStart]);
+    const el = userContextEditorRef.current;
+    if (!el) return;
+    el.focus();
+    if (value === "heading1") document.execCommand("formatBlock", false, "h1");
+    else if (value === "heading2") document.execCommand("formatBlock", false, "h2");
+    else if (value === "bullet") document.execCommand("insertUnorderedList", false, "");
+    else document.execCommand("formatBlock", false, "p");
+    setUserContextBlockType("paragraph");
+    syncEditorToMarkdown();
+  }, [syncEditorToMarkdown]);
 
   // Files bar shows first FILES_BAR_COUNT; cache for initial load
   React.useEffect(() => {
@@ -1021,78 +1037,93 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
             className="p-0 gap-0 overflow-hidden border-0 bg-white shadow-xl max-h-[92vh] min-w-0 max-w-4xl w-[min(900px,calc(100vw-32px))] rounded-xl flex flex-col duration-0 data-[state=open]:animate-none data-[state=closed]:animate-none"
             style={{ boxShadow: "0 4px 24px rgba(0,0,0,0.08)" }}
             overlayClassName="bg-black/10 data-[state=open]:animate-none data-[state=closed]:animate-none"
-            closeClassName="!top-3"
+            hideClose
           >
             <DialogTitle className="sr-only">User context (USER.md)</DialogTitle>
-            {/* Toolbar row — pr-16 reserves space for dialog close (X) so Save doesn't overlap */}
-            <div className="flex shrink-0 items-center gap-3 pl-10 pr-16 py-4 rounded-t-xl">
+            {/* Toolbar row — notepad-style: format controls + Save as draft / Save + Close */}
+            <div className="flex shrink-0 items-center gap-3 pl-6 pr-4 py-3 border-b border-gray-100 rounded-t-xl bg-white">
               <div className="flex items-center gap-3 flex-1 min-w-0">
-                <button type="button" className="p-1.5 rounded-lg hover:bg-gray-200 text-neutral-600" aria-label="Menu">
-                  <Menu className="h-4 w-4" />
-                </button>
-                <span className="text-[13px] font-normal text-gray-900 truncate">User context (USER.md)</span>
+                <span className="text-[15px] font-medium text-gray-700 truncate">USER.md</span>
               </div>
               <div className="flex items-center gap-0.5 flex-shrink-0">
                 <Select value={userContextBlockType} onValueChange={handleParagraphSelect}>
-                  <SelectTrigger className="w-[120px] h-8 border-0 bg-transparent shadow-none gap-1 text-[13px] font-normal text-gray-700 hover:bg-gray-200 rounded-lg" hideIcon>
+                  <SelectTrigger className="w-[120px] h-8 border-0 bg-transparent shadow-none gap-1 text-[13px] font-normal text-gray-700 hover:bg-gray-100 rounded-md" hideIcon>
                     <SelectValue placeholder="Paragraph" />
                   </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="paragraph">Paragraph</SelectItem>
-                    <SelectItem value="heading1">Heading 1</SelectItem>
-                    <SelectItem value="heading2">Heading 2</SelectItem>
-                    <SelectItem value="bullet">Bullet list</SelectItem>
+                  <SelectContent className="min-w-[7rem] p-0.5">
+                    <SelectItem value="paragraph" className="py-1 pl-7 pr-1.5 text-xs focus:bg-gray-100 focus:text-gray-900 data-[highlighted]:bg-gray-100 data-[highlighted]:text-gray-900">Paragraph</SelectItem>
+                    <SelectItem value="heading1" className="py-1 pl-7 pr-1.5 text-xs focus:bg-gray-100 focus:text-gray-900 data-[highlighted]:bg-gray-100 data-[highlighted]:text-gray-900">Heading 1</SelectItem>
+                    <SelectItem value="heading2" className="py-1 pl-7 pr-1.5 text-xs focus:bg-gray-100 focus:text-gray-900 data-[highlighted]:bg-gray-100 data-[highlighted]:text-gray-900">Heading 2</SelectItem>
+                    <SelectItem value="bullet" className="py-1 pl-7 pr-1.5 text-xs focus:bg-gray-100 focus:text-gray-900 data-[highlighted]:bg-gray-100 data-[highlighted]:text-gray-900">Bullet list</SelectItem>
                   </SelectContent>
                 </Select>
-                <button type="button" className="p-1.5 rounded-lg hover:bg-gray-200 text-neutral-600" aria-label="Bold" onClick={() => wrapSelection('**', '**')}>
+                <button type="button" className="p-1.5 rounded-md hover:bg-gray-100 text-neutral-600" aria-label="Bold" onClick={() => applyFormat('bold')}>
                   <Bold className="h-4 w-4" />
                 </button>
-                <button type="button" className="p-1.5 rounded-lg hover:bg-gray-200 text-neutral-600" aria-label="Italic" onClick={() => wrapSelection('*', '*')}>
+                <button type="button" className="p-1.5 rounded-md hover:bg-gray-100 text-neutral-600" aria-label="Italic" onClick={() => applyFormat('italic')}>
                   <Italic className="h-4 w-4" />
                 </button>
-                <button type="button" className={`p-1.5 rounded-lg ${userContextAlignment === 'left' ? 'bg-gray-200 text-gray-800' : 'hover:bg-gray-200 text-neutral-600'}`} aria-label="Align left" onClick={() => setUserContextAlignment('left')}>
+                <button type="button" className={`p-1.5 rounded-md ${userContextAlignment === 'left' ? 'bg-gray-100 text-gray-800' : 'hover:bg-gray-100 text-neutral-600'}`} aria-label="Align left" onClick={() => setUserContextAlignment('left')}>
                   <AlignLeft className="h-4 w-4" />
                 </button>
-                <button type="button" className={`p-1.5 rounded-lg ${userContextAlignment === 'center' ? 'bg-gray-200 text-gray-800' : 'hover:bg-gray-200 text-neutral-600'}`} aria-label="Align center" onClick={() => setUserContextAlignment('center')}>
+                <button type="button" className={`p-1.5 rounded-md ${userContextAlignment === 'center' ? 'bg-gray-100 text-gray-800' : 'hover:bg-gray-100 text-neutral-600'}`} aria-label="Align center" onClick={() => setUserContextAlignment('center')}>
                   <AlignCenter className="h-4 w-4" />
                 </button>
-                <button type="button" className={`p-1.5 rounded-lg ${userContextAlignment === 'right' ? 'bg-gray-200 text-gray-800' : 'hover:bg-gray-200 text-neutral-600'}`} aria-label="Align right" onClick={() => setUserContextAlignment('right')}>
+                <button type="button" className={`p-1.5 rounded-md ${userContextAlignment === 'right' ? 'bg-gray-100 text-gray-800' : 'hover:bg-gray-100 text-neutral-600'}`} aria-label="Align right" onClick={() => setUserContextAlignment('right')}>
                   <AlignRight className="h-4 w-4" />
                 </button>
               </div>
               <div className="flex items-center gap-2 flex-shrink-0 pl-2">
                 <button
                   type="button"
-                  className="px-3 py-1.5 rounded-lg text-[13px] font-normal text-neutral-800 bg-white border border-gray-200 hover:bg-gray-50 disabled:opacity-50 disabled:pointer-events-none transition-colors"
-                  onClick={handleSaveUserContext}
-                  disabled={userContextLoading || userContextSaving}
+                  className="px-3 py-1.5 rounded-lg text-[13px] font-normal text-gray-600 bg-white border border-gray-200 hover:bg-gray-50 disabled:opacity-50 disabled:pointer-events-none transition-colors"
+                  onClick={() => handleSaveUserContext(false)}
+                  disabled={userContextSaving}
                 >
-                  {userContextSaving ? "Saving…" : "Save"}
+                  {userContextSaving ? "Saving…" : "Save as draft"}
                 </button>
+                <button
+                  type="button"
+                  className="px-3 py-1.5 rounded-lg text-[13px] font-medium text-white bg-gray-800 hover:bg-gray-900 disabled:opacity-50 disabled:pointer-events-none transition-colors"
+                  onClick={() => handleSaveUserContext(true)}
+                  disabled={userContextSaving}
+                >
+                  Save
+                </button>
+                <DialogClose
+                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-gray-500 opacity-70 hover:opacity-100 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none"
+                  aria-label="Close"
+                >
+                  <span className="inline-flex items-center justify-center text-2xl font-extralight leading-[0]" aria-hidden>×</span>
+                </DialogClose>
               </div>
             </div>
-            {/* Content area — textarea is always visible and focused when dialog opens so it's instantly editable */}
-            <div className="flex-1 min-h-0 overflow-y-auto py-4 px-4">
-              <p className="text-[15px] text-gray-500 mb-3">
-                This text is shown to Velora so it can personalize responses. You can also ask Velora to update it in chat.
+            {/* Notepad content area — document-like, no input box styling */}
+            <div className="flex-1 min-h-0 overflow-y-auto flex flex-col">
+              <p className="text-[14px] text-gray-400 px-6 pt-3 pb-1 shrink-0">
+                Shown to Velora to personalize responses. You can also ask Velora to update it in chat.
               </p>
-              {userContextLoading && <p className="text-[13px] text-gray-500">Loading…</p>}
               {userContextLoadError && (
-                <p className="text-[13px] text-destructive mb-2" role="alert">{userContextLoadError}</p>
+                <p className="text-[13px] text-destructive px-6 py-2" role="alert">{userContextLoadError}</p>
               )}
-              <textarea
-                ref={userContextTextareaRef}
-                className={`min-h-[280px] w-full p-4 rounded-lg border border-gray-200 bg-white text-[13px] font-normal text-gray-900 placeholder:text-neutral-400 resize-y outline-none focus:ring-2 focus:ring-gray-200 focus:border-gray-300 ${userContextAlignment === 'center' ? 'text-center' : userContextAlignment === 'right' ? 'text-right' : 'text-left'}`}
-                placeholder="e.g. I'm a commercial property solicitor. Focus on lease reviews and rent schedules."
-                value={userContextContent}
-                onChange={(e) => setUserContextContent(e.target.value)}
-                disabled={userContextLoading}
-              />
-              <p className="text-[11px] text-gray-500 mt-2">
-                {userContextContent.length.toLocaleString()} / 150,000 characters
-              </p>
+              <div className="flex-1 min-h-0 px-6 pb-6 pt-1">
+                <div
+                  ref={userContextEditorRef}
+                  contentEditable
+                  data-placeholder="e.g. I'm a commercial property solicitor. Focus on lease reviews and rent schedules."
+                  className={`min-h-[320px] w-full py-4 px-0 bg-transparent text-[15px] font-normal text-gray-900 outline-none border-0 focus:ring-0 focus:border-0 leading-relaxed [&[data-empty]]:before:content-[attr(data-placeholder)] [&[data-empty]]:before:text-gray-400 ${userContextAlignment === 'center' ? 'text-center' : userContextAlignment === 'right' ? 'text-right' : 'text-left'}`}
+                  style={{ boxShadow: 'none' }}
+                  onInput={() => syncEditorToMarkdown()}
+                  onPaste={(e) => {
+                    e.preventDefault();
+                    const text = e.clipboardData.getData('text/plain');
+                    document.execCommand('insertText', false, text);
+                    syncEditorToMarkdown();
+                  }}
+                />
+              </div>
               {userContextSaveError && (
-                <p className="text-[13px] text-destructive mt-2" role="alert">{userContextSaveError}</p>
+                <p className="text-[13px] text-destructive px-6 pb-3" role="alert">{userContextSaveError}</p>
               )}
             </div>
           </DialogContent>

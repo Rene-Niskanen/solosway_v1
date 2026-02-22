@@ -36,6 +36,7 @@ import { useUsage } from "../contexts/UsageContext";
 import { useAuthUser } from "../contexts/AuthContext";
 import { backendApi } from "@/services/backendApi";
 import { TIERS, type TierKey } from "@/config/billing";
+import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 
 export interface SidebarProps {
   className?: string;
@@ -250,6 +251,11 @@ export const Sidebar = ({
     }
     return userName.charAt(0).toUpperCase() || 'U';
   }, [userName]);
+
+  const avatarImageSrc = React.useMemo(() => {
+    const base = userData?.profile_image || userData?.avatar_url || userData?.profile_picture_url || "/default profile icon.png";
+    return base.startsWith("http") && profilePicCacheBust != null ? `${base}?t=${profilePicCacheBust}` : base;
+  }, [userData?.profile_image, userData?.avatar_url, userData?.profile_picture_url, profilePicCacheBust]);
 
   const planLabel = React.useMemo(() => {
     const plan = usageData?.plan as TierKey | undefined;
@@ -553,7 +559,7 @@ export const Sidebar = ({
                   aria-label={isIconsOnly ? 'Expand sidebar' : 'Show only icons'}
                   title={isIconsOnly ? 'Expand sidebar' : 'Show only icons'}
                 >
-                  <img src="/sidebar.png" alt="" className="h-5 w-5 object-contain" />
+                  <img src="/sidebar.png" alt="" className="h-6 w-6 object-contain -mt-0.5" />
                 </button>
               </div>
             )}
@@ -636,14 +642,14 @@ export const Sidebar = ({
                         }}
                         className="w-full flex items-center gap-3 px-2 py-2 rounded text-[#141413] hover:bg-gray-50 transition-colors text-left"
                       >
-                        <Settings className="w-4 h-4 flex-shrink-0 text-[#141413]" strokeWidth={1.25} />
+                        <Settings className="h-5 w-5 flex-shrink-0 text-[#141413]" strokeWidth={1.25} />
                         <span className="text-[13px] font-normal text-[#141413]">Settings</span>
                       </button>
                       <button
                         onClick={() => setIsBrandDropdownOpen(false)}
                         className="w-full flex items-center gap-3 px-2 py-2 rounded text-[#141413] hover:bg-gray-50 transition-colors text-left"
                       >
-                        <HelpCircle className="w-4 h-4 flex-shrink-0 text-[#141413]" strokeWidth={1.25} />
+                        <HelpCircle className="h-5 w-5 flex-shrink-0 text-[#141413]" strokeWidth={1.25} />
                         <span className="text-[13px] font-normal text-[#141413]">Get help</span>
                       </button>
                       <div className="border-t border-gray-100 my-1" />
@@ -654,16 +660,16 @@ export const Sidebar = ({
                         }}
                         className="w-full flex items-center gap-3 px-2 py-2 rounded text-[#141413] hover:bg-gray-50 transition-colors text-left"
                       >
-                        <ArrowUpCircle className="w-4 h-4 flex-shrink-0 text-[#141413]" strokeWidth={1.25} />
+                        <ArrowUpCircle className="h-5 w-5 flex-shrink-0 text-[#141413]" strokeWidth={1.25} />
                         <span className="text-[13px] font-normal text-[#141413]">Upgrade plan</span>
                       </button>
                       <button
                         onClick={() => setIsBrandDropdownOpen(false)}
                         className="w-full flex items-center gap-3 px-2 py-2 rounded text-[#141413] hover:bg-gray-50 transition-colors text-left"
                       >
-                        <Info className="w-4 h-4 flex-shrink-0 text-[#141413]" strokeWidth={1.25} />
+                        <Info className="h-5 w-5 flex-shrink-0 text-[#141413]" strokeWidth={1.25} />
                         <span className="text-[13px] font-normal text-[#141413] flex-1">Learn more</span>
-                        <ChevronRight className="w-4 h-4 flex-shrink-0 text-muted-foreground" strokeWidth={1.5} />
+                        <ChevronRight className="h-5 w-5 flex-shrink-0 text-muted-foreground" strokeWidth={1.5} />
                       </button>
                       <div className="border-t border-gray-100 my-1" />
                       <button
@@ -673,7 +679,7 @@ export const Sidebar = ({
                         }}
                         className="w-full flex items-center gap-3 px-2 py-2 rounded text-[#141413] hover:bg-gray-50 transition-colors text-left"
                       >
-                        <LogOut className="w-4 h-4 flex-shrink-0 text-[#141413]" strokeWidth={1.25} />
+                        <LogOut className="h-5 w-5 flex-shrink-0 text-[#141413]" strokeWidth={1.25} />
                         <span className="text-[13px] font-normal text-[#141413]">Log out</span>
                       </button>
                     </div>
@@ -703,14 +709,14 @@ export const Sidebar = ({
                         }}
                         className="w-full flex items-center gap-3 px-2 py-2 rounded text-[#141413] hover:bg-gray-50 transition-colors text-left"
                       >
-                        <Settings className="w-4 h-4 flex-shrink-0 text-[#141413]" strokeWidth={1.25} />
+                        <Settings className="h-5 w-5 flex-shrink-0 text-[#141413]" strokeWidth={1.25} />
                         <span className="text-[13px] font-normal text-[#141413]">Settings</span>
                       </button>
                       <button
                         onClick={() => setIsBrandDropdownOpen(false)}
                         className="w-full flex items-center gap-3 px-2 py-2 rounded text-[#141413] hover:bg-gray-50 transition-colors text-left"
                       >
-                        <HelpCircle className="w-4 h-4 flex-shrink-0 text-[#141413]" strokeWidth={1.25} />
+                        <HelpCircle className="h-5 w-5 flex-shrink-0 text-[#141413]" strokeWidth={1.25} />
                         <span className="text-[13px] font-normal text-[#141413]">Get help</span>
                       </button>
                       <div className="border-t border-gray-100 my-1" />
@@ -721,16 +727,16 @@ export const Sidebar = ({
                         }}
                         className="w-full flex items-center gap-3 px-2 py-2 rounded text-[#141413] hover:bg-gray-50 transition-colors text-left"
                       >
-                        <ArrowUpCircle className="w-4 h-4 flex-shrink-0 text-[#141413]" strokeWidth={1.25} />
+                        <ArrowUpCircle className="h-5 w-5 flex-shrink-0 text-[#141413]" strokeWidth={1.25} />
                         <span className="text-[13px] font-normal text-[#141413]">Upgrade plan</span>
                       </button>
                       <button
                         onClick={() => setIsBrandDropdownOpen(false)}
                         className="w-full flex items-center gap-3 px-2 py-2 rounded text-[#141413] hover:bg-gray-50 transition-colors text-left"
                       >
-                        <Info className="w-4 h-4 flex-shrink-0 text-[#141413]" strokeWidth={1.25} />
+                        <Info className="h-5 w-5 flex-shrink-0 text-[#141413]" strokeWidth={1.25} />
                         <span className="text-[13px] font-normal text-[#141413] flex-1">Learn more</span>
-                        <ChevronRight className="w-4 h-4 flex-shrink-0 text-muted-foreground" strokeWidth={1.5} />
+                        <ChevronRight className="h-5 w-5 flex-shrink-0 text-muted-foreground" strokeWidth={1.5} />
                       </button>
                       <div className="border-t border-gray-100 my-1" />
                       <button
@@ -740,7 +746,7 @@ export const Sidebar = ({
                         }}
                         className="w-full flex items-center gap-3 px-2 py-2 rounded text-[#141413] hover:bg-gray-50 transition-colors text-left"
                       >
-                        <LogOut className="w-4 h-4 flex-shrink-0 text-[#141413]" strokeWidth={1.25} />
+                        <LogOut className="h-5 w-5 flex-shrink-0 text-[#141413]" strokeWidth={1.25} />
                         <span className="text-[13px] font-normal text-[#141413]">Log out</span>
                       </button>
                     </div>
@@ -764,12 +770,15 @@ export const Sidebar = ({
                   }`}
                   aria-label="Account menu"
                 >
-                  <div className="h-[26px] w-[26px] rounded-full bg-gray-700 flex items-center justify-center flex-shrink-0 text-white text-xs font-medium">
-                    {userInitials}
-                  </div>
+                  <Avatar className="h-[26px] w-[26px] flex-shrink-0">
+                    <AvatarImage src={avatarImageSrc} alt={userName} className="object-cover" />
+                    <AvatarFallback className="bg-gray-700 text-white text-xs font-medium">
+                      {userInitials}
+                    </AvatarFallback>
+                  </Avatar>
                   {!isIconsOnly && (
                     <div className="min-w-0 flex-1 text-left">
-                      <p className="text-[13px] font-semibold text-[#141413] truncate leading-tight">{userName}</p>
+                      <p className="text-[13px] font-semibold text-gray-600 truncate leading-tight">{userName}</p>
                       <p className="text-[11px] text-muted-foreground truncate leading-tight">{planLabel}</p>
                     </div>
                   )}
@@ -978,14 +987,14 @@ export const Sidebar = ({
                         }}
                         className="w-full flex items-center gap-3 px-2 py-2 rounded text-[#141413] hover:bg-gray-50 transition-colors text-left"
                       >
-                        <Settings className="w-4 h-4 flex-shrink-0 text-[#141413]" strokeWidth={1.25} />
+                        <Settings className="h-5 w-5 flex-shrink-0 text-[#141413]" strokeWidth={1.25} />
                         <span className="text-[13px] font-normal text-[#141413]">Settings</span>
                       </button>
                       <button
                         onClick={() => setIsBrandDropdownOpen(false)}
                         className="w-full flex items-center gap-3 px-2 py-2 rounded text-[#141413] hover:bg-gray-50 transition-colors text-left"
                       >
-                        <HelpCircle className="w-4 h-4 flex-shrink-0 text-[#141413]" strokeWidth={1.25} />
+                        <HelpCircle className="h-5 w-5 flex-shrink-0 text-[#141413]" strokeWidth={1.25} />
                         <span className="text-[13px] font-normal text-[#141413]">Get help</span>
                       </button>
                       <div className="border-t border-gray-100 my-1" />
@@ -996,16 +1005,16 @@ export const Sidebar = ({
                         }}
                         className="w-full flex items-center gap-3 px-2 py-2 rounded text-[#141413] hover:bg-gray-50 transition-colors text-left"
                       >
-                        <ArrowUpCircle className="w-4 h-4 flex-shrink-0 text-[#141413]" strokeWidth={1.25} />
+                        <ArrowUpCircle className="h-5 w-5 flex-shrink-0 text-[#141413]" strokeWidth={1.25} />
                         <span className="text-[13px] font-normal text-[#141413]">Upgrade plan</span>
                       </button>
                       <button
                         onClick={() => setIsBrandDropdownOpen(false)}
                         className="w-full flex items-center gap-3 px-2 py-2 rounded text-[#141413] hover:bg-gray-50 transition-colors text-left"
                       >
-                        <Info className="w-4 h-4 flex-shrink-0 text-[#141413]" strokeWidth={1.25} />
+                        <Info className="h-5 w-5 flex-shrink-0 text-[#141413]" strokeWidth={1.25} />
                         <span className="text-[13px] font-normal text-[#141413] flex-1">Learn more</span>
-                        <ChevronRight className="w-4 h-4 flex-shrink-0 text-muted-foreground" strokeWidth={1.5} />
+                        <ChevronRight className="h-5 w-5 flex-shrink-0 text-muted-foreground" strokeWidth={1.5} />
                       </button>
                       <div className="border-t border-gray-100 my-1" />
                       <button
@@ -1015,7 +1024,7 @@ export const Sidebar = ({
                         }}
                         className="w-full flex items-center gap-3 px-2 py-2 rounded text-[#141413] hover:bg-gray-50 transition-colors text-left"
                       >
-                        <LogOut className="w-4 h-4 flex-shrink-0 text-[#141413]" strokeWidth={1.25} />
+                        <LogOut className="h-5 w-5 flex-shrink-0 text-[#141413]" strokeWidth={1.25} />
                         <span className="text-[13px] font-normal text-[#141413]">Log out</span>
                       </button>
                     </div>
@@ -1029,11 +1038,14 @@ export const Sidebar = ({
                   className="flex items-center gap-3 flex-1 min-w-0 py-0.5 rounded transition-colors duration-75 text-left"
                   aria-label="Account menu"
                 >
-                  <div className="h-[26px] w-[26px] rounded-full bg-gray-700 flex items-center justify-center flex-shrink-0 text-white text-xs font-medium">
-                    {userInitials}
-                  </div>
+                  <Avatar className="h-[26px] w-[26px] flex-shrink-0">
+                    <AvatarImage src={avatarImageSrc} alt={userName} className="object-cover" />
+                    <AvatarFallback className="bg-gray-700 text-white text-xs font-medium">
+                      {userInitials}
+                    </AvatarFallback>
+                  </Avatar>
                   <div className="min-w-0 flex-1 text-left">
-                    <p className="text-[13px] font-semibold text-[#141413] truncate leading-tight">{userName}</p>
+                    <p className="text-[13px] font-semibold text-gray-600 truncate leading-tight">{userName}</p>
                     <p className="text-[11px] text-muted-foreground truncate leading-tight">{planLabel}</p>
                   </div>
                 </button>

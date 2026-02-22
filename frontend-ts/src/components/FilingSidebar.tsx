@@ -2415,7 +2415,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                                       />
                                     </span>
                                       <div className="flex-1 min-w-0">
-                                        <div className="text-xs font-normal text-gray-900 truncate" style={{ fontFamily: 'system-ui, -apple-system, sans-serif', letterSpacing: '-0.01em' }}>
+                                        <div className="text-sm font-normal text-gray-900 truncate" style={{ fontFamily: 'system-ui, -apple-system, sans-serif', letterSpacing: '-0.01em' }}>
                                           {address}
                                         </div>
                                       </div>

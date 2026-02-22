@@ -58,9 +58,9 @@ def validate_planner_output(output: Dict[str, Any], input_state: Dict[str, Any] 
     if not isinstance(plan["steps"], list):
         raise ValueError("execution_plan.steps must be a list")
     
-    if len(plan["steps"]) not in (0, 1, 2):
+    if len(plan["steps"]) not in (0, 1, 2, 3):
         raise ValueError(
-            f"execution_plan.steps must have 0, 1, or 2 steps, got {len(plan['steps'])}"
+            f"execution_plan.steps must have 0, 1, 2, or 3 steps, got {len(plan['steps'])}"
         )
     
     logger.debug("[VALIDATOR] ✅ Planner output contract validated")

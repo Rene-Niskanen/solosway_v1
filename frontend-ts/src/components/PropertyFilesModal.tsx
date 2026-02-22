@@ -528,10 +528,14 @@ export const PropertyFilesModal: React.FC<PropertyFilesModalProps> = ({
                         title={`Click to open or drag to chat: ${doc.original_filename}`}
                       >
                         <div className="flex items-center gap-2">
-                          {/* File Icon - Red square with white document outline (matching FileAttachment) */}
-                          <div className={`w-6 h-6 ${isPDF ? 'bg-red-500' : isDOC ? 'bg-blue-600' : isImage ? 'bg-red-500' : 'bg-gray-600'} rounded flex items-center justify-center flex-shrink-0`}>
-                            <FileText className="w-4 h-4 text-white" strokeWidth={2} />
-                          </div>
+                          {/* File Icon - PDF/Word images, colored box for others (matching FileAttachment) */}
+                          {isDOC ? (
+                            <img src="/word.png" alt="Word" className="w-6 h-6 rounded object-contain flex-shrink-0" />
+                          ) : (
+                            <div className={`w-6 h-6 ${isPDF ? 'bg-red-500' : isImage ? 'bg-red-500' : 'bg-gray-600'} rounded flex items-center justify-center flex-shrink-0`}>
+                              <FileText className="w-4 h-4 text-white" strokeWidth={2} />
+                            </div>
+                          )}
                           
                           {/* File Info */}
                           <div className="flex flex-col min-w-0 flex-1">

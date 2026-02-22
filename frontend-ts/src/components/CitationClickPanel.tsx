@@ -96,9 +96,13 @@ export function computeCitationPreviewTransform(
   const rawZoom = Math.min(zoomForWidth, zoomForHeight);
   const zoom = Math.min(1.2, rawZoom);
 
-  // Place bbox center at viewport center for even padding
+  // Horizontal: center bbox in viewport
   const idealTranslateX = previewWidth / 2 - centerX * zoom;
-  const idealTranslateY = previewHeight / 2 - centerY * zoom;
+  // Vertical: when bbox is in the upper part of the page, align to top to avoid excessive blank space above the title
+  const preferTopAlign = bbox.top < 0.35;
+  const idealTranslateY = preferTopAlign
+    ? previewPadding - originalBboxTop * zoom
+    : previewHeight / 2 - centerY * zoom;
   // Clamp so we don't show area outside the image
   const minTranslateX = previewWidth - imageWidth * zoom;
   const maxTranslateX = 0;
