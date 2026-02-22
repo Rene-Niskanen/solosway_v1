@@ -60,6 +60,9 @@ class LLMConfig(BaseSettings):
     # Developer/testing helpers
     simple_mode: bool = os.getenv("LLM_SIMPLE_MODE", "false").lower() == "true"
 
+    # LLM intent fallback: when heuristics would return "document", optionally call LLM to decide conversation vs document (default off)
+    use_llm_intent_fallback: bool = os.getenv("USE_LLM_INTENT_FALLBACK", "false").lower() == "true"
+
     # Mem0 Memory Settings (persistent user memory across sessions/chats)
     mem0_enabled: bool = os.getenv("MEM0_ENABLED", "true").lower() == "true"
     mem0_search_limit: int = int(os.getenv("MEM0_SEARCH_LIMIT", "5"))

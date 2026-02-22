@@ -102,9 +102,9 @@ export const Landing: React.FC = () => {
       </div>
       <div className="flex flex-col gap-10 px-4 py-10">
         <div className="flex flex-col gap-4">
-          <h1 className="text-[#101419] tracking-light text-4xl font-black leading-tight max-w-3xl">
+          <h2 className="text-[#101419] tracking-light text-4xl font-black leading-tight max-w-3xl">
             Key Features
-          </h1>
+          </h2>
           <p className="text-[#101419] text-base font-normal leading-normal max-w-3xl">
             Our software offers a range of features designed to streamline
             your workflow and provide accurate property valuations.

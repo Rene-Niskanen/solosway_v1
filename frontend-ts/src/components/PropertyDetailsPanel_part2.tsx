@@ -1,3 +1,77 @@
+"use client";
+
+import React, { useState, useRef } from 'react';
+import { createPortal } from 'react-dom';
+import { motion, AnimatePresence } from 'framer-motion';
+import {
+  X, Search, LayoutDashboard, FileText, Banknote, File as FileIcon,
+  Bed, Bath, Ruler, DollarSign, ArrowUp, Upload, CheckSquare, Square, Trash2, Image as ImageIcon,
+} from 'lucide-react';
+
+type SectionId = 'overview' | 'details' | 'financials' | 'documents';
+
+const SECTION_TABS: { id: SectionId; label: string; icon: React.ComponentType<any> }[] = [
+  { id: 'overview', label: 'Overview', icon: LayoutDashboard },
+  { id: 'details', label: 'Details', icon: FileText },
+  { id: 'financials', label: 'Financials', icon: Banknote },
+  { id: 'documents', label: 'Documents', icon: FileIcon },
+];
+
+interface PropertyDetailsPanelPart2Props {
+  activeSection: SectionId;
+  setActiveSection: (s: SectionId) => void;
+  displayProperty: Record<string, any>;
+  getPropertyImage: () => string;
+  property: { id: string };
+  isVisible: boolean;
+  onClose: () => void;
+}
+
+const formatFileName = (s: string) => s;
+
+interface DocItem {
+  id: string;
+  original_filename: string;
+  created_at?: string;
+  file_type?: string;
+}
+
+const ExpandedCardView: React.FC<{ selectedDoc: DocItem; onClose: () => void; onDocumentClick: (doc: DocItem, index: number) => void }> = () => null;
+
+export const PropertyDetailsPanelPart2: React.FC<PropertyDetailsPanelPart2Props> = ({
+  activeSection,
+  setActiveSection,
+  displayProperty,
+  getPropertyImage,
+  property,
+  isVisible,
+  onClose,
+}) => {
+  const [filesSearchQuery, setFilesSearchQuery] = useState('');
+  const [isSelectionMode, setIsSelectionMode] = useState(false);
+  const [selectedDocumentIds, setSelectedDocumentIds] = useState<Set<string>>(new Set());
+  const [selectedCardIndex, setSelectedCardIndex] = useState<number | null>(null);
+  const [hoveredCardIndex, setHoveredCardIndex] = useState<number | null>(null);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [isDraggingToDelete, setIsDraggingToDelete] = useState(false);
+  const [draggedDocumentId, setDraggedDocumentId] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const filteredDocuments: DocItem[] = [];
+  const yieldPercentage = (displayProperty.rentPcm && displayProperty.soldPrice)
+    ? Number(displayProperty.rentPcm) / Number(displayProperty.soldPrice) * 100 : 0;
+  const lettingInfo = displayProperty as Record<string, any>;
+  const handleDocumentClick = (_doc: DocItem, _index: number) => {};
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const handleDocumentDragStart = (_e: any, _doc: DocItem) => {};
+  const handleDocumentDragEnd = () => {};
+  const handleDeleteZoneDragOver = () => {};
+  const handleDeleteZoneDragLeave = () => {};
+  const handleDeleteZoneDrop = () => {};
+  const handleFileInputChange = () => {};
+  const handleDeleteDocument = async (_docId: string) => {};
+
   // Render different sections content
   const renderContent = () => {
     switch (activeSection) {
@@ -138,7 +212,7 @@
                       <div className="pt-4 border-t border-white/5">
                         <span className="block text-xs text-gray-500 uppercase tracking-wider font-medium mb-2">Status</span>
                         <span className="text-xs font-bold text-blue-300 bg-blue-900/40 px-3 py-1.5 rounded-full border border-blue-500/20 inline-block tracking-wide">
-                          {lettingInfo}
+                          {typeof lettingInfo === 'string' ? lettingInfo : (lettingInfo?.status ?? '—')}
                         </span>
                       </div>
                     )}
@@ -365,7 +439,7 @@
                                   }`}>
                                     {isPDF ? <FileText size={16} strokeWidth={3} /> : 
                                      isDOC ? <FileText size={16} strokeWidth={3} /> : 
-                                     isImage ? <ImageIcon size={16} strokeWidth={3} /> : <File size={16} strokeWidth={3} />}
+                                     isImage ? <ImageIcon size={16} strokeWidth={3} /> : <FileIcon size={16} strokeWidth={3} />}
                                   </div>
                                   
                                   <div className="flex flex-col min-w-0">
@@ -534,7 +608,7 @@
             {/* Sidebar - Sleek Dark Gradient */}
             <div className="w-72 bg-gradient-to-b from-[#1A1A1A] to-[#121212] border-r border-white/5 flex flex-col flex-shrink-0 py-6">
               <div className="px-6 mb-8">
-                <h1 className="text-xl font-bold text-white tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-white to-gray-400">Property Details</h1>
+                <h2 className="text-xl font-bold text-white tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-white to-gray-400">Property Details</h2>
               </div>
               
               <div className="flex-1 px-4 space-y-2">

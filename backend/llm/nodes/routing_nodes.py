@@ -1017,46 +1017,65 @@ async def classify_intent(state: MainWorkflowState) -> str:
     query_lower = user_query.lower().strip("!?.,' ")
     property_id = state.get("property_id")
 
-    # ── Rule 2: property selected → always document ──
-    # If the user has a property open, any question is very likely about it.
-    if property_id:
-        logger.info("[CLASSIFY] property_id present (%s) -> document", property_id[:8])
-        return "document"
-
-    # ── Rule 3: any document / real-estate keyword → document ──
-    if any(kw in query_lower for kw in _DOC_KEYWORDS):
-        logger.info("[CLASSIFY] doc keyword found -> document (query: '%s')", user_query[:60])
-        return "document"
-
-    # ── Rule 4: exact greeting match → conversation ──
-    # Also try after stripping "velora" address (e.g. "hey velora" → "hey" → match)
+    # ── Rule 2: conversation cues (checked even when property is selected) ──
+    # Obvious greetings/personal chat → conversation so "how are you?" doesn't trigger doc search.
     if query_lower in _GREETING_EXACT:
         logger.info("[CLASSIFY] greeting -> conversation (query: '%s')", user_query[:60])
         return "conversation"
-
-    # Strip greeting prefix + "velora" so "hey velora, how are you?" → "how are you"
     stripped = _strip_velora_greeting(query_lower)
-
-    # Check if the whole message was just a greeting to velora (e.g. "hey velora" → stripped is empty)
     if not stripped and "velora" in query_lower:
         logger.info("[CLASSIFY] greeting to Velora -> conversation (query: '%s')", user_query[:60])
         return "conversation"
-
-    # ── Rule 5: short personal / about-velora question → conversation ──
-    # Check both the original query and the stripped version (after removing greeting prefix)
     if any(query_lower.startswith(p) for p in _PERSONAL_STARTS):
         logger.info("[CLASSIFY] personal/about-velora -> conversation (query: '%s')", user_query[:60])
         return "conversation"
     if stripped and any(stripped.startswith(p) for p in _PERSONAL_STARTS):
-        logger.info("[CLASSIFY] personal/about-velora (after stripping greeting) -> conversation (query: '%s')", user_query[:60])
+        logger.info("[CLASSIFY] personal/about-velora (after stripping) -> conversation (query: '%s')", user_query[:60])
         return "conversation"
-
-    # ── Rule 6: very short message with no doc keywords → conversation ──
-    # e.g. "ok", "cool", "nice one", "lol", "haha"
     word_count = len(user_query.split())
     if word_count <= 3:
-        logger.info("[CLASSIFY] short message (%d words), no doc keywords -> conversation (query: '%s')", word_count, user_query[:60])
+        logger.info("[CLASSIFY] short message (%d words) -> conversation (query: '%s')", word_count, user_query[:60])
         return "conversation"
+
+    # ── Rule 3: property selected → document (for everything that wasn't clearly conversation) ──
+    if property_id:
+        logger.info("[CLASSIFY] property_id present (%s) -> document", property_id[:8])
+        return "document"
+
+    # ── Rule 4: any document / real-estate keyword → document ──
+    if any(kw in query_lower for kw in _DOC_KEYWORDS):
+        logger.info("[CLASSIFY] doc keyword found -> document (query: '%s')", user_query[:60])
+        return "document"
+
+    # ── Optional LLM fallback: when heuristics would return document, ask LLM for ambiguous mid-length queries ──
+    from backend.llm.config import config
+    if config.use_llm_intent_fallback and 4 <= word_count <= 25:
+        try:
+            from langchain_openai import ChatOpenAI
+            from langchain_core.messages import HumanMessage
+            from backend.llm.prompts.human_templates import get_query_classification_prompt
+            conv_hist = state.get("conversation_history")
+            history_parts = []
+            if isinstance(conv_hist, list):
+                for entry in conv_hist[-3:]:
+                    history_parts.append(
+                        "User: " + (entry.get("query") or "") + "\nAssistant: " + (entry.get("summary") or "")
+                    )
+            conversation_history_str = "\n".join(history_parts)
+            prompt = get_query_classification_prompt(user_query, conversation_history_str)
+            llm = ChatOpenAI(
+                model=config.openai_followup_classifier_model,
+                temperature=0,
+                max_tokens=20,
+            )
+            response = await llm.ainvoke([HumanMessage(content=prompt)])
+            label = (response.content or "").strip().lower()
+            allowed = {"general_query", "text_transformation", "document_search", "follow_up_document_search", "hybrid"}
+            if label in allowed and label == "general_query":
+                logger.info("[CLASSIFY] LLM fallback -> conversation (label=%s)", label)
+                return "conversation"
+        except Exception as e:
+            logger.warning("[CLASSIFY] LLM intent fallback failed, defaulting to document: %s", e)
 
     # ── Default: document (safe — better to search and find nothing) ──
     logger.info("[CLASSIFY] default -> document (query: '%s')", user_query[:60])

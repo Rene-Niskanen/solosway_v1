@@ -218,8 +218,9 @@ function clampPanelPosition(
 
   // Horizontal: start with panel to the right of the anchor; if it would overlap the blue highlight, move right
   let left = anchorRect.right + GAP;
-  const topIfBelow = anchorRect.bottom + GAP;
-  const panelBottomIfAbove = anchorRect.top - GAP;
+  // Use avoidRect (highlight) for vertical placement so panel never overlaps the blue highlight
+  const topIfBelow = avoidRect.bottom + GAP;
+  const panelBottomIfAbove = avoidRect.top - GAP;
   const panelTopIfAbove = panelBottomIfAbove - panelHeight;
   const panelRectAbove = { left, top: panelTopIfAbove, width: panelWidth, height: panelHeight };
   const panelRectBelow = { left, top: topIfBelow, width: panelWidth, height: panelHeight };
@@ -233,7 +234,7 @@ function clampPanelPosition(
     left = VIEWPORT_MARGIN;
   }
 
-  // Prefer below: panel top = citation bottom + GAP so the panel never covers the cited text or markers
+  // Prefer below: panel top = highlight bottom + GAP so the panel never covers the blue highlight
   const fitsBelow = topIfBelow + panelHeight <= vh - VIEWPORT_MARGIN;
 
   if (fitsBelow) {
@@ -242,7 +243,7 @@ function clampPanelPosition(
     return { left, top, openAbove: false };
   }
 
-  // Consider opening above only if the full panel fits entirely above the anchor (no overlap)
+  // Consider opening above only if the full panel fits entirely above the highlight (no overlap)
   const fitsAboveWithoutOverlap = panelTopIfAbove >= VIEWPORT_MARGIN;
 
   if (fitsAboveWithoutOverlap) {
@@ -251,7 +252,7 @@ function clampPanelPosition(
   }
 
   // Not enough room above without overlapping: open below and clamp to viewport
-  let top = anchorRect.bottom + GAP;
+  let top = avoidRect.bottom + GAP;
   if (top + panelHeight > vh - VIEWPORT_MARGIN) {
     top = vh - panelHeight - VIEWPORT_MARGIN;
   }
@@ -262,7 +263,7 @@ function clampPanelPosition(
 export interface CitationClickPanelProps {
   citationData: CitationClickPanelData;
   anchorRect: DOMRect;
-  /** When provided, used for the "go right" calculation so the panel does not overlap the blue highlight. */
+  /** When provided, used so the panel does not overlap the blue highlight (horizontal and vertical placement). */
   highlightRect?: DOMRect | null;
   cachedPageImage: CachedPageImage | null;
   onViewInDocument: () => void;
@@ -457,7 +458,7 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
             e.currentTarget.style.color = "#6b7280";
           }}
         >
-          <ChevronDown size={16} strokeWidth={2} />
+          <ChevronDown size={14} strokeWidth={1.25} />
         </button>
       </div>
 
@@ -576,7 +577,7 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
               }
               return (
                 <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 8, color: "#6b7280", fontSize: "13px" }}>
-                  <Loader2 className="w-6 h-6 animate-spin" strokeWidth={2} />
+                  <Loader2 className="w-5 h-5 animate-spin" strokeWidth={1.25} />
                   <span>Loading preview…</span>
                 </div>
               );
@@ -642,7 +643,7 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
                 onFocus={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = "0 1px 1px rgba(0,0,0,0.05), 0 0 0 2px #fff"; }}
                 onBlur={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = "0 1px 1px rgba(0,0,0,0.05)"; }}
               >
-                <FileSearchCorner style={{ width: 14, height: 14 }} strokeWidth={2} stroke="currentColor" />
+                <FileSearchCorner className="w-5 h-5 flex-shrink-0" strokeWidth={1.25} stroke="currentColor" />
                 View
               </button>
             )}
@@ -681,7 +682,7 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
                 onFocus={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = "0 1px 1px rgba(0,0,0,0.05), 0 0 0 2px #fff"; }}
                 onBlur={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = "0 1px 1px rgba(0,0,0,0.05)"; }}
               >
-                <MessageCircle style={{ width: 14, height: 14 }} strokeWidth={2} stroke="currentColor" />
+                <MessageCircle style={{ width: 12, height: 12 }} strokeWidth={1.25} stroke="currentColor" />
                 Ask Follow Up
               </button>
             )}
@@ -720,7 +721,7 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
                 onFocus={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = "0 1px 1px rgba(0,0,0,0.05), 0 0 0 2px #fff"; }}
                 onBlur={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = "0 1px 1px rgba(0,0,0,0.05)"; }}
               >
-                <Save size={14} strokeWidth={2} stroke="currentColor" />
+                <Save size={12} strokeWidth={1.25} stroke="currentColor" />
                 Save
               </button>
             )}

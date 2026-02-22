@@ -1106,7 +1106,7 @@ const LocationPickerModal: React.FC<{
         </p>
         {savedLocation && (
           <div className="flex items-center gap-2 mb-4">
-            <Locate className="w-4 h-4 flex-shrink-0 text-gray-500" strokeWidth={2} />
+            <Locate className="w-5 h-5 flex-shrink-0 text-gray-500" strokeWidth={2} />
             <span className="text-[15px] font-normal text-gray-700">{savedLocation}</span>
           </div>
         )}
@@ -1154,7 +1154,7 @@ const LocationPickerModal: React.FC<{
                   transition: 'border-color 150ms ease, box-shadow 150ms ease',
                 }}
               >
-                <Search className="w-4 h-4 text-neutral-400 flex-shrink-0" strokeWidth={2} />
+                <Search className="w-5 h-5 text-neutral-400 flex-shrink-0" strokeWidth={2} />
                 <input
                   type="text"
                   value={locationInput}
@@ -1190,7 +1190,7 @@ const LocationPickerModal: React.FC<{
                 />
                 {isLoadingSuggestions && (
                   <div className="flex-shrink-0">
-                    <Loader2 className="w-4 h-4 animate-spin text-gray-400" />
+                    <Loader2 className="w-5 h-5 animate-spin text-gray-400" />
                   </div>
                 )}
                 {locationInput && !isLoadingSuggestions && (
@@ -1203,7 +1203,7 @@ const LocationPickerModal: React.FC<{
                     disabled={isGeocoding}
                     className="flex-shrink-0 disabled:opacity-50 p-2 rounded-md hover:bg-gray-100 text-neutral-500 transition-colors"
                   >
-                    {isGeocoding ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowRight className="w-4 h-4" strokeWidth={2} />}
+                    {isGeocoding ? <Loader2 className="w-5 h-5 animate-spin" /> : <ArrowRight className="w-5 h-5" strokeWidth={2} />}
                   </button>
                 )}
               </div>
@@ -1230,7 +1230,7 @@ const LocationPickerModal: React.FC<{
                         }}
                         className="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-left transition-colors hover:bg-gray-100 mx-2"
                       >
-                        <MapPin className="w-4 h-4 text-gray-400 flex-shrink-0" strokeWidth={1.5} />
+                        <MapPin className="w-5 h-5 text-gray-400 flex-shrink-0" strokeWidth={1.5} />
                         <span className="flex-1 min-w-0 text-[13px] font-normal text-gray-900 truncate">
                           {suggestion.place_name}
                         </span>
@@ -1558,7 +1558,7 @@ const BackgroundSettings: React.FC = () => {
               {/* Checkmark indicator - white circle with checkmark */}
               {isSelected && (
                 <div className="absolute top-2 right-2 w-6 h-6 bg-white rounded-full flex items-center justify-center shadow-sm border border-gray-200">
-                  <Check className="w-4 h-4 text-gray-900" strokeWidth={2.5} />
+                  <Check className="w-5 h-5 text-gray-900" strokeWidth={2.5} />
                 </div>
               )}
             </motion.button>
@@ -1575,7 +1575,7 @@ const BackgroundSettings: React.FC = () => {
           whileHover={{ scale: 1.02 }}
           whileTap={{ scale: 0.98 }}
         >
-          <Plus className="w-8 h-8 text-slate-400" />
+          <Plus className="w-9 h-9 text-slate-400" />
           <input
             type="file"
             accept="image/*"
@@ -1657,7 +1657,7 @@ const NotificationsSettingsContent: React.FC = () => {
 
         {/* Volume: Spotify-style — speaker icon + horizontal slider */}
         <div className="flex items-center gap-3 mb-5">
-          <Volume2 className="h-5 w-5 shrink-0 text-gray-500" aria-hidden />
+          <Volume2 className="h-6 w-6 shrink-0 text-gray-500" aria-hidden />
           <Slider
             value={[volume]}
             onValueChange={([v]) => setVolume(v)}
@@ -4529,7 +4529,7 @@ export const MainContent = ({
                                 e.currentTarget.style.borderColor = 'rgba(229, 231, 235, 0.6)';
                               }}
                             >
-                              <Folder className="w-3.5 h-3.5" strokeWidth={1.5} />
+                              <Folder className="w-4 h-4" strokeWidth={1.5} />
                               <span>Recent Projects</span>
                             </button>
                           </div>
@@ -5850,9 +5850,9 @@ export const MainContent = ({
               }}
             >
               {isBrowserFullscreen ? (
-                <Minimize className="w-4 h-4 text-[#6B7280] flex-shrink-0" strokeWidth={2} />
+                <Minimize className="w-5 h-5 text-[#6B7280] flex-shrink-0" strokeWidth={2} />
               ) : (
-                <Fullscreen className="w-4 h-4 text-[#6B7280] flex-shrink-0" strokeWidth={2} />
+                <Fullscreen className="w-5 h-5 text-[#6B7280] flex-shrink-0" strokeWidth={2} />
               )}
               <span className="inline-flex items-center gap-2 min-w-0 w-0 overflow-hidden opacity-0 whitespace-nowrap transition-none group-hover:w-auto group-hover:min-w-0 group-hover:opacity-100 group-hover:ml-1.5">
                 <span className="text-[13px] font-medium text-[#374151] leading-none">
@@ -6123,7 +6123,7 @@ export const MainContent = ({
             }}
             title="Back"
           >
-            <ArrowLeft className="w-3.5 h-3.5 text-slate-600 group-hover:text-slate-700" strokeWidth={1.5} />
+            <ArrowLeft className="w-4 h-4 text-slate-600 group-hover:text-slate-700" strokeWidth={1.5} />
             <span className="text-slate-600 text-xs">
               Back
             </span>

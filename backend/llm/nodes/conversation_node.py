@@ -11,10 +11,8 @@ from langchain_openai import ChatOpenAI
 
 from backend.llm.config import config
 from backend.llm.types import MainWorkflowState
-from backend.llm.prompts.conversation import (
-    get_conversation_system_content,
-    format_memories_section,
-)
+from backend.llm.prompts.conversation import format_memories_section
+from backend.llm.prompts.system_builder import build_system_content
 from backend.llm.utils.workspace_context import build_workspace_context
 from backend.llm.prompts.personality import (
     VALID_PERSONALITY_IDS,
@@ -79,7 +77,9 @@ async def conversation_node(state: MainWorkflowState) -> MainWorkflowState:
         f"(or None if first message): {previous_personality or 'None'}\n"
         f"Is this the first message in the conversation? {is_first_message}\n"
     )
-    system_content = get_conversation_system_content(
+    system_content = build_system_content(
+        "conversation",
+        state,
         personality_context=personality_context,
         memories_section=memories_section,
         workspace_section=workspace_section,

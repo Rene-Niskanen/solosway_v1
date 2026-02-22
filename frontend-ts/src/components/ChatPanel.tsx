@@ -263,7 +263,7 @@ export const ChatPanel = ({
               className="px-4 flex flex-col"
               style={{
                 backgroundColor: '#4A4A4A',
-                paddingTop: 10,
+                paddingTop: 24,
                 paddingBottom: 19,
               }}
             >
@@ -284,13 +284,13 @@ export const ChatPanel = ({
                 </div>
               )}
               {/* Search Input - 32px height to align with Response button in main chat header */}
-              <div className="relative flex items-center" style={{ minHeight: 32, height: 32 }}>
+              <div className="relative flex items-center mt-1" style={{ minHeight: 32, height: 32 }}>
                 <input
                   type="text"
                   placeholder="Search"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full h-full pl-2 pr-14 py-0 text-[13px] bg-transparent border-none focus:outline-none placeholder:text-[13px] placeholder:text-[#8F8F8F] placeholder:font-normal"
+                  className="w-full h-full pl-2 pr-14 py-0 text-[15px] font-normal bg-transparent border-none focus:outline-none placeholder:text-[15px] placeholder:text-[#8F8F8F] placeholder:font-normal"
                   style={{ color: '#C5C5C5', caretColor: '#C5C5C5', height: 32, minHeight: 32 }}
                 />
                 {/* Options (sliders) + Close - Inline with Search Input */}
@@ -305,7 +305,7 @@ export const ChatPanel = ({
                         aria-haspopup="true"
                         aria-expanded={optionsMenuOpen}
                       >
-                        <SlidersHorizontal className="w-4 h-4 text-[#B0B0B0] hover:text-[#D0D0D0]" strokeWidth={1.5} />
+                        <SlidersHorizontal className="w-5 h-5 text-[#B0B0B0] hover:text-[#D0D0D0]" strokeWidth={1.75} />
                       </button>
                     </PopoverTrigger>
                     <PopoverContent
@@ -345,7 +345,7 @@ export const ChatPanel = ({
                     title="Close Agent Sidebar"
                     type="button"
                   >
-                    <X className="w-4 h-4 text-[#B0B0B0] hover:text-[#D0D0D0]" strokeWidth={1.5} />
+                    <X className="w-5 h-5 text-[#B0B0B0] hover:text-[#D0D0D0]" strokeWidth={1.75} />
                   </button>
                 </div>
               </div>
@@ -363,11 +363,11 @@ export const ChatPanel = ({
                 }} 
                 whileHover={{ scale: 1.01 }} 
                 whileTap={{ scale: 0.99 }} 
-                className="w-full flex items-center justify-center gap-1.5 px-2.5 py-1.5 border border-white/15 hover:border-white/25 rounded transition-[border-color,background-color] duration-75 ease-out group"
-                style={{ backgroundColor: '#5A5A5A', opacity: 1, backdropFilter: 'none' }}
+                className="w-full flex items-center justify-center gap-1.5 px-2.5 py-1.5 border border-gray-200/80 hover:border-gray-300 rounded transition-[border-color,background-color] duration-75 ease-out group"
+                style={{ backgroundColor: '#F2F2EF', opacity: 1, backdropFilter: 'none' }}
               >
-                <Plus className="w-3 h-3 text-[#C5C5C5]" />
-                <span className="text-[11px] font-medium" style={{ color: '#D0D0D0' }}>
+                <Plus className="w-3 h-3 text-[#141413]" />
+                <span className="text-[11px] font-medium text-[#141413]">
                   New Agent
                 </span>
               </motion.button>

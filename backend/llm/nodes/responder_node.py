@@ -44,6 +44,7 @@ from backend.llm.utils.personality_prompts import (
 )
 from backend.llm.tools.citation_mapping import create_chunk_citation_tool, _narrow_bbox_to_cited_line
 from backend.llm.prompts.conversation import format_memories_section
+from backend.llm.prompts.system_builder import build_system_content
 from backend.llm.prompts.no_results import (
     get_responder_no_chunks_system_prompt,
     get_responder_no_chunks_human_prompt,
@@ -631,6 +632,8 @@ MAX_BLOCKS_PER_DOC_IN_PROMPT = 500
 
 # Max characters for pasted/attachment context in paste+docs path (avoids token overflow)
 MAX_PASTE_CONTEXT_CHARS = 12000
+MAX_PRIOR_QUERY_CHARS = 100
+MAX_PRIOR_ANSWER_CHARS = 400
 
 
 def _resolve_block_id_to_metadata(
@@ -2129,6 +2132,8 @@ async def generate_conversational_answer_with_citations(
     user_id: Optional[str] = None,
     workspace_section: str = "",
     paste_context: str = "",
+    state: Optional[dict] = None,
+    conversation_context: Optional[str] = None,
 ) -> Tuple[str, str]:
     """
     Generate conversational answer with citation instructions (jan28th-style).
@@ -2136,6 +2141,8 @@ async def generate_conversational_answer_with_citations(
     Also chooses personality for this turn and returns (personality_id, answer_text).
     When paste_context is non-empty (paste+other-docs path), the LLM gets pasted/attached content
     plus retrieved document content; cite only the document content (block IDs).
+    When state is provided, turn context is prepended to the system prompt.
+    When conversation_context is non-empty, it is prepended to the human message as "Previous exchange".
     """
     # Temperature 0.38: slight increase for more natural variation; revert if responses become inconsistent or repetitive (see plan: conversational responses).
     llm = ChatOpenAI(
@@ -2150,10 +2157,17 @@ async def generate_conversational_answer_with_citations(
 Previous personality for this conversation (or None if first message): {previous_personality or 'None'}
 Is this the first message in the conversation? {is_first_message}
 """
-    system_content = get_responder_block_citation_system_content(personality_context)
-
-    if workspace_section:
-        system_content = system_content + "\n\n" + workspace_section
+    if state is not None:
+        system_content = build_system_content(
+            "responder",
+            state,
+            personality_context=personality_context,
+            workspace_section=workspace_section,
+        )
+    else:
+        system_content = get_responder_block_citation_system_content(personality_context)
+        if workspace_section:
+            system_content = system_content + "\n\n" + workspace_section
 
     # --- Mem0 memory injection (Phase 2) ---
     if getattr(config, "mem0_enabled", False):
@@ -2195,13 +2209,27 @@ Is this the first message in the conversation? {is_first_message}
 - Explain in a clear, conversational way; use Markdown where it helps readability. Be accurate.
 """
 
-    human_message = HumanMessage(content=f"""
+    if conversation_context and conversation_context.strip():
+        human_content = (
+            "**Previous exchange:**\n"
+            + conversation_context.strip()
+            + "\n\n**Current user message:**\n**User Question:**\n"
+            + user_query
+            + "\n"
+            + paste_section
+            + doc_section
+            + "**Instructions:**\n"
+            + instructions
+        )
+    else:
+        human_content = f"""
 **User Question:**
 {user_query}
 {paste_section}{doc_section}
 **Instructions:**
 {instructions}
-""")
+"""
+    human_message = HumanMessage(content=human_content)
 
     logger.info(
         f"[RESPONDER] Invoking LLM with block-id citation instructions "
@@ -2237,6 +2265,8 @@ async def generate_answer_with_direct_citations(
     user_id: Optional[str] = None,
     workspace_section: str = "",
     paste_context: str = "",
+    state: Optional[dict] = None,
+    prior_exchange_summary: str = "",
 ) -> Tuple[str, List[Dict[str, Any]], str]:
     """
     Generate answer using direct citation system with short IDs.
@@ -2283,6 +2313,8 @@ async def generate_answer_with_direct_citations(
             user_id=user_id,
             workspace_section=workspace_section,
             paste_context=paste_context,
+            state=state,
+            conversation_context=prior_exchange_summary or None,
         )
         logger.info(f"[DIRECT_CITATIONS] LLM response generated ({len(llm_response)} chars), personality_id={personality_id}")
 
@@ -2456,6 +2488,16 @@ async def responder_node(state: MainWorkflowState, runnable_config=None) -> Main
                     logger.info(f"[RESPONDER] Paste+docs path: truncated pasted context to {MAX_PASTE_CONTEXT_CHARS} chars")
                 else:
                     logger.info(f"[RESPONDER] Paste+docs path: including {len(paste_context_str)} chars of pasted/attachment context")
+            # Prior exchange for follow-ups: last user question + last answer (summary)
+            prior_exchange_summary = ""
+            conv_hist = state.get("conversation_history")
+            if isinstance(conv_hist, list) and len(conv_hist) > 0:
+                entry = conv_hist[-1]
+                q = (entry.get("query") or "")[:MAX_PRIOR_QUERY_CHARS]
+                s = (entry.get("summary") or "")[:MAX_PRIOR_ANSWER_CHARS]
+                prior_exchange_summary = "Previous user question: " + q + "\nPrevious answer (summary): " + s
+            elif state.get("prior_turn_content"):
+                prior_exchange_summary = "Previous answer (summary): " + (state["prior_turn_content"] or "")[:MAX_PRIOR_ANSWER_CHARS]
             logger.info(f"[RESPONDER] Generating answer with direct citation system...")
             formatted_answer, citations, personality_id = await generate_answer_with_direct_citations(
                 user_query, execution_results,
@@ -2464,6 +2506,8 @@ async def responder_node(state: MainWorkflowState, runnable_config=None) -> Main
                 user_id=state.get("user_id"),
                 workspace_section=workspace_section,
                 paste_context=paste_context_str,
+                state=state,
+                prior_exchange_summary=prior_exchange_summary,
             )
             formatted_answer = ensure_main_tags_when_missing(formatted_answer, user_query)
             if state.get("paste_requested_but_missing"):

@@ -258,7 +258,7 @@ export default function Analytics({ className }: AnalyticsProps) {
         {/* Header */}
         <div className="flex items-center justify-between mb-8">
           <div>
-            <h1 className="text-xl font-semibold text-gray-900">Processing Queue</h1>
+            <h2 className="text-xl font-semibold text-gray-900">Processing Queue</h2>
             <p className="text-xs text-gray-400 mt-1">
               Last updated {format(lastRefresh, 'h:mm:ss a')}
             </p>

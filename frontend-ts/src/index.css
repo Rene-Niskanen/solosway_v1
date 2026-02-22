@@ -522,3 +522,8 @@ button:focus-visible:not(:focus-within) {
 .at-mention-popover-scroll::-webkit-scrollbar {
   display: none;
 }
+
+/* Thinner rects in Lucide icons inside dropdown/popover (Radix Popper) */
+.thin-icon-rects svg rect {
+  stroke-width: 1.25;
+}
