@@ -1030,30 +1030,58 @@ For now, answer based on extracted text below. Citations will become clickable o
 **USER QUERY:** {query}
 """
 
-def format_attachment_context(attachment_context: dict) -> str:
-    """Format attachment context for inclusion in prompts."""
+def format_attachment_context(attachment_context: dict, max_chars: int | None = None) -> str:
+    """Format attachment context for inclusion in prompts.
+    If max_chars is set (e.g. from ATTACHMENT_FAST_MAX_CONTEXT_CHARS), truncate with a note.
+    """
+    import os
     if not attachment_context:
         return ""
-    
+    if max_chars is None:
+        max_chars = int(os.environ.get("ATTACHMENT_FAST_MAX_CONTEXT_CHARS", "28000"))
     texts = attachment_context.get('texts', [])
     filenames = attachment_context.get('filenames', [])
     page_texts = attachment_context.get('pageTexts', [])
-    
     formatted_parts = []
-    
+    total_len = 0
+    truncation_note = "\n[Content truncated for length. You may summarise based on the portion above.]"
+    note_len = len(truncation_note)
+
     for i, (text, filename) in enumerate(zip(texts, filenames)):
+        if total_len >= max_chars:
+            break
         formatted_parts.append(f"=== DOCUMENT {i+1}: {filename} ===")
-        
+        total_len += len(formatted_parts[-1]) + 1
+
         if page_texts and i < len(page_texts) and page_texts[i]:
             for page_num, page_text in enumerate(page_texts[i], 1):
+                if total_len >= max_chars:
+                    break
                 if page_text.strip():
-                    formatted_parts.append(f"\n--- Page {page_num} ---")
-                    formatted_parts.append(page_text.strip())
+                    head = f"\n--- Page {page_num} ---\n"
+                    body = page_text.strip()
+                    if total_len + len(head) + len(body) + note_len > max_chars:
+                        take = max(0, max_chars - total_len - len(head) - note_len)
+                        body = body[:take]
+                        formatted_parts.append(head + body + truncation_note)
+                        total_len = max_chars
+                        break
+                    formatted_parts.append(head + body)
+                    total_len += len(head) + len(body)
         else:
-            formatted_parts.append(text)
-        
+            head = ""
+            body = (text or "").strip()
+            if total_len + len(body) + note_len > max_chars:
+                take = max(0, max_chars - total_len - note_len)
+                body = body[:take] + truncation_note
+                formatted_parts.append(body)
+                total_len = max_chars
+            else:
+                formatted_parts.append(body)
+                total_len += len(body)
         formatted_parts.append("")
-    
+        total_len += 1
+
     return "\n".join(formatted_parts)
 
 def get_attachment_prompt(response_mode: str, attachment_context: dict, query: str) -> str:

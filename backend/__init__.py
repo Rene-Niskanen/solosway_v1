@@ -11,6 +11,54 @@ from flask_cors import CORS
 # Load .env from project root before Config (which reads SUPABASE_DB_URL etc.)
 _load_env_path = path.abspath(path.join(path.dirname(__file__), "..", ".env"))
 load_dotenv(_load_env_path)
+# If EXTRACTION_SERVICE_URL still missing, try .env in cwd (e.g. when running from project root)
+if not os.environ.get("EXTRACTION_SERVICE_URL"):
+    load_dotenv(path.join(os.getcwd(), ".env"))
+
+# Ensure EXTRACTION_SERVICE_URL is set from .env file if missing (load_dotenv can miss it if var was set empty)
+def _read_env_key(env_path, key):
+    if not path.isfile(env_path):
+        return None
+    try:
+        with open(env_path, "r", encoding="utf-8-sig") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, _, v = line.partition("=")
+                if k.strip() != key:
+                    continue
+                v = v.strip().strip("'\"").strip()
+                if " #" in v:
+                    v = v.split(" #")[0].strip()
+                if v:
+                    return v.rstrip("/")
+    except Exception:
+        pass
+    return None
+
+if not (os.environ.get("EXTRACTION_SERVICE_URL") or "").strip():
+    for env_file in (_load_env_path, path.join(os.getcwd(), ".env")):
+        val = _read_env_key(env_file, "EXTRACTION_SERVICE_URL")
+        if val:
+            os.environ["EXTRACTION_SERVICE_URL"] = val
+            logging.info("EXTRACTION_SERVICE_URL set from %s", env_file)
+            break
+
+# Log extraction URL status at startup so it's visible in console (logging may not be configured yet)
+_EXTRACTION_URL = (os.environ.get("EXTRACTION_SERVICE_URL") or "").strip()
+if not _EXTRACTION_URL:
+    print(
+        "[BACKEND] EXTRACTION_SERVICE_URL is NOT SET — quick-extract (PDF/PPTX/XLSX) will return 400. "
+        "Add EXTRACTION_SERVICE_URL=http://localhost:5002 to project root .env and restart."
+    )
+    logging.warning(
+        "EXTRACTION_SERVICE_URL is not set. Document extraction (PDF/PPTX/XLSX) will fail. "
+        "Add EXTRACTION_SERVICE_URL=http://localhost:5002 to the project root .env and restart the backend."
+    )
+else:
+    print(f"[BACKEND] EXTRACTION_SERVICE_URL is set: {_EXTRACTION_URL}")
+    logging.info("EXTRACTION_SERVICE_URL is set (doc-extraction Node service will be used for quick-extract).")
 
 from .config import Config
 from .celery_utils import celery_init_app
@@ -66,6 +114,27 @@ def create_app():
             task_ignore_result=True,
         ),
     )
+
+    # Single source of truth for Node doc-extraction service (quick_extract uses this for POST {url}/extract).
+    # Port 5002 is reserved for doc-extraction; do not run the embedding server on 5002.
+    app.config['EXTRACTION_SERVICE_URL'] = (os.environ.get('EXTRACTION_SERVICE_URL') or '').strip().rstrip('/')
+
+    # Optional startup check: warn if extraction URL is set but service is not reachable (do not block startup)
+    _url = app.config['EXTRACTION_SERVICE_URL']
+    if _url:
+        try:
+            import requests
+            r = requests.get(f"{_url.rstrip('/')}/health", timeout=2)
+            if r.status_code != 200:
+                logging.warning(
+                    "EXTRACTION_SERVICE_URL is set but extraction service returned %s; quick-extract may fail.",
+                    r.status_code,
+                )
+        except Exception as e:
+            logging.warning(
+                "EXTRACTION_SERVICE_URL is set but extraction service is not reachable: %s; quick-extract may fail.",
+                e,
+            )
     
     # Initialize extensions
     db.init_app(app)

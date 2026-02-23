@@ -860,14 +860,22 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
     
     const fileId = `file-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     
-    // Check if file type supports quick extraction
+    // Check if file type supports quick extraction (same as SideChatPanel: PDF, Word, Excel, PowerPoint, text)
     const isPDF = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
-    const isDOCX = file.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' || 
+    const isDOCX = file.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
                    file.type === 'application/msword' ||
-                   file.name.toLowerCase().endsWith('.docx') || 
+                   file.name.toLowerCase().endsWith('.docx') ||
                    file.name.toLowerCase().endsWith('.doc');
+    const isExcel = file.type === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
+                    file.type === 'application/vnd.ms-excel' ||
+                    file.name.toLowerCase().endsWith('.xlsx') ||
+                    file.name.toLowerCase().endsWith('.xls');
+    const isPPTX = file.type === 'application/vnd.openxmlformats-officedocument.presentationml.presentation' ||
+                  file.type === 'application/vnd.ms-powerpoint' ||
+                  file.name.toLowerCase().endsWith('.pptx') ||
+                  file.name.toLowerCase().endsWith('.ppt');
     const isTXT = file.type === 'text/plain' || file.name.toLowerCase().endsWith('.txt');
-    const supportsExtraction = isPDF || isDOCX || isTXT;
+    const supportsExtraction = isPDF || isDOCX || isExcel || isPPTX || isTXT;
     
     const fileData: FileAttachmentData = {
       id: fileId,
@@ -1637,7 +1645,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                           }
                         }}
                         className="hidden"
-                        accept="image/*,.pdf,.doc,.docx"
+                        accept="image/*,.pdf,.doc,.docx,.xlsx,.xls,.pptx,.ppt"
                       />
                       <ChatBarAttachDropdown
                         onAttachClick={() => fileInputRef.current?.click()}
@@ -1666,9 +1674,8 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                         <button
                           type="button"
                           onClick={() => window.dispatchEvent(new CustomEvent('openChooseProjectModal'))}
-                          className="flex items-center justify-center gap-1.5 text-gray-700 transition-colors focus:outline-none outline-none rounded-md"
+                          className="flex items-center justify-center gap-1.5 text-gray-700 transition-colors focus:outline-none outline-none rounded-md bg-black/[0.01] hover:bg-black/[0.05]"
                           style={{
-                            backgroundColor: 'rgba(0, 0, 0, 0.02)',
                             border: 'none',
                             height: '26px',
                             minHeight: '26px',

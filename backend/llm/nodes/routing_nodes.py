@@ -644,27 +644,28 @@ async def handle_attachment_fast(state: MainWorkflowState) -> MainWorkflowState:
         logger.warning("[ATTACHMENT_FAST] No attachment context - falling back to normal flow")
         return {"final_summary": "I couldn't find any attached document content to analyze."}
     
-    # Get the attachment prompt
+    # Get the attachment prompt (format_attachment_context already caps size via ATTACHMENT_FAST_MAX_CONTEXT_CHARS)
     prompt = get_attachment_prompt(response_mode, attachment_context, user_query)
-    
-    # Single fast LLM call
+    model = (config.openai_attachment_fast_model or config.openai_model).strip() or config.openai_model
     llm = ChatOpenAI(
         api_key=config.openai_api_key,
-        model=config.openai_model,
+        model=model,
         temperature=0,
     )
-    
     from backend.llm.prompts.routing import get_attachment_fast_system_prompt
-
     system_msg = SystemMessage(content=get_attachment_fast_system_prompt())
     human_msg = HumanMessage(content=prompt)
-    
-    logger.info(f"[ATTACHMENT_FAST] Calling LLM with {len(prompt)} chars of context")
-    response = await llm.ainvoke([system_msg, human_msg])
-    
-    final_summary = response.content.strip()
+    emitter = state.get("execution_events")
+    logger.info(f"[ATTACHMENT_FAST] Calling LLM (stream) with {len(prompt)} chars of context, model={model}")
+    chunks = []
+    async for chunk in llm.astream([system_msg, human_msg]):
+        if hasattr(chunk, "content") and chunk.content:
+            part = chunk.content if isinstance(chunk.content, str) else str(chunk.content)
+            chunks.append(part)
+            if emitter and hasattr(emitter, "emit_stream_token"):
+                emitter.emit_stream_token(part)
+    final_summary = "".join(chunks).strip()
     logger.info(f"[ATTACHMENT_FAST] Response generated: {len(final_summary)} chars")
-    
     return {"final_summary": final_summary}
 
 

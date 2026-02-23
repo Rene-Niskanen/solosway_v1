@@ -20,72 +20,61 @@ export const AuthGuard: React.FC<AuthGuardProps> = ({ children }) => {
   const [userInfo, setUserInfo] = useState<any>(null);
 
   useEffect(() => {
-  const checkAuth = async () => {
-    try {
-      const result = await backendApi.checkAuth();
-      
+    const checkAuth = async () => {
+      try {
+        const result = await backendApi.checkAuth();
+
         if (result.success && result.data) {
           setUserInfo(result.data.user || result.data);
           setIsAuthenticated(true);
           setIsLoading(false);
         } else {
-          // Only treat as auth failure if it's an actual authentication error (401/403)
-          // For timeouts or network errors, keep user logged in (might be temporary)
           const statusCode = (result as any).statusCode;
-          const isAuthError = statusCode === 401 || statusCode === 403 || 
-                             result.error?.includes('401') || result.error?.includes('403') || 
-                             result.error?.includes('Unauthorized') || result.error?.includes('Forbidden');
-          
+          const isAuthError = statusCode === 401 || statusCode === 403 ||
+            result.error?.includes('401') || result.error?.includes('403') ||
+            result.error?.includes('Unauthorized') || result.error?.includes('Forbidden');
+
           if (isAuthError) {
             console.log('🔒 AuthGuard: Authentication failed - redirecting to login');
             localStorage.removeItem('isAuthenticated');
             setIsAuthenticated(false);
             setIsLoading(false);
           } else {
-            // Network error or timeout - keep user logged in, just log the error
             console.warn('⚠️ AuthGuard: Auth check failed but keeping user logged in (might be temporary):', result.error);
-            // Assume authenticated if we have previous auth state, otherwise check localStorage
             const hasPreviousAuth = localStorage.getItem('isAuthenticated') === 'true';
-            if (hasPreviousAuth) {
-        setIsAuthenticated(true);
-      } else {
-              // First time check failed - treat as not authenticated
-        setIsAuthenticated(false);
-            }
+            setIsAuthenticated(!!hasPreviousAuth);
             setIsLoading(false);
           }
-      }
-    } catch (error) {
-        console.error('Auth check error:', error);
-        // On error, check if we have previous auth state
-        const hasPreviousAuth = localStorage.getItem('isAuthenticated') === 'true';
-        if (hasPreviousAuth) {
-          console.warn('⚠️ AuthGuard: Auth check error but keeping user logged in (might be temporary)');
-          setIsAuthenticated(true);
-        } else {
-      setIsAuthenticated(false);
         }
-      setIsLoading(false);
-    }
-  };
+      } catch (error) {
+        console.error('Auth check error:', error);
+        const hasPreviousAuth = localStorage.getItem('isAuthenticated') === 'true';
+        setIsAuthenticated(!!hasPreviousAuth);
+        setIsLoading(false);
+      }
+    };
 
-    // If we just logged in, do a quick non-blocking check
     const justLoggedIn = sessionStorage.getItem('justLoggedIn');
     if (justLoggedIn === 'true') {
       sessionStorage.removeItem('justLoggedIn');
       localStorage.setItem('isAuthenticated', 'true');
-      // Trust login but verify in background
       setIsAuthenticated(true);
       setIsLoading(false);
-      // Verify session exists (non-blocking)
-      checkAuth().catch(() => {
-        // If verification fails, user will be logged out on next API call
-        console.warn('Session verification failed, but allowing initial access');
-      });
+      checkAuth().catch(() => console.warn('Session verification failed, but allowing initial access'));
     } else {
-      // Normal check
       checkAuth();
     }
+
+    // Fallback: stop loading after 15s if checkAuth never completes (e.g. backend down/slow after restart)
+    const maxWaitId = setTimeout(() => {
+      setIsLoading((loading) => {
+        if (!loading) return loading;
+        console.warn('⚠️ AuthGuard: Max wait (15s) reached; stopping loading. Backend may be slow or down.');
+        return false;
+      });
+      setIsAuthenticated((prev) => (prev !== null ? prev : localStorage.getItem('isAuthenticated') === 'true'));
+    }, 15000);
+    return () => clearTimeout(maxWaitId);
   }, []);
 
   // Redirect to /auth if not authenticated (but only if we're not already there)

@@ -1,0 +1,39 @@
+{
+  "name": "doc-extraction-service",
+  "version": "1.0.0",
+  "private": true,
+  "description": "HTTP wrapper around LobeHub file-loaders for quick document extraction",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "dev": "tsx src/server.ts"
+  },
+  "dependencies": {
+    "@napi-rs/canvas": "^0.1.70",
+    "@xmldom/xmldom": "^0.9.8",
+    "concat-stream": "^2.0.0",
+    "debug": "^4.4.3",
+    "express": "^4.21.0",
+    "mammoth": "^1.11.0",
+    "multer": "^1.4.5-lts.1",
+    "officeparser": "5.1.1",
+    "pdfjs-dist": "5.4.530",
+    "word-extractor": "^1.0.4",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
+    "yauzl": "^3.2.0"
+  },
+  "devDependencies": {
+    "@types/concat-stream": "^2.0.3",
+    "@types/debug": "^4.1.12",
+    "@types/express": "^4.17.21",
+    "@types/multer": "^1.4.11",
+    "@types/node": "^20.10.0",
+    "@types/yauzl": "^2.10.3",
+    "typescript": "^5.9.3",
+    "tsx": "^4.7.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

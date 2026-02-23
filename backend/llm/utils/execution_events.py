@@ -54,15 +54,16 @@ class ReasoningEvent:
 class ExecutionEvent:
     """Execution event schema - internal events (not shown to user directly)"""
     type: Literal[
-        "read", 
-        "search", 
-        "grep", 
-        "tool", 
-        "retrieve_docs", 
-        "retrieve_chunks", 
-        "query_db", 
+        "read",
+        "search",
+        "grep",
+        "tool",
+        "retrieve_docs",
+        "retrieve_chunks",
+        "query_db",
         "api_call",
-        "phase"  # High-level task marker (not "decision")
+        "phase",  # High-level task marker (not "decision")
+        "stream_token",  # LLM token chunk for attachment_fast streaming
     ]
     description: str
     metadata: Optional[Dict] = None
@@ -129,6 +130,23 @@ class ExecutionEventEmitter:
                 logger.warning(f"[EXECUTION_EVENTS] Stream queue full or error: {e}")
         else:
             logger.warning(f"[EXECUTION_EVENTS] ⚠️  Stream queue not set - reasoning event '{label}' not streamed")
+
+    def emit_stream_token(self, token: str):
+        """Emit a single LLM token chunk for attachment_fast streaming (view yields as SSE token)."""
+        if not token:
+            return
+        if self.stream_queue:
+            try:
+                execution_event = ExecutionEvent(
+                    type="stream_token",
+                    description="",
+                    metadata={"token": token},
+                    timestamp=time.time(),
+                    event_id=str(uuid.uuid4())
+                )
+                self.stream_queue.put(execution_event, block=False)
+            except Exception as e:
+                logger.debug(f"[EXECUTION_EVENTS] Stream token queue full or error: {e}")
     
     def get_reasoning_events(self) -> List[ReasoningEvent]:
         """Get all reasoning events (thread-safe copy)"""

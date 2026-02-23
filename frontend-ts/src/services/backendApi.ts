@@ -1630,14 +1630,21 @@ class BackendApiService {
       formData.append('file', file);
       formData.append('store_temp', storeTempFile.toString());
 
+      // Large files (e.g. 20MB PPTX) can take 1–2 min: upload + backend→Node + Node parsing. Use 2 min timeout.
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 120_000);
+
       const response = await fetch(`${this.baseUrl}/api/documents/quick-extract`, {
         method: 'POST',
         body: formData,
         credentials: 'include',
+        signal: controller.signal,
         headers: {
           // Don't set Content-Type - browser will set it with boundary for FormData
         }
       });
+
+      clearTimeout(timeoutId);
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
@@ -1668,6 +1675,10 @@ class BackendApiService {
       };
 
     } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') {
+        console.error(`⏱️ Quick extraction timed out for ${file.name} (2 min). Try a smaller file or try again.`);
+        return { success: false, error: 'Extraction took too long. Try a smaller file or try again.' };
+      }
       console.error(`❌ Quick extraction error for ${file.name}:`, error);
       return {
         success: false,
@@ -2043,9 +2054,9 @@ class BackendApiService {
   async checkAuth() {
     try {
       // Use AbortController for proper timeout handling
-      // 15 second timeout to allow for slow database queries (Supabase + PostgreSQL)
+      // 12s timeout to allow slow backend after restart (e.g. /api/dashboard); on timeout AuthGuard falls back to localStorage
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 15000);
+      const timeoutId = setTimeout(() => controller.abort(), 12000);
       
       console.log('🔍 checkAuth: Starting auth check request...');
       const response = await fetch(`${this.baseUrl}/api/dashboard`, {
@@ -2088,10 +2099,10 @@ class BackendApiService {
       }
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
-        console.error('⏱️ checkAuth: Request timed out after 15 seconds');
+        console.error('⏱️ checkAuth: Request timed out after 12 seconds');
         return {
           success: false,
-          error: 'Request timeout - backend server not responding (database queries may be slow)'
+          error: 'Request timeout - backend server not responding'
         };
       }
       const errorMsg = error instanceof Error ? error.message : 'Unknown error occurred';

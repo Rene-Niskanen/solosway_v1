@@ -25,6 +25,8 @@ export interface FileAttachmentProps {
   onPreview?: (attachment: FileAttachmentData) => void;
   onDragStart?: (fileId: string) => void;
   onDragEnd?: () => void;
+  /** Slightly smaller UI for use inside query bubbles (no remove/drag). */
+  compact?: boolean;
 }
 
 export const FileAttachment: React.FC<FileAttachmentProps> = ({
@@ -32,7 +34,8 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
   onRemove,
   onPreview,
   onDragStart,
-  onDragEnd
+  onDragEnd,
+  compact = false
 }) => {
   const [imagePreviewUrl, setImagePreviewUrl] = React.useState<string | null>(null);
   const [isDragging, setIsDragging] = React.useState(false);
@@ -114,6 +117,8 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
       return;
     }
 
+    if (!attachment.file) return;
+
     // Fallback: Create a blob URL from the file
     const blobUrl = URL.createObjectURL(attachment.file);
     
@@ -184,25 +189,25 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
   if (isImage && imagePreviewUrl) {
     return (
       <motion.div
-        ref={imageDragRef}
+        ref={compact ? undefined : imageDragRef}
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
         transition={{ duration: 0.1, ease: "easeOut" }}
         className="relative bg-white rounded-lg border border-gray-200 shadow-sm cursor-pointer hover:border-gray-300 hover:shadow-md transition-all duration-100 overflow-hidden"
         style={{ 
-          width: '120px',
-          height: '80px',
+          width: compact ? '62px' : '120px',
+          height: compact ? '62px' : '80px',
           display: 'inline-block',
           flexShrink: 0,
           padding: 0,
           margin: 0,
-          cursor: isDragging ? 'grabbing' : 'grab',
+          cursor: compact ? 'pointer' : (isDragging ? 'grabbing' : 'grab'),
         }}
         layout={false}
-        draggable
+        draggable={!compact}
         onClick={handleFileClick}
-        title={`Drag to delete or click to open ${attachment.name}`}
+        title={compact ? `Click to preview ${attachment.name}` : `Drag to delete or click to open ${attachment.name}`}
       >
         {/* Image Preview */}
         <img
@@ -218,31 +223,40 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
           }}
         />
         
-        {/* Remove Button - Bottom right corner */}
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            onRemove(attachment.id);
-          }}
-          className="absolute bottom-1 right-1 w-6 h-6 flex items-center justify-center flex-shrink-0 text-gray-400 hover:text-gray-600 transition-colors"
-          title="Remove file"
-        >
-          <X className="w-4 h-4" strokeWidth={2.5} />
-        </button>
+        {/* Remove Button - Bottom right corner (hidden in compact) */}
+        {!compact && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onRemove(attachment.id);
+            }}
+            className="absolute bottom-1 right-1 w-6 h-6 flex items-center justify-center flex-shrink-0 text-gray-400 hover:text-gray-600 transition-colors"
+            title="Remove file"
+          >
+            <X className="w-4 h-4" strokeWidth={2.5} />
+          </button>
+        )}
       </motion.div>
     );
   }
 
   // For non-image files, show the original file attachment UI
+  const iconSize = compact ? 'w-5 h-5' : 'w-6 h-6';
+  const fileTextSize = compact ? 'w-3 h-3' : 'w-4 h-4';
+  const nameClass = compact ? 'text-[11px] font-medium text-black truncate' : 'text-xs font-medium text-black truncate';
+  const typeClass = compact ? 'text-[9px] text-gray-500 font-normal' : 'text-[10px] text-gray-500 font-normal';
+  const paddingClass = compact ? 'px-2 py-1.5' : 'px-2.5 py-2';
+  const gapClass = compact ? 'gap-1.5' : 'gap-2';
+
   return (
     <motion.div
-      ref={fileDragRef}
+      ref={compact ? undefined : fileDragRef}
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       transition={{ duration: 0.1, ease: "easeOut" }}
-      className="relative bg-white rounded-lg border border-gray-200 px-2.5 py-2 cursor-pointer hover:border-gray-300 transition-all duration-100"
+      className={`relative bg-white rounded-lg border border-gray-200 ${paddingClass} cursor-pointer hover:border-gray-300 transition-all duration-100`}
       style={{ 
         width: 'auto',
         height: 'auto',
@@ -252,60 +266,62 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
         flexShrink: 0,
         flexGrow: 0,
         alignSelf: 'flex-start',
-        cursor: isDragging ? 'grabbing' : 'grab',
+        cursor: compact ? 'pointer' : (isDragging ? 'grabbing' : 'grab'),
       }}
       layout={false}
-      draggable
+      draggable={!compact}
       onClick={handleFileClick}
-      title={`Drag to delete or click to open ${attachment.name}`}
+      title={compact ? `Click to preview ${attachment.name}` : `Drag to delete or click to open ${attachment.name}`}
     >
-      <div className="flex items-center gap-2" style={{ width: 'auto', flexShrink: 0 }}>
+      <div className={`flex items-center ${gapClass}`} style={{ width: 'auto', flexShrink: 0 }}>
         {/* File Icon - PDF image, Word image for DOCX, Gray FileText for others */}
         {isDOCX ? (
-          <img src="/word.png" alt="Word" className="w-6 h-6 rounded object-contain flex-shrink-0" />
+          <img src="/word.png" alt="Word" className={`${iconSize} rounded object-contain flex-shrink-0`} />
         ) : (
-          <div className={`w-6 h-6 ${isPDF ? 'bg-red-500' : 'bg-gray-500'} rounded flex items-center justify-center flex-shrink-0`}>
-            <FileText className="w-4 h-4 text-white" strokeWidth={2} />
+          <div className={`${iconSize} ${isPDF ? 'bg-red-500' : 'bg-gray-500'} rounded flex items-center justify-center flex-shrink-0`}>
+            <FileText className={`${fileTextSize} text-white`} strokeWidth={2} />
           </div>
         )}
         
         {/* File Info */}
         <div className="flex flex-col" style={{ width: 'auto', flexShrink: 0 }}>
-          <span className="text-xs font-medium text-black truncate" style={{ whiteSpace: 'nowrap' }}>
+          <span className={`${nameClass}`} style={{ whiteSpace: 'nowrap' }}>
             {formatFileName(attachment.name)}
           </span>
           <div className="flex items-center gap-1">
-            <span className="text-[10px] text-gray-500 font-normal">
+            <span className={typeClass}>
               {getFileTypeLabel(attachment.type)}
             </span>
-            {/* Extraction Status Indicator */}
-            {attachment.extractionStatus === 'extracting' && (
+            {/* Extraction Status Indicator (hidden in compact to keep bubble minimal) */}
+            {!compact && attachment.extractionStatus === 'extracting' && (
               <Loader2 className="w-2.5 h-2.5 text-blue-500 animate-spin" />
             )}
-            {attachment.extractionStatus === 'pending' && (
+            {!compact && attachment.extractionStatus === 'pending' && (
               <div className="w-2 h-2 rounded-full bg-gray-300" />
             )}
-            {attachment.extractionStatus === 'complete' && (
+            {!compact && attachment.extractionStatus === 'complete' && (
               <Check className="w-2.5 h-2.5 text-green-500" strokeWidth={3} />
             )}
-            {attachment.extractionStatus === 'error' && (
+            {!compact && attachment.extractionStatus === 'error' && (
               <AlertCircle className="w-2.5 h-2.5 text-red-500" />
             )}
           </div>
         </div>
         
-        {/* Remove Button - X only, no background */}
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            onRemove(attachment.id);
-          }}
-          className="w-6 h-6 flex items-center justify-center flex-shrink-0 text-gray-400 hover:text-gray-600 transition-colors ml-2"
-          title="Remove file"
-        >
-          <X className="w-4 h-4" strokeWidth={2.5} />
-        </button>
+        {/* Remove Button - X only (hidden in compact) */}
+        {!compact && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onRemove(attachment.id);
+            }}
+            className="w-6 h-6 flex items-center justify-center flex-shrink-0 text-gray-400 hover:text-gray-600 transition-colors ml-2"
+            title="Remove file"
+          >
+            <X className="w-4 h-4" strokeWidth={2.5} />
+          </button>
+        )}
       </div>
     </motion.div>
   );

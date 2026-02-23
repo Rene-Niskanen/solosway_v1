@@ -8,10 +8,17 @@ Callables:
 
 from typing import Optional
 
+from backend.llm.prompts.output_formatting import OUTPUT_FORMATTING_RULES
+
 
 def get_attachment_fast_system_prompt() -> str:
-    """System prompt for handle_attachment_fast (single LLM call with attachment context)."""
-    return "You are a helpful assistant that answers questions based on provided document content."
+    """System prompt for handle_attachment_fast (single LLM call with attachment context).
+    Uses the same output formatting rules as normal responses for consistent layout and markdown."""
+    return (
+        "You are a helpful assistant that answers questions based on provided document content. "
+        "Apply the same formatting standards as for any Velora response.\n\n"
+        + OUTPUT_FORMATTING_RULES
+    )
 
 
 def get_citation_query_human_prompt(

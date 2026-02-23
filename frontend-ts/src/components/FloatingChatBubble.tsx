@@ -643,7 +643,7 @@ export const FloatingChatBubble: React.FC<FloatingChatBubbleProps> = ({
                   {/* Query bubble - aligned with response text */}
                   <div
                     style={{
-                      backgroundColor: '#F3F3F3',
+                      backgroundColor: '#F8F8F8',
                       borderRadius: '8.8px',
                       paddingTop: '4.4px',
                       paddingBottom: '4.4px',

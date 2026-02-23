@@ -305,6 +305,28 @@ def select_best_citation_for_query(query: str, citations_map: dict, preferred_ci
 # ============================================================================
 
 
+@views.route('/api/debug/extraction-status', methods=['GET'])
+def debug_extraction_status():
+    """Return whether EXTRACTION_SERVICE_URL is set and if the Node service is reachable (for debugging quick-extract)."""
+    try:
+        from .services.quick_extract_service import _get_extraction_service_url
+        base_url = _get_extraction_service_url()
+        out = {
+            "EXTRACTION_SERVICE_URL_set": bool(base_url),
+            "base_url": base_url if base_url else None,
+            "extraction_service_reachable": False,
+        }
+        if base_url:
+            try:
+                r = requests.get(f"{base_url}/health", timeout=3)
+                out["extraction_service_reachable"] = r.status_code == 200
+            except Exception as e:
+                out["extraction_service_error"] = str(e)
+        return jsonify(out), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @views.route('/api/health', methods=['GET'])
 def health_check():
     """Basic health check endpoint"""
@@ -1527,6 +1549,16 @@ def query_documents_stream():
                                 execution_events = consume_execution_events()
                                 for exec_event in execution_events:
                                     payload = exec_event.to_dict()
+                                    # Attachment fast: stream LLM tokens as they arrive so user sees output quickly
+                                    if payload.get('type') == 'stream_token':
+                                        token = (payload.get('metadata') or {}).get('token', '')
+                                        if token:
+                                            if not first_token_sent_marked:
+                                                timing.mark("first_token_sent")
+                                                first_token_sent_marked = True
+                                            yield f"data: {json.dumps({'type': 'token', 'token': token})}\n\n"
+                                            summary_already_streamed = True
+                                        continue
                                     # When executor/planner emits phase events with reasoning (e.g. "Searched documents", "Reviewed selected document(s)"),
                                     # emit a reasoning_step so the UI shows the step when the toggle is on
                                     if not is_fast_path and payload.get('type') == 'phase' and (payload.get('metadata') or {}).get('reasoning'):
@@ -1606,6 +1638,17 @@ def query_documents_stream():
                                         }
                                         yield f"data: {json.dumps(reasoning_data)}\n\n"
                                         logger.info("🟡 [REASONING] ✅ Emitted citation step: Generating response")
+                                    elif node_name == "handle_attachment_fast":
+                                        # Attachment fast path: show "Generating response" while LLM streams
+                                        reasoning_data = {
+                                            'type': 'reasoning_step',
+                                            'step': 'generating_response',
+                                            'action_type': 'analysing',
+                                            'message': 'Generating response',
+                                            'details': {}
+                                        }
+                                        yield f"data: {json.dumps(reasoning_data)}\n\n"
+                                        logger.info("🟡 [REASONING] ✅ Emitted attachment_fast step: Generating response")
                                     elif not is_fast_path and node_name in node_messages and node_name not in processed_nodes:
                                         if node_name == "responder":
                                             # Emit "Generating response" when prompt is sent to LLM (disappears when streaming starts)
@@ -1987,6 +2030,30 @@ def query_documents_stream():
                                         if citations_from_citation:
                                             final_result['citations'] = citations_from_citation
                                             logger.info(f"⚡ [CITATION_QUERY] Captured {len(citations_from_citation)} citations")
+                                    
+                                    # Handle attachment fast completion (same formatting as citation/summarize path)
+                                    elif node_name == "handle_attachment_fast":
+                                        state_data = state_update if state_update else output
+                                        if final_result is None:
+                                            final_result = {}
+                                        final_summary_from_attachment = (state_data or {}).get('final_summary', '')
+                                        if final_summary_from_attachment:
+                                            final_summary_from_attachment = _strip_intent_fragment_from_response(final_summary_from_attachment or "")
+                                            final_summary_from_attachment = _strip_mid_response_generic_closings(final_summary_from_attachment or "")
+                                            final_result['final_summary'] = final_summary_from_attachment
+                                            logger.info(f"⚡ [ATTACHMENT_FAST] Captured final_summary ({len(final_summary_from_attachment)} chars)")
+                                            if not summary_already_streamed:
+                                                yield f"data: {json.dumps({'type': 'status', 'message': 'Streaming response...'})}\n\n"
+                                                for i in range(0, len(final_summary_from_attachment), STREAM_CHUNK_SIZE):
+                                                    if i == 0 and not first_token_sent_marked:
+                                                        timing.mark("first_token_sent")
+                                                        first_token_sent_marked = True
+                                                    chunk = final_summary_from_attachment[i:i + STREAM_CHUNK_SIZE]
+                                                    yield f"data: {json.dumps({'type': 'token', 'token': chunk})}\n\n"
+                                                    if STREAM_CHUNK_DELAY_MS > 0:
+                                                        time.sleep(STREAM_CHUNK_DELAY_MS / 1000.0)
+                                                summary_already_streamed = True
+                                                logger.info("⚡ [ATTACHMENT_FAST] Streamed response (same formatting as citation path)")
                                     
                                     # Handle RunnableSequence end: inner LLM chain inside responder emits as "RunnableSequence", not "responder"
                                     # Capture LLM response content so we have final_summary for the post-loop stream

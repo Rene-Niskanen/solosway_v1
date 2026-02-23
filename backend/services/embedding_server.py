@@ -4,12 +4,15 @@ Local Embedding Server using Sentence Transformers (CPU-based).
 This FastAPI server hosts embedding models (BGE, GTE, E5) on CPU,
 providing a local alternative to OpenAI embeddings for cost savings.
 
+Port 5002 is reserved for the doc-extraction Node service (EXTRACTION_SERVICE_URL).
+Run this embedding server on a different port (default 5003) via EMBEDDING_SERVER_PORT.
+
 Usage:
-    # Development
-    uvicorn backend.services.embedding_server:app --host 0.0.0.0 --port 5002 --reload
-    
+    # Development (default port 5003)
+    uvicorn backend.services.embedding_server:app --host 0.0.0.0 --port 5003 --reload
+
     # Production
-    gunicorn -w 4 -k uvicorn.workers.UvicornWorker backend.services.embedding_server:app --bind 0.0.0.0:5002
+    gunicorn -w 4 -k uvicorn.workers.UvicornWorker backend.services.embedding_server:app --bind 0.0.0.0:5003
 """
 
 from fastapi import FastAPI, HTTPException
@@ -527,6 +530,6 @@ async def root():
 
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.environ.get("EMBEDDING_SERVER_PORT", 5002))
+    port = int(os.environ.get("EMBEDDING_SERVER_PORT", 5003))
     uvicorn.run(app, host="0.0.0.0", port=port)
 

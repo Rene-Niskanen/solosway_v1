@@ -2449,10 +2449,27 @@ const StreamingResponseText: React.FC<{
         .streaming-response-text p:first-child {
           margin-top: 0 !important;
         }
+        /* More space above titles when they follow other content; less space below so related content sits close */
+        .streaming-response-text p + h1,
+        .streaming-response-text p + h2,
+        .streaming-response-text p + h3,
+        .streaming-response-text ul + h1,
+        .streaming-response-text ul + h2,
+        .streaming-response-text ul + h3,
+        .streaming-response-text ol + h1,
+        .streaming-response-text ol + h2,
+        .streaming-response-text ol + h3 {
+          margin-top: 1.25em !important;
+        }
+        .streaming-response-text h1,
+        .streaming-response-text h2,
+        .streaming-response-text h3 {
+          margin-bottom: 0.35em !important;
+        }
         .streaming-response-text h1 + p,
         .streaming-response-text h2 + p,
         .streaming-response-text h3 + p {
-          margin-top: 4.4px !important;
+          margin-top: 0.25em !important;
         }
         .streaming-response-text p:has(+ p) {
           margin-bottom: 4.4px !important;
@@ -2485,9 +2502,13 @@ const StreamingResponseText: React.FC<{
         .streaming-response-text p span > .response-strong-title:not(.response-strong-title-has-colon)::after {
           content: ':';
         }
-        /* Paragraph that is only a section title (e.g. "Assumptions:") – minimal gap so it doesn't stack with the strong's margin and next p's margin */
+        /* Paragraph that is only a section title (e.g. "Methodology:", "Assumptions:") – more space above, minimal below so related content sits close */
         .streaming-response-text p:has(> span > .response-strong-title:only-child) {
+          margin-top: 1em !important;
           margin-bottom: 0 !important;
+        }
+        .streaming-response-text p:has(> span > .response-strong-title:only-child) + p {
+          margin-top: 0.25em !important;
         }
         /* Headings inside list items must not use huge title sizes – treat as list-item labels */
         .streaming-response-text li h1,
@@ -4537,140 +4558,6 @@ const QueryPropertyAttachment: React.FC<{
       title={`Click to view ${attachment.address}`}
     >
       <span style={{ fontSize: '21.9px', pointerEvents: 'none' }}>🏠</span>
-    </div>
-  );
-};
-
-// Component for displaying attachment in query bubble
-const QueryAttachment: React.FC<{ attachment: FileAttachmentData }> = ({ attachment }) => {
-  const isImage = attachment.type.startsWith('image/');
-  const [imageUrl, setImageUrl] = React.useState<string | null>(null);
-  const { addPreviewFile } = usePreview();
-  
-  // Create blob URL for images
-  React.useEffect(() => {
-    if (isImage && attachment.file) {
-      // Check for preloaded blob URL first
-      const preloadedBlob = (window as any).__preloadedAttachmentBlobs?.[attachment.id];
-      if (preloadedBlob) {
-        setImageUrl(preloadedBlob);
-      } else {
-        const url = URL.createObjectURL(attachment.file);
-        setImageUrl(url);
-        return () => {
-          URL.revokeObjectURL(url);
-        };
-      }
-    }
-  }, [isImage, attachment.id, attachment.file]);
-  
-  const handleImageClick = () => {
-    if (attachment.file) {
-      // Ensure the File object is still valid by creating a fresh attachment object
-      // This prevents issues when reopening previews after closing
-      const freshAttachment: FileAttachmentData = {
-        ...attachment,
-        file: attachment.file // Ensure we're using the current file reference
-      };
-      addPreviewFile(freshAttachment);
-    }
-  };
-  
-  if (isImage && imageUrl) {
-    return (
-      <div
-        onClick={handleImageClick}
-        style={{
-          width: '62px',
-          height: '62px',
-          borderRadius: '6.6px',
-          overflow: 'hidden',
-          backgroundColor: '#F3F4F6',
-          border: '1px solid #E5E7EB',
-          display: 'inline-flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          flexShrink: 0,
-          cursor: 'pointer',
-          transition: 'opacity 0.2s ease'
-        }}
-        onMouseEnter={(e) => {
-          e.currentTarget.style.opacity = '0.8';
-        }}
-        onMouseLeave={(e) => {
-          e.currentTarget.style.opacity = '1';
-        }}
-        title={`Click to preview ${attachment.name}`}
-      >
-        <img
-          src={imageUrl}
-          alt={attachment.name}
-          style={{
-            width: '100%',
-            height: '100%',
-            objectFit: 'cover',
-            display: 'block'
-          }}
-        />
-      </div>
-    );
-  }
-  
-  // For non-image files, match FileAttachment composer style: file-type icon + name + type label
-  const isPDF = attachment.type === 'application/pdf' || (attachment.name && attachment.name.toLowerCase().endsWith('.pdf'));
-  const isDOCX = attachment.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
-    attachment.type === 'application/msword' ||
-    (attachment.name && (attachment.name.toLowerCase().endsWith('.docx') || attachment.name.toLowerCase().endsWith('.doc')));
-  const getFileTypeLabel = (type: string): string => {
-    if (type.includes('pdf')) return 'PDF';
-    if (type.includes('word') || type.includes('document')) return 'DOC';
-    if (type.includes('excel') || type.includes('spreadsheet')) return 'XLS';
-    if (type.includes('image')) return 'IMG';
-    if (type.includes('text')) return 'TXT';
-    return 'FILE';
-  };
-  const formatFileName = (name: string): string => {
-    if (name.length > 24) {
-      const ext = name.split('.').pop();
-      const base = name.substring(0, name.lastIndexOf('.'));
-      return `${base.substring(0, 21)}...${ext ? '.' + ext : ''}`;
-    }
-    return name;
-  };
-  return (
-    <div
-      style={{
-        fontSize: '12px',
-        color: '#111',
-        backgroundColor: '#fff',
-        border: '1px solid #E5E7EB',
-        padding: '4px 8px',
-        borderRadius: '6px',
-        display: 'inline-flex',
-        alignItems: 'center',
-        gap: '6px',
-        boxShadow: '0 1px 2px rgba(0,0,0,0.05)'
-      }}
-      title={attachment.name}
-    >
-      {isDOCX ? (
-        <img src="/word.png" alt="Word" style={{ width: 18, height: 18, objectFit: 'contain', flexShrink: 0 }} />
-      ) : (
-        <div style={{
-          width: 18, height: 18, borderRadius: 4, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-          backgroundColor: isPDF ? '#dc2626' : '#6B7280'
-        }}>
-          <FileText style={{ width: 12, height: 12, color: '#fff' }} strokeWidth={2} />
-        </div>
-      )}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 0, minWidth: 0 }}>
-        <span style={{ fontWeight: 600, color: '#111', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {formatFileName(attachment.name)}
-        </span>
-        <span style={{ fontSize: '10px', color: '#6B7280' }}>
-          {getFileTypeLabel(attachment.type)}
-        </span>
-      </div>
     </div>
   );
 };
@@ -9687,41 +9574,17 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             });
             
             if (hasExtractedAttachments(attachmentsToUse)) {
-              console.log('📁 Attachments have extracted text - showing file choice step');
-              
-              // Wait for user to select response mode
-              const userChoice = await showFileChoiceAndWait(loadingResponseId, attachmentsToUse);
-              console.log('📁 User selected response mode:', userChoice);
-              
-              // Map 'project' choice to 'full' for backend (project = full + property linking)
-              responseMode = userChoice === 'project' ? 'full' : userChoice;
-              
-              // Build attachment context for backend
+              responseMode = 'fast';
               attachmentContext = buildAttachmentContext(attachmentsToUse);
-              console.log('📦 Built attachment context:', {
-                hasContext: !!attachmentContext,
-                textCount: attachmentContext?.texts.length || 0,
-                filenameCount: attachmentContext?.filenames.length || 0,
-                filenames: attachmentContext?.filenames || []
-              });
-              
-              // Clear the file choice step and add "Processing with..." step
               const processingStep: ReasoningStep = {
                 step: 'processing_attachments',
                 action_type: 'analysing',
-                message: userChoice === 'fast' 
-                  ? 'Generating fast response...' 
-                  : userChoice === 'detailed'
-                    ? 'Analysing documents for detailed citations...'
-                    : 'Processing and adding to project...',
+                message: 'Generating response...',
                 details: {},
                 timestamp: Date.now()
               };
-              
-              setChatMessages(prev => prev.map(msg => 
-                msg.id === loadingResponseId 
-                  ? { ...msg, reasoningSteps: [processingStep] }
-                  : msg
+              setChatMessages(prev => prev.map(msg =>
+                msg.id === loadingResponseId ? { ...msg, reasoningSteps: [processingStep] } : msg
               ));
             } else {
               // Only warn if there ARE attachments but no extracted text
@@ -13228,14 +13091,22 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     
     const fileId = `file-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     
-    // Check if file type supports quick extraction
+    // Check if file type supports quick extraction (PDF, Word, Excel, PowerPoint, text - same as Node/LobeHub loaders)
     const isPDF = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
-    const isDOCX = file.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' || 
+    const isDOCX = file.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
                    file.type === 'application/msword' ||
-                   file.name.toLowerCase().endsWith('.docx') || 
+                   file.name.toLowerCase().endsWith('.docx') ||
                    file.name.toLowerCase().endsWith('.doc');
+    const isExcel = file.type === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
+                    file.type === 'application/vnd.ms-excel' ||
+                    file.name.toLowerCase().endsWith('.xlsx') ||
+                    file.name.toLowerCase().endsWith('.xls');
+    const isPPTX = file.type === 'application/vnd.openxmlformats-officedocument.presentationml.presentation' ||
+                  file.type === 'application/vnd.ms-powerpoint' ||
+                  file.name.toLowerCase().endsWith('.pptx') ||
+                  file.name.toLowerCase().endsWith('.ppt');
     const isTXT = file.type === 'text/plain' || file.name.toLowerCase().endsWith('.txt');
-    const supportsExtraction = isPDF || isDOCX || isTXT;
+    const supportsExtraction = isPDF || isDOCX || isExcel || isPPTX || isTXT;
     
     const fileData: FileAttachmentData = {
       id: fileId,
@@ -14107,35 +13978,17 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           let attachmentContext: { texts: string[]; pageTexts: string[][]; filenames: string[]; tempFileIds: string[] } | null = null;
           
           if (hasExtractedAttachments(attachmentsToStore)) {
-            console.log('📁 Attachments have extracted text - showing file choice step');
-            
-            // Wait for user to select response mode
-            const userChoice = await showFileChoiceAndWait(loadingResponseId, attachmentsToStore);
-            console.log('📁 User selected response mode:', userChoice);
-            
-            // Map 'project' choice to 'full' for backend (project = full + property linking)
-            responseMode = userChoice === 'project' ? 'full' : userChoice;
-            
-            // Build attachment context for backend
+            responseMode = 'fast';
             attachmentContext = buildAttachmentContext(attachmentsToStore);
-            
-            // Clear the file choice step and add "Processing with..." step
             const processingStep: ReasoningStep = {
               step: 'processing_attachments',
               action_type: 'analysing',
-              message: userChoice === 'fast' 
-                ? 'Generating fast response...' 
-                : userChoice === 'detailed'
-                  ? 'Analyzing documents for detailed citations...'
-                  : 'Processing and adding to project...',
+              message: 'Generating response...',
               details: {},
               timestamp: Date.now()
             };
-            
-            setChatMessages(prev => prev.map(msg => 
-              msg.id === loadingResponseId 
-                ? { ...msg, reasoningSteps: [processingStep] }
-                : msg
+            setChatMessages(prev => prev.map(msg =>
+              msg.id === loadingResponseId ? { ...msg, reasoningSteps: [processingStep] } : msg
             ));
           }
           
@@ -15470,11 +15323,17 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             display: 'flex', flexDirection: 'column', gap: '6.6px', alignItems: 'flex-end',
             boxSizing: 'border-box'
           }}>
-            <div style={{ backgroundColor: '#F3F3F3', borderRadius: '15.4px', padding: '4.4px 6.6px 4.4px 11px', width: 'fit-content', maxWidth: '100%', maxHeight: 'min(320px, 50vh)', overflowY: 'auto', overflowX: 'hidden', wordWrap: 'break-word', overflowWrap: 'break-word', display: 'block', boxSizing: 'border-box', WebkitOverflowScrolling: 'touch' }}>
+            <div style={{ backgroundColor: '#F8F8F8', borderRadius: '15.4px', padding: '4.4px 6.6px 4.4px 11px', width: 'fit-content', maxWidth: '100%', maxHeight: 'min(320px, 50vh)', overflowY: 'auto', overflowX: 'hidden', wordWrap: 'break-word', overflowWrap: 'break-word', display: 'block', boxSizing: 'border-box', WebkitOverflowScrolling: 'touch' }}>
               {message.attachments?.length > 0 && (
                 <div style={{ marginBottom: (message.text || message.propertyAttachments?.length > 0) ? '8.8px' : '0', display: 'flex', flexWrap: 'wrap', gap: '4.4px' }}>
                   {message.attachments.map((attachment, i) => (
-                    <QueryAttachment key={attachment.id || attachment.name || `att-${i}`} attachment={attachment} />
+                    <FileAttachment
+                      key={attachment.id || attachment.name || `att-${i}`}
+                      attachment={attachment}
+                      onRemove={() => {}}
+                      onPreview={attachment.file ? () => addPreviewFile(attachment) : undefined}
+                      compact
+                    />
                   ))}
                 </div>
               )}
@@ -17588,7 +17447,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                 multiple
                                 onChange={handleFileSelect}
                                 className="hidden"
-                                accept="image/*,.pdf,.doc,.docx"
+                                accept="image/*,.pdf,.doc,.docx,.xlsx,.xls,.pptx,.ppt"
                               />
                               <ChatBarAttachDropdown
                                 onAttachClick={() => fileInputRef.current?.click()}
@@ -17606,9 +17465,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                 <button
                                   type="button"
                                   onClick={() => window.dispatchEvent(new CustomEvent('openChooseProjectModal'))}
-                                  className="flex items-center justify-center gap-1.5 text-gray-700 transition-colors focus:outline-none outline-none rounded-md"
+                                  className="flex items-center justify-center gap-1.5 text-gray-700 transition-colors focus:outline-none outline-none rounded-md bg-black/[0.01] hover:bg-black/[0.05]"
                                   style={{
-                                    backgroundColor: 'rgba(0, 0, 0, 0.02)',
                                     border: 'none',
                                     height: '26px',
                                     minHeight: '26px',
@@ -18802,9 +18660,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               <button
                                 type="button"
                                 onClick={() => window.dispatchEvent(new CustomEvent('openChooseProjectModal'))}
-                                className="flex items-center justify-center gap-1.5 text-gray-700 transition-colors focus:outline-none outline-none rounded-md"
+                                className="flex items-center justify-center gap-1.5 text-gray-700 transition-colors focus:outline-none outline-none rounded-md bg-black/[0.01] hover:bg-black/[0.05]"
                                 style={{
-                                  backgroundColor: 'rgba(0, 0, 0, 0.02)',
                                   border: 'none',
                                   height: '26px',
                                   minHeight: '26px',
@@ -18836,7 +18693,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           multiple
                           onChange={handleFileSelect}
                           className="hidden"
-                          accept="image/*,.pdf,.doc,.docx"
+                          accept="image/*,.pdf,.doc,.docx,.xlsx,.xls,.pptx,.ppt"
                         />
                         <ModeSelector compact={true} className="mr-2" />
                         {!isVeryNarrow && <ModelSelector compact={true} />}

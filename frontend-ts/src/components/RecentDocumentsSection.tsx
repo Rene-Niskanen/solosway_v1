@@ -113,6 +113,7 @@ export const RecentDocumentsSection: React.FC<RecentDocumentsSectionProps> = ({
         className={scrollable ? 'recent-docs-scroll flex overflow-x-auto' : 'flex'}
         style={{
           gap,
+          justifyContent: 'space-evenly',
           paddingBottom: compact ? 4 : 8,
           paddingLeft: 0,
           ...(scrollable && {

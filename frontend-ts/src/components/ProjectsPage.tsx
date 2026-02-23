@@ -1008,7 +1008,8 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
             style={{
               paddingBottom: showAllFiles ? 0 : '32px',
               marginLeft: 0,
-              paddingLeft: 0,
+              paddingLeft: '38px',
+              paddingRight: '38px',
               marginTop: showAllFiles ? 8 : 0,
               width: '100%',
               maxWidth: '100%',

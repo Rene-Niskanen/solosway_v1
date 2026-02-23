@@ -511,7 +511,7 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
                     if (fileInputRef.current) fileInputRef.current.value = '';
                   }}
                   className="hidden"
-                  accept="image/*,.pdf,.doc,.docx"
+                  accept="image/*,.pdf,.doc,.docx,.xlsx,.xls,.pptx,.ppt"
                 />
                 <ChatBarAttachDropdown
                 onAttachClick={() => fileInputRef.current?.click()}

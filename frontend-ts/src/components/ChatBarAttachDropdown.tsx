@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { Plus, Paperclip } from "lucide-react";
+import { Plus, CloudUpload } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -32,9 +32,8 @@ export function ChatBarAttachDropdown({
       <DropdownMenuTrigger asChild>
         <button
           type="button"
-          className={`flex items-center justify-center gap-1.5 text-gray-700 transition-colors focus:outline-none outline-none rounded-md ${className || ""}`}
+          className={`flex items-center justify-center gap-1.5 text-gray-700 transition-colors focus:outline-none outline-none rounded-md bg-black/[0.01] hover:bg-black/[0.05] ${className || ""}`}
           style={{
-            backgroundColor: "rgba(0, 0, 0, 0.02)",
             border: "none",
             height: "26px",
             minHeight: "26px",
@@ -56,13 +55,13 @@ export function ChatBarAttachDropdown({
         align="start"
         side="top"
         sideOffset={5}
-        className="p-0.5 z-[10002]"
+        className="p-0.5 z-[10002] min-w-[10rem]"
         style={{
           backgroundColor: "#FFFFFF",
           border: "1px solid rgba(229, 231, 235, 0.8)",
-          borderRadius: "8px",
+          borderRadius: "10px",
           boxShadow: "0 3px 10px rgba(0, 0, 0, 0.1)",
-          minWidth: "132px",
+          minWidth: "168px",
           zIndex: 10002,
         }}
       >
@@ -70,16 +69,16 @@ export function ChatBarAttachDropdown({
           onClick={() => onAttachClick()}
           onMouseEnter={() => setHoveredId("attach")}
           onMouseLeave={() => setHoveredId(null)}
-          className="flex items-center gap-1.5 cursor-pointer rounded-[4px] px-1.5 py-1"
+          className="flex items-center gap-2 cursor-pointer rounded-[6px] px-2 py-1"
           style={{
             backgroundColor: hoveredId === "attach" ? "rgba(0, 0, 0, 0.05)" : "transparent",
             color: "#4b5563",
-            fontSize: "14px",
+            fontSize: "13px",
             fontWeight: 400,
           }}
         >
-          <Paperclip className="w-4 h-4 flex-shrink-0 text-gray-600" strokeWidth={1.5} />
-          <span className="flex-1">Attach</span>
+          <CloudUpload className="w-[18px] h-[18px] flex-shrink-0 text-gray-600" strokeWidth={1.5} />
+          <span className="flex-1">Upload files</span>
         </DropdownMenuItem>
         {toolsItems.length > 0 && (
           <>
@@ -92,18 +91,18 @@ export function ChatBarAttachDropdown({
                   onClick={() => item.onClick()}
                   onMouseEnter={() => setHoveredId(item.id)}
                   onMouseLeave={() => setHoveredId(null)}
-                  className="flex items-center gap-1.5 cursor-pointer rounded-[4px] px-1.5 py-1"
+                  className="flex items-center gap-2 cursor-pointer rounded-[6px] px-2 py-1"
                   style={{
                     backgroundColor: isHovered ? "rgba(0, 0, 0, 0.05)" : "transparent",
                     color: "#4b5563",
-                    fontSize: "11px",
+                    fontSize: "13px",
                     fontWeight: 400,
                   }}
                 >
-                  <Icon className="w-4 h-4 flex-shrink-0 text-gray-600" strokeWidth={1.5} />
+                  <Icon className="w-[18px] h-[18px] flex-shrink-0 text-gray-600" strokeWidth={1.5} />
                   <span className="flex-1">{item.label}</span>
                   {item.badge != null && (
-                    <span className="text-gray-500" style={{ fontSize: "9px" }}>{item.badge}</span>
+                    <span className="text-gray-500" style={{ fontSize: "10px" }}>{item.badge}</span>
                   )}
                 </DropdownMenuItem>
               );

@@ -1382,7 +1382,7 @@ export const QuickStartBar: React.FC<QuickStartBarProps> = ({
                     <input
                       ref={fileInputRef}
                       type="file"
-                      accept=".pdf,.docx,.doc,image/*"
+                      accept=".pdf,.docx,.doc,.xlsx,.xls,.pptx,.ppt,image/*"
                       multiple
                       onChange={handleFileInputChange}
                       style={{ display: 'none' }}

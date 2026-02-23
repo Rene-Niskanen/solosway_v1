@@ -505,8 +505,8 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
         # Check for fast paths
         query_type = state.get("query_type")
         citation_context = state.get("citation_context")
-        attached_document = state.get("attached_document")
-        fast_mode = state.get("fast_mode", False)
+        attachment_context = state.get("attachment_context")
+        response_mode = state.get("response_mode")
         document_ids = state.get("document_ids")
         
         # Navigation action
@@ -519,8 +519,14 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
             logger.info("[GRAPH] Fast path: citation_query")
             return "citation_query"
         
-        # Attachment fast mode
-        if attached_document and fast_mode:
+        # Attachment fast path: use attachment_context + response_mode from view (not attached_document/fast_mode)
+        has_attachment = (
+            attachment_context
+            and isinstance(attachment_context, dict)
+            and attachment_context.get("texts")
+            and any(len(str(t).strip()) > 0 for t in attachment_context.get("texts", []))
+        )
+        if has_attachment and response_mode == "fast":
             logger.info("[GRAPH] Fast path: attachment_fast")
             return "handle_attachment_fast"
         
