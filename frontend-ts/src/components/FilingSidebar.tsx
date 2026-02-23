@@ -133,7 +133,7 @@ const PendingFileItem: React.FC<{
       }}
       onClick={() => onSelect?.(index)}
       role={onSelect ? 'button' : undefined}
-      className={`flex items-center gap-2.5 px-3 py-2 bg-white border rounded-lg transition-all duration-200 group cursor-pointer ${showOutline ? 'border-gray-400 ring-1 ring-gray-300' : 'border-gray-200/60 hover:border-gray-300/80'}`}
+      className={`flex items-center gap-2.5 px-3 py-2 bg-white border rounded-lg transition-all duration-200 group cursor-pointer ${showOutline ? 'border-gray-400 ring-1 ring-gray-300' : 'border-gray-200/60 hover:border-gray-300/80 hover:bg-[#f0f0f0] active:bg-[#e8e8e8]'}`}
     >
       {/* Image preview or file icon */}
       <div className="flex-shrink-0 flex items-center justify-center">
@@ -2816,8 +2816,8 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                     isSelectionMode 
                       ? (isSelected 
                           ? 'bg-gray-100/50 border-gray-300/60 hover:border-gray-400/80' 
-                          : 'bg-white border-gray-200/60 hover:border-gray-300/80 hover:bg-gray-50/50')
-                      : 'bg-white border-gray-200/60 hover:border-gray-300/80 hover:bg-gray-50/50'
+                          : 'bg-white border-gray-200/60 hover:border-gray-300/80 hover:bg-[#f0f0f0] active:bg-[#e8e8e8]')
+                      : 'bg-white border-gray-200/60 hover:border-gray-300/80 hover:bg-[#f0f0f0] active:bg-[#e8e8e8]'
                   }`}
                   onClick={(e) => {
                     if (editingItemId) return;
@@ -2969,8 +2969,8 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                         onClick={() => togglePropertyExpansion(propertyId)}
                         className={`px-4 py-2 ml-4 mr-8 cursor-pointer transition-all duration-200 rounded-md border flex items-center gap-2.5 w-full ${
                           isExpanded 
-                            ? 'bg-gray-50 border-gray-200/60' 
-                            : 'bg-white border-gray-200/60 hover:border-gray-300/80 hover:bg-gray-50/50'
+                            ? 'bg-gray-50 border-gray-200/60'
+                            : 'bg-white border-gray-200/60 hover:border-gray-300/80 hover:bg-[#f0f0f0] active:bg-[#e8e8e8]'
                         }`}
                       >
                         <ChevronRight 
@@ -3034,11 +3034,11 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                                 className={`flex items-center gap-2.5 pl-3 pr-3 py-1.5 ml-4 mr-8 cursor-pointer group rounded-md border transition-[transform,background-color,border-color] duration-150 ease-out active:scale-[0.99] ${
                                   isSelectionMode 
                                     ? (isSelected 
-                                        ? 'bg-gray-100/50 border-gray-300/60 hover:bg-blue-50/90 hover:border-blue-200/70' 
-                                        : 'bg-white border-gray-200/60 hover:bg-blue-50/90 hover:border-blue-200/70')
+                                        ? 'bg-gray-100/50 border-gray-300/60 hover:bg-[#f0f0f0] hover:border-gray-300/80' 
+                                        : 'bg-white border-gray-200/60 hover:bg-[#f0f0f0] hover:border-gray-300/80 active:bg-[#e8e8e8]')
                                     : isOpenInFileView
                                       ? 'bg-blue-50/60 border-blue-200/50 hover:bg-blue-100/70 hover:border-blue-300/60 active:bg-blue-100/80'
-                                      : 'bg-white border-gray-200/60 hover:bg-blue-50/90 hover:border-blue-200/70 active:bg-blue-50'
+                                      : 'bg-white border-gray-200/60 hover:bg-[#f0f0f0] hover:border-gray-300/80 active:bg-[#e8e8e8]'
                                 }`}
                                 onClick={(e) => {
                                   if (editingItemId) return;
@@ -3255,11 +3255,11 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                       className={`flex items-center gap-2.5 pl-3 pr-3 py-1.5 mx-4 cursor-pointer group rounded-md border transition-[transform,background-color,border-color] duration-150 ease-out active:scale-[0.99] ${
                         isSelectionMode 
                           ? (isSelected 
-                              ? 'bg-gray-100/50 border-gray-300/60 hover:bg-blue-50/90 hover:border-blue-200/70' 
-                              : 'bg-white border-gray-200/60 hover:bg-blue-50/90 hover:border-blue-200/70')
+                              ? 'bg-gray-100/50 border-gray-300/60 hover:bg-[#f0f0f0] hover:border-gray-300/80' 
+                              : 'bg-white border-gray-200/60 hover:bg-[#f0f0f0] hover:border-gray-300/80 active:bg-[#e8e8e8]')
                           : isOpenInFileView
                             ? 'bg-blue-50/60 border-blue-200/50 hover:bg-blue-100/70 hover:border-blue-300/60 active:bg-blue-100/80'
-                            : 'bg-white border-gray-200/60 hover:bg-blue-50/90 hover:border-blue-200/70 active:bg-blue-50'
+                            : 'bg-white border-gray-200/60 hover:bg-[#f0f0f0] hover:border-gray-300/80 active:bg-[#e8e8e8]'
                       }`}
                       onClick={(e) => {
                         if (editingItemId) return;

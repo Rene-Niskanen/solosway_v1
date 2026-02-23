@@ -633,8 +633,47 @@ MAX_BLOCKS_PER_DOC_IN_PROMPT = 500
 
 # Max characters for pasted/attachment context in paste+docs path (avoids token overflow)
 MAX_PASTE_CONTEXT_CHARS = 12000
-MAX_PRIOR_QUERY_CHARS = 100
-MAX_PRIOR_ANSWER_CHARS = 400
+# Prior context for follow-ups (LobeHub-style: last N exchanges, capped)
+PRIOR_CONTEXT_MAX_EXCHANGES = 3
+PRIOR_CONTEXT_MAX_TOTAL_CHARS = 2500
+MAX_PRIOR_QUERY_CHARS = 150
+MAX_PRIOR_ANSWER_CHARS = 500
+
+
+def _build_prior_context_from_conversation_history(
+    conv_hist: list,
+    max_exchanges: int = PRIOR_CONTEXT_MAX_EXCHANGES,
+    max_total_chars: int = PRIOR_CONTEXT_MAX_TOTAL_CHARS,
+    max_query_chars: int = MAX_PRIOR_QUERY_CHARS,
+    max_summary_chars: int = MAX_PRIOR_ANSWER_CHARS,
+) -> str:
+    """
+    Build a single string of prior Q&A for the responder (last N exchanges, capped).
+    Oldest content is truncated first if total exceeds max_total_chars.
+    """
+    if not conv_hist or not isinstance(conv_hist, list):
+        return ""
+    recent = conv_hist[-(max_exchanges):]
+    parts = []
+    for entry in recent:
+        if not isinstance(entry, dict):
+            continue
+        q = (entry.get("query") or "").strip()[:max_query_chars]
+        s = (entry.get("summary") or "").strip()[:max_summary_chars]
+        if q or s:
+            parts.append("Previous user question: " + q + "\nPrevious answer (summary): " + s)
+    if not parts:
+        return ""
+    combined = "\n\n".join(parts)
+    if len(combined) > max_total_chars:
+        combined = combined[-max_total_chars:].lstrip()
+        idx = combined.find("Previous user question:")
+        if idx > 0:
+            combined = combined[idx:]
+        elif idx == -1 and "\n\n" in combined:
+            # Truncation cut mid-line; start after first exchange boundary
+            combined = combined[combined.find("\n\n") + 2:]
+    return combined
 
 
 def _resolve_block_id_to_metadata(
@@ -2453,18 +2492,23 @@ async def responder_node(state: MainWorkflowState, runnable_config=None) -> Main
                 "chunk_citations": [],
                 "messages": [AIMessage(content=formatted_answer)],
             }
+            if not state.get("conversation_from_client"):
+                responder_output["conversation_history"] = [{"query": (user_query or "")[:500], "summary": (formatted_answer or "")[:2000]}]
             validate_responder_output(responder_output)
             return responder_output
         except Exception as e:
             logger.error(f"[RESPONDER] Format path error: {e}", exc_info=True)
             fallback_msg = "I couldn't reformat that. Please try again."
-            return {
+            fallback_output = {
                 "final_summary": fallback_msg,
                 "personality_id": previous_personality or DEFAULT_PERSONALITY_ID,
                 "citations": [],
                 "chunk_citations": [],
                 "messages": [AIMessage(content=fallback_msg)],
             }
+            if not state.get("conversation_from_client"):
+                fallback_output["conversation_history"] = [{"query": (user_query or "")[:500], "summary": (fallback_msg or "")[:2000]}]
+            return fallback_output
     
     # Extract chunks WITH metadata (chunk_id, chunk_text, document_id)
     chunks_metadata = extract_chunks_with_metadata(execution_results)
@@ -2501,16 +2545,15 @@ async def responder_node(state: MainWorkflowState, runnable_config=None) -> Main
                     logger.info(f"[RESPONDER] Paste+docs path: truncated pasted context to {MAX_PASTE_CONTEXT_CHARS} chars")
                 else:
                     logger.info(f"[RESPONDER] Paste+docs path: including {len(paste_context_str)} chars of pasted/attachment context")
-            # Prior exchange for follow-ups: last user question + last answer (summary)
+            # Prior context for follow-ups: last N exchanges (LobeHub-style), capped
             prior_exchange_summary = ""
             conv_hist = state.get("conversation_history")
             if isinstance(conv_hist, list) and len(conv_hist) > 0:
-                entry = conv_hist[-1]
-                q = (entry.get("query") or "")[:MAX_PRIOR_QUERY_CHARS]
-                s = (entry.get("summary") or "")[:MAX_PRIOR_ANSWER_CHARS]
-                prior_exchange_summary = "Previous user question: " + q + "\nPrevious answer (summary): " + s
-            elif state.get("prior_turn_content"):
-                prior_exchange_summary = "Previous answer (summary): " + (state["prior_turn_content"] or "")[:MAX_PRIOR_ANSWER_CHARS]
+                prior_exchange_summary = _build_prior_context_from_conversation_history(conv_hist)
+            if not prior_exchange_summary and state.get("prior_turn_content"):
+                prior_exchange_summary = "Previous answer (summary): " + (
+                    (state["prior_turn_content"] or "")[:MAX_PRIOR_ANSWER_CHARS]
+                )
             logger.info(f"[RESPONDER] Generating answer with direct citation system...")
             formatted_answer, citations, personality_id = await generate_answer_with_direct_citations(
                 user_query, execution_results,
@@ -2531,6 +2574,7 @@ async def responder_node(state: MainWorkflowState, runnable_config=None) -> Main
             # Prepare output with citations and persist chosen personality for next turn.
             # When we had no attachment but derived document_ids from retrieval, persist them so
             # the next turn (follow-up) reuses the same docs instead of running a new search.
+            # Level B: when client sent conversation, do not persist conversation to checkpoint
             responder_output = {
                 "final_summary": formatted_answer,
                 "personality_id": personality_id,
@@ -2538,6 +2582,8 @@ async def responder_node(state: MainWorkflowState, runnable_config=None) -> Main
                 "chunk_citations": citations if citations else [],
                 "messages": [AIMessage(content=formatted_answer)],
             }
+            if not state.get("conversation_from_client"):
+                responder_output["conversation_history"] = [{"query": (user_query or "")[:500], "summary": (formatted_answer or "")[:2000]}]
             if derived_document_ids and not state.get("document_ids"):
                 responder_output["document_ids"] = derived_document_ids
                 logger.info(f"[RESPONDER] Persisting derived document_ids for follow-up ({len(derived_document_ids)} doc(s))")
@@ -2563,25 +2609,29 @@ async def responder_node(state: MainWorkflowState, runnable_config=None) -> Main
                 logger.error(f"[RESPONDER] ❌ Fallback also failed: {fallback_error}", exc_info=True)
                 error_answer = "I encountered an error while generating the answer. Please try again."
             
-            # Prepare error output (keep previous personality)
+            # Prepare error output (keep previous personality). Level B: do not persist conversation when client sent it
             error_output = {
                 "final_summary": error_answer,
                 "personality_id": previous_personality or DEFAULT_PERSONALITY_ID,
                 "messages": [AIMessage(content=error_answer)],
             }
+            if not state.get("conversation_from_client"):
+                error_output["conversation_history"] = [{"query": (user_query or "")[:500], "summary": (error_answer or "")[:2000]}]
             
             # Validate error output (should still be valid string)
             try:
                 validate_responder_output(error_output)
             except ValueError as e:
                 logger.error(f"[RESPONDER] ❌ Error output contract violation: {e}")
-                # Fallback to minimal valid output
+                # Fallback to minimal valid output. Level B: do not persist conversation when client sent it
                 fallback_msg = "I encountered an error. Please try again."
                 error_output = {
                     "final_summary": fallback_msg,
                     "personality_id": previous_personality or DEFAULT_PERSONALITY_ID,
                     "messages": [AIMessage(content=fallback_msg)],
                 }
+                if not state.get("conversation_from_client"):
+                    error_output["conversation_history"] = [{"query": (user_query or "")[:500], "summary": (fallback_msg or "")[:2000]}]
             
             if emitter:
                 emitter.emit_reasoning(
@@ -2608,12 +2658,14 @@ async def responder_node(state: MainWorkflowState, runnable_config=None) -> Main
         except Exception as e:
             logger.warning("[RESPONDER] No-chunks LLM fallback: %s", e)
             answer = fallback_answer
-        # Prepare no-results output (keep previous personality)
+        # Prepare no-results output (keep previous personality). Level B: do not persist conversation when client sent it
         no_results_output = {
             "final_summary": answer,
             "personality_id": previous_personality or DEFAULT_PERSONALITY_ID,
             "messages": [AIMessage(content=answer)],
         }
+        if not state.get("conversation_from_client"):
+            no_results_output["conversation_history"] = [{"query": (user_query or "")[:500], "summary": (answer or "")[:2000]}]
         
         # Validate output
         try:

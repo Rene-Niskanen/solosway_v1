@@ -381,31 +381,35 @@ async def planner_node(state: MainWorkflowState, runnable_config=None) -> MainWo
         or property_id
     )
     if not has_document_scope:
-        # When router sends us back after "no results", we must increment refinement count so the loop eventually stops
-        is_refinement = state.get("execution_plan") is not None
-        if is_refinement:
-            plan_refinement_count += 1
-            logger.info("[PLANNER] Refining plan (attempt %s/3) for query: '%s...'", plan_refinement_count, (user_query or "")[:80])
-        user_query_stripped = (user_query or "").strip() or "Search documents"
-        execution_plan = _canonical_two_step_plan(user_query_stripped)
-        logger.info("[PLANNER] No scope: injected fixed 2-step plan (no LLM)")
-        if emitter:
-            planning_label = _rephrase_query_to_finding(user_query)
-            emitter.emit_reasoning(label=planning_label, detail=None)
-        plan_message = AIMessage(
-            content=f"Generated execution plan: {execution_plan['objective']} (2 steps)"
-        )
-        planner_output = {
-            "execution_plan": execution_plan,
-            "current_step_index": 0,
-            "execution_results": [],
-            "messages": [plan_message],
-            "plan_refinement_count": plan_refinement_count,
-            "prior_turn_content": None,
-            "format_instruction": None,
-        }
-        validate_planner_output(planner_output)
-        return planner_output
+        # When we have no doc scope but we have conversation history, run LLM planner so it can infer retrieval query (LobeHub: brain always sees conversation)
+        if messages:
+            logger.info("[PLANNER] No scope but messages present: running LLM planner for follow-up (infer query from conversation)")
+        else:
+            # No conversation: use literal query with fixed 2-step plan (skip LLM)
+            is_refinement = state.get("execution_plan") is not None
+            if is_refinement:
+                plan_refinement_count += 1
+                logger.info("[PLANNER] Refining plan (attempt %s/3) for query: '%s...'", plan_refinement_count, (user_query or "")[:80])
+            user_query_stripped = (user_query or "").strip() or "Search documents"
+            execution_plan = _canonical_two_step_plan(user_query_stripped)
+            logger.info("[PLANNER] No scope: injected fixed 2-step plan (no LLM)")
+            if emitter:
+                planning_label = _rephrase_query_to_finding(user_query)
+                emitter.emit_reasoning(label=planning_label, detail=None)
+            plan_message = AIMessage(
+                content=f"Generated execution plan: {execution_plan['objective']} (2 steps)"
+            )
+            planner_output = {
+                "execution_plan": execution_plan,
+                "current_step_index": 0,
+                "execution_results": [],
+                "messages": [plan_message],
+                "plan_refinement_count": plan_refinement_count,
+                "prior_turn_content": None,
+                "format_instruction": None,
+            }
+            validate_planner_output(planner_output)
+            return planner_output
 
     is_refinement = plan_refinement_count > 0 or state.get("execution_plan") is not None
     if is_refinement:

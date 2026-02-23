@@ -519,7 +519,7 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
                   {
                     id: 'web-search',
                     icon: Globe,
-                    label: 'Search the web',
+                    label: 'Web search',
                     onClick: () => setIsWebSearchEnabled((prev) => !prev),
                   },
                   {

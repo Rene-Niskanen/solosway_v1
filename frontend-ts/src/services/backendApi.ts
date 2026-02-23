@@ -421,10 +421,21 @@ class BackendApiService {
     const baseUrl = this.baseUrl || BACKEND_URL;
     const url = `${baseUrl}/api/llm/query/stream`;
     
+    // Level A (LobeHub-identical): send full thread with current user message last so backend derives query and prior context from one array
+    const prior = Array.isArray(messageHistory) ? messageHistory : [];
+    const messages: Array<{ role: string; content: string }> = [
+      ...prior.map((m: any) => ({
+        role: typeof m?.role === 'string' ? m.role : (m?.type === 'query' ? 'user' : 'assistant'),
+        content: typeof m?.content === 'string' ? m.content : String(m?.text ?? '')
+      })),
+      { role: 'user', content: query }
+    ];
+
     const requestBody: Record<string, any> = {
       query,
       propertyId,
       messageHistory,
+      messages,
       sessionId: sessionId || `session_${Date.now()}`,
       documentIds: documentIds || undefined,
       citationContext: citationContext || undefined, // Pass citation context to backend
@@ -482,6 +493,7 @@ class BackendApiService {
         });
       }
 
+      let receivedComplete = false;
       while (true) {
         // Check if aborted
         if (abortSignal?.aborted) {
@@ -492,7 +504,29 @@ class BackendApiService {
         const { done, value } = await reader.read();
         
         if (done) {
-          console.log('✅ backendApi: Stream finished (done=true)');
+          console.log('✅ backendApi: Stream finished (done=true)', { receivedComplete, accumulatedTextLength: accumulatedText.length });
+          // Process any remaining buffer (last chunk may contain final event)
+          if (buffer.trim()) {
+            const lines = buffer.split('\n');
+            for (const line of lines) {
+              if (line.startsWith('data: ')) {
+                try {
+                  const jsonStr = line.slice(6).trim();
+                  const data = JSON.parse(jsonStr);
+                  if (data.type === 'complete') {
+                    receivedComplete = true;
+                    onComplete(data.data);
+                    return;
+                  }
+                } catch (_) { /* ignore */ }
+              }
+            }
+          }
+          // If stream ended without 'complete' event, call onComplete so UI resets (fixes stuck stop button / Planning next moves)
+          if (!receivedComplete && accumulatedText.length > 0) {
+            console.warn('⚠️ backendApi: Stream ended without complete event; calling onComplete with accumulated text');
+            onComplete({ summary: accumulatedText });
+          }
           break;
         }
 
@@ -613,6 +647,7 @@ class BackendApiService {
                   }
                   break;
                 case 'complete':
+                  receivedComplete = true;
                   console.log('✅ backendApi: Received complete event:', {
                     hasData: !!data.data,
                     dataKeys: data.data ? Object.keys(data.data) : [],
@@ -2112,6 +2147,24 @@ class BackendApiService {
         error: errorMsg
       };
     }
+  }
+
+  async updateUserProfile(data: {
+    first_name?: string;
+    last_name?: string;
+    title?: string;
+    email?: string;
+    phone?: string;
+    address?: string;
+    location?: string;
+    organization?: string;
+  }) {
+    const result = await this.fetchApi<{ success: boolean; user?: unknown }>(
+      '/api/user/profile',
+      { method: 'PUT', body: JSON.stringify(data) }
+    );
+    if (!result.success) throw new Error(result.error);
+    return result;
   }
 
   async logout() {

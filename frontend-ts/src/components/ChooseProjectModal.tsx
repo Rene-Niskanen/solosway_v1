@@ -84,7 +84,7 @@ export function ChooseProjectModal({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="p-0 gap-0 overflow-hidden border-0 bg-white shadow-xl max-h-[70vh] min-w-0 max-w-[840px] w-[min(840px,calc(100vw-32px))] rounded-xl flex flex-col !z-[100100]"
+        className="p-0 gap-0 overflow-hidden border-0 bg-white shadow-xl max-h-[70vh] min-w-0 max-w-[840px] w-[min(840px,calc(100vw-32px))] rounded-xl flex flex-col !z-[100100] !top-auto !translate-y-0 left-[50%] translate-x-[-50%] bottom-[100px]"
         style={{ boxShadow: "0 4px 24px rgba(0,0,0,0.08)" }}
         overlayClassName="bg-black/10 !z-[100100]"
         onPointerDownOutside={() => onOpenChange(false)}

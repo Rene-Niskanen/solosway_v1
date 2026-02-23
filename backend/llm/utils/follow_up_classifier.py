@@ -66,6 +66,7 @@ Reply with exactly one word: SAME_DOC or NEW_QUESTION or PASTE_AND_DOCS. No othe
 MAX_PREV_ANSWER_CHARS = 400
 MAX_PREV_QUERY_CHARS = 200
 MAX_DOC_NAMES = 5
+MAX_PREV_EXCHANGES_FOR_CLASSIFIER = 2  # Last N exchanges for same_doc vs new_question
 
 
 def should_use_paste_plus_docs(
@@ -95,18 +96,20 @@ def _build_user_prompt(
     doc_names: List[str],
     has_attachment: bool = False,
 ) -> str:
-    prev_query = ""
-    prev_summary = ""
-    if conversation_history:
-        last = conversation_history[-1]
-        if isinstance(last, dict):
-            prev_query = (last.get("query") or "")[:MAX_PREV_QUERY_CHARS]
-            prev_summary = (last.get("summary") or "")[:MAX_PREV_ANSWER_CHARS]
     lines = []
-    if prev_query:
-        lines.append(f"Previous user question: {prev_query}")
-    if prev_summary:
-        lines.append(f"Previous answer (summary): {prev_summary}")
+    if conversation_history:
+        recent = conversation_history[-MAX_PREV_EXCHANGES_FOR_CLASSIFIER:]
+        for i, last in enumerate(recent):
+            if not isinstance(last, dict):
+                continue
+            prev_query = (last.get("query") or "").strip()[:MAX_PREV_QUERY_CHARS]
+            prev_summary = (last.get("summary") or "").strip()[:MAX_PREV_ANSWER_CHARS]
+            if prev_query:
+                lines.append(f"Previous user question: {prev_query}")
+            if prev_summary:
+                lines.append(f"Previous answer (summary): {prev_summary}")
+            if i < len(recent) - 1:
+                lines.append("")
     if doc_names:
         names = doc_names[:MAX_DOC_NAMES]
         lines.append(f"Documents from that turn: {', '.join(names)}")

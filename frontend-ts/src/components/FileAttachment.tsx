@@ -194,7 +194,7 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
         transition={{ duration: 0.1, ease: "easeOut" }}
-        className="relative bg-white rounded-lg border border-gray-200 shadow-sm cursor-pointer hover:border-gray-300 hover:shadow-md transition-all duration-100 overflow-hidden"
+        className="relative bg-white rounded-md border border-gray-200 shadow-sm cursor-pointer hover:border-gray-300 hover:shadow-md transition-all duration-100 overflow-hidden"
         style={{ 
           width: compact ? '62px' : '120px',
           height: compact ? '62px' : '80px',
@@ -256,7 +256,7 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       transition={{ duration: 0.1, ease: "easeOut" }}
-      className={`relative bg-white rounded-lg border border-gray-200 ${paddingClass} cursor-pointer hover:border-gray-300 transition-all duration-100`}
+      className={`relative bg-white rounded-md border border-gray-200 ${paddingClass} cursor-pointer hover:border-gray-300 transition-all duration-100`}
       style={{ 
         width: 'auto',
         height: 'auto',
@@ -275,10 +275,12 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
     >
       <div className={`flex items-center ${gapClass}`} style={{ width: 'auto', flexShrink: 0 }}>
         {/* File Icon - PDF image, Word image for DOCX, Gray FileText for others */}
-        {isDOCX ? (
+        {isPDF ? (
+          <img src="/PDF.png" alt="PDF" className={`${iconSize} rounded object-contain flex-shrink-0`} />
+        ) : isDOCX ? (
           <img src="/word.png" alt="Word" className={`${iconSize} rounded object-contain flex-shrink-0`} />
         ) : (
-          <div className={`${iconSize} ${isPDF ? 'bg-red-500' : 'bg-gray-500'} rounded flex items-center justify-center flex-shrink-0`}>
+          <div className={`${iconSize} bg-gray-500 rounded flex items-center justify-center flex-shrink-0`}>
             <FileText className={`${fileTextSize} text-white`} strokeWidth={2} />
           </div>
         )}

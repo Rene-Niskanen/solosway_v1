@@ -45,6 +45,18 @@ export function removePeriodAfterBracketCitations(text: string): string {
   return text.replace(/\[(\d+)\]\s*\./g, '[$1]');
 }
 
+/** Strip internal BLOCK_CITE_ID markers so they never appear in the UI (e.g. "(BLOCK_CITE_ID_15)", "BLOCK_CITE_ID_99"). */
+export function stripBlockCiteIdFromDisplay(text: string): string {
+  if (!text || typeof text !== 'string') return text;
+  return text.replace(/\s*[\[\(]?BLOCK_CITE_ID_\d+[\]\)]?\s*/g, ' ').replace(/\s{2,}/g, ' ');
+}
+
+/** Normalize [ID: 1](BLOCK_CITE_ID_N) or [ID: 1] to [1] so citation matching and display use bracket numbers. */
+export function normalizeIdCitationsToBracket(text: string): string {
+  if (!text || typeof text !== 'string') return text;
+  return text.replace(/\[ID:\s*(\d+)\](?:\s*\(\s*BLOCK_CITE_ID_\d+\s*\))?/g, '[$1]');
+}
+
 /**
  * Convert list items that are only a bold section label (e.g. "- **Parties Involved:**") into
  * plain bold lines so they render as section titles, not bullets. Handles - * + and optional leading whitespace.
@@ -240,7 +252,11 @@ export function mergeOrphanLines(text: string): string {
  * lists, or insert section breaks. Let the LLM's markdown flow naturally.
  */
 export function prepareResponseTextForDisplay(text: string): string {
-  const withBold = ensureBalancedBoldForDisplay(text);
+  if (!text || typeof text !== 'string') return text;
+  // Normalize [ID: X](BLOCK_CITE_ID_N) -> [X] and strip any remaining BLOCK_CITE_ID so they never leak into the UI
+  let out = normalizeIdCitationsToBracket(text);
+  out = stripBlockCiteIdFromDisplay(out);
+  const withBold = ensureBalancedBoldForDisplay(out);
   const withMergedHeadings = mergeBoldHeadingWithNextLine(withBold);
   const withMergedOrphans = mergeOrphanLines(withMergedHeadings);
   const withMergedListItems = mergeConsecutiveListItemsAsOne(withMergedOrphans);

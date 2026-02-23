@@ -666,7 +666,13 @@ async def handle_attachment_fast(state: MainWorkflowState) -> MainWorkflowState:
                 emitter.emit_stream_token(part)
     final_summary = "".join(chunks).strip()
     logger.info(f"[ATTACHMENT_FAST] Response generated: {len(final_summary)} chars")
-    return {"final_summary": final_summary}
+    # Persist one exchange so next turn has prior context (LobeHub: no missing history). Level B: skip when client sent conversation.
+    out = {"final_summary": final_summary}
+    if not state.get("conversation_from_client"):
+        q = (user_query or "").strip()[:500]
+        s = (final_summary or "").strip()[:2000]
+        out["conversation_history"] = [{"query": q, "summary": s}]
+    return out
 
 
 async def handle_citation_query(state: MainWorkflowState) -> MainWorkflowState:
@@ -1076,9 +1082,6 @@ async def classify_intent(state: MainWorkflowState) -> str:
         logger.info("[CLASSIFY] personal/about-velora (after stripping) -> conversation (query: '%s')", user_query[:60])
         return "conversation"
     word_count = len(user_query.split())
-    if word_count <= 3:
-        logger.info("[CLASSIFY] short message (%d words) -> conversation (query: '%s')", word_count, user_query[:60])
-        return "conversation"
 
     # ── Rule 3: property selected → document (for everything that wasn't clearly conversation) ──
     if property_id:

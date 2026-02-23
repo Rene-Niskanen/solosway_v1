@@ -2025,7 +2025,7 @@ const StreamingResponseText: React.FC<{
       return (
         <>
           <h1 style={{
-            fontSize: '38px',
+            fontSize: '33px',
             fontWeight: 700,
             margin: '15.2px 0 11px 0',
             color: '#111827',
@@ -2049,7 +2049,7 @@ const StreamingResponseText: React.FC<{
       return (
         <>
           <h2 style={{
-            fontSize: '26px',
+            fontSize: '23px',
             fontWeight: 700,
             margin: '13.1px 0 8.8px 0',
             color: '#111827',
@@ -2073,7 +2073,7 @@ const StreamingResponseText: React.FC<{
       return (
         <>
           <h3 style={{
-            fontSize: '24px',
+            fontSize: '21px',
             fontWeight: 700,
             margin: '10.9px 0 6.6px 0',
             color: '#111827',
@@ -2170,7 +2170,7 @@ const StreamingResponseText: React.FC<{
       backgroundColor: '#f3f4f6', 
       padding: '2.2px 5.5px', 
       borderRadius: '4.4px', 
-      fontSize: '16px', 
+      fontSize: '14px', 
       fontFamily: 'monospace',
       wordWrap: 'break-word',
       overflowWrap: 'break-word',
@@ -2292,7 +2292,7 @@ const StreamingResponseText: React.FC<{
       return (
       <>
         <h1 style={{
-          fontSize: '38px',
+          fontSize: '33px',
           fontWeight: 700,
           margin: '15.2px 0 11px 0',
           color: '#111827',
@@ -2316,7 +2316,7 @@ const StreamingResponseText: React.FC<{
       return (
       <>
         <h2 style={{
-          fontSize: '26px',
+          fontSize: '23px',
           fontWeight: 700,
           margin: '13.1px 0 8.8px 0',
           color: '#111827',
@@ -2340,7 +2340,7 @@ const StreamingResponseText: React.FC<{
       return (
       <>
         <h3 style={{
-          fontSize: '24px',
+          fontSize: '21px',
           fontWeight: 700,
           margin: '10.9px 0 6.6px 0',
           color: '#111827',
@@ -2570,7 +2570,7 @@ const StreamingResponseText: React.FC<{
           className="streaming-response-text"
           style={{
             color: '#374151',
-            fontSize: '16px',
+            fontSize: '14px',
             lineHeight: '1.74',
             margin: 0,
             padding: '4.4px 0',
@@ -4222,15 +4222,15 @@ const truncateQueryText = (
   measureElement.style.width = containerWidth 
     ? `${containerWidth * (maxWidthPercent / 100)}px`
     : `${maxWidthPercent}%`;
-  measureElement.style.fontSize = '16px';
-  measureElement.style.lineHeight = '21.8px';
+  measureElement.style.fontSize = '14px';
+  measureElement.style.lineHeight = '19px';
   measureElement.style.fontFamily = 'system-ui, -apple-system, sans-serif';
   measureElement.style.whiteSpace = 'pre-wrap';
   measureElement.style.wordWrap = 'break-word';
   document.body.appendChild(measureElement);
   
   // Calculate max height for 2 lines (-0.5% again)
-  const lineHeight = 21.8;
+  const lineHeight = 19;
   const maxHeight = lineHeight * maxLines;
   
   // Try full text first
@@ -9983,8 +9983,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   if (b) displayedText += b;
                 }
                 
+                let finalizeCalled = false;
                 // Wait for queue to finish processing, then set final text
                 const finalizeText = () => {
+                  if (finalizeCalled) return;
+                  finalizeCalled = true;
                   playCompletionSound();
                 // Use displayedText as source of truth - it was pre-completed during streaming
                 // This ensures text doesn't change when streaming completes (prevents "click" effect)
@@ -10031,18 +10034,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     chatIsActive
                   });
                   
-                  if (chatIsActive) {
-                    // Hide bot status overlay when streaming completes
-                    // BUT keep it visible in agent mode if navigation task or document opening is in progress
-                    if (!isAgentModeRef.current || (!isNavigatingTaskRef.current && !isOpeningDocumentRef.current)) {
-                      setIsBotActive(false);
-                    }
-                    
-                    // Clear resume processing ref when query completes
-                    resumeProcessingRef.current = null;
-                    
-                    // Set the complete formatted text
-                    setChatMessages(prev => {
+                  // Always clear loading state and set final text so send button and reasoning shimmer reset (even if chat became "inactive" due to ref race)
+                  setIsBotActive(false);
+                  resumeProcessingRef.current = null;
+                  setChatMessages(prev => {
                       const existingMessage = prev.find(msg => msg.id === loadingResponseId);
                       console.log('✅ SideChatPanel: setChatMessages - before update:', {
                         prevCount: prev.length,
@@ -10117,8 +10112,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       persistedChatMessagesRef.current = updated;
                       return updated;
                     });
-                  } else if (queryChatId) {
-                    // Chat is inactive - buffer the complete message
+                  if (!chatIsActive && queryChatId) {
+                    // Chat is inactive - also buffer the complete message for when user switches back
                     const bufferedState = getBufferedState(queryChatId);
                     const existingMessage = bufferedState.messages.find(msg => msg.id === loadingResponseId) || 
                       chatMessages.find(msg => msg.id === loadingResponseId);
@@ -10246,13 +10241,19 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   if (!isProcessingQueue && blockQueue.length === 0 && !tokenBuffer.trim() && !pendingBuffer.trim()) {
                     clearInterval(checkQueue);
                     if (usePerplexityStyleRef.current) perplexityFinalizeRef.current = () => finalizeText();
-                    else finalizeText();
+                    finalizeText(); // Always call so loading clears even when perplexity interval never runs
                   } else if (waited >= maxWait) {
                     clearInterval(checkQueue);
                     if (usePerplexityStyleRef.current) perplexityFinalizeRef.current = () => finalizeText();
-                    else finalizeText();
+                    finalizeText();
                   }
                 }, checkInterval);
+                // Guaranteed finalization after 80ms so loading state and "Planning next moves" always clear (fixes stuck stop button)
+                setTimeout(() => {
+                  clearInterval(checkQueue);
+                  if (usePerplexityStyleRef.current) perplexityFinalizeRef.current = () => finalizeText();
+                  finalizeText(); // Always call (finalizeCalled guards double run); fixes stuck button when perplexity interval wasn't started
+                }, 80);
               },
               // onError: Handle errors
               (error: string) => {
@@ -12549,7 +12550,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 }
                 
                 // Wait for queue to finish processing, then set final text
+                let finalizeCalledInitial = false;
                 const finalizeText = () => {
+                  if (finalizeCalledInitial) return;
+                  finalizeCalledInitial = true;
                   playCompletionSound();
                   // Citation context is cleared by parent (MainContent) after query
                 // Use displayedText as source of truth - it was pre-completed during streaming
@@ -12578,10 +12582,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 });
                 
                 // Hide bot status overlay when streaming completes
-                // BUT keep it visible in agent mode if navigation task or document opening is in progress
-                if (!isAgentModeRef.current || (!isNavigatingTaskRef.current && !isOpeningDocumentRef.current)) {
-                  setIsBotActive(false);
-                }
+                setIsBotActive(false);
                 
                 // Clear resume processing ref when query completes
                 resumeProcessingRef.current = null;
@@ -12620,13 +12621,18 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   if (!isProcessingQueue && blockQueue.length === 0 && !tokenBuffer.trim() && !pendingBuffer.trim()) {
                     clearInterval(checkQueue);
                     if (usePerplexityStyleRef.current) perplexityFinalizeRef.current = () => finalizeText();
-                    else finalizeText();
+                    finalizeText();
                   } else if (waited >= maxWait) {
                     clearInterval(checkQueue);
                     if (usePerplexityStyleRef.current) perplexityFinalizeRef.current = () => finalizeText();
-                    else finalizeText();
+                    finalizeText();
                   }
                 }, checkInterval);
+                setTimeout(() => {
+                  clearInterval(checkQueue);
+                  if (usePerplexityStyleRef.current) perplexityFinalizeRef.current = () => finalizeText();
+                  finalizeText();
+                }, 80);
               },
               // onError: Handle errors
               (error: string) => {
@@ -14169,7 +14175,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 if (b) displayedText += b;
               }
               
+              let finalizeCalledSubmit = false;
               const finalizeText = () => {
+                if (finalizeCalledSubmit) return;
+                finalizeCalledSubmit = true;
                 playCompletionSound();
               // This ensures text doesn't change when streaming completes (prevents "click" effect)
               // Use longer of displayedText vs accumulatedText as safety net so we never persist shortened content
@@ -14227,10 +14236,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 
                 if (chatIsActive) {
                   // Hide bot status overlay when streaming completes
-                  // BUT keep it visible in agent mode if navigation task is in progress
-                  if (!isAgentModeRef.current || !isNavigatingTaskRef.current) {
-                    setIsBotActive(false);
-                  }
+                  setIsBotActive(false);
                   
                   // Set the complete formatted text
                   setChatMessages(prev => {
@@ -14360,13 +14366,18 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 if (!isProcessingQueue && blockQueue.length === 0 && !tokenBuffer.trim() && !pendingBuffer.trim()) {
                   clearInterval(checkQueue);
                   if (usePerplexityStyleRef.current) perplexityFinalizeRef.current = () => finalizeText();
-                  else finalizeText();
+                  finalizeText();
                 } else if (waited >= maxWait) {
                   clearInterval(checkQueue);
                   if (usePerplexityStyleRef.current) perplexityFinalizeRef.current = () => finalizeText();
-                  else finalizeText();
+                  finalizeText();
                 }
               }, checkInterval);
+              setTimeout(() => {
+                clearInterval(checkQueue);
+                if (usePerplexityStyleRef.current) perplexityFinalizeRef.current = () => finalizeText();
+                finalizeText();
+              }, 80);
             },
               // onError: Handle errors
               (error: string) => {
@@ -15323,7 +15334,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             display: 'flex', flexDirection: 'column', gap: '6.6px', alignItems: 'flex-end',
             boxSizing: 'border-box'
           }}>
-            <div style={{ backgroundColor: '#F8F8F8', borderRadius: '15.4px', padding: '4.4px 6.6px 4.4px 11px', width: 'fit-content', maxWidth: '100%', maxHeight: 'min(320px, 50vh)', overflowY: 'auto', overflowX: 'hidden', wordWrap: 'break-word', overflowWrap: 'break-word', display: 'block', boxSizing: 'border-box', WebkitOverflowScrolling: 'touch' }}>
+            <div style={{ backgroundColor: '#F8F8F8', borderRadius: '15.4px', padding: '4.4px 6.6px 4.4px 11px', width: 'fit-content', maxWidth: '100%', wordWrap: 'break-word', overflowWrap: 'break-word', display: 'block', boxSizing: 'border-box' }}>
               {message.attachments?.length > 0 && (
                 <div style={{ marginBottom: (message.text || message.propertyAttachments?.length > 0) ? '8.8px' : '0', display: 'flex', flexWrap: 'wrap', gap: '4.4px' }}>
                   {message.attachments.map((attachment, i) => (
@@ -15337,7 +15348,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   ))}
                 </div>
               )}
-              <div style={{ display: 'block', lineHeight: '24px', fontSize: '15.2px', width: 'fit-content', maxWidth: '100%', minWidth: 0, padding: 0, margin: 0 }}>
+              <div style={{ maxHeight: 'min(320px, 50vh)', overflowY: 'auto', overflowX: 'hidden', WebkitOverflowScrolling: 'touch' }}>
+              <div style={{ display: 'block', lineHeight: '24px', fontSize: '14px', width: 'fit-content', maxWidth: '100%', minWidth: 0, padding: 0, margin: 0 }}>
                 {message.contentSegments && message.contentSegments.length > 0
                   ? message.contentSegments.map((seg, idx) => {
                       if (seg.type === 'text') {
@@ -15353,7 +15365,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             key={`t-${idx}`}
                             style={{
                               color: '#0D0D0D',
-                              fontSize: '16px',
+                              fontSize: '14px',
                               lineHeight: '1.74',
                               margin: 0,
                               padding: 0,
@@ -15373,14 +15385,14 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           >
                             <ReactMarkdown components={{
                               p: ({ children }) => <p style={{ margin: 0, padding: 0, display: 'inline', wordWrap: 'break-word', overflowWrap: 'break-word' }}>{children}</p>,
-                              h1: ({ children }) => <h1 style={{ fontSize: '38px', fontWeight: 700, margin: '15.2px 0 11px 0', display: 'block' }}>{children}</h1>,
-                              h2: () => null, h3: ({ children }) => <h3 style={{ fontSize: '24px', fontWeight: 700, margin: '10.9px 0 6.6px 0' }}>{children}</h3>,
+                              h1: ({ children }) => <h1 style={{ fontSize: '33px', fontWeight: 700, margin: '15.2px 0 11px 0', display: 'block' }}>{children}</h1>,
+                              h2: () => null, h3: ({ children }) => <h3 style={{ fontSize: '21px', fontWeight: 700, margin: '10.9px 0 6.6px 0' }}>{children}</h3>,
                               ul: ({ children }) => <ul style={{ margin: '11px 0', paddingLeft: '24.1px' }}>{children}</ul>,
                               ol: ({ children }) => <ol style={{ margin: '11px 0', paddingLeft: '24.1px' }}>{children}</ol>,
                               li: ({ children }) => <li style={{ margin: '4.4px 0 4.4px 0' }}>{children}</li>,
                               strong: ({ children }) => <strong style={{ fontWeight: 700 }}>{children}</strong>,
                               em: ({ children }) => <em style={{ fontStyle: 'italic' }}>{children}</em>,
-                              code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2.2px 5.5px', borderRadius: '4.4px', fontSize: '16px', fontFamily: 'monospace' }}>{children}</code>,
+                              code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2.2px 5.5px', borderRadius: '4.4px', fontSize: '14px', fontFamily: 'monospace' }}>{children}</code>,
                               blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #d1d5db', paddingLeft: '15.3px', margin: '10.9px 0', color: '#6b7280' }}>{children}</blockquote>,
                               hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '6px 0' }} />,
                             }}>{segText}</ReactMarkdown>
@@ -15449,7 +15461,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         <span
                           style={{
                             color: '#0D0D0D',
-                            fontSize: '15.2px',
+                            fontSize: '14px',
                             lineHeight: '24px',
                             margin: 0,
                             padding: 0,
@@ -15469,14 +15481,14 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         >
                           <ReactMarkdown components={{
                             p: ({ children }) => <p style={{ margin: 0, padding: 0, display: 'inline', wordWrap: 'break-word', overflowWrap: 'break-word' }}>{children}</p>,
-                            h1: ({ children }) => <h1 style={{ fontSize: '38px', fontWeight: 700, margin: '15.2px 0 11px 0', display: 'block' }}>{children}</h1>,
-                            h2: () => null, h3: ({ children }) => <h3 style={{ fontSize: '24px', fontWeight: 700, margin: '10.9px 0 6.6px 0' }}>{children}</h3>,
+                            h1: ({ children }) => <h1 style={{ fontSize: '33px', fontWeight: 700, margin: '15.2px 0 11px 0', display: 'block' }}>{children}</h1>,
+                            h2: () => null, h3: ({ children }) => <h3 style={{ fontSize: '21px', fontWeight: 700, margin: '10.9px 0 6.6px 0' }}>{children}</h3>,
                             ul: ({ children }) => <ul style={{ margin: '11px 0', paddingLeft: '24.1px' }}>{children}</ul>,
                             ol: ({ children }) => <ol style={{ margin: '11px 0', paddingLeft: '24.1px' }}>{children}</ol>,
                             li: ({ children }) => <li style={{ margin: '4.4px 0 4.4px 0' }}>{children}</li>,
                             strong: ({ children }) => <strong style={{ fontWeight: 600 }}>{children}</strong>,
                             em: ({ children }) => <em style={{ fontStyle: 'italic' }}>{children}</em>,
-                            code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2.2px 5.5px', borderRadius: '4.4px', fontSize: '15.2px', fontFamily: 'monospace' }}>{children}</code>,
+                            code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2.2px 5.5px', borderRadius: '4.4px', fontSize: '14px', fontFamily: 'monospace' }}>{children}</code>,
                             blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #d1d5db', paddingLeft: '15.3px', margin: '10.9px 0', color: '#6b7280' }}>{children}</blockquote>,
                             hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '6px 0' }} />,
                           }}>{truncatedText}</ReactMarkdown>
@@ -15484,6 +15496,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       ) : null}
                     </>
                   )}
+              </div>
               </div>
             </div>
           </div>
@@ -15557,7 +15570,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           {/* Reasoning Steps: show instantly when loading (Planning next moves) then real steps replace it; when finished show under collapsible "Thought Xs" header (collapsed by default). Hide entirely when query is paused. */}
           {(message.isLoading || (message.reasoningSteps && message.reasoningSteps.length > 0 && (message.isLoading || showReasoningTrace))) && !isBotPaused && (
             message.isLoading ? (
-              <ReasoningSteps key={`reasoning-${finalKey}`} steps={message.reasoningSteps ?? []} isLoading={true} hasResponseText={!!message.text} isAgentMode={isAgentMode} skipAnimations={!!isRestored} transientStep={message.id === transientThinkingMessageId ? { message: 'Thinking' } : undefined} />
+              <ReasoningSteps key={`reasoning-${finalKey}`} steps={message.reasoningSteps ?? []} isLoading={message.isLoading} hasResponseText={!!message.text} isAgentMode={isAgentMode} skipAnimations={!!isRestored} transientStep={message.id === transientThinkingMessageId ? { message: 'Thinking' } : undefined} />
             ) : (
               <div key={`thought-${finalKey}`} style={{ marginBottom: '17.6px' }}>
                 <button
@@ -17456,7 +17469,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                   {
                                     id: 'web-search',
                                     icon: Globe,
-                                    label: 'Search the web',
+                                    label: 'Web search',
                                     onClick: () => setIsWebSearchEnabled((prev) => !prev),
                                   },
                                 ] : []}
@@ -18651,7 +18664,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                 {
                                   id: 'web-search',
                                   icon: Globe,
-                                  label: 'Search the web',
+                                  label: 'Web search',
                                   onClick: () => setIsWebSearchEnabled((prev) => !prev),
                                 },
                               ] : []}
@@ -18819,7 +18832,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                   title="Stop generating"
                                   tabIndex={0}
                                 >
-                                  <Square className="w-5 h-5" fill="#FFFFFF" stroke="#FFFFFF" strokeWidth={0} />
+                                  <Square className="w-4 h-4" fill="#FFFFFF" stroke="#FFFFFF" strokeWidth={0} />
                                 </motion.button>
                               );
                             }

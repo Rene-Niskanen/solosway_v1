@@ -77,16 +77,114 @@ def _get_search_corpus_type_counts(business_id):
         return {}
 
 
+def _message_history_to_conversation_history(message_history, max_turns=10):
+    """
+    Convert frontend messageHistory (list of {role, content}) into our conversation_history
+    format (list of {query, summary}) for use when checkpointer is unavailable.
+    Pairs consecutive user/assistant messages; ignores unpaired or non-dict entries.
+    """
+    if not message_history or not isinstance(message_history, list):
+        return []
+    out = []
+    i = 0
+    while i < len(message_history) and len(out) < max_turns:
+        entry = message_history[i] if isinstance(message_history[i], dict) else None
+        if not entry:
+            i += 1
+            continue
+        role = (entry.get("role") or "").strip().lower()
+        content = str(entry.get("content") or "").strip()
+        if role == "user" and content:
+            j = i + 1
+            next_entry = message_history[j] if j < len(message_history) and isinstance(message_history[j], dict) else None
+            next_role = (next_entry.get("role") or "").strip().lower() if next_entry else ""
+            next_content = str(next_entry.get("content") or "").strip() if next_entry else ""
+            if next_role == "assistant":
+                out.append({"query": content[:500], "summary": next_content[:2000]})
+                i = j + 1
+            else:
+                out.append({"query": content[:500], "summary": ""})
+                i += 1
+        else:
+            i += 1
+    return out[-max_turns:]
+
+
+def _conversation_history_to_messages(conv_hist, max_exchanges=5):
+    """
+    Convert conversation_history (list of {query, summary}) into LangChain messages
+    for the planner so it sees prior Q&A and can infer follow-up retrieval queries.
+    Uses only the last max_exchanges to avoid planner token overflow.
+    """
+    if not conv_hist or not isinstance(conv_hist, list):
+        return []
+    from langchain_core.messages import HumanMessage, AIMessage
+    recent = conv_hist[-max_exchanges:]
+    out = []
+    for entry in recent:
+        if not isinstance(entry, dict):
+            continue
+        query = (entry.get("query") or "").strip()
+        summary = str(entry.get("summary") or "").strip()
+        out.append(HumanMessage(content=query or " "))
+        if summary:
+            out.append(AIMessage(content=summary))
+    return out
+
+
+def _messages_array_to_conversation_and_query(messages, max_turns=10, max_query_chars=500, max_summary_chars=2000):
+    """
+    Level A: Parse LobeHub-style messages array (list of {role, content}) with current user message last.
+    Returns (user_query, conversation_history).
+    - user_query: content of last message if role is 'user', else None (caller should use request query).
+    - conversation_history: list of {query, summary} from pairing messages[:-1] (all but last), capped.
+    """
+    if not messages or not isinstance(messages, list):
+        return (None, [])
+    if len(messages) == 0:
+        return (None, [])
+    last = messages[-1] if isinstance(messages[-1], dict) else None
+    if not last:
+        return (None, [])
+    role = (last.get("role") or "").strip().lower()
+    content = (last.get("content") or "")
+    if isinstance(content, str):
+        user_query = content.strip() or None
+    else:
+        user_query = str(content).strip() or None
+    if role != "user":
+        user_query = None
+    # Build conversation_history from all but last (same pairing as _message_history_to_conversation_history)
+    preceding = messages[:-1]
+    conv_hist = _message_history_to_conversation_history(
+        [{"role": (e.get("role") or ""), "content": (e.get("content") or "")} for e in preceding if isinstance(e, dict)],
+        max_turns=max_turns,
+    )
+    # Apply per-entry caps (helper uses 500/2000 already; ensure we cap)
+    capped = []
+    for entry in conv_hist:
+        if not isinstance(entry, dict):
+            continue
+        q = (entry.get("query") or "").strip()[:max_query_chars]
+        s = (entry.get("summary") or "").strip()[:max_summary_chars]
+        capped.append({"query": q, "summary": s})
+    return (user_query, capped)
+
+
 def _citation_numbers_in_response(response_text):
     """Return set of citation numbers (as str) that actually appear in the response text.
     Only documents cited in the response should be shown as sources.
     Uses bracket format [1], [2] (and optional superscript ¹²³) to avoid false positives from (1), (2) in prose.
+    Also recognizes [ID: 1], [ID: 2] so the first citation is not dropped when text has not been normalized yet.
     """
     if not response_text or not isinstance(response_text, str):
         return set()
     seen = set()
     # Bracket format: [1], [2], [12] (primary citation format from responder/summary)
     for m in re.finditer(r"\[(\d+)\]", response_text):
+        seen.add(m.group(1))
+    # [ID: 1], [ID: 2] (raw LLM format before replace_ids_with_citation_numbers)
+    for m in re.finditer(r"\[ID:\s*(\d+)\]", response_text):
         seen.add(m.group(1))
     # Superscript ¹²³ if used in display
     if "\u00B9" in response_text:
@@ -96,6 +194,20 @@ def _citation_numbers_in_response(response_text):
     if "\u00B3" in response_text:
         seen.add("3")
     return seen
+
+
+def _normalize_citation_text_for_display(text):
+    """Strip BLOCK_CITE_ID from response and normalize [ID: X](BLOCK_CITE_ID_N) to [X] so
+    the first citation is included in cited_nums and no block id leaks into the UI.
+    """
+    if not text or not isinstance(text, str):
+        return text or ""
+    # Replace [ID: X](BLOCK_CITE_ID_N) or [ID: X] with [X]
+    out = re.sub(r"\[ID:\s*(\d+)\](?:\s*\(\s*BLOCK_CITE_ID_\d+\s*\))?", r"[\1]", text)
+    # Strip any remaining (BLOCK_CITE_ID_N) or BLOCK_CITE_ID_N that might appear without [ID: X]
+    out = re.sub(r"\s*[\[\(]?BLOCK_CITE_ID_\d+[\]\)]?\s*", " ", out)
+    out = re.sub(r"\s{2,}", " ", out)
+    return out
 
 
 def _ensure_business_uuid():
@@ -792,7 +904,20 @@ def query_documents_stream():
         property_id = data.get('propertyId')
         document_ids = data.get('documentIds') or data.get('document_ids', [])  # NEW: Get attached document IDs
         message_history = data.get('messageHistory', [])
+        messages_payload = data.get('messages') or []  # Level A: LobeHub-style array (current user message last)
         is_new_chat = data.get('isNewChat', False)  # Skip checkpoint load when true (first message of new chat)
+
+        # Level A & B: Normalize conversation source (messages → message_history → checkpoint)
+        client_conversation_history = None
+        conversation_from_client = False
+        if isinstance(messages_payload, list) and len(messages_payload) > 0:
+            derived_query, client_conversation_history = _messages_array_to_conversation_and_query(messages_payload)
+            if derived_query is not None:
+                query = derived_query
+            conversation_from_client = True
+        elif message_history and len(message_history) > 0:
+            client_conversation_history = _message_history_to_conversation_history(message_history)
+            conversation_from_client = True
         
         # NEW: Use SessionManager to generate thread_id for LangGraph checkpointer
         # This ensures consistent session identification between frontend and backend
@@ -1339,6 +1464,7 @@ def query_documents_stream():
                         existing_doc_count = 0
                         loaded_conversation_history = []
                         existing_state = None
+                        history_from_checkpoint = False
                         try:
                             if not is_new_chat and checkpointer:
                                 try:
@@ -1352,10 +1478,29 @@ def query_documents_stream():
                                     if conv_history and len(conv_history) > 0:
                                         is_followup = True
                                         loaded_conversation_history = conv_history
+                                        history_from_checkpoint = True
                                     if prev_docs:
                                         existing_doc_count = len(prev_docs)
                         except Exception as state_err:
                             logger.warning(f"Could not check existing state: {state_err}")
+                        
+                        # Level A & B: When client sent conversation (messages or messageHistory), use it as source of truth; do not use checkpoint for conversation
+                        if conversation_from_client:
+                            loaded_conversation_history = client_conversation_history or []
+                            initial_state["conversation_history"] = loaded_conversation_history
+                            initial_state["messages"] = _conversation_history_to_messages(loaded_conversation_history)
+                            if loaded_conversation_history:
+                                is_followup = True
+                            initial_state["conversation_from_client"] = True
+                            logger.info("🟡 [STREAM] Using client-sent conversation (%d exchanges) [LobeHub-identical]", len(loaded_conversation_history))
+                        else:
+                            # No client conversation: use checkpoint when available
+                            if history_from_checkpoint and loaded_conversation_history and existing_state and getattr(existing_state, "values", None):
+                                checkpoint_messages = existing_state.values.get("messages") or []
+                                if not checkpoint_messages:
+                                    initial_state["messages"] = _conversation_history_to_messages(loaded_conversation_history)
+                                    logger.info("🟡 [STREAM] Built messages from checkpoint conversation_history (no messages in checkpoint)")
+                            initial_state["conversation_from_client"] = False
                         
                         # Cache-first only when fast classifier says same-doc follow-up (else run planner for new question)
                         if is_followup and existing_state is not None and getattr(existing_state, "values", None):
@@ -2302,6 +2447,8 @@ def query_documents_stream():
                                             final_summary_from_state = _strip_intent_fragment_from_response(final_summary_from_state or "")
                                             # Move any closing phrase that leaked to the start/middle to the end (e.g. "feel free to ask" before "£1,950,000")
                                             final_summary_from_state = _strip_mid_response_generic_closings(final_summary_from_state or "")
+                                            # Normalize [ID: X](BLOCK_CITE_ID_N) -> [X] and strip BLOCK_CITE_ID so they never leak into the UI
+                                            final_summary_from_state = _normalize_citation_text_for_display(final_summary_from_state or "")
                                             streamed_summary = final_summary_from_state
                                             if final_result is not None:
                                                 final_result['final_summary'] = final_summary_from_state
@@ -2596,6 +2743,8 @@ def query_documents_stream():
                         full_summary = _strip_intent_fragment_from_response(full_summary or "")
                         # Move any closing phrase that leaked to the start/middle to the end (never show "feel free to ask" before main content)
                         full_summary = _strip_mid_response_generic_closings(full_summary or "")
+                        # Normalize citations: [ID: X](BLOCK_CITE_ID_N) -> [X] and strip any BLOCK_CITE_ID so they never leak; keeps first citation in document view
+                        full_summary = _normalize_citation_text_for_display(full_summary or "")
 
                         # --- Mem0: Schedule memory storage (fire-and-forget) ---
                         if not memory_storage_scheduled and full_summary:
@@ -6522,17 +6671,15 @@ def api_dashboard():
                 'document_count': document_count_by_property_id.get(prop.id, 0)
             })
     
-        # User data (include profile picture and title from Supabase if available)
+        # User data (include profile picture and profile fields from Supabase if available)
         profile_picture_url = None
-        title = None
+        supabase_user = None
         try:
             from .services.supabase_auth_service import SupabaseAuthService
             auth_service = SupabaseAuthService()
             supabase_user = auth_service.get_user_by_id(current_user.id)
             if supabase_user:
                 s3_key = supabase_user.get('profile_picture_url')
-                title = supabase_user.get('title')
-                # Return profile picture as API URL so frontend can use it in <img src>
                 if s3_key and s3_key.strip():
                     profile_picture_url = request.host_url.rstrip('/') + 'api/user/profile-picture'
         except Exception:
@@ -6543,16 +6690,23 @@ def api_dashboard():
                 role_name = current_user.role.name
             except (AttributeError, ValueError):
                 pass
+        # Prefer Supabase for profile fields so edits persist (current_user is only set at login).
         user_data = {
             'id': current_user.id,
-            'email': current_user.email,
-            'first_name': current_user.first_name,
-            'company_name': current_user.company_name,
+            'email': (supabase_user.get('email') if supabase_user else None) or current_user.email,
+            'first_name': (supabase_user.get('first_name') if supabase_user else None) or current_user.first_name,
+            'company_name': (supabase_user.get('company_name') if supabase_user else None) or current_user.company_name,
             'business_id': str(current_user.business_id) if current_user.business_id else None,
-            'company_website': current_user.company_website,
+            'company_website': (supabase_user.get('company_website') if supabase_user else None) or current_user.company_website,
             'role': role_name,
             'profile_picture_url': profile_picture_url,
-            'title': title
+            'title': supabase_user.get('title') if supabase_user else None,
+            'last_name': supabase_user.get('last_name') if supabase_user else None,
+            'phone': supabase_user.get('phone') if supabase_user else None,
+            'address': supabase_user.get('address') if supabase_user else None,
+            'location': supabase_user.get('location') if supabase_user else None,
+            'organization': supabase_user.get('company_name') if supabase_user else current_user.company_name,
+            'company_logo_url': supabase_user.get('company_logo_url') if supabase_user else None,
         }
         
         return jsonify({
@@ -6572,6 +6726,38 @@ def api_dashboard():
         if current_app.debug:
             body['traceback'] = traceback.format_exc()
         return jsonify(body), 500
+
+
+@views.route('/api/user/profile', methods=['PUT', 'OPTIONS'])
+@login_required
+def update_user_profile():
+    """Update current user profile (name, title, email, phone, address, organization). Persists to Supabase."""
+    if request.method == 'OPTIONS':
+        response = jsonify({})
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
+        response.headers.add('Access-Control-Allow-Methods', 'PUT, OPTIONS')
+        return response, 200
+    try:
+        data = request.get_json(silent=True) or {}
+        # Only persist columns that exist on the users table. If you've run
+        # backend/migrations/add_profile_columns_to_users.sql, use the full set:
+        # allowed_for_db = {'first_name', 'last_name', 'title', 'email', 'company_name', 'phone', 'address', 'location'}
+        allowed_for_db = {'first_name', 'email', 'company_name'}
+        raw = {k: (v if v is not None else None) for k, v in data.items() if k in {'first_name', 'last_name', 'title', 'email', 'phone', 'address', 'location', 'organization'}}
+        if 'organization' in raw:
+            raw['company_name'] = raw.pop('organization')
+        update = {k: v for k, v in raw.items() if k in allowed_for_db}
+        if not update:
+            return jsonify({'error': 'No valid profile fields to update'}), 400
+        from .services.supabase_auth_service import SupabaseAuthService
+        auth_service = SupabaseAuthService()
+        updated = auth_service.update_user(current_user.id, update)
+        return jsonify({'success': True, 'user': updated or update})
+    except Exception as e:
+        current_app.logger.exception("Error updating profile")
+        return jsonify({'error': str(e)}), 500
 
 
 @views.route('/api/user/profile-picture', methods=['GET'])

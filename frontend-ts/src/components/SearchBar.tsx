@@ -1659,7 +1659,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                           {
                             id: 'web-search',
                             icon: Globe,
-                            label: 'Search the web',
+                            label: 'Web search',
                             onClick: () => setIsWebSearchEnabled((prev) => !prev),
                           },
                           ...(isMapVisible && onPanelToggle ? [{

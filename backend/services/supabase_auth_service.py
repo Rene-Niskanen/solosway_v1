@@ -166,15 +166,11 @@ class SupabaseAuthService:
             return None
     
     def update_user(self, user_id, user_data):
-        """Update user in Supabase"""
-        try:
-            result = self.supabase.table('users').update(user_data).eq('id', user_id).execute()
-            if result.data:
-                return result.data[0]
-            return None
-        except Exception as e:
-            logger.error(f"Error updating user in Supabase: {e}")
-            return None
+        """Update user in Supabase. Raises on error so callers can return 500."""
+        result = self.supabase.table('users').update(user_data).eq('id', user_id).execute()
+        if result.data:
+            return result.data[0]
+        return None
 
     # Business mapping helpers -------------------------------------------------
     def get_business_uuid(self, legacy_id: str) -> str | None:

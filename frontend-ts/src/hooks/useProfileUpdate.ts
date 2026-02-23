@@ -36,47 +36,13 @@ export const useProfileUpdate = (): UseProfileUpdateReturn => {
     setError(null);
 
     try {
-      const response = await fetch(`${BACKEND_URL}/api/user/profile`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        credentials: 'include',
-        body: JSON.stringify(data),
-      });
-
-      // If endpoint doesn't exist (404), log warning but don't throw error
-      // This allows the UI to work while backend is being developed
-      if (response.status === 404) {
-        console.warn('Profile update endpoint not yet implemented on backend. Update will be saved locally only.');
-        setIsUpdating(false);
-        return; // Return successfully so UI updates
-      }
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error || `Failed to update profile (${response.status})`);
-      }
-
-      const result = await response.json();
-      
-      // Refresh auth to get updated user data
+      await backendApi.updateUserProfile(data);
       try {
         await backendApi.checkAuth();
       } catch (authError) {
         console.warn('Could not refresh auth after profile update:', authError);
-        // Don't throw - the update might have succeeded
       }
-      
-      return result;
     } catch (err) {
-      // If it's a network error and endpoint doesn't exist, allow local update
-      if (err instanceof TypeError && err.message.includes('fetch')) {
-        console.warn('Network error - profile update endpoint may not exist. Update will be saved locally only.');
-        setIsUpdating(false);
-        return; // Return successfully so UI updates
-      }
-      
       const errorMessage = err instanceof Error ? err.message : 'Failed to update profile';
       setError(errorMessage);
       throw err;
