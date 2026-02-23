@@ -48,7 +48,7 @@ const PROPERTY_ICON_SIZE = 18;
 const ROW_GAP = 7;
 const SEPARATOR_COLOR = "rgba(0, 0, 0, 0.08)";
 const PDF_ICON_SRC = "/PDF.png";
-const PROPERTY_ICON_SRC = "/houseicon.png";
+const PROPERTY_ICON_SRC = "/projectsfolder.png";
 const WORD_ICON_COLOR = "#2563EB";
 
 export function AtMentionPopover({

@@ -39,6 +39,7 @@ export const useProfileUpdate = (): UseProfileUpdateReturn => {
       await backendApi.updateUserProfile(data);
       try {
         await backendApi.checkAuth();
+        window.dispatchEvent(new CustomEvent('authRefreshRequested'));
       } catch (authError) {
         console.warn('Could not refresh auth after profile update:', authError);
       }

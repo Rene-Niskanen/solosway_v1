@@ -777,7 +777,7 @@ const BlueCitedTextHighlight: React.FC<{
           font-style: inherit;
           line-height: 1.5;
           overflow: visible;
-          background: linear-gradient(90deg, #DBEAFE 0%, #DBEAFE 100%);
+          background: linear-gradient(90deg, #BCD4EB 0%, #BCD4EB 100%);
           background-repeat: no-repeat;
           background-size: 0% 100%;
           background-origin: border-box;
@@ -1330,18 +1330,29 @@ const StreamingResponseText: React.FC<{
   }, [filteredText]);
 
   // Parse <<<MAIN>>>...<<<END_MAIN>>> (LLM wraps the direct answer); replace with placeholders so we highlight each segment
-  // Match 1–3 closing > so malformed tags (<<<END_MAIN>, <<<END_MAIN>>, <<<END_MAIN>>>) are stripped
+  // For follow-ups with multiple citations: only highlight up to and including the first citation so the "line" isn't the entire response
   const mainTagEndRe = /<<<END_MAIN\s*>+/;
   const { mainSegments, textWithTagsStripped } = React.useMemo(() => {
     const segments: string[] = [];
+    const hasCitations = citations != null && typeof citations === 'object' && Object.keys(citations).length > 0;
+    const firstCitationRe = /\[1\]|\*\*1(?:\s*,\s*\d+)*\*\*|[¹]/;
     let text = processedText.replace(/<<<MAIN>>>(.*?)<<<END_MAIN\s*>+/gs, (_match: string, content: string) => {
-      segments.push(content.trim());
+      const trimmed = content.trim();
+      if (trimmed.length > 200 && hasCitations) {
+        const firstMatch = trimmed.match(firstCitationRe);
+        if (firstMatch && firstMatch.index !== undefined) {
+          const endPos = firstMatch.index + firstMatch[0].length;
+          segments.push(trimmed.slice(0, endPos));
+          return `%%MAIN_${segments.length - 1}%%` + trimmed.slice(endPos);
+        }
+      }
+      segments.push(trimmed);
       return `%%MAIN_${segments.length - 1}%%`;
     });
     // Strip any remaining raw MAIN/END_MAIN tags that didn't match (malformed)
     text = text.replace(/<<<MAIN>>>/g, '').replace(mainTagEndRe, '');
     return { mainSegments: segments, textWithTagsStripped: text };
-  }, [processedText]);
+  }, [processedText, citations]);
 
   // Process citations on the full text BEFORE ReactMarkdown splits it
   // This ensures citations are matched even if ReactMarkdown splits text across elements
@@ -1795,25 +1806,40 @@ const StreamingResponseText: React.FC<{
     });
     return out.replace(/\s+/g, ' ').trim();
   };
-  // True if bold text looks like a section title (e.g. "Commission Fee", "Payment Terms"), not inline emphasis (e.g. "3%:", "10% - 30%:", "Kshs. 500,000,000").
+  // True if bold text looks like a section title (e.g. "Property Details:", "Monthly Rent:", "Commission Fee"),
+  // not inline emphasis (e.g. "KSH 100,000:", "annually in advance:") or document titles ("Lease Terms for Dik Dik Lane").
   const strongLooksLikeTitle = (text: string): boolean => {
     if (!text || text.length > 45) return false;
-    // Dates: ordinal + month + year, or year, or numeric date
+    const t = text.trim();
+    const tNorm = t.replace(/:\s*$/, ''); // strip trailing colon for value checks
+    // Document/main titles (e.g. "Lease Terms for Dik Dik Lane") = bold, not block section title
+    if (/\s+for\s+/i.test(t)) return false;
+    if (tNorm.split(/\s+/).length > 4) return false; // long phrases = document title, not section label
+    // Dates: ordinal + month + year, month + day, day + month, year, or numeric date
+    const months = 'january|february|march|april|may|june|july|august|september|october|november|december';
     if (/\d{1,2}(st|nd|rd|th)\s+(january|february|march|april|may|june|july|august|september|october|november|december)/i.test(text)) return false;
     if (/\b(19|20)\d{2}\b/.test(text)) return false; // 4-digit year
     if (/^\d{1,4}[\/\-\.]\d{1,4}([\/\-\.]\d{1,4})?$/.test(text)) return false; // e.g. 20/03/2023
+    if (new RegExp(`^(${months})\\s+\\d{1,2}:?\\s*$`, 'i').test(tNorm)) return false; // e.g. "July 12:", "July 12"
+    if (new RegExp(`^\\d{1,2}\\s+(${months}):?\\s*$`, 'i').test(tNorm)) return false; // e.g. "12 July", "12th July"
     // Percentages or number ranges used as inline emphasis (e.g. "3%:", "10% - 30%:")
     if (/%/.test(text)) return false;
-    // Sentence fragment or clause (e.g. "3% of the total sale price of the property plus applicable VAT thereon.")
-    if (text.trimEnd().endsWith('.')) return false;
-    // Starts with digit (e.g. "3%:" or "10% - 30%:")
-    if (/^\d/.test(text.trim())) return false;
+    // Sentence fragment or clause (e.g. "3% of the total sale price...")
+    if (t.endsWith('.')) return false;
+    // Starts with digit (e.g. "3%:" or "12 months")
+    if (/^\d/.test(t)) return false;
     // Clause-like phrase (e.g. "X of the Y" inside a sentence)
     if (/\bof the\b/i.test(text)) return false;
-    // Monetary amounts / numbers: currency symbol (£ $ €) or abbrev (e.g. Kshs., USD, GBP) or predominantly digits/commas — inline emphasis, not a title
-    if (/^[£$€]\s*[\d,.\s]+$/.test(text.trim())) return false; // e.g. £1,950,000
-    if (/^(?:Kshs\.?|USD|GBP|EUR|KES|etc\.?)\s*[\d,.\s]+$/i.test(text.trim())) return false;
+    // Monetary amounts: currency symbol (£ $ €) or abbrev (Kshs., KSH, USD, GBP) or predominantly digits
+    if (/^[£$€]\s*[\d,.\s]+$/.test(tNorm)) return false; // e.g. £1,950,000
+    if (/^(?:Kshs?\.?|KSH|KES|USD|GBP|EUR|etc\.?)\s*[\d,.\s]+$/i.test(tNorm)) return false;
     if (/^[\d,\s.]+$/.test(text.replace(/\s/g, ''))) return false; // e.g. 500,000,000
+    // Inline emphasis: adverbial phrases, value descriptions (not section labels)
+    if (/\b(?:annually|monthly|quarterly)\s+in\s+advance\b/i.test(text)) return false;
+    if (/\b(?:per\s+month|per\s+annum|per\s+year)\b/i.test(text)) return false;
+    if (/\b(?:one|two|three|six|twelve)\s*[\s-]?month'?s?\s+rent\b/i.test(text)) return false;
+    if (/\b(?:one|two|three|six)\s*[\s-]?months?'?\s+(?:written\s+)?notice\b/i.test(text)) return false;
+    if (/\([\s\d,KSH$€£]+\)/.test(text)) return false; // e.g. "(KSH 100,000)"
     return true;
   };
 
@@ -1848,6 +1874,21 @@ const StreamingResponseText: React.FC<{
     });
     return out;
   }, []);
+
+  // Split flattened segments at the first occurrence of a citation placeholder for the given number.
+  // Used to show the grey line and document preview only for the first-citation segment.
+  const splitSegmentsAtFirstCitation = (
+    segments: (string | React.ReactElement | symbol)[],
+    citationNum: string
+  ): { first: (string | React.ReactElement | symbol)[]; rest: (string | React.ReactElement | symbol)[] } => {
+    const re = new RegExp(`^%%CITATION_(?:SUPERSCRIPT|BRACKET|PENDING)_${citationNum.replace(/[^0-9]/g, '')}%%$`);
+    for (let i = 0; i < segments.length; i++) {
+      if (typeof segments[i] === 'string' && re.test(segments[i] as string)) {
+        return { first: segments.slice(0, i + 1), rest: segments.slice(i + 1) };
+      }
+    }
+    return { first: [], rest: segments };
+  };
 
   // Deeply collect citation numbers in document order (recurse into all elements so we find
   // citations inside list items, strong/em, and any nested structure — ensures document preview
@@ -1976,8 +2017,16 @@ const StreamingResponseText: React.FC<{
     };
     const citationLineBarBlockStyle = { position: 'relative' as const };
     const citationLineBarInlineStyle = { position: 'absolute' as const, left: '-16px', top: 0, bottom: 0, width: '3px', background: '#d1d5db', pointerEvents: 'none' as const, borderRadius: '2px' };
-    /* List items need extra offset so the line stays lef3t of bullet/text (ul/ol + li padding reduce effective space) */
+    /* First part can have empty first line from inline-containing-block (1 line-height); skip it so line aligns with "Market Value:" */
+    const citationLineBarInlineStyleFirstPart = { ...citationLineBarInlineStyle, top: '1.7em' };
+    /* List items need extra offset so the line stays left of bullet/text (ul/ol + li padding reduce effective space) */
     const citationLineBarLiBarStyle = { position: 'absolute' as const, left: '-40px', top: 0, bottom: 0, width: '3px', background: '#d1d5db', pointerEvents: 'none' as const, borderRadius: '2px' };
+    const firstCitationNum = orderedCitationNumbersForMessage?.[0] ?? null;
+    const renderCallout = (num: string, keyPrefix: string, i: number) => (
+      <div key={`${keyPrefix}-${i}-${num}`} style={{ width: '100%', maxWidth: '100%', minWidth: 0, boxSizing: 'border-box' }}>
+        <CitationCallout key={`callout-${messageId ?? ''}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumberRef.current[num]} skipEntranceAnimation={citationEntranceDoneRef.current.has(num)} onEntranceComplete={() => citationEntranceDoneRef.current.add(num)} onClosePreviewBar={onCloseCitationPreviewBar ? () => onCloseCitationPreviewBar(messageId ?? '') : undefined} />
+      </div>
+    );
     return {
     p: ({ children }: { children?: React.ReactNode }) => {
       const citationNumbers = collectCitationNumbersInOrder(children ?? null);
@@ -1995,6 +2044,53 @@ const StreamingResponseText: React.FC<{
       if (shouldShowExcerptThisTime) {
         citationNumbers.forEach((num) => excerptShownForCitationsRef.current.add(num));
       }
+      const containsFirst = firstCitationNum != null && citationNumbers.indexOf(firstCitationNum) !== -1;
+      const segments = flattenSegments(children ?? null);
+      const { first: firstSegs, rest: restSegs } = splitSegmentsAtFirstCitation(segments, firstCitationNum ?? '');
+      const useFirstCitationLayout = containsFirst && firstCitationNum && firstSegs.length > 0;
+      const firstPartContent = useFirstCitationLayout ? processFlattenedWithCitations(firstSegs, 'p-first') : null;
+      const restPartContent = useFirstCitationLayout && restSegs.length > 0 ? processFlattenedWithCitations(restSegs, 'p-rest') : null;
+      const showBarFirstPartOnly = useFirstCitationLayout && showCitationPreviewBar && showInResponseCitationCallouts && (citationBarMode ? (currentCitationNum === firstCitationNum && !calloutRenderedForCurrentRef.current) : showCalloutForNum(firstCitationNum));
+      const restCitationNums = citationNumbers.filter((n) => n !== firstCitationNum);
+      const showBarRestPart = useFirstCitationLayout && restPartContent != null && restPartContent.length > 0 && showCitationPreviewBar && showInResponseCitationCallouts && (citationBarMode ? (currentCitationNum != null && restCitationNums.indexOf(currentCitationNum) !== -1 && !calloutRenderedForCurrentRef.current) : restCitationNums.some(showCalloutForNum));
+      const otherCalloutNums = restCitationNums.filter(showCalloutForNum);
+      if (useFirstCitationLayout && firstPartContent != null) {
+        return (
+          <>
+            {(!isOnlyCitationExcerpt || shouldShowExcerptThisTime) && (
+              <>
+                <p style={{
+                  margin: '0 0 0 0',
+                  padding: 0,
+                  textAlign: 'left',
+                  lineHeight: 0,
+                  wordWrap: 'break-word',
+                  overflowWrap: 'break-word',
+                  wordBreak: 'break-word',
+                  ...(showBarFirstPartOnly ? citationLineBarBlockStyle : {}),
+                }}><span style={{ display: 'block', lineHeight: '1.7' }}>{showBarFirstPartOnly && <span aria-hidden style={citationLineBarInlineStyleFirstPart} />}{firstPartContent}</span></p>
+                {citationBarMode && currentCitationNum === firstCitationNum
+                  ? renderSingleCalloutIfHere(citationNumbers, 'p')
+                  : (showCitationPreviewBar && showInResponseCitationCallouts && !citationBarMode && showCalloutForNum(firstCitationNum) && renderCallout(firstCitationNum, 'callout-p', 0))}
+                {restPartContent != null && restPartContent.length > 0 && (
+                  <p style={{
+                    margin: '0 0 17.5px 0',
+                    padding: 0,
+                    textAlign: 'left',
+                    lineHeight: 0,
+                    wordWrap: 'break-word',
+                    overflowWrap: 'break-word',
+                    wordBreak: 'break-word',
+                    ...(showBarRestPart ? citationLineBarBlockStyle : {}),
+                  }}><span style={{ display: 'block', lineHeight: '1.7' }}>{showBarRestPart && <span aria-hidden style={citationLineBarInlineStyle} />}{restPartContent}</span></p>
+                )}
+              </>
+            )}
+            {showCitationPreviewBar && showInResponseCitationCallouts && !citationBarMode && otherCalloutNums.map((num, i) => renderCallout(num, 'callout-p', i + 1))}
+            {citationBarMode && renderSingleCalloutIfHere(citationNumbers, 'p')}
+          </>
+        );
+      }
       const showBar = hasCalloutsBelow(citationNumbers);
       return (
         <>
@@ -2010,11 +2106,7 @@ const StreamingResponseText: React.FC<{
               ...(showBar ? citationLineBarBlockStyle : {}),
             }}><span style={{ display: 'block', lineHeight: '1.7' }}>{showBar && <span aria-hidden style={citationLineBarInlineStyle} />}{processChildrenWithCitationsFlattened(children ?? null, 'p')}</span></p>
           )}
-          {showCitationPreviewBar && showInResponseCitationCallouts && !citationBarMode && citationNumbers.filter(showCalloutForNum).map((num, i) => (
-            <div key={`callout-p-${i}-${num}`} style={{ width: '100%', maxWidth: '100%', minWidth: 0, boxSizing: 'border-box' }}>
-              <CitationCallout key={`callout-${messageId ?? ''}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumberRef.current[num]} skipEntranceAnimation={citationEntranceDoneRef.current.has(num)} onEntranceComplete={() => citationEntranceDoneRef.current.add(num)} onClosePreviewBar={onCloseCitationPreviewBar ? () => onCloseCitationPreviewBar(messageId ?? '') : undefined} />
-            </div>
-          ))}
+          {showCitationPreviewBar && showInResponseCitationCallouts && !citationBarMode && citationNumbers.filter(showCalloutForNum).map((num, i) => renderCallout(num, 'callout-p', i))}
           {citationBarMode && renderSingleCalloutIfHere(citationNumbers, 'p')}
         </>
       );
@@ -2241,8 +2333,15 @@ const StreamingResponseText: React.FC<{
     };
     const citationLineBarBlockStyle = { position: 'relative' as const };
     const citationLineBarInlineStyle = { position: 'absolute' as const, left: '-16px', top: 0, bottom: 0, width: '3px', background: '#d1d5db', pointerEvents: 'none' as const, borderRadius: '2px' };
+    const citationLineBarInlineStyleFirstPartP = { ...citationLineBarInlineStyle, top: '1.7em' };
     /* List items need extra offset so the line stays left of bullet/text (ul/ol + li padding reduce effective space) */
     const citationLineBarLiBarStyle = { position: 'absolute' as const, left: '-40px', top: 0, bottom: 0, width: '3px', background: '#d1d5db', pointerEvents: 'none' as const, borderRadius: '2px' };
+    const firstCitationNumP = orderedCitationNumbersForMessage?.[0] ?? null;
+    const renderCalloutP = (num: string, keyPrefix: string, i: number) => (
+      <div key={`${keyPrefix}-${i}-${num}`} style={{ width: '100%', maxWidth: '100%', minWidth: 0, boxSizing: 'border-box' }}>
+        <CitationCallout key={`callout-${messageId ?? ''}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumberRef.current[num]} skipEntranceAnimation={citationEntranceDoneRef.current.has(num)} onEntranceComplete={() => citationEntranceDoneRef.current.add(num)} onClosePreviewBar={onCloseCitationPreviewBar ? () => onCloseCitationPreviewBar(messageId ?? '') : undefined} />
+      </div>
+    );
     return {
     ...markdownComponents,
     p: ({ children }: { children?: React.ReactNode }) => {
@@ -2261,6 +2360,55 @@ const StreamingResponseText: React.FC<{
       if (shouldShowExcerptThisTime) {
         citationNumbers.forEach((num) => excerptShownForCitationsRef.current.add(num));
       }
+      const containsFirstP = firstCitationNumP != null && citationNumbers.indexOf(firstCitationNumP) !== -1;
+      const segmentsP = flattenSegments(children ?? null);
+      const { first: firstSegsP, rest: restSegsP } = splitSegmentsAtFirstCitation(segmentsP, firstCitationNumP ?? '');
+      const useFirstCitationLayoutP = containsFirstP && firstCitationNumP && firstSegsP.length > 0;
+      const firstPartContentP = useFirstCitationLayoutP ? processFlattenedWithCitations(firstSegsP, 'p-first') : null;
+      const restPartContentP = useFirstCitationLayoutP && restSegsP.length > 0 ? processFlattenedWithCitations(restSegsP, 'p-rest') : null;
+      const showBarFirstPartOnlyP = useFirstCitationLayoutP && showCitationPreviewBar && showInResponseCitationCallouts && (citationBarMode ? (currentCitationNum === firstCitationNumP && !calloutRenderedForCurrentRef.current) : showCalloutForNum(firstCitationNumP));
+      const restCitationNumsP = citationNumbers.filter((n) => n !== firstCitationNumP);
+      const showBarRestPartP = useFirstCitationLayoutP && restPartContentP != null && restPartContentP.length > 0 && showCitationPreviewBar && showInResponseCitationCallouts && (citationBarMode ? (currentCitationNum != null && restCitationNumsP.indexOf(currentCitationNum) !== -1 && !calloutRenderedForCurrentRef.current) : restCitationNumsP.some(showCalloutForNum));
+      const otherCalloutNumsP = restCitationNumsP.filter(showCalloutForNum);
+      if (useFirstCitationLayoutP && firstPartContentP != null) {
+        const innerFirst = wrapTwoWordChunksInMotion(firstPartContentP, 'p-first');
+        const innerRest = restPartContentP != null && restPartContentP.length > 0 ? wrapTwoWordChunksInMotion(restPartContentP, 'p-rest') : null;
+        return (
+          <>
+            {(!isOnlyCitationExcerpt || shouldShowExcerptThisTime) && (
+              <>
+                <p style={{
+                  margin: '0 0 0 0',
+                  padding: 0,
+                  textAlign: 'left',
+                  lineHeight: 0,
+                  wordWrap: 'break-word',
+                  overflowWrap: 'break-word',
+                  wordBreak: 'break-word',
+                  ...(showBarFirstPartOnlyP ? citationLineBarBlockStyle : {}),
+                }}><span style={{ display: 'block', lineHeight: '1.7' }}>{showBarFirstPartOnlyP && <span aria-hidden style={citationLineBarInlineStyleFirstPartP} />}{innerFirst}</span></p>
+                {citationBarMode && currentCitationNum === firstCitationNumP
+                  ? renderSingleCalloutIfHere(citationNumbers, 'p')
+                  : (showCitationPreviewBar && showInResponseCitationCallouts && !citationBarMode && showCalloutForNum(firstCitationNumP) && renderCalloutP(firstCitationNumP, 'callout-p', 0))}
+                {innerRest != null && (
+                  <p style={{
+                    margin: '0 0 17.5px 0',
+                    padding: 0,
+                    textAlign: 'left',
+                    lineHeight: 0,
+                    wordWrap: 'break-word',
+                    overflowWrap: 'break-word',
+                    wordBreak: 'break-word',
+                    ...(showBarRestPartP ? citationLineBarBlockStyle : {}),
+                  }}><span style={{ display: 'block', lineHeight: '1.7' }}>{showBarRestPartP && <span aria-hidden style={citationLineBarInlineStyle} />}{innerRest}</span></p>
+                )}
+              </>
+            )}
+            {showCitationPreviewBar && showInResponseCitationCallouts && !citationBarMode && otherCalloutNumsP.map((num, i) => renderCalloutP(num, 'callout-p', i + 1))}
+            {citationBarMode && renderSingleCalloutIfHere(citationNumbers, 'p')}
+          </>
+        );
+      }
       const showBar = hasCalloutsBelow(citationNumbers);
       const inner = wrapTwoWordChunksInMotion(processChildrenWithCitationsFlattened(children ?? null, 'p'), 'p');
       return (
@@ -2277,11 +2425,7 @@ const StreamingResponseText: React.FC<{
               ...(showBar ? citationLineBarBlockStyle : {}),
             }}><span style={{ display: 'block', lineHeight: '1.7' }}>{showBar && <span aria-hidden style={citationLineBarInlineStyle} />}{inner}</span></p>
           )}
-          {showCitationPreviewBar && showInResponseCitationCallouts && !citationBarMode && citationNumbers.filter(showCalloutForNum).map((num, i) => (
-            <div key={`callout-p-${i}-${num}`} style={{ width: '100%', maxWidth: '100%', minWidth: 0, boxSizing: 'border-box' }}>
-              <CitationCallout key={`callout-${messageId ?? ''}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumberRef.current[num]} skipEntranceAnimation={citationEntranceDoneRef.current.has(num)} onEntranceComplete={() => citationEntranceDoneRef.current.add(num)} onClosePreviewBar={onCloseCitationPreviewBar ? () => onCloseCitationPreviewBar(messageId ?? '') : undefined} />
-            </div>
-          ))}
+          {showCitationPreviewBar && showInResponseCitationCallouts && !citationBarMode && citationNumbers.filter(showCalloutForNum).map((num, i) => renderCalloutP(num, 'callout-p', i))}
           {citationBarMode && renderSingleCalloutIfHere(citationNumbers, 'p')}
         </>
       );
@@ -2471,11 +2615,12 @@ const StreamingResponseText: React.FC<{
         .streaming-response-text h3 + p {
           margin-top: 0.25em !important;
         }
+        /* Larger gaps between paragraphs for clearer section separation */
         .streaming-response-text p:has(+ p) {
-          margin-bottom: 4.4px !important;
+          margin-bottom: 14px !important;
         }
         .streaming-response-text p + p {
-          margin-top: 4.4px !important;
+          margin-top: 14px !important;
         }
         /* Equal spacing above and below each bullet point */
         .streaming-response-text li {
@@ -2495,6 +2640,17 @@ const StreamingResponseText: React.FC<{
         .streaming-response-text p span > .response-strong-title {
           display: block !important;
           margin-bottom: 0.2em;
+        }
+        /* Main title: first bold title in the response (e.g. "Lease Terms Summary for Dik Dik Lane Property") – larger, bolder, more spacing below */
+        .streaming-response-text p:first-of-type .response-strong-title:first-of-type {
+          font-size: 1.28em !important;
+          font-weight: 700 !important;
+          margin-bottom: 1em !important;
+          color: #111827 !important;
+        }
+        /* Extra space below the main title paragraph to clearly separate it from first section */
+        .streaming-response-text p:first-of-type:has(.response-strong-title:first-of-type) + p {
+          margin-top: 1.25em !important;
         }
         .streaming-response-text p > .response-strong-title:first-child:not(.response-strong-title-has-colon)::after,
         .streaming-response-text p > span:first-child + .response-strong-title:not(.response-strong-title-has-colon)::after,
@@ -2533,27 +2689,20 @@ const StreamingResponseText: React.FC<{
         .cited-highlight-formatting em {
           font-style: italic !important;
         }
-        /* Inside cited text, treat title-style strong as regular bold (no block, no colon, no larger font). Specificity must match .streaming-response-text p span > .response-strong-title (0,3,2) so this wins. */
-        .streaming-response-text p span.cited-highlight-formatting .response-strong-title,
-        .streaming-response-text p span.cited-highlight-formatting .response-strong-title-has-colon,
-        .streaming-response-text p [data-cited-text-block] .response-strong-title,
-        .streaming-response-text p [data-cited-text-block] .response-strong-title-has-colon {
-          display: inline !important;
-          font-size: inherit !important;
-          margin-bottom: 0 !important;
-        }
-        .streaming-response-text p span.cited-highlight-formatting .response-strong-title::after,
-        .streaming-response-text p span.cited-highlight-formatting .response-strong-title-has-colon::after,
-        .streaming-response-text p [data-cited-text-block] .response-strong-title::after,
-        .streaming-response-text p [data-cited-text-block] .response-strong-title-has-colon::after {
-          content: none !important;
-        }
+        /* Retain original formatting inside cited text: titles stay block-level (own line) so they don't merge with the paragraph below. */
+        /* (Previously we forced display:inline which made "Market Value:" merge with the text; now we preserve block layout.) */
         /* Keep highlight continuous: bold/italic and raw markdown (e.g. ] or **) must not interrupt the background */
         .cited-highlight-formatting strong,
         .cited-highlight-formatting em {
           background: transparent !important;
           -webkit-background-clip: unset;
           background-clip: unset;
+        }
+        /* Inline wrapper containing a block (e.g. strong.response-strong-title) creates an empty first line box.
+           Make the wrapper block when it leads with a block so the citation line aligns with the first visible content. */
+        .streaming-response-text p > span > .cited-highlight-formatting:has(> .response-strong-title:first-child),
+        .streaming-response-text p > span > .cited-highlight-formatting:has(> .cited-highlight-formatting > .response-strong-title:first-child) {
+          display: block !important;
         }
       `}</style>
       <div
@@ -2853,7 +3002,9 @@ function getOrderedCitationNumbersFromMessageText(text: string): string[] {
   return order;
 }
 
-/** Extract the cited run for a citation from message text (the text that precedes the citation marker, same as GreenCitedTextHighlight). Preserves ** and * so the citation panel can render bold/italic. */
+/** Extract the cited run for a citation from message text (the text that precedes the citation marker, same as GreenCitedTextHighlight). Preserves ** and * so the citation panel can render bold/italic.
+ * When citations are adjacent (e.g. "...rent [3][4]..."), the second citation has no text before it. In that case we use
+ * the run from the first adjacent citation so both show the same contextual excerpt with consistent formatting. */
 function getCitedRunFromMessageText(messageText: string, citationNumber: string): string {
   if (!messageText || !citationNumber) return '';
   const hits: { index: number; end: number; num: string }[] = [];
@@ -2874,12 +3025,16 @@ function getCitedRunFromMessageText(messageText: string, citationNumber: string)
   }
   hits.sort((a, b) => a.index - b.index);
   let prevEnd = 0;
+  let lastNonEmptyRun = '';
   for (const hit of hits) {
+    const run = messageText.slice(prevEnd, hit.index).trim();
+    const cleaned = run.replace(/\[id:\s*\d+\]\(block_cite_id_\d+\)/g, '').replace(/\s+/g, ' ').trim();
     if (hit.num === citationNumber) {
-      const run = messageText.slice(prevEnd, hit.index).trim();
-      // Strip only internal block refs; keep ** and * so citation panel can render bold/italic
-      return run.replace(/\[id:\s*\d+\]\(block_cite_id_\d+\)/g, '').replace(/\s+/g, ' ').trim();
+      // Use this run if non-empty; otherwise for adjacent citations use the run from the preceding citation
+      if (cleaned) return cleaned;
+      return lastNonEmptyRun;
     }
+    if (cleaned) lastNonEmptyRun = cleaned;
     prevEnd = hit.end;
   }
   return '';
@@ -7470,21 +7625,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     citationReviewForWheelRef.current.total = ordered.length;
   }, [citationReviewMessageId, chatMessages, setCitationReviewCurrentIndex]);
 
-  // Prime file-sidebar document list when Searching is shown and sidebar list is empty (so carousel rotates through docs)
-  const hasSearchingStep = chatMessages.some((m) => m.isLoading && (m.reasoningSteps ?? []).some((s) => s.action_type === 'searching'));
-  React.useEffect(() => {
-    if (!hasSearchingStep || sidebarDocuments.length > 0) return;
-    let cancelled = false;
-    backendApi.getAllDocuments().then((response) => {
-      if (cancelled || !response?.success) return;
-      const data = response.data;
-      const raw = Array.isArray(data) ? data : data?.data?.documents ?? data?.documents ?? data?.data ?? [];
-      const docs = Array.isArray(raw) ? raw : [];
-      const list = docs.map((d: { id?: string; original_filename?: string }) => ({ id: d.id ?? '', original_filename: d.original_filename }));
-      if (!cancelled && list.length > 0) setSidebarDocuments(list);
-    });
-    return () => { cancelled = true; };
-  }, [hasSearchingStep, sidebarDocuments.length, setSidebarDocuments]);
+  // Searching step: show generic rotating file icons (PDF/DOCX) without fetching all documents.
+  // ReasoningSteps/SearchingSourcesCarousel falls back to [...allowedTypes x 9] when no docPreviews.
+  // Only use sidebar documents when FilingSidebar has already loaded them (e.g. user opened it).
 
   const lastResponseForDownload = React.useMemo(() => {
     const responses = chatMessages.filter((m) => m.type === 'response' && m.text?.trim());
@@ -7952,70 +8095,18 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
 
   // Citation bar: set review state only for latest (by position) when it has citations; clear when latest has no text/citations or when latest message id changes so new response callouts open again
   const citationReviewMessageIdRef = React.useRef<string | null>(null);
-  React.useEffect(() => {
-    if (!currentChatId || chatMessages.length === 0) {
-      setCitationReviewMessageId(null);
-      citationReviewMessageIdRef.current = null;
-      setCitationReviewCurrentIndex(0);
-      setCitationReviewAcceptedIndices(new Set());
-      setCitationReviewShowReviewNextOnly(false);
-      setCitationReviewJustRejected(false);
-      setCitationReviewCompletedForMessageIds(new globalThis.Set());
-      return;
-    }
-    const list = Array.isArray(chatMessages) ? chatMessages : [];
-    const lastAssistantByPosition = [...list].reverse().find((m) => m.type !== 'query');
-    if (!lastAssistantByPosition) {
-      setCitationReviewMessageId(null);
-      citationReviewMessageIdRef.current = null;
-      return;
-    }
-    const latestMessageId = lastAssistantByPosition.id ?? `msg-${list.indexOf(lastAssistantByPosition)}`;
-    // When the latest (by position) has no text yet (new query / new empty assistant), clear citation review so the previous response's document preview bar hides and we focus on the new query only
-    if (!lastAssistantByPosition.text) {
-      setCitationReviewMessageId(null);
-      citationReviewMessageIdRef.current = null;
-      setCitationReviewCurrentIndex(0);
-      setCitationReviewAcceptedIndices(new Set());
-      setCitationReviewShowReviewNextOnly(false);
-      setCitationReviewJustRejected(false);
-      return;
-    }
-    // Latest has text: when switching to a different message, reset so new response callouts open; previous message is no longer "citation active" so its callouts stay closed
-    if (citationReviewMessageIdRef.current !== null && citationReviewMessageIdRef.current !== latestMessageId) {
-      setCitationReviewCurrentIndex(0);
-      setCitationReviewAcceptedIndices(new Set());
-      setCitationReviewShowReviewNextOnly(false);
-      setCitationReviewJustRejected(false);
-    }
-    const ordered = getOrderedCitationNumbersFromMessageText(lastAssistantByPosition.text);
-    if (ordered.length === 0) {
-      setCitationReviewMessageId(null);
-      citationReviewMessageIdRef.current = null;
-      return;
-    }
-    // Don't re-open the bar for this message if user already finished review (e.g. accepted last citation)
-    if (citationReviewCompletedForMessageIdsRef.current.has(latestMessageId)) {
-      setCitationReviewMessageId(null);
-      citationReviewMessageIdRef.current = null;
-      return;
-    }
-    const prevMessageId = citationReviewMessageIdRef.current;
-    citationReviewMessageIdRef.current = latestMessageId;
-    setCitationReviewMessageId(latestMessageId);
-    if (prevMessageId !== latestMessageId) {
-      setCitationReviewCurrentIndex(0);
-      setCitationReviewAcceptedIndices(new Set());
-      setCitationReviewShowReviewNextOnly(false);
-      setCitationReviewJustRejected(false);
-    } else {
-      setCitationReviewCurrentIndex((prev) => (prev >= ordered.length ? Math.max(0, ordered.length - 1) : prev));
-    }
-  }, [currentChatId, chatMessages]);
 
   // When scroll position changes, show citation bar for the message in view (so going back to accepted messages shows the bar); only one at a time; when leaving an accepted message, bar closes again
   React.useEffect(() => {
     if (citationMessagesInView.size === 0) {
+      // Don't clear when no visibility reported yet — IntersectionObserver may not have fired; keep citation bar for latest (first effect sets it)
+      const list = Array.isArray(chatMessages) ? chatMessages : [];
+      const lastAssistant = [...list].reverse().find((m: { type?: string }) => m.type !== 'query');
+      const latestId = lastAssistant ? ((lastAssistant as { id?: string }).id ?? `msg-${list.indexOf(lastAssistant)}`) : null;
+      const latestHasCitations = latestId && lastAssistant?.text && getOrderedCitationNumbersFromMessageText(lastAssistant.text).length > 0;
+      if (latestId && latestHasCitations && citationReviewMessageIdRef.current === latestId) {
+        return; // Keep showing document preview for latest until we get explicit visibility
+      }
       setCitationReviewMessageId(null);
       citationReviewMessageIdRef.current = null;
       return;
@@ -8084,6 +8175,90 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     }
     legacyCloseExpandedCardView();
   }, [closeDocumentForChat, legacyCloseExpandedCardView, getChatState]);
+
+  /** Dismiss citation bar, close document preview, and hide buttons when user sends a new query. Prevents bar/buttons from affecting the previous response. */
+  const dismissCitationBarForNewQuery = React.useCallback(() => {
+    setCitationReviewMessageId(null);
+    citationReviewMessageIdRef.current = null;
+    setCitationReviewCurrentIndex(0);
+    setCitationReviewAcceptedIndices(new Set());
+    setCitationReviewShowReviewNextOnly(false);
+    setCitationReviewJustRejected(false);
+    setCitationClickPanel(null);
+    closeExpandedCardView();
+  }, [closeExpandedCardView]);
+
+  // Citation bar: set review state only for latest (by position) when it has citations; clear when latest has no text/citations or when latest message id changes
+  React.useEffect(() => {
+    if (!currentChatId || chatMessages.length === 0) {
+      setCitationReviewMessageId(null);
+      citationReviewMessageIdRef.current = null;
+      setCitationReviewCurrentIndex(0);
+      setCitationReviewAcceptedIndices(new Set());
+      setCitationReviewShowReviewNextOnly(false);
+      setCitationReviewJustRejected(false);
+      setCitationReviewCompletedForMessageIds(new globalThis.Set());
+      return;
+    }
+    const list = Array.isArray(chatMessages) ? chatMessages : [];
+    const lastMessageByPosition = list[list.length - 1];
+    // When the last message is a query, user just sent a new query — dismiss citation bar, close document preview, hide buttons
+    if (lastMessageByPosition && (lastMessageByPosition as { type?: string }).type === 'query') {
+      setCitationReviewMessageId(null);
+      citationReviewMessageIdRef.current = null;
+      setCitationReviewCurrentIndex(0);
+      setCitationReviewAcceptedIndices(new Set());
+      setCitationReviewShowReviewNextOnly(false);
+      setCitationReviewJustRejected(false);
+      setCitationClickPanel(null);
+      closeExpandedCardView();
+      return;
+    }
+    const lastAssistantByPosition = [...list].reverse().find((m) => m.type !== 'query');
+    if (!lastAssistantByPosition) {
+      setCitationReviewMessageId(null);
+      citationReviewMessageIdRef.current = null;
+      return;
+    }
+    const latestMessageId = lastAssistantByPosition.id ?? `msg-${list.indexOf(lastAssistantByPosition)}`;
+    if (!lastAssistantByPosition.text) {
+      setCitationReviewMessageId(null);
+      citationReviewMessageIdRef.current = null;
+      setCitationReviewCurrentIndex(0);
+      setCitationReviewAcceptedIndices(new Set());
+      setCitationReviewShowReviewNextOnly(false);
+      setCitationReviewJustRejected(false);
+      return;
+    }
+    if (citationReviewMessageIdRef.current !== null && citationReviewMessageIdRef.current !== latestMessageId) {
+      setCitationReviewCurrentIndex(0);
+      setCitationReviewAcceptedIndices(new Set());
+      setCitationReviewShowReviewNextOnly(false);
+      setCitationReviewJustRejected(false);
+    }
+    const ordered = getOrderedCitationNumbersFromMessageText(lastAssistantByPosition.text);
+    if (ordered.length === 0) {
+      setCitationReviewMessageId(null);
+      citationReviewMessageIdRef.current = null;
+      return;
+    }
+    if (citationReviewCompletedForMessageIdsRef.current.has(latestMessageId)) {
+      setCitationReviewMessageId(null);
+      citationReviewMessageIdRef.current = null;
+      return;
+    }
+    const prevMessageId = citationReviewMessageIdRef.current;
+    citationReviewMessageIdRef.current = latestMessageId;
+    setCitationReviewMessageId(latestMessageId);
+    if (prevMessageId !== latestMessageId) {
+      setCitationReviewCurrentIndex(0);
+      setCitationReviewAcceptedIndices(new Set());
+      setCitationReviewShowReviewNextOnly(false);
+      setCitationReviewJustRejected(false);
+    } else {
+      setCitationReviewCurrentIndex((prev) => (prev >= ordered.length ? Math.max(0, ordered.length - 1) : prev));
+    }
+  }, [currentChatId, chatMessages, closeExpandedCardView]);
   
   // CRITICAL: Sync currentChatId to ChatStateStore's activeChatId
   // This ensures the store knows which chat is currently active
@@ -9984,16 +10159,18 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 }
                 
                 let finalizeCalled = false;
-                // Wait for queue to finish processing, then set final text
-                const finalizeText = () => {
+                // Wait for queue to finish processing, then set final text. Only play completion sound when we finalize after queue has drained (not on 80ms fallback).
+                const finalizeText = (shouldPlayCompletionSound = false) => {
                   if (finalizeCalled) return;
                   finalizeCalled = true;
-                  playCompletionSound();
+                  if (shouldPlayCompletionSound) playCompletionSound();
                 // Use displayedText as source of truth - it was pre-completed during streaming
                 // This ensures text doesn't change when streaming completes (prevents "click" effect)
-                // Use longer of displayedText vs accumulatedText as safety net so we never persist shortened content
-                  // CRITICAL: Ensure we always have text to display
-                  const rawText = (displayedText.length >= accumulatedText.length ? displayedText : accumulatedText) || data?.summary || "";
+                // Use longest of displayedText, accumulatedText, and data.summary so we never persist truncated content
+                  const summaryStr = (data?.summary ?? '').trim();
+                  const rawText = [displayedText, accumulatedText, summaryStr]
+                    .filter(Boolean)
+                    .reduce((a, b) => (a.length >= b.length ? a : b), '') || summaryStr || "";
                   const finalText = rawText.trim() 
                     ? cleanResponseText(rawText) 
                     : (data?.summary?.trim() || NO_INFO_FALLBACK_MESSAGE);
@@ -10077,7 +10254,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         text: finalText || 'Response received', // Ensure text is never empty
                         isLoading: false,
                         responseStreamComplete: true,
-                        reasoningSteps: isNoInfoResponse ? [] : (existingMessage?.reasoningSteps || []), // Hide reasoning before no-info message
+                        reasoningSteps: existingMessage?.reasoningSteps || [], // Keep reasoning steps visible so user sees what ran (Searching, etc.)
                         citations: finalCitations, // Use final citations (normalized to string keys)
                         responseStartedAt: existingMessage?.responseStartedAt,
                         responseCompletedAt: existingMessage?.responseCompletedAt ?? Date.now()
@@ -10124,7 +10301,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       text: finalText || 'Response received',
                       isLoading: false,
                       responseStreamComplete: true,
-                      reasoningSteps: isNoInfoResponse ? [] : (existingMessage?.reasoningSteps || []),
+                      reasoningSteps: existingMessage?.reasoningSteps || [],
                       citations: finalCitations,
                       responseStartedAt: existingMessage?.responseStartedAt,
                       responseCompletedAt: existingMessage?.responseCompletedAt ?? Date.now()
@@ -10240,20 +10417,20 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   waited += checkInterval;
                   if (!isProcessingQueue && blockQueue.length === 0 && !tokenBuffer.trim() && !pendingBuffer.trim()) {
                     clearInterval(checkQueue);
-                    if (usePerplexityStyleRef.current) perplexityFinalizeRef.current = () => finalizeText();
-                    finalizeText(); // Always call so loading clears even when perplexity interval never runs
+                    if (usePerplexityStyleRef.current) perplexityFinalizeRef.current = () => finalizeText(true);
+                    finalizeText(true); // Queue drained: finalize and play completion sound
                   } else if (waited >= maxWait) {
                     clearInterval(checkQueue);
-                    if (usePerplexityStyleRef.current) perplexityFinalizeRef.current = () => finalizeText();
-                    finalizeText();
+                    if (usePerplexityStyleRef.current) perplexityFinalizeRef.current = () => finalizeText(true);
+                    finalizeText(true); // Timeout: finalize and play completion sound
                   }
                 }, checkInterval);
-                // Guaranteed finalization after 80ms so loading state and "Planning next moves" always clear (fixes stuck stop button)
+                // Safety: guarantee finalization so loading state never sticks (e.g. if interval logic misses). No sound on this path.
                 setTimeout(() => {
                   clearInterval(checkQueue);
-                  if (usePerplexityStyleRef.current) perplexityFinalizeRef.current = () => finalizeText();
-                  finalizeText(); // Always call (finalizeCalled guards double run); fixes stuck button when perplexity interval wasn't started
-                }, 80);
+                  if (usePerplexityStyleRef.current) perplexityFinalizeRef.current = () => finalizeText(true);
+                  finalizeText(false);
+                }, 3000);
               },
               // onError: Handle errors
               (error: string) => {
@@ -10266,7 +10443,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               
               // Log network errors as warnings (less severe), others as errors
               if (isNetworkError) {
-                console.warn('⚠️ SideChatPanel: Network error during streaming:', error);
+                  console.warn('⚠️ SideChatPanel: Network error during streaming:', error);
               } else {
                 console.error('❌ SideChatPanel: Streaming error:', error);
               }
@@ -12551,15 +12728,19 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 
                 // Wait for queue to finish processing, then set final text
                 let finalizeCalledInitial = false;
-                const finalizeText = () => {
+                const finalizeText = (shouldPlayCompletionSound = false) => {
                   if (finalizeCalledInitial) return;
                   finalizeCalledInitial = true;
-                  playCompletionSound();
+                  if (shouldPlayCompletionSound) playCompletionSound();
                   // Citation context is cleared by parent (MainContent) after query
                 // Use displayedText as source of truth - it was pre-completed during streaming
                 // This ensures text doesn't change when streaming completes (prevents "click" effect)
-                // Fallback to data.summary only if displayedText is empty
-                  const finalText = cleanResponseText(displayedText || data.summary || accumulatedText || "");
+                // Use longest of displayedText, accumulatedText, and data.summary so we never persist truncated content
+                  const summaryStrInit = (data?.summary ?? '').trim();
+                  const rawTextInit = [displayedText, accumulatedText, summaryStrInit]
+                    .filter(Boolean)
+                    .reduce((a, b) => (a.length >= b.length ? a : b), '') || summaryStrInit || "";
+                  const finalText = cleanResponseText(rawTextInit);
                   
                   // Merge accumulated citations with any from backend complete message; ensure doc_id set from document_id
                   const mergedRaw = { ...accumulatedCitations, ...(data.citations || {}) };
@@ -12620,19 +12801,19 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   waited += checkInterval;
                   if (!isProcessingQueue && blockQueue.length === 0 && !tokenBuffer.trim() && !pendingBuffer.trim()) {
                     clearInterval(checkQueue);
-                    if (usePerplexityStyleRef.current) perplexityFinalizeRef.current = () => finalizeText();
-                    finalizeText();
+                    if (usePerplexityStyleRef.current) perplexityFinalizeRef.current = () => finalizeText(true);
+                    finalizeText(true);
                   } else if (waited >= maxWait) {
                     clearInterval(checkQueue);
-                    if (usePerplexityStyleRef.current) perplexityFinalizeRef.current = () => finalizeText();
-                    finalizeText();
+                    if (usePerplexityStyleRef.current) perplexityFinalizeRef.current = () => finalizeText(true);
+                    finalizeText(true);
                   }
                 }, checkInterval);
                 setTimeout(() => {
                   clearInterval(checkQueue);
-                  if (usePerplexityStyleRef.current) perplexityFinalizeRef.current = () => finalizeText();
-                  finalizeText();
-                }, 80);
+                  if (usePerplexityStyleRef.current) perplexityFinalizeRef.current = () => finalizeText(true);
+                  finalizeText(false);
+                }, 3000);
               },
               // onError: Handle errors
               (error: string) => {
@@ -13048,7 +13229,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       setAtMentionOpen(false);
       setAtItems([]);
       if (item.type === 'property' && item.payload) {
-        addPropertyAttachment(item.payload as unknown as Parameters<typeof addPropertyAttachment>[0]);
+        // @-mentioned projects: blue highlight only (no project container row). Choose-project flow adds via addPropertyAttachment.
         segmentInput.insertChipAtCursor(
           {
             type: 'chip',
@@ -13056,6 +13237,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             id: (item.payload as { id: string }).id,
             label: (item.payload as { address?: string }).address || item.primaryLabel,
             payload: item.payload,
+            source: 'at_mention',
           },
           { trailingSpace: true }
         );
@@ -13079,7 +13261,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         }
       }, 50);
     },
-    [atAnchorIndex, addPropertyAttachment, toggleDocumentSelection, segmentInput]
+    [atAnchorIndex, toggleDocumentSelection, segmentInput]
   );
 
   const handleFileUpload = React.useCallback((file: File) => {
@@ -13577,6 +13759,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     
     // Allow submit when there is text, file/property attachments, or document chips (so chip-only queries register)
     if ((submitted || attachedFiles.length > 0 || propertyAttachments.length > 0 || atMentionDocumentChips.length > 0) && !isSubmitted && onQuerySubmit) {
+      // Dismiss citation bar immediately so buttons don't affect previous response; bar will show for new response when it arrives
+      dismissCitationBarForNewQuery();
       setIsSubmitted(true);
       
       // Create a copy of attachments to store with the query
@@ -13595,8 +13779,28 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         final: attachmentsToStore.length,
         attachmentNames: attachmentsToStore.map(a => a.name)
       });
+      // Include both "Choose project" attachments and @-mentioned property chips so backend gets full list
       const propertiesToStore = [...propertyAttachments];
-      
+      for (const seg of segmentInput.segments) {
+        if (isChipSegment(seg) && seg.kind === 'property' && seg.payload) {
+          const already = propertiesToStore.some(
+            (a) => String(a.propertyId) === String(seg.id) || (a.property as any)?.id == seg.id
+          );
+          if (!already) {
+            const p = (seg.payload as any) || {};
+            const addr = p.formatted_address || p.normalized_address || p.address || seg.label || 'Unknown Address';
+            const imageUrl = (p as any).imageUrl ?? (p as any).image ?? (p as any).primary_image_url ?? '';
+            propertiesToStore.push({
+              id: String(seg.id),
+              propertyId: seg.id,
+              address: addr,
+              imageUrl: typeof imageUrl === 'string' ? imageUrl : '',
+              property: p,
+            });
+          }
+        }
+      }
+
       // Add query with attachments to the submitted queries list (for backward compatibility)
       setSubmittedQueries(prev => [...prev, { 
         text: submitted || '', 
@@ -14176,13 +14380,17 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               }
               
               let finalizeCalledSubmit = false;
-              const finalizeText = () => {
+              const finalizeText = (shouldPlayCompletionSound = false) => {
                 if (finalizeCalledSubmit) return;
                 finalizeCalledSubmit = true;
-                playCompletionSound();
+                if (shouldPlayCompletionSound) playCompletionSound();
               // This ensures text doesn't change when streaming completes (prevents "click" effect)
-              // Use longer of displayedText vs accumulatedText as safety net so we never persist shortened content
-                const finalText = cleanResponseText((displayedText.length >= accumulatedText.length ? displayedText : accumulatedText) || data.summary || "");
+              // Use longest of displayedText, accumulatedText, and data.summary so we never persist truncated content
+                const summaryStr2 = (data?.summary ?? '').trim();
+                const rawText2 = [displayedText, accumulatedText, summaryStr2]
+                  .filter(Boolean)
+                  .reduce((a, b) => (a.length >= b.length ? a : b), '') || summaryStr2 || "";
+                const finalText = cleanResponseText(rawText2);
               
                 // Merge accumulated citations with any from backend complete message; ensure doc_id set from document_id
                 const mergedRaw = { ...accumulatedCitations, ...(data.citations || {}) };
@@ -14365,19 +14573,19 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 waited += checkInterval;
                 if (!isProcessingQueue && blockQueue.length === 0 && !tokenBuffer.trim() && !pendingBuffer.trim()) {
                   clearInterval(checkQueue);
-                  if (usePerplexityStyleRef.current) perplexityFinalizeRef.current = () => finalizeText();
-                  finalizeText();
+                  if (usePerplexityStyleRef.current) perplexityFinalizeRef.current = () => finalizeText(true);
+                  finalizeText(true);
                 } else if (waited >= maxWait) {
                   clearInterval(checkQueue);
-                  if (usePerplexityStyleRef.current) perplexityFinalizeRef.current = () => finalizeText();
-                  finalizeText();
+                  if (usePerplexityStyleRef.current) perplexityFinalizeRef.current = () => finalizeText(true);
+                  finalizeText(true);
                 }
               }, checkInterval);
               setTimeout(() => {
                 clearInterval(checkQueue);
-                if (usePerplexityStyleRef.current) perplexityFinalizeRef.current = () => finalizeText();
-                finalizeText();
-              }, 80);
+                if (usePerplexityStyleRef.current) perplexityFinalizeRef.current = () => finalizeText(true);
+                finalizeText(false);
+              }, 3000);
             },
               // onError: Handle errors
               (error: string) => {
@@ -17256,11 +17464,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         transition: isDragOver ? 'background-color 0.08s ease-out, border-color 0.08s ease-out, box-shadow 0.08s ease-out' : 'background-color 0.2s ease-in-out, border-color 0.2s ease-in-out, box-shadow 0.2s ease-in-out',
                       }}
                     >
-                      {/* File Attachments Display - above input (same placement as SideChatPanel scroll layout) */}
+                      {/* Files and projects in one row so they can stack on the same line when there's space */}
                       <AnimatePresence mode="wait">
-                        {attachedFiles.length > 0 && (
-                          <motion.div 
-                            key="file-attachments-empty"
+                        {(attachedFiles.length > 0 || propertyAttachments.length > 0) && (
+                          <motion.div
+                            key="attachments-empty"
                             initial={false}
                             animate={{ opacity: 1 }}
                             exit={{ opacity: 0 }}
@@ -17293,22 +17501,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                 }}
                               />
                             ))}
-                          </motion.div>
-                        )}
-                      </AnimatePresence>
-                      {/* Property attachments - same row placement as file attachments (above input) */}
-                      <AnimatePresence mode="wait">
-                        {propertyAttachments.length > 0 && (
-                          <motion.div
-                            key="property-attachments-empty"
-                            initial={false}
-                            animate={{ opacity: 1 }}
-                            exit={{ opacity: 0 }}
-                            transition={{ duration: 0.1, ease: "easeOut" }}
-                            style={{ height: 'auto', marginBottom: '12px' }}
-                            className="flex flex-wrap gap-2 justify-start"
-                            layout={false}
-                          >
                             {propertyAttachments.map((a) => (
                               <PropertyPillChip
                                 key={a.id}
@@ -18106,6 +18298,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                   onClick={(e) => {
                                     e.preventDefault();
                                     e.stopPropagation();
+                                    if (citationReviewMessageIdRef.current !== reviewMsgId) return; // Guard: bar must apply to current response only
                                     if (isDocOpenForCurrent) closeExpandedCardView();
                                     else if (citationData) openCitationInDocumentView(citationData as CitationData, false);
                                   }}
@@ -18127,6 +18320,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               <button type="button" title="Review Next Source" onClick={(e) => {
                                 e.preventDefault();
                                 e.stopPropagation();
+                                if (citationReviewMessageIdRef.current !== reviewMsgId) return;
                                 setCitationReviewJustRejected(false);
                                 const next = effectiveIndex + 1;
                                 if (next >= orderedForBar.length) {
@@ -18145,6 +18339,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               <button type="button" title="Undo reject – restore this part of the response" onClick={(e) => {
                                 e.preventDefault();
                                 e.stopPropagation();
+                                if (citationReviewMessageIdRef.current !== reviewMsgId) return;
                                 const numToUndo = orderedForBar[effectiveIndex];
                                 const msgKey = String(reviewMsgId);
                                 if (numToUndo != null) {
@@ -18170,6 +18365,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                 onClick={(e) => {
                                   e.preventDefault();
                                   e.stopPropagation();
+                                  if (citationReviewMessageIdRef.current !== reviewMsgId) return;
                                   setCitationPreviewClosedForMessageIds((prev) => new Set(prev).add(reviewMsgId));
                                   setCitationReviewMessageId(null);
                                   setCitationReviewCurrentIndex(0);
@@ -18188,6 +18384,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             <button type="button" title="Review Next Source" onClick={(e) => {
                               e.preventDefault();
                               e.stopPropagation();
+                              if (citationReviewMessageIdRef.current !== reviewMsgId) return;
                               const next = effectiveIndex + 1;
                               if (next >= orderedForBar.length) {
                                 setCitationReviewCompletedForMessageIds((prev) => { const s = new globalThis.Set(prev); s.add(reviewMsgId); return s; });
@@ -18209,6 +18406,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               onClick={(e) => {
                                 e.preventDefault();
                                 e.stopPropagation();
+                                if (citationReviewMessageIdRef.current !== reviewMsgId) return;
                                 setCitationPreviewClosedForMessageIds((prev) => new Set(prev).add(reviewMsgId));
                                 setCitationReviewMessageId(null);
                                 setCitationReviewCurrentIndex(0);
@@ -18227,6 +18425,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               <button type="button" title="Reject citation – remove this part from the response" onClick={(e) => {
                                 e.preventDefault();
                                 e.stopPropagation();
+                                if (citationReviewMessageIdRef.current !== reviewMsgId) return;
                                 const numToReject = orderedForBar[effectiveIndex];
                                 const msgKey = String(reviewMsgId);
                                 if (numToReject != null) {
@@ -18254,6 +18453,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               <button type="button" title="Accept Citation" onClick={(e) => {
                                 e.preventDefault();
                                 e.stopPropagation();
+                                if (citationReviewMessageIdRef.current !== reviewMsgId) return;
                                 setCitationAcceptedByMessageId((prev) => {
                                   const next = { ...prev };
                                   const existing = next[reviewMsgId] ?? new globalThis.Set();
@@ -18367,18 +18567,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       overflow: 'visible',
                     }}
                   >
-                    {/* File Attachments Display - Above textarea */}
+                    {/* Files and projects in one row so they can stack on the same line when there's space */}
                     <AnimatePresence mode="wait">
-                      {attachedFiles.length > 0 && (
-                        <motion.div 
-                          key="file-attachments"
+                      {(attachedFiles.length > 0 || propertyAttachments.length > 0) && (
+                        <motion.div
+                          key="attachments"
                           initial={false}
                           animate={{ opacity: 1 }}
                           exit={{ opacity: 0 }}
-                          transition={{ 
-                            duration: 0.1,
-                            ease: "easeOut"
-                          }}
+                          transition={{ duration: 0.1, ease: "easeOut" }}
                           style={{ maxHeight: '52px', overflowY: 'auto', marginBottom: '12px', flexShrink: 0 }}
                           className="flex flex-wrap gap-2 justify-start"
                           layout={false}
@@ -18394,7 +18591,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               attachment={file}
                               onRemove={handleRemoveFile}
                               onPreview={(file) => {
-                                // Use shared preview context to add file
                                 addPreviewFile(file);
                               }}
                               onDragStart={(fileId) => {
@@ -18408,22 +18604,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               }}
                             />
                           ))}
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                    {/* Property attachments - same placement as file attachments (above input) */}
-                    <AnimatePresence mode="wait">
-                      {propertyAttachments.length > 0 && (
-                        <motion.div
-                          key="property-attachments"
-                          initial={false}
-                          animate={{ opacity: 1 }}
-                          exit={{ opacity: 0 }}
-                          transition={{ duration: 0.1, ease: "easeOut" }}
-                          style={{ maxHeight: '52px', overflowY: 'auto', marginBottom: '12px', flexShrink: 0 }}
-                          className="flex flex-wrap gap-2 justify-start"
-                          layout={false}
-                        >
                           {propertyAttachments.map((a) => (
                             <PropertyPillChip
                               key={a.id}

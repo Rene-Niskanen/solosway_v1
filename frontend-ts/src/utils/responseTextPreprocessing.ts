@@ -15,14 +15,40 @@ export function ensureBalancedBoldForDisplay(text: string): string {
   return text;
 }
 
-/** Insert paragraph breaks before bold section labels (e.g. **Flood Zone 2:**). */
+/**
+ * Insert paragraph breaks before bold section labels so titles appear on their own lines.
+ * Handles: ". **Property Details:**" -> ".\n\n**Property Details:**"
+ * and: " - **Lease Duration:**" -> "\n\n**Lease Duration:**" (dash is a separator, drop it).
+ */
 export function ensureParagraphBreaksBeforeBoldSections(text: string): string {
-  return text.replace(/(\.\s*|\s-\s)\s*\*\*([^*]+):\*\*/g, '$1\n\n**$2:**');
+  return text.replace(/(\.\s*|\s-\s)\s*\*\*([^*]+):\*\*/g, (_m, prefix: string, label: string) => {
+    if (/^\s-\s$/.test(prefix)) return `\n\n**${label}:**`; // dash separator before title: drop it
+    return `${prefix.trimEnd()}\n\n**${label}:**`;
+  });
 }
 
 /** Insert newline after **Label:** when followed by text so description is a separate paragraph. */
 export function ensureNewlineAfterBoldLabel(text: string): string {
   return text.replace(/(\*\*[^*]+:\*\*)\s+(?=[A-Za-z0-9])/g, '$1\n\n');
+}
+
+/**
+ * Strip redundant colon before normal text so we don't show "Property Description:: The property...".
+ * LLM often outputs ": The property..." after a bold label; remove that leading ": " or ": ".
+ * Runs multiple passes to catch different formats.
+ */
+export function stripRedundantColonAfterBoldLabel(text: string): string {
+  let out = text;
+  // (1) **Label:** + anything + ": " -> **Label:** + single space
+  out = out.replace(/(\*\*[^*]+:\*\*)(?:\s|\[\d+\]|[-])*\s*:\s+/g, '$1 ');
+  // (2) Any line that starts with ": " (redundant colon) - strip it, keep one space before the word
+  //    Use [\r\n] to handle Windows line endings; \s* allows optional leading space on the line
+  out = out.replace(/(^|[\r\n]+)(\s*):\s+/g, '$1$2 ');
+  // (3) Same line: "**Label:** : " (space-colon-space) when not caught above
+  out = out.replace(/(\*\*[^*]+:\*\*)\s+:\s+/g, '$1 ');
+  // (4) Bullet line with redundant colon: "- : The" or "* : The" -> "- The" / "* The"
+  out = out.replace(/([\r\n]+\s*[-*+]\s*)\s*:\s+/g, '$1');
+  return out;
 }
 
 /** Normalize Unicode circled numbers (①②③) to bracket citations [1][2][3]. */
@@ -220,6 +246,34 @@ export function mergeBoldHeadingWithNextLine(text: string): string {
   return result.join('\n');
 }
 
+/**
+ * Merge lines that contain only citations (e.g. "[4]" or "[4] [5]") with the previous line.
+ * Prevents citations from appearing on their own line when the LLM outputs paragraph breaks.
+ */
+export function mergeCitationOnlyLinesWithPrevious(text: string): string {
+  const lines = text.split(/\n/);
+  const citationOnlyRe = /^\s*(?:\[\d+\]\s*)*(?:\[\d+\])\s*(?:\[\d+\]\s*)*\s*$/; // line is only [1], [2], [1] [2], etc.
+  const result: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmed = line.trim();
+    if (trimmed !== '' && citationOnlyRe.test(line)) {
+      // Citation-only line: merge with previous non-empty line
+      while (result.length > 0 && result[result.length - 1].trim() === '') {
+        result.pop();
+      }
+      if (result.length > 0) {
+        result[result.length - 1] = (result[result.length - 1] + ' ' + trimmed).trimEnd();
+      } else {
+        result.push(line);
+      }
+      continue;
+    }
+    result.push(line);
+  }
+  return result.join('\n');
+}
+
 /** Merge very short orphan lines (e.g. "of 2025") with the previous line. */
 export function mergeOrphanLines(text: string): string {
   const maxOrphanLen = 20;
@@ -257,12 +311,17 @@ export function prepareResponseTextForDisplay(text: string): string {
   let out = normalizeIdCitationsToBracket(text);
   out = stripBlockCiteIdFromDisplay(out);
   const withBold = ensureBalancedBoldForDisplay(out);
-  const withMergedHeadings = mergeBoldHeadingWithNextLine(withBold);
+  const withSectionBreaks = ensureParagraphBreaksBeforeBoldSections(withBold);
+  const noDoubleColon = stripRedundantColonAfterBoldLabel(withSectionBreaks);
+  const withMergedHeadings = mergeBoldHeadingWithNextLine(noDoubleColon);
   const withMergedOrphans = mergeOrphanLines(withMergedHeadings);
-  const withMergedListItems = mergeConsecutiveListItemsAsOne(withMergedOrphans);
+  const withMergedCitations = mergeCitationOnlyLinesWithPrevious(withMergedOrphans);
+  const withMergedListItems = mergeConsecutiveListItemsAsOne(withMergedCitations);
   const withPromotedTitles = promoteBoldSectionLabelsFromListItems(withMergedListItems);
   const withBracketCitations = normalizeCircledCitationsToBracket(withPromotedTitles);
-  return removePeriodAfterBracketCitations(withBracketCitations);
+  const noPeriodAfterCite = removePeriodAfterBracketCitations(withBracketCitations);
+  // Final pass: catch any redundant ": " at line start that later steps might have preserved
+  return stripRedundantColonAfterBoldLabel(noPeriodAfterCite);
 }
 
 /**

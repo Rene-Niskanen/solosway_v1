@@ -63,7 +63,17 @@ except ImportError:
     logger.warning("langgraph.checkpoint.postgres not available - checkpointer features disabled")
 
 from backend.llm.types import MainWorkflowState
-from backend.llm.nodes.routing_nodes import fetch_direct_document_chunks, handle_citation_query, handle_attachment_fast, handle_navigation_action, classify_intent
+from backend.llm.nodes.routing_nodes import (
+    fetch_direct_document_chunks,
+    handle_citation_query,
+    handle_attachment_fast,
+    handle_navigation_action,
+    _GREETING_EXACT,
+    _strip_velora_greeting,
+    _PERSONAL_STARTS,
+    _USER_CONTEXT_PHRASES,
+    _USER_CONTEXT_ACTION_RE,
+)
 from backend.llm.nodes.conversation_node import conversation_node
 from backend.llm.nodes.processing_nodes import process_documents
 from backend.llm.nodes.summary_nodes import summarize_results
@@ -73,11 +83,8 @@ from backend.llm.nodes.agent_node import agent_node
 from backend.llm.nodes.no_results_node import no_results_node
 # NEW: Context manager for automatic summarization
 from backend.llm.nodes.context_manager_node import context_manager_node
-# NEW: Planner → Executor → Responder architecture
-from backend.llm.nodes.planner_node import planner_node, _make_fallback_plan, REFINE_PATTERNS
-from backend.llm.nodes.executor_node import executor_node
-from backend.llm.nodes.evaluator_node import evaluator_node
-from backend.llm.contracts.node_contracts import RouterContract
+# LobeHub-style: single agent loop (model decides tool use)
+from backend.llm.nodes.agent_loop_node import agent_loop_node
 from backend.llm.nodes.responder_node import responder_node
 # LangGraph prebuilt components
 from langgraph.prebuilt import ToolNode
@@ -350,30 +357,13 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
     builder.add_node("context_manager", context_manager_node)
     logger.info("✅ Added context_manager node (auto-summarize at 8k tokens)")
     
-    # NEW: Planner → Executor → Responder architecture
-    builder.add_node("planner", planner_node)
+    # LobeHub-style: single agent loop (model decides tool use via tool_calls)
+    builder.add_node("agent_loop", agent_loop_node)
     """
-    Planner Node
-    - Generates structured JSON execution plan from user query
-    - Output: execution_plan (structured plan with objective and steps)
-    - Emits plan as execution event (visible to user)
-    """
-    
-    builder.add_node("executor", executor_node)
-    """
-    Executor Node
-    - Executes steps from execution plan sequentially
-    - Calls tools directly (retrieve_documents, retrieve_chunks)
-    - Emits execution events for each step
-    - Output: execution_results (results from each step)
-    """
-    
-    builder.add_node("evaluator", evaluator_node)
-    """
-    Evaluator Node
-    - Evaluates plan execution and result sufficiency
-    - Routes: executor (continue), planner (refine), or responder (answer)
-    - Emits evaluation events
+    Agent Loop Node
+    - Model sees full conversation + tool definitions
+    - Decides: call retrieve_docs/retrieve_chunks or finish
+    - Accumulates execution_results for responder citation pipeline
     """
     
     builder.add_node("responder", responder_node)
@@ -384,7 +374,7 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
     - Output: final_summary
     """
     
-    # KEEP: Unified Agent Node (fallback for non-planner paths)
+    # KEEP: Unified Agent Node (for user_context / USER.md read/write)
     builder.add_node("agent", agent_node)
     """
     Unified Agent Node (Fallback)
@@ -499,7 +489,7 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
         - Citation queries
         - Attachment fast mode
         
-        Everything else (including chip/@ document or property selection) → context_manager → planner → executor → responder,
+        Everything else (including chip/@ document or property selection) → context_manager → agent_loop → responder,
         so response formatting is the same whether or not the user used @.
         """
         # Check for fast paths
@@ -531,9 +521,9 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
             return "handle_attachment_fast"
         
         # Chip selection (@ property/document): use same route as regular queries so response formatting
-        # is identical (planner → executor → responder). Planner already creates 1-step retrieve_chunks
+        # is identical (agent_loop → responder)
         # when document_ids are in state, so we do not use fetch_direct_chunks → summarize_results here.
-        # Everything (including when document_ids present) → context_manager → planner → executor → responder
+        # Everything (including when document_ids present) → context_manager → agent_loop → responder
         logger.info("[GRAPH] Routing to context_manager (check tokens before agent)%s", f" (doc_ids={len(document_ids)})" if document_ids and len(document_ids) > 0 else "")
         return "context_manager"
     
@@ -550,62 +540,65 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
     )
     logger.debug("START -> [navigation_action|citation_query|attachment_fast|direct_chunks|context_manager]")
     
-    # Conversation node (chat without document retrieval — greetings, small talk, personal)
+    # Conversation node (chat without document retrieval — explicit greetings only)
     builder.add_node("conversation", conversation_node)
     logger.info("Added conversation node (chat-only path)")
 
-    # Simple path: only for clearly new, self-contained questions (no planner LLM).
-    # Short queries go to planner so the LLM can decide follow-up vs new; we don't hardcode follow-up patterns.
-    SIMPLE_QUERY_MIN_WORDS = 9
-    SIMPLE_QUERY_MAX_WORDS = 15
-
-    def _is_simple_document_query(state: MainWorkflowState) -> bool:
-        """True only when query looks like a new, self-contained question (medium length). Short queries → planner so LLM decides follow-up."""
-        document_ids = state.get("document_ids") or []
-        if document_ids and len(document_ids) > 0:
-            return False  # Chip path: keep going to planner (it uses fixed 1-step without LLM)
-        user_query = (state.get("user_query") or "").strip()
-        query_lower = user_query.lower()
-        if any(p in query_lower for p in REFINE_PATTERNS):
-            return False  # Format/refine intent: use planner
-        word_count = len(user_query.split())
-        # Only use fixed 2-step plan when query is medium-length (likely new question). Short → planner (LLM decides follow-up)
-        return SIMPLE_QUERY_MIN_WORDS <= word_count <= SIMPLE_QUERY_MAX_WORDS
-
-    def simple_plan_node(state: MainWorkflowState) -> MainWorkflowState:
-        """Inject fixed 2-step plan (retrieve_docs → retrieve_chunks) without calling planner LLM."""
-        user_query = state.get("user_query", "") or ""
-        execution_plan = _make_fallback_plan(user_query)
-        logger.info("[GRAPH] simple_plan: injected fixed 2-step plan (skip planner LLM) for query '%s...'", (user_query or "")[:60])
-        emitter = state.get("execution_events")
-        if emitter:
-            emitter.emit_reasoning(label="Planning next moves", detail=None)
-        return {
-            "execution_plan": execution_plan,
-            "current_step_index": 0,
-            "execution_results": [],
-        }
-
-    builder.add_node("simple_plan", simple_plan_node)
-
-    # Context manager → classify intent → conversation, document_cached (responder), document_simple (simple_plan), or document (planner)
-    # Cache-first: when use_cached_results and execution_results are set (follow-up), skip planner+executor and go to responder.
-    # Simple path: when document query is "simple" (no chip, no format/refine), use fixed 2-step plan and skip planner LLM.
+    # Context manager → LobeHub-style routing: only greetings to conversation, rest to agent_loop
     async def after_context_manager(state):
-        intent = await classify_intent(state)
-        if intent == "conversation":
+        """
+        Minimal routing — only explicit greetings to conversation.
+        Everything else goes to agent_loop (model decides tool use).
+        """
+        user_query = (state.get("user_query") or "").strip()
+        query_lower = user_query.lower().strip("!?.,' ")
+        
+        # Explicit greetings only -> conversation
+        if query_lower in _GREETING_EXACT:
+            logger.info("[GRAPH] greeting -> conversation")
             return "conversation"
-        if intent == "user_context":
-            logger.info("[GRAPH] user_context: routing to agent (USER.md read/write)")
+        stripped = _strip_velora_greeting(query_lower)
+        if not stripped and "velora" in query_lower:
+            logger.info("[GRAPH] greeting to Velora -> conversation")
+            return "conversation"
+        if any(query_lower.startswith(p) for p in _PERSONAL_STARTS):
+            logger.info("[GRAPH] personal -> conversation")
+            return "conversation"
+        if stripped and any(stripped.startswith(p) for p in _PERSONAL_STARTS):
+            logger.info("[GRAPH] personal (after strip) -> conversation")
+            return "conversation"
+        
+        # USER.md / user context -> agent (has read/write_workspace_file tools)
+        if any(phrase in query_lower for phrase in _USER_CONTEXT_PHRASES):
+            logger.info("[GRAPH] user_context -> agent")
             return "user_context"
-        # Document intent: check cache-first, then simple path, else full planner
+        if _USER_CONTEXT_ACTION_RE.search(query_lower):
+            logger.info("[GRAPH] user_context action -> agent")
+            return "user_context"
+        
+        # Check for user_context from last AI message (follow-up to content request)
+        messages = state.get("messages") or []
+        if isinstance(messages, list) and len(messages) >= 2:
+            from backend.llm.utils.agent_turn_context import last_turn_was_request_for_user_content
+            if last_turn_was_request_for_user_content(messages):
+                logger.info("[GRAPH] user_context follow-up -> agent")
+                return "user_context"
+        conv_hist = state.get("conversation_history") or []
+        if isinstance(conv_hist, list) and len(conv_hist) > 0:
+            from backend.llm.utils.agent_turn_context import AI_REQUESTED_CONTENT_PHRASES
+            last_summary = (conv_hist[-1].get("summary") or "").strip().lower()
+            if last_summary and any(p in last_summary for p in AI_REQUESTED_CONTENT_PHRASES):
+                logger.info("[GRAPH] user_context follow-up (conv hist) -> agent")
+                return "user_context"
+        
+        # Cache-first: same-doc follow-up -> responder directly
         if state.get("use_cached_results") and state.get("execution_results"):
-            logger.info("[GRAPH] document_cached: routing to responder (cache-first)")
+            logger.info("[GRAPH] document_cached -> responder (cache-first)")
             return "document_cached"
-        if _is_simple_document_query(state):
-            logger.info("[GRAPH] document_simple: routing to simple_plan (skip planner LLM)")
-            return "document_simple"
-        return "document"
+        
+        # Everything else -> agent_loop (LobeHub-style: model decides tools)
+        logger.info("[GRAPH] default -> agent_loop")
+        return "agent_loop"
 
     builder.add_conditional_edges(
         "context_manager",
@@ -614,11 +607,10 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
             "conversation": "conversation",
             "user_context": "agent",
             "document_cached": "responder",
-            "document_simple": "simple_plan",
-            "document": "planner",
+            "agent_loop": "agent_loop",
         }
     )
-    logger.debug("Conditional: context_manager -> [conversation|user_context|document_cached|document_simple|document]")
+    logger.debug("Conditional: context_manager -> [conversation|user_context|document_cached|agent_loop]")
 
     # Conversation → END (single LLM call, no retrieval)
     builder.add_edge("conversation", END)
@@ -824,55 +816,11 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
     logger.debug("Edge: force_chunks -> agent (loop back for chunk retrieval)")
     
     # Planner → Executor → Evaluator → Responder flow
-    # (context_manager → planner edge is set above via conditional edges)
+    # (context_manager → agent_loop edge is set above via conditional edges)
     
-    # Planner → Executor or Responder (0 steps = skip executor, go straight to responder for refine/format)
-    def after_planner(state: MainWorkflowState) -> Literal["executor", "responder"]:
-        steps = state.get("execution_plan") or {}
-        step_list = steps.get("steps", []) if isinstance(steps, dict) else []
-        if len(step_list) == 0:
-            logger.info("[GRAPH] 0-step plan: routing planner → responder (refine/format)")
-            return "responder"
-        logger.debug(f"[GRAPH] {len(step_list)}-step plan: routing planner → executor")
-        return "executor"
-    
-    builder.add_conditional_edges("planner", after_planner, {"executor": "executor", "responder": "responder"})
-    logger.debug("Conditional: planner -> [executor|responder] (0 steps → responder)")
-
-    # Simple plan → Executor (fixed 2-step plan, no planner LLM)
-    builder.add_edge("simple_plan", "executor")
-    logger.debug("Edge: simple_plan -> executor")
-    
-    # Executor → Evaluator (evaluate execution)
-    builder.add_edge("executor", "evaluator")
-    logger.debug("Edge: executor -> evaluator")
-    
-    # Evaluator → Routes based on execution status
-    # CENTRALIZED ROUTER - Single owner of flow control
-    def centralized_router(state: MainWorkflowState) -> Literal["executor", "planner", "responder", "END"]:
-        """
-        CENTRALIZED ROUTER - Single owner of "what happens next".
-        
-        This is the ONLY place that decides flow control.
-        Nodes never decide routing - they only emit events.
-        
-        Uses RouterContract.route() for all routing decisions.
-        """
-        decision = RouterContract.route(state)
-        logger.info(f"[ROUTER] Decision: {decision['next_node']} - {decision['reason']}")
-        return decision["next_node"]
-    
-    builder.add_conditional_edges(
-        "evaluator",
-        centralized_router,  # ← Single source of truth
-        {
-            "executor": "executor",  # Continue executing steps
-            "planner": "planner",  # Refine plan (if results insufficient)
-            "responder": "responder",  # Generate answer
-            "END": END  # Error state
-        }
-    )
-    logger.debug("Conditional: evaluator -> [executor|planner|responder|END] (centralized router)")
+    # Agent loop → Responder (always: agent loop produces execution_results, responder generates answer with citations)
+    builder.add_edge("agent_loop", "responder")
+    logger.debug("Edge: agent_loop -> responder")
     
     # Responder → END
     builder.add_edge("responder", END)

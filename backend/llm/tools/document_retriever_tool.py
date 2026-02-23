@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 # Default patterns that indicate a summary is about another property/location (not the query entity).
 # Override via entity_gate_config.json "conflicting_location_patterns".
 _DEFAULT_CONFLICTING_LOCATION_PATTERNS = [
+    "banda",
+    "banda lane",
     "dik dik",
     "dik dik lane",
     "nzohe",
@@ -32,6 +34,9 @@ _DEFAULT_CONFLICTING_LOCATION_PATTERNS = [
     "carlos espindola",
     "martin wainaina",
 ]
+
+# Short (3-letter) query words to exclude from keyword search to avoid matching too many docs.
+_KEYWORD_STOP_3 = frozenset(("the", "and", "for", "are", "but", "not", "you", "all", "can", "had", "her", "was", "one", "our", "out", "its"))
 
 # Tokens we do NOT count as "entity in summary" - they're too generic (e.g. "lane" appears in "Dik Dik Lane").
 # Only distinctive tokens (e.g. "banda", "nzohe") should require presence in summary.
@@ -81,6 +86,10 @@ def _summary_clearly_about_another_property(summary: str, gate_phrases: List[str
     Return True if the summary is clearly about another property:
     (1) No entity in summary but other address in summary -> exclude.
     (2) Both entity and other address in summary but other address dominates (first or more often) -> exclude.
+
+    Important: Conflicting patterns that match the user's entity (gate_phrases) are excluded from
+    "other" so we don't exclude the document the user asked for (e.g. "dik dik lane" query should
+    not treat "dik dik" as "another property" when the doc is the Dik Dik Lane lease).
     """
     if not gate_phrases:
         return False
@@ -88,7 +97,10 @@ def _summary_clearly_about_another_property(summary: str, gate_phrases: List[str
     if not summary_lower:
         return False
     patterns = _get_conflicting_location_patterns()
-    other_address_in_summary = any(p in summary_lower for p in patterns)
+    gate_lower = [ (g or "").strip().lower() for g in gate_phrases if (g or "").strip() ]
+    # Exclude conflicting patterns that are the user's entity (e.g. user asked about "dik dik lane" -> don't treat "dik dik" as "other")
+    other_patterns = [ p for p in patterns if not any((p in g or g in p) for g in gate_lower) ]
+    other_address_in_summary = any(p in summary_lower for p in other_patterns)
     entity_in_summary = _entity_mentioned_in_summary(summary, gate_phrases)
     if not other_address_in_summary:
         return False
@@ -104,13 +116,13 @@ def _summary_clearly_about_another_property(summary: str, gate_phrases: List[str
             if len(token) >= 2 and token not in _GENERIC_ENTITY_TOKENS and token in summary_lower:
                 entity_first_pos = min(entity_first_pos, summary_lower.index(token))
     other_first_pos = len(summary_lower)
-    for p in patterns:
+    for p in other_patterns:
         if p in summary_lower:
             other_first_pos = min(other_first_pos, summary_lower.index(p))
     # If other address appears before entity, or we have multiple other-address hits and few entity hits, treat as wrong doc
     if other_first_pos < entity_first_pos:
         return True
-    other_count = sum(1 for p in patterns if p in summary_lower)
+    other_count = sum(1 for p in other_patterns if p in summary_lower)
     entity_count = 0
     for phrase in gate_phrases:
         phrase_lower = (phrase or "").strip().lower()
@@ -306,9 +318,10 @@ def retrieve_documents(
             # 2. original_filename (filename metadata)
             # 3. document_summary JSONB (addresses, property names, parties, etc.)
             # Split query into words for better matching (handles "letter of offer" matching "Letter_of_Offer")
+            # Include 3-letter words (e.g. "dik" in "Dik Dik Lane") but exclude common stopwords
             if len(query.strip()) > 0:
                 query_lower = query.lower().strip()
-                query_words = [w for w in query_lower.split() if len(w) > 3]  # Only words longer than 3 chars
+                query_words = [w for w in query_lower.split() if len(w) >= 3 and w not in _KEYWORD_STOP_3]
                 
                 # Build OR conditions for keyword search
                 or_conditions = []
@@ -352,7 +365,7 @@ def retrieve_documents(
         # Try longer/more specific words first (e.g. "highlands" before "what") so property/doc names match
         if not keyword_results and query.strip() and business_id:
             try:
-                words = [w for w in query.lower().strip().split() if len(w) > 3]
+                words = [w for w in query.lower().strip().split() if len(w) >= 3 and w not in _KEYWORD_STOP_3]
                 words = sorted(words, key=len, reverse=True)
                 for word in words:
                     fb = supabase.table('documents').select(
@@ -400,7 +413,7 @@ def retrieve_documents(
         
         # 5. Add keyword matches with quality-based scoring
         query_lower = query.lower().strip()
-        query_words = [w for w in query_lower.split() if len(w) > 3]  # Only words longer than 3 chars
+        query_words = [w for w in query_lower.split() if len(w) >= 3 and w not in _KEYWORD_STOP_3]
         
         for doc in keyword_results:
             doc_id = str(doc.get('id', ''))
@@ -418,8 +431,8 @@ def retrieve_documents(
             if query_lower in filename:
                 keyword_score = max(keyword_score, 0.8)
                 match_quality.append('exact_filename')
-            # Partial filename match (high quality)
-            elif any(word in filename for word in query_words if len(word) > 3):
+            # Partial filename match (high quality) - include 3-letter words (e.g. "dik")
+            elif any(word in filename for word in query_words):
                 keyword_score = max(keyword_score, 0.6)
                 match_quality.append('partial_filename')
             
@@ -427,8 +440,8 @@ def retrieve_documents(
             if query_lower in summary:
                 keyword_score = max(keyword_score, 0.7)
                 match_quality.append('exact_summary')
-            # Partial summary match (medium quality)
-            elif any(word in summary for word in query_words if len(word) > 3):
+            # Partial summary match (medium quality) - include 3-letter words
+            elif any(word in summary for word in query_words):
                 keyword_score = max(keyword_score, 0.4)
                 match_quality.append('partial_summary')
             

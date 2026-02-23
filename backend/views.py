@@ -1690,7 +1690,7 @@ def query_documents_stream():
                                     )
                                     yield f"data: {json.dumps({'type': 'error', 'message': 'Request timed out. The search is taking too long—please try again or try a simpler query.'})}\n\n"
                                     break
-                                # NEW: Consume execution events from queue (non-blocking, after each graph event)
+                                # Consume execution events from queue (non-blocking, after each graph event)
                                 execution_events = consume_execution_events()
                                 for exec_event in execution_events:
                                     payload = exec_event.to_dict()
@@ -1713,29 +1713,29 @@ def query_documents_stream():
                                             # Normal retrieval uses "Planning next moves" (step 1) from initial_reasoning; skip duplicate from phase
                                             pass
                                         elif label and ('Searched' in label or 'search' in label.lower() or label_stripped.startswith('Preparing ') or label_stripped.startswith('Finding ') or label_stripped.startswith('Searching for ') or label_stripped.startswith('Locating ')):
-                                            # Emit only one searching step per request to avoid duplicate
                                             if not searching_step_emitted:
                                                 searching_step_emitted = True
-                                                # Carousel reflects actual document types in the user's corpus (PDF/DOCX counts)
-                                                source_count_by_type = _get_search_corpus_type_counts(business_id)
-                                                total_count = sum(source_count_by_type.values())
-                                                details = {}
-                                                if source_count_by_type:
-                                                    details['source_count_by_type'] = source_count_by_type
-                                                    details['source_count'] = total_count
+                                                # Skip _get_search_corpus_type_counts - avoid blocking DB query; carousel uses generic icons
                                                 reasoning_data = {
                                                     'type': 'reasoning_step',
                                                     'step': 'searching_documents',
                                                     'action_type': 'searching',
                                                     'message': 'Searching',
                                                     'timestamp': time.time(),
-                                                    'details': details
+                                                    'details': {}
                                                 }
                                                 yield f"data: {json.dumps(reasoning_data)}\n\n"
-                                                logger.info("🟡 [REASONING] Emitted searching step: Searching (corpus: %s)", source_count_by_type or 'unknown')
+                                                logger.info("🟡 [REASONING] Emitted searching step (phase): Searching")
                                         elif label and ('Reviewed' in label or 'review' in label.lower()):
-                                            # Normal retrieval: skip "Reviewed relevant sections" so steps match (1) Planning (2) Searching for query (3) Found x docs (4) Read
                                             pass
+                                        elif label and label_stripped.startswith('Analysing '):
+                                            yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'analysing_documents', 'action_type': 'analysing', 'message': label_stripped, 'timestamp': time.time(), 'details': {}})}\n\n"
+                                        elif label and (label_stripped.startswith('Found ') and 'section' in label_stripped.lower()):
+                                            detail = (payload.get('metadata') or {}).get('detail', '')
+                                            yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'found_sections', 'action_type': 'exploring', 'message': label_stripped + (' (' + detail + ')' if detail else ''), 'timestamp': time.time(), 'details': {}})}\n\n"
+                                        elif label and ('No documents found' in label or 'No relevant' in label or 'Error occurred' in label):
+                                            detail = (payload.get('metadata') or {}).get('detail', '')
+                                            yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'search_status', 'action_type': 'analysing', 'message': label_stripped + (' - ' + detail if detail else ''), 'timestamp': time.time(), 'details': {}})}\n\n"
                                     event_data = {
                                         'type': 'execution_event',
                                         'payload': payload
@@ -1753,15 +1753,11 @@ def query_documents_stream():
                                 # Only emit steps for phases that are actually happening (searching, reading, etc.)
                                 # Do NOT emit "Summarising content" when responder starts - emit it when we actually start streaming
                                 if event_type == "on_chain_start":
-                                    # Emit "Searching" as soon as executor starts (first step is document name search)
-                                    if not is_fast_path and node_name == "executor" and not searching_step_emitted:
+                                    # Emit "Searching" as soon as executor or agent_loop starts (first step is document search)
+                                    # Skip _get_search_corpus_type_counts here to avoid blocking DB call - phase events will provide details later
+                                    if not is_fast_path and node_name in ("executor", "agent_loop") and not searching_step_emitted:
                                         searching_step_emitted = True
-                                        source_count_by_type = _get_search_corpus_type_counts(business_id)
-                                        total_count = sum(source_count_by_type.values())
                                         details = {}
-                                        if source_count_by_type:
-                                            details['source_count_by_type'] = source_count_by_type
-                                            details['source_count'] = total_count
                                         reasoning_data = {
                                             'type': 'reasoning_step',
                                             'step': 'searching_documents',
@@ -1771,7 +1767,7 @@ def query_documents_stream():
                                             'details': details
                                         }
                                         yield f"data: {json.dumps(reasoning_data)}\n\n"
-                                        logger.info("🟡 [REASONING] Emitted searching step (executor start): Searching (corpus: %s)", source_count_by_type or 'unknown')
+                                        logger.info("🟡 [REASONING] Emitted searching step (agent_loop/executor start): Searching")
                                     if is_fast_path and node_name == "handle_citation_query":
                                         # Citation path: show "Generating response" when LLM is in action
                                         reasoning_data = {
@@ -1948,8 +1944,8 @@ def query_documents_stream():
                                                 yield f"data: {json.dumps(prepare_action)}\n\n"
                                                 logger.info(f"📂 [EARLY_PREP] Emitted prepare_document for {first_doc.get('doc_id', '')[:8]}...")
                                     
-                                    elif node_name == "executor" and not is_fast_path:
-                                        # Planner/Executor path: emit "Analysing N document(s):" + "Reading" only for
+                                    elif node_name in ("executor", "agent_loop") and not is_fast_path:
+                                        # Planner/Executor or agent_loop path: emit "Analysing N document(s):" + "Reading" only for
                                         # documents we actually read (have chunks for). Wait until we have retrieve_chunks
                                         # result so we don't show docs we never read.
                                         state_data = state_update or output or event_data
@@ -2773,6 +2769,23 @@ def query_documents_stream():
                             # Only error if we have neither summary nor documents
                             if not doc_outputs:
                                 logger.error("🟡 [STREAM] No summary and no documents - cannot proceed")
+                                # Final drain of execution queue so user sees any pending reasoning steps (Searching, Analysing 0 docs, etc.) before the error
+                                try:
+                                    for exec_event in consume_execution_events():
+                                        payload = exec_event.to_dict()
+                                        if payload.get('type') == 'phase' and (payload.get('metadata') or {}).get('reasoning'):
+                                            label = (payload.get('metadata') or {}).get('label') or payload.get('description', '')
+                                            label_stripped = (label or '').strip()
+                                            if label_stripped.startswith('Analysing '):
+                                                yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'analysing_documents', 'action_type': 'analysing', 'message': label_stripped, 'timestamp': time.time(), 'details': {}})}\n\n"
+                                            elif label and (label_stripped.startswith('Found ') and 'section' in label_stripped.lower()):
+                                                detail = (payload.get('metadata') or {}).get('detail', '')
+                                                yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'found_sections', 'action_type': 'exploring', 'message': label_stripped + (' (' + detail + ')' if detail else ''), 'timestamp': time.time(), 'details': {}})}\n\n"
+                                            elif label and ('No documents found' in label or 'No relevant' in label or 'Error occurred' in label):
+                                                detail = (payload.get('metadata') or {}).get('detail', '')
+                                                yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'search_status', 'action_type': 'analysing', 'message': label_stripped + (' - ' + detail if detail else ''), 'timestamp': time.time(), 'details': {}})}\n\n"
+                                except Exception:
+                                    pass
                                 yield f"data: {json.dumps({'type': 'error', 'message': 'No relevant documents found'})}\n\n"
                                 return
                             else:
@@ -2785,6 +2798,23 @@ def query_documents_stream():
                         
                         # If we have a summary, proceed even if doc_outputs is empty (documents were already processed)
                         if not doc_outputs and not full_summary:
+                            # Final drain so user sees reasoning steps before the error
+                            try:
+                                for exec_event in consume_execution_events():
+                                    payload = exec_event.to_dict()
+                                    if payload.get('type') == 'phase' and (payload.get('metadata') or {}).get('reasoning'):
+                                        label = (payload.get('metadata') or {}).get('label') or payload.get('description', '')
+                                        label_stripped = (label or '').strip()
+                                        if label_stripped.startswith('Analysing '):
+                                            yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'analysing_documents', 'action_type': 'analysing', 'message': label_stripped, 'timestamp': time.time(), 'details': {}})}\n\n"
+                                        elif label and (label_stripped.startswith('Found ') and 'section' in label_stripped.lower()):
+                                            detail = (payload.get('metadata') or {}).get('detail', '')
+                                            yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'found_sections', 'action_type': 'exploring', 'message': label_stripped + (' (' + detail + ')' if detail else ''), 'timestamp': time.time(), 'details': {}})}\n\n"
+                                        elif label and ('No documents found' in label or 'No relevant' in label or 'Error occurred' in label):
+                                            detail = (payload.get('metadata') or {}).get('detail', '')
+                                            yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'search_status', 'action_type': 'analysing', 'message': label_stripped + (' - ' + detail if detail else ''), 'timestamp': time.time(), 'details': {}})}\n\n"
+                            except Exception:
+                                pass
                             yield f"data: {json.dumps({'type': 'error', 'message': 'No relevant documents found'})}\n\n"
                             return
                         
@@ -6741,10 +6771,8 @@ def update_user_profile():
         return response, 200
     try:
         data = request.get_json(silent=True) or {}
-        # Only persist columns that exist on the users table. If you've run
-        # backend/migrations/add_profile_columns_to_users.sql, use the full set:
-        # allowed_for_db = {'first_name', 'last_name', 'title', 'email', 'company_name', 'phone', 'address', 'location'}
-        allowed_for_db = {'first_name', 'email', 'company_name'}
+        # Persist profile columns (migration add_profile_columns_to_users.sql adds last_name, title, phone, address, location)
+        allowed_for_db = {'first_name', 'last_name', 'title', 'email', 'company_name', 'phone', 'address', 'location'}
         raw = {k: (v if v is not None else None) for k, v in data.items() if k in {'first_name', 'last_name', 'title', 'email', 'phone', 'address', 'location', 'organization'}}
         if 'organization' in raw:
             raw['company_name'] = raw.pop('organization')
@@ -6756,8 +6784,14 @@ def update_user_profile():
         updated = auth_service.update_user(current_user.id, update)
         return jsonify({'success': True, 'user': updated or update})
     except Exception as e:
+        err_msg = str(e)
+        if 'PGRST204' in err_msg or ("Could not find the" in err_msg and "column" in err_msg and "users" in err_msg):
+            return jsonify({
+                'error': "Profile could not be saved: the database is missing profile columns (e.g. title). "
+                        "Run the SQL in backend/migrations/add_profile_columns_to_users.sql in your Supabase project SQL editor, then try again."
+            }), 400
         current_app.logger.exception("Error updating profile")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': err_msg}), 500
 
 
 @views.route('/api/user/profile-picture', methods=['GET'])

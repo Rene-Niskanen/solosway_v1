@@ -77,6 +77,22 @@ export const AuthGuard: React.FC<AuthGuardProps> = ({ children }) => {
     return () => clearTimeout(maxWaitId);
   }, []);
 
+  // When profile is updated (name, email, etc.), refresh auth state so Sidebar and other UI show new data
+  useEffect(() => {
+    const onRefresh = async () => {
+      try {
+        const result = await backendApi.checkAuth();
+        if (result.success && result.data?.user) {
+          setUserInfo(result.data.user);
+        }
+      } catch {
+        // ignore
+      }
+    };
+    window.addEventListener('authRefreshRequested', onRefresh);
+    return () => window.removeEventListener('authRefreshRequested', onRefresh);
+  }, []);
+
   // Redirect to /auth if not authenticated (but only if we're not already there)
   useEffect(() => {
     if (!isLoading && !isAuthenticated && window.location.pathname !== '/auth') {

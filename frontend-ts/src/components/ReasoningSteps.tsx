@@ -965,7 +965,8 @@ const StepRenderer: React.FC<{
     case 'searching': {
       // Show "Searching" with files rotating from the file sidebar (or exploring step fallback); once reading steps appear, this step is hidden
       const nextStep = stepIndex < allSteps.length - 1 ? allSteps[stepIndex + 1] : null;
-      const isSearchingActive = isLoading && !hasResponseText && (!nextStep || nextStep.action_type === 'searching');
+      // Animate carousel whenever still loading with no response yet (don't require next step to be searching - fast path goes straight to generating_response)
+      const isSearchingActive = isLoading && !hasResponseText && (!nextStep || nextStep.action_type === 'searching' || nextStep.action_type === 'analysing');
       const sourceCountByType = step.details?.source_count_by_type as { pdf?: number; docx?: number } | undefined;
       const sourceTypes = (step.details?.source_types ?? []).filter((t): t is 'pdf' | 'docx' =>
         SEARCHING_CAROUSEL_TYPES.includes(t)

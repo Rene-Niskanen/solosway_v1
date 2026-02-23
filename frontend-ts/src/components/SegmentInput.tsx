@@ -590,7 +590,8 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
             removeChipAtSegmentIndex ? () => removeChipAtSegmentIndex(i) : seg.kind === "property" ? () => onRemovePropertyChip?.(seg.id) : undefined;
           const removeDoc =
             removeChipAtSegmentIndex ? () => removeChipAtSegmentIndex(i) : seg.kind === "document" ? () => onRemoveDocumentChip?.(seg.id) : undefined;
-          if (seg.kind === "property") {
+          // @-mentioned properties: blue highlight (AtMentionChip). Choose-project properties: project container (PropertyPillChip).
+          if (seg.kind === "property" && seg.source !== "at_mention") {
             return (
               <span
                 key={`c-${i}`}
@@ -605,6 +606,25 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
                   label={seg.label}
                   onRemove={removeProp}
                   title={seg.label}
+                />
+              </span>
+            );
+          }
+          if (seg.kind === "property" && seg.source === "at_mention") {
+            return (
+              <span
+                key={`c-${i}`}
+                ref={(el) => {
+                  segmentRefs.current[i] = el;
+                }}
+                data-segment-index={i}
+                contentEditable={false}
+                style={{ display: "inline-flex", verticalAlign: "middle" }}
+              >
+                <AtMentionChip
+                  type="document"
+                  label={seg.label}
+                  onRemove={removeProp}
                 />
               </span>
             );
@@ -712,7 +732,8 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
             removeChipAtSegmentIndex ? () => removeChipAtSegmentIndex(i) : seg.kind === "property" ? () => onRemovePropertyChip?.(seg.id) : undefined;
           const removeDoc =
             removeChipAtSegmentIndex ? () => removeChipAtSegmentIndex(i) : seg.kind === "document" ? () => onRemoveDocumentChip?.(seg.id) : undefined;
-          if (seg.kind === "property") {
+          // @-mentioned properties: blue highlight (AtMentionChip). Choose-project properties: project container (PropertyPillChip).
+          if (seg.kind === "property" && seg.source !== "at_mention") {
             return (
               <span
                 key={`c-${i}`}
@@ -727,6 +748,25 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
                   label={seg.label}
                   onRemove={removeProp}
                   title={seg.label}
+                />
+              </span>
+            );
+          }
+          if (seg.kind === "property" && seg.source === "at_mention") {
+            return (
+              <span
+                key={`c-${i}`}
+                ref={(el) => {
+                  segmentRefs.current[i] = el;
+                }}
+                data-segment-index={i}
+                contentEditable={false}
+                style={{ display: "inline-flex", verticalAlign: "middle" }}
+              >
+                <AtMentionChip
+                  type="document"
+                  label={seg.label}
+                  onRemove={removeProp}
                 />
               </span>
             );

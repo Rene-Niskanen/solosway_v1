@@ -32,6 +32,9 @@ export interface TextSegment {
   value: string;
 }
 
+/** When set to 'at_mention', property chips render as blue inline chip (AtMentionChip) instead of project container (PropertyPillChip). Omit for "Choose project" flow. */
+export type ChipSegmentSource = "at_mention" | "attach";
+
 export interface ChipSegment {
   type: "chip";
   kind: SegmentKind;
@@ -39,6 +42,8 @@ export interface ChipSegment {
   label: string;
   /** For property: full property payload for context/attachment. For document: optional. */
   payload?: unknown;
+  /** If 'at_mention', render as blue highlight chip; if 'attach' or omitted, property uses project container UI. */
+  source?: ChipSegmentSource;
 }
 
 export type Segment = TextSegment | ChipSegment;

@@ -187,10 +187,10 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
       }
       setAtMentionOpen(false);
       if (item.type === 'property') {
+        // @-mentioned projects: blue highlight only (no project container row). Choose-project flow adds via addPropertyAttachment.
         const property = item.payload as { id: string; address: string; [key: string]: unknown };
-        addPropertyAttachment(property as unknown as Parameters<typeof addPropertyAttachment>[0]);
         segmentInput.insertChipAtCursor(
-          { type: 'chip', kind: 'property', id: property.id, label: property.address || item.primaryLabel, payload: property },
+          { type: 'chip', kind: 'property', id: property.id, label: property.address || item.primaryLabel, payload: property, source: 'at_mention' },
           { trailingSpace: true }
         );
       } else {

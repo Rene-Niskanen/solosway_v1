@@ -323,8 +323,8 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
     }
     setAtMentionOpen(false);
     if (item.type === "property") {
+      // @-mentioned projects: blue highlight only (no project container row). Choose-project flow adds via addPropertyAttachment.
       const property = item.payload as { id: string; address: string; [key: string]: unknown };
-      addPropertyAttachment(property as any);
       segmentInput.insertChipAtCursor(
         {
           type: "chip",
@@ -332,6 +332,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
           id: property.id,
           label: property.address || item.primaryLabel,
           payload: property,
+          source: "at_mention",
         },
         { trailingSpace: true }
       );
@@ -1454,10 +1455,11 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                 overflow: 'visible',
               }}
             >
+            {/* Files and projects in one row so they can stack on the same line when there's space */}
             <AnimatePresence mode="wait">
-              {attachedFiles.length > 0 && (
-                <motion.div 
-                  key="file-attachments-search"
+              {(attachedFiles.length > 0 || propertyAttachments.length > 0) && (
+                <motion.div
+                  key="attachments-search"
                   initial={false}
                   animate={{ opacity: 1 }}
                   exit={{ opacity: 0 }}
@@ -1467,37 +1469,20 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                   layout={false}
                 >
                   {attachedFiles.map((file, idx) => {
-                  const fileKey = (file.id && String(file.id).length > 0) 
-                    ? String(file.id) 
-                    : `file-${idx}-${Math.random().toString(36).substr(2, 9)}`;
-                  return (
-                  <FileAttachment
-                      key={fileKey}
-                      attachment={file}
-                    onRemove={handleRemoveFile}
-                    onPreview={(file) => {
-                      // Use shared preview context to add file (will add to existing preview if open)
-                      addPreviewFile(file);
-                    }}
-                  />
-                  );
-                })}
-                </motion.div>
-              )}
-            </AnimatePresence>
-            {/* Property attachments - same placement as file attachments (above input) */}
-            <AnimatePresence mode="wait">
-              {propertyAttachments.length > 0 && (
-                <motion.div
-                  key="property-attachments-search"
-                  initial={false}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
-                  transition={{ duration: 0.1, ease: "easeOut" }}
-                  style={{ maxHeight: '52px', overflowY: 'auto', marginBottom: '12px', flexShrink: 0 }}
-                  className="flex flex-wrap gap-2 justify-start"
-                  layout={false}
-                >
+                    const fileKey = (file.id && String(file.id).length > 0)
+                      ? String(file.id)
+                      : `file-${idx}-${Math.random().toString(36).substr(2, 9)}`;
+                    return (
+                      <FileAttachment
+                        key={fileKey}
+                        attachment={file}
+                        onRemove={handleRemoveFile}
+                        onPreview={(file) => {
+                          addPreviewFile(file);
+                        }}
+                      />
+                    );
+                  })}
                   {propertyAttachments.map((a) => (
                     <PropertyPillChip
                       key={a.id}

@@ -384,7 +384,7 @@ button:focus-visible:not(:focus-within) {
 }
 .citation-link-btn.citation-link-btn--selected {
   color: #374151 !important;
-  background-color: #DBEAFE !important;
+  background-color: #BCD4EB !important;
 }
 
 /* Citation in document preview / response: white container (CitedTextContainer) */
@@ -401,7 +401,7 @@ button:focus-visible:not(:focus-within) {
 [data-cited-text-block] .citation-link-btn.citation-link-btn--selected {
   background-color: #ffffff !important;
   color: #1d4ed8 !important;
-  box-shadow: 0 0 0 1.5px rgba(59, 130, 246, 0.5);
+  box-shadow: 0 0 0 1.5px rgba(188, 212, 235, 0.8);
 }
 
 /* Completely hidden scrollbar for tabs container - still scrollable */

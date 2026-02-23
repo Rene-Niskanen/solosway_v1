@@ -217,21 +217,20 @@ export const Sidebar = ({
     }
   }, [openMenuId]);
 
-  // Generate user display info - use useMemo to recalculate when userData changes
+  // Generate user display info - prefer profile name (first_name / last_name), then email prefix, then role
   const userName = React.useMemo(() => {
-    // Use role/profile ID if available (e.g., "Admin")
-    if (userData?.role) {
-      // Capitalize the first letter (e.g., "admin" -> "Admin")
-      const role = String(userData.role);
-      console.log('Using role for userName:', role);
-      return role.charAt(0).toUpperCase() + role.slice(1).toLowerCase();
-    }
-    if (userData?.first_name) {
-      return userData.first_name + (userData.last_name ? ` ${userData.last_name}` : '');
+    const first = (userData?.first_name || '').trim();
+    const last = (userData?.last_name || '').trim();
+    if (first || last) {
+      return `${first} ${last}`.trim();
     }
     if (userData?.email) {
       const emailPrefix = userData.email.split('@')[0];
       return emailPrefix.charAt(0).toUpperCase() + emailPrefix.slice(1);
+    }
+    if (userData?.role) {
+      const role = String(userData.role);
+      return role.charAt(0).toUpperCase() + role.slice(1).toLowerCase();
     }
     return "User";
   }, [userData]);
