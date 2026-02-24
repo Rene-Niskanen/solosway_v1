@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { flushSync } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { SearchBar } from './SearchBar';
 import PropertyValuationUpload from './PropertyValuationUpload';
@@ -2613,16 +2614,19 @@ export const MainContent = ({
   }, [expandedCardViewDoc?.docId, messageForDocPreview]);
 
   // When on Projects with a doc open, use default chat width until panel reports (avoids doc preview jumping)
+  // Also used when attachment preview is open (50/50 with chat)
+  const isAttachmentPreviewOpen = Boolean(isPreviewOpen && previewFiles.length > 0);
   const effectiveChatWidthForDocPreview = React.useMemo(() => {
     const base = chatPanelWidth || 0;
     if (currentView === 'projects' && expandedCardViewDoc && base === 0) return CHAT_PANEL_WIDTH.COLLAPSED;
     return base;
   }, [currentView, expandedCardViewDoc, chatPanelWidth]);
 
-  // Document preview position/size (must match StandaloneExpandedCardView) for the chat-background layer
-  // so the area behind the document preview shows chat background instead of the map
+  // Document/attachment preview position/size (must match StandaloneExpandedCardView) for the chat-background layer
+  // and for positioning attachment preview in 50/50 split
   const docPreviewBackdropLayout = React.useMemo(() => {
-    if (!expandedCardViewDoc) return null;
+    const hasRightPanel = expandedCardViewDoc || isAttachmentPreviewOpen;
+    if (!hasRightPanel) return null;
     const DOC_PREVIEW_MIN = 380;
     const DOC_PREVIEW_RIGHT_PADDING = 16;
     const AGENT_RAIL = 12;
@@ -2634,7 +2638,10 @@ export const MainContent = ({
     const expected50 = Math.round((viewportWidth - sidebarWidth - agentSidebarWidth) / 2);
     const roundedChat = Math.round(effectiveChatWidthForDocPreview || 0);
     const isNear50 = Math.abs(roundedChat - expected50) <= 2;
-    const effectiveChatWidth = isNear50 ? expected50 : roundedChat;
+    // When attachment preview just opened, chat width may not have updated yet; use 50% for first frame
+    const effectiveChatWidth = isAttachmentPreviewOpen && roundedChat === 0
+      ? expected50
+      : (isNear50 ? expected50 : roundedChat);
     const naturalDocLeft = sidebarWidth + effectiveChatWidth + 12;
     const maxDocLeft = viewportWidth - agentSidebarWidth - DOC_PREVIEW_MIN - DOC_PREVIEW_RIGHT_PADDING;
     const docLeft = Math.min(naturalDocLeft, maxDocLeft);
@@ -2644,7 +2651,7 @@ export const MainContent = ({
     const backdropLeft = docLeft - 12;
     const backdropWidth = viewportWidth - agentSidebarWidth - backdropLeft;
     return { left: docLeft, width: panelWidth, backdropLeft, backdropWidth };
-  }, [expandedCardViewDoc, effectiveChatWidthForDocPreview, isChatHistoryPanelOpen, chatHistoryPanelWidth, isFilingSidebarOpen, isFilingSidebarClosing, isSidebarCollapsed, effectiveSidebarWidth, filingSidebarWidth]);
+  }, [expandedCardViewDoc, isAttachmentPreviewOpen, effectiveChatWidthForDocPreview, isChatHistoryPanelOpen, chatHistoryPanelWidth, isFilingSidebarOpen, isFilingSidebarClosing, isSidebarCollapsed, effectiveSidebarWidth, filingSidebarWidth]);
   
   // Sync chat panel visibility to PreviewContext for document preview gating
   // Document preview will only open when chat panel is visible; otherwise it queues silently
@@ -5157,33 +5164,20 @@ export const MainContent = ({
 
     const files = Array.from(e.dataTransfer.files);
     if (files.length > 0) {
-      // Only handle the first file for now
       const file = files[0];
-      console.log('📁 [MainContent] File dropped on empty space:', file.name, {
-        size: file.size,
-        type: file.type,
-        currentView,
-        hasSearchRef: !!searchBarRef.current,
-        searchRefMethods: searchBarRef.current ? Object.keys(searchBarRef.current) : []
-      });
-      
       try {
-        // Pass file to SearchBar via ref (preferred method)
-        if (searchBarRef.current && searchBarRef.current.handleFileDrop) {
-          console.log('📤 [MainContent] Passing file to SearchBar via ref');
+        // Pass file to SearchBar via ref — flushSync so the chip paints before drag state clears
+        if (searchBarRef.current?.handleFileDrop) {
           try {
-            searchBarRef.current.handleFileDrop(file);
-            console.log('✅ [MainContent] File successfully passed to SearchBar via ref');
-            return; // Success - exit early
+            flushSync(() => {
+              searchBarRef.current!.handleFileDrop(file);
+            });
+            setIsDragging(false);
+            setDragCounter(0);
+            return;
           } catch (refError) {
             console.error('❌ [MainContent] Error calling searchBarRef.handleFileDrop:', refError);
-            // Fall through to fallback mechanisms
           }
-        } else {
-          console.warn('⚠️ [MainContent] SearchBar ref not available or missing handleFileDrop method', {
-            refExists: !!searchBarRef.current,
-            hasHandleFileDrop: searchBarRef.current?.handleFileDrop ? true : false
-          });
         }
         
         // Fallback 1: Try to trigger file upload via the file input element
@@ -5694,6 +5688,7 @@ export const MainContent = ({
         resetWidthTrigger={resetWidthForDocPreviewTrigger}
         chatBarGlowTrigger={chatBarGlowTrigger}
         isMapVisible={isMapVisible}
+        isAttachmentPreviewOpen={isAttachmentPreviewOpen}
         onQuickStartToggle={() => {
           setIsQuickStartBarVisible(!isQuickStartBarVisible);
         }}
@@ -6025,11 +6020,14 @@ export const MainContent = ({
         />
       )}
 
-      {/* Shared Document Preview Modal - used by SearchBar, SideChatPanel, and PropertyFilesModal */}
+      {/* Shared Document Preview Modal - 50/50 with chat when opened from attachments (split), else centered modal */}
       <DocumentPreviewModal
         files={previewFiles}
         activeTabIndex={activePreviewTabIndex}
         isOpen={isPreviewOpen}
+        displayMode={isAttachmentPreviewOpen ? 'split' : 'modal'}
+        splitPanelLeft={docPreviewBackdropLayout?.left ?? 0}
+        splitPanelWidth={docPreviewBackdropLayout?.width ?? 400}
         onClose={() => {
           setIsPreviewOpen(false);
           setPreviewFiles([]);
@@ -6225,6 +6223,12 @@ export const MainContent = ({
         open={chooseProjectModalOpen}
         onOpenChange={setChooseProjectModalOpen}
         onSelectProject={handleChooseProjectSelect}
+        alignWithSearchBar={{
+          sidebarWidth: effectiveSidebarWidthWithRail,
+          isSidebarCollapsed,
+          // Viewport center on dashboard (search bar in flow); content-area center when bar is fixed (map or very small viewport)
+          useViewportCenter: !isMapVisible && viewportSize.width >= 600 && viewportSize.height >= 500,
+        }}
       />
     </div>
   );

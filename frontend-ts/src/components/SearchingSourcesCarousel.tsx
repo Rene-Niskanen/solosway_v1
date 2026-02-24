@@ -33,7 +33,7 @@ function CircleIcon({ type }: { type: string }) {
   if (type === 'pdf') {
     return (
       <img
-        src="/PDF.png"
+        src="/pdfnew.png"
         alt=""
         aria-hidden
         style={{ width: 14, height: 14, objectFit: 'contain' }}
@@ -59,7 +59,7 @@ function CircleIcon({ type }: { type: string }) {
   // Only show supported types; unknown extensions fall back to PDF (no random letters like "V")
   return (
     <img
-      src="/PDF.png"
+      src="/pdfnew.png"
       alt=""
       aria-hidden
       style={{ width: 14, height: 14, objectFit: 'contain' }}

@@ -1019,7 +1019,7 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
           >
             {!showAllFiles && (
               <div className="flex items-center justify-between gap-2 mb-2" style={{ marginLeft: 0, paddingLeft: 0 }}>
-                <span className="text-[12px] font-normal text-[#666]" style={{ opacity: allDocuments.length ? 1 : 0.6 }}>Files</span>
+                <span className="text-[12px] font-normal text-[#666]" style={{ opacity: allDocuments.length ? 1 : 0.6, marginLeft: '6px' }}>Files</span>
               </div>
             )}
             <RecentDocumentsSection

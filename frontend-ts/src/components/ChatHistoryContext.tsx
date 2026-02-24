@@ -82,12 +82,28 @@ const getStoredChatHistory = (): ChatHistoryEntry[] => {
   }
 };
 
+// Max number of chats to keep in localStorage when quota is exceeded
+const MAX_CHATS_STORED = 80;
+
 // Helper function to save chat history to localStorage
 const saveChatHistory = (chatHistory: ChatHistoryEntry[]) => {
   try {
     localStorage.setItem('chatHistory', JSON.stringify(chatHistory));
   } catch (error) {
-    console.error('Error saving chat history to localStorage:', error);
+    if (error instanceof DOMException && error.name === 'QuotaExceededError') {
+      // Try saving a trimmed history (keep most recent)
+      try {
+        const trimmed = chatHistory.slice(0, MAX_CHATS_STORED);
+        localStorage.setItem('chatHistory', JSON.stringify(trimmed));
+        if (trimmed.length < chatHistory.length && typeof console !== 'undefined' && console.warn) {
+          console.warn('Chat history exceeded localStorage quota; kept most recent', MAX_CHATS_STORED, 'chats.');
+        }
+      } catch {
+        // Still over quota or other error; skip save to avoid console spam
+      }
+    } else {
+      console.error('Error saving chat history to localStorage:', error);
+    }
   }
 };
 

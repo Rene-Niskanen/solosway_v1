@@ -400,7 +400,7 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
           }}
         >
           <img
-            src="/PDF.png"
+            src="/pdfnew.png"
             alt="PDF"
             style={{ width: 14, height: 14, objectFit: "contain" }}
           />

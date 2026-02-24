@@ -993,18 +993,37 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
     });
   };
 
-  // Get file type icon (sized to match row proportions)
+  // Get file type icon (same size as FileAttachment chip: w-6 h-6)
+  const iconClass = "w-6 h-6 object-contain flex-shrink-0 rounded";
   const getFileIcon = (doc: Document) => {
     const filename = doc.original_filename.toLowerCase();
-    const iconClass = "w-3.5 h-3.5 object-contain flex-shrink-0";
     if (filename.endsWith('.pdf')) {
-      return <img src="/PDF.png" alt="PDF" className={iconClass} />;
-    } else if (filename.endsWith('.doc') || filename.endsWith('.docx')) {
-      return <img src="/word.png" alt="Word" className={iconClass} />;
-    } else if (filename.match(/\.(jpg|jpeg|png|gif|webp)$/i)) {
-      return <FileIcon className="w-3.5 h-3.5 text-green-600 flex-shrink-0" />;
+      return <img src="/pdfnew.png" alt="PDF" className={iconClass} />;
     }
-    return <FileIcon className="w-3.5 h-3.5 text-gray-600 flex-shrink-0" />;
+    if (filename.endsWith('.doc') || filename.endsWith('.docx')) {
+      return <img src="/word.png" alt="Word" className={iconClass} />;
+    }
+    if (filename.endsWith('.xlsx') || filename.endsWith('.xls')) {
+      return <img src="/excel.png" alt="Excel" className={iconClass} />;
+    }
+    if (filename.endsWith('.pptx') || filename.endsWith('.ppt')) {
+      return <img src="/powerpoint.png" alt="PowerPoint" className={iconClass} />;
+    }
+    if (filename.match(/\.(jpg|jpeg|png|gif|webp)$/i)) {
+      return <FileIcon className="w-6 h-6 text-green-600 flex-shrink-0" />;
+    }
+    return <FileIcon className="w-6 h-6 text-gray-600 flex-shrink-0" />;
+  };
+
+  // File type label for chip (matches FileAttachment: PDF, DOC, XLS, PPT, etc.)
+  const getFileTypeLabelFromFilename = (filename: string): string => {
+    const lower = filename.toLowerCase();
+    if (lower.endsWith('.pdf')) return 'PDF';
+    if (lower.endsWith('.doc') || lower.endsWith('.docx')) return 'DOC';
+    if (lower.endsWith('.xlsx') || lower.endsWith('.xls')) return 'XLS';
+    if (lower.endsWith('.pptx') || lower.endsWith('.ppt')) return 'PPT';
+    if (lower.match(/\.(jpg|jpeg|png|gif|webp)$/)) return 'IMG';
+    return 'FILE';
   };
 
   // Format date
@@ -2929,9 +2948,11 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                 {/* Uploading placeholders at top so user sees them uploading */}
                 {uploadingPlaceholders.length > 0 && (
                   <div className="px-0 mb-0.5">
-                    <div className="px-4 py-2 ml-4 mr-8 rounded-md border bg-gray-50/80 border-gray-200/60 flex items-center gap-2.5">
-                      <OrbitProgress color="#22c55e" size="small" dense text="" textColor="" speedPlus={1} style={{ fontSize: '2px' }} />
-                      <span className="font-medium text-gray-600" style={{ fontSize: `${12 * FILING_SIDEBAR_FILE_SCALE}px` }}>Uploading</span>
+                    <div className="flex items-center gap-2 px-2 py-1.5 ml-4 mr-8 rounded-md border bg-gray-50/80 border-gray-200/60">
+                      <div className="w-6 h-6 flex-shrink-0 flex items-center justify-center">
+                        <OrbitProgress color="#22c55e" size="small" dense text="" textColor="" speedPlus={1} style={{ fontSize: '2px' }} />
+                      </div>
+                      <span className="text-xs font-medium text-gray-600">Uploading</span>
                     </div>
                     <div className="py-0.5 w-full" style={{ boxSizing: 'border-box' }}>
                       {uploadingPlaceholders.map((p) => (
@@ -2964,10 +2985,10 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                   
                   return (
                     <div key={propertyId} className="px-0 mb-0.5">
-                      {/* Property Section Header - inset (ml-4 mr-8) so file rows below can be full width */}
+                      {/* Property Section Header - same size as file row (gap-2, px-2 py-1.5, w-6 icon, text-xs) */}
                       <div 
                         onClick={() => togglePropertyExpansion(propertyId)}
-                        className={`px-4 py-2 ml-4 mr-8 cursor-pointer transition-all duration-200 rounded-md border flex items-center gap-2.5 w-full ${
+                        className={`flex items-center gap-2 px-2 py-1.5 ml-4 mr-8 w-full cursor-pointer transition-all duration-200 rounded-md border ${
                           isExpanded 
                             ? 'bg-gray-50 border-gray-200/60'
                             : 'bg-white border-gray-200/60 hover:border-gray-300/80 hover:bg-[#f0f0f0] active:bg-[#e8e8e8]'
@@ -2977,7 +2998,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                           className={`w-3 h-3 text-gray-400 flex-shrink-0 transition-transform duration-200 ${isExpanded ? 'rotate-90' : ''}`}
                           strokeWidth={1.75}
                         />
-                        <span className="w-5 h-5 flex-shrink-0 block">
+                        <span className="w-6 h-6 flex-shrink-0 block">
                           <img 
                             src="/projectsfolder.png" 
                             alt=""
@@ -2990,12 +3011,12 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                           {propertyAddress && 
                            !propertyAddress.startsWith('Property ') && 
                            propertyAddress !== 'Unknown Property' && (
-                            <div className="font-normal text-gray-900 truncate" style={{ fontFamily: 'system-ui, -apple-system, sans-serif', letterSpacing: '-0.01em', fontSize: `${12 * FILING_SIDEBAR_FILE_SCALE}px` }}>
+                            <div className="text-xs font-medium text-slate-600 truncate" style={{ fontFamily: 'system-ui, -apple-system, sans-serif', letterSpacing: '-0.01em' }}>
                               {propertyAddress}
                             </div>
                           )}
                         </div>
-                        <span className="text-gray-500 flex-shrink-0 font-medium" style={{ fontSize: `${12 * FILING_SIDEBAR_FILE_SCALE}px` }}>
+                        <span className="text-[10px] text-gray-500 font-medium flex-shrink-0">
                           {propertyDocs.length}
                         </span>
                       </div>
@@ -3031,14 +3052,14 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                                   setHoveredItemId(null);
                                   cancelHoverPreload();
                                 }}
-                                className={`flex items-center gap-2.5 pl-3 pr-3 py-1.5 ml-4 mr-8 cursor-pointer group rounded-md border transition-[transform,background-color,border-color] duration-150 ease-out active:scale-[0.99] ${
+                                className={`flex items-center gap-2 px-2 py-1.5 ml-4 mr-8 -mb-px cursor-pointer group rounded-md border transition-all duration-100 active:scale-[0.99] ${
                                   isSelectionMode 
                                     ? (isSelected 
-                                        ? 'bg-gray-100/50 border-gray-300/60 hover:bg-[#f0f0f0] hover:border-gray-300/80' 
-                                        : 'bg-white border-gray-200/60 hover:bg-[#f0f0f0] hover:border-gray-300/80 active:bg-[#e8e8e8]')
+                                        ? 'bg-gray-100/50 border-gray-300 hover:border-gray-400' 
+                                        : 'bg-white border-gray-200 hover:border-gray-300 active:bg-gray-50')
                                     : isOpenInFileView
-                                      ? 'bg-blue-50/60 border-blue-200/50 hover:bg-blue-100/70 hover:border-blue-300/60 active:bg-blue-100/80'
-                                      : 'bg-white border-gray-200/60 hover:bg-[#f0f0f0] hover:border-gray-300/80 active:bg-[#e8e8e8]'
+                                      ? 'bg-blue-50 border-blue-200 hover:bg-blue-100/80 hover:border-blue-300'
+                                      : 'bg-white border-gray-200 hover:border-gray-300 hover:bg-gray-50/50 active:bg-gray-50'
                                 }`}
                                 onClick={(e) => {
                                   if (editingItemId) return;
@@ -3103,8 +3124,8 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                                     </motion.div>
                                   </div>
                                 )}
-                                <div className="flex-shrink-0 w-3.5 h-3.5 flex items-center justify-center">{getFileIcon(doc)}</div>
-                                <div className="flex-1 min-w-0">
+                                <div className="flex-shrink-0 flex items-center justify-center">{getFileIcon(doc)}</div>
+                                <div className="flex-1 min-w-0 flex flex-col">
                                   {editingItemId === doc.id ? (
                                     <input
                                       type="text"
@@ -3118,85 +3139,55 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                                         }
                                       }}
                                       onBlur={() => handleSaveRename(doc.id, false)}
-                                      className="w-full px-2 py-1 border border-blue-500 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500/20 bg-white"
-                                      style={{ fontSize: `${12 * FILING_SIDEBAR_FILE_SCALE}px` }}
+                                      className="w-full px-2 py-1 border border-blue-500 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500/20 bg-white text-xs"
                                       autoFocus
                                       onClick={(e) => e.stopPropagation()}
                                     />
                                   ) : (
-                                    <div className="font-normal text-gray-900 truncate" style={{ fontFamily: 'system-ui, -apple-system, sans-serif', letterSpacing: '-0.01em', fontSize: `${12 * FILING_SIDEBAR_FILE_SCALE}px` }}>
-                                      {doc.original_filename}
-                                    </div>
+                                    <>
+                                      <span className="text-xs font-medium text-slate-600 truncate" style={{ fontFamily: 'system-ui, -apple-system, sans-serif' }}>
+                                        {doc.original_filename}
+                                      </span>
+                                      <div className="flex items-center gap-1">
+                                        <span className="text-[10px] text-gray-500 font-normal">
+                                          {getFileTypeLabelFromFilename(doc.original_filename)}
+                                        </span>
+                                        {/* Green dot / status next to type label (like chat extraction indicator) */}
+                                        {(reprocessingDocs.has(doc.id) || doc.status === 'processing' || isRecentlyUploaded || showLoadingIndicator || reprocessedDocs.has(doc.id) || doc.status === 'completed' || showAsComplete) ? (
+                                          <div
+                                            onMouseEnter={(e) => handlePipelineTriggerMouseEnter(doc, e)}
+                                            onMouseLeave={handlePipelineTriggerMouseLeave}
+                                            className="flex items-center justify-center w-3 h-3 flex-shrink-0 cursor-default relative z-10 overflow-visible"
+                                          >
+                                            {!showAsComplete && (reprocessingDocs.has(doc.id) || showLoadingIndicator) ? (
+                                              <OrbitProgress color="#22c55e" size="small" dense text="" textColor="" speedPlus={1} style={{ fontSize: '2px' }} />
+                                            ) : (
+                                              <span
+                                                className="w-[5px] h-[5px] rounded-full bg-green-500/45 flex-shrink-0 block relative z-10"
+                                                style={{ boxShadow: '0 0 0 1px rgba(34, 197, 94, 0.1)' }}
+                                                aria-hidden
+                                              />
+                                            )}
+                                          </div>
+                                        ) : doc.status === 'failed' ? (
+                                          <span className="w-1.5 h-1.5 rounded-full bg-red-500 block flex-shrink-0" style={{ boxShadow: '0 0 0 1px rgba(239, 68, 68, 0.2)' }} title="Processing failed" aria-hidden />
+                                        ) : doc.status === 'uploaded' && (!doc.created_at || (Date.now() - new Date(doc.created_at).getTime() > 60000)) ? (
+                                          <span className="w-1.5 h-1.5 rounded-full bg-amber-500 block flex-shrink-0" style={{ boxShadow: '0 0 0 1px rgba(245, 158, 11, 0.2)' }} title="Not yet processed" aria-hidden />
+                                        ) : null}
+                                      </div>
+                                    </>
                                   )}
                                 </div>
                                 {!editingItemId && (
-                                  <div className="flex items-center gap-0.5 flex-shrink-0">
-                                    {/* Reprocess button / status indicator; hover wrapper for pipeline popup on spinner or tick */}
-                                    {(reprocessingDocs.has(doc.id) || doc.status === 'processing' || isRecentlyUploaded || showLoadingIndicator || reprocessedDocs.has(doc.id) || doc.status === 'completed' || showAsComplete) ? (
-                                      <div
-                                        onMouseEnter={(e) => handlePipelineTriggerMouseEnter(doc, e)}
-                                        onMouseLeave={handlePipelineTriggerMouseLeave}
-                                        className="flex items-center justify-center w-3 h-3 flex-shrink-0 cursor-default relative z-10 overflow-visible"
-                                      >
-                                        {!showAsComplete && reprocessingDocs.has(doc.id) ? (
-                                          <OrbitProgress color="#22c55e" size="small" dense text="" textColor="" speedPlus={1} style={{ fontSize: '2px' }} />
-                                        ) : !showAsComplete && showLoadingIndicator ? (
-                                          <OrbitProgress color="#22c55e" size="small" dense text="" textColor="" speedPlus={1} style={{ fontSize: '2px' }} />
-                                        ) : (
-                                          <span
-                                            className="w-1.5 h-1.5 rounded-full bg-green-500/60 flex-shrink-0 block relative z-10"
-                                            style={{
-                                              boxShadow: '0 0 0 1px rgba(34, 197, 94, 0.1)',
-                                            }}
-                                            aria-hidden
-                                          />
-                                        )}
-                                      </div>
-                                    ) : doc.status === 'failed' ? (
-                                      // Failed - same slot size as green so red dot aligns with green
-                                      <div className="relative flex items-center justify-center w-3 h-3 flex-shrink-0 cursor-default">
-                                        <span
-                                          className="w-1.5 h-1.5 rounded-full bg-red-500 block opacity-100 group-hover:opacity-0 transition-opacity duration-150"
-                                          style={{ boxShadow: '0 0 0 1px rgba(239, 68, 68, 0.2)' }}
-                                          title="Processing failed"
-                                          aria-hidden
-                                        />
-                                        <button
-                                          onClick={(e) => handleReprocessDocument(doc, e)}
-                                          title="Reprocess document (processing failed)"
-                                          className="absolute inset-0 flex items-center justify-center hover:bg-red-50 rounded opacity-0 group-hover:opacity-100 transition-opacity duration-150"
-                                        >
-                                          <RefreshCw className="w-3 h-3 text-red-500" strokeWidth={1.5} />
-                                        </button>
-                                      </div>
-                                    ) : doc.status === 'uploaded' && (!doc.created_at || (Date.now() - new Date(doc.created_at).getTime() > 60000)) ? (
-                                      // Stuck (uploaded but not processed for a while) - orange dot; not shown when just uploaded
-                                      <div className="relative flex items-center justify-center w-3 h-3 flex-shrink-0 cursor-default">
-                                        <span
-                                          className="w-1.5 h-1.5 rounded-full bg-amber-500 block opacity-100 group-hover:opacity-0 transition-opacity duration-150"
-                                          style={{ boxShadow: '0 0 0 1px rgba(245, 158, 11, 0.2)' }}
-                                          title="Not yet processed (stuck)"
-                                          aria-hidden
-                                        />
-                                        <button
-                                          onClick={(e) => handleReprocessDocument(doc, e)}
-                                          title="Reprocess document (generate embeddings)"
-                                          className="absolute inset-0 flex items-center justify-center hover:bg-gray-100 rounded opacity-0 group-hover:opacity-100 transition-opacity duration-150"
-                                        >
-                                          <RefreshCw className="w-3 h-3 text-amber-600" strokeWidth={1.5} />
-                                        </button>
-                                      </div>
-                                    ) : null}
-                                    <button
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        handleContextMenuClick(e, doc.id);
-                                      }}
-                                      className="p-0.5 hover:bg-gray-100 rounded flex-shrink-0 opacity-0 group-hover:opacity-100 transition-all duration-150"
-                                    >
-                                      <MoreVertical className="w-3 h-3 text-gray-400" strokeWidth={1.5} />
-                                    </button>
-                                  </div>
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleContextMenuClick(e, doc.id);
+                                    }}
+                                    className="p-0.5 hover:bg-gray-100 rounded flex-shrink-0 opacity-0 group-hover:opacity-100 transition-all duration-150"
+                                  >
+                                    <MoreVertical className="w-3 h-3 text-gray-400" strokeWidth={1.5} />
+                                  </button>
                                 )}
                               </div>
                             );
@@ -3252,14 +3243,14 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                         setHoveredItemId(null);
                         cancelHoverPreload();
                       }}
-                      className={`flex items-center gap-2.5 pl-3 pr-3 py-1.5 mx-4 cursor-pointer group rounded-md border transition-[transform,background-color,border-color] duration-150 ease-out active:scale-[0.99] ${
+                      className={`flex items-center gap-2 px-2 py-1.5 mx-4 -mb-px cursor-pointer group rounded-md border transition-all duration-100 active:scale-[0.99] ${
                         isSelectionMode 
                           ? (isSelected 
-                              ? 'bg-gray-100/50 border-gray-300/60 hover:bg-[#f0f0f0] hover:border-gray-300/80' 
-                              : 'bg-white border-gray-200/60 hover:bg-[#f0f0f0] hover:border-gray-300/80 active:bg-[#e8e8e8]')
+                              ? 'bg-gray-100/50 border-gray-300 hover:border-gray-400' 
+                              : 'bg-white border-gray-200 hover:border-gray-300 active:bg-gray-50')
                           : isOpenInFileView
-                            ? 'bg-blue-50/60 border-blue-200/50 hover:bg-blue-100/70 hover:border-blue-300/60 active:bg-blue-100/80'
-                            : 'bg-white border-gray-200/60 hover:bg-[#f0f0f0] hover:border-gray-300/80 active:bg-[#e8e8e8]'
+                            ? 'bg-blue-50 border-blue-200 hover:bg-blue-100/80 hover:border-blue-300'
+                            : 'bg-white border-gray-200 hover:border-gray-300 hover:bg-gray-50/50 active:bg-gray-50'
                       }`}
                       onClick={(e) => {
                         if (editingItemId) return;
@@ -3324,8 +3315,8 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                           </motion.div>
                         </div>
                       )}
-                      <div className="flex-shrink-0 w-3.5 h-3.5 flex items-center justify-center">{getFileIcon(doc)}</div>
-                      <div className="flex-1 min-w-0">
+                      <div className="flex-shrink-0 flex items-center justify-center">{getFileIcon(doc)}</div>
+                      <div className="flex-1 min-w-0 flex flex-col">
                         {editingItemId === doc.id ? (
                           <input
                             type="text"
@@ -3339,85 +3330,55 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                               }
                             }}
                             onBlur={() => handleSaveRename(doc.id, false)}
-                            className="w-full px-2 py-1 border border-blue-500 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500/20 bg-white"
-                            style={{ fontSize: `${12 * FILING_SIDEBAR_FILE_SCALE}px` }}
+                            className="w-full px-2 py-1 border border-blue-500 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500/20 bg-white text-xs"
                             autoFocus
                             onClick={(e) => e.stopPropagation()}
                           />
                         ) : (
-                          <div className="font-normal text-gray-900 truncate" style={{ fontFamily: 'system-ui, -apple-system, sans-serif', letterSpacing: '-0.01em', fontSize: `${12 * FILING_SIDEBAR_FILE_SCALE}px` }}>
-                            {doc.original_filename}
-                          </div>
+                          <>
+                            <span className="text-xs font-medium text-slate-600 truncate" style={{ fontFamily: 'system-ui, -apple-system, sans-serif' }}>
+                              {doc.original_filename}
+                            </span>
+                            <div className="flex items-center gap-1">
+                              <span className="text-[10px] text-gray-500 font-normal">
+                                {getFileTypeLabelFromFilename(doc.original_filename)}
+                              </span>
+                              {/* Green dot / status next to type label (like chat extraction indicator) */}
+                              {(reprocessingDocs.has(doc.id) || doc.status === 'processing' || isRecentlyUploadedFlat || showLoadingIndicatorFlat || reprocessedDocs.has(doc.id) || doc.status === 'completed' || showAsCompleteFlat) ? (
+                                <div
+                                  onMouseEnter={(e) => handlePipelineTriggerMouseEnter(doc, e)}
+                                  onMouseLeave={handlePipelineTriggerMouseLeave}
+                                  className="flex items-center justify-center w-3 h-3 flex-shrink-0 cursor-default relative z-10 overflow-visible"
+                                >
+                                  {!showAsCompleteFlat && (reprocessingDocs.has(doc.id) || showLoadingIndicatorFlat) ? (
+                                    <OrbitProgress color="#22c55e" size="small" dense text="" textColor="" speedPlus={1} style={{ fontSize: '2px' }} />
+                                  ) : (
+                                    <span
+                                      className="w-[5px] h-[5px] rounded-full bg-green-500/45 flex-shrink-0 block relative z-10"
+                                      style={{ boxShadow: '0 0 0 1px rgba(34, 197, 94, 0.1)' }}
+                                      aria-hidden
+                                    />
+                                  )}
+                                </div>
+                              ) : doc.status === 'failed' ? (
+                                <span className="w-1.5 h-1.5 rounded-full bg-red-500 block flex-shrink-0" style={{ boxShadow: '0 0 0 1px rgba(239, 68, 68, 0.2)' }} title="Processing failed" aria-hidden />
+                              ) : doc.status === 'uploaded' && (!doc.created_at || (Date.now() - new Date(doc.created_at).getTime() > 60000)) ? (
+                                <span className="w-1.5 h-1.5 rounded-full bg-amber-500 block flex-shrink-0" style={{ boxShadow: '0 0 0 1px rgba(245, 158, 11, 0.2)' }} title="Not yet processed" aria-hidden />
+                              ) : null}
+                            </div>
+                          </>
                         )}
                       </div>
                       {!editingItemId && (
-                        <div className="flex items-center gap-0.5 flex-shrink-0">
-                          {/* Reprocess button / status indicator; hover wrapper for pipeline popup on spinner or tick */}
-                          {(reprocessingDocs.has(doc.id) || doc.status === 'processing' || isRecentlyUploadedFlat || showLoadingIndicatorFlat || reprocessedDocs.has(doc.id) || doc.status === 'completed' || showAsCompleteFlat) ? (
-                            <div
-                              onMouseEnter={(e) => handlePipelineTriggerMouseEnter(doc, e)}
-                              onMouseLeave={handlePipelineTriggerMouseLeave}
-                              className="flex items-center justify-center w-3 h-3 flex-shrink-0 cursor-default relative z-10 overflow-visible"
-                            >
-                              {!showAsCompleteFlat && reprocessingDocs.has(doc.id) ? (
-                                <OrbitProgress color="#22c55e" size="small" dense text="" textColor="" speedPlus={1} style={{ fontSize: '2px' }} />
-                              ) : !showAsCompleteFlat && showLoadingIndicatorFlat ? (
-                                <OrbitProgress color="#22c55e" size="small" dense text="" textColor="" speedPlus={1} style={{ fontSize: '2px' }} />
-                              ) : (
-                                <span
-                                  className="w-1.5 h-1.5 rounded-full bg-green-500/60 flex-shrink-0 block relative z-10"
-                                  style={{
-                                    boxShadow: '0 0 0 1px rgba(34, 197, 94, 0.1)',
-                                  }}
-                                  aria-hidden
-                                />
-                              )}
-                            </div>
-                          ) : doc.status === 'failed' ? (
-                            // Failed - same slot size as green so red dot aligns with green
-                            <div className="relative flex items-center justify-center w-3 h-3 flex-shrink-0 cursor-default">
-                              <span
-                                className="w-1.5 h-1.5 rounded-full bg-red-500 block opacity-100 group-hover:opacity-0 transition-opacity duration-150"
-                                style={{ boxShadow: '0 0 0 1px rgba(239, 68, 68, 0.2)' }}
-                                title="Processing failed"
-                                aria-hidden
-                              />
-                              <button
-                                onClick={(e) => handleReprocessDocument(doc, e)}
-                                title="Reprocess document (processing failed)"
-                                className="absolute inset-0 flex items-center justify-center hover:bg-red-50 rounded opacity-0 group-hover:opacity-100 transition-opacity duration-150"
-                              >
-                                <RefreshCw className="w-3 h-3 text-red-500" strokeWidth={1.5} />
-                              </button>
-                            </div>
-                          ) : doc.status === 'uploaded' && (!doc.created_at || (Date.now() - new Date(doc.created_at).getTime() > 60000)) ? (
-                            // Stuck (uploaded but not processed for a while) - orange dot; not shown when just uploaded
-                            <div className="relative flex items-center justify-center w-3 h-3 flex-shrink-0 cursor-default">
-                              <span
-                                className="w-1.5 h-1.5 rounded-full bg-amber-500 block opacity-100 group-hover:opacity-0 transition-opacity duration-150"
-                                style={{ boxShadow: '0 0 0 1px rgba(245, 158, 11, 0.2)' }}
-                                title="Not yet processed (stuck)"
-                                aria-hidden
-                              />
-                              <button
-                                onClick={(e) => handleReprocessDocument(doc, e)}
-                                title="Reprocess document (generate embeddings)"
-                                className="absolute inset-0 flex items-center justify-center hover:bg-gray-100 rounded opacity-0 group-hover:opacity-100 transition-opacity duration-150"
-                              >
-                                <RefreshCw className="w-3 h-3 text-amber-600" strokeWidth={1.5} />
-                              </button>
-                            </div>
-                          ) : null}
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleContextMenuClick(e, doc.id);
-                            }}
-                            className="p-0.5 hover:bg-gray-100 rounded flex-shrink-0 opacity-0 group-hover:opacity-100 transition-all duration-150"
-                          >
-                            <MoreVertical className="w-3 h-3 text-gray-400" strokeWidth={1.5} />
-                          </button>
-                        </div>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleContextMenuClick(e, doc.id);
+                          }}
+                          className="p-0.5 hover:bg-gray-100 rounded flex-shrink-0 opacity-0 group-hover:opacity-100 transition-all duration-150"
+                        >
+                          <MoreVertical className="w-3 h-3 text-gray-400" strokeWidth={1.5} />
+                        </button>
                       )}
                     </div>
                   );

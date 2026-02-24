@@ -5,7 +5,7 @@ import { useMemo } from "react";
 import { createPortal, flushSync } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { generateAnimatePresenceKey, generateConditionalKey, generateUniqueKey } from '../utils/keyGenerator';
-import { ChevronLeft, ChevronRight, ChevronDown, ChevronUp, ArrowUp, Mic, Map, Globe, X, SquareDashedMousePointer, Scan, Fullscreen, PanelLeftOpen, PanelRightClose, PictureInPicture2, Trash2, CreditCard, MoveDiagonal, Square, Files, Image as ImageIcon, File as FileIcon, FileText, FileCheck, Minimize, Minimize2, Workflow, Home, Brain, AudioLines, MessageCircle, MessageCircleDashed, Copy, Search, MessageSquare, Pencil, Check, Highlighter, SlidersHorizontal, Book, BookOpen, Download, ThumbsUp, ThumbsDown, Link2, Star, FolderPlus, FolderOpen, Undo2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, ChevronDown, ChevronUp, ArrowUp, Mic, Map, Globe, X, SquareDashedMousePointer, Scan, Fullscreen, PanelLeftOpen, PanelRightClose, PictureInPicture2, Trash2, CreditCard, MoveDiagonal, Square, Files, Image as ImageIcon, File as FileIcon, FileText, FileCheck, Minimize, Minimize2, Workflow, Home, Brain, AudioLines, MessageCircle, MessageCircleDashed, Copy, Search, MessageSquare, Pencil, Check, Highlighter, SlidersHorizontal, Book, BookOpen, Download, ThumbsUp, ThumbsDown, Link2, Star, FolderPlus, FolderOpen, Undo2, CloudUpload } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { FileAttachment, FileAttachmentData } from './FileAttachment';
 import { PropertyPillChip } from './PropertyPillChip';
@@ -704,6 +704,7 @@ const OrangeCitationSwoopHighlight: React.FC<{ children: React.ReactNode }> = ({
         font-style: inherit;
         line-height: inherit;
         overflow: visible;
+        pointer-events: none;
         background: linear-gradient(90deg, #F5EBD9 0%, #F5EBD9 100%);
         background-repeat: no-repeat;
         background-size: 0% 100%;
@@ -757,6 +758,7 @@ const BlueCitedTextHighlight: React.FC<{
           backgroundColor: '#DBEAFE',
           lineHeight: 1.5,
           overflow: 'visible',
+          pointerEvents: 'none',
         }}
       >
         {children}
@@ -777,6 +779,7 @@ const BlueCitedTextHighlight: React.FC<{
           font-style: inherit;
           line-height: 1.5;
           overflow: visible;
+          pointer-events: none;
           background: linear-gradient(90deg, #BCD4EB 0%, #BCD4EB 100%);
           background-repeat: no-repeat;
           background-size: 0% 100%;
@@ -825,6 +828,7 @@ const GreenCitedTextHighlight: React.FC<{ children: React.ReactNode }> = ({ chil
       backgroundColor: 'transparent',
       lineHeight: 'inherit',
       overflow: 'visible',
+      pointerEvents: 'none',
     }}
   >
     {children}
@@ -1643,8 +1647,8 @@ const StreamingResponseText: React.FC<{
     const result: React.ReactNode[] = [];
     let pending: (string | React.ReactElement)[] = [];
     let segIndex = 0;
-    const flushPending = (num: string | null, citKey: string, citationNode: React.ReactNode | null): boolean => {
-      if (pending.length === 0) return false;
+    const flushPending = (num: string | null, citKey: string, citationNode: React.ReactNode | null): { consumed: boolean; citationPushedInFlush?: boolean } => {
+      if (pending.length === 0) return { consumed: false };
       const wrapGreen = num != null && (greenCitationNumbers?.has(num) ?? false);
       const wrapBlue = num != null && (blueCitationNumbers?.has(num) ?? false);
       const wrapOrange = num != null && (orangeCitationNumbers?.has(num) ?? false);
@@ -1693,13 +1697,30 @@ const StreamingResponseText: React.FC<{
         if (leadingSpace) result.push(<React.Fragment key={`${keyPrefix}-lead-${segIndex}-${citKey}`}>{leadingSpace}</React.Fragment>);
         result.push(<CitedTextContainer key={`${keyPrefix}-wrap-${segIndex}-${citKey}`}><OrangeCitationSwoopHighlight key={`${keyPrefix}-orange-${segIndex}-${citKey}`}>{content}</OrangeCitationSwoopHighlight>{citationNode}</CitedTextContainer>);
       } else {
+        // Keep "3, 4" on one line: when pending is only punctuation and we have the next citation, push in a no-break span
+        const isPunctuationOnly = pending.length === 1 && typeof pending[0] === 'string' && /^[\s,]+$/.test(pending[0]);
+        if (isPunctuationOnly && citationNode != null) {
+          result.push(
+            <span key={`${keyPrefix}-cit-nowrap-${segIndex}`} className="citation-nowrap-wrap" style={{ whiteSpace: 'nowrap', pointerEvents: 'auto' }}>
+              {content}{citationNode}
+            </span>
+          );
+          pending = [];
+          segIndex += 1;
+          return { consumed: false, citationPushedInFlush: true };
+        }
         result.push(...content);
       }
       pending = [];
       segIndex += 1;
-      return inHighlight && citationNode != null;
+      return { consumed: inHighlight && citationNode != null };
     };
+    let skipNext = 0;
     segments.forEach((seg, i) => {
+      if (skipNext > 0) {
+        skipNext -= 1;
+        return;
+      }
       if (seg === BLOCK_BOUNDARY) {
         flushPending(null, 'boundary', null);
         return;
@@ -1710,9 +1731,34 @@ const StreamingResponseText: React.FC<{
           pending = [];
           segIndex += 1;
         } else {
-          const citationNode = renderCitationPlaceholder(seg, `${keyPrefix}-cit-${i}-${seg}`);
-          const consumed = flushPending(num, seg, citationNode);
-          if (!consumed && citationNode != null) result.push(<React.Fragment key={`${keyPrefix}-cit-${i}`}>{citationNode}</React.Fragment>);
+          const nextSeg = segments[i + 1];
+          const nextNextSeg = segments[i + 2];
+          const nextIsPunctuationOnly = typeof nextSeg === 'string' && !nextSeg.startsWith('%%CITATION_') && /^[\s,]+$/.test(nextSeg);
+          const nextNextIsCitation = typeof nextNextSeg === 'string' && nextNextSeg.startsWith('%%CITATION_');
+          const nextNextNum = nextNextIsCitation ? citationNumFromPlaceholder(nextNextSeg as string) : null;
+          const nextNextRejected = nextNextNum != null && (rejectedCitationNumbers?.has(nextNextNum) ?? false);
+          // Keep "3, 4" on one line: wrap first citation + punctuation + second citation in nowrap
+          if (nextIsPunctuationOnly && nextNextIsCitation && !nextNextRejected) {
+            const firstNode = renderCitationPlaceholder(seg, `${keyPrefix}-cit-${i}-${seg}`);
+            const punctContent = typeof nextSeg === 'string' ? renderStringSegment(nextSeg, `${keyPrefix}-p${segIndex}`) : null;
+            const secondNode = renderCitationPlaceholder(nextNextSeg as string, `${keyPrefix}-cit-${i + 2}-${nextNextSeg}`);
+            if (firstNode != null && secondNode != null && punctContent != null) {
+              // Flush any pending content first so "Security Deposit: ..." appears before the citations, not after
+              flushPending(null, 'before-nowrap', null);
+              result.push(
+                <span key={`${keyPrefix}-cit-nowrap-${i}-${i + 2}`} className="citation-nowrap-wrap" style={{ whiteSpace: 'nowrap', pointerEvents: 'auto' }}>
+                  {firstNode}{punctContent}{secondNode}
+                </span>
+              );
+              skipNext = 2;
+            } else {
+              if (firstNode != null) result.push(<React.Fragment key={`${keyPrefix}-cit-${i}`}>{firstNode}</React.Fragment>);
+            }
+          } else {
+            const citationNode = renderCitationPlaceholder(seg, `${keyPrefix}-cit-${i}-${seg}`);
+            const { consumed, citationPushedInFlush } = flushPending(num, seg, citationNode);
+            if (!consumed && citationNode != null && !citationPushedInFlush) result.push(<React.Fragment key={`${keyPrefix}-cit-${i}`}>{citationNode}</React.Fragment>);
+          }
         }
       } else {
         pending.push(seg as string | React.ReactElement);
@@ -1730,16 +1776,41 @@ const StreamingResponseText: React.FC<{
         const parts = child.split(citationPlaceholderRe);
         const result: React.ReactNode[] = [];
         let lastConsumedCitationIndex = -1; // citation at this index was included inside previous container
+        const consumedInNowrap = new Set<number>(); // indices already rendered inside a no-break span (citation + punctuation + citation)
         parts.forEach((part, idx) => {
+          if (consumedInNowrap.has(idx)) return;
           if (part.startsWith('%%CITATION_')) {
             if (idx === lastConsumedCitationIndex) return; // already inside previous container
             const citNum = citationNumFromPlaceholder(part);
             if (citNum != null && (rejectedCitationNumbers?.has(citNum) ?? false)) {
               // Rejected: omit this citation marker
             } else {
-              const citationNode = renderCitationPlaceholder(part, `cit-${idx}-${part}`);
-              if (citationNode !== null) {
-                result.push(<React.Fragment key={`cit-${idx}-${part}`}>{citationNode}</React.Fragment>);
+              const nextPart = parts[idx + 1];
+              const nextNextPart = parts[idx + 2];
+              const nextIsPunctuationOnly = nextPart && !nextPart.startsWith('%%CITATION_') && /^[\s,]+$/.test(nextPart);
+              const nextNextIsCitation = nextNextPart?.startsWith('%%CITATION_');
+              const nextNextNum = nextNextPart ? citationNumFromPlaceholder(nextNextPart) : null;
+              const nextNextRejected = nextNextNum != null && (rejectedCitationNumbers?.has(nextNextNum) ?? false);
+              // Keep "1, 2" (and "1 2") on one line: wrap first citation + punctuation + second citation in nowrap
+              if (nextIsPunctuationOnly && nextNextIsCitation && !nextNextRejected) {
+                const firstNode = renderCitationPlaceholder(part, `cit-${idx}-${part}`);
+                const punctContent = renderStringSegment(nextPart, `text-${idx + 1}`);
+                const secondNode = renderCitationPlaceholder(nextNextPart, `cit-${idx + 2}-${nextNextPart}`);
+                if (firstNode != null && secondNode != null) {
+                  result.push(
+                    <span key={`cit-nowrap-${idx}-${idx + 2}`} className="citation-nowrap-wrap" style={{ whiteSpace: 'nowrap', pointerEvents: 'auto' }}>
+                      {firstNode}{punctContent}{secondNode}
+                    </span>
+                  );
+                  consumedInNowrap.add(idx).add(idx + 1).add(idx + 2);
+                } else {
+                  if (firstNode != null) result.push(<React.Fragment key={`cit-${idx}-${part}`}>{firstNode}</React.Fragment>);
+                }
+              } else {
+                const citationNode = renderCitationPlaceholder(part, `cit-${idx}-${part}`);
+                if (citationNode !== null) {
+                  result.push(<React.Fragment key={`cit-${idx}-${part}`}>{citationNode}</React.Fragment>);
+                }
               }
             }
           } else if (part) {
@@ -1771,7 +1842,19 @@ const StreamingResponseText: React.FC<{
                 if (leadingSpace) result.push(<React.Fragment key={`lead-${idx}`}>{leadingSpace}</React.Fragment>);
                 result.push(<CitedTextContainer key={`wrap-${idx}`}><OrangeCitationSwoopHighlight key={`orange-${idx}`}>{content}</OrangeCitationSwoopHighlight>{citationNode}</CitedTextContainer>);
               } else {
-                result.push(...content);
+                // Keep trailing punctuation (e.g. ", ") and the following citation on the same line when the citation bar is shown
+                const isPunctuationOnly = /^[\s,]+$/.test(part);
+                const nextIsCitation = nextPart?.startsWith('%%CITATION_');
+                if (isPunctuationOnly && nextIsCitation && citationNode != null) {
+                  result.push(
+                    <span key={`cit-nowrap-${idx}-${idx + 1}`} className="citation-nowrap-wrap" style={{ whiteSpace: 'nowrap', pointerEvents: 'auto' }}>
+                      {content}{citationNode}
+                    </span>
+                  );
+                  consumedInNowrap.add(idx + 1);
+                } else {
+                  result.push(...content);
+                }
               }
               if (inHighlight && citationNode != null) lastConsumedCitationIndex = idx + 1;
             }
@@ -2117,7 +2200,7 @@ const StreamingResponseText: React.FC<{
       return (
         <>
           <h1 style={{
-            fontSize: '33px',
+            fontSize: isStreaming ? '14px' : '33px',
             fontWeight: 700,
             margin: '15.2px 0 11px 0',
             color: '#111827',
@@ -2141,7 +2224,7 @@ const StreamingResponseText: React.FC<{
       return (
         <>
           <h2 style={{
-            fontSize: '23px',
+            fontSize: isStreaming ? '14px' : '23px',
             fontWeight: 700,
             margin: '13.1px 0 8.8px 0',
             color: '#111827',
@@ -2165,7 +2248,7 @@ const StreamingResponseText: React.FC<{
       return (
         <>
           <h3 style={{
-            fontSize: '21px',
+            fontSize: isStreaming ? '14px' : '21px',
             fontWeight: 700,
             margin: '10.9px 0 6.6px 0',
             color: '#111827',
@@ -2633,23 +2716,24 @@ const StreamingResponseText: React.FC<{
           font-size: 1.08em !important;
           font-weight: 600 !important;
         }
-        /* Section-title strong (e.g. "Offer Expiration", "Drafting Firm") – on its own line; colon added in JS when not already present */
-        .streaming-response-text p > .response-strong-title:first-child,
-        .streaming-response-text p > span:first-child + .response-strong-title,
-        .streaming-response-text p > span:first-child + span .response-strong-title:first-child,
-        .streaming-response-text p span > .response-strong-title {
+        /* Only treat bold as a block "title" when it's the sole content of the paragraph (e.g. main title "Lease Terms for Dik Dik Lane Property").
+           Inline labels like "Property Type:", "Monthly Rent:" stay inline so they flow with the following text. */
+        .streaming-response-text p > .response-strong-title:only-child,
+        .streaming-response-text p > span:only-child > .response-strong-title:only-child {
           display: block !important;
           margin-bottom: 0.2em;
         }
-        /* Main title: first bold title in the response (e.g. "Lease Terms Summary for Dik Dik Lane Property") – larger, bolder, more spacing below */
-        .streaming-response-text p:first-of-type .response-strong-title:first-of-type {
+        /* Main title: only when the first paragraph is solely a bold title (e.g. "Lease Terms for Dik Dik Lane Property") */
+        .streaming-response-text p:first-of-type > .response-strong-title:only-child,
+        .streaming-response-text p:first-of-type > span:only-child > .response-strong-title:only-child {
           font-size: 1.28em !important;
           font-weight: 700 !important;
           margin-bottom: 1em !important;
           color: #111827 !important;
         }
         /* Extra space below the main title paragraph to clearly separate it from first section */
-        .streaming-response-text p:first-of-type:has(.response-strong-title:first-of-type) + p {
+        .streaming-response-text p:first-of-type:has(> .response-strong-title:only-child) + p,
+        .streaming-response-text p:first-of-type:has(> span:only-child > .response-strong-title:only-child) + p {
           margin-top: 1.25em !important;
         }
         .streaming-response-text p > .response-strong-title:first-child:not(.response-strong-title-has-colon)::after,
@@ -2658,12 +2742,14 @@ const StreamingResponseText: React.FC<{
         .streaming-response-text p span > .response-strong-title:not(.response-strong-title-has-colon)::after {
           content: ':';
         }
-        /* Paragraph that is only a section title (e.g. "Methodology:", "Assumptions:") – more space above, minimal below so related content sits close */
-        .streaming-response-text p:has(> span > .response-strong-title:only-child) {
+        /* Paragraph that is only a bold title (no other content) – more space above, minimal below */
+        .streaming-response-text p:has(> .response-strong-title:only-child),
+        .streaming-response-text p:has(> span:only-child > .response-strong-title:only-child) {
           margin-top: 1em !important;
           margin-bottom: 0 !important;
         }
-        .streaming-response-text p:has(> span > .response-strong-title:only-child) + p {
+        .streaming-response-text p:has(> .response-strong-title:only-child) + p,
+        .streaming-response-text p:has(> span:only-child > .response-strong-title:only-child) + p {
           margin-top: 0.25em !important;
         }
         /* Headings inside list items must not use huge title sizes – treat as list-item labels */
@@ -2681,6 +2767,34 @@ const StreamingResponseText: React.FC<{
         }
         .citation-callout-preview-scroll::-webkit-scrollbar {
           display: none;
+        }
+        /* Keep citation pills on one line so "3, 4" don't wrap the last citation to a new line when the bar is shown */
+        .streaming-response-text .citation-link-btn {
+          white-space: nowrap;
+          position: relative;
+          z-index: 2;
+        }
+        /* Ensure response text and citation buttons receive clicks (no overlay/parent blocking) */
+        .streaming-response-text,
+        .streaming-response-text .citation-link-btn,
+        .streaming-response-text .citation-nowrap-wrap {
+          pointer-events: auto;
+        }
+        /* Let citation/font highlight spans not capture clicks so the pill (sibling) stays clickable */
+        .streaming-response-text .orange-citation-swoop,
+        .streaming-response-text .blue-citation-swoop,
+        .streaming-response-text .blue-cited-highlight-bg,
+        .streaming-response-text .cited-highlight-formatting:has(> .citation-link-btn) > span:first-child {
+          pointer-events: none;
+        }
+        /* Ensure selected/saved states still apply when citation is inside a nowrap span (same as index.css) */
+        .streaming-response-text .citation-link-btn.citation-link-btn--selected {
+          color: #374151 !important;
+          background-color: #BCD4EB !important;
+        }
+        .streaming-response-text .citation-link-btn.citation-link-btn--saved {
+          color: #3A3A3A !important;
+          background-color: #E8E8E8 !important;
         }
         /* Force bold/italic inside citation highlights so parent font-weight does not override */
         .cited-highlight-formatting strong {
@@ -2727,12 +2841,14 @@ const StreamingResponseText: React.FC<{
             fontFamily: 'Inter, system-ui, sans-serif',
             fontWeight: 400,
             position: 'relative',
+            zIndex: 1,
             minHeight: '1px',
             wordWrap: 'break-word',
             overflowWrap: 'break-word',
             maxWidth: '100%',
             overflow: 'visible',
             boxSizing: 'border-box',
+            pointerEvents: 'auto',
           }}
         >
           {/* Single ReactMarkdown keeps layout (paragraphs, lists, spacing). Perplexity-style: wrap 2-word runs in motion.span inside blocks for 0→1 reveal. */}
@@ -3102,10 +3218,6 @@ const CitationLink: React.FC<{
       return false;
     }
     
-    console.log('✅ [CitationLink] Valid bbox for citation', citationNumber, { 
-      bbox, 
-      area: (area * 100).toFixed(1) + '%' 
-    });
     return true;
   }, [citationData.bbox, citationNumber]);
   
@@ -3465,6 +3577,38 @@ const CitationCallout: React.FC<{
   const [isCardHovered, setIsCardHovered] = React.useState(false);
   const hoverEnterTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const hoverLeaveTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Inline ask input value for the hover popup chat bar. */
+  const [askInputValue, setAskInputValue] = React.useState('');
+  const askInputRef = React.useRef<HTMLInputElement | HTMLTextAreaElement | null>(null);
+
+  // Build citation context for citation-query-submit (same shape as CitationActionMenu)
+  const citationContext = React.useMemo(() => ({
+    document_id: docId ?? '',
+    page_number: pageNum,
+    bbox: bbox ? {
+      left: bbox.left ?? 0,
+      top: bbox.top ?? 0,
+      width: bbox.width ?? 0,
+      height: bbox.height ?? 0
+    } : { left: 0, top: 0, width: 0, height: 0 },
+    cited_text: citation?.cited_text ?? citation?.block_content ?? '',
+    original_filename: citation?.original_filename ?? '',
+    block_id: (citation as { block_id?: string })?.block_id ?? ''
+  }), [docId, pageNum, bbox, citation]);
+
+  const handleAskSubmit = React.useCallback((e?: React.FormEvent) => {
+    e?.preventDefault();
+    const trimmed = askInputValue.trim();
+    if (!trimmed) return;
+    window.dispatchEvent(new CustomEvent('citation-context-prepare', {
+      detail: { citationContext, documentIds: docId ? [docId] : undefined }
+    }));
+    window.dispatchEvent(new CustomEvent('citation-query-submit', {
+      detail: { query: trimmed, citationContext, documentIds: docId ? [docId] : undefined }
+    }));
+    setAskInputValue('');
+    setIsCardHovered(false);
+  }, [askInputValue, citationContext, docId]);
 
   // Keep local closed state in sync with parent (so close persists across parent re-renders)
   React.useEffect(() => {
@@ -3565,20 +3709,27 @@ const CitationCallout: React.FC<{
   const displayDocType = docTypeLabel === 'Document' ? 'PDF Document' : docTypeLabel;
   const hasCalloutCard = !!docId;
 
-  const handleWheel = React.useCallback((e: React.WheelEvent) => {
-    if (e.shiftKey || e.metaKey || e.altKey) return; // Let scroll-container handler cycle cards
-    const scrollEl = (e.currentTarget as HTMLElement).closest?.('.sidechat-scroll') as HTMLElement | null;
-    if (scrollEl && scrollEl.scrollHeight > scrollEl.clientHeight) {
-      scrollEl.scrollTop += e.deltaY;
-      e.preventDefault();
-    }
+  // Wheel: scroll .sidechat-scroll when callout is in a scrollable area. Use native listener with { passive: false }
+  // so preventDefault is allowed (React's onWheel is passive and triggers "Unable to preventDefault" otherwise).
+  React.useEffect(() => {
+    const el = calloutRootRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (e.shiftKey || e.metaKey || e.altKey) return;
+      const scrollEl = (e.currentTarget as HTMLElement).closest?.('.sidechat-scroll') as HTMLElement | null;
+      if (scrollEl && scrollEl.scrollHeight > scrollEl.clientHeight) {
+        scrollEl.scrollTop += e.deltaY;
+        e.preventDefault();
+      }
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
   }, []);
 
   const rootProps = {
     role: 'region' as const,
     'aria-label': `Citation ${citationNumber} excerpt`,
     'data-citation-callout': citationNumber,
-    onWheel: handleWheel,
   };
 
   // No entrance animation for document preview card — show instantly
@@ -3617,6 +3768,13 @@ const CitationCallout: React.FC<{
     if (hoverEnterTimeoutRef.current) clearTimeout(hoverEnterTimeoutRef.current);
     if (hoverLeaveTimeoutRef.current) clearTimeout(hoverLeaveTimeoutRef.current);
   }, []);
+
+  // Auto-focus ask input when popup becomes visible
+  React.useEffect(() => {
+    if (isCardHovered && onAskFollowUp) {
+      requestAnimationFrame(() => askInputRef.current?.focus());
+    }
+  }, [isCardHovered, onAskFollowUp]);
 
   const effectivelyClosed = isCalloutClosed || isClosed;
   if (effectivelyClosed) return null;
@@ -3710,21 +3868,14 @@ const CitationCallout: React.FC<{
                   }}
                 />
               </div>
-              {/* Bar overlay: always in DOM, opacity transition only — no mount/unmount, no reflow. onMouseEnter keeps hover when moving from preview to bar. */}
+              {/* Ask citation popup overlay: white panel with document info + "Ask about this..." input (matches reference) */}
               <div
                 style={{
                   position: 'absolute',
                   bottom: 0,
                   left: 0,
                   right: 0,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  gap: 12,
-                  padding: '8px 12px',
-                  minHeight: 40,
-                  backgroundColor: '#FFFFFF',
-                  boxShadow: '0 -1px 3px rgba(0,0,0,0.06)',
+                  padding: '12px',
                   opacity: isCardHovered ? 1 : 0,
                   pointerEvents: isCardHovered ? 'auto' : 'none',
                   transition: 'opacity 0.12s ease-out',
@@ -3732,216 +3883,94 @@ const CitationCallout: React.FC<{
                 }}
                 onMouseEnter={hideBarActions ? handleCardHoverEnter : undefined}
               >
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-                minWidth: 0,
-                flex: 1,
-              }}
-            >
-              <div
-                style={{
-                  width: 24,
-                  height: 24,
-                  borderRadius: 6,
-                  backgroundColor: '#FFFFFF',
-                  border: '1px solid rgba(0,0,0,0.08)',
-                  boxShadow: '0 1px 2px rgba(0,0,0,0.06)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  flexShrink: 0,
-                  overflow: 'hidden',
-                }}
-              >
-                <img
-                  src="/PDF.png"
-                  alt=""
-                  style={{ width: 14, height: 14, objectFit: 'contain' }}
-                />
-              </div>
-              <div style={{ minWidth: 0, flex: 1, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'nowrap' }}>
                 <div
                   style={{
-                    fontWeight: 600,
-                    fontSize: '11px',
-                    color: '#1f2937',
-                    lineHeight: 1.25,
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap',
-                    maxWidth: 140,
+                    backgroundColor: '#FFFFFF',
+                    borderRadius: 10,
+                    padding: 12,
+                    boxShadow: '0 4px 24px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.06)',
+                    border: '1px solid rgba(0,0,0,0.06)',
                   }}
                 >
-                  {displayFilename}
+                  {/* Document icon + name + page */}
+                  <div style={{ marginBottom: 10 }}>
+                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+                      <div
+                        style={{
+                          width: 28,
+                          height: 28,
+                          borderRadius: 6,
+                          backgroundColor: '#FFFFFF',
+                          border: '1px solid rgba(0,0,0,0.08)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          flexShrink: 0,
+                          overflow: 'hidden',
+                        }}
+                      >
+                        <img src="/pdfnew.png" alt="" style={{ width: 16, height: 16, objectFit: 'contain' }} />
+                      </div>
+                      <div style={{ minWidth: 0, flex: 1 }}>
+                        <div style={{ fontWeight: 600, fontSize: 13, color: '#1f2937', lineHeight: 1.35, wordBreak: 'break-word' }}>
+                          {displayFilename}
+                        </div>
+                        <div style={{ fontSize: 11, color: '#6b7280', marginTop: 2 }}>Page {pageNum}</div>
+                      </div>
+                    </div>
+                  </div>
+                  {/* Ask about this... chat bar */}
+                  {showAskQuestion && (
+                    <form onSubmit={handleAskSubmit} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <input
+                        ref={askInputRef as React.RefObject<HTMLInputElement>}
+                        type="text"
+                        value={askInputValue}
+                        onChange={(e) => setAskInputValue(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            handleAskSubmit();
+                          }
+                        }}
+                        placeholder="Ask about this..."
+                        style={{
+                          flex: 1,
+                          height: 40,
+                          padding: '0 14px',
+                          fontSize: 14,
+                          color: '#1f2937',
+                          backgroundColor: '#f3f4f6',
+                          border: '1px solid #e5e7eb',
+                          borderRadius: 10,
+                          outline: 'none',
+                        }}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => handleAskSubmit()}
+                        disabled={!askInputValue.trim()}
+                        style={{
+                          width: 36,
+                          height: 36,
+                          minWidth: 36,
+                          minHeight: 36,
+                          borderRadius: '50%',
+                          border: 'none',
+                          backgroundColor: askInputValue.trim() ? '#4A4A4A' : '#F3F4F6',
+                          color: askInputValue.trim() ? '#ffffff' : '#4B5563',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          cursor: askInputValue.trim() ? 'pointer' : 'not-allowed',
+                          flexShrink: 0,
+                        }}
+                      >
+                        <ArrowUp size={18} strokeWidth={2.5} />
+                      </button>
+                    </form>
+                  )}
                 </div>
-                <div
-                  style={{
-                    fontSize: '11px',
-                    color: '#6b7280',
-                    lineHeight: 1.25,
-                    flexShrink: 0,
-                    whiteSpace: 'nowrap',
-                  }}
-                >
-                  Page {pageNum}
-                </div>
-              </div>
-            </div>
-            {hasAnyAction && (
-              <div
-                role="group"
-                aria-label="Citation actions"
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 8,
-                  flexShrink: 0,
-                }}
-              >
-                {showAskQuestion && (
-                  <button
-                    type="button"
-                    title="Ask Question"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      (e.currentTarget as HTMLElement).blur();
-                      onAskFollowUp();
-                    }}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      gap: compactActions ? 0 : 4.4,
-                      padding: compactActions ? 6 : '3.3px 6.6px',
-                      minHeight: 26,
-                      fontSize: '12px',
-                      lineHeight: 1,
-                      fontWeight: 500,
-                      color: '#666666',
-                      backgroundColor: '#F2F2EF',
-                      border: '1px solid #d4d4d4',
-                      borderRadius: 5.5,
-                      cursor: 'pointer',
-                      transition: 'background-color 0.15s ease, box-shadow 0.15s ease',
-                      boxShadow: '0 1px 1px rgba(0,0,0,0.05)',
-                      outline: 'none',
-                    }}
-                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#E8E8E5'; }}
-                    onMouseLeave={(e) => {
-                      const el = e.currentTarget as HTMLElement;
-                      el.style.backgroundColor = '#F2F2EF';
-                      el.style.boxShadow = '0 1px 1px rgba(0,0,0,0.05)';
-                    }}
-                    onFocus={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = '0 1px 1px rgba(0,0,0,0.05), 0 0 0 2px #0160B2'; }}
-                    onBlur={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = '0 1px 1px rgba(0,0,0,0.05)'; }}
-                  >
-                    <MessageCircle style={{ width: compactActions ? 14 : 11, height: compactActions ? 14 : 11 }} strokeWidth={2} />
-                    {!compactActions && 'Ask Question'}
-                  </button>
-                )}
-                {showViewDocument && (
-                  <button
-                    type="button"
-                    title={isViewedInDocument ? 'Close' : 'View'}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      (e.currentTarget as HTMLElement).blur();
-                      if (isViewedInDocument && onCloseDocument) {
-                        onCloseDocument();
-                      } else if (onViewInDocument) {
-                        onViewInDocument();
-                      }
-                    }}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      gap: compactActions ? 0 : '3px',
-                      padding: compactActions ? 6 : '1px 4px',
-                      fontSize: '11px',
-                      fontWeight: 600,
-                      color: isViewedInDocument ? '#5c2e0a' : '#666666',
-                      backgroundColor: isViewedInDocument ? '#D4B88A' : '#F2F2EF',
-                      border: isViewedInDocument ? '1px solid rgba(180, 140, 80, 0.55)' : '1px solid #d4d4d4',
-                      borderRadius: 4,
-                      cursor: 'pointer',
-                      transition: 'background-color 0.15s ease, box-shadow 0.15s ease',
-                      boxShadow: '0 1px 1px rgba(0,0,0,0.05)',
-                      outline: 'none',
-                    }}
-                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = isViewedInDocument ? '#C4A87A' : '#E8E8E5'; }}
-                    onMouseLeave={(e) => {
-                      const el = e.currentTarget as HTMLElement;
-                      el.style.backgroundColor = isViewedInDocument ? '#D4B88A' : '#F2F2EF';
-                      el.style.boxShadow = '0 1px 1px rgba(0,0,0,0.05)';
-                    }}
-                    onFocus={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = isViewedInDocument ? '0 1px 1px rgba(0,0,0,0.05), 0 0 0 2px rgba(92, 46, 10, 0.45)' : '0 1px 1px rgba(0,0,0,0.05), 0 0 0 2px #9ca3af'; }}
-                    onBlur={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = '0 1px 1px rgba(0,0,0,0.05)'; }}
-                  >
-                    {isViewedInDocument ? (
-                      <>
-                        <X size={18} style={{ color: '#5c2e0a' }} />
-                        {!compactActions && 'Close'}
-                      </>
-                    ) : (
-                      'View'
-                    )}
-                  </button>
-                )}
-                {showAccept && (
-                    <button
-                    type="button"
-                    title="Accept"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      (e.currentTarget as HTMLElement).blur();
-                      handleClose();
-                    }}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      gap: compactActions ? 0 : '3px',
-                      padding: compactActions ? 6 : '1px 4px',
-                      fontSize: '11px',
-                      fontWeight: 500,
-                      color: '#1f2937',
-                      backgroundColor: '#EBF1DE',
-                      border: '1px solid #e5e7eb',
-                      borderRadius: 4,
-                      cursor: 'pointer',
-                      transition: 'background-color 0.15s ease, box-shadow 0.15s ease',
-                      boxShadow: '0 1px 1px rgba(0,0,0,0.05)',
-                      outline: 'none',
-                    }}
-                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#E0E8D4'; }}
-                    onMouseLeave={(e) => {
-                      const el = e.currentTarget as HTMLElement;
-                      el.style.backgroundColor = '#EBF1DE';
-                      el.style.boxShadow = '0 1px 1px rgba(0,0,0,0.05)';
-                    }}
-                    onFocus={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = '0 1px 1px rgba(0,0,0,0.05), 0 0 0 2px #9ca3af'; }}
-                    onBlur={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = '0 1px 1px rgba(0,0,0,0.05)'; }}
-                  >
-                    {compactActions ? (
-                      <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 18, height: 18 }}>
-                        <Check size={16} strokeWidth={3.25} style={{ color: '#1f2937' }} />
-                      </span>
-                    ) : (
-                      <>
-                        <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 18, height: 18, marginRight: 6 }}>
-                          <Check size={16} strokeWidth={3.25} style={{ color: '#1f2937' }} />
-                        </span>
-                        Accept
-                      </>
-                    )}
-                  </button>
-                )}
-              </div>
-            )}
               </div>
             </div>
           ) : (
@@ -4000,269 +4029,188 @@ const CitationCallout: React.FC<{
               />
             </div>
           )}
-          {/* Document bar + actions: when hideBarActions, show only on hover over bbox area (or always if no preview) */}
+          {/* Document bar: ask citation popup design + View/Accept when !hideBarActions */}
           {(!hideBarActions || isCardHovered || !canShowPreview) && (
           <div
             style={{
               flexShrink: 0,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              gap: 12,
-              padding: '8px 12px',
-              minHeight: 40,
               backgroundColor: '#FFFFFF',
+              padding: 12,
+              borderRadius: 10,
+              border: '1px solid rgba(0,0,0,0.06)',
+              boxShadow: '0 4px 24px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.06)',
             }}
           >
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-                minWidth: 0,
-                flex: 1,
-              }}
-            >
-              <div
-                style={{
-                  width: 24,
-                  height: 24,
-                  borderRadius: 6,
-                  backgroundColor: '#FFFFFF',
-                  border: '1px solid rgba(0,0,0,0.08)',
-                  boxShadow: '0 1px 2px rgba(0,0,0,0.06)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  flexShrink: 0,
-                  overflow: 'hidden',
-                }}
-              >
-                <img
-                  src="/PDF.png"
-                  alt=""
-                  style={{ width: 14, height: 14, objectFit: 'contain' }}
-                />
-              </div>
-              <div style={{ minWidth: 0, flex: 1, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'nowrap' }}>
+            {/* Document icon + name + page */}
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
                 <div
                   style={{
-                    fontWeight: 600,
-                    fontSize: '11px',
-                    color: '#1f2937',
-                    lineHeight: 1.25,
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap',
-                    maxWidth: 140,
-                  }}
-                >
-                  {displayFilename}
-                </div>
-                <div
-                  style={{
-                    fontSize: '11px',
-                    color: '#6b7280',
-                    lineHeight: 1.25,
+                    width: 28,
+                    height: 28,
+                    borderRadius: 6,
+                    backgroundColor: '#FFFFFF',
+                    border: '1px solid rgba(0,0,0,0.08)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
                     flexShrink: 0,
-                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
                   }}
                 >
-                  Page {pageNum}
+                  <img src="/pdfnew.png" alt="" style={{ width: 16, height: 16, objectFit: 'contain' }} />
+                </div>
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div style={{ fontWeight: 600, fontSize: 13, color: '#1f2937', lineHeight: 1.35, wordBreak: 'break-word' }}>
+                    {displayFilename}
+                  </div>
+                  <div style={{ fontSize: 11, color: '#6b7280', marginTop: 2 }}>Page {pageNum}</div>
                 </div>
               </div>
             </div>
-            {hasAnyAction && (
-              <div
-                role="group"
-                aria-label="Citation actions"
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 8,
-                  flexShrink: 0,
-                }}
-              >
-                {showAskQuestion && (
-                  <button
-                    type="button"
-                    title="Ask Question"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      (e.currentTarget as HTMLElement).blur();
-                      onAskFollowUp();
-                    }}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      gap: compactActions ? 0 : 4.4,
-                      padding: compactActions ? 6 : '3.3px 6.6px',
-                      minHeight: 26,
-                      fontSize: '12px',
-                      lineHeight: 1,
-                      fontWeight: 500,
-                      color: '#666666',
-                      backgroundColor: '#F2F2EF',
-                      border: '1px solid #d4d4d4',
-                      borderRadius: 5.5,
-                      cursor: 'pointer',
-                      transition: 'background-color 0.15s ease, box-shadow 0.15s ease',
-                      boxShadow: '0 1px 1px rgba(0,0,0,0.05)',
-                      outline: 'none',
-                    }}
-                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#E8E8E5'; }}
-                    onMouseLeave={(e) => {
-                      const el = e.currentTarget as HTMLElement;
-                      el.style.backgroundColor = '#F2F2EF';
-                      el.style.boxShadow = '0 1px 1px rgba(0,0,0,0.05)';
-                    }}
-                    onFocus={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = '0 1px 1px rgba(0,0,0,0.05), 0 0 0 2px #0160B2'; }}
-                    onBlur={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = '0 1px 1px rgba(0,0,0,0.05)'; }}
-                  >
-                    <MessageCircle style={{ width: compactActions ? 14 : 11, height: compactActions ? 14 : 11 }} strokeWidth={2} />
-                    {!compactActions && 'Ask Question'}
-                  </button>
-                )}
-                {showViewDocument && (
-                  <button
-                    type="button"
-                    title={isViewedInDocument ? 'Close' : 'View'}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      (e.currentTarget as HTMLElement).blur();
-                      if (isViewedInDocument && onCloseDocument) {
-                        onCloseDocument();
-                      } else if (onViewInDocument) {
-                        onViewInDocument();
+            {/* Ask bar + View/Accept row */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              {showAskQuestion && (
+                <form onSubmit={handleAskSubmit} style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 180 }}>
+                  <input
+                    ref={askInputRef as React.RefObject<HTMLInputElement>}
+                    type="text"
+                    value={askInputValue}
+                    onChange={(e) => setAskInputValue(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        handleAskSubmit();
                       }
                     }}
+                    placeholder="Ask about this..."
                     style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      gap: compactActions ? 0 : '3px',
-                      padding: compactActions ? 6 : '1px 4px',
-                      fontSize: '11px',
-                      fontWeight: 600,
-                      color: isViewedInDocument ? '#5c2e0a' : '#666666',
-                      backgroundColor: isViewedInDocument ? '#D4B88A' : '#F2F2EF',
-                      border: isViewedInDocument ? '1px solid rgba(180, 140, 80, 0.55)' : '1px solid #d4d4d4',
-                      borderRadius: 4,
-                      cursor: 'pointer',
-                      transition: 'background-color 0.15s ease, box-shadow 0.15s ease',
-                      boxShadow: '0 1px 1px rgba(0,0,0,0.05)',
-                      outline: 'none',
-                    }}
-                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = isViewedInDocument ? '#C4A87A' : '#E8E8E5'; }}
-                    onMouseLeave={(e) => {
-                      const el = e.currentTarget as HTMLElement;
-                      el.style.backgroundColor = isViewedInDocument ? '#D4B88A' : '#F2F2EF';
-                      el.style.boxShadow = '0 1px 1px rgba(0,0,0,0.05)';
-                    }}
-                    onFocus={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = isViewedInDocument ? '0 1px 1px rgba(0,0,0,0.05), 0 0 0 2px rgba(92, 46, 10, 0.45)' : '0 1px 1px rgba(0,0,0,0.05), 0 0 0 2px #9ca3af'; }}
-                    onBlur={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = '0 1px 1px rgba(0,0,0,0.05)'; }}
-                  >
-                    {isViewedInDocument ? (
-                      <>
-                        <X size={18} style={{ color: '#5c2e0a' }} />
-                        {!compactActions && 'Close'}
-                      </>
-                    ) : (
-                      'View'
-                    )}
-                  </button>
-                )}
-                {showAccept && (
-                    <button
-                    type="button"
-                    title="Accept"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      (e.currentTarget as HTMLElement).blur();
-                      handleClose();
-                    }}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      gap: compactActions ? 0 : '3px',
-                      padding: compactActions ? 6 : '1px 4px',
-                      fontSize: '11px',
-                      fontWeight: 500,
+                      flex: 1,
+                      minWidth: 120,
+                      height: 40,
+                      padding: '0 14px',
+                      fontSize: 14,
                       color: '#1f2937',
-                      backgroundColor: '#EBF1DE',
+                      backgroundColor: '#f3f4f6',
                       border: '1px solid #e5e7eb',
-                      borderRadius: 4,
-                      cursor: 'pointer',
-                      transition: 'background-color 0.15s ease, box-shadow 0.15s ease',
-                      boxShadow: '0 1px 1px rgba(0,0,0,0.05)',
+                      borderRadius: 10,
                       outline: 'none',
                     }}
-                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#E0E8D4'; }}
-                    onMouseLeave={(e) => {
-                      const el = e.currentTarget as HTMLElement;
-                      el.style.backgroundColor = '#EBF1DE';
-                      el.style.boxShadow = '0 1px 1px rgba(0,0,0,0.05)';
-                    }}
-                    onFocus={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = '0 1px 1px rgba(0,0,0,0.05), 0 0 0 2px #9ca3af'; }}
-                    onBlur={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = '0 1px 1px rgba(0,0,0,0.05)'; }}
-                  >
-                    {compactActions ? (
-                      <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 18, height: 18 }}>
-                        <Check size={16} strokeWidth={3.25} style={{ color: '#1f2937' }} />
-                      </span>
-                    ) : (
-                      <>
-                        <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 18, height: 18, marginRight: 6 }}>
-                          <Check size={16} strokeWidth={3.25} style={{ color: '#1f2937' }} />
-                        </span>
-                        Accept
-                      </>
-                    )}
-                  </button>
-                )}
-                {onClosePreviewBar && (
+                  />
                   <button
                     type="button"
-                    title="Close document preview cards"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      (e.currentTarget as HTMLElement).blur();
-                      onClosePreviewBar();
-                    }}
+                    onClick={() => handleAskSubmit()}
+                    disabled={!askInputValue.trim()}
                     style={{
+                      width: 36,
+                      height: 36,
+                      minWidth: 36,
+                      minHeight: 36,
+                      borderRadius: '50%',
+                      border: 'none',
+                      backgroundColor: askInputValue.trim() ? '#4A4A4A' : '#F3F4F6',
+                      color: askInputValue.trim() ? '#ffffff' : '#4B5563',
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'center',
-                      width: 26,
-                      height: 26,
-                      padding: 0,
-                      fontSize: '11px',
-                      color: '#6b7280',
-                      backgroundColor: 'transparent',
-                      border: '1px solid #e5e7eb',
-                      borderRadius: 4,
-                      cursor: 'pointer',
-                      transition: 'color 0.15s ease, background-color 0.15s ease',
-                      outline: 'none',
-                    }}
-                    onMouseEnter={(e) => {
-                      const el = e.currentTarget as HTMLElement;
-                      el.style.color = '#374151';
-                      el.style.backgroundColor = '#f3f4f6';
-                    }}
-                    onMouseLeave={(e) => {
-                      const el = e.currentTarget as HTMLElement;
-                      el.style.color = '#6b7280';
-                      el.style.backgroundColor = 'transparent';
+                      cursor: askInputValue.trim() ? 'pointer' : 'not-allowed',
+                      flexShrink: 0,
                     }}
                   >
-                    <ChevronDown size={18} strokeWidth={1.25} />
+                    <ArrowUp size={18} strokeWidth={2.5} />
                   </button>
-                )}
-              </div>
-            )}
+                </form>
+              )}
+              {hasAnyAction && (showViewDocument || showAccept || onClosePreviewBar) && (
+                <div role="group" aria-label="Citation actions" style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+                  {showViewDocument && (
+                    <button
+                      type="button"
+                      title={isViewedInDocument ? 'Close' : 'View'}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        (e.currentTarget as HTMLElement).blur();
+                        if (isViewedInDocument && onCloseDocument) onCloseDocument();
+                        else if (onViewInDocument) onViewInDocument();
+                      }}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: compactActions ? 0 : '3px',
+                        padding: compactActions ? 6 : '6px 10px',
+                        fontSize: 11,
+                        fontWeight: 600,
+                        color: isViewedInDocument ? '#5c2e0a' : '#666666',
+                        backgroundColor: isViewedInDocument ? '#D4B88A' : '#F2F2EF',
+                        border: isViewedInDocument ? '1px solid rgba(180, 140, 80, 0.55)' : '1px solid #d4d4d4',
+                        borderRadius: 6,
+                        cursor: 'pointer',
+                        outline: 'none',
+                      }}
+                    >
+                      {isViewedInDocument ? (compactActions ? <X size={16} /> : <> <X size={14} /> Close </>) : 'View'}
+                    </button>
+                  )}
+                  {showAccept && (
+                    <button
+                      type="button"
+                      title="Accept"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        (e.currentTarget as HTMLElement).blur();
+                        handleClose();
+                      }}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: compactActions ? 0 : '3px',
+                        padding: compactActions ? 6 : '6px 10px',
+                        fontSize: 11,
+                        fontWeight: 500,
+                        color: '#1f2937',
+                        backgroundColor: '#EBF1DE',
+                        border: '1px solid #e5e7eb',
+                        borderRadius: 6,
+                        cursor: 'pointer',
+                        outline: 'none',
+                      }}
+                    >
+                      {compactActions ? <Check size={16} strokeWidth={3.25} /> : <> <Check size={14} strokeWidth={3.25} /> Accept </>}
+                    </button>
+                  )}
+                  {onClosePreviewBar && (
+                    <button
+                      type="button"
+                      title="Close document preview cards"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        (e.currentTarget as HTMLElement).blur();
+                        onClosePreviewBar();
+                      }}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        width: 32,
+                        height: 32,
+                        padding: 0,
+                        fontSize: 11,
+                        color: '#6b7280',
+                        backgroundColor: 'transparent',
+                        border: '1px solid #e5e7eb',
+                        borderRadius: 6,
+                        cursor: 'pointer',
+                        outline: 'none',
+                      }}
+                    >
+                      <ChevronDown size={18} strokeWidth={1.25} />
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
           )}
             </>
@@ -5611,6 +5559,8 @@ interface SideChatPanelProps {
   chatBarGlowTrigger?: number;
   /** User's first name for personalized empty-state greeting (e.g. "Hey Tom, What can I help you with today?"). */
   userFirstName?: string;
+  /** When true, attachment preview is open in 50/50 split (chat resizes like document preview). */
+  isAttachmentPreviewOpen?: boolean;
 }
 
 export interface SideChatPanelRef {
@@ -5730,6 +5680,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   resetWidthTrigger,
   chatBarGlowTrigger,
   userFirstName,
+  isAttachmentPreviewOpen = false,
 }, ref) => {
   // Main navigation state:
   // - collapsed: icon-only sidebar (treat as "closed" for the purposes of showing open controls)
@@ -6467,6 +6418,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   const [isDragOver, setIsDragOver] = React.useState<boolean>(false);
   // Ref to track drag state to prevent false clears when moving between child elements
   const isDragOverRef = React.useRef<boolean>(false);
+  // Ref for chat bar drop zone (set on empty-state wrapper or bottom bar wrapper) for document-level drag detection
+  const chatBarDropZoneRef = React.useRef<HTMLDivElement | null>(null);
   // Track locked width to prevent expansion when property details panel closes
   const lockedWidthRef = React.useRef<string | null>(null);
   // Track if agent is performing a navigation task (prevents fullscreen re-expansion)
@@ -7213,8 +7166,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
 
   // Keep ref in sync so handleUserCitationClick (passed to memoized StreamingResponseText) always sees current state
   React.useEffect(() => {
-    isDocumentPreviewOpenRef.current = !!expandedCardViewDoc;
-  }, [expandedCardViewDoc]);
+    isDocumentPreviewOpenRef.current = !!expandedCardViewDoc || isAttachmentPreviewOpen;
+  }, [expandedCardViewDoc, isAttachmentPreviewOpen]);
 
   // Clear "viewed in document" citation highlight when document preview is closed
   React.useEffect(() => {
@@ -7223,7 +7176,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
 
   // Whether chat panel is in "large" width (>= 600px) for View area minimise/expand
   const isChatLarge = React.useMemo(() => {
-    const isDocumentPreviewOpen = isPropertyDetailsOpen || !!expandedCardViewDoc;
+    const isDocumentPreviewOpen = isPropertyDetailsOpen || !!expandedCardViewDoc || isAttachmentPreviewOpen;
     const { widthPx } = calculateChatPanelWidth({
       draggedWidth,
       isExpanded,
@@ -7238,7 +7191,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       prefer50SplitOnMap,
     });
     return widthPx >= 600;
-  }, [draggedWidth, isExpanded, isFullscreenMode, isPropertyDetailsOpen, expandedCardViewDoc, sidebarWidth, chatPanelWidth, isChatPanelOpen, isVisible, isMapVisible, prefer50SplitOnMap]);
+  }, [draggedWidth, isExpanded, isFullscreenMode, isPropertyDetailsOpen, expandedCardViewDoc, isAttachmentPreviewOpen, sidebarWidth, chatPanelWidth, isChatPanelOpen, isVisible, isMapVisible, prefer50SplitOnMap]);
 
   // Standalone Minimise shows for 10s after Expand; standalone Expand shows for 10s after Minimise
   const [hasUserExpandedFromView, setHasUserExpandedFromView] = React.useState(false);
@@ -7302,7 +7255,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   // Uses unified calculateChatPanelWidth for consistent width calculation
   React.useEffect(() => {
     if (onChatWidthChange && isVisible) {
-      const isDocumentPreviewOpen = !!expandedCardViewDoc;
+      const isDocumentPreviewOpen = !!expandedCardViewDoc || isAttachmentPreviewOpen;
       
       const { widthPx } = calculateChatPanelWidth({
         draggedWidth,
@@ -7323,7 +7276,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       // Chat is hidden, notify parent that width is 0
       onChatWidthChange(0);
     }
-  }, [isExpanded, isVisible, isPropertyDetailsOpen, draggedWidth, onChatWidthChange, isFullscreenMode, sidebarWidth, isChatPanelOpen, chatPanelWidth, expandedCardViewDoc, isMapVisible, prefer50SplitOnMap]);
+  }, [isExpanded, isVisible, isPropertyDetailsOpen, draggedWidth, onChatWidthChange, isFullscreenMode, sidebarWidth, isChatPanelOpen, chatPanelWidth, expandedCardViewDoc, isAttachmentPreviewOpen, isMapVisible, prefer50SplitOnMap]);
 
   // When document preview opens (e.g. from "Analyse with AI"), force chat to move aside: exit fullscreen
   // so the 50/50 split is used. Without this, chat can stay full width if it entered fullscreen before
@@ -13264,12 +13217,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     [atAnchorIndex, toggleDocumentSelection, segmentInput]
   );
 
-  const handleFileUpload = React.useCallback((file: File) => {
-    console.log('📎 SideChatPanel: handleFileUpload called with file:', file.name);
-    
-    // Check if we've reached the maximum number of files
+  const handleFileUpload = React.useCallback((file: File, options?: { skipExtraction?: boolean }) => {
     if (attachedFiles.length >= MAX_FILES) {
-      console.warn(`⚠️ Maximum of ${MAX_FILES} files allowed`);
       toast({
         description: `Maximum of ${MAX_FILES} files allowed. Please remove a file before adding another.`,
         duration: 3000,
@@ -13278,23 +13227,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     }
     
     const fileId = `file-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-    
-    // Check if file type supports quick extraction (PDF, Word, Excel, PowerPoint, text - same as Node/LobeHub loaders)
-    const isPDF = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
-    const isDOCX = file.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
-                   file.type === 'application/msword' ||
-                   file.name.toLowerCase().endsWith('.docx') ||
-                   file.name.toLowerCase().endsWith('.doc');
-    const isExcel = file.type === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
-                    file.type === 'application/vnd.ms-excel' ||
-                    file.name.toLowerCase().endsWith('.xlsx') ||
-                    file.name.toLowerCase().endsWith('.xls');
-    const isPPTX = file.type === 'application/vnd.openxmlformats-officedocument.presentationml.presentation' ||
-                  file.type === 'application/vnd.ms-powerpoint' ||
-                  file.name.toLowerCase().endsWith('.pptx') ||
-                  file.name.toLowerCase().endsWith('.ppt');
-    const isTXT = file.type === 'text/plain' || file.name.toLowerCase().endsWith('.txt');
-    const supportsExtraction = isPDF || isDOCX || isExcel || isPPTX || isTXT;
+    const skipExtraction = options?.skipExtraction === true;
     
     const fileData: FileAttachmentData = {
       id: fileId,
@@ -13302,107 +13235,88 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       name: file.name,
       type: file.type,
       size: file.size,
-      // Set initial extraction status for supported file types
-      extractionStatus: supportsExtraction ? 'pending' : undefined
+      extractionStatus: undefined,
     };
     
-    // Preload blob URL immediately (Instagram-style preloading)
-    const preloadBlobUrl = () => {
+    // Paint the chip immediately; defer preload and extraction to next frame
+    flushSync(() => {
+      setAttachedFiles(prev => {
+        const updated = [...prev, fileData];
+        attachedFilesRef.current = updated;
+        return updated;
+      });
+    });
+    
+    requestAnimationFrame(() => {
       try {
-        console.log('🚀 Preloading blob URL for attachment:', file.name);
         const blobUrl = URL.createObjectURL(file);
-        
-        // Store preloaded blob URL in global cache
         if (!(window as any).__preloadedAttachmentBlobs) {
           (window as any).__preloadedAttachmentBlobs = {};
         }
         (window as any).__preloadedAttachmentBlobs[fileId] = blobUrl;
-        
-        console.log(`✅ Preloaded blob URL for attachment ${fileId}`);
-      } catch (error) {
-        console.error('❌ Error preloading blob URL:', error);
+      } catch (_) {}
+      
+      const isPDF = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+      const isDOCX = file.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
+                     file.type === 'application/msword' ||
+                     file.name.toLowerCase().endsWith('.docx') ||
+                     file.name.toLowerCase().endsWith('.doc');
+      const isExcel = file.type === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
+                      file.type === 'application/vnd.ms-excel' ||
+                      file.name.toLowerCase().endsWith('.xlsx') ||
+                      file.name.toLowerCase().endsWith('.xls');
+      const isPPTX = file.type === 'application/vnd.openxmlformats-officedocument.presentationml.presentation' ||
+                    file.type === 'application/vnd.ms-powerpoint' ||
+                    file.name.toLowerCase().endsWith('.pptx') ||
+                    file.name.toLowerCase().endsWith('.ppt');
+      const isTXT = file.type === 'text/plain' || file.name.toLowerCase().endsWith('.txt');
+      const supportsExtraction = !skipExtraction && (isPDF || isDOCX || isExcel || isPPTX || isTXT);
+      
+      if (supportsExtraction) {
+        setAttachedFiles(prev => prev.map(f =>
+          f.id === fileId ? { ...f, extractionStatus: 'extracting' as const } : f
+        ));
+        backendApi.quickExtractText(file, true)
+          .then(result => {
+            if (result.success) {
+              setAttachedFiles(prev => prev.map(f =>
+                f.id === fileId
+                  ? { ...f, extractionStatus: 'complete' as const, extractedText: result.text, pageTexts: result.pageTexts, pageCount: result.pageCount, tempFileId: result.tempFileId }
+                  : f
+              ));
+            } else {
+              setAttachedFiles(prev => prev.map(f =>
+                f.id === fileId ? { ...f, extractionStatus: 'error' as const, extractionError: result.error } : f
+              ));
+            }
+          })
+          .catch(error => {
+            setAttachedFiles(prev => prev.map(f =>
+              f.id === fileId ? { ...f, extractionStatus: 'error' as const, extractionError: error instanceof Error ? error.message : 'Unknown error' } : f
+            ));
+          });
       }
-    };
-    
-    // Preload immediately
-    preloadBlobUrl();
-    
-    setAttachedFiles(prev => {
-      const updated = [...prev, fileData];
-      attachedFilesRef.current = updated; // Update ref immediately
-      return updated;
     });
-    console.log('✅ SideChatPanel: File attached:', fileData, `(${attachedFiles.length + 1}/${MAX_FILES})`);
-    
-    // Trigger quick text extraction for supported file types
-    if (supportsExtraction) {
-      console.log('🔍 Starting quick extraction for:', file.name);
-      
-      // Update status to extracting
-      setAttachedFiles(prev => prev.map(f => 
-        f.id === fileId ? { ...f, extractionStatus: 'extracting' as const } : f
-      ));
-      
-      // Call backend extraction API
-      backendApi.quickExtractText(file, true)
-        .then(result => {
-          if (result.success) {
-            console.log(`✅ Quick extraction complete for ${file.name}: ${result.pageCount} pages, ${result.charCount} chars`);
-            setAttachedFiles(prev => prev.map(f => 
-              f.id === fileId 
-                ? { 
-                    ...f, 
-                    extractionStatus: 'complete' as const,
-                    extractedText: result.text,
-                    pageTexts: result.pageTexts,
-                    pageCount: result.pageCount,
-                    tempFileId: result.tempFileId
-                  } 
-                : f
-            ));
-          } else {
-            console.error(`❌ Quick extraction failed for ${file.name}:`, result.error);
-            setAttachedFiles(prev => prev.map(f => 
-              f.id === fileId 
-                ? { 
-                    ...f, 
-                    extractionStatus: 'error' as const,
-                    extractionError: result.error
-                  } 
-                : f
-            ));
-          }
-        })
-        .catch(error => {
-          console.error(`❌ Quick extraction error for ${file.name}:`, error);
-          setAttachedFiles(prev => prev.map(f => 
-            f.id === fileId 
-              ? { 
-                  ...f, 
-                  extractionStatus: 'error' as const,
-                  extractionError: error instanceof Error ? error.message : 'Unknown error'
-                } 
-              : f
-          ));
-        });
-    }
   }, [attachedFiles.length]);
 
-  // Handle drop from FilingSidebar
+  // Handle drop: native files first for instant UI, then FilingSidebar documents
   const handleDrop = React.useCallback(async (e: React.DragEvent) => {
-    console.log('📥 SideChatPanel: handleDrop called', {
-      types: Array.from(e.dataTransfer.types),
-      files: e.dataTransfer.files.length,
-      target: (e.target as HTMLElement)?.tagName,
-      currentTarget: (e.currentTarget as HTMLElement)?.tagName
-    });
-    
     e.preventDefault();
     e.stopPropagation();
+    // Clear drag state immediately so bar reverts in same frame
     isDragOverRef.current = false;
-    setIsDragOver(false);
-    
+    flushSync(() => setIsDragOver(false));
+
     try {
+      // Handle native file drops first so the file appears immediately (no JSON parse or branching)
+      const files = Array.from(e.dataTransfer.files);
+      if (files.length > 0) {
+        files.forEach(file => {
+          flushSync(() => handleFileUpload(file, { skipExtraction: true }));
+        });
+        return;
+      }
+
       // Check if this is a document from FilingSidebar (use text/plain for Chrome/cross-browser)
       let jsonData = e.dataTransfer.getData('application/json');
       if (!jsonData) jsonData = e.dataTransfer.getData('text/plain');
@@ -13421,27 +13335,26 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             });
             return;
           }
-          console.log('📥 SideChatPanel: Dropped document from FilingSidebar:', data.filename);
-          
-          // Create optimistic attachment immediately with placeholder file
+
+          // Create optimistic attachment and add synchronously for instant UI update
           const attachmentId = `file-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
           const placeholderFile = new File([], data.filename, {
             type: data.fileType || 'application/pdf',
           });
-          
           const optimisticFileData: FileAttachmentData = {
             id: attachmentId,
             file: placeholderFile,
             name: data.filename,
             type: data.fileType || 'application/pdf',
             size: 0, // Will be updated when file is fetched
+            extractionStatus: 'extracting', // Show spinner while fetching (same feedback as chat bar)
           };
-          
-          // Add attachment immediately for instant feedback
-          setAttachedFiles(prev => {
-            const updated = [...prev, optimisticFileData];
-            attachedFilesRef.current = updated;
-            return updated;
+          flushSync(() => {
+            setAttachedFiles(prev => {
+              const updated = [...prev, optimisticFileData];
+              attachedFilesRef.current = updated;
+              return updated;
+            });
           });
           
           // Fetch the actual file in the background
@@ -13466,11 +13379,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 type: data.fileType || blob.type || 'application/pdf',
               });
               
-              // Update the attachment with the actual file
+              // Update the attachment with the actual file; clear loading spinner (no extraction tick for drop)
               setAttachedFiles(prev => {
                 const updated = prev.map(att => 
                   att.id === attachmentId 
-                    ? { ...att, file: actualFile, size: actualFile.size }
+                    ? { ...att, file: actualFile, size: actualFile.size, extractionStatus: undefined }
                     : att
                 );
                 attachedFilesRef.current = updated;
@@ -13503,15 +13416,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               });
             }
           })();
-          
-          return;
         }
-      }
-      
-      // Fallback: check for regular file drops
-      const files = Array.from(e.dataTransfer.files);
-      if (files.length > 0) {
-        files.forEach(file => handleFileUpload(file));
       }
     } catch (error) {
       console.error('❌ SideChatPanel: Error handling drop:', error);
@@ -13525,9 +13430,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   const handleDragOver = React.useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    const types = e.dataTransfer.types;
+    const types = Array.from(e.dataTransfer.types);
     const hasFilingSidebarDocument = types.includes('application/json') || types.includes('text/plain');
     const hasFiles = types.includes('Files');
+    // Accept native files or sidebar document drag (sidebar sets both application/json and text/plain)
     if (hasFilingSidebarDocument || hasFiles) {
       e.dataTransfer.dropEffect = 'copy';
       isDragOverRef.current = true;
@@ -13540,14 +13446,59 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   }, []);
 
   const handleDragLeave = React.useCallback((e: React.DragEvent) => {
-    // Only clear drag state if we're actually leaving the drop zone
-    // Use simple relatedTarget check like SearchBar
-    const relatedTarget = e.relatedTarget as HTMLElement;
-    if (!e.currentTarget.contains(relatedTarget)) {
+    // Only clear drag state if we're actually leaving the drop zone (not moving to a child)
+    const relatedTarget = e.relatedTarget as HTMLElement | null;
+    if (relatedTarget == null || !e.currentTarget.contains(relatedTarget)) {
       isDragOverRef.current = false;
       setIsDragOver(false);
     }
   }, []);
+
+  // Document-level dragover so we register hover when cursor is over chat bar even if event doesn't hit our div (e.g. drag from FilingSidebar)
+  React.useEffect(() => {
+    if (!isVisible) return;
+    const onDocDragOver = (e: DragEvent) => {
+      const el = chatBarDropZoneRef.current;
+      if (!el) return;
+      const types = Array.from(e.dataTransfer?.types ?? []);
+      const hasFiles = types.includes('Files');
+      const hasFilingSidebar = types.includes('application/json') || types.includes('text/plain');
+      if (!hasFiles && !hasFilingSidebar) return;
+      const rect = el.getBoundingClientRect();
+      const x = e.clientX;
+      const y = e.clientY;
+      const inRect = x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+      if (inRect) {
+        e.preventDefault();
+        if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+        if (!isDragOverRef.current) {
+          isDragOverRef.current = true;
+          flushSync(() => setIsDragOver(true));
+        }
+      } else {
+        if (isDragOverRef.current) {
+          isDragOverRef.current = false;
+          flushSync(() => setIsDragOver(false));
+        }
+      }
+    };
+    const onDocDragEnd = () => {
+      isDragOverRef.current = false;
+      setIsDragOver(false);
+    };
+    const onDocDrop = () => {
+      isDragOverRef.current = false;
+      flushSync(() => setIsDragOver(false));
+    };
+    document.addEventListener('dragover', onDocDragOver, true);
+    document.addEventListener('dragend', onDocDragEnd, true);
+    document.addEventListener('drop', onDocDrop, true);
+    return () => {
+      document.removeEventListener('dragover', onDocDragOver, true);
+      document.removeEventListener('dragend', onDocDragEnd, true);
+      document.removeEventListener('drop', onDocDrop, true);
+    };
+  }, [isVisible]);
 
   // Handle opening document selection mode
   const handleOpenDocumentSelection = React.useCallback(() => {
@@ -16084,7 +16035,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             }}
                           >
                             {isPDF ? (
-                              <img src="/PDF.png" alt="PDF" style={{ width: 12, height: 12, flexShrink: 0, objectFit: 'contain' }} />
+                              <img src="/pdfnew.png" alt="PDF" style={{ width: 12, height: 12, flexShrink: 0, objectFit: 'contain' }} />
                             ) : (
                               <Files size={14} style={{ flexShrink: 0, color: '#9ca3af' }} />
                             )}
@@ -16235,7 +16186,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             width: (() => {
               // Use unified width calculation for consistent behavior
               // This ensures the same width logic is used for both parent notification and DOM rendering
-              const isDocumentPreviewOpen = isPropertyDetailsOpen || !!expandedCardViewDoc;
+              const isDocumentPreviewOpen = isPropertyDetailsOpen || !!expandedCardViewDoc || isAttachmentPreviewOpen;
               
               const { widthCss } = calculateChatPanelWidth({
                 draggedWidth,
@@ -17384,12 +17335,17 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     {emptyStateTitleMessage}
                   </h2>
                 ) : null}
-                {/* Expanded Chat Input Container */}
-                <div style={{ 
-                  width: '100%', 
-                  maxWidth: '680px',
-                  position: 'relative'
-                }}>
+                {/* Expanded Chat Input Container - drag handlers + ref for document-level drag detection */}
+                <div
+                  ref={chatBarDropZoneRef}
+                  style={{ 
+                    width: '100%', 
+                    maxWidth: '680px',
+                    position: 'relative'
+                  }}
+                  onDragOver={handleDragOver}
+                  onDragLeave={handleDragLeave}
+                >
                   {/* QuickStartBar for empty state */}
                   {isQuickStartBarVisible && (
                     <div
@@ -17441,15 +17397,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   >
                     {/* Expanded chat bar for empty state */}
                     <div 
-                      className={`relative flex flex-col ${isSubmitted ? 'opacity-75' : ''}`}
+                      className={`relative flex flex-col ${isSubmitted && !isDragOver ? 'opacity-75' : ''}`}
                       onClick={(e) => e.stopPropagation()}
                       onDragOver={handleDragOver}
                       onDragLeave={handleDragLeave}
                       onDrop={handleDrop}
                       style={{
-                        background: isDragOver ? 'rgba(59, 130, 246, 0.1)' : '#ffffff',
-                        border: isDragOver ? '2px dashed rgba(59, 130, 246, 0.75)' : '1px solid #E0E0E0',
-                        boxShadow: isDragOver ? '0 0 0 1px rgba(59, 130, 246, 0.25)' : '0 1px 3px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.02)',
+                        background: '#ffffff',
+                        border: isDragOver ? '2px dashed #E0E0E0' : '1px solid #E0E0E0',
+                        boxShadow: isDragOver ? '0 1px 3px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.02)' : '0 1px 3px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.02)',
                         position: 'relative',
                         paddingTop: '16px',
                         paddingBottom: '12px',
@@ -17461,9 +17417,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         minHeight: '160px',
                         boxSizing: 'border-box',
                         borderRadius: '28px',
-                        transition: isDragOver ? 'background-color 0.08s ease-out, border-color 0.08s ease-out, box-shadow 0.08s ease-out' : 'background-color 0.2s ease-in-out, border-color 0.2s ease-in-out, box-shadow 0.2s ease-in-out',
+                        transition: isDragOver ? 'border-color 0.08s ease-out' : 'border-color 0.2s ease-in-out',
                       }}
                     >
+                      {isDragOver ? (
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', flex: 1, minHeight: '120px', pointerEvents: 'none' }}>
+                          <CloudUpload className="text-gray-400" size={48} strokeWidth={2} />
+                        </div>
+                      ) : (
+                      <>
                       {/* Files and projects in one row so they can stack on the same line when there's space */}
                       <AnimatePresence mode="wait">
                         {(attachedFiles.length > 0 || propertyAttachments.length > 0) && (
@@ -17764,6 +17726,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           </div>
                         );
                       })()}
+                    </>
+                    )}
                     </div>
                   </form>
                 </div>
@@ -18240,8 +18204,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   onDragLeave={handleDragLeave}
                   onDrop={handleDrop}
                 >
-                  {/* Wrapper for chat bar + overlay - no z-index so overlay shows through; only inner chat bar is above overlay */}
+                  {/* Wrapper for chat bar + overlay - ref for document-level drag detection when in messages view */}
                 <div 
+                  ref={chatBarDropZoneRef}
                   onClick={(e) => e.stopPropagation()} // Prevent clicks from closing agent sidebar
                   style={{ 
                     position: 'relative', 
@@ -18526,19 +18491,17 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     )}
                   {/* Chat bar - ONLY element above citation overlay (z 10051); form/container stay behind overlay */}
                   <div 
-                    className={`relative flex flex-col ${isSubmitted ? 'opacity-75' : ''}`}
+                    className={`relative flex flex-col ${isSubmitted && !isDragOver ? 'opacity-75' : ''}`}
                     onClick={(e) => e.stopPropagation()} // Prevent clicks from closing agent sidebar
                     onDragOver={handleDragOver}
                     onDragLeave={handleDragLeave}
                     onDrop={handleDrop}
                     style={{
-                      background: isDragOver ? 'rgba(59, 130, 246, 0.1)' : '#ffffff',
+                      background: '#ffffff',
                       borderWidth: isDragOver ? 2 : 1,
                       borderStyle: isDragOver ? 'dashed' : 'solid',
-                      borderColor: showBarGlow ? 'transparent' : (isDragOver ? 'rgba(59, 130, 246, 0.75)' : '#E0E0E0'),
-                      boxShadow: isDragOver 
-                        ? '0 0 0 1px rgba(59, 130, 246, 0.25)' 
-                        : '0 1px 3px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.02)',
+                      borderColor: showBarGlow ? 'transparent' : (isDragOver ? '#E0E0E0' : '#E0E0E0'),
+                      boxShadow: '0 1px 3px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.02)',
                       position: 'relative',
                       paddingTop: '16px',
                       paddingBottom: '12px',
@@ -18550,10 +18513,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       minHeight: 'fit-content',
                       boxSizing: 'border-box',
                       borderRadius: showBarGlow ? '26px' : '28px',
-                      transition: isDragOver ? 'background-color 0.08s ease-out, border-color 0.08s ease-out, box-shadow 0.08s ease-out' : 'background-color 0.2s ease-in-out, border-color 0.28s ease-out, box-shadow 0.2s ease-in-out, border-radius 0.2s ease-out',
+                      transition: isDragOver ? 'border-color 0.08s ease-out' : 'border-color 0.28s ease-out, border-radius 0.2s ease-out',
                       zIndex: citationClickPanel ? 10051 : 2,
                     }}
                   >
+                  {isDragOver ? (
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '120px', pointerEvents: 'none' }}>
+                      <CloudUpload className="text-gray-400" size={48} strokeWidth={2} />
+                    </div>
+                  ) : (
+                  <>
                   {/* Input row - fixed height so bar bottom never moves when typing */}
                   <div 
                     className="relative flex flex-col w-full" 
@@ -19073,6 +19042,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       );
                     })()}
                   </div>
+                  </>
+                  )}
                   </div>
                   </div>
                 </div>

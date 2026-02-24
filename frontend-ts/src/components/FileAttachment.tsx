@@ -46,6 +46,12 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
   const isDOCX = attachment.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' || 
                  attachment.type === 'application/msword' ||
                  (attachment.name && (attachment.name.toLowerCase().endsWith('.docx') || attachment.name.toLowerCase().endsWith('.doc')));
+  const isExcel = attachment.type === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
+                  attachment.type === 'application/vnd.ms-excel' ||
+                  (attachment.name && (attachment.name.toLowerCase().endsWith('.xlsx') || attachment.name.toLowerCase().endsWith('.xls')));
+  const isPowerPoint = attachment.type === 'application/vnd.openxmlformats-officedocument.presentationml.presentation' ||
+                       attachment.type === 'application/vnd.ms-powerpoint' ||
+                       (attachment.name && (attachment.name.toLowerCase().endsWith('.pptx') || attachment.name.toLowerCase().endsWith('.ppt')));
 
   const handleDragStart = (e: React.DragEvent) => {
     e.dataTransfer.effectAllowed = 'move';
@@ -90,6 +96,7 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
     if (type.includes('pdf')) return 'PDF';
     if (type.includes('word') || type.includes('document')) return 'DOC';
     if (type.includes('excel') || type.includes('spreadsheet')) return 'XLS';
+    if (type.includes('presentation') || type.includes('powerpoint')) return 'PPT';
     if (type.includes('image')) return 'IMG';
     if (type.includes('text')) return 'TXT';
     return 'FILE';
@@ -246,7 +253,7 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
   const fileTextSize = compact ? 'w-3 h-3' : 'w-4 h-4';
   const nameClass = compact ? 'text-[11px] font-medium text-black truncate' : 'text-xs font-medium text-black truncate';
   const typeClass = compact ? 'text-[9px] text-gray-500 font-normal' : 'text-[10px] text-gray-500 font-normal';
-  const paddingClass = compact ? 'px-2 py-1.5' : 'px-2.5 py-2';
+  const paddingClass = compact ? 'px-1.5 py-1' : 'px-2 py-1.5';
   const gapClass = compact ? 'gap-1.5' : 'gap-2';
 
   return (
@@ -274,11 +281,15 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
       title={compact ? `Click to preview ${attachment.name}` : `Drag to delete or click to open ${attachment.name}`}
     >
       <div className={`flex items-center ${gapClass}`} style={{ width: 'auto', flexShrink: 0 }}>
-        {/* File Icon - PDF image, Word image for DOCX, Gray FileText for others */}
+        {/* File Icon - PDF, Word, Excel, PowerPoint images; Gray FileText for others */}
         {isPDF ? (
-          <img src="/PDF.png" alt="PDF" className={`${iconSize} rounded object-contain flex-shrink-0`} />
+          <img src="/pdfnew.png" alt="PDF" className={`${iconSize} rounded object-contain flex-shrink-0`} />
         ) : isDOCX ? (
-          <img src="/word.png" alt="Word" className={`${iconSize} rounded object-contain flex-shrink-0`} />
+          <img src="/word.png" alt="Word" className={`${compact ? 'w-6 h-6' : 'w-7 h-7'} rounded object-contain flex-shrink-0`} />
+        ) : isExcel ? (
+          <img src="/excel.png" alt="Excel" className={`${compact ? 'w-6 h-6' : 'w-7 h-7'} rounded object-contain flex-shrink-0`} />
+        ) : isPowerPoint ? (
+          <img src="/powerpoint.png" alt="PowerPoint" className={`${compact ? 'w-6 h-6' : 'w-7 h-7'} rounded object-contain flex-shrink-0`} />
         ) : (
           <div className={`${iconSize} bg-gray-500 rounded flex items-center justify-center flex-shrink-0`}>
             <FileText className={`${fileTextSize} text-white`} strokeWidth={2} />
@@ -297,9 +308,6 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
             {/* Extraction Status Indicator (hidden in compact to keep bubble minimal) */}
             {!compact && attachment.extractionStatus === 'extracting' && (
               <Loader2 className="w-2.5 h-2.5 text-blue-500 animate-spin" />
-            )}
-            {!compact && attachment.extractionStatus === 'pending' && (
-              <div className="w-2 h-2 rounded-full bg-gray-300" />
             )}
             {!compact && attachment.extractionStatus === 'complete' && (
               <Check className="w-2.5 h-2.5 text-green-500" strokeWidth={3} />

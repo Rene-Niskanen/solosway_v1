@@ -329,7 +329,7 @@ export const LLMContextViewer: React.FC<LLMContextViewerProps> = ({
         
         {/* Header */}
         <div className="llm-context-header">
-          <img src="/PDF.png" alt="PDF" style={{ width: '14px', height: '14px', flexShrink: 0 }} />
+          <img src="/pdfnew.png" alt="PDF" style={{ width: '14px', height: '14px', flexShrink: 0 }} />
           <span className="llm-context-filename">{filename}</span>
           <button 
             onClick={() => setIsExpanded(!isExpanded)} 
@@ -584,7 +584,7 @@ export const LLMContextViewer: React.FC<LLMContextViewerProps> = ({
 
       {/* Header */}
       <div className="llm-context-header">
-        <img src="/PDF.png" alt="PDF" style={{ width: '14px', height: '14px', flexShrink: 0 }} />
+        <img src="/pdfnew.png" alt="PDF" style={{ width: '14px', height: '14px', flexShrink: 0 }} />
         <span className="llm-context-filename">{filename}</span>
         {onClose && (
           <button onClick={onClose} className="llm-context-close">

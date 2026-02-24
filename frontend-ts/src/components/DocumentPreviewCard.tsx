@@ -27,7 +27,7 @@ interface DocumentPreviewCardProps {
 }
 
 // PDF icon from public assets (replaces lucide FileText for PDFs)
-const PDF_ICON_SRC = '/PDF.png';
+const PDF_ICON_SRC = '/pdfnew.png';
 // Word document icon from public assets
 const WORD_ICON_SRC = '/word.png';
 

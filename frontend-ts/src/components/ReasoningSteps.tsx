@@ -560,7 +560,7 @@ const ReadingStepWithTransition: React.FC<{
                     }}
                   >
                     <img
-                      src="/PDF.png"
+                      src="/pdfnew.png"
                       alt="PDF"
                       style={{ width: '14px', height: '14px', flexShrink: 0, display: 'block', verticalAlign: 'middle' }}
                     />
@@ -584,7 +584,7 @@ const ReadingStepWithTransition: React.FC<{
                     ...detailStyle,
                   }}
                 >
-                  <img src="/PDF.png" alt="PDF" style={{ width: '14px', height: '14px', flexShrink: 0 }} />
+                  <img src="/pdfnew.png" alt="PDF" style={{ width: '14px', height: '14px', flexShrink: 0 }} />
                   {filename}
                 </span>
               )}
@@ -923,7 +923,7 @@ const StepRenderer: React.FC<{
                     />
                   </span>
                   <span style={{ position: 'relative', zIndex: 1, display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
-                    <img src="/PDF.png" alt="PDF" style={{ width: '14px', height: '14px', flexShrink: 0, display: 'block', verticalAlign: 'middle' }} />
+                    <img src="/pdfnew.png" alt="PDF" style={{ width: '14px', height: '14px', flexShrink: 0, display: 'block', verticalAlign: 'middle' }} />
                     {bubbleLabel}
                   </span>
                 </span>
@@ -947,7 +947,7 @@ const StepRenderer: React.FC<{
                   onClick={() => bubbleClickable && onDocumentClick?.(firstMeta)}
                   role={bubbleClickable ? 'button' : undefined}
                 >
-                  <img src="/PDF.png" alt="PDF" style={{ width: '14px', height: '14px', flexShrink: 0 }} />
+                  <img src="/pdfnew.png" alt="PDF" style={{ width: '14px', height: '14px', flexShrink: 0 }} />
                   {bubbleLabel}
                 </span>
               )}
@@ -1844,7 +1844,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
   // When we have both Analysing and Thinking steps, show Analysing first for a minimum time so the user sees documents, then Thinking.
   type Phase = 1 | 2 | 3 | 4 | 5;
   const [phase3ShownAt, setPhase3ShownAt] = useState<number | null>(null);
-  const ANALYSING_MIN_MS = 2200; // Show "Analysing documents" at least this long before switching to Thinking
+  const ANALYSING_MIN_MS = 900; // Show "Analysing documents" at least this long before switching to Thinking (reduced for snappier transition to Generating response)
 
   const currentPhaseAndItem = useMemo((): { phase: Phase; displayItem: DisplayItem | null; displayIdx: number } => {
     if (!stepsForDisplay || stepsForDisplay.length === 0) {
@@ -2189,7 +2189,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
               key="phase-1-planning"
               initial={skipAnimations ? { opacity: 1 } : { opacity: 0 }}
               animate={{ opacity: 1 }}
-              exit={{ opacity: 0, transition: { duration: 0.1 } }}
+              exit={{ opacity: 0, transition: { duration: 0.05 } }}
               transition={{ duration: 0.15, ease: [0.16, 1, 0.3, 1] }}
               style={{
                 fontSize: '13.1px',
@@ -2211,13 +2211,14 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
 
             if (displayItem.kind === 'group') {
               const groupKey = anim.stepKey + '-group';
+              const isPhase4Or5 = currentPhaseAndItem.phase === 4 || currentPhaseAndItem.phase === 5;
               return (
                 <motion.div
                   key={`phase-${currentPhaseAndItem.phase}`}
                   initial={skipAnimations ? { opacity: 1, y: 0, scale: 1 } : { opacity: 0, y: 2, scale: 0.98 }}
                   animate={{ opacity: 1, y: 0, scale: 1 }}
-                  exit={{ opacity: 0, transition: { duration: 0.1 } }}
-                  transition={(hasResponseText || skipAnimations) ? { duration: 0 } : { duration: 0.08, delay: anim.delay, ease: [0.16, 1, 0.3, 1] }}
+                  exit={{ opacity: 0, transition: { duration: 0.05 } }}
+                  transition={(hasResponseText || skipAnimations) ? { duration: 0 } : { duration: 0.06, delay: isPhase4Or5 ? 0 : anim.delay, ease: [0.16, 1, 0.3, 1] }}
                   style={{
                     fontSize: '13.1px',
                     color: DETAIL_COLOR,
@@ -2254,13 +2255,14 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
             }
 
             const { step, delay: stepDelay, readingIndex: currentReadingIndex, isLastReadingStep, stepIndex: idx } = anim;
+            const isPhase4Or5 = currentPhaseAndItem.phase === 4 || currentPhaseAndItem.phase === 5;
             return (
               <motion.div
                 key={`phase-${currentPhaseAndItem.phase}`}
                 initial={skipAnimations ? { opacity: 1, y: 0, scale: 1 } : { opacity: 0, y: 2, scale: 0.98 }}
                 animate={{ opacity: 1, y: 0, scale: 1 }}
-                exit={{ opacity: 0, transition: { duration: 0.1 } }}
-                transition={(hasResponseText || skipAnimations) ? { duration: 0 } : { duration: 0.08, delay: stepDelay, ease: [0.16, 1, 0.3, 1] }}
+                exit={{ opacity: 0, transition: { duration: 0.05 } }}
+                transition={(hasResponseText || skipAnimations) ? { duration: 0 } : { duration: 0.06, delay: isPhase4Or5 ? 0 : stepDelay, ease: [0.16, 1, 0.3, 1] }}
                 style={{
                   fontSize: '13.1px',
                   color: DETAIL_COLOR,

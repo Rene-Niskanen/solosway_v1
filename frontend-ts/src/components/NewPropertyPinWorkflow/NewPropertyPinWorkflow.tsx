@@ -1806,7 +1806,7 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
                                 const getFileIcon = () => {
                                   const filename = uploadedFile.file.name.toLowerCase();
                                   if (filename.endsWith('.pdf')) {
-                                    return <img src="/PDF.png" alt="PDF" className="w-4 h-4 object-contain" />;
+                                    return <img src="/pdfnew.png" alt="PDF" className="w-4 h-4 object-contain" />;
                                   } else if (filename.endsWith('.doc') || filename.endsWith('.docx')) {
                                     return <FileText className="w-4 h-4 text-blue-600" />;
                                   } else if (filename.match(/\.(jpg|jpeg|png|gif|webp)$/i)) {

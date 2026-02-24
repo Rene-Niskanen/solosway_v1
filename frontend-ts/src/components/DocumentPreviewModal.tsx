@@ -31,6 +31,12 @@ interface DocumentPreviewModalProps {
   chatPanelWidth?: number; // Width of the SideChatPanel in pixels
   sidebarWidth?: number; // Width of the sidebar in pixels (includes base sidebar + filing sidebar)
   filingSidebarWidth?: number; // Width of the FilingSidebar in pixels (for instant recalculation)
+  /** When 'split', render as 50/50 right panel next to chat (no modal overlay). */
+  displayMode?: 'modal' | 'split';
+  /** For displayMode='split': left edge of the panel in pixels. */
+  splitPanelLeft?: number;
+  /** For displayMode='split': width of the panel in pixels. */
+  splitPanelWidth?: number;
 }
 
 export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
@@ -46,7 +52,10 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
   isSidebarCollapsed = false,
   chatPanelWidth = 0,
   sidebarWidth = 56,
-  filingSidebarWidth = 0
+  filingSidebarWidth = 0,
+  displayMode = 'modal',
+  splitPanelLeft = 0,
+  splitPanelWidth = 400,
 }) => {
   const file = files[activeTabIndex] || null;
   const [blobUrl, setBlobUrl] = React.useState<string | null>(null);
@@ -1737,28 +1746,30 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
     <AnimatePresence mode="sync">
       {isOpen && !isLocallyHidden && files.length > 0 && file && (
         <>
-          {/* Backdrop - Dark Translucent Overlay - Always show for centered modal */}
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0 }}
-            onClick={handleInstantClose}
-            className="fixed inset-0 bg-black/75"
-            style={{
-              position: 'fixed',
-              top: 0,
-              left: 0,
-              right: 0,
-              bottom: 0,
-              width: '100vw',
-              height: '100vh',
-              backgroundColor: 'rgba(0, 0, 0, 0.75)',
-              zIndex: 40
-            }}
-          />
+          {/* Backdrop - only for modal mode; split mode is 50/50 with chat, no overlay */}
+          {displayMode === 'modal' && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0 }}
+              onClick={handleInstantClose}
+              className="fixed inset-0 bg-black/75"
+              style={{
+                position: 'fixed',
+                top: 0,
+                left: 0,
+                right: 0,
+                bottom: 0,
+                width: '100vw',
+                height: '100vh',
+                backgroundColor: 'rgba(0, 0, 0, 0.75)',
+                zIndex: 40
+              }}
+            />
+          )}
           
-          {/* Modal Content - Centered Dialog or Top-Left for Map View */}
+          {/* Modal Content - Centered Dialog (modal) or 50/50 right panel (split) */}
           <motion.div
             data-document-preview-modal="true"
             layout={false}
@@ -1777,34 +1788,49 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
             transition={{ 
               duration: 0, // Instant - no animation for all properties
             }}
-            style={{
-              position: 'fixed',
-              ...(isResizing ? { willChange: 'width, height, left, top' } : {}),
-              // Always use centered positioning with overlay (not map view positioning)
-              left: '50%', 
-              top: '50%', 
-              width: typeof modalWidth === 'number' ? `${modalWidth}px` : (typeof modalWidth === 'string' ? modalWidth : '67.5vw'), // 65-70% of viewport width (using 67.5% as middle)
-              height: typeof modalHeight === 'number' ? `${modalHeight}px` : (typeof modalHeight === 'string' ? modalHeight : '82.5vh'), // 80-85% of viewport height (using 82.5% as middle)
-              // Ensure modal adjusts instantly when ANY sidebar opens (viewport shrinks)
-              // sidebarWidth already includes filing sidebar, so we use it directly
-              maxWidth: `min(70vw, calc(100vw - ${sidebarWidth + chatPanelWidth}px - 32px))`, // Account for all sidebars + chat panel + padding, but cap at 70vw
-              minWidth: isDOCX ? '640px' : '300px', // Minimum width
-              maxHeight: '85vh', // Max 85% height
-              boxSizing: 'border-box', // Ensure padding/borders don't expand width
-              overflow: 'hidden', // Prevent content from expanding modal
-              zIndex: 50,
-              border: 'none',
-              borderRadius: '16px', // Rounded corners like Prism
-              transform: 'translate(-50%, -50%)', // Center the modal - apply directly in style
-              // Prevent any visual transitions on dimensions - instant like section opening
-              transition: 'none',
-              transitionProperty: 'none',
-              transitionDuration: '0s',
-              transitionTimingFunction: 'none',
-              // Resize cursor
-              ...(isResizing ? { cursor: resizeDirection === 'se' ? 'nwse-resize' : resizeDirection === 'sw' ? 'nesw-resize' : resizeDirection === 'ne' ? 'nesw-resize' : resizeDirection === 'nw' ? 'nwse-resize' : resizeDirection === 'e' || resizeDirection === 'w' ? 'ew-resize' : resizeDirection === 'n' || resizeDirection === 's' ? 'ns-resize' : 'default' } : {})
-            }}
-            className={`flex flex-col bg-white rounded-2xl shadow-2xl overflow-hidden relative ${!isMapVisible ? 'modal-centered' : ''} ${isResizing ? 'select-none' : ''}`}
+            style={displayMode === 'split'
+              ? {
+                  position: 'fixed',
+                  left: splitPanelLeft,
+                  top: 0,
+                  bottom: 0,
+                  width: splitPanelWidth,
+                  maxWidth: splitPanelWidth,
+                  minWidth: splitPanelWidth,
+                  height: '100vh',
+                  boxSizing: 'border-box',
+                  overflow: 'hidden',
+                  zIndex: 50,
+                  border: 'none',
+                  borderLeft: '1px solid #E5E7EB',
+                  borderRadius: 0,
+                  transition: 'none',
+                  ...(isResizing ? { willChange: 'width', cursor: 'ew-resize' } : {}),
+                }
+              : {
+                  position: 'fixed',
+                  ...(isResizing ? { willChange: 'width, height, left, top' } : {}),
+                  left: '50%', 
+                  top: '50%', 
+                  width: typeof modalWidth === 'number' ? `${modalWidth}px` : (typeof modalWidth === 'string' ? modalWidth : '67.5vw'),
+                  height: typeof modalHeight === 'number' ? `${modalHeight}px` : (typeof modalHeight === 'string' ? modalHeight : '82.5vh'),
+                  maxWidth: `min(70vw, calc(100vw - ${sidebarWidth + chatPanelWidth}px - 32px))`,
+                  minWidth: isDOCX ? '640px' : '300px',
+                  maxHeight: '85vh',
+                  boxSizing: 'border-box',
+                  overflow: 'hidden',
+                  zIndex: 50,
+                  border: 'none',
+                  borderRadius: '16px',
+                  transform: 'translate(-50%, -50%)',
+                  transition: 'none',
+                  transitionProperty: 'none',
+                  transitionDuration: '0s',
+                  transitionTimingFunction: 'none',
+                  ...(isResizing ? { cursor: resizeDirection === 'se' ? 'nwse-resize' : resizeDirection === 'sw' ? 'nesw-resize' : resizeDirection === 'ne' ? 'nesw-resize' : resizeDirection === 'nw' ? 'nwse-resize' : resizeDirection === 'e' || resizeDirection === 'w' ? 'ew-resize' : resizeDirection === 'n' || resizeDirection === 's' ? 'ns-resize' : 'default' } : {})
+                }
+            }
+            className={`flex flex-col bg-white overflow-hidden relative ${displayMode === 'modal' ? 'rounded-2xl shadow-2xl' : ''} ${!isMapVisible && displayMode === 'modal' ? 'modal-centered' : ''} ${isResizing ? 'select-none' : ''}`}
             onClick={(e) => e.stopPropagation()}
             ref={modalRef}
           >

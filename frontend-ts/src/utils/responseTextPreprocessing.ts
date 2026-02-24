@@ -48,6 +48,9 @@ export function stripRedundantColonAfterBoldLabel(text: string): string {
   out = out.replace(/(\*\*[^*]+:\*\*)\s+:\s+/g, '$1 ');
   // (4) Bullet line with redundant colon: "- : The" or "* : The" -> "- The" / "* The"
   out = out.replace(/([\r\n]+\s*[-*+]\s*)\s*:\s+/g, '$1');
+  // (5) Redundant colon after citation marker (same line): "[1]: The" or "%%CITATION_N%%: The" -> "[1] The" (so we don't show ": The...")
+  out = out.replace(/(\[\d+\])\s*:\s+/g, '$1 ');
+  out = out.replace(/(%%CITATION_(?:SUPERSCRIPT|BRACKET|PENDING)_\d+%%)\s*:\s+/g, '$1 ');
   return out;
 }
 
@@ -274,6 +277,21 @@ export function mergeCitationOnlyLinesWithPrevious(text: string): string {
   return result.join('\n');
 }
 
+/**
+ * Convert inline " - " bullet runs into proper markdown list items so they render with indentation.
+ * (1) "**Label:** - item" → "**Label:**\n- item" so the first bullet is a real list item.
+ * (2) On the same line, further " - " that look like list separators (preceded by . or ; or ") ") become newlines.
+ * Avoids splitting "8.0 kg - dimensions" by only splitting when preceded by sentence-end or quote.
+ */
+export function convertInlineDashedBulletsToMarkdownLists(text: string): string {
+  let out = text;
+  // **Label:** - first item (and optionally more on same line) → label on own line, then "- item" per line
+  out = out.replace(/(\*\*[^*]+:\*\*)\s+-\s+/g, '$1\n- ');
+  // Within a line that already has "- item", split " - " that starts a new phrase (after . ; or ") ")
+  out = out.replace(/([.;)])\s+-\s+/g, '$1\n- ');
+  return out;
+}
+
 /** Merge very short orphan lines (e.g. "of 2025") with the previous line. */
 export function mergeOrphanLines(text: string): string {
   const maxOrphanLen = 20;
@@ -313,7 +331,9 @@ export function prepareResponseTextForDisplay(text: string): string {
   const withBold = ensureBalancedBoldForDisplay(out);
   const withSectionBreaks = ensureParagraphBreaksBeforeBoldSections(withBold);
   const noDoubleColon = stripRedundantColonAfterBoldLabel(withSectionBreaks);
-  const withMergedHeadings = mergeBoldHeadingWithNextLine(noDoubleColon);
+  const withNewlineAfterLabel = ensureNewlineAfterBoldLabel(noDoubleColon);
+  const withListFormatting = convertInlineDashedBulletsToMarkdownLists(withNewlineAfterLabel);
+  const withMergedHeadings = mergeBoldHeadingWithNextLine(withListFormatting);
   const withMergedOrphans = mergeOrphanLines(withMergedHeadings);
   const withMergedCitations = mergeCitationOnlyLinesWithPrevious(withMergedOrphans);
   const withMergedListItems = mergeConsecutiveListItemsAsOne(withMergedCitations);

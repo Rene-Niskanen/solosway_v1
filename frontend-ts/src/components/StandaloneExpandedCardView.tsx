@@ -1603,7 +1603,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
             >
               <X className="w-3.5 h-3.5 text-[#666]" strokeWidth={2} />
             </button>
-            <img src="/PDF.png" alt="PDF" className="w-4 h-4 object-contain flex-shrink-0" />
+            <img src="/pdfnew.png" alt="PDF" className="w-4 h-4 object-contain flex-shrink-0" />
             <span className="text-slate-700 text-sm font-medium truncate min-w-0">
               {displayFilename}
             </span>

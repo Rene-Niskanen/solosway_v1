@@ -4,7 +4,7 @@ import * as React from "react";
 import { useState, useRef, useEffect, useLayoutEffect, useImperativeHandle, forwardRef, useCallback, useMemo } from "react";
 import { flushSync } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import { ChevronRight, Map, ArrowUp, LibraryBig, Mic, PanelRightOpen, SquareDashedMousePointer, Scan, Fullscreen, X, Brain, MoveDiagonal, MapPinHouse, MessageCircle, Upload, AudioLines, Globe, FolderOpen } from "lucide-react";
+import { ChevronRight, Map, ArrowUp, LibraryBig, Mic, PanelRightOpen, SquareDashedMousePointer, Scan, Fullscreen, X, Brain, MoveDiagonal, MapPinHouse, MessageCircle, Upload, AudioLines, Globe, FolderOpen, CloudUpload } from "lucide-react";
 import { ImageUploadButton } from './ImageUploadButton';
 import { FileAttachment, FileAttachmentData } from './FileAttachment';
 import { PropertyPillChip } from './PropertyPillChip';
@@ -111,6 +111,8 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
   const [hasStartedTyping, setHasStartedTyping] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
+  const isDragOverRef = useRef(false);
+  const searchBarDropZoneRef = useRef<HTMLDivElement | null>(null);
   const [isWebSearchEnabled, setIsWebSearchEnabled] = useState(false);
   // Initialize attachedFiles from initialAttachedFiles prop if provided
   const [attachedFiles, setAttachedFiles] = useState<FileAttachmentData[]>(() => {
@@ -160,6 +162,12 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
     prevInitialAttachedFilesRef.current = initialAttachedFiles;
     
     if (initialAttachedFiles !== undefined) {
+      // Don't overwrite when we have more attachments than the prop (e.g. just added via drop);
+      // parent hasn't re-rendered yet so prop is stale and would wipe the new file.
+      if (attachedFiles.length > initialAttachedFiles.length) {
+        // Local addition (e.g. drop) — keep current state so file appears instantly
+        return;
+      }
       // Compare by IDs instead of JSON.stringify (File objects can't be stringified)
       const currentIds = attachedFiles.map(f => f.id).sort().join(',');
       const newIds = initialAttachedFiles.map(f => f.id).sort().join(',');
@@ -187,7 +195,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
       // If initialAttachedFiles is explicitly undefined, preserve existing attachments
       // This prevents clearing on remounts when switching views
     }
-  }, [initialAttachedFiles]);
+  }, [initialAttachedFiles, attachedFiles]);
 
   const prevInitialValueRef = useRef<string | undefined>(initialValue);
   
@@ -846,12 +854,9 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
     }
   }, [isMultiLine, isFocused]);
 
-  const handleFileUpload = useCallback((file: File) => {
-    console.log('📎 SearchBar: handleFileUpload called with file:', file.name);
-    
+  const handleFileUpload = useCallback((file: File, options?: { skipExtraction?: boolean }) => {
     // Check if we've reached the maximum number of files
     if (attachedFiles.length >= MAX_FILES) {
-      console.warn(`⚠️ Maximum of ${MAX_FILES} files allowed`);
       toast({
         description: `Maximum of ${MAX_FILES} files allowed. Please remove a file before adding another.`,
         duration: 3000,
@@ -860,81 +865,62 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
     }
     
     const fileId = `file-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    const skipExtraction = options?.skipExtraction === true;
     
-    // Check if file type supports quick extraction (same as SideChatPanel: PDF, Word, Excel, PowerPoint, text)
-    const isPDF = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
-    const isDOCX = file.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
-                   file.type === 'application/msword' ||
-                   file.name.toLowerCase().endsWith('.docx') ||
-                   file.name.toLowerCase().endsWith('.doc');
-    const isExcel = file.type === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
-                    file.type === 'application/vnd.ms-excel' ||
-                    file.name.toLowerCase().endsWith('.xlsx') ||
-                    file.name.toLowerCase().endsWith('.xls');
-    const isPPTX = file.type === 'application/vnd.openxmlformats-officedocument.presentationml.presentation' ||
-                  file.type === 'application/vnd.ms-powerpoint' ||
-                  file.name.toLowerCase().endsWith('.pptx') ||
-                  file.name.toLowerCase().endsWith('.ppt');
-    const isTXT = file.type === 'text/plain' || file.name.toLowerCase().endsWith('.txt');
-    const supportsExtraction = isPDF || isDOCX || isExcel || isPPTX || isTXT;
-    
+    // Minimal fileData so we can flush state immediately (chip appears in same frame)
     const fileData: FileAttachmentData = {
       id: fileId,
       file,
       name: file.name,
       type: file.type,
       size: file.size,
-      // Set initial extraction status for supported file types
-      extractionStatus: supportsExtraction ? 'pending' : undefined
+      extractionStatus: undefined,
     };
     
-    // Preload blob URL immediately (Instagram-style preloading)
-    // This ensures instant preview when user clicks the attachment
-    const preloadBlobUrl = () => {
+    // Paint the chip immediately; defer preload and extraction to next frame
+    flushSync(() => {
+      setAttachedFiles(prev => {
+        const updated = [...prev, fileData];
+        attachedFilesRef.current = updated;
+        return updated;
+      });
+    });
+    if (onAttachmentsChange) {
+      onAttachmentsChange(attachedFilesRef.current);
+    }
+    
+    // Defer heavy work so the chip is visible first (URL.createObjectURL can block on large files)
+    requestAnimationFrame(() => {
       try {
-        console.log('🚀 Preloading blob URL for attachment:', file.name);
         const blobUrl = URL.createObjectURL(file);
-        
-        // Store preloaded blob URL in global cache
         if (!(window as any).__preloadedAttachmentBlobs) {
           (window as any).__preloadedAttachmentBlobs = {};
         }
         (window as any).__preloadedAttachmentBlobs[fileId] = blobUrl;
-        
-        console.log(`✅ Preloaded blob URL for attachment ${fileId}`);
-      } catch (error) {
-        console.error('❌ Error preloading blob URL:', error);
-        // Don't throw - preloading failure shouldn't block file attachment
-      }
-    };
-    
-    // Preload immediately (don't await - let it happen in background)
-    preloadBlobUrl();
-    
-    setAttachedFiles(prev => {
-      const updated = [...prev, fileData];
-      attachedFilesRef.current = updated; // Update ref immediately
-      return updated;
-    });
-    // Notify parent after state update (useEffect will also handle this, but this ensures immediate notification)
-    queueMicrotask(() => {
-      if (onAttachmentsChange) {
-        onAttachmentsChange(attachedFilesRef.current);
-      }
-    });
-    console.log('✅ SearchBar: File attached:', fileData, `(${attachedFiles.length + 1}/${MAX_FILES})`);
-    
-    // Trigger quick text extraction for supported file types
-    if (supportsExtraction) {
-      console.log('🔍 Starting quick extraction for:', file.name);
+      } catch (_) {}
       
-      // Update status to extracting
-      setAttachedFiles(prev => prev.map(f => 
-        f.id === fileId ? { ...f, extractionStatus: 'extracting' as const } : f
-      ));
+      // Quick extraction for supported types (same as before: PDF, Word, Excel, PowerPoint, text)
+      const isPDF = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+      const isDOCX = file.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
+                     file.type === 'application/msword' ||
+                     file.name.toLowerCase().endsWith('.docx') ||
+                     file.name.toLowerCase().endsWith('.doc');
+      const isExcel = file.type === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
+                      file.type === 'application/vnd.ms-excel' ||
+                      file.name.toLowerCase().endsWith('.xlsx') ||
+                      file.name.toLowerCase().endsWith('.xls');
+      const isPPTX = file.type === 'application/vnd.openxmlformats-officedocument.presentationml.presentation' ||
+                    file.type === 'application/vnd.ms-powerpoint' ||
+                    file.name.toLowerCase().endsWith('.pptx') ||
+                    file.name.toLowerCase().endsWith('.ppt');
+      const isTXT = file.type === 'text/plain' || file.name.toLowerCase().endsWith('.txt');
+      const supportsExtraction = !skipExtraction && (isPDF || isDOCX || isExcel || isPPTX || isTXT);
       
-      // Call backend extraction API
-      backendApi.quickExtractText(file, true)
+      if (supportsExtraction) {
+        setAttachedFiles(prev => prev.map(f =>
+          f.id === fileId ? { ...f, extractionStatus: 'extracting' as const } : f
+        ));
+        backendApi.quickExtractText(file, true)
         .then(result => {
           if (result.success) {
             console.log(`✅ Quick extraction complete for ${file.name}: ${result.pageCount} pages, ${result.charCount} chars`);
@@ -970,19 +956,14 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
           }
         })
         .catch(error => {
-          console.error(`❌ Quick extraction error for ${file.name}:`, error);
-          setAttachedFiles(prev => prev.map(f => 
-            f.id === fileId 
-              ? { 
-                  ...f, 
-                  extractionStatus: 'error' as const,
-                  extractionError: error instanceof Error ? error.message : 'Unknown error'
-                } 
+          setAttachedFiles(prev => prev.map(f =>
+            f.id === fileId
+              ? { ...f, extractionStatus: 'error' as const, extractionError: error instanceof Error ? error.message : 'Unknown error' }
               : f
           ));
         });
-    }
-    // Also call onFileDrop prop if provided (for drag-and-drop from parent)
+      }
+    });
     onFileDrop?.(file);
   }, [onFileDrop, attachedFiles.length]);
 
@@ -1035,13 +1016,24 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
     });
   };
 
-  // Handle drop from FilingSidebar
+  // Handle drop: native files first for instant UI, then FilingSidebar documents
   const handleDrop = useCallback(async (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    setIsDragOver(false);
-    
+    // Clear drag state immediately so bar reverts in same frame
+    isDragOverRef.current = false;
+    flushSync(() => setIsDragOver(false));
+
     try {
+      // Handle native file drops first so the file appears immediately (no JSON parse or branching)
+      const files = Array.from(e.dataTransfer.files);
+      if (files.length > 0) {
+        files.forEach(file => {
+          flushSync(() => handleFileUpload(file, { skipExtraction: true }));
+        });
+        return;
+      }
+
       // Check if this is a document from FilingSidebar (use text/plain for Chrome/cross-browser)
       let jsonData = e.dataTransfer.getData('application/json');
       if (!jsonData) jsonData = e.dataTransfer.getData('text/plain');
@@ -1060,34 +1052,30 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
             });
             return;
           }
-          console.log('📥 SearchBar: Dropped document from FilingSidebar:', data.filename);
-          
-          // Create optimistic attachment immediately with placeholder file
+
+          // Create optimistic attachment and add synchronously for instant UI update
           const attachmentId = `file-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
           const placeholderFile = new File([], data.filename, {
             type: data.fileType || 'application/pdf',
           });
-          
           const optimisticFileData: FileAttachmentData = {
             id: attachmentId,
             file: placeholderFile,
             name: data.filename,
             type: data.fileType || 'application/pdf',
             size: 0, // Will be updated when file is fetched
+            extractionStatus: 'extracting', // Show spinner while fetching (same feedback as chat bar)
           };
-          
-          // Add attachment immediately for instant feedback
-          setAttachedFiles(prev => {
-            const updated = [...prev, optimisticFileData];
-            attachedFilesRef.current = updated;
-            return updated;
+          flushSync(() => {
+            setAttachedFiles(prev => {
+              const updated = [...prev, optimisticFileData];
+              attachedFilesRef.current = updated;
+              return updated;
+            });
           });
-          // Notify parent after state update
-          queueMicrotask(() => {
-            if (onAttachmentsChange) {
-              onAttachmentsChange(attachedFilesRef.current);
-            }
-          });
+          if (onAttachmentsChange) {
+            onAttachmentsChange(attachedFilesRef.current);
+          }
           
           // Fetch the actual file in the background
           (async () => {
@@ -1111,11 +1099,11 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                 type: data.fileType || blob.type || 'application/pdf',
               });
               
-              // Update the attachment with the actual file
+              // Update the attachment with the actual file; clear loading spinner (no extraction tick for drop)
               setAttachedFiles(prev => {
                 const updated = prev.map(att => 
                   att.id === attachmentId 
-                    ? { ...att, file: actualFile, size: actualFile.size }
+                    ? { ...att, file: actualFile, size: actualFile.size, extractionStatus: undefined }
                     : att
                 );
                 attachedFilesRef.current = updated;
@@ -1160,15 +1148,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
               });
             }
           })();
-          
-          return;
         }
-      }
-      
-      // Fallback: check for regular file drops
-      const files = Array.from(e.dataTransfer.files);
-      if (files.length > 0) {
-        files.forEach(file => handleFileUpload(file));
       }
     } catch (error) {
       console.error('❌ SearchBar: Error handling drop:', error);
@@ -1182,24 +1162,71 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    const types = e.dataTransfer.types;
+    const types = Array.from(e.dataTransfer.types);
     const hasFilingSidebarDocument = types.includes('application/json') || types.includes('text/plain');
     const hasFiles = types.includes('Files');
     if (hasFilingSidebarDocument || hasFiles) {
       e.dataTransfer.dropEffect = 'copy';
+      isDragOverRef.current = true;
       flushSync(() => setIsDragOver(true));
     } else {
       e.dataTransfer.dropEffect = 'none';
+      isDragOverRef.current = false;
       flushSync(() => setIsDragOver(false));
     }
   }, []);
 
   const handleDragLeave = useCallback((e: React.DragEvent) => {
-    // Only clear drag state if we're actually leaving the drop zone
-    const relatedTarget = e.relatedTarget as HTMLElement;
-    if (!e.currentTarget.contains(relatedTarget)) {
+    const relatedTarget = e.relatedTarget as HTMLElement | null;
+    if (relatedTarget == null || !e.currentTarget.contains(relatedTarget)) {
+      isDragOverRef.current = false;
       setIsDragOver(false);
     }
+  }, []);
+
+  // Document-level dragover so dashboard bar registers when dragging from FilingSidebar
+  useEffect(() => {
+    const onDocDragOver = (e: DragEvent) => {
+      const el = searchBarDropZoneRef.current;
+      if (!el) return;
+      const types = Array.from(e.dataTransfer?.types ?? []);
+      const hasFiles = types.includes('Files');
+      const hasFilingSidebar = types.includes('application/json') || types.includes('text/plain');
+      if (!hasFiles && !hasFilingSidebar) return;
+      const rect = el.getBoundingClientRect();
+      const x = e.clientX;
+      const y = e.clientY;
+      const inRect = x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+      if (inRect) {
+        e.preventDefault();
+        if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+        if (!isDragOverRef.current) {
+          isDragOverRef.current = true;
+          flushSync(() => setIsDragOver(true));
+        }
+      } else {
+        if (isDragOverRef.current) {
+          isDragOverRef.current = false;
+          flushSync(() => setIsDragOver(false));
+        }
+      }
+    };
+    const onDocDragEnd = () => {
+      isDragOverRef.current = false;
+      setIsDragOver(false);
+    };
+    const onDocDrop = () => {
+      isDragOverRef.current = false;
+      flushSync(() => setIsDragOver(false));
+    };
+    document.addEventListener('dragover', onDocDragOver, true);
+    document.addEventListener('dragend', onDocDragEnd, true);
+    document.addEventListener('drop', onDocDrop, true);
+    return () => {
+      document.removeEventListener('dragover', onDocDragOver, true);
+      document.removeEventListener('dragend', onDocDragEnd, true);
+      document.removeEventListener('drop', onDocDrop, true);
+    };
   }, []);
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -1418,16 +1445,15 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
           onDrop={handleDrop}
         >
             <div 
-            className={`relative flex flex-col ${isSubmitted ? 'opacity-75' : ''}`}
+            ref={searchBarDropZoneRef}
+            className={`relative flex flex-col ${isSubmitted && !isDragOver ? 'opacity-75' : ''}`}
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
             onDrop={handleDrop}
                 style={{
-                  background: isDragOver ? 'rgba(59, 130, 246, 0.1)' : '#ffffff',
-                  border: isDragOver ? '2px dashed rgba(59, 130, 246, 0.75)' : '1px solid #E0E0E0',
-                  boxShadow: isDragOver 
-                    ? '0 0 0 1px rgba(59, 130, 246, 0.25)' 
-                    : '0 1px 3px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.02)',
+                  background: '#ffffff',
+                  border: isDragOver ? '2px dashed #E0E0E0' : '1px solid #E0E0E0',
+                  boxShadow: '0 1px 3px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.02)',
                   position: 'relative',
                   paddingTop: '16px',
                   paddingBottom: '12px',
@@ -1439,9 +1465,15 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                   minHeight: '160px',
                   boxSizing: 'border-box',
                   borderRadius: '28px',
-                  transition: isDragOver ? 'background-color 0.08s ease-out, border-color 0.08s ease-out, box-shadow 0.08s ease-out' : 'background-color 0.2s ease-in-out, border-color 0.2s ease-in-out, box-shadow 0.2s ease-in-out',
+                  transition: isDragOver ? 'border-color 0.08s ease-out' : 'border-color 0.2s ease-in-out',
                 }}
             >
+            {isDragOver ? (
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', flex: 1, minHeight: '120px', pointerEvents: 'none' }}>
+                <CloudUpload className="text-gray-400" size={48} strokeWidth={2} />
+              </div>
+            ) : (
+            <>
             {/* Input row - match SideChatPanel "Ask anything" bar height */}
             <div 
               className="relative flex flex-col w-full" 
@@ -1885,6 +1917,8 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                   </div>
                 );
               })()}
+            </>
+            )}
             </div>
         </form>
         </div>
