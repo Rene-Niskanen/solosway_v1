@@ -6637,6 +6637,62 @@ def root():
     return redirect('http://localhost:8080')
 
 
+@views.route('/api/auth/me', methods=['GET', 'OPTIONS'])
+@login_required
+def api_auth_me():
+    """Lightweight session check: returns current user only (no documents/properties). Use for auth checks."""
+    if request.method == 'OPTIONS':
+        response = jsonify({})
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'GET, OPTIONS')
+        response.headers.add('Access-Control-Max-Age', '3600')
+        return response, 200
+    try:
+        _ensure_business_uuid()
+        profile_picture_url = None
+        supabase_user = None
+        try:
+            from .services.supabase_auth_service import SupabaseAuthService
+            auth_service = SupabaseAuthService()
+            supabase_user = auth_service.get_user_by_id(current_user.id)
+            if supabase_user and supabase_user.get('profile_picture_url', '').strip():
+                profile_picture_url = request.host_url.rstrip('/') + 'api/user/profile-picture'
+        except Exception:
+            pass
+        role_name = 'user'
+        if getattr(current_user, 'role', None) is not None:
+            try:
+                role_name = current_user.role.name
+            except (AttributeError, ValueError):
+                pass
+        user_data = {
+            'id': current_user.id,
+            'email': (supabase_user.get('email') if supabase_user else None) or current_user.email,
+            'first_name': (supabase_user.get('first_name') if supabase_user else None) or current_user.first_name,
+            'company_name': (supabase_user.get('company_name') if supabase_user else None) or current_user.company_name,
+            'business_id': str(current_user.business_id) if current_user.business_id else None,
+            'company_website': (supabase_user.get('company_website') if supabase_user else None) or current_user.company_website,
+            'role': role_name,
+            'profile_picture_url': profile_picture_url,
+            'title': supabase_user.get('title') if supabase_user else None,
+            'last_name': supabase_user.get('last_name') if supabase_user else None,
+            'phone': supabase_user.get('phone') if supabase_user else None,
+            'address': supabase_user.get('address') if supabase_user else None,
+            'location': supabase_user.get('location') if supabase_user else None,
+            'organization': supabase_user.get('company_name') if supabase_user else current_user.company_name,
+            'company_logo_url': supabase_user.get('company_logo_url') if supabase_user else None,
+        }
+        return jsonify({'user': user_data}), 200
+    except Exception as e:
+        current_app.logger.exception("Auth me error")
+        body = {'error': str(e)}
+        if current_app.debug:
+            body['traceback'] = traceback.format_exc()
+        return jsonify(body), 500
+
+
 @views.route('/api/dashboard', methods=['GET', 'OPTIONS'])
 @login_required
 def api_dashboard():

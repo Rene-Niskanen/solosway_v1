@@ -839,6 +839,8 @@ const StreamingResponseText: React.FC<{
   skipRevealAnimation?: boolean;
   /** Called when the line-by-line reveal animation has fully finished. Used to show feedback bar only after animation. */
   onRevealComplete?: (messageId: string) => void;
+  /** Called when the first citation document preview unveils – parent resumes post-callout streaming (pause/resume instead of hide). */
+  onFirstCalloutUnveiled?: (messageId: string) => void;
   /** Citation numbers (e.g. "1", "2") that have been saved for docx export for this message – those links render greyer. */
   savedCitationNumbersForMessage?: Set<string>;
   /** Called when user clicks "Ask follow up" on a citation callout preview. */
@@ -871,7 +873,7 @@ const StreamingResponseText: React.FC<{
   onCloseCitationPreviewBar?: (messageId: string) => void;
   /** When false, do not apply blue highlight to cited text (bar/document preview selection). */
   showBlueCitationHighlight?: boolean;
-}> = ({ text, isStreaming, citations, handleCitationClick, renderTextWithCitations, onTextUpdate, messageId, skipHighlight, showCitations = true, orangeCitationNumbers, greenCitationNumbers, selectedCitationNumber, selectedCitationMessageId, skipHighlightSwoop = false, skipRevealAnimation = false, onRevealComplete, savedCitationNumbersForMessage, onAskFollowUpFromCallout, onViewInDocumentFromCallout, citationViewedInDocument, onCloseDocumentFromCallout, orderedCitationNumbersForMessage, isCitationBarActive = true, currentCitationIndex = 0, acceptedCitationIndices, showReviewNextOnly = false, showInResponseCitationCallouts = true, showCitationPreviewBar = true, rejectedCitationNumbers, usePerplexityStyle = true, onCloseCitationPreviewBar, showBlueCitationHighlight = true }) => {
+}> = ({ text, isStreaming, citations, handleCitationClick, renderTextWithCitations, onTextUpdate, messageId, skipHighlight, showCitations = true, orangeCitationNumbers, greenCitationNumbers, selectedCitationNumber, selectedCitationMessageId, skipHighlightSwoop = false, skipRevealAnimation = false, onRevealComplete, onFirstCalloutUnveiled, savedCitationNumbersForMessage, onAskFollowUpFromCallout, onViewInDocumentFromCallout, citationViewedInDocument, onCloseDocumentFromCallout, orderedCitationNumbersForMessage, isCitationBarActive = true, currentCitationIndex = 0, acceptedCitationIndices, showReviewNextOnly = false, showInResponseCitationCallouts = true, showCitationPreviewBar = true, rejectedCitationNumbers, usePerplexityStyle = true, onCloseCitationPreviewBar, showBlueCitationHighlight = true }) => {
   const [shouldAnimate, setShouldAnimate] = React.useState(false);
   const hasAnimatedRef = React.useRef(false);
   const hasSwoopedBlueRef = React.useRef(false);
@@ -930,60 +932,23 @@ const StreamingResponseText: React.FC<{
     citationEntranceDoneRef.current.clear();
   }, [messageId]);
 
-  // First citation callout unveil: hide content after the first callout until top-to-bottom reveal completes.
-  // Once unveiled, the second part uses the same word-by-word streaming as the first part (getPrefixUpToWordCount + 48ms interval).
+  // First citation callout unveil: parent pauses streaming at first citation, resumes when document preview unveils (no hiding).
   const [firstCalloutUnveiled, setFirstCalloutUnveiled] = React.useState(false);
-  const [postCalloutRevealedWordCount, setPostCalloutRevealedWordCount] = React.useState(0);
+  const handleFirstCalloutUnveil = React.useCallback(() => {
+    setFirstCalloutUnveiled(true);
+    onFirstCalloutUnveiled?.(messageId ?? '');
+  }, [messageId, onFirstCalloutUnveiled]);
   const blockIndexRef = React.useRef(0);
   const firstCalloutBlockIndexRef = React.useRef<number | null>(null);
-  const effectivelyUnveiled = firstCalloutUnveiled || skipRevealAnimation;
-  const effectivelyUnveiledRef = React.useRef(effectivelyUnveiled);
-  effectivelyUnveiledRef.current = effectivelyUnveiled;
+  const effectivelyUnveiledRef = React.useRef(firstCalloutUnveiled || skipRevealAnimation);
+  effectivelyUnveiledRef.current = firstCalloutUnveiled || skipRevealAnimation;
   const firstCalloutUnveiledRef = React.useRef(firstCalloutUnveiled);
   firstCalloutUnveiledRef.current = firstCalloutUnveiled;
-  const POST_CALLOUT_CHUNK_MS = 48; // Same cadence as parent's first-part streaming
-  const POST_CALLOUT_WORDS_PER_TICK = 3;
-  const getPrefixUpToWordCount = React.useCallback((s: string, wordCount: number): string => {
-    if (wordCount <= 0 || !s) return '';
-    let count = 0;
-    let i = 0;
-    while (i < s.length && count < wordCount) {
-      while (i < s.length && /\s/.test(s[i])) i++;
-      if (i >= s.length) break;
-      while (i < s.length && !/\s/.test(s[i])) i++;
-      count++;
-    }
-    return s.slice(0, i);
-  }, []);
   React.useEffect(() => {
     blockIndexRef.current = 0;
     firstCalloutBlockIndexRef.current = null;
     setFirstCalloutUnveiled(false);
-    setPostCalloutRevealedWordCount(0);
   }, [messageId]);
-  const postCalloutIntervalRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
-  const postCalloutTotalWordsRef = React.useRef(0);
-  React.useEffect(() => {
-    if (!firstCalloutUnveiled || skipRevealAnimation) return;
-    setPostCalloutRevealedWordCount(0);
-    postCalloutIntervalRef.current = setInterval(() => {
-      const total = postCalloutTotalWordsRef.current;
-      setPostCalloutRevealedWordCount(prev => {
-        const next = Math.min(prev + POST_CALLOUT_WORDS_PER_TICK, total);
-        if (next >= total && postCalloutIntervalRef.current) {
-          clearInterval(postCalloutIntervalRef.current);
-          postCalloutIntervalRef.current = null;
-        }
-        return next;
-      });
-    }, POST_CALLOUT_CHUNK_MS);
-    return () => {
-      if (postCalloutIntervalRef.current) {
-        clearInterval(postCalloutIntervalRef.current);
-        postCalloutIntervalRef.current = null;
-      }
-    };
-  }, [firstCalloutUnveiled, skipRevealAnimation]);
 
   React.useEffect(() => {
     streamingRef.current = !!(text && text.length > prevTextLenRef.current) || !!isStreaming;
@@ -1078,13 +1043,12 @@ const StreamingResponseText: React.FC<{
     if (messageId) onRevealCompleteRef.current?.(messageId);
   }, [isStreaming, messageId, text, usePerplexityStyle]);
 
-  // When document preview unveil + post-callout streaming complete (and streaming is done), fire onRevealComplete
+  // When streaming is done (and document preview has unveiled if there was a citation), fire onRevealComplete
   React.useEffect(() => {
-    if (!firstCalloutUnveiled || isStreaming || skipRevealAnimation) return;
-    const total = postCalloutTotalWordsRef.current;
-    if (firstCalloutBlockIndexRef.current !== null && total > 0 && postCalloutRevealedWordCount < total) return;
+    if (isStreaming || skipRevealAnimation) return;
+    if (firstCalloutBlockIndexRef.current !== null && !firstCalloutUnveiled) return; // Wait for unveil when we have a citation
     if (messageId) onRevealCompleteRef.current?.(messageId);
-  }, [firstCalloutUnveiled, isStreaming, skipRevealAnimation, messageId, postCalloutRevealedWordCount]);
+  }, [firstCalloutUnveiled, isStreaming, skipRevealAnimation, messageId]);
 
   const onTextUpdateRef = React.useRef(onTextUpdate);
   onTextUpdateRef.current = onTextUpdate;
@@ -1465,31 +1429,8 @@ const StreamingResponseText: React.FC<{
     return processCitationsBeforeMarkdown(prepared);
   }, [textWithTagsStripped, citations, showCitations]);
 
-  // Post-callout streaming: same as first part - truncate to first N words, increment N every 48ms
-  const firstCitationNumForSplit = orderedCitationNumbersForMessage?.[0] ?? null;
-  const { textForMarkdown, postCalloutTotalWords } = React.useMemo(() => {
-    const base = textWithCitationPlaceholders;
-    if (!firstCitationNumForSplit || !effectivelyUnveiled) {
-      postCalloutTotalWordsRef.current = 0;
-      return { textForMarkdown: base, postCalloutTotalWords: 0 };
-    }
-    const placeholderRe = new RegExp(`%%CITATION_(?:SUPERSCRIPT|BRACKET|PENDING)_${firstCitationNumForSplit.replace(/[^0-9]/g, '')}%%`);
-    const match = base.match(placeholderRe);
-    if (!match || match.index == null) {
-      postCalloutTotalWordsRef.current = 0;
-      return { textForMarkdown: base, postCalloutTotalWords: 0 };
-    }
-    const endOfPlaceholder = match.index + match[0].length;
-    const textBeforeFirstCitation = base.slice(0, endOfPlaceholder);
-    const textAfterFirstCitation = base.slice(endOfPlaceholder);
-    const trimmedAfter = textAfterFirstCitation.trimStart();
-    const totalWords = trimmedAfter.split(/\s+/).filter(Boolean).length;
-    postCalloutTotalWordsRef.current = totalWords;
-    const truncated = getPrefixUpToWordCount(trimmedAfter, postCalloutRevealedWordCount);
-    const sep = textAfterFirstCitation.match(/^\s*/)?.[0] ?? ' '; // preserve original spacing
-    const textForMarkdown = textBeforeFirstCitation + (truncated ? sep + truncated : '');
-    return { textForMarkdown, postCalloutTotalWords: totalWords };
-  }, [textWithCitationPlaceholders, firstCitationNumForSplit, effectivelyUnveiled, postCalloutRevealedWordCount, getPrefixUpToWordCount]);
+  // Parent pauses at first citation and resumes when document preview unveils – no truncation needed, just render text as-is.
+  const textForMarkdown = textWithCitationPlaceholders;
 
   // Stable selector that reads from refs so markdownComponents identity doesn't change when only selection changes (avoids CitationLink remount → flash)
   const isCitationSelectedStable = React.useCallback((num: string) =>
@@ -2134,6 +2075,9 @@ const StreamingResponseText: React.FC<{
   const showCurrentCallout = citationBarMode && !showReviewNextOnly && currentCitationNum != null;
   const calloutRenderedForCurrentRef = React.useRef(false);
   if (citationBarMode) calloutRenderedForCurrentRef.current = false;
+  // Refs for first-citation unveil trigger (must be at top level; do not call useRef inside useMemo)
+  const firstPartTriggerRef = React.useRef<HTMLSpanElement>(null);
+  const firstPartTriggerRefP = React.useRef<HTMLSpanElement>(null);
   // Markdown components: memoized so identity is stable when only citation selection/saved changes (prevents CitationLink remount → flash)
   const markdownComponents = React.useMemo(() => {
     // When bar is closed, hide callouts for citations that were accepted (persisted or from review); never show callouts for rejected citations
@@ -2168,9 +2112,9 @@ const StreamingResponseText: React.FC<{
       if (currentCitationNum === firstCitationNum) {
         if (firstCalloutBlockIndexRef.current === null) firstCalloutBlockIndexRef.current = blockIndexRef.current;
         return (
-          <CitationCalloutUnveilWrapper key={`first-callout-unveil-${messageId ?? ''}`} onUnveilComplete={() => setFirstCalloutUnveiled(true)} skipAnimation={skipRevealAnimation || firstCalloutUnveiledRef.current}>
-            {calloutNode}
-          </CitationCalloutUnveilWrapper>
+        <CitationCalloutUnveilWrapper key={`first-callout-unveil-${messageId ?? ''}`} onUnveilComplete={handleFirstCalloutUnveil} skipAnimation={skipRevealAnimation || firstCalloutUnveiledRef.current || isStreaming} triggerRef={firstPartTriggerRef} isStreaming={isStreaming}>
+          {calloutNode}
+        </CitationCalloutUnveilWrapper>
         );
       }
       return calloutNode;
@@ -2192,15 +2136,12 @@ const StreamingResponseText: React.FC<{
         <CitationCallout key={`callout-${messageId ?? ''}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumberRef.current[num]} skipEntranceAnimation={citationEntranceDoneRef.current.has(num)} onEntranceComplete={() => citationEntranceDoneRef.current.add(num)} onClosePreviewBar={onCloseCitationPreviewBar ? () => onCloseCitationPreviewBar(messageId ?? '') : undefined} />
       </div>
     );
-    const hideAfterFirstCalloutStyle = { opacity: 0, visibility: 'hidden' as const, pointerEvents: 'none' as const };
-    const getPostCalloutStyle = (): React.CSSProperties | undefined => {
-      if (!effectivelyUnveiledRef.current) return hideAfterFirstCalloutStyle;
-      return undefined;
-    };
+    // No hiding: parent pauses streaming at first citation and resumes when document preview unveils, so post-callout text only appears when ready.
+    const getPostCalloutStyle = (): React.CSSProperties | undefined => undefined;
     const renderFirstCalloutWithUnveil = () => {
       if (firstCalloutBlockIndexRef.current === null) firstCalloutBlockIndexRef.current = blockIndexRef.current;
       return (
-        <CitationCalloutUnveilWrapper key={`first-callout-unveil-${messageId ?? ''}`} onUnveilComplete={() => setFirstCalloutUnveiled(true)} skipAnimation={skipRevealAnimation || firstCalloutUnveiledRef.current}>
+        <CitationCalloutUnveilWrapper key={`first-callout-unveil-${messageId ?? ''}`} onUnveilComplete={handleFirstCalloutUnveil} skipAnimation={skipRevealAnimation || firstCalloutUnveiledRef.current || isStreaming} triggerRef={firstPartTriggerRef} isStreaming={isStreaming}>
           {renderCallout(firstCitationNum!, 'callout-p', 0)}
         </CitationCalloutUnveilWrapper>
       );
@@ -2241,39 +2182,31 @@ const StreamingResponseText: React.FC<{
       if (useFirstCitationLayout && firstPartContentToRender != null) {
         return (
           <>
-            {(!isOnlyCitationExcerpt || shouldShowExcerptThisTime) && (
-              <>
+            <p style={{
+              margin: '0 0 0 0',
+              padding: 0,
+              textAlign: 'left',
+              lineHeight: 0,
+              wordWrap: 'break-word',
+              overflowWrap: 'break-word',
+              wordBreak: 'break-word',
+              ...(showBarFirstPartOnly ? citationLineBarBlockStyle : {}),
+            }}><span ref={firstPartTriggerRef} style={{ display: 'block', lineHeight: '1.7' }}>{showBarFirstPartOnly && <span aria-hidden style={citationLineBarInlineStyle} />}{firstPartContentToRender}</span></p>
+            {showCitationPreviewBar && showInResponseCitationCallouts && (citationBarMode ? currentCitationNum === firstCitationNum : showCalloutForNum(firstCitationNum)) && renderFirstCalloutWithUnveil()}
+            {restPartContent != null && restPartContent.length > 0 && (
+              <div style={{ ...getPostCalloutStyle(), marginTop: 4 }}>
                 <p style={{
-                  margin: '0 0 0 0',
+                  margin: '0 0 17.5px 0',
                   padding: 0,
                   textAlign: 'left',
                   lineHeight: 0,
                   wordWrap: 'break-word',
                   overflowWrap: 'break-word',
                   wordBreak: 'break-word',
-                  ...(showBarFirstPartOnly ? citationLineBarBlockStyle : {}),
-                }}><span style={{ display: 'block', lineHeight: '1.7' }}>{showBarFirstPartOnly && <span aria-hidden style={citationLineBarInlineStyle} />}{firstPartContentToRender}</span></p>
-                {citationBarMode && currentCitationNum === firstCitationNum
-                  ? renderSingleCalloutIfHere(citationNumbers, 'p')
-                  : (showCitationPreviewBar && showInResponseCitationCallouts && !citationBarMode && showCalloutForNum(firstCitationNum) && renderFirstCalloutWithUnveil())}
-                {restPartContent != null && restPartContent.length > 0 && (
-                  <div style={getPostCalloutStyle()}>
-                    <p style={{
-                      margin: '0 0 17.5px 0',
-                      padding: 0,
-                      textAlign: 'left',
-                      lineHeight: 0,
-                      wordWrap: 'break-word',
-                      overflowWrap: 'break-word',
-                      wordBreak: 'break-word',
-                      ...(showBarRestPart ? citationLineBarBlockStyle : {}),
-                    }}><span style={{ display: 'block', lineHeight: '1.7' }}>{showBarRestPart && <span aria-hidden style={citationLineBarInlineStyle} />}{wrapTwoWordChunksInMotion(restPartContent, 'p-rest')}</span></p>
-                  </div>
-                )}
-              </>
+                  ...(showBarRestPart ? citationLineBarBlockStyle : {}),
+                }}><span style={{ display: 'block', lineHeight: '1.7' }}>{showBarRestPart && <span aria-hidden style={citationLineBarInlineStyle} />}{wrapTwoWordChunksInMotion(restPartContent, 'p-rest')}</span></p>
+              </div>
             )}
-            {showCitationPreviewBar && showInResponseCitationCallouts && !citationBarMode && otherCalloutNums.map((num, i) => renderCallout(num, 'callout-p', i + 1))}
-            {citationBarMode && renderSingleCalloutIfHere(citationNumbers, 'p')}
           </>
         );
       }
@@ -2484,7 +2417,7 @@ const StreamingResponseText: React.FC<{
       return postCalloutStyle ? <div style={postCalloutStyle}>{content}</div> : content;
     },
     hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '6px 0' }} />,
-  }; }, [renderCitationPlaceholder, skipHighlight, runBlueSwoop, citations, onAskFollowUpFromCallout, onViewInDocumentFromCallout, citationViewedInDocument, onCloseDocumentFromCallout, onCloseCitationPreviewBar, messageId, citationBarMode, isCitationBarActive, orderedCitationNumbersForMessage, currentCitationIndex, acceptedCitationIndices, showReviewNextOnly, showCurrentCallout, currentCitationNum, showInResponseCitationCallouts, showCitationPreviewBar, blueCitationNumbers, orangeCitationNumbers, greenCitationNumbers, blueAnimatedCitationNumbers, rejectedCitationNumbers]);
+  }; }, [renderCitationPlaceholder, skipHighlight, runBlueSwoop, citations, onAskFollowUpFromCallout, onViewInDocumentFromCallout, citationViewedInDocument, onCloseDocumentFromCallout, onCloseCitationPreviewBar, messageId, citationBarMode, isCitationBarActive, orderedCitationNumbersForMessage, currentCitationIndex, acceptedCitationIndices, showReviewNextOnly, showCurrentCallout, currentCitationNum, showInResponseCitationCallouts, showCitationPreviewBar, blueCitationNumbers, orangeCitationNumbers, greenCitationNumbers, blueAnimatedCitationNumbers, rejectedCitationNumbers, handleFirstCalloutUnveil]);
 
   // Perplexity-style: same structure as markdownComponents (real <p>, <h1>, lists) but block content gets 2-word motion.span wrap so reveal works without flattening layout.
   const perplexityMarkdownComponents = React.useMemo(() => {
@@ -2519,9 +2452,9 @@ const StreamingResponseText: React.FC<{
       if (currentCitationNum === firstCitationNumP) {
         if (firstCalloutBlockIndexRef.current === null) firstCalloutBlockIndexRef.current = blockIndexRef.current;
         return (
-          <CitationCalloutUnveilWrapper key={`first-callout-unveil-${messageId ?? ''}`} onUnveilComplete={() => setFirstCalloutUnveiled(true)} skipAnimation={skipRevealAnimation || firstCalloutUnveiledRef.current}>
-            {calloutNode}
-          </CitationCalloutUnveilWrapper>
+        <CitationCalloutUnveilWrapper key={`first-callout-unveil-${messageId ?? ''}`} onUnveilComplete={handleFirstCalloutUnveil} skipAnimation={skipRevealAnimation || firstCalloutUnveiledRef.current || isStreaming} triggerRef={firstPartTriggerRefP} isStreaming={isStreaming}>
+          {calloutNode}
+        </CitationCalloutUnveilWrapper>
         );
       }
       return calloutNode;
@@ -2543,15 +2476,12 @@ const StreamingResponseText: React.FC<{
         <CitationCallout key={`callout-${messageId ?? ''}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumberRef.current[num]} skipEntranceAnimation={citationEntranceDoneRef.current.has(num)} onEntranceComplete={() => citationEntranceDoneRef.current.add(num)} onClosePreviewBar={onCloseCitationPreviewBar ? () => onCloseCitationPreviewBar(messageId ?? '') : undefined} />
       </div>
     );
-    const hideAfterFirstCalloutStyleP = { opacity: 0, visibility: 'hidden' as const, pointerEvents: 'none' as const };
-    const getPostCalloutStyleP = (): React.CSSProperties | undefined => {
-      if (!effectivelyUnveiledRef.current) return hideAfterFirstCalloutStyleP;
-      return undefined;
-    };
+    // No hiding: parent pauses streaming at first citation and resumes when document preview unveils.
+    const getPostCalloutStyleP = (): React.CSSProperties | undefined => undefined;
     const renderFirstCalloutWithUnveilP = () => {
       if (firstCalloutBlockIndexRef.current === null) firstCalloutBlockIndexRef.current = blockIndexRef.current;
       return (
-        <CitationCalloutUnveilWrapper key={`first-callout-unveil-${messageId ?? ''}`} onUnveilComplete={() => setFirstCalloutUnveiled(true)} skipAnimation={skipRevealAnimation || firstCalloutUnveiledRef.current}>
+        <CitationCalloutUnveilWrapper key={`first-callout-unveil-${messageId ?? ''}`} onUnveilComplete={handleFirstCalloutUnveil} skipAnimation={skipRevealAnimation || firstCalloutUnveiledRef.current || isStreaming} triggerRef={firstPartTriggerRefP} isStreaming={isStreaming}>
           {renderCalloutP(firstCitationNumP!, 'callout-p', 0)}
         </CitationCalloutUnveilWrapper>
       );
@@ -2594,39 +2524,31 @@ const StreamingResponseText: React.FC<{
         const innerRest = restPartContentP != null && restPartContentP.length > 0 ? wrapTwoWordChunksInMotion(restPartContentP, 'p-rest') : null;
         return (
           <>
-            {(!isOnlyCitationExcerpt || shouldShowExcerptThisTime) && (
-              <>
+            <p style={{
+              margin: '0 0 0 0',
+              padding: 0,
+              textAlign: 'left',
+              lineHeight: 0,
+              wordWrap: 'break-word',
+              overflowWrap: 'break-word',
+              wordBreak: 'break-word',
+              ...(showBarFirstPartOnlyP ? citationLineBarBlockStyle : {}),
+            }}><span ref={firstPartTriggerRefP} style={{ display: 'block', lineHeight: '1.7' }}>{showBarFirstPartOnlyP && <span aria-hidden style={citationLineBarInlineStyle} />}{innerFirst}</span></p>
+            {showCitationPreviewBar && showInResponseCitationCallouts && (citationBarMode ? currentCitationNum === firstCitationNumP : showCalloutForNum(firstCitationNumP)) && renderFirstCalloutWithUnveilP()}
+            {innerRest != null && (
+              <div style={{ ...getPostCalloutStyleP(), marginTop: 4 }}>
                 <p style={{
-                  margin: '0 0 0 0',
+                  margin: '0 0 17.5px 0',
                   padding: 0,
                   textAlign: 'left',
                   lineHeight: 0,
                   wordWrap: 'break-word',
                   overflowWrap: 'break-word',
                   wordBreak: 'break-word',
-                  ...(showBarFirstPartOnlyP ? citationLineBarBlockStyle : {}),
-                }}><span style={{ display: 'block', lineHeight: '1.7' }}>{showBarFirstPartOnlyP && <span aria-hidden style={citationLineBarInlineStyle} />}{innerFirst}</span></p>
-                {citationBarMode && currentCitationNum === firstCitationNumP
-                  ? renderSingleCalloutIfHere(citationNumbers, 'p')
-                  : (showCitationPreviewBar && showInResponseCitationCallouts && !citationBarMode && showCalloutForNum(firstCitationNumP) && renderFirstCalloutWithUnveilP())}
-                {innerRest != null && (
-                  <div style={getPostCalloutStyleP()}>
-                    <p style={{
-                      margin: '0 0 17.5px 0',
-                      padding: 0,
-                      textAlign: 'left',
-                      lineHeight: 0,
-                      wordWrap: 'break-word',
-                      overflowWrap: 'break-word',
-                      wordBreak: 'break-word',
-                      ...(showBarRestPartP ? citationLineBarBlockStyle : {}),
-                    }}><span style={{ display: 'block', lineHeight: '1.7' }}>{showBarRestPartP && <span aria-hidden style={citationLineBarInlineStyle} />}{innerRest}</span></p>
-                  </div>
-                )}
-              </>
+                  ...(showBarRestPartP ? citationLineBarBlockStyle : {}),
+                }}><span style={{ display: 'block', lineHeight: '1.7' }}>{showBarRestPartP && <span aria-hidden style={citationLineBarInlineStyle} />}{innerRest}</span></p>
+              </div>
             )}
-            {showCitationPreviewBar && showInResponseCitationCallouts && !citationBarMode && otherCalloutNumsP.map((num, i) => renderCalloutOrFirstUnveilP(num, 'callout-p', i + 1))}
-            {citationBarMode && renderSingleCalloutIfHere(citationNumbers, 'p')}
           </>
         );
       }
@@ -2811,7 +2733,7 @@ const StreamingResponseText: React.FC<{
       );
       return postCalloutStyle ? <div style={postCalloutStyle}>{content}</div> : content;
     },
-  }; }, [markdownComponents, wrapTwoWordChunksInMotion, citations, showCitationPreviewBar, showInResponseCitationCallouts, citationBarMode, messageId, onAskFollowUpFromCallout, onViewInDocumentFromCallout, citationViewedInDocument, onCloseDocumentFromCallout, onCloseCitationPreviewBar, acceptedCitationIndices, orderedCitationNumbersForMessage, showCurrentCallout, currentCitationNum, rejectedCitationNumbers]);
+  }; }, [markdownComponents, wrapTwoWordChunksInMotion, citations, showCitationPreviewBar, showInResponseCitationCallouts, citationBarMode, messageId, onAskFollowUpFromCallout, onViewInDocumentFromCallout, citationViewedInDocument, onCloseDocumentFromCallout, onCloseCitationPreviewBar, acceptedCitationIndices, orderedCitationNumbersForMessage, showCurrentCallout, currentCitationNum, rejectedCitationNumbers, handleFirstCalloutUnveil]);
 
   return (
     <>
@@ -3690,9 +3612,14 @@ const CitationCalloutUnveilWrapper: React.FC<{
   children: React.ReactNode;
   onUnveilComplete: () => void;
   skipAnimation?: boolean;
-}> = ({ children, onUnveilComplete, skipAnimation = false }) => {
+  /** When provided, the 400ms delay only starts when this element becomes visible (watches first citation button), unless isStreaming. */
+  triggerRef?: React.RefObject<HTMLElement | null>;
+  /** When true, start delay immediately on mount (don't wait for trigger in viewport – during streaming the trigger may be below fold). */
+  isStreaming?: boolean;
+}> = ({ children, onUnveilComplete, skipAnimation = false, triggerRef, isStreaming = false }) => {
   const measureRef = React.useRef<HTMLDivElement>(null);
   const [measuredHeight, setMeasuredHeight] = React.useState<number | null>(null);
+  const [triggerSeen, setTriggerSeen] = React.useState(!triggerRef || isStreaming);
   const [delayDone, setDelayDone] = React.useState(false);
   const [animationDone, setAnimationDone] = React.useState(false);
   const onUnveilCompleteRef = React.useRef(onUnveilComplete);
@@ -3701,6 +3628,23 @@ const CitationCalloutUnveilWrapper: React.FC<{
 
   // Snapshot children once at mount so parent re-renders during animation don't cause jitter
   const frozenChildrenRef = React.useRef<React.ReactNode>(children);
+
+  // During streaming, trigger is "seen" immediately so animation starts when callout mounts (trigger may be below fold)
+  React.useEffect(() => {
+    if (isStreaming) setTriggerSeen(true);
+  }, [isStreaming]);
+
+  // Watch trigger element (first citation button) – when not streaming, delay starts when it enters viewport
+  React.useEffect(() => {
+    if (isStreaming || !triggerRef?.current) return;
+    const el = triggerRef.current;
+    const io = new IntersectionObserver(
+      ([entry]) => { if (entry?.isIntersecting) setTriggerSeen(true); },
+      { rootMargin: '20px', threshold: 0 }
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [triggerRef, isStreaming]);
 
   React.useLayoutEffect(() => {
     if (skipAnimation) {
@@ -3725,12 +3669,12 @@ const CitationCalloutUnveilWrapper: React.FC<{
     return () => clearTimeout(t);
   }, [skipAnimation, measuredHeight]);
 
-  // Delay phase: wait UNVEIL_DELAY_MS after measurement before starting clip-path animation
+  // Delay phase: wait UNVEIL_DELAY_MS after measurement AND after trigger seen before starting clip-path animation
   React.useEffect(() => {
-    if (skipAnimation || measuredHeight === null || delayDone) return;
+    if (skipAnimation || measuredHeight === null || delayDone || !triggerSeen) return;
     const t = setTimeout(() => setDelayDone(true), UNVEIL_DELAY_MS);
     return () => clearTimeout(t);
-  }, [skipAnimation, measuredHeight, delayDone]);
+  }, [skipAnimation, measuredHeight, delayDone, triggerSeen]);
 
   const handleAnimationComplete = React.useCallback(() => {
     if (hasCalledCompleteRef.current) return;
@@ -4069,6 +4013,52 @@ const CitationCallout: React.FC<{
   const effectivelyClosed = isCalloutClosed || isClosed;
   if (effectivelyClosed) return null;
 
+  // Placeholder card when citation marker is in text but citation data not yet available (e.g. during streaming).
+  // Renders so CitationCalloutUnveilWrapper can animate; when citation data arrives, we re-render with hasCalloutCard.
+  if (!hasCalloutCard) {
+    return (
+      <motion.div
+        ref={calloutRootRef}
+        {...rootProps}
+        initial={citationCalloutEntrance.initial}
+        animate={citationCalloutEntrance.animate}
+        transition={citationCalloutEntrance.transition}
+        onAnimationComplete={!skipEntranceAnimation && onEntranceComplete ? () => onEntranceComplete() : undefined}
+        style={{
+          position: 'relative',
+          display: 'flex',
+          flexDirection: 'column',
+          width: '100%',
+          maxWidth: '100%',
+          minWidth: 0,
+          boxSizing: 'border-box',
+          marginTop: '8.8px',
+          marginBottom: '12px',
+          borderRadius: 6,
+          overflow: 'hidden',
+          border: '1px solid #e5e7eb',
+          boxShadow: '0 0 6px rgba(0,0,0,0.06)',
+          contain: 'layout',
+        }}
+      >
+        <div
+          style={{
+            padding: '24px 16px',
+            minHeight: 80,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            color: '#9ca3af',
+            fontSize: '13px',
+            backgroundColor: '#f9fafb',
+          }}
+        >
+          Loading source…
+        </div>
+      </motion.div>
+    );
+  }
+
   if (hasCalloutCard) {
     const showAskQuestion = !!onAskFollowUp;
     const showViewDocument = !hideBarActions && (onViewInDocument || (isViewedInDocument && onCloseDocument));
@@ -4103,11 +4093,11 @@ const CitationCallout: React.FC<{
           {/* Hover perimeter: only the bbox preview + bar area triggers show/hide of the bar (avoids glitchy enter/leave) */}
           <div
             style={{ display: 'flex', flexDirection: 'column', width: '100%', minWidth: 0 }}
-            onMouseEnter={hideBarActions ? handleCardHoverEnter : undefined}
-            onMouseLeave={hideBarActions ? handleCardHoverLeave : undefined}
+            onMouseEnter={canShowPreview ? handleCardHoverEnter : undefined}
+            onMouseLeave={canShowPreview ? handleCardHoverLeave : undefined}
           >
-          {/* When hideBarActions + preview: bar is always in DOM as overlay with opacity transition (0 layout reflow / jitter) */}
-          {hideBarActions && canShowPreview ? (
+          {/* When preview: bar is overlay with opacity transition (hover-only so it doesn't span below the card) */}
+          {canShowPreview ? (
             <div style={{ position: 'relative', width: '100%', height: 180, minHeight: 180, flexShrink: 0, boxSizing: 'border-box' }}>
               <div
                 ref={previewContainerRef}
@@ -4175,7 +4165,7 @@ const CitationCallout: React.FC<{
                   transition: 'opacity 0.12s ease-out',
                   willChange: 'opacity',
                 }}
-                onMouseEnter={hideBarActions ? handleCardHoverEnter : undefined}
+                onMouseEnter={handleCardHoverEnter}
               >
                 <div
                   style={{
@@ -4341,8 +4331,8 @@ const CitationCallout: React.FC<{
               />
             </div>
           )}
-          {/* Document bar: ask citation popup design + View/Accept when !hideBarActions */}
-          {(!hideBarActions || !canShowPreview) && (
+          {/* Document bar: only when no preview (e.g. DOCX); when canShowPreview the bar is in the hover overlay above) */}
+          {!canShowPreview && (
           <div
             style={{
               flexShrink: 0,
@@ -4448,95 +4438,6 @@ const CitationCallout: React.FC<{
                     </button>
                   </div>
                 </form>
-              )}
-              {hasAnyAction && (showViewDocument || showAccept || onClosePreviewBar) && (
-                <div role="group" aria-label="Citation actions" style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-                  {showViewDocument && (
-                    <button
-                      type="button"
-                      title={isViewedInDocument ? 'Close' : 'View'}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        (e.currentTarget as HTMLElement).blur();
-                        if (isViewedInDocument && onCloseDocument) onCloseDocument();
-                        else if (onViewInDocument) onViewInDocument();
-                      }}
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        gap: compactActions ? 0 : '3px',
-                        padding: compactActions ? 6 : '6px 10px',
-                        fontSize: 11,
-                        fontWeight: 600,
-                        color: isViewedInDocument ? '#5c2e0a' : '#666666',
-                        backgroundColor: isViewedInDocument ? '#D4B88A' : '#F2F2EF',
-                        border: isViewedInDocument ? '1px solid rgba(180, 140, 80, 0.55)' : '1px solid #d4d4d4',
-                        borderRadius: 6,
-                        cursor: 'pointer',
-                        outline: 'none',
-                      }}
-                    >
-                      {isViewedInDocument ? (compactActions ? <X size={16} /> : <> <X size={14} /> Close </>) : 'View'}
-                    </button>
-                  )}
-                  {showAccept && (
-                    <button
-                      type="button"
-                      title="Accept"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        (e.currentTarget as HTMLElement).blur();
-                        handleClose();
-                      }}
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        gap: compactActions ? 0 : '3px',
-                        padding: compactActions ? 6 : '6px 10px',
-                        fontSize: 11,
-                        fontWeight: 500,
-                        color: '#1f2937',
-                        backgroundColor: '#EBF1DE',
-                        border: '1px solid #e5e7eb',
-                        borderRadius: 6,
-                        cursor: 'pointer',
-                        outline: 'none',
-                      }}
-                    >
-                      {compactActions ? <Check size={16} strokeWidth={3.25} /> : <> <Check size={14} strokeWidth={3.25} /> Accept </>}
-                    </button>
-                  )}
-                  {onClosePreviewBar && (
-                    <button
-                      type="button"
-                      title="Close document preview cards"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        (e.currentTarget as HTMLElement).blur();
-                        onClosePreviewBar();
-                      }}
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        width: 32,
-                        height: 32,
-                        padding: 0,
-                        fontSize: 11,
-                        color: '#6b7280',
-                        backgroundColor: 'transparent',
-                        border: '1px solid #e5e7eb',
-                        borderRadius: 6,
-                        cursor: 'pointer',
-                        outline: 'none',
-                      }}
-                    >
-                      <ChevronDown size={18} strokeWidth={1.25} />
-                    </button>
-                  )}
-                </div>
               )}
             </div>
           </div>
@@ -6140,6 +6041,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   const perplexityLoadingIdRef = React.useRef<string | null>(null);
   const perplexityStreamEndedRef = React.useRef(false);
   const perplexityFinalizeRef = React.useRef<(() => void) | null>(null);
+  /** When document preview (first citation callout) unveils, we resume revealing post-callout text. Until then, we pause. */
+  const firstCalloutUnveiledForStreamingRef = React.useRef(false);
   const PERPLEXITY_CHUNK_MS = 48;
   /** Reveal first N words but preserve original newlines/spacing (no join(' ') so paragraphs stay). */
   const getPrefixUpToWordCount = (text: string, wordCount: number): string => {
@@ -6155,31 +6058,59 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     }
     return s.slice(0, i);
   };
+  /** Word count up to and including the first citation. Raw stream may use [1], [ID: 1], or [ID: 1](BLOCK_CITE_ID_N). Match all. */
+  const getWordCountUpToFirstCitation = (raw: string): number | null => {
+    const placeholderMatch = raw.match(/%%CITATION_(?:SUPERSCRIPT|BRACKET|PENDING)_\d+%%/);
+    const bracketMatch = raw.match(/\[\d+\]/);
+    const idMatch = raw.match(/\[ID:\s*\d+\](?:\s*\(\s*BLOCK_CITE_ID_\d+\s*\))?/);
+    let endIndex: number | null = null;
+    const candidates: { end: number }[] = [];
+    if (placeholderMatch && placeholderMatch.index != null) {
+      candidates.push({ end: placeholderMatch.index + placeholderMatch[0].length });
+    }
+    if (bracketMatch && bracketMatch.index != null) {
+      candidates.push({ end: bracketMatch.index + bracketMatch[0].length });
+    }
+    if (idMatch && idMatch.index != null) {
+      candidates.push({ end: idMatch.index + idMatch[0].length });
+    }
+    if (candidates.length === 0) return null;
+    endIndex = Math.min(...candidates.map((c) => c.end));
+    const upTo = raw.slice(0, endIndex);
+    return upTo.trim().split(/\s+/).filter(Boolean).length;
+  };
+  const perplexityRevealTick = React.useCallback(() => {
+    const lid = perplexityLoadingIdRef.current;
+    const raw = streamingAccumulatedTextRef.current;
+    if (!lid || !raw) return;
+    const total = raw.trim().split(/\s+/).filter(Boolean).length;
+    const firstCitationWordCount = getWordCountUpToFirstCitation(raw);
+    const effectiveMax =
+      firstCitationWordCount != null && !firstCalloutUnveiledForStreamingRef.current
+        ? Math.min(perplexityRevealedCountRef.current + 3, firstCitationWordCount)
+        : Math.min(perplexityRevealedCountRef.current + 3, total);
+    perplexityRevealedCountRef.current = effectiveMax;
+    const prefix = getPrefixUpToWordCount(raw, perplexityRevealedCountRef.current);
+    setChatMessages(prev => prev.map(msg => msg.id === lid ? { ...msg, text: prefix } : msg));
+    if (perplexityStreamEndedRef.current && (perplexityRevealedCountRef.current >= total || total === 0)) {
+      if (perplexityRevealIntervalRef.current != null) {
+        clearInterval(perplexityRevealIntervalRef.current);
+        perplexityRevealIntervalRef.current = null;
+      }
+      perplexityLoadingIdRef.current = null;
+      perplexityFinalizeRef.current?.();
+      perplexityFinalizeRef.current = null;
+    }
+  }, []);
   const startPerplexityRevealInterval = React.useCallback(() => {
     if (perplexityRevealIntervalRef.current != null) return;
     perplexityRevealedCountRef.current = 0;
     perplexityStreamEndedRef.current = false;
     perplexityFinalizeRef.current = null;
-    perplexityRevealIntervalRef.current = setInterval(() => {
-      const lid = perplexityLoadingIdRef.current;
-      const raw = streamingAccumulatedTextRef.current;
-      if (!lid || !raw) return;
-      const total = raw.trim().split(/\s+/).filter(Boolean).length;
-      perplexityRevealedCountRef.current = Math.min(perplexityRevealedCountRef.current + 3, total);
-      const take = perplexityRevealedCountRef.current;
-      const prefix = getPrefixUpToWordCount(raw, take);
-      setChatMessages(prev => prev.map(msg => msg.id === lid ? { ...msg, text: prefix } : msg));
-      if (perplexityStreamEndedRef.current && (take >= total || total === 0)) {
-        if (perplexityRevealIntervalRef.current != null) {
-          clearInterval(perplexityRevealIntervalRef.current);
-          perplexityRevealIntervalRef.current = null;
-        }
-        perplexityLoadingIdRef.current = null;
-        perplexityFinalizeRef.current?.();
-        perplexityFinalizeRef.current = null;
-      }
-    }, PERPLEXITY_CHUNK_MS);
-  }, []);
+    firstCalloutUnveiledForStreamingRef.current = false;
+    perplexityRevealIntervalRef.current = setInterval(perplexityRevealTick, PERPLEXITY_CHUNK_MS);
+    perplexityRevealTick(); // Fire immediately so text appears on first token
+  }, [perplexityRevealTick]);
   const stopPerplexityRevealInterval = React.useCallback(() => {
     if (perplexityRevealIntervalRef.current != null) {
       clearInterval(perplexityRevealIntervalRef.current);
@@ -8485,6 +8416,18 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     setCitationClickPanel(null);
     closeExpandedCardView();
   }, [closeExpandedCardView]);
+
+  /** When user moves to a different citation (prev/next or click), close the previous citation's document preview and click panel so only the new citation's callout shows. */
+  const citationReviewCurrentIndexRef = React.useRef<number>(citationReviewCurrentIndex);
+  React.useEffect(() => {
+    if (citationReviewMessageId == null) return;
+    const prev = citationReviewCurrentIndexRef.current;
+    citationReviewCurrentIndexRef.current = citationReviewCurrentIndex;
+    if (prev !== citationReviewCurrentIndex) {
+      closeExpandedCardView();
+      setCitationClickPanel(null);
+    }
+  }, [citationReviewCurrentIndex, citationReviewMessageId, closeExpandedCardView]);
 
   // Citation bar: set review state only for latest (by position) when it has citations; clear when latest has no text/citations or when latest message id changes
   React.useEffect(() => {
@@ -16234,6 +16177,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   setRevealCompleteTick((t) => t + 1);
                   // Do not auto-scroll when response finishes; respect user scroll position.
                 }}
+                onFirstCalloutUnveiled={(id) => {
+                  if (perplexityLoadingIdRef.current === id) firstCalloutUnveiledForStreamingRef.current = true;
+                }}
                 savedCitationNumbersForMessage={undefined}
                 onAskFollowUpFromCallout={(msgId, citationNumber, citationData) => {
                   const data = citationData as CitationData & { document_id?: string; block_id?: string; cited_text?: string; block_content?: string; bbox?: { left: number; top: number; width: number; height: number }; page?: number; page_number?: number };
@@ -16276,12 +16222,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 }}
                 citationViewedInDocument={citationViewedInDocument}
                 onCloseDocumentFromCallout={closeExpandedCardView}
-                orderedCitationNumbersForMessage={citationReviewMessageId === finalKey ? (() => { const o = getOrderedCitationNumbersFromMessageText(message.text ?? ''); return o.length > 0 ? o : undefined; })() : undefined}
-                isCitationBarActive={citationReviewMessageId === finalKey}
+                orderedCitationNumbersForMessage={(() => { const o = getOrderedCitationNumbersFromMessageText(message.text ?? ''); return o.length > 0 ? o : undefined; })()}
+                isCitationBarActive={isLatestAssistantMessage}
                 currentCitationIndex={citationReviewMessageId === finalKey ? citationReviewCurrentIndex : 0}
                 acceptedCitationIndices={citationReviewMessageId === finalKey ? citationReviewAcceptedIndices : (citationAcceptedByMessageId[finalKey] ?? undefined)}
                 showReviewNextOnly={citationReviewMessageId === finalKey ? citationReviewShowReviewNextOnly : false}
-                showInResponseCitationCallouts={citationReviewMessageId === finalKey}
+                showInResponseCitationCallouts={!!(message.text && getOrderedCitationNumbersFromMessageText(message.text ?? '').length > 0)}
                 showCitationPreviewBar={showCitationPreviewBar && !citationPreviewClosedForMessageIds.has(finalKey)}
                 onCloseCitationPreviewBar={(id) => setCitationPreviewClosedForMessageIds((prev) => new Set(prev).add(id))}
                 rejectedCitationNumbers={rejectedCitationNumbersByMessage.get(String(message.id ?? finalKey))}

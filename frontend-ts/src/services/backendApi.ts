@@ -2088,13 +2088,12 @@ class BackendApiService {
 
   async checkAuth() {
     try {
-      // Use AbortController for proper timeout handling
-      // 12s timeout to allow slow backend after restart (e.g. /api/dashboard); on timeout AuthGuard falls back to localStorage
+      // Lightweight session check via /api/auth/me (user only); 8s timeout
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 12000);
-      
+      const timeoutId = setTimeout(() => controller.abort(), 8000);
+
       console.log('🔍 checkAuth: Starting auth check request...');
-      const response = await fetch(`${this.baseUrl}/api/dashboard`, {
+      const response = await fetch(`${this.baseUrl}/api/auth/me`, {
         method: 'GET',
         credentials: 'include',
         headers: {
@@ -2123,7 +2122,7 @@ class BackendApiService {
         const errorMsg = (body.error && body.error.trim()) ? body.error : `HTTP ${response.status}: ${response.statusText}`;
         console.log(`❌ checkAuth: Authentication failed - ${errorMsg}`);
         if (response.status === 500 && body.traceback) {
-          console.error('📋 Dashboard 500 traceback:', body.traceback);
+          console.error('📋 Auth 500 traceback:', body.traceback);
         }
         return {
           success: false,
@@ -2134,7 +2133,7 @@ class BackendApiService {
       }
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
-        console.error('⏱️ checkAuth: Request timed out after 12 seconds');
+        console.error('⏱️ checkAuth: Request timed out after 8 seconds');
         return {
           success: false,
           error: 'Request timeout - backend server not responding'
