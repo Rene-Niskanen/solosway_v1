@@ -42,14 +42,11 @@ from backend.llm.utils.personality_prompts import (
     VALID_PERSONALITY_IDS,
     DEFAULT_PERSONALITY_ID,
 )
-from backend.llm.tools.citation_mapping import create_chunk_citation_tool, _narrow_bbox_to_cited_line
+from backend.llm.tools.citation_mapping import create_chunk_citation_tool, _narrow_bbox_to_cited_line, match_citation_to_chunk
 from backend.llm.prompts.conversation import format_memories_section
 from backend.llm.bootstrap.loaders import BootstrapScope, get_bootstrap_context
 from backend.llm.prompts.system_builder import build_system_content
-from backend.llm.prompts.no_results import (
-    get_responder_no_chunks_system_prompt,
-    get_responder_no_chunks_human_prompt,
-)
+from backend.llm.prompts.no_results import get_no_results_template_message
 from backend.llm.utils.workspace_context import build_workspace_context
 from backend.llm.prompts.human_templates import format_attachment_context
 from backend.services.supabase_client_factory import get_supabase_client
@@ -262,6 +259,30 @@ def _strip_leaked_heading_before_value(text: str) -> str:
     return re.sub(r"(^|\s)Market\s+Value\s+(?=\*\*)", r"\1", text, flags=re.IGNORECASE)
 
 
+def _strip_standalone_value_label_line(text: str) -> str:
+    """Remove a leading line like 'Market Value: £2,400,000' or '**Market Value:** £2,400,000' when the next sentence repeats the same value (avoids duplicate)."""
+    if not text or not text.strip():
+        return text
+    lines = text.split("\n")
+    if not lines:
+        return text
+    first = lines[0].strip()
+    # Match first line that is only "Market Value" + optional colon/bold + amount (optional citation)
+    m = re.match(
+        r"^(?:\*\*)?\s*Market\s+Value\s*:?\s*(?:\*\*)?\s*[:\s]*\s*£?\s*([\d,]+(?:\.[\d]+)?)\s*(?:\*\*)?\s*(?:\s*\[\d+\])?\s*$",
+        first,
+        re.IGNORECASE,
+    )
+    if not m:
+        return text
+    amount = m.group(1).replace(",", "")
+    rest = "\n".join(lines[1:]).strip()
+    # Only strip if the rest also contains this amount (removing duplication)
+    if not rest or amount not in re.sub(r"[,.\s]", "", rest):
+        return text
+    return rest
+
+
 def _strip_entirely_closings(text: str) -> str:
     """Remove closing phrases that should never appear (e.g. comparables/valuation 'feel free to ask')."""
     if not (text or text.strip()):
@@ -306,6 +327,7 @@ def _strip_mid_response_generic_closings(text: str) -> str:
     result = _normalize_bare_citation_digits(result)
     result = _strip_amount_in_words_parentheticals(result)
     result = _strip_leaked_heading_before_value(result)
+    result = _strip_standalone_value_label_line(result)
     result = re.sub(r"  +", " ", result).strip() if result else result
     # Remove any "strip entirely" closings that were moved to the end (so they never appear)
     result = _strip_entirely_closings(result)
@@ -1086,6 +1108,37 @@ def format_chunks_with_block_ids(
         f"{len(metadata_lookup_tables)} docs"
     )
     return formatted_text, short_id_lookup, metadata_lookup_tables
+
+
+def _build_chunk_block_to_cite_map(
+    chunks_metadata: List[Dict[str, Any]]
+) -> Dict[Tuple[str, int], Tuple[str, str]]:
+    """
+    Build (chunk_id, block_index) -> (short_id, block_cite_id) in the same order as format_chunks_with_block_ids.
+    Used to resolve research notes to citation markers for the curated-piece flow.
+    """
+    chunk_block_to_cite: Dict[Tuple[str, int], Tuple[str, str]] = {}
+    block_id_counter = 1
+    for idx, chunk in enumerate(chunks_metadata, start=1):
+        short_id = str(idx)
+        chunk_id = chunk.get("chunk_id", "")
+        chunk_text = chunk.get("chunk_text", "")
+        blocks = chunk.get("blocks", [])
+        if not chunk_id or not chunk_text:
+            continue
+        if blocks and isinstance(blocks, list):
+            for block_index, block in enumerate(blocks):
+                if not isinstance(block, dict):
+                    continue
+                if (block.get("content") or "").strip():
+                    block_cite_id = f"BLOCK_CITE_ID_{block_id_counter}"
+                    chunk_block_to_cite[(chunk_id, block_index)] = (short_id, block_cite_id)
+                    block_id_counter += 1
+        else:
+            block_cite_id = f"BLOCK_CITE_ID_{block_id_counter}"
+            chunk_block_to_cite[(chunk_id, 0)] = (short_id, block_cite_id)
+            block_id_counter += 1
+    return chunk_block_to_cite
 
 
 def replace_ids_with_citation_numbers(
@@ -2174,6 +2227,8 @@ async def generate_conversational_answer_with_citations(
     paste_context: str = "",
     state: Optional[dict] = None,
     conversation_context: Optional[str] = None,
+    research_notes_section: Optional[str] = None,
+    research_notes_instruction: Optional[str] = None,
 ) -> Tuple[str, str]:
     """
     Generate conversational answer with citation instructions (jan28th-style).
@@ -2246,12 +2301,15 @@ Is this the first message in the conversation? {is_first_message}
 {paste_context.strip()}
 
 """
+    research_section = (research_notes_section or "").strip()
     doc_section = f"""**Document content from search (each fact is inside a <BLOCK id="..."> tag):**
 
 {formatted_chunks}
 {metadata_section}
 """
     instructions = "- Answer based on the content above. For each fact you use, cite it as [ID: X](BLOCK_CITE_ID_N) where the block id is from the <BLOCK> whose content actually contains that fact (e.g. the block with \"56\" and \"D\" for EPC current rating)."
+    if research_notes_instruction and research_notes_instruction.strip():
+        instructions = instructions + research_notes_instruction.strip()
     if paste_section:
         instructions = "- Use both the pasted/attached content and the document content from search. For facts from the pasted content, explain in your own words (no citation). For facts from the document content, cite as [ID: X](BLOCK_CITE_ID_N). " + instructions
     instructions += """
@@ -2261,6 +2319,7 @@ Is this the first message in the conversation? {is_first_message}
 - Explain in a clear, conversational way; use Markdown where it helps readability. Be accurate.
 """
 
+    doc_block = research_section + doc_section if research_section else doc_section
     if conversation_context and conversation_context.strip():
         human_content = (
             "**Previous exchange:**\n"
@@ -2269,7 +2328,7 @@ Is this the first message in the conversation? {is_first_message}
             + user_query
             + "\n"
             + paste_section
-            + doc_section
+            + doc_block
             + "**Instructions:**\n"
             + instructions
         )
@@ -2277,7 +2336,7 @@ Is this the first message in the conversation? {is_first_message}
         human_content = f"""
 **User Question:**
 {user_query}
-{paste_section}{doc_section}
+{paste_section}{doc_block}
 **Instructions:**
 {instructions}
 """
@@ -2356,6 +2415,45 @@ async def generate_answer_with_direct_citations(
             f"{list(short_id_lookup.keys())}, {sum(len(t) for t in metadata_lookup_tables.values())} blocks"
         )
 
+        # Step 2b: If research_notes present (research-then-write), resolve each note to (short_id, BLOCK_CITE_ID)
+        research_notes_section = ""
+        research_notes_instruction = ""
+        research_notes = (state or {}).get("research_notes") or []
+        if research_notes and isinstance(research_notes, list):
+            chunk_block_to_cite = _build_chunk_block_to_cite_map(chunks_metadata)
+            note_lines = []
+            for i, note in enumerate(research_notes, start=1):
+                if not isinstance(note, dict):
+                    continue
+                content = (note.get("content") or "").strip() or "(no content)"
+                chunk_id = (note.get("chunk_id") or "").strip()
+                cited_text = (note.get("cited_text") or "").strip()
+                if not chunk_id or not cited_text:
+                    note_lines.append(f"- Note {i}: {content} (citation not resolved: missing chunk_id or cited_text)")
+                    continue
+                try:
+                    match_result = match_citation_to_chunk(chunk_id, cited_text)
+                    block_index = match_result.get("block_id")
+                    if block_index is not None and (chunk_id, block_index) in chunk_block_to_cite:
+                        short_id, block_cite_id = chunk_block_to_cite[(chunk_id, block_index)]
+                        note_lines.append(f"- Note {i}: {content} (when using this, cite as [ID: {short_id}]({block_cite_id}))")
+                    else:
+                        note_lines.append(f"- Note {i}: {content} (source not resolved for citation)")
+                except Exception as e:
+                    logger.warning("[DIRECT_CITATIONS] Research note resolution failed for note %s: %s", i, e)
+                    note_lines.append(f"- Note {i}: {content} (source not resolved for citation)")
+            if note_lines:
+                research_notes_section = (
+                    "**Research notes (synthesise these into one curated piece; use the citation marker given after each note when you use that fact):**\n\n"
+                    + "\n".join(note_lines)
+                    + "\n\n"
+                )
+                research_notes_instruction = (
+                    " Write a single curated piece of writing from the research notes above. "
+                    "When you use information from a note, use the citation marker given in parentheses after that note so that citations and highlights remain accurate."
+                )
+            logger.info(f"[DIRECT_CITATIONS] Resolved {len(note_lines)} research notes for curated-piece flow")
+
         # Step 3: Generate LLM response (with personality selection)
         logger.info(f"[DIRECT_CITATIONS] Generating LLM response with block-id citation instructions...")
         personality_id, llm_response = await generate_conversational_answer_with_citations(
@@ -2367,6 +2465,8 @@ async def generate_answer_with_direct_citations(
             paste_context=paste_context,
             state=state,
             conversation_context=prior_exchange_summary or None,
+            research_notes_section=research_notes_section or None,
+            research_notes_instruction=research_notes_instruction or None,
         )
         logger.info(f"[DIRECT_CITATIONS] LLM response generated ({len(llm_response)} chars), personality_id={personality_id}")
 
@@ -2642,25 +2742,14 @@ async def responder_node(state: MainWorkflowState, runnable_config=None) -> Main
             return error_output
     
     else:
-        # No chunks found - generate helpful message via prompt (no hard-coded strings)
+        # No chunks found - use canonical template message and set no_results for frontend actions
         logger.warning("[RESPONDER] ⚠️ No chunks found in execution results")
         has_documents = any(r.get("action") == "retrieve_docs" and r.get("result") for r in execution_results)
-        fallback_answer = "I couldn't find that. Please try rephrasing or adding more detail."
-        try:
-            llm = ChatOpenAI(api_key=config.openai_api_key, model=config.openai_model, temperature=0)
-            response = await llm.ainvoke([
-                SystemMessage(content=get_responder_no_chunks_system_prompt()),
-                HumanMessage(content=get_responder_no_chunks_human_prompt(
-                    user_query, has_documents, refinement_limit_reached
-                )),
-            ])
-            answer = (response.content or "").strip() or fallback_answer
-        except Exception as e:
-            logger.warning("[RESPONDER] No-chunks LLM fallback: %s", e)
-            answer = fallback_answer
+        answer = get_no_results_template_message(has_documents, refinement_limit_reached)
         # Prepare no-results output (keep previous personality). Level B: do not persist conversation when client sent it
         no_results_output = {
             "final_summary": answer,
+            "no_results": True,
             "personality_id": previous_personality or DEFAULT_PERSONALITY_ID,
             "messages": [AIMessage(content=answer)],
         }

@@ -47,6 +47,13 @@ class RetrievedDocument(TypedDict):
     property_address: Optional[str]  # NEW: Property address
     blocks: Optional[list[dict]]  # NEW: Block-level metadata for citation mapping
 
+class ResearchNote(TypedDict):
+    """Single research note for find-note-then-write flow. cited_text must be exact from chunk for citation resolution."""
+    content: str
+    chunk_id: str
+    cited_text: str
+
+
 class Citation(TypedDict):
     """Citation stored in graph state with bbox coordinates"""
     citation_number: int
@@ -127,6 +134,7 @@ class MainWorkflowState(TypedDict, total=False):
     prior_turn_content: Optional[str]  # Previous assistant answer when use_prior_context (for refine/format)
     format_instruction: Optional[str]  # User-requested output format (e.g. "one concise paragraph")
     personality_id: Optional[str]  # Chosen response tone (e.g. "default", "friendly", "efficient"); set by responder from LLM structured output
+    research_notes: Optional[List[Dict[str, Any]]]  # Research-then-write: list of {content, chunk_id, cited_text} per turn (replaced each turn)
 
 class DocumentQAState(TypedDict, total=False):
     """State for per-document Q&A subgraph"""

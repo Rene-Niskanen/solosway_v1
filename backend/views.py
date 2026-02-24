@@ -1728,11 +1728,26 @@ def query_documents_stream():
                                                 logger.info("🟡 [REASONING] Emitted searching step (phase): Searching")
                                         elif label and ('Reviewed' in label or 'review' in label.lower()):
                                             pass
+                                        elif label and (label_stripped.startswith('Retrieved ') and 'passage' in label_stripped.lower() and ' from ' in label_stripped and 'document' in label_stripped.lower()):
+                                            yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'found_sections', 'action_type': 'exploring', 'message': label_stripped, 'timestamp': time.time(), 'details': {}})}\n\n"
+                                        elif label and label_stripped.startswith('Analysing ') and 'section' in label_stripped.lower() and ' for ' in label_stripped and 'document' in label_stripped.lower():
+                                            yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'found_sections', 'action_type': 'exploring', 'message': label_stripped, 'timestamp': time.time(), 'details': {}})}\n\n"
                                         elif label and label_stripped.startswith('Analysing '):
                                             yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'analysing_documents', 'action_type': 'analysing', 'message': label_stripped, 'timestamp': time.time(), 'details': {}})}\n\n"
                                         elif label and (label_stripped.startswith('Found ') and 'section' in label_stripped.lower()):
                                             detail = (payload.get('metadata') or {}).get('detail', '')
                                             yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'found_sections', 'action_type': 'exploring', 'message': label_stripped + (' (' + detail + ')' if detail else ''), 'timestamp': time.time(), 'details': {}})}\n\n"
+                                        # Research-note flow (Cursor-style): Reading -> Read -> Thinking -> Making a note
+                                        elif label_stripped == 'Reading':
+                                            detail = (payload.get('metadata') or {}).get('detail', '') or ''
+                                            yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'reading_doc_note', 'action_type': 'reading', 'message': detail or 'Reading...', 'timestamp': time.time(), 'details': {}})}\n\n"
+                                        elif label_stripped == 'Read':
+                                            yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'read_done', 'action_type': 'reading', 'message': 'Read', 'timestamp': time.time(), 'details': {'status': 'read'}})}\n\n"
+                                        elif label_stripped == 'Thinking':
+                                            yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'thinking_note', 'action_type': 'thinking', 'message': 'Thinking', 'timestamp': time.time(), 'details': {}})}\n\n"
+                                        elif label_stripped == 'Making a note for the curated piece':
+                                            detail = (payload.get('metadata') or {}).get('detail', '') or ''
+                                            yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'making_note', 'action_type': 'making_note', 'message': 'Making a note', 'timestamp': time.time(), 'details': {'note_content': detail}})}\n\n"
                                         elif label and ('No documents found' in label or 'No relevant' in label or 'Error occurred' in label):
                                             detail = (payload.get('metadata') or {}).get('detail', '')
                                             yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'search_status', 'action_type': 'analysing', 'message': label_stripped + (' - ' + detail if detail else ''), 'timestamp': time.time(), 'details': {}})}\n\n"
@@ -2776,7 +2791,11 @@ def query_documents_stream():
                                         if payload.get('type') == 'phase' and (payload.get('metadata') or {}).get('reasoning'):
                                             label = (payload.get('metadata') or {}).get('label') or payload.get('description', '')
                                             label_stripped = (label or '').strip()
-                                            if label_stripped.startswith('Analysing '):
+                                            if label and (label_stripped.startswith('Retrieved ') and 'passage' in label_stripped.lower() and ' from ' in label_stripped and 'document' in label_stripped.lower()):
+                                                yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'found_sections', 'action_type': 'exploring', 'message': label_stripped, 'timestamp': time.time(), 'details': {}})}\n\n"
+                                            elif label and label_stripped.startswith('Analysing ') and 'section' in label_stripped.lower() and ' for ' in label_stripped and 'document' in label_stripped.lower():
+                                                yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'found_sections', 'action_type': 'exploring', 'message': label_stripped, 'timestamp': time.time(), 'details': {}})}\n\n"
+                                            elif label_stripped.startswith('Analysing '):
                                                 yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'analysing_documents', 'action_type': 'analysing', 'message': label_stripped, 'timestamp': time.time(), 'details': {}})}\n\n"
                                             elif label and (label_stripped.startswith('Found ') and 'section' in label_stripped.lower()):
                                                 detail = (payload.get('metadata') or {}).get('detail', '')
@@ -2805,7 +2824,11 @@ def query_documents_stream():
                                     if payload.get('type') == 'phase' and (payload.get('metadata') or {}).get('reasoning'):
                                         label = (payload.get('metadata') or {}).get('label') or payload.get('description', '')
                                         label_stripped = (label or '').strip()
-                                        if label_stripped.startswith('Analysing '):
+                                        if label and (label_stripped.startswith('Retrieved ') and 'passage' in label_stripped.lower() and ' from ' in label_stripped and 'document' in label_stripped.lower()):
+                                            yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'found_sections', 'action_type': 'exploring', 'message': label_stripped, 'timestamp': time.time(), 'details': {}})}\n\n"
+                                        elif label and label_stripped.startswith('Analysing ') and 'section' in label_stripped.lower() and ' for ' in label_stripped and 'document' in label_stripped.lower():
+                                            yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'found_sections', 'action_type': 'exploring', 'message': label_stripped, 'timestamp': time.time(), 'details': {}})}\n\n"
+                                        elif label_stripped.startswith('Analysing '):
                                             yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'analysing_documents', 'action_type': 'analysing', 'message': label_stripped, 'timestamp': time.time(), 'details': {}})}\n\n"
                                         elif label and (label_stripped.startswith('Found ') and 'section' in label_stripped.lower()):
                                             detail = (payload.get('metadata') or {}).get('detail', '')
@@ -3422,7 +3445,8 @@ def query_documents_stream():
                                 'citations': citations_map_for_frontend,  # Frontend expects Record<string, CitationDataType>
                                 'citations_array': structured_citations,  # NEW: Structured array format (for future use)
                                 'session_id': session_id,
-                                'title': streamed_chat_title  # Streamed earlier as title_chunk; include for persistence
+                                'title': streamed_chat_title,  # Streamed earlier as title_chunk; include for persistence
+                                'no_results': final_result.get('no_results', False),  # Show "Files and sources" / "Choose project" when true
                             }
                         }
                         yield f"data: {json.dumps(complete_data)}\n\n"

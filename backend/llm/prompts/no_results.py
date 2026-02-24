@@ -4,7 +4,39 @@ No-results node prompts: helpful failure messages when retrieval exhausts retrie
 Callables:
 - get_no_results_system_prompt() -> str
 - get_no_results_human_prompt(...) -> str
+- get_no_results_template_message(...) -> str  (canonical UX copy for frontend + actions)
 """
+
+# Canonical no-results message templates (displayed with "Files and sources" / "Choose project" buttons)
+NO_RESULTS_MESSAGE_NO_SCOPE = (
+    "We couldn't find a matching result.\n\n"
+    "Your current search didn't return any relevant information from the connected sources. "
+    "To refine the results, please select a specific source below and try again.\n\n"
+    "Choosing a source helps Velora narrow the context and deliver more accurate answers."
+)
+NO_RESULTS_MESSAGE_HAD_SCOPE = (
+    "Nothing matched your search.\n\n"
+    "Velora couldn't find relevant information across the currently selected data. "
+    "To improve accuracy, choose a specific source below and run your search again.\n\n"
+    "Targeting a source helps Velora focus and return sharper results."
+)
+NO_RESULTS_MESSAGE_MINIMAL = (
+    "No results found.\n\n"
+    "This query didn't return any matches within the active data scope. "
+    "Select a source to narrow the search and refine the outcome."
+)
+
+
+def get_no_results_template_message(
+    has_documents: bool,
+    refinement_limit_reached: bool = False,
+) -> str:
+    """Return one of the canonical no-results messages for consistent UX and action buttons."""
+    if refinement_limit_reached:
+        return NO_RESULTS_MESSAGE_MINIMAL
+    if has_documents:
+        return NO_RESULTS_MESSAGE_HAD_SCOPE
+    return NO_RESULTS_MESSAGE_NO_SCOPE
 
 
 def get_no_results_system_prompt() -> str:

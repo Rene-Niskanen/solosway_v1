@@ -334,7 +334,7 @@ export const FloatingChatBubble: React.FC<FloatingChatBubbleProps> = ({
   const messagesEndRef = React.useRef<HTMLDivElement>(null);
   const { openExpandedCardView } = usePreview();
   
-  // Per-message expanded state for "Thought" dropdown (collapsed by default when response is finished)
+  // Per-message expanded state for "Thought" section (default = collapsed; only show steps when user expands)
   const [expandedThoughtMessageIds, setExpandedThoughtMessageIds] = React.useState<Set<string>>(() => new Set());
   const toggleThoughtExpanded = React.useCallback((messageId: string) => {
     setExpandedThoughtMessageIds((prev) => {
@@ -894,6 +894,7 @@ export const FloatingChatBubble: React.FC<FloatingChatBubbleProps> = ({
                                 onDocumentClick={() => {}}
                                 hasResponseText={!!message.text}
                                 thoughtCompleted={true}
+                                showAllStepsInTrace={true}
                               />
                             </div>
                           )}

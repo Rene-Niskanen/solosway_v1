@@ -600,8 +600,7 @@ async def executor_node(state: MainWorkflowState, runnable_config=None) -> MainW
                 
                 if result_count > 0:
                     emitter.emit_reasoning(
-                        label=f"Found {result_count} relevant section{'' if result_count == 1 else 's'}",
-                        detail=f"From {doc_count} document{'' if doc_count == 1 else 's'}"
+                        label=f"Retrieved {result_count} passage{'' if result_count == 1 else 's'} from {doc_count} document{'' if doc_count == 1 else 's'}"
                     )
                 else:
                     emitter.emit_reasoning(

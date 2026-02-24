@@ -89,17 +89,11 @@ def _get_entity_normalization_instructions() -> str:
     return """
 **PRESENTATION FORMAT**:
 1. **Normalize Data**: Each piece of data appears once. Merge duplicates (e.g., "Company: X" and "Valuation Company: X" → ONE section).
-2. **Figure first**: The opening sentence must start with the figure (e.g. £X,XXX,XXX or the number), not "The Market Value..." or "The property...". Example: "£2,300,000 — the Market Value[1]. The property is..."
-3. **Section Headers**: Use H1 for the first section; the H1 text must start with the answer (figure/category), not a topic sentence. Use H2 (##) for major sections (e.g., "Market Value", "Valuers").
-4. **Label-Value Layout**: Use vertical format - label on one line (bold), value on next line (regular text):
-   ```
-   **Market Value:**
-   £X,XXX,XXX[1]
-   *Market value with vacant possession, normal marketing period*
-   ```
-5. **Citation Markers**: Place [1], [2], [3] immediately after each fact - "£X,XXX,XXX[1]" NOT "£X,XXX,XXX [1]"
-6. **Lists**: Use bullet points for multiple items. Each item on its own line with citation if applicable.
-7. **Remove Noise**: Remove phrases like "The firm responsible for..." - keep only essential information.
+2. **One flowing sentence for the main answer**: Do NOT write a standalone label line (e.g. "Market Value: £X" or "**Market Value:** £X") and then repeat the same value in the next sentence. Write one natural, flowing sentence that includes the figure in context (e.g. "The property known as Highlands, at [address], is currently under offer at **£2,400,000** as of 9th February 2024[1]."). Put the figure in <<<MAIN>>> or bold. Never lead with "Market Value: £X" or similar on its own line—it creates repetition and breaks the flow.
+3. **Section Headers**: Use H1 for the first section; the H1 text must start with the answer (figure/category), not a topic sentence. Use H2 (##) for major sections (e.g., "Valuers", "Inspection").
+4. **Citation Markers**: Place [1], [2], [3] immediately after each fact - "£X,XXX,XXX[1]" NOT "£X,XXX,XXX [1]"
+5. **Lists**: Use bullet points for multiple items. Each item on its own line with citation if applicable.
+6. **Remove Noise**: Remove phrases like "The firm responsible for..." - keep only essential information.
 """
 
 

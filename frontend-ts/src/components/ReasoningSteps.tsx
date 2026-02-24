@@ -22,7 +22,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 // Types for reasoning steps
 export interface ReasoningStep {
   step: string;
-  action_type: 'planning' | 'exploring' | 'searching' | 'reading' | 'analysing' | 'summarising' | 'thinking' | 'complete' | 'context' | 'file_choice' | 'executing' | 'opening' | 'navigating' | 'highlighting' | 'opening_map' | 'selecting_pin';
+  action_type: 'planning' | 'exploring' | 'searching' | 'reading' | 'analysing' | 'summarising' | 'thinking' | 'making_note' | 'complete' | 'context' | 'file_choice' | 'executing' | 'opening' | 'navigating' | 'highlighting' | 'opening_map' | 'selecting_pin';
   message: string;
   count?: number;
   target?: string;
@@ -814,6 +814,8 @@ const StepRenderer: React.FC<{
       // Use same colour for whole phrase (no different colour for the number).
       const isSectionsStep = step.message.toLowerCase().includes('section');
       const isNoResultsStep = step.message.toLowerCase().includes('no relevant');
+      // Retrieved passages step has no doc_previews; don't show "document details not available" under it
+      const isRetrievedPassagesStep = step.step === 'found_sections' || /Retrieved\s+\d+\s+passage/i.test((step.message || '').trim());
       const foundActionColor = thoughtCompleted ? FAINT_COLOR : ACTION_COLOR;
       const foundActionStyle = { color: foundActionColor, fontWeight: 500 as const };
       const foundDetailColor = foundActionColor;
@@ -831,6 +833,22 @@ const StepRenderer: React.FC<{
       }
 
       const nextStepExploring = stepIndex < allSteps.length - 1 ? allSteps[stepIndex + 1] : null;
+      // "Retrieved X passages from Y documents" — no colon, shimmer when active
+      if (isRetrievedPassagesStep) {
+        const isRetrievedPassagesActive =
+          isLoading &&
+          !hasResponseText &&
+          (!nextStepExploring || nextStepExploring.action_type === 'exploring' || nextStepExploring.action_type === 'reading');
+        return (
+          <span style={{ display: 'inline-flex', alignItems: 'flex-start' }}>
+            {isRetrievedPassagesActive ? (
+              <span className="ranking-shimmer-active">{prefix.trim()}</span>
+            ) : (
+              <span style={foundActionStyle}>{prefix.trim()}</span>
+            )}
+          </span>
+        );
+      }
       // Shimmer while still loading and no response: active if next step is exploring OR reading (documents still being analysed)
       const isExploringActive =
         isLoading &&
@@ -954,7 +972,7 @@ const StepRenderer: React.FC<{
             </span>
             )}
           </div>
-          {!isSectionsStep && !isNoResultsStep && !showDocsInline && !(step.details?.doc_previews?.length) ? (
+          {!isSectionsStep && !isNoResultsStep && !showDocsInline && !(step.details?.doc_previews?.length) && !isRetrievedPassagesStep ? (
             <div style={{ marginTop: '2px', paddingLeft: '0', color: foundDetailColor, fontStyle: 'italic', fontSize: '12px' }}>
               (document details not available)
             </div>
@@ -1165,6 +1183,29 @@ const StepRenderer: React.FC<{
           model={model}
           searchTerm={extractedSearchTerm}
         />
+      );
+
+    case 'making_note':
+      // Cursor-style: note summary in faint font (chain-of-thought style)
+      const noteContent = step.details?.note_content || step.message || '';
+      return (
+        <span style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'flex-start', gap: 2 }}>
+          <span style={{ ...actionStyle, color: actionColor }}>Making a note</span>
+          {noteContent ? (
+            <span
+              style={{
+                color: detailColor,
+                fontSize: '11px',
+                lineHeight: 1.4,
+                fontStyle: 'italic',
+                maxWidth: '100%',
+              }}
+              className="reasoning-note-content"
+            >
+              {noteContent}
+            </span>
+          ) : null}
+        </span>
       );
     
     case 'complete':
@@ -1542,6 +1583,9 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
   const isPlanningPlaceholder = (s: ReasoningStep) =>
     s.step === 'planning_next_moves' || (s.action_type === 'summarising' && s.message === 'Planning next moves');
 
+  // During loading, show the full trace (Searching, Found N relevant sections, Thinking, etc.) so it matches the dropdown.
+  const effectiveShowAllStepsInTrace = showAllStepsInTrace || isLoading;
+
   // Remove "Planning next moves" as soon as the very next reasoning step appears (searching, exploring, reading, analysing, etc.).
   // When the only reasoning is "Planning next moves" + a thinking step with trivial content, hide both (simple response).
   const stepsToRender = useMemo(() => {
@@ -1576,16 +1620,16 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
       return collapsed.length > 0 ? collapsed : list.slice(0, 2);
     }
     // Hide "Searching" once we have reading steps: show only Found + Read... (searching step disappears, reading steps appear)
-    // When showAllStepsInTrace (e.g. expanded Thought dropdown), keep all steps including Searching
-    if (!showAllStepsInTrace && list.some(s => s.action_type === 'reading')) {
+    // When showAllStepsInTrace (e.g. expanded Thought dropdown) or during loading, keep all steps including Searching
+    if (!effectiveShowAllStepsInTrace && list.some(s => s.action_type === 'reading')) {
       list = list.filter(s => s.action_type !== 'searching');
     }
     // UX: When thought is completed (collapsed trace), also hide searching so we show Found + reading list only
-    if (thoughtCompleted && !showAllStepsInTrace) {
+    if (thoughtCompleted && !effectiveShowAllStepsInTrace) {
       list = list.filter(s => s.action_type !== 'searching');
     }
     // Only show "Analysing X documents" exploring step when more than one document (in live view; show all in full trace)
-    if (!showAllStepsInTrace) {
+    if (!effectiveShowAllStepsInTrace) {
       const isAnalysingOneDocumentStep = (s: ReasoningStep) => {
         if (s.action_type !== 'exploring') return false;
         const msg = s.message || '';
@@ -1630,11 +1674,11 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
     // We now keep the full sequence: Searching → Analysing N documents → (reading) → Thinking → Generating response.
 
     // When "Generating response" is present, it replaces "Thinking" (show only one - the current phase)
-    // When showAllStepsInTrace, show both Thinking and Generating response in sequence
+    // When showAllStepsInTrace (or during loading), show both Thinking and Generating response in sequence
     const hasGeneratingResponse = list.some(
       (s) => s.step === 'generating_response' || (s.message || '').trim() === 'Generating response'
     );
-    if (hasGeneratingResponse && !showAllStepsInTrace) {
+    if (hasGeneratingResponse && !effectiveShowAllStepsInTrace) {
       list = list.filter(
         (s) =>
           s.step !== 'thinking_after_chunks' &&
@@ -1644,15 +1688,15 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
     }
 
     // Hide "Generating response" once response is streaming (prompt was sent; step disappears when first token arrives)
-    // When showAllStepsInTrace (expanded Thought dropdown), keep it so the full trace is visible
-    if (hasResponseText && !showAllStepsInTrace) {
+    // When showAllStepsInTrace (expanded Thought dropdown or during loading), keep it so the full trace is visible
+    if (hasResponseText && !effectiveShowAllStepsInTrace) {
       list = list.filter(
         (s) => s.step !== 'generating_response' && (s.message || '').trim() !== 'Generating response'
       );
     }
 
     return list;
-  }, [filteredSteps, isNoResultsResponse, thoughtCompleted, hasResponseText, showAllStepsInTrace]);
+  }, [filteredSteps, isNoResultsResponse, thoughtCompleted, hasResponseText, effectiveShowAllStepsInTrace]);
 
   // When transientStep is set (e.g. "Thinking"), show it as the current step without adding to stored steps (parallel, not sequential)
   const stepsForDisplay = useMemo(() => {
@@ -1840,11 +1884,10 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
     return items;
   }, [stepsForDisplay]);
 
-  // Single-step-at-a-time: show only the current phase (1=Planning, 2=Searching, 3=Analysing, 4=Thinking, 5=Generating response)
-  // When we have both Analysing and Thinking steps, show Analysing first for a minimum time so the user sees documents, then Thinking.
-  type Phase = 1 | 2 | 3 | 4 | 5;
-  const [phase3ShownAt, setPhase3ShownAt] = useState<number | null>(null);
-  const ANALYSING_MIN_MS = 900; // Show "Analysing documents" at least this long before switching to Thinking (reduced for snappier transition to Generating response)
+  // Single-step-at-a-time during loading: (1) Planning (2) Searching (3) Found N relevant sections (4) Analysing (5) Thinking (6) Generating response
+  type Phase = 1 | 2 | 3 | 4 | 5 | 6;
+  const [phase4ShownAt, setPhase4ShownAt] = useState<number | null>(null);
+  const ANALYSING_MIN_MS = 900;
 
   const currentPhaseAndItem = useMemo((): { phase: Phase; displayItem: DisplayItem | null; displayIdx: number } => {
     if (!stepsForDisplay || stepsForDisplay.length === 0) {
@@ -1855,6 +1898,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
     );
     const hasThinking = stepsForDisplay.some(
       (s) =>
+        s.action_type === 'thinking' ||
         s.step === 'thinking_after_chunks' ||
         ((s.message || '').trim() === 'Thinking' && s.action_type === 'analysing')
     );
@@ -1864,14 +1908,17 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
           s.action_type === 'exploring' &&
           /^Analysing\s+\d+\s+documents?\s*:?/i.test((s.message || '').trim())
       ) || stepsForDisplay.some((s) => s.action_type === 'reading');
+    const hasFoundSections = stepsForDisplay.some(
+      (s) => s.step === 'found_sections' || /Retrieved\s+\d+\s+passage/i.test((s.message || '').trim()) || /Found\s+\d+\s+relevant\s+section/i.test((s.message || '').trim()) || /Analysing\s+\d+\s+section/i.test((s.message || '').trim())
+    );
     const hasSearching = stepsForDisplay.some((s) => s.action_type === 'searching');
 
-    // When we have both Analysing and Thinking, show Analysing first for ANALYSING_MIN_MS, then Thinking
     let phase: Phase = 1;
-    if (hasGenerating) phase = 5;
-    else if (hasThinking && (!hasAnalysing || (phase3ShownAt !== null && Date.now() - phase3ShownAt >= ANALYSING_MIN_MS)))
-      phase = 4;
-    else if (hasAnalysing) phase = 3;
+    if (hasGenerating) phase = 6;
+    else if (hasThinking && (!hasAnalysing || (phase4ShownAt !== null && Date.now() - phase4ShownAt >= ANALYSING_MIN_MS)))
+      phase = 5;
+    else if (hasAnalysing) phase = 4;
+    else if (hasFoundSections) phase = 3;
     else if (hasSearching) phase = 2;
 
     if (phase === 1) {
@@ -1881,40 +1928,45 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
     const isGeneratingStep = (s: ReasoningStep) =>
       s.step === 'generating_response' || (s.message || '').trim() === 'Generating response';
     const isThinkingStep = (s: ReasoningStep) =>
+      s.action_type === 'thinking' ||
       s.step === 'thinking_after_chunks' ||
       ((s.message || '').trim() === 'Thinking' && s.action_type === 'analysing');
     const isAnalysingExploring = (s: ReasoningStep) =>
       s.action_type === 'exploring' &&
       /^Analysing\s+\d+\s+documents?\s*:?/i.test((s.message || '').trim());
+    const isFoundSectionsStep = (s: ReasoningStep) =>
+      s.step === 'found_sections' || /Retrieved\s+\d+\s+passage/i.test((s.message || '').trim()) || /Found\s+\d+\s+relevant\s+section/i.test((s.message || '').trim()) || /Analysing\s+\d+\s+section/i.test((s.message || '').trim());
 
     for (let idx = 0; idx < displayItems.length; idx++) {
       const item = displayItems[idx];
-      if (phase === 5 && item.kind === 'single' && isGeneratingStep(item.step)) {
+      if (phase === 6 && item.kind === 'single' && isGeneratingStep(item.step)) {
+        return { phase: 6, displayItem: item, displayIdx: idx };
+      }
+      if (phase === 5 && item.kind === 'single' && isThinkingStep(item.step)) {
         return { phase: 5, displayItem: item, displayIdx: idx };
       }
-      if (phase === 4 && item.kind === 'single' && isThinkingStep(item.step)) {
-        return { phase: 4, displayItem: item, displayIdx: idx };
-      }
-      if (phase === 3) {
-        if (item.kind === 'group') return { phase: 3, displayItem: item, displayIdx: idx };
+      if (phase === 4) {
+        if (item.kind === 'group') return { phase: 4, displayItem: item, displayIdx: idx };
         if (item.kind === 'single' && (isAnalysingExploring(item.step) || item.step.action_type === 'reading')) {
-          return { phase: 3, displayItem: item, displayIdx: idx };
+          return { phase: 4, displayItem: item, displayIdx: idx };
         }
+      }
+      if (phase === 3 && item.kind === 'single' && isFoundSectionsStep(item.step)) {
+        return { phase: 3, displayItem: item, displayIdx: idx };
       }
       if (phase === 2 && item.kind === 'single' && item.step.action_type === 'searching') {
         return { phase: 2, displayItem: item, displayIdx: idx };
       }
     }
     return { phase: 1, displayItem: null, displayIdx: 0 };
-  }, [stepsForDisplay, displayItems, phase3ShownAt]);
+  }, [stepsForDisplay, displayItems, phase4ShownAt]);
 
-  // Record when we first show Analysing (phase 3) so we keep it visible for ANALYSING_MIN_MS before switching to Thinking
   useEffect(() => {
-    if (!stepsForDisplay || stepsForDisplay.length === 0) setPhase3ShownAt(null);
+    if (!stepsForDisplay || stepsForDisplay.length === 0) setPhase4ShownAt(null);
   }, [stepsForDisplay]);
   useEffect(() => {
-    if (currentPhaseAndItem.phase === 3 && phase3ShownAt === null) setPhase3ShownAt(Date.now());
-  }, [currentPhaseAndItem.phase, phase3ShownAt]);
+    if (currentPhaseAndItem.phase === 4 && phase4ShownAt === null) setPhase4ShownAt(Date.now());
+  }, [currentPhaseAndItem.phase, phase4ShownAt]);
 
   const [documentsDropdownStepKey, setDocumentsDropdownStepKey] = useState<string | null>(null);
   
@@ -2181,7 +2233,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
       contain: 'layout style',
       minHeight: '1px' // Prevent collapse
     }}>
-      {/* Single step at a time when loading: (1) Planning (2) Searching (3) Analysing (4) Thinking (5) Generating response */}
+      {/* When loading: show one step at a time (Planning → Searching → Found sections → Analysing → Thinking → Generating). When done: show full list. */}
       {isLoading && (currentPhaseAndItem.phase === 1 || currentPhaseAndItem.displayItem) ? (
         <AnimatePresence mode="wait">
           {currentPhaseAndItem.phase === 1 && !currentPhaseAndItem.displayItem ? (
@@ -2211,14 +2263,14 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
 
             if (displayItem.kind === 'group') {
               const groupKey = anim.stepKey + '-group';
-              const isPhase4Or5 = currentPhaseAndItem.phase === 4 || currentPhaseAndItem.phase === 5;
+              const isPhase5Or6 = currentPhaseAndItem.phase === 5 || currentPhaseAndItem.phase === 6;
               return (
                 <motion.div
                   key={`phase-${currentPhaseAndItem.phase}`}
                   initial={skipAnimations ? { opacity: 1, y: 0, scale: 1 } : { opacity: 0, y: 2, scale: 0.98 }}
                   animate={{ opacity: 1, y: 0, scale: 1 }}
                   exit={{ opacity: 0, transition: { duration: 0.05 } }}
-                  transition={(hasResponseText || skipAnimations) ? { duration: 0 } : { duration: 0.06, delay: isPhase4Or5 ? 0 : anim.delay, ease: [0.16, 1, 0.3, 1] }}
+                  transition={(hasResponseText || skipAnimations) ? { duration: 0 } : { duration: 0.06, delay: isPhase5Or6 ? 0 : anim.delay, ease: [0.16, 1, 0.3, 1] }}
                   style={{
                     fontSize: '13.1px',
                     color: DETAIL_COLOR,
@@ -2255,14 +2307,14 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
             }
 
             const { step, delay: stepDelay, readingIndex: currentReadingIndex, isLastReadingStep, stepIndex: idx } = anim;
-            const isPhase4Or5 = currentPhaseAndItem.phase === 4 || currentPhaseAndItem.phase === 5;
+            const isPhase5Or6 = currentPhaseAndItem.phase === 5 || currentPhaseAndItem.phase === 6;
             return (
               <motion.div
                 key={`phase-${currentPhaseAndItem.phase}`}
                 initial={skipAnimations ? { opacity: 1, y: 0, scale: 1 } : { opacity: 0, y: 2, scale: 0.98 }}
                 animate={{ opacity: 1, y: 0, scale: 1 }}
                 exit={{ opacity: 0, transition: { duration: 0.05 } }}
-                transition={(hasResponseText || skipAnimations) ? { duration: 0 } : { duration: 0.06, delay: isPhase4Or5 ? 0 : stepDelay, ease: [0.16, 1, 0.3, 1] }}
+                transition={(hasResponseText || skipAnimations) ? { duration: 0 } : { duration: 0.06, delay: isPhase5Or6 ? 0 : stepDelay, ease: [0.16, 1, 0.3, 1] }}
                 style={{
                   fontSize: '13.1px',
                   color: DETAIL_COLOR,
@@ -2293,7 +2345,6 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
           })() : null}
         </AnimatePresence>
       ) : (
-        // When not loading (trace mode), render all steps
         <div key="reasoning-steps-static">
           {displayItems.map((displayItem, displayIdx) => {
             const isLastDisplayItem = displayIdx === displayItems.length - 1;

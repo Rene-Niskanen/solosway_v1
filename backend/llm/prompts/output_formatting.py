@@ -67,21 +67,16 @@ Key values — prices, areas, dates, durations, ratings — must be
 instantly findable.
 
 Rules:
-- Put key figures on their own line, not buried inside a sentence.
 - Bold the **value**, not the label.
-- Never wrap a key figure inside a long clause where the reader has to
-  hunt for it.
+- Never wrap a key figure inside a long clause where the reader has to hunt for it.
+- **Do not** put a standalone label line (e.g. "Market Value: £X" or "**Market Value:**") and then repeat the same value in the next sentence. Write one flowing sentence that includes the figure in context (e.g. "The property at [address] is currently under offer at **£2,400,000** as of [date][1].").
 
-Preferred pattern:
+Preferred: one flowing sentence with the value bolded inline:
+"The property known as Highlands, at Berden Road, is currently under offer at **£2,400,000** as of 9th February 2024[1]."
 
-  Market Value
-  **£1,950,000**
-
-  Gross Internal Area
-  **4,480 sq ft (416 sq m)**
-
-  EPC Rating
-  **56 D** (potential **71 C**)
+For multiple distinct facts (e.g. area, EPC), you may use short label-value lines:
+  Gross Internal Area: **4,480 sq ft (416 sq m)**
+  EPC Rating: **56 D** (potential **71 C**)
 
 When a figure appears inline (e.g. mid-sentence), still bold the value:
 "The rent is **£6,000 per month**, payable in advance."

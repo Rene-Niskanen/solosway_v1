@@ -259,6 +259,34 @@ def _phrase_heuristic_fallback(query: str) -> List[str]:
     return gate_phrases
 
 
+def _ensure_property_name_in_phrases(query: str, phrases: List[str]) -> List[str]:
+    """
+    When the query mentions a property by name (e.g. "value of the highlands property" or "value of highlands"),
+    ensure the core name (e.g. "highlands") is in the gate phrases so entity gating matches docs that only
+    mention "Highlands" in summary/filename, not the full phrase "the highlands property".
+    """
+    if not query or not phrases:
+        return phrases
+    import re
+    q = query.lower().strip()
+    # "value of the highlands property", "value of highlands", "the highlands property", "EPC of highlands"
+    m = re.search(r"(?:value|epc|price|rent|valuation)\s+of\s+(?:the\s+)?(\w+)(?:\s+property)?", q)
+    if not m:
+        m = re.search(r"the\s+(\w+)\s+property", q)
+    if not m:
+        m = re.search(r"(?:of|for)\s+(\w+)(?:\s+property)?\s*$", q)
+    if not m:
+        return phrases
+    name = m.group(1).lower()
+    if len(name) < 2 or name in get_stopwords() or name in get_generic_terms():
+        return phrases
+    # If we already have a phrase that contains this name (e.g. "highlands property"), we're good
+    if any(name in p for p in phrases):
+        return phrases
+    # Prepend the short name so matching "Highlands" in doc summary is enough
+    return [name] + [p for p in phrases if p != name]
+
+
 def get_entity_gate_phrases(query: str) -> List[str]:
     """
     Return list of phrases that must appear in a document (filename or summary) for entity gating.
@@ -273,20 +301,24 @@ def get_entity_gate_phrases(query: str) -> List[str]:
     if not query or not query.strip():
         return []
     _load_entity_gate_config()
+    phrases = []
     if _use_keybert:
         phrases = _get_keybert_phrases(query)
         if phrases:
             logger.debug("Entity gate phrases from KeyBERT: %s", phrases[:5])
+            phrases = _ensure_property_name_in_phrases(query, phrases)
             return phrases
         logger.debug("KeyBERT returned no phrases; falling back to NER/heuristic")
     entities = _extract_entities_ner(query)
     if entities:
         expanded = _expand_with_aliases(entities)
         if expanded:
-            return expanded
+            phrases = _ensure_property_name_in_phrases(query, expanded)
+            return phrases if phrases else expanded
     if _get_nlp() is None:
         return []
-    return _phrase_heuristic_fallback(query)
+    phrases = _phrase_heuristic_fallback(query)
+    return _ensure_property_name_in_phrases(query, phrases)
 
 
 def get_title_from_query(query: str, max_length: int = 50) -> str:

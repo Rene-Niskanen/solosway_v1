@@ -10,7 +10,7 @@ No separate planner, executor, or intent classifier. Routing is identical to Lob
 
 import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from langchain_core.messages import (
     AIMessage,
@@ -33,15 +33,17 @@ MAX_ITERATIONS = 6
 # Tool names (must match function names in _execute_tool)
 RETRIEVE_DOCS = "retrieve_docs"
 RETRIEVE_CHUNKS = "retrieve_chunks"
+ADD_RESEARCH_NOTE = "add_research_note"
 
 
 def _get_agent_loop_system_prompt() -> str:
     """System prompt instructing the model on when to use tools vs reply directly."""
     return """You are an assistant with access to a document search system. Your job is to decide when to search documents and when to reply from context alone.
 
-You have two tools:
+You have three tools:
 1. retrieve_docs(query) - Search for relevant documents. Returns document IDs and filenames. Use this FIRST when the user asks about documents, property information, valuations, leases, etc.
 2. retrieve_chunks(query, document_ids) - Get detailed text from specific documents. Use AFTER retrieve_docs. Pass the document_ids from the retrieve_docs result.
+3. add_research_note(content, chunk_id, cited_text) - Record a finding for a curated piece of writing. Use ONLY when the user asks for a curated piece (brief, report, summary from multiple findings). See "Research-then-write" below.
 
 When to use tools:
 - User asks about documents, property, valuations, leases, contracts, summaries, details, etc. -> Call retrieve_docs, then retrieve_chunks with the returned document_ids
@@ -56,7 +58,20 @@ When to finish (no tools):
 
 If the user's message is ambiguous, prefer using tools (search) over finishing. Better to search and find nothing than miss relevant documents.
 
-After calling retrieve_chunks and receiving results, you may finish - the system will generate the final answer with citations from those chunks."""
+After calling retrieve_chunks and receiving results, you may finish - the system will generate the final answer with citations from those chunks.
+
+---
+RESEARCH-THEN-WRITE (curated piece)
+---
+When the user asks for a **curated piece of writing** from multiple pieces of information (e.g. "write a one-page brief on X", "summarise the key findings into a report", "draft a summary that pulls together the valuations", "create a curated summary"), do this:
+1. Call retrieve_docs then retrieve_chunks to find relevant content.
+2. After each retrieve_chunks that yields useful content, call add_research_note for each distinct finding: content = a short summary of the finding, chunk_id = the exact chunk_id from that chunk in the retrieve_chunks result, cited_text = a **verbatim** excerpt from that chunk's chunk_text (the exact phrase or sentence that supports the note).
+3. If you need more information, call retrieve_chunks again (or retrieve_docs first if needed), then add_research_note for any new findings.
+4. When you have enough notes to write the piece, stop calling tools (finish). The system will generate the curated piece from your notes with working citations.
+
+CITATION FORMATTING (mandatory for add_research_note):
+- chunk_id: Use the exact **chunk_id** from the retrieve_chunks result for the chunk you are noting (the UUID string).
+- cited_text: Use an **exact** substring from that chunk's **chunk_text** — the exact words that support the note. Do NOT paraphrase. Do NOT reword. If the chunk says "Market Value: £1,950,000", then cited_text must be exactly that (or a contiguous substring of it), not "market value of 1.95M". The system uses cited_text to attach the correct source and highlight in the document. If you paraphrase, the citation will not match and the reader will not see the correct highlight."""
 
 
 def _build_tool_definitions() -> List[Dict[str, Any]]:
@@ -101,7 +116,53 @@ def _build_tool_definitions() -> List[Dict[str, Any]]:
                 },
             },
         },
+        {
+            "type": "function",
+            "function": {
+                "name": ADD_RESEARCH_NOTE,
+                "description": "Record a finding for a curated piece of writing. Use after retrieve_chunks when the user asked for a brief, report, or summary from multiple findings. Required for citations: pass chunk_id and cited_text exactly as in the retrieve_chunks result.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "content": {
+                            "type": "string",
+                            "description": "Short summary of the finding (one or two sentences)",
+                        },
+                        "chunk_id": {
+                            "type": "string",
+                            "description": "Exact chunk_id (UUID) from the retrieve_chunks result for the chunk this note comes from",
+                        },
+                        "cited_text": {
+                            "type": "string",
+                            "description": "Exact verbatim excerpt from that chunk's chunk_text — do not paraphrase; use the exact words so the system can attach the correct citation and highlight",
+                        },
+                    },
+                    "required": ["content", "chunk_id", "cited_text"],
+                },
+            },
+        },
     ]
+
+
+def _get_chunk_doc_and_page(chunk_id: str, execution_results: List[Dict[str, Any]]) -> Tuple[Optional[str], Optional[int]]:
+    """Get document filename and page number for a chunk_id from the most recent retrieve_chunks result. Returns (filename, page_number) or (None, None)."""
+    for item in reversed(execution_results):
+        if item.get("action") != "retrieve_chunks" or not item.get("success"):
+            continue
+        result = item.get("result") or []
+        if not isinstance(result, list):
+            continue
+        for chunk in result:
+            if isinstance(chunk, dict) and (chunk.get("chunk_id") or chunk.get("id")) == chunk_id:
+                filename = chunk.get("document_filename") or chunk.get("original_filename") or chunk.get("filename")
+                page = chunk.get("page_number")
+                if page is not None:
+                    try:
+                        page = int(page)
+                    except (TypeError, ValueError):
+                        page = None
+                return (filename or None, page)
+    return (None, None)
 
 
 def _choose_search_intro(query: str) -> str:
@@ -140,6 +201,8 @@ def _summarize_tool_result_for_context(tool_name: str, result: Any) -> str:
             "count": count,
             "message": f"Found {count} relevant text sections. The system will now generate the answer with citations.",
         })
+    elif tool_name == ADD_RESEARCH_NOTE:
+        return json.dumps({"message": "Research note recorded. Add more notes or finish to generate the curated piece."})
     return json.dumps({"message": "Tool executed"})
 
 
@@ -212,6 +275,10 @@ def _execute_tool(tool_name: str, args: Dict[str, Any], state: MainWorkflowState
         )
         return result
     
+    elif tool_name == ADD_RESEARCH_NOTE:
+        # No external call; handled in the loop by appending to research_notes
+        return None
+    
     logger.warning("[AGENT_LOOP] Unknown tool: %s", tool_name)
     return []
 
@@ -264,6 +331,7 @@ async def agent_loop_node(state: MainWorkflowState, runnable_config=None) -> Mai
     messages = _build_messages_for_llm(state)
     tools = _build_tool_definitions()
     execution_results: List[Dict[str, Any]] = []
+    research_notes: List[Dict[str, Any]] = []  # Fresh per turn for research-then-write
     emitter = state.get("execution_events")
     
     llm = ChatOpenAI(
@@ -286,6 +354,7 @@ async def agent_loop_node(state: MainWorkflowState, runnable_config=None) -> Mai
             return {
                 "execution_results": execution_results,
                 "messages": messages,
+                "research_notes": research_notes,
             }
         
         if not isinstance(response, AIMessage):
@@ -311,6 +380,37 @@ async def agent_loop_node(state: MainWorkflowState, runnable_config=None) -> Mai
                 tool_args = tool_args_raw or {}
             
             tool_call_id = tc.get("id", f"call_{iteration}_{tool_name}")
+            
+            if tool_name == ADD_RESEARCH_NOTE:
+                content = (tool_args.get("content") or "").strip()
+                chunk_id = (tool_args.get("chunk_id") or "").strip()
+                cited_text = (tool_args.get("cited_text") or "").strip()
+                if not chunk_id or not cited_text:
+                    summary = "Error: chunk_id and cited_text are required. Use the exact chunk_id and a verbatim excerpt from chunk_text from the retrieve_chunks result so citations work."
+                else:
+                    research_notes.append({
+                        "content": content or "(no content)",
+                        "chunk_id": chunk_id,
+                        "cited_text": cited_text,
+                    })
+                    summary = _summarize_tool_result_for_context(ADD_RESEARCH_NOTE, None)
+                    if emitter:
+                        # Cursor-style sequence: Reading (page, doc) -> Read -> Thinking -> Note summary (faint)
+                        filename, page = _get_chunk_doc_and_page(chunk_id, execution_results)
+                        if filename or page is not None:
+                            reading_detail = "Page %s, %s" % (page if page is not None else "?", filename or "document")
+                            emitter.emit_reasoning(label="Reading", detail=reading_detail)
+                        emitter.emit_reasoning(label="Read", detail=None)
+                        emitter.emit_reasoning(label="Thinking", detail=None)
+                        note_preview = (content or "(no content)").strip()[:80]
+                        if len((content or "").strip()) > 80:
+                            note_preview += "..."
+                        emitter.emit_reasoning(
+                            label="Making a note for the curated piece",
+                            detail=note_preview if note_preview else None,
+                        )
+                messages.append(ToolMessage(content=summary, tool_call_id=tool_call_id))
+                continue
             
             if emitter:
                 query = tool_args.get("query", "")
@@ -345,14 +445,17 @@ async def agent_loop_node(state: MainWorkflowState, runnable_config=None) -> Mai
                     )
                 elif tool_name == RETRIEVE_CHUNKS:
                     doc_ids = tool_args.get("document_ids") or []
+                    n_docs = len(doc_ids) if doc_ids else 0
+                    # Backend just ran vector + keyword search within those docs and returned matching chunks
                     emitter.emit_reasoning(
-                        label=f"Found {len(result)} relevant section{'s' if len(result) != 1 else ''}",
-                        detail=f"From {len(doc_ids)} document{'s' if len(doc_ids) != 1 else ''}" if doc_ids else None,
+                        label=f"Retrieved {len(result)} passage{'s' if len(result) != 1 else ''} from {n_docs} document{'s' if n_docs != 1 else ''}",
+                        detail=None,
                     )
     
-    logger.info("[AGENT_LOOP] Finished after %d iterations, %d execution results", iteration + 1, len(execution_results))
+    logger.info("[AGENT_LOOP] Finished after %d iterations, %d execution results, %d research notes", iteration + 1, len(execution_results), len(research_notes))
     
     return {
         "execution_results": execution_results,
         "messages": messages,
+        "research_notes": research_notes,
     }
