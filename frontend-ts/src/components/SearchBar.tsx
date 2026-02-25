@@ -175,23 +175,26 @@ export const SearchBar = forwardRef<{
         // Local addition (e.g. drop) — keep current state so file appears instantly
         return;
       }
+      // Don't overwrite when user deliberately removed file(s) — current IDs are a subset of prop
+      // (we have fewer items and all our IDs exist in initialAttachedFiles). Parent's onAttachmentsChange
+      // hasn't run yet, so prop still has the removed file — restoring would undo the removal.
+      const currentIdSet = new Set(attachedFiles.map(f => f.id));
+      const initialIdSet = new Set(initialAttachedFiles.map(f => f.id));
+      const isSubset = attachedFiles.length < initialAttachedFiles.length &&
+        [...currentIdSet].every(id => initialIdSet.has(id));
+      if (isSubset) {
+        return; // User removed file(s) — keep current state
+      }
       // Compare by IDs instead of JSON.stringify (File objects can't be stringified)
       const currentIds = attachedFiles.map(f => f.id).sort().join(',');
       const newIds = initialAttachedFiles.map(f => f.id).sort().join(',');
       const isDifferent = currentIds !== newIds || attachedFiles.length !== initialAttachedFiles.length;
       const propChanged = prevInitial !== initialAttachedFiles;
       
-      // Always restore if:
-      // 1. We haven't initialized yet, OR
-      // 2. The attachments are different, OR
-      // 3. Current attachments are empty but we have initialAttachedFiles (CRITICAL: always restore if empty), OR
-      // 4. The prop changed (component remounted with new prop), OR
-      // 5. We have initialAttachedFiles but current is empty (CRITICAL for restoration)
+      // Restore if: haven't initialized yet, or prop changed (e.g. view switch), or IDs differ
       const shouldRestore = !hasInitializedAttachmentsRef.current || 
-                           isDifferent || 
-                           (attachedFiles.length === 0 && initialAttachedFiles.length > 0) ||
                            (propChanged && initialAttachedFiles.length > 0) ||
-                           (initialAttachedFiles.length > 0 && attachedFiles.length === 0);
+                           isDifferent;
       
       if (shouldRestore) {
         setAttachedFiles(initialAttachedFiles);

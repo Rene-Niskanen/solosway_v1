@@ -352,7 +352,7 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
             borderWidth: 1,
             borderStyle: 'solid',
             borderColor: showBarGlow ? 'transparent' : '#B8BCC4',
-            boxShadow: 'none', // No shadow like SideChatPanel
+            boxShadow: '0 4px 20px rgba(0, 0, 0, 0.07), 0 2px 8px rgba(0, 0, 0, 0.05)',
             position: 'relative',
             paddingTop: '16px',
             paddingBottom: '24px',

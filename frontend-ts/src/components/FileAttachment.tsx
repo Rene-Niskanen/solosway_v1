@@ -41,7 +41,6 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
   const [isDragging, setIsDragging] = React.useState(false);
   const imageDragRef = React.useRef<HTMLDivElement>(null);
   const fileDragRef = React.useRef<HTMLDivElement>(null);
-  const removeBtnRef = React.useRef<HTMLButtonElement>(null);
   const isImage = attachment.type.startsWith('image/');
   const isPDF = attachment.type === 'application/pdf';
   const isDOCX = attachment.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' || 
@@ -86,25 +85,6 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
       onDragEnd();
     }
   };
-
-  // Native listeners on remove button — bypass React/overlays; mousedown fires before drag, click for touch devices
-  const attachmentIdRef = React.useRef(attachment.id);
-  attachmentIdRef.current = attachment.id;
-  React.useEffect(() => {
-    const el = removeBtnRef.current;
-    if (!el || compact) return;
-    const handler = (e: Event) => {
-      e.preventDefault();
-      e.stopPropagation();
-      onRemove(attachmentIdRef.current);
-    };
-    el.addEventListener('mousedown', handler, { capture: true });
-    el.addEventListener('click', handler, { capture: true });
-    return () => {
-      el.removeEventListener('mousedown', handler, { capture: true });
-      el.removeEventListener('click', handler, { capture: true });
-    };
-  }, [compact, onRemove]);
 
   // Create preview URL for images
   React.useEffect(() => {
@@ -254,11 +234,9 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
             height: '100%',
           }}
         />
-        
-        {/* Remove Button - Bottom right corner (hidden in compact). Native listener in useEffect ensures it fires. */}
+        {/* Remove Button - Bottom right corner (hidden in compact) */}
         {!compact && (
           <button
-            ref={removeBtnRef}
             type="button"
             draggable={false}
             onClick={(e) => {
@@ -350,10 +328,9 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
           </div>
         </div>
         
-        {/* Remove Button - X only (hidden in compact). Native listener in useEffect ensures it fires. */}
+        {/* Remove Button - X only (hidden in compact) */}
         {!compact && (
           <button
-            ref={removeBtnRef}
             type="button"
             draggable={false}
             onClick={(e) => {
