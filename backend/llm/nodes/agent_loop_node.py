@@ -439,16 +439,24 @@ async def agent_loop_node(state: MainWorkflowState, runnable_config=None) -> Mai
             
             if emitter and isinstance(result, list):
                 if tool_name == RETRIEVE_DOCS:
+                    # Don't show count here - that's "searched"; show count only after chunks (documents we're using)
+                    emitter.emit_reasoning(label="Analysing documents...", detail=None)
+                elif tool_name == RETRIEVE_CHUNKS:
+                    # Show how many documents we're actually using (unique docs in chunk result)
+                    unique_doc_ids = set()
+                    for item in result:
+                        if isinstance(item, dict):
+                            did = item.get("document_id") or item.get("doc_id")
+                            if did is not None:
+                                unique_doc_ids.add(str(did))
+                    n_docs_used = len(unique_doc_ids)
+                    doc_word = "document" if n_docs_used == 1 else "documents"
                     emitter.emit_reasoning(
-                        label=f"Analysing {len(result)} document{'s' if len(result) != 1 else ''}",
+                        label=f"Analysing {n_docs_used} {doc_word}",
                         detail=None,
                     )
-                elif tool_name == RETRIEVE_CHUNKS:
-                    doc_ids = tool_args.get("document_ids") or []
-                    n_docs = len(doc_ids) if doc_ids else 0
-                    # Backend just ran vector + keyword search within those docs and returned matching chunks
                     emitter.emit_reasoning(
-                        label=f"Retrieved {len(result)} passage{'s' if len(result) != 1 else ''} from {n_docs} document{'s' if n_docs != 1 else ''}",
+                        label=f"Retrieved {len(result)} passage{'s' if len(result) != 1 else ''} from {n_docs_used} {doc_word}",
                         detail=None,
                     )
     

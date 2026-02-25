@@ -585,22 +585,27 @@ async def executor_node(state: MainWorkflowState, runnable_config=None) -> MainW
             
             if action == "retrieve_docs":
                 if result_count > 0:
-                    emitter.emit_reasoning(
-                        label=f"Analysing {result_count} document{'' if result_count == 1 else 's'}",
-                        detail=None
-                    )
+                    # Don't show search count here; "Analysing N documents" is set from chunks-used count (views / retrieve_chunks)
+                    emitter.emit_reasoning(label="Analysing documents...", detail=None)
                 else:
                     emitter.emit_reasoning(
                         label="No documents found",
                         detail="Trying alternative search terms"
                     )
             elif action == "retrieve_chunks":
-                doc_ids = resolved_step.get("document_ids") or []
-                doc_count = len(doc_ids) if doc_ids else 0
-                
+                # Use unique doc count from chunk result (documents we're actually using), not docs we queried
+                unique_doc_ids = set()
+                if isinstance(result, list):
+                    for item in result:
+                        if isinstance(item, dict):
+                            did = item.get("document_id") or item.get("doc_id")
+                            if did is not None:
+                                unique_doc_ids.add(str(did))
+                doc_count = len(unique_doc_ids) if unique_doc_ids else 0
+                doc_word = "document" if doc_count == 1 else "documents"
                 if result_count > 0:
                     emitter.emit_reasoning(
-                        label=f"Retrieved {result_count} passage{'' if result_count == 1 else 's'} from {doc_count} document{'' if doc_count == 1 else 's'}"
+                        label=f"Retrieved {result_count} passage{'' if result_count == 1 else 's'} from {doc_count} {doc_word}"
                     )
                 else:
                     emitter.emit_reasoning(

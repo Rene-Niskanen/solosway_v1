@@ -676,7 +676,7 @@ const DashboardLayoutContent = ({
               minHeight: '100vh',
               minWidth: '100vw',
               // Use solid color for default background, image for others
-              backgroundColor: isDefaultBackground ? '#FCFCF9' : undefined,
+              backgroundColor: isDefaultBackground ? '#FFFFFF' : undefined,
               backgroundImage: backgroundImage ? `url(${backgroundImage})` : undefined,
               backgroundSize: backgroundImage ? 'cover' : undefined,
               backgroundPosition: backgroundImage ? 'center' : undefined,

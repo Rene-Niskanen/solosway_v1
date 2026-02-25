@@ -697,7 +697,7 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
     <div 
       className="absolute inset-0 flex flex-col items-center justify-center"
       style={{
-        background: '#FCFCF9',
+        background: '#FFFFFF',
         pointerEvents: 'auto',
       }}
     >
@@ -755,7 +755,7 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
       <div
         className="absolute inset-0 flex flex-col items-center justify-center"
         style={{
-          background: '#FCFCF9',
+          background: '#FFFFFF',
           pointerEvents: 'auto',
         }}
       >
@@ -776,12 +776,12 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
     );
   }
 
-  // Show full page with cream background - fills parent tightly next to sidebar
+  // Show full page with white background - fills parent tightly next to sidebar
   return (
     <div 
       className="relative w-full h-full min-h-0 overflow-y-auto"
       style={{
-        background: '#FCFCF9',
+        background: '#FFFFFF',
         pointerEvents: 'auto',
       }}
     >

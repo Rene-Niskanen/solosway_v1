@@ -5,7 +5,7 @@ import { useMemo } from "react";
 import { createPortal, flushSync } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { generateAnimatePresenceKey, generateConditionalKey, generateUniqueKey } from '../utils/keyGenerator';
-import { ChevronLeft, ChevronRight, ChevronDown, ChevronUp, ArrowUp, Mic, Map, Globe, X, SquareDashedMousePointer, Scan, Fullscreen, PanelLeftOpen, PanelRightClose, PictureInPicture2, Trash2, CreditCard, MoveDiagonal, Square, Files, Image as ImageIcon, File as FileIcon, FileText, FileCheck, Minimize, Minimize2, Workflow, Home, Brain, BrainCircuit, AudioLines, MessageCircle, MessageCircleDashed, Copy, Search, MessageSquare, Pencil, Check, Highlighter, SlidersHorizontal, Book, BookOpen, Download, ThumbsUp, ThumbsDown, Link2, Quote, Star, FolderPlus, FolderOpen, Undo2, CloudUpload, Plus, Captions, CaptionsOff } from "lucide-react";
+import { ChevronLeft, ChevronRight, ChevronDown, ChevronUp, ArrowUp, Mic, Map, Globe, X, SquareDashedMousePointer, Scan, Fullscreen, PanelLeftOpen, PanelRightClose, PictureInPicture2, Trash2, CreditCard, MoveDiagonal, Square, Files, Image as ImageIcon, File as FileIcon, FileText, FileCheck, Minimize, Minimize2, Workflow, Home, Brain, BrainCircuit, AudioLines, MessageCircle, MessageCircleDashed, Copy, Search, MessageSquare, Pencil, Check, Highlighter, SlidersHorizontal, Book, BookOpen, Download, ThumbsUp, ThumbsDown, Link2, Quote, Star, FolderPlus, FolderOpen, Undo2, CloudUpload, Plus, Captions, CaptionsOff, CloudDownload } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { FileAttachment, FileAttachmentData } from './FileAttachment';
 import { PropertyPillChip } from './PropertyPillChip';
@@ -30,6 +30,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 import { PropertyData } from './PropertyResultsDisplay';
 import { useChatHistory } from './ChatHistoryContext';
 import { backendApi } from '../services/backendApi';
+import { uploadEvents } from './UploadProgressBar';
 import { QuickStartBar } from './QuickStartBar';
 import { ReasoningSteps, ReasoningStep } from './ReasoningSteps';
 import { ResponseModeChoice } from './FileChoiceStep';
@@ -2205,6 +2206,7 @@ const StreamingResponseText: React.FC<{
                   wordBreak: 'break-word',
                   ...(showBarRestPart ? citationLineBarBlockStyle : {}),
                 }}><span style={{ display: 'block', lineHeight: '1.7' }}>{showBarRestPart && <span aria-hidden style={citationLineBarInlineStyle} />}{wrapTwoWordChunksInMotion(restPartContent, 'p-rest')}</span></p>
+                {citationBarMode && renderSingleCalloutIfHere(restCitationNums, 'p-rest')}
               </div>
             )}
           </>
@@ -2547,6 +2549,7 @@ const StreamingResponseText: React.FC<{
                   wordBreak: 'break-word',
                   ...(showBarRestPartP ? citationLineBarBlockStyle : {}),
                 }}><span style={{ display: 'block', lineHeight: '1.7' }}>{showBarRestPartP && <span aria-hidden style={citationLineBarInlineStyle} />}{innerRest}</span></p>
+                {citationBarMode && renderSingleCalloutIfHere(restCitationNumsP, 'p-rest')}
               </div>
             )}
           </>
@@ -2972,7 +2975,7 @@ const StreamingResponseText: React.FC<{
                     right: 0,
                     height: line.height,
                     // Right side solid (cover unrevealed text), left side blur/fade (soft edge at reveal boundary so we don't cut words)
-                    background: 'linear-gradient(to right, transparent 0%, rgba(252,252,249,0.08) 15%, rgba(252,252,249,0.4) 35%, rgba(252,252,249,0.85) 55%, #FCFCF9 75%, #FCFCF9 100%)',
+                    background: 'linear-gradient(to right, transparent 0%, rgba(255,255,255,0.08) 15%, rgba(255,255,255,0.4) 35%, rgba(255,255,255,0.85) 55%, #FFFFFF 75%, #FFFFFF 100%)',
                     pointerEvents: 'none',
                     filter: 'blur(0.5px)',
                     WebkitFilter: 'blur(0.5px)',
@@ -3930,7 +3933,6 @@ const CitationCallout: React.FC<{
   }, [cachedPageImage, hasBbox, bbox, previewSize.width, previewSize.height]);
 
   const showPreviewImage = canShowPreview && cachedPageImage;
-  const displayFilename = citation?.original_filename ?? 'Document';
   const docTypeLabel = citation?.classification_type != null
     ? String(citation.classification_type).replace(/_/g, ' ')
     : 'PDF Document';
@@ -4178,32 +4180,6 @@ const CitationCallout: React.FC<{
                     border: '1px solid rgba(0,0,0,0.06)',
                   }}
                 >
-                  {/* Document icon + name + page */}
-                  <div style={{ marginBottom: 10 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-                      <div
-                        style={{
-                          width: 36,
-                          height: 36,
-                          borderRadius: 6,
-                          backgroundColor: 'transparent',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          flexShrink: 0,
-                          overflow: 'hidden',
-                        }}
-                      >
-                        <img src="/pdfnew.png" alt="" style={{ width: 24, height: 24, objectFit: 'contain' }} />
-                      </div>
-                      <div style={{ minWidth: 0, flex: 1, overflow: 'hidden' }}>
-                        <div style={{ fontWeight: 600, fontSize: 11, color: '#1f2937', lineHeight: 1.3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={displayFilename}>
-                          {displayFilename}
-                        </div>
-                        <div style={{ fontSize: 9, color: '#6b7280', marginTop: 1 }}>Page {pageNum}</div>
-                      </div>
-                    </div>
-                  </div>
                   {/* Ask about this... chat bar (send button inside input) */}
                   {showAskQuestion && (
                     <form onSubmit={handleAskSubmit} style={{ display: 'block' }}>
@@ -4234,8 +4210,8 @@ const CitationCallout: React.FC<{
                           style={{
                             flex: 1,
                             height: '100%',
-                            padding: '0 14px 0 14px',
-                            paddingRight: 44,
+                            padding: '0 4px 0 4px',
+                            paddingRight: 42,
                             fontSize: 14,
                             lineHeight: '20px',
                             color: '#0D0D0D',
@@ -4343,32 +4319,6 @@ const CitationCallout: React.FC<{
               boxShadow: '0 4px 24px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.06)',
             }}
           >
-            {/* Document icon + name + page */}
-            <div style={{ marginBottom: 10 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-                <div
-                  style={{
-                    width: 36,
-                    height: 36,
-                    borderRadius: 6,
-                    backgroundColor: 'transparent',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    flexShrink: 0,
-                    overflow: 'hidden',
-                  }}
-                >
-                  <img src="/pdfnew.png" alt="" style={{ width: 24, height: 24, objectFit: 'contain' }} />
-                </div>
-                <div style={{ minWidth: 0, flex: 1, overflow: 'hidden' }}>
-                  <div style={{ fontWeight: 600, fontSize: 11, color: '#1f2937', lineHeight: 1.3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={displayFilename}>
-                    {displayFilename}
-                  </div>
-                  <div style={{ fontSize: 9, color: '#6b7280', marginTop: 1 }}>Page {pageNum}</div>
-                </div>
-              </div>
-            </div>
             {/* Ask bar + View/Accept row (send button inside input) */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
               {showAskQuestion && (
@@ -4401,8 +4351,8 @@ const CitationCallout: React.FC<{
                         flex: 1,
                         minWidth: 120,
                         height: '100%',
-                        padding: '0 14px 0 14px',
-                        paddingRight: 44,
+                        padding: '0 4px 0 4px',
+                        paddingRight: 42,
                         fontSize: 14,
                         lineHeight: '20px',
                         color: '#0D0D0D',
@@ -6330,6 +6280,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   const [shimmerTickMessageId, setShimmerTickMessageId] = React.useState<string | null>(null);
   const [downloadDropdownMessageId, setDownloadDropdownMessageId] = React.useState<string | null>(null);
   const [sourcesDropdownMessageId, setSourcesDropdownMessageId] = React.useState<string | null>(null);
+  // Add to DB popover: which response's "Add to your database?" is open; auto-shown only when that response had new files
+  const [addToDbPopoverMessageId, setAddToDbPopoverMessageId] = React.useState<string | null>(null);
+  const addToDbPopoverAutoShownRef = React.useRef<Set<string>>(new Set());
+  // Toast shown at top-center of chat when user clicks Add to DB but message had no new files
+  const [chatTopToastMessage, setChatTopToastMessage] = React.useState<string | null>(null);
+  const chatTopToastTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  React.useEffect(() => () => {
+    if (chatTopToastTimeoutRef.current) clearTimeout(chatTopToastTimeoutRef.current);
+  }, []);
   // Which response is hovered (for showing feedback bar on older messages); latest response always shows bar when stream done
   const [showBarForResponseId, setShowBarForResponseId] = React.useState<string | null>(null);
   const feedbackBarHoverEnterRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -6339,6 +6298,51 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     if (feedbackBarHoverEnterRef.current) clearTimeout(feedbackBarHoverEnterRef.current);
     if (feedbackBarHoverLeaveRef.current) clearTimeout(feedbackBarHoverLeaveRef.current);
   }, []);
+
+  const handleAddToDbConfirm = React.useCallback(async (attachments: FileAttachmentData[]) => {
+    const toUpload = attachments.filter((a) => a?.file instanceof File);
+    if (toUpload.length === 0) return;
+    setAddToDbPopoverMessageId(null);
+    let completed = 0;
+    let failed = 0;
+    for (const att of toUpload) {
+      const file = att.file;
+      uploadEvents.start(file.name);
+      try {
+        const result = await backendApi.uploadDocument(file, (p) => uploadEvents.progress(p, file.name));
+        if (result.success && result.data?.document_id) {
+          uploadEvents.complete(file.name, result.data.document_id);
+          completed++;
+        } else {
+          uploadEvents.error(file.name, result.error || 'Upload failed');
+          failed++;
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Upload failed';
+        uploadEvents.error(file.name, msg);
+        failed++;
+      }
+    }
+    if (failed === 0) {
+      toast({
+        description: completed === 1 ? 'File added to your database.' : `${completed} files added to your database.`,
+        duration: 2500,
+      });
+    } else if (completed > 0) {
+      toast({
+        description: `${completed} uploaded; ${failed} failed.`,
+        variant: 'destructive',
+        duration: 3000,
+      });
+    } else {
+      toast({
+        description: 'Upload failed.',
+        variant: 'destructive',
+        duration: 3000,
+      });
+    }
+  }, []);
+
   const handleThumbsUpResponse = React.useCallback((messageId: string) => {
     setLikedResponseIds((prev) => {
       const next = new Set(prev);
@@ -7853,6 +7857,44 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     citationReviewForWheelRef.current.active = true;
     citationReviewForWheelRef.current.total = ordered.length;
   }, [citationReviewMessageId, chatMessages, setCitationReviewCurrentIndex]);
+
+  // Response IDs that have feedback bar visible and had new files in the previous query (for auto-opening "Add to DB" popover)
+  const responseIdsWithNewFilesForAutoOpen = React.useMemo(() => {
+    const list: string[] = [];
+    let latestResponseId: string | null = null;
+    for (let i = chatMessages.length - 1; i >= 0; i--) {
+      const m = chatMessages[i];
+      if (m && m.type === 'response' && m.id) {
+        latestResponseId = m.id;
+        break;
+      }
+    }
+    for (let i = 0; i < chatMessages.length; i++) {
+      const msg = chatMessages[i];
+      if (!msg || msg.type !== 'response' || !msg.id) continue;
+      const prev = chatMessages[i - 1];
+      const hasNewFiles = prev?.type === 'query' && (prev as any).attachments?.length > 0 &&
+        (prev as any).attachments.some((a: any) => a?.file instanceof File);
+      if (!hasNewFiles) continue;
+      if (!revealEndedForResponseIdRef.current.has(msg.id)) continue;
+      const isLatest = msg.id === latestResponseId;
+      const showBar = isLatest || showBarForResponseId === msg.id;
+      if (showBar) list.push(msg.id);
+    }
+    return list;
+  }, [chatMessages, revealCompleteTick, showBarForResponseId]);
+
+  React.useEffect(() => {
+    const ids = responseIdsWithNewFilesForAutoOpen;
+    if (ids.length === 0) return;
+    const latestId = ids[ids.length - 1];
+    if (addToDbPopoverAutoShownRef.current.has(latestId)) return;
+    const t = setTimeout(() => {
+      setAddToDbPopoverMessageId(latestId);
+      addToDbPopoverAutoShownRef.current.add(latestId);
+    }, 300);
+    return () => clearTimeout(t);
+  }, [responseIdsWithNewFilesForAutoOpen]);
 
   // Searching step: show generic rotating file icons (PDF/DOCX) without fetching all documents.
   // ReasoningSteps/SearchingSourcesCarousel falls back to [...allowedTypes x 9] when no docPreviews.
@@ -16231,7 +16273,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 showCitationPreviewBar={showCitationPreviewBar && !citationPreviewClosedForMessageIds.has(finalKey)}
                 onCloseCitationPreviewBar={(id) => setCitationPreviewClosedForMessageIds((prev) => new Set(prev).add(id))}
                 rejectedCitationNumbers={rejectedCitationNumbersByMessage.get(String(message.id ?? finalKey))}
-                showBlueCitationHighlight={showBlueCitationHighlight}
+                showBlueCitationHighlight={showBlueCitationHighlight && !citationPreviewClosedForMessageIds.has(finalKey)}
               />
             </div>
           )}
@@ -16293,6 +16335,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               {revealEndedOrRestored && showFeedbackBar && (() => {
                 const sources = getSourcesFromReadingStepsOrCitations(message);
                 const isSourcesOpen = sourcesDropdownMessageId === finalKey;
+                const prevMessage = validMessages[idx - 1]?.message;
+                const hasNewFilesFromQuery = prevMessage?.type === 'query' && (prevMessage as any).attachments?.length > 0 &&
+                  (prevMessage as any).attachments.some((a: any) => a?.file instanceof File);
                 return (
             <div className="feedback-action-bar-enter" style={{ display: 'flex', alignItems: 'center', gap: '5px', flexWrap: 'wrap', color: '#6b7280', fontSize: '11px', fontFamily: 'inherit' }}>
               <Tooltip>
@@ -16425,6 +16470,67 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   </TooltipContent>
                 </Tooltip>
               )}
+              <Popover open={addToDbPopoverMessageId === finalKey} onOpenChange={(open) => { if (!open) setAddToDbPopoverMessageId(null); }}>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <PopoverTrigger asChild>
+                      <button
+                        type="button"
+                        className="feedback-bar-icon-btn"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (hasNewFilesFromQuery) setAddToDbPopoverMessageId(addToDbPopoverMessageId === finalKey ? null : finalKey);
+                          else {
+                            if (chatTopToastTimeoutRef.current) clearTimeout(chatTopToastTimeoutRef.current);
+                            setChatTopToastMessage('No new files from this message.');
+                            chatTopToastTimeoutRef.current = setTimeout(() => {
+                              setChatTopToastMessage(null);
+                              chatTopToastTimeoutRef.current = null;
+                            }, 2000);
+                          }
+                        }}
+                        style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', border: 'none', cursor: 'pointer', color: '#9CA3AF' }}
+                      >
+                        <CloudDownload size={14} />
+                      </button>
+                    </PopoverTrigger>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom" sideOffset={6} className="bg-black text-white rounded-sm px-1.5 py-0.5 text-[11px] border-0 shadow-md">
+                    Add to database
+                  </TooltipContent>
+                </Tooltip>
+                <PopoverContent side="bottom" align="center" sideOffset={6} className="bg-black text-white rounded-sm px-3 py-2 text-[11px] border-0 shadow-md" style={{ width: 'auto' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    <span>Add to your database?</span>
+                    <div style={{ display: 'flex', gap: '6px', justifyContent: 'flex-end' }}>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setAddToDbPopoverMessageId(null);
+                        }}
+                        style={{ padding: '2px 8px', borderRadius: '4px', border: '1px solid rgba(255,255,255,0.4)', background: 'transparent', color: 'white', cursor: 'pointer', fontSize: '11px' }}
+                      >
+                        No
+                      </button>
+                      <button
+                        type="button"
+                        disabled={!hasNewFilesFromQuery}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (hasNewFilesFromQuery && prevMessage && (prevMessage as any).attachments?.length) {
+                            handleAddToDbConfirm((prevMessage as any).attachments);
+                          }
+                          setAddToDbPopoverMessageId(null);
+                        }}
+                        style={{ padding: '2px 8px', borderRadius: '4px', border: 'none', background: 'white', color: 'black', cursor: hasNewFilesFromQuery ? 'pointer' : 'not-allowed', fontSize: '11px' }}
+                      >
+                        Yes
+                      </button>
+                    </div>
+                  </div>
+                </PopoverContent>
+              </Popover>
               {sources.count > 0 && (
               <Popover open={isSourcesOpen} onOpenChange={(open) => setSourcesDropdownMessageId(open ? finalKey : null)}>
                 <PopoverTrigger asChild>
@@ -16507,7 +16613,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         </CitationMessageVisibility>
       );
     }).filter(Boolean);
-  }, [chatMessages, showReasoningTrace, showHighlight, showCitations, showCitationPreviewBar, showBlueCitationHighlight, expandedThoughtMessageIds, toggleThoughtExpanded, restoredMessageIdsRef, reopenNoAnimationTick, handleUserCitationClick, onOpenProperty, scrollToBottom, expandedCardViewDoc, propertyAttachments, orangeCitationNumbersByMessage, citationClickPanel, citationViewedInDocument, currentChatId, skipSwoopForChatId, revealCompleteTick, likedResponseIds, dislikedResponseIds, copiedResponseId, shimmerTickMessageId, sourcesDropdownMessageId, showBarForResponseId, handleThumbsUpResponse, handleThumbsDownResponse, handleCopyResponse, handleDownloadResponse, handleDownloadResponseAsDocxForMessage, openCitationInDocumentView, openFeedbackModal, isBotPaused, citationReviewMessageId, citationReviewCurrentIndex, citationReviewAcceptedIndices, citationReviewShowReviewNextOnly, rejectedCitationNumbersByMessage, handleCitationVisibilityChange]);
+  }, [chatMessages, showReasoningTrace, showHighlight, showCitations, showCitationPreviewBar, showBlueCitationHighlight, expandedThoughtMessageIds, toggleThoughtExpanded, restoredMessageIdsRef, reopenNoAnimationTick, handleUserCitationClick, onOpenProperty, scrollToBottom, expandedCardViewDoc, propertyAttachments, orangeCitationNumbersByMessage, citationClickPanel, citationViewedInDocument, currentChatId, skipSwoopForChatId, revealCompleteTick, likedResponseIds, dislikedResponseIds, copiedResponseId, shimmerTickMessageId, sourcesDropdownMessageId, addToDbPopoverMessageId, showBarForResponseId, handleThumbsUpResponse, handleThumbsDownResponse, handleCopyResponse, handleDownloadResponse, handleDownloadResponseAsDocxForMessage, openCitationInDocumentView, openFeedbackModal, handleAddToDbConfirm, isBotPaused, citationReviewMessageId, citationReviewCurrentIndex, citationReviewAcceptedIndices, citationReviewShowReviewNextOnly, rejectedCitationNumbersByMessage, handleCitationVisibilityChange]);
 
   return (
     <>
@@ -16666,7 +16772,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               
               return widthCss;
             })(),
-            backgroundColor: '#FCFCF9',
+            backgroundColor: '#FFFFFF',
             boxShadow: 'none',
             // Disable ALL transitions instantly when FilingSidebar/sidebar closes or resizes to prevent map showing through
             // Track previous sidebar state to detect collapse immediately
@@ -16743,6 +16849,34 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               position: 'relative',
             }}
           >
+            {/* Chat top-center toast (e.g. "No new files from this message.") */}
+            {chatTopToastMessage && (
+              <div
+                role="status"
+                aria-live="polite"
+                style={{
+                  position: 'absolute',
+                  top: 12,
+                  left: '50%',
+                  transform: 'translateX(-50%)',
+                  zIndex: 10020,
+                  padding: '6px 12px',
+                  borderRadius: 6,
+                  backgroundColor: '#000',
+                  color: '#fff',
+                  fontSize: '12px',
+                  fontFamily: 'inherit',
+                  boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
+                  pointerEvents: 'none',
+                  whiteSpace: 'nowrap',
+                  maxWidth: '90%',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                }}
+              >
+                {chatTopToastMessage}
+              </div>
+            )}
             {/* Expanded Plan Panel - LEFT side when View Plan is clicked */}
             {isPlanPanelExpanded && showPlanViewer && (
               <div
@@ -16753,7 +16887,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   height: '100%',
                   flexShrink: 0,
                   padding: '20px',
-                  backgroundColor: '#FCFCF9',
+                  backgroundColor: '#FFFFFF',
                   overflow: 'hidden',
                   transition: 'width 0.3s ease',
                 }}
@@ -16936,7 +17070,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 transition: (shouldExpand && !isFullscreenMode && !isPropertyDetailsOpen) ? 'none' : 'opacity 0.05s ease-in, width 0.3s ease',
                 visibility: (shouldExpand && !isFullscreenMode && !isPropertyDetailsOpen) ? 'hidden' : 'visible',
                 position: 'relative',
-                backgroundColor: '#FCFCF9', // Ensure solid background to prevent leaks
+                backgroundColor: '#FFFFFF', // Ensure solid background to prevent leaks
                 overflow: 'hidden', // Prevent content from leaking during transitions
                 width: isPlanPanelExpanded && showPlanViewer ? '45%' : '100%',
                 minWidth: isPlanPanelExpanded && showPlanViewer ? '350px' : undefined,
@@ -16948,7 +17082,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             <div 
               className="pr-4 pl-6" 
               style={{ 
-                backgroundColor: showTopBlur ? 'rgba(252, 252, 249, 0.88)' : '#FCFCF9',
+                backgroundColor: showTopBlur ? 'rgba(255, 255, 255, 0.88)' : '#FFFFFF',
                 backdropFilter: showTopBlur ? 'blur(16px) saturate(160%)' : undefined,
                 WebkitBackdropFilter: showTopBlur ? 'blur(16px) saturate(160%)' : undefined,
                 position: 'sticky', 
@@ -17252,17 +17386,17 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               <ChevronDown className="w-6 h-6 text-gray-400 flex-shrink-0 ml-0.5" strokeWidth={1.25} />
                             </button>
                           </DropdownMenuTrigger>
-                          <DropdownMenuContent align="start" sideOffset={4} onClick={(e) => e.stopPropagation()} className="min-w-[180px] rounded-lg shadow-lg border bg-white py-1">
-                            <DropdownMenuItem onClick={(e) => { e.stopPropagation(); if (starredToastTimeoutRef.current) clearTimeout(starredToastTimeoutRef.current); setShowStarredToast(true); starredToastTimeoutRef.current = setTimeout(() => { setShowStarredToast(false); starredToastTimeoutRef.current = null; }, 3000); }} className="flex items-center gap-2 cursor-pointer text-[13px] font-normal text-[#666] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#666]">
-                              <Star className="w-6 h-6 text-[#666]" strokeWidth={1.25} />
+                          <DropdownMenuContent align="start" sideOffset={4} onClick={(e) => e.stopPropagation()} className="min-w-[165px] w-auto rounded-md border border-gray-200 bg-white p-2 shadow-md">
+                            <DropdownMenuItem onClick={(e) => { e.stopPropagation(); if (starredToastTimeoutRef.current) clearTimeout(starredToastTimeoutRef.current); setShowStarredToast(true); starredToastTimeoutRef.current = setTimeout(() => { setShowStarredToast(false); starredToastTimeoutRef.current = null; }, 3000); }} className="flex items-center gap-2 cursor-pointer rounded-sm px-2 py-2 text-left text-[13px] font-normal text-[#374151] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#374151]">
+                              <Star className="w-6 h-6 text-[#666] flex-shrink-0" strokeWidth={1.25} />
                               Star
                             </DropdownMenuItem>
-                            <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleToggleEdit(); }} className="flex items-center gap-2 cursor-pointer text-[13px] font-normal text-[#666] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#666]">
-                              <Pencil className="w-6 h-6 text-[#666]" strokeWidth={1.25} />
+                            <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleToggleEdit(); }} className="flex items-center gap-2 cursor-pointer rounded-sm px-2 py-2 text-left text-[13px] font-normal text-[#374151] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#374151]">
+                              <Pencil className="w-6 h-6 text-[#666] flex-shrink-0" strokeWidth={1.25} />
                               Rename
                             </DropdownMenuItem>
-                            <DropdownMenuItem onClick={(e) => { e.stopPropagation(); toast({ title: 'Add to project', description: 'Add to project coming soon.' }); }} className="flex items-center gap-2 cursor-pointer text-[13px] font-normal text-[#666] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#666]">
-                              <FolderPlus className="w-6 h-6 text-[#666]" strokeWidth={1.25} />
+                            <DropdownMenuItem onClick={(e) => { e.stopPropagation(); toast({ title: 'Add to project', description: 'Add to project coming soon.' }); }} className="flex items-center gap-2 cursor-pointer rounded-sm px-2 py-2 text-left text-[13px] font-normal text-[#374151] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#374151]">
+                              <FolderPlus className="w-6 h-6 text-[#666] flex-shrink-0" strokeWidth={1.25} />
                               Add to project
                             </DropdownMenuItem>
                             <DropdownMenuSeparator className="my-1 bg-gray-200" />
@@ -17274,9 +17408,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                   if (onNewChat) onNewChat();
                                 }
                               }}
-                              className="flex items-center gap-2 cursor-pointer text-[13px] font-normal text-red-600 hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-red-600"
+                              className="flex items-center gap-2 cursor-pointer rounded-sm px-2 py-2 text-left text-[13px] font-normal text-red-600 hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-red-600"
                             >
-                              <Trash2 className="w-6 h-6 text-red-600" strokeWidth={1.25} />
+                              <Trash2 className="w-6 h-6 text-red-600 flex-shrink-0" strokeWidth={1.25} />
                               Delete
                             </DropdownMenuItem>
                           </DropdownMenuContent>
@@ -17322,17 +17456,17 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             <ChevronDown className="w-6 h-6 text-gray-400 flex-shrink-0 ml-0.5" strokeWidth={1.25} />
                           </button>
                         </DropdownMenuTrigger>
-                        <DropdownMenuContent align="start" sideOffset={4} onClick={(e) => e.stopPropagation()} className="min-w-[180px] rounded-lg shadow-lg border bg-white py-1">
-                          <DropdownMenuItem onClick={(e) => { e.stopPropagation(); if (starredToastTimeoutRef.current) clearTimeout(starredToastTimeoutRef.current); setShowStarredToast(true); starredToastTimeoutRef.current = setTimeout(() => { setShowStarredToast(false); starredToastTimeoutRef.current = null; }, 3000); }} className="flex items-center gap-2 cursor-pointer text-[13px] font-normal text-[#666] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#666]">
-                            <Star className="w-6 h-6 text-[#666]" strokeWidth={1.25} />
+                        <DropdownMenuContent align="start" sideOffset={4} onClick={(e) => e.stopPropagation()} className="min-w-[165px] w-auto rounded-md border border-gray-200 bg-white p-2 shadow-md">
+                          <DropdownMenuItem onClick={(e) => { e.stopPropagation(); if (starredToastTimeoutRef.current) clearTimeout(starredToastTimeoutRef.current); setShowStarredToast(true); starredToastTimeoutRef.current = setTimeout(() => { setShowStarredToast(false); starredToastTimeoutRef.current = null; }, 3000); }} className="flex items-center gap-2 cursor-pointer rounded-sm px-2 py-2 text-left text-[13px] font-normal text-[#374151] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#374151]">
+                            <Star className="w-6 h-6 text-[#666] flex-shrink-0" strokeWidth={1.25} />
                             Star
                           </DropdownMenuItem>
-                          <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleToggleEdit(); }} className="flex items-center gap-2 cursor-pointer text-[13px] font-normal text-[#666] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#666]">
-                            <Pencil className="w-6 h-6 text-[#666]" strokeWidth={1.25} />
+                          <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleToggleEdit(); }} className="flex items-center gap-2 cursor-pointer rounded-sm px-2 py-2 text-left text-[13px] font-normal text-[#374151] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#374151]">
+                            <Pencil className="w-6 h-6 text-[#666] flex-shrink-0" strokeWidth={1.25} />
                             Rename
                           </DropdownMenuItem>
-                          <DropdownMenuItem onClick={(e) => { e.stopPropagation(); toast({ title: 'Add to project', description: 'Add to project coming soon.' }); }} className="flex items-center gap-2 cursor-pointer text-[13px] font-normal text-[#666] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#666]">
-                            <FolderPlus className="w-6 h-6 text-[#666]" strokeWidth={1.25} />
+                          <DropdownMenuItem onClick={(e) => { e.stopPropagation(); toast({ title: 'Add to project', description: 'Add to project coming soon.' }); }} className="flex items-center gap-2 cursor-pointer rounded-sm px-2 py-2 text-left text-[13px] font-normal text-[#374151] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#374151]">
+                            <FolderPlus className="w-6 h-6 text-[#666] flex-shrink-0" strokeWidth={1.25} />
                             Add to project
                           </DropdownMenuItem>
                           <DropdownMenuSeparator className="my-1 bg-gray-200" />
@@ -17344,9 +17478,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                 if (onNewChat) onNewChat();
                               }
                             }}
-                            className="flex items-center gap-2 cursor-pointer text-[13px] font-normal text-red-600 hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-red-600"
+                            className="flex items-center gap-2 cursor-pointer rounded-sm px-2 py-2 text-left text-[13px] font-normal text-red-600 hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-red-600"
                           >
-                            <Trash2 className="w-6 h-6 text-red-600" strokeWidth={1.25} />
+                            <Trash2 className="w-6 h-6 text-red-600 flex-shrink-0" strokeWidth={1.25} />
                             Delete
                           </DropdownMenuItem>
                         </DropdownMenuContent>
@@ -17789,7 +17923,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 onClick={(e) => e.stopPropagation()}
                 className="flex-1"
                 style={{
-                  backgroundColor: '#FCFCF9',
+                  backgroundColor: '#FFFFFF',
                   display: 'flex',
                   flexDirection: 'column',
                   justifyContent: 'flex-start',
@@ -18228,7 +18362,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   onClick={(e) => e.stopPropagation()} // Prevent clicks from closing agent sidebar
                   className="flex-1 overflow-y-auto sidechat-scroll" 
                   style={{ 
-                    backgroundColor: '#FCFCF9',
+                    backgroundColor: '#FFFFFF',
                     padding: '16px 0', // Simplified padding - content will be centered
                     marginRight: '6px',
                     scrollbarWidth: 'thin',
@@ -18572,7 +18706,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   ref={chatInputContainerRef}
               onClick={(e) => e.stopPropagation()} // Prevent clicks from closing agent sidebar
                 style={{ 
-                backgroundColor: citationClickPanel ? 'transparent' : '#FCFCF9',
+                backgroundColor: citationClickPanel ? 'transparent' : '#FFFFFF',
                 paddingTop: '12px', 
                 paddingBottom: `${INPUT_BAR_SPACE_BELOW_PANEL}px`, 
                 paddingLeft: '0', // Remove left padding - centering handled by form
@@ -18888,6 +19022,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                   return next;
                                 });
                                 if (effectiveIndex >= total - 1) {
+                                  setCitationPreviewClosedForMessageIds((prev) => new Set(prev).add(reviewMsgId));
                                   setCitationReviewCompletedForMessageIds((prev) => { const next = new globalThis.Set(prev); next.add(reviewMsgId); return next; });
                                   setCitationReviewMessageId(null);
                                   setCitationReviewCurrentIndex(0);

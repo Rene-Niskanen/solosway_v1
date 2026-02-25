@@ -1854,110 +1854,25 @@ def query_documents_stream():
                                     # SKIP reasoning step emissions for citation queries (ultra-fast path)
                                     # but still capture state updates for final result
                                     if node_name == "query_vector_documents" and not is_fast_path:
+                                        # Don't emit "Analysing N documents" here - N would be "searched" count.
+                                        # We emit it from process_documents with "documents we're using chunks from" count.
                                         state_data = state_update if state_update else output
                                         relevant_docs = state_data.get("relevant_documents", [])
-                                        doc_count = len(relevant_docs)
-                                        if doc_count > 0:
-                                            # Build document names and previews for found_documents step
-                                            doc_names = []
-                                            doc_previews = []
-                                            
-                                            for doc in relevant_docs[:10]:  # Limit to first 10 for display
-                                                filename = doc.get('original_filename', '') or ''
-                                                classification_type = doc.get('classification_type', 'Document') or 'Document'
-                                                doc_id = doc.get('doc_id', '')
-                                                
-                                                # Build display name
-                                                if filename:
-                                                    display_name = filename
-                                                    if len(display_name) > 35:
-                                                        display_name = display_name[:32] + '...'
-                                                else:
-                                                    display_name = classification_type.replace('_', ' ').title()
-                                                
-                                                    doc_names.append(display_name)
-                                                    
-                                                # Build doc_preview metadata
-                                                doc_preview = {
-                                                        'doc_id': doc_id,
-                                                    'original_filename': filename if filename else None,
-                                                        'classification_type': classification_type,
-                                                        'page_range': doc.get('page_range', ''),
-                                                        'page_numbers': doc.get('page_numbers', []),
-                                                        's3_path': doc.get('s3_path', ''),
-                                                        'download_url': f"/api/files/download?document_id={doc_id}" if doc_id else ''
-                                                }
-                                                doc_previews.append(doc_preview)
-                                            
-                                            # Build message - different for follow-ups vs first query
-                                            if followup_context['is_followup'] and not followup_context['docs_already_shown']:
-                                                # For follow-up queries, show a more contextual message
-                                                if doc_names:
-                                                    names_str = ', '.join(doc_names[:3])  # Show fewer names for cleaner display
-                                                    message = f'Using documents: {names_str}'
-                                                else:
-                                                    # Fix grammar: "1 document" vs "X documents"
-                                                    doc_word = "document" if doc_count == 1 else "documents"
-                                                    message = f'Using {doc_count} existing {doc_word}'
-                                                followup_context['docs_already_shown'] = True
-                                            else:
-                                                # First query - show full "Found X documents" message
-                                                if doc_names:
-                                                    names_str = ', '.join(doc_names)
-                                                    # Fix grammar: "1 document" vs "X documents"
-                                                    doc_word = "document" if doc_count == 1 else "documents"
-                                                    message = f'Found {doc_count} {doc_word}: {names_str}'
-                                                else:
-                                                    # Fix grammar: "1 document" vs "X documents"
-                                                    doc_word = "document" if doc_count == 1 else "documents"
-                                                    message = f'Found {doc_count} {doc_word}'
-                                            
-                                            # Set reading timestamp when documents are first found (before analyzing/summarizing)
-                                            # This ensures reading steps appear in correct order (after found, before summarizing)
+                                        if relevant_docs:
                                             if reading_timestamp is None:
-                                                reading_timestamp = time.time() + 0.1  # Slightly after "Found documents", before "Analyzing"
-                                            
-                                            reasoning_data = {
-                                                'type': 'reasoning_step',
-                                                'step': 'found_documents',
-                                                'action_type': 'exploring',
-                                                'message': message,
-                                                'count': doc_count,
-                                                'timestamp': time.time(),  # Ensure proper ordering
-                                                'details': {
-                                                    'documents_found': doc_count, 
-                                                    'document_names': doc_names,
-                                                    'doc_previews': doc_previews  # Full metadata for preview cards
-                                                }
-                                            }
-                                            yield f"data: {json.dumps(reasoning_data)}\n\n"
-                                            
-                                            # IMMEDIATELY emit "Analyzing" step after found_documents for faster UI feedback
-                                            # Only for non-follow-ups (follow-ups get their own "Analyzing" step during process_documents)
-                                            if not followup_context.get('is_followup'):
-                                                doc_word_analyzing = "document" if doc_count == 1 else "documents"
-                                                analyzing_data = {
-                                                    'type': 'reasoning_step',
-                                                    'step': 'analyzing_documents',
-                                                    'action_type': 'analysing',
-                                                    'message': f'Analysing {doc_count} {doc_word_analyzing} for your question',
-                                                    'timestamp': time.time(),  # Ensure proper ordering
-                                                    'details': {'documents_to_analyze': doc_count}
-                                                }
-                                                yield f"data: {json.dumps(analyzing_data)}\n\n"
-                                    
-                                            # EARLY DOCUMENT PREPARATION: In agent mode, emit prepare_document action
-                                            # This allows frontend to start loading the document BEFORE answer generation
-                                            if is_agent_mode and doc_previews:
-                                                first_doc = doc_previews[0]
+                                                reading_timestamp = time.time() + 0.1
+                                            # EARLY DOCUMENT PREPARATION: In agent mode, emit prepare_document for first doc
+                                            if is_agent_mode and relevant_docs:
+                                                first_doc = relevant_docs[0]
+                                                doc_id = first_doc.get('doc_id', '')
                                                 prepare_action = {
                                                     'type': 'prepare_document',
-                                                    'doc_id': first_doc.get('doc_id'),
-                                                    'filename': first_doc.get('original_filename', ''),
-                                                    'download_url': first_doc.get('download_url', '')
+                                                    'doc_id': doc_id,
+                                                    'filename': first_doc.get('original_filename', '') or '',
+                                                    'download_url': f"/api/files/download?document_id={doc_id}" if doc_id else ''
                                                 }
                                                 yield f"data: {json.dumps(prepare_action)}\n\n"
-                                                logger.info(f"📂 [EARLY_PREP] Emitted prepare_document for {first_doc.get('doc_id', '')[:8]}...")
+                                                logger.info(f"📂 [EARLY_PREP] Emitted prepare_document for {doc_id[:8] if doc_id else '?'}...")
                                     
                                     elif node_name in ("executor", "agent_loop") and not is_fast_path:
                                         # Planner/Executor or agent_loop path: emit "Analysing N document(s):" + "Reading" only for
@@ -2109,7 +2024,7 @@ def query_documents_stream():
                                             relevant_docs = state_data.get("relevant_documents", [])
                                             
                                             # For follow-ups, show a single "Analyzing documents" step
-                                            # For first queries, show individual "Read [filename]" steps with preview cards
+                                            # For first queries, show "Analysing N documents:" (N = docs we're using chunks from) then individual "Read [filename]" steps
                                             if followup_context['is_followup']:
                                                 # Single step for follow-up - documents already read before
                                                 reasoning_data = {
@@ -2122,7 +2037,41 @@ def query_documents_stream():
                                                 }
                                                 yield f"data: {json.dumps(reasoning_data)}\n\n"
                                             else:
-                                                # First query - show individual read steps with preview cards
+                                                # First query: emit "Analysing N documents:" with N = docs we're actually using (doc_outputs), then reading steps
+                                                doc_names = []
+                                                doc_previews = []
+                                                for doc_output in doc_outputs[:10]:
+                                                    filename = doc_output.get('original_filename', '') or ''
+                                                    classification_type = doc_output.get('classification_type', 'Document') or 'Document'
+                                                    doc_id = doc_output.get('doc_id', '')
+                                                    display_name = (filename[:32] + '...') if len(filename) > 35 else (filename or classification_type.replace('_', ' ').title())
+                                                    doc_names.append(display_name)
+                                                    doc_previews.append({
+                                                        'doc_id': doc_id,
+                                                        'original_filename': filename if filename else None,
+                                                        'classification_type': classification_type,
+                                                        'page_range': doc_output.get('page_range', ''),
+                                                        'page_numbers': doc_output.get('page_numbers', []),
+                                                        's3_path': doc_output.get('s3_path', ''),
+                                                        'download_url': f"/api/files/download?document_id={doc_id}" if doc_id else ''
+                                                    })
+                                                doc_word = "document" if doc_outputs_count == 1 else "documents"
+                                                message = f'Analysing {doc_outputs_count} {doc_word}:'
+                                                reasoning_data = {
+                                                    'type': 'reasoning_step',
+                                                    'step': 'found_documents',
+                                                    'action_type': 'exploring',
+                                                    'message': message,
+                                                    'count': doc_outputs_count,
+                                                    'timestamp': time.time(),
+                                                    'details': {
+                                                        'documents_found': doc_outputs_count,
+                                                        'document_names': doc_names,
+                                                        'doc_previews': doc_previews
+                                                    }
+                                                }
+                                                yield f"data: {json.dumps(reasoning_data)}\n\n"
+                                                # Individual read steps with preview cards
                                                 for i, doc_output in enumerate(doc_outputs):
                                                     filename = doc_output.get('original_filename', '') or ''
                                                     classification_type = doc_output.get('classification_type', 'Document') or 'Document'
@@ -2533,81 +2482,12 @@ def query_documents_stream():
                                         state_update = event_data.get("data", {})
                                         
                                         if node_name == "query_vector_documents":
+                                            # Don't emit "Analysing N documents" here - N would be "searched" count.
+                                            # We emit it from process_documents with "documents we're using chunks from" count.
                                             state_data = state_update if state_update else event_data.get("output", {})
                                             relevant_docs = state_data.get("relevant_documents", [])
-                                            doc_count = len(relevant_docs)
-                                            if doc_count > 0:
-                                                # Build document names and previews for found_documents step
-                                                doc_names = []
-                                                doc_previews = []
-                                                
-                                                for doc in relevant_docs[:10]:  # Limit to first 10 for display
-                                                    filename = doc.get('original_filename', '') or ''
-                                                    classification_type = doc.get('classification_type', 'Document') or 'Document'
-                                                    doc_id = doc.get('doc_id', '')
-                                                    
-                                                    # Build display name
-                                                    if filename:
-                                                        display_name = filename
-                                                        if len(display_name) > 35:
-                                                            display_name = display_name[:32] + '...'
-                                                    else:
-                                                        display_name = classification_type.replace('_', ' ').title()
-                                                    
-                                                    doc_names.append(display_name)
-                                                    
-                                                    # Build doc_preview metadata
-                                                    doc_preview = {
-                                                        'doc_id': doc_id,
-                                                        'original_filename': filename if filename else None,
-                                                        'classification_type': classification_type,
-                                                        'page_range': doc.get('page_range', ''),
-                                                        'page_numbers': doc.get('page_numbers', []),
-                                                        's3_path': doc.get('s3_path', ''),
-                                                        'download_url': f"/api/files/download?document_id={doc_id}" if doc_id else ''
-                                                    }
-                                                    doc_previews.append(doc_preview)
-                                                
-                                                # Set reading timestamp when documents are first found (before analyzing/summarizing)
-                                                # This ensures reading steps appear in correct order (after found, before summarizing)
-                                                if reading_timestamp is None:
-                                                    reading_timestamp = time.time() + 0.1  # Slightly after "Found documents", before "Analyzing"
-                                                
-                                                # Create found_documents step with exploring action_type
-                                                message = f'Analysing {doc_count} document{"s" if doc_count > 1 else ""}'
-                                                if doc_names:
-                                                    message += f': {", ".join(doc_names[:3])}'
-                                                    if doc_count > 3:
-                                                        message += '...'
-                                                
-                                                reasoning_data = {
-                                                    'type': 'reasoning_step',
-                                                    'step': 'found_documents',
-                                                    'action_type': 'exploring',
-                                                    'message': message,
-                                                    'count': doc_count,
-                                                    'timestamp': time.time(),  # Ensure proper ordering
-                                                    'details': {
-                                                        'documents_found': doc_count,
-                                                        'document_names': doc_names,
-                                                        'doc_previews': doc_previews  # Full metadata for preview cards
-                                                    }
-                                                }
-                                                yield f"data: {json.dumps(reasoning_data)}\n\n"
-                                                
-                                                # IMMEDIATELY emit "Analyzing" step after found_documents for faster UI feedback
-                                                # Only for non-follow-ups (follow-ups get their own "Analyzing" step during process_documents)
-                                                if not followup_context.get('is_followup'):
-                                                    doc_word_analyzing = "document" if doc_count == 1 else "documents"
-                                                    analyzing_data = {
-                                                        'type': 'reasoning_step',
-                                                        'step': 'analyzing_documents',
-                                                        'action_type': 'analysing',
-                                                        'message': f'Analysing {doc_count} {doc_word_analyzing} for your question',
-                                                        'timestamp': time.time(),  # Ensure proper ordering
-                                                        'details': {'documents_to_analyze': doc_count}
-                                                    }
-                                                    yield f"data: {json.dumps(analyzing_data)}\n\n"
+                                            if relevant_docs and reading_timestamp is None:
+                                                reading_timestamp = time.time() + 0.1
                                         
                                         elif node_name == "process_documents":
                                             state_data = state_update if state_update else event_data.get("output", {})
@@ -2619,6 +2499,40 @@ def query_documents_stream():
                                                 if reading_timestamp is None:
                                                     reading_timestamp = time.time() - 2.0  # Fallback: 2 seconds before current time
                                                 
+                                                # Emit "Analysing N documents:" with N = docs we're actually using (doc_outputs)
+                                                doc_names = []
+                                                doc_previews = []
+                                                for doc_output in doc_outputs[:10]:
+                                                    filename = doc_output.get('original_filename', '') or ''
+                                                    classification_type = doc_output.get('classification_type', 'Document') or 'Document'
+                                                    doc_id = doc_output.get('doc_id', '')
+                                                    display_name = (filename[:32] + '...') if len(filename) > 35 else (filename or classification_type.replace('_', ' ').title())
+                                                    doc_names.append(display_name)
+                                                    doc_previews.append({
+                                                        'doc_id': doc_id,
+                                                        'original_filename': filename if filename else None,
+                                                        'classification_type': classification_type,
+                                                        'page_range': doc_output.get('page_range', ''),
+                                                        'page_numbers': doc_output.get('page_numbers', []),
+                                                        's3_path': doc_output.get('s3_path', ''),
+                                                        'download_url': f"/api/files/download?document_id={doc_id}" if doc_id else ''
+                                                    })
+                                                doc_word = "document" if doc_outputs_count == 1 else "documents"
+                                                message = f'Analysing {doc_outputs_count} {doc_word}:'
+                                                reasoning_data = {
+                                                    'type': 'reasoning_step',
+                                                    'step': 'found_documents',
+                                                    'action_type': 'exploring',
+                                                    'message': message,
+                                                    'count': doc_outputs_count,
+                                                    'timestamp': time.time(),
+                                                    'details': {
+                                                        'documents_found': doc_outputs_count,
+                                                        'document_names': doc_names,
+                                                        'doc_previews': doc_previews
+                                                    }
+                                                }
+                                                yield f"data: {json.dumps(reasoning_data)}\n\n"
                                                 # Create individual reading steps for each document (for preview cards)
                                                 for i, doc_output in enumerate(doc_outputs):
                                                     filename = doc_output.get('original_filename', '') or ''

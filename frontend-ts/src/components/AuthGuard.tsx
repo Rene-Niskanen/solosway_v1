@@ -114,7 +114,7 @@ export const AuthGuard: React.FC<AuthGuardProps> = ({ children }) => {
         }
       `}</style>
       <img
-        src="/velora-dash-logo.png"
+        src="/O-logo.png"
         alt=""
         className="auth-loading-logo h-14 w-auto object-contain block"
       />

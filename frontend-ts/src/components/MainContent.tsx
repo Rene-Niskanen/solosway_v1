@@ -4340,22 +4340,22 @@ export const MainContent = ({
                         position: 'relative',
                         zIndex: 10 // Above background image
                       }}>
-                        {/* VELORA Logo - fixed pixel width + crisp scaling to avoid blur from vw/subpixel */}
+                        {/* Dashboard Logo - fixed pixel width + crisp scaling to avoid blur from vw/subpixel */}
                         <img 
-                          src="/HDvelorabackground.png"
+                          src="/OpenFind-darkbrown.png"
                           width={906}
                           height={250}
-                          alt="VELORA" 
+                          alt="OpenFind" 
                           // @ts-expect-error - use lowercase fetchpriority per React DOM warning; types still use fetchPriority
                           fetchpriority="high"
                           className="h-auto"
                           style={{ 
-                            width: 'min(420px, 90vw)',
-                            minWidth: '280px',
-                            maxWidth: '420px',
+                            width: 'min(320px, 70vw)',
+                            minWidth: '218px',
+                            maxWidth: '320px',
                             height: 'auto',
-                            minHeight: '90px',
-                            maxHeight: '170px',
+                            minHeight: '70px',
+                            maxHeight: '136px',
                             marginBottom: (!effectiveIsVerySmall && !effectiveShouldHideProjects) ? 'clamp(2rem, 4vh, 3rem)' : '0',
                             objectFit: 'contain',
                             transform: 'translateZ(0)',
@@ -4363,10 +4363,10 @@ export const MainContent = ({
                             imageRendering: 'crisp-edges',
                           }}
                     onLoad={() => {
-                      console.log('✅ VELORA logo loaded successfully');
+                      console.log('✅ OpenFind logo loaded successfully');
                     }}
                     onError={(e) => {
-                      console.error('❌ VELORA logo failed to load:', e.currentTarget.src);
+                      console.error('❌ OpenFind logo failed to load:', e.currentTarget.src);
                     }}
                   />
                 </div>

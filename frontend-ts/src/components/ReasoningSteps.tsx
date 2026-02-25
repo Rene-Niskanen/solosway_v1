@@ -857,7 +857,17 @@ const StepRenderer: React.FC<{
       const isAnalysingPrefix = /^Analysing\s+/i.test(prefix);
       const ensureColon = (s: string) => (s.trimEnd().endsWith(':') ? s.trimEnd() : `${s.trimEnd()}:`);
       const showDocsInline = documentsDropdown && documentsDropdown.readingSteps.length > 0;
-      const docCount = showDocsInline ? documentsDropdown!.readingSteps.length : 0;
+      // Use unique doc count from reading steps (documents we're actually using) so we never show "searched" count
+      const uniqueDocIds = showDocsInline
+        ? new Set(
+            documentsDropdown!.readingSteps
+              .map((s) => s.details?.doc_metadata?.doc_id ?? (s.details as any)?.doc_id)
+              .filter(Boolean)
+          )
+        : new Set<string>();
+      const docCount = showDocsInline
+        ? (uniqueDocIds.size > 0 ? uniqueDocIds.size : documentsDropdown!.readingSteps.length)
+        : 0;
       const anyStillReading = showDocsInline && documentsDropdown!.readingSteps.some((s) => s.details?.status !== 'read');
       const firstReadingStep = showDocsInline ? documentsDropdown!.readingSteps[0] : null;
       // When we have the bubble, main heading is just "Analysing:"; bubble shows "N documents"
