@@ -180,7 +180,7 @@ export function SearchingSourcesCarousel({
               height: CIRCLE_SIZE_PX,
               minWidth: CIRCLE_SIZE_PX,
               borderRadius: '50%',
-              border: '1px solid #FCFCF9',
+              border: '1px solid #FFFFFF',
               background: '#FAFAFA',
               display: 'inline-flex',
               alignItems: 'center',

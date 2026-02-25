@@ -62,7 +62,7 @@ import { useCitationExportOptional } from '../contexts/CitationExportContext';
 import { buildDocxMarkdownWithCitationImages, cropPageImageToBbox } from '../utils/citationExport';
 import { convertMarkdownToDocx, downloadDocx } from '@mohtasham/md-to-docx';
 import { playCompletionSound } from '../utils/playCompletionSound';
-import { INPUT_BAR_SPACE_BELOW_PANEL, CHAT_INPUT_MAX_HEIGHT_PX } from '@/utils/inputBarPosition';
+import { INPUT_BAR_SPACE_BELOW_PANEL, CHAT_INPUT_MAX_HEIGHT_PX, CHAT_BAR_MAX_WIDTH_PX } from '@/utils/inputBarPosition';
 import { CHAT_PANEL_WIDTH } from './chatPanelConstants';
 
 /** Strip HTML/SVG tags from query string so submitted text never includes e.g. <svg /> from icons. */
@@ -4159,7 +4159,7 @@ const CitationCallout: React.FC<{
                   bottom: 0,
                   left: 0,
                   right: 0,
-                  padding: '12px',
+                  padding: '8px',
                   display: 'flex',
                   justifyContent: 'center',
                   opacity: 0,
@@ -4174,8 +4174,8 @@ const CitationCallout: React.FC<{
                     width: '100%',
                     maxWidth: 340,
                     backgroundColor: '#FFFFFF',
-                    borderRadius: 10,
-                    padding: 12,
+                    borderRadius: 16,
+                    padding: 8,
                     boxShadow: '0 4px 24px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.06)',
                     border: '1px solid rgba(0,0,0,0.06)',
                   }}
@@ -4188,9 +4188,9 @@ const CitationCallout: React.FC<{
                           position: 'relative',
                           display: 'flex',
                           alignItems: 'center',
-                          height: 40,
+                          height: 36,
                           backgroundColor: '#FFFFFF',
-                          borderRadius: 10,
+                          borderRadius: 12,
                           overflow: 'hidden',
                         }}
                       >
@@ -4210,8 +4210,8 @@ const CitationCallout: React.FC<{
                           style={{
                             flex: 1,
                             height: '100%',
-                            padding: '0 4px 0 4px',
-                            paddingRight: 42,
+                            padding: '0 2px 0 2px',
+                            paddingRight: 38,
                             fontSize: 14,
                             lineHeight: '20px',
                             color: '#0D0D0D',
@@ -4313,8 +4313,8 @@ const CitationCallout: React.FC<{
             style={{
               flexShrink: 0,
               backgroundColor: '#FFFFFF',
-              padding: 12,
-              borderRadius: 10,
+              padding: 8,
+              borderRadius: 16,
               border: '1px solid rgba(0,0,0,0.06)',
               boxShadow: '0 4px 24px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.06)',
             }}
@@ -4328,9 +4328,9 @@ const CitationCallout: React.FC<{
                       position: 'relative',
                       display: 'flex',
                       alignItems: 'center',
-                      height: 40,
+                      height: 36,
                       backgroundColor: '#FFFFFF',
-                      borderRadius: 10,
+                      borderRadius: 12,
                       overflow: 'hidden',
                     }}
                   >
@@ -4351,8 +4351,8 @@ const CitationCallout: React.FC<{
                         flex: 1,
                         minWidth: 120,
                         height: '100%',
-                        padding: '0 4px 0 4px',
-                        paddingRight: 42,
+                        padding: '0 2px 0 2px',
+                        paddingRight: 38,
                         fontSize: 14,
                         lineHeight: '20px',
                         color: '#0D0D0D',
@@ -6677,6 +6677,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   const [inputContainerWidth, setInputContainerWidth] = React.useState<number>(CHAT_PANEL_WIDTH.COLLAPSED);
   // Track if we just entered fullscreen to disable transition
   const [justEnteredFullscreen, setJustEnteredFullscreen] = React.useState<boolean>(false);
+  // Track when we just navigated to the new chat (centered empty) section - disable all movement/transitions
+  const [justEnteredNewChatSection, setJustEnteredNewChatSection] = React.useState<boolean>(false);
   // State for drag over feedback
   const [isDragOver, setIsDragOver] = React.useState<boolean>(false);
   // Ref to track drag state to prevent false clears when moving between child elements
@@ -7007,6 +7009,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       if (isFirstOpen) {
         setIsFirstOpen(false);
       }
+
+      // When opening to new chat section we disable movement via the useCenteredEmptyState effect (runs after empty state is known)
 
       // CRITICAL: Opening with shouldExpand + isPropertyDetailsOpen (fullscreen property view) - instant 50/50, no delay
       if (shouldExpand && isPropertyDetailsOpen) {
@@ -11576,14 +11580,14 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   React.useEffect(() => {
     const calculateCollapseLevel = () => {
       // Use actualPanelWidth as the primary constraint, accounting for padding
-      // Empty state: 32px padding on each side (64px total), or 12px each side (24px) when narrow
-      // Chat state: form has 32px padding + chat bar has 12px padding = 44px each side (88px total)
+      // Empty state: 16px padding each side when wide
+      // Chat state: form has 16px padding each side (so bar can reach 680px and match SearchBar)
       
       // Calculate effective button row width based on panel width and padding
       const isNarrowPanel = actualPanelWidth < 320;
       const effectiveWidth = isNarrowPanel 
         ? actualPanelWidth - 36 // 12px padding + 6px margins
-        : actualPanelWidth - 88; // 32px form padding + 12px bar padding each side
+        : actualPanelWidth - 56; // 16px form padding each side + bar internal padding
       
       // Calculate required width for different collapse levels based on actual button widths:
       // Level 0 (all labels): ModeSelector(~100) + Model(~100) + gap + Web(28) + Map(55) + Attach(70) + Voice(65) + gaps ≈ 450px
@@ -15756,6 +15760,21 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     }
   }, [isChatOnlyViewHere, isEmptyChat, isFullscreenMode, shouldExpand]);
 
+  // When switching to the new chat (centered empty) section, disable movement/transitions briefly
+  const prevUseCenteredEmptyStateRef = React.useRef<boolean>(useCenteredEmptyState);
+  const prevIsVisibleForNewChatRef = React.useRef<boolean>(isVisible);
+  React.useEffect(() => {
+    const becameVisible = !prevIsVisibleForNewChatRef.current && isVisible;
+    const becameEmptyState = !prevUseCenteredEmptyStateRef.current && useCenteredEmptyState && isVisible;
+    prevUseCenteredEmptyStateRef.current = useCenteredEmptyState;
+    prevIsVisibleForNewChatRef.current = isVisible;
+    if (becameEmptyState || (becameVisible && useCenteredEmptyState)) {
+      setJustEnteredNewChatSection(true);
+      const t = setTimeout(() => setJustEnteredNewChatSection(false), 200);
+      return () => clearTimeout(t);
+    }
+  }, [useCenteredEmptyState, isVisible]);
+
   // Auto-focus the chat input when we enter the new-chat (centered empty) section so the caret is already bouncing.
   React.useEffect(() => {
     if (!isVisible || !useCenteredEmptyState) return;
@@ -16779,9 +16798,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             // Use local tracking (isSidebarJustCollapsed) for immediate detection, plus props for MainContent tracking
             // This ensures chat panel adjusts immediately with no animation delay
             // Also disable transitions when ChatPanel (agent sidebar) opens/closes for instant width adjustment
-            transition: (isResizing || isFilingSidebarResizing || isChatPanelResizing || isChatPanelJustToggled || isFilingSidebarClosing || isFilingSidebarOpening || isSidebarCollapsing || isSidebarJustCollapsed || !isFilingSidebarOpen || justEnteredFullscreen || shouldExpand || isRestoringFullscreen || (isFullscreenMode && !isRestoringFullscreen) || isFirstOpen || isPropertyDetailsOpen) ? 'none' : 'width 0.4s cubic-bezier(0.4, 0, 0.2, 1)',
-            transitionProperty: (isResizing || isFilingSidebarResizing || isChatPanelResizing || isChatPanelJustToggled || isFilingSidebarClosing || isFilingSidebarOpening || isSidebarCollapsing || isSidebarJustCollapsed || !isFilingSidebarOpen || isFirstOpen || isPropertyDetailsOpen) ? 'none' : 'width',
-            willChange: (isResizing || isFilingSidebarResizing || isChatPanelResizing || isChatPanelJustToggled || isFilingSidebarClosing || isFilingSidebarOpening || isSidebarCollapsing || isSidebarJustCollapsed) ? 'left, width' : 'width', // Optimize for instant changes when closing/opening or ChatPanel toggle
+            transition: (isResizing || isFilingSidebarResizing || isChatPanelResizing || isChatPanelJustToggled || isFilingSidebarClosing || isFilingSidebarOpening || isSidebarCollapsing || isSidebarJustCollapsed || !isFilingSidebarOpen || justEnteredFullscreen || justEnteredNewChatSection || shouldExpand || isRestoringFullscreen || (isFullscreenMode && !isRestoringFullscreen) || isFirstOpen || isPropertyDetailsOpen) ? 'none' : 'width 0.4s cubic-bezier(0.4, 0, 0.2, 1)',
+            transitionProperty: (isResizing || isFilingSidebarResizing || isChatPanelResizing || isChatPanelJustToggled || isFilingSidebarClosing || isFilingSidebarOpening || isSidebarCollapsing || isSidebarJustCollapsed || !isFilingSidebarOpen || isFirstOpen || justEnteredNewChatSection || isPropertyDetailsOpen) ? 'none' : 'width',
+            willChange: (isResizing || isFilingSidebarResizing || isChatPanelResizing || isChatPanelJustToggled || isFilingSidebarClosing || isFilingSidebarOpening || isSidebarCollapsing || isSidebarJustCollapsed || justEnteredNewChatSection) ? 'left, width' : 'width', // Optimize for instant changes when closing/opening or ChatPanel toggle
             backfaceVisibility: 'hidden', // Prevent flickering
             transform: 'translateZ(0)' // Force GPU acceleration
           }}
@@ -17905,18 +17924,13 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             </div>
             
             {/* Conditional layout: Centered empty state OR normal messages + bottom input */}
-            {/* When fullscreen (e.g. opened via New chat), use bottom input even when empty */}
-            <AnimatePresence mode="wait">
-            <motion.div
-              key={useCenteredEmptyState ? `empty-${currentChatId ?? 'new'}` : `messages-${currentChatId ?? 'new'}`}
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0, transition: { duration: 0.1 } }}
-              transition={{ duration: 0.15 }}
+            {/* When fullscreen (e.g. opened via New chat), use bottom input even when empty. Stable key so no unmount/remount = no jump. */}
+            <div
+              key="chat-content-area"
               style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', position: 'relative', width: '100%' }}
             >
             {useCenteredEmptyState ? (
-              /* Empty chat state - Centered expanded chat bar (like Cursor's new chat) */
+              /* Empty chat state - Same vertical positioning as dashboard: top spacer calc(50vh - 400px) + logo-equivalent (200px) so bar sits at 50vh - 200px (no jump when switching) */
               <div
                 key="empty-chat-layout-inner"
                 ref={contentAreaRefWithWheel}
@@ -17928,34 +17942,40 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   flexDirection: 'column',
                   justifyContent: 'flex-start',
                   alignItems: 'center',
-                  // Reduce padding for narrow panels; 48px = 32 + 16 extra so bar sits slightly inward (matches SearchBar)
-                  padding: actualPanelWidth < 320 ? '0 20px' : '0 48px',
-                  paddingTop: '34vh', // Y position of new-chat bar – lower to align with chat interface bar feel (increase to move down, decrease to move up)
+                  // Minimal horizontal padding so chat bar can reach CHAT_BAR_MAX_WIDTH_PX (680) and match SearchBar width
+                  padding: actualPanelWidth < 320 ? '0 20px' : '0 16px',
+                  paddingTop: 0,
                   minWidth: '200px', // Allow narrower layouts
                   position: 'relative',
                   overflowX: 'hidden'
                 }}
               >
-                {/* Title above chat bar - slightly less bold */}
-                {emptyStateTitleMessage ? (
-                  <h2
-                    className="w-full text-center text-[#111]"
-                    style={{
-                      fontWeight: 400,
-                      fontSize: 'clamp(1.25rem, 3.5vw, 1.5rem)',
-                      lineHeight: 1.3,
-                      marginBottom: '56px',
-                    }}
-                  >
-                    {emptyStateTitleMessage}
-                  </h2>
-                ) : null}
+                {/* Top spacer: must match dashboard exactly (calc(50vh - 400px)) so logo + bar do not jump */}
+                <div style={{ flexShrink: 0, height: 'calc(50vh - 400px)', width: '100%' }} aria-hidden />
+                {/* Logo-equivalent section: 200px + 5rem margin to match dashboard (logo maxHeight + clamp(2.25rem,5vh,3.25rem) + clamp(2rem,4vh,2.75rem)) so bar vertical position is identical */}
+                <div style={{ flexShrink: 0, minHeight: '200px', marginBottom: '5rem', width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'flex-end' }}>
+                  {/* Title above chat bar - slightly less bold */}
+                  {emptyStateTitleMessage ? (
+                    <h2
+                      className="w-full text-center text-[#111]"
+                      style={{
+                        fontWeight: 400,
+                        fontSize: 'clamp(1.25rem, 3.5vw, 1.5rem)',
+                        lineHeight: 1.3,
+                        marginBottom: '40px',
+                      }}
+                    >
+                      {emptyStateTitleMessage}
+                    </h2>
+                  ) : null}
+                </div>
                 {/* Expanded Chat Input Container - drag handlers + ref for document-level drag detection */}
                 <div
                   ref={chatBarDropZoneRef}
                   style={{ 
-                    width: '100%', 
-                    maxWidth: '680px',
+                    width: `min(100%, ${CHAT_BAR_MAX_WIDTH_PX}px)`, 
+                    maxWidth: `${CHAT_BAR_MAX_WIDTH_PX}px`,
+                    minWidth: '200px',
                     position: 'relative'
                   }}
                   onDragOver={handleDragOver}
@@ -18024,7 +18044,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         position: 'relative',
                         paddingTop: '16px',
                         paddingBottom: '12px',
-                        paddingRight: '12px',
+                        paddingRight: '24px',
                         paddingLeft: '16px',
                         overflow: 'hidden',
                         width: '100%',
@@ -18811,8 +18831,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   alignItems: 'center',
                   position: 'relative',
                   margin: '-10px',
-                  paddingLeft: actualPanelWidth < 320 ? '20px' : '48px',
-                  paddingRight: actualPanelWidth < 320 ? '20px' : '48px',
+                  // 16px each so chat bar can reach CHAT_BAR_MAX_WIDTH_PX (680) and match SearchBar width
+                  paddingLeft: actualPanelWidth < 320 ? '20px' : '16px',
+                  paddingRight: actualPanelWidth < 320 ? '20px' : '16px',
                   pointerEvents: 'auto'
                 }}
                   onDragOver={handleDragOver}
@@ -18825,8 +18846,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   onClick={(e) => e.stopPropagation()} // Prevent clicks from closing agent sidebar
                   style={{ 
                     position: 'relative', 
-                    width: 'min(100%, 680px)', 
+                    width: `min(100%, ${CHAT_BAR_MAX_WIDTH_PX}px)`, 
                     minWidth: '200px', // Allow narrower wrapper
+                    maxWidth: `${CHAT_BAR_MAX_WIDTH_PX}px`,
                     pointerEvents: 'auto', // Ensure wrapper can receive drag events
                   }}
                 >
@@ -19091,7 +19113,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       position: 'relative',
                       paddingTop: '16px',
                       paddingBottom: '12px',
-                      paddingRight: '16px',
+                      paddingRight: '24px',
                       paddingLeft: '16px',
                       overflow: 'visible',
                       width: '100%',
@@ -19637,8 +19659,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 </div>
               </div>
             )}
-            </motion.div>
-            </AnimatePresence>
+            </div>
           </div>
           </div>
         </motion.div>

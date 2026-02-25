@@ -27,13 +27,14 @@ const toastVariants = cva(
   {
     variants: {
       variant: {
-        default: "w-full justify-between space-x-3 border border-gray-200 bg-white p-3 pr-4 text-gray-900",
+        default:
+          "w-full justify-between space-x-3 border-2 border-[#F2F2EF] bg-white p-3 pr-4 text-[#141413]",
         compact:
-          "w-fit max-w-[200px] justify-between gap-2 border border-gray-200 bg-white py-1.5 pl-2 pr-7 text-gray-900",
+          "w-fit max-w-[200px] justify-between gap-2 border-2 border-[#F2F2EF] bg-white py-1.5 pl-2 pr-7 text-[#141413]",
         destructive:
           "destructive w-fit max-w-[320px] justify-between gap-2 border border-red-100 bg-red-50 p-2 pr-8 text-red-800",
         success:
-          "w-full justify-between space-x-2 border border-gray-200 bg-white p-3 pr-4 text-gray-900",
+          "w-full justify-between gap-0.5 border-2 border-[#F2F2EF] bg-white rounded-full pl-2.5 pr-10 py-2.5 text-[#141413]",
       },
     },
     defaultVariants: {

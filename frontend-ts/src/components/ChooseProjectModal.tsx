@@ -15,6 +15,10 @@ export interface ChooseProjectModalProps {
    * - useViewportCenter: false when search bar is fixed (map or small viewport) → modal at content-area center (50vw + sidebar/2 when sidebar open).
    */
   alignWithSearchBar?: { sidebarWidth: number; isSidebarCollapsed: boolean; useViewportCenter?: boolean };
+  /** When set (e.g. from SearchBar "Choose project" button), modal is centered over this rect and positioned above it. */
+  anchorRect?: { left: number; top: number; width: number; height: number } | null;
+  /** When set (e.g. on dashboard), portal the modal into this element so it appears in the dashboard area. */
+  portalContainer?: HTMLElement | null;
 }
 
 export function ChooseProjectModal({
@@ -22,6 +26,8 @@ export function ChooseProjectModal({
   onOpenChange,
   onSelectProject,
   alignWithSearchBar,
+  anchorRect,
+  portalContainer,
 }: ChooseProjectModalProps) {
   const [query, setQuery] = React.useState("");
   const [projects, setProjects] = React.useState<{ id: string; label: string; imageUrl?: string; documentCount?: number }[]>([]);
@@ -88,8 +94,20 @@ export function ChooseProjectModal({
     onOpenChange(false);
   };
 
+  // When anchorRect is set (search bar view): center modal both horizontally and vertically over the search bar so it doesn't appear too high.
+  // When no anchorRect (chat bar / bottom of screen): keep default bottom positioning.
+  const anchorStyle =
+    anchorRect && typeof window !== "undefined"
+      ? {
+          left: anchorRect.left + anchorRect.width / 2,
+          top: anchorRect.top + anchorRect.height / 2,
+          transform: "translate(-50%, -50%)",
+        }
+      : undefined;
+
   // Dashboard: viewport center (50%). Map/small viewport (fixed bar): content-area center when sidebar open.
   const useOffset =
+    !anchorStyle &&
     alignWithSearchBar &&
     !alignWithSearchBar.useViewportCenter &&
     !alignWithSearchBar.isSidebarCollapsed &&
@@ -101,8 +119,12 @@ export function ChooseProjectModal({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className={`p-0 gap-0 overflow-hidden border-0 bg-white shadow-xl max-h-[70vh] min-w-0 max-w-[840px] w-[min(840px,calc(100vw-32px))] rounded-xl flex flex-col !z-[100100] !top-auto !translate-y-0 translate-x-[-50%] bottom-[100px] ${leftStyle ? "" : "left-[50%]"}`}
-        style={{ boxShadow: "0 4px 24px rgba(0,0,0,0.08)", ...leftStyle }}
+        container={portalContainer ?? undefined}
+        className={`p-0 gap-0 overflow-hidden border-0 bg-white shadow-xl max-h-[70vh] min-w-0 max-w-[840px] w-[min(840px,calc(100vw-32px))] rounded-xl flex flex-col !z-[100100] !top-auto !translate-y-0 ${anchorStyle ? "" : "translate-x-[-50%]"} ${anchorStyle ? "" : "bottom-[100px]"} ${anchorStyle ? "" : leftStyle ? "" : "left-[50%]"}`}
+        style={{
+          boxShadow: "0 4px 24px rgba(0,0,0,0.08)",
+          ...(anchorStyle ?? leftStyle),
+        }}
         overlayClassName="bg-black/10 !z-[100100]"
         onPointerDownOutside={() => onOpenChange(false)}
         onEscapeKeyDown={() => onOpenChange(false)}

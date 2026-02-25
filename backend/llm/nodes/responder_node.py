@@ -142,6 +142,11 @@ _STRIP_ENTIRELY_CLOSING_PATTERNS = [
         r"\s*(?:If\s+you\s+need\s+more\s+details[^.!?\n]*?|Hope\s+that\s+helps\.?)\s*,\s*feel\s+free\s+to\s+ask\!?\s*[😊🙂📄✨\s]*",
         re.IGNORECASE,
     ),
+    # Location-specific: "If you need more specific details about the area or amenities nearby, feel free to ask! 😊"
+    re.compile(
+        r"\s*If\s+you\s+need\s+more\s+specific\s+details\s+about\s+the\s+area\s+or\s+amenities\s+nearby\s*,\s*feel\s+free\s+to\s+ask\!?\s*[😊🙂📄✨\s]*",
+        re.IGNORECASE,
+    ),
 ]
 
 
@@ -155,6 +160,7 @@ def _looks_like_closing_line(s: str) -> bool:
         or "let me know" in t
         or "need more details" in t
         or "further details or assistance" in t
+        or "specific details about the area or amenities" in t
         or "dive deeper" in t
         or "any more questions" in t
         or "any further questions" in t
@@ -166,8 +172,15 @@ def _looks_like_closing_line(s: str) -> bool:
 _EMBEDDED_CLOSING_SUFFIX_PATTERNS = [
     re.compile(r"\s+free to ask\!?\s*[😊🙂📄✨📋🌳📊💡✅\s]*$", re.IGNORECASE),
     re.compile(r",?\s*feel free to ask\!?\s*[😊🙂📄✨📋🌳📊💡✅\s]*$", re.IGNORECASE),
+    # Bold-wrapped closing leaking into address line (e.g. "Address: ... nearby, **feel free to ask! 😊**-")
+    re.compile(r",?\s*\*\*feel free to ask\!?\s*[😊🙂📄✨📋🌳📊💡✅\s]*\*\*[-–—]?\s*$", re.IGNORECASE),
     re.compile(r"\s+If you need (?:more )?information or further assistance, feel\s*$", re.IGNORECASE),
     re.compile(r"\s+If you need further details or assistance, feel free to ask\!?\s*[😊🙂\s]*$", re.IGNORECASE),
+    # Location-specific closing (full or truncated) at end of line
+    re.compile(
+        r"\s+If you need more specific details about the area or amenities(?: nearby)?,?\s*(?:feel free to ask\!?\s*[😊🙂📄✨\s]*)?\s*$",
+        re.IGNORECASE,
+    ),
     re.compile(r"\s+let me know(?: if you need[^.]*)?\!?\s*[😊🙂📄✨\s]*$", re.IGNORECASE),
 ]
 
@@ -186,6 +199,11 @@ _EMBEDDED_CLOSING_MIDLINE_PATTERNS = [
     ),
     re.compile(r"\s+or\s+need\s+more\s+details\s*,\s*feel\s+free\s+to\s+ask\!?\s*[😊🙂\s]*", re.IGNORECASE),
     re.compile(r",\s*feel\s+free\s+to\s+ask\!?\s*[😊🙂📄✨\s]*(?=\s*\*\*|\s*\[?\d+\]?|\s*£|\s*\d)", re.IGNORECASE),
+    # Location-specific closing leaking mid-response (full or truncated after Accessibility etc.)
+    re.compile(
+        r"\s+If you need more specific details about the area or amenities(?: nearby)?,?\s*(?:feel free to ask\!?\s*[😊🙂📄✨\s]*)?",
+        re.IGNORECASE,
+    ),
 ]
 
 # Full closing phrase when it appears in the *middle* of a paragraph (e.g. after "Completion Deadline").

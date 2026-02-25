@@ -124,7 +124,7 @@ export const UsageAndBillingSection: React.FC = () => {
         <Button
           variant="outline"
           onClick={() => openPlanModal(usage.plan, usage.billing_cycle_end)}
-          className="rounded-sm px-3 py-1 h-auto text-xs font-medium bg-transparent border border-gray-300 text-gray-700 hover:bg-transparent hover:text-gray-700 mt-4"
+          className="rounded-sm px-3 py-1 h-auto text-xs font-medium border border-gray-300 text-gray-700 mt-4 bg-[#F6F7F3] hover:bg-[#EEEFE9] hover:text-gray-700"
         >
           Manage Subscription
         </Button>

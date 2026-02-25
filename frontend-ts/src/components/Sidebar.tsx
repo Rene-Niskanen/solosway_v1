@@ -25,8 +25,8 @@ import {
   Map,
   Search,
   HelpCircle,
-  ArrowUpCircle,
-  Info
+  Info,
+  CircleArrowUp
 } from "lucide-react";
 import { useChatHistory } from "./ChatHistoryContext";
 import { useFilingSidebar } from "../contexts/FilingSidebarContext";
@@ -659,7 +659,7 @@ export const Sidebar = ({
                         }}
                         className="w-full flex items-center gap-3 px-2 py-2 rounded text-[#141413] hover:bg-gray-50 transition-colors text-left"
                       >
-                        <ArrowUpCircle className="h-5 w-5 flex-shrink-0 text-[#141413]" strokeWidth={1.25} />
+                        <CircleArrowUp className="h-5 w-5 flex-shrink-0 text-[#141413]" strokeWidth={1.25} />
                         <span className="text-[13px] font-normal text-[#141413]">Upgrade plan</span>
                       </button>
                       <button
@@ -726,7 +726,7 @@ export const Sidebar = ({
                         }}
                         className="w-full flex items-center gap-3 px-2 py-2 rounded text-[#141413] hover:bg-gray-50 transition-colors text-left"
                       >
-                        <ArrowUpCircle className="h-5 w-5 flex-shrink-0 text-[#141413]" strokeWidth={1.25} />
+                        <CircleArrowUp className="h-5 w-5 flex-shrink-0 text-[#141413]" strokeWidth={1.25} />
                         <span className="text-[13px] font-normal text-[#141413]">Upgrade plan</span>
                       </button>
                       <button
@@ -1004,7 +1004,7 @@ export const Sidebar = ({
                         }}
                         className="w-full flex items-center gap-3 px-2 py-2 rounded text-[#141413] hover:bg-gray-50 transition-colors text-left"
                       >
-                        <ArrowUpCircle className="h-5 w-5 flex-shrink-0 text-[#141413]" strokeWidth={1.25} />
+                        <CircleArrowUp className="h-5 w-5 flex-shrink-0 text-[#141413]" strokeWidth={1.25} />
                         <span className="text-[13px] font-normal text-[#141413]">Upgrade plan</span>
                       </button>
                       <button

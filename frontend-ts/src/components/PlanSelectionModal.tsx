@@ -94,7 +94,7 @@ function CurrencyDropdown({
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        className={`flex h-6 w-full items-center justify-between border border-gray-200 pl-1.5 pr-0.5 gap-0.5 text-xs text-gray-900 focus:ring-1 focus:ring-gray-300 focus:ring-offset-0 ${
+        className={`flex h-6 w-full items-center justify-between border border-gray-200 pl-3 pr-0.5 gap-0.5 text-xs text-gray-900 focus:ring-1 focus:ring-gray-300 focus:ring-offset-0 ${
           open
             ? "rounded-t-md rounded-b-none border-b-0 bg-gray-50"
             : "rounded-md bg-white"
@@ -120,7 +120,7 @@ function CurrencyDropdown({
                 onValueChange(opt.value);
                 setOpen(false);
               }}
-              className="flex cursor-default items-center px-1.5 py-0.5 first:pt-0.5 last:pb-0.5 hover:bg-gray-50 text-gray-900"
+              className="flex cursor-default items-center pl-3 pr-1.5 py-0.5 first:pt-0.5 last:pb-0.5 hover:bg-gray-50 text-gray-900"
             >
               {opt.label}
             </li>
@@ -286,11 +286,11 @@ function PlanModalContent({
                       }}
                       className={
                         isBusiness
-                          ? "flex items-center justify-center h-10 w-full min-h-[2.5rem] px-4 py-2 text-sm font-medium rounded-full bg-gray-900 text-white hover:bg-gray-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-400 focus-visible:ring-offset-0 transition-colors disabled:pointer-events-none disabled:opacity-50 mb-8"
-                          : "flex items-center justify-center h-10 w-full px-4 py-2 text-sm font-medium rounded-full border border-gray-200 bg-white text-gray-900 hover:bg-gray-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-400 focus-visible:ring-offset-0 transition-colors disabled:pointer-events-none disabled:opacity-50 mb-8"
+                          ? "flex items-center justify-center h-10 w-full min-h-[2.5rem] px-4 py-2 text-sm font-medium rounded-full bg-gray-900 text-white hover:bg-[#2d2d2b] hover:shadow-md hover:scale-[1.02] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-400 focus-visible:ring-offset-0 transition-all duration-150 disabled:pointer-events-none disabled:opacity-50 mb-8"
+                          : "flex items-center justify-center h-10 w-full px-4 py-2 text-sm font-medium rounded-full border border-gray-200 bg-white text-gray-900 hover:bg-[#FAFAF9] hover:border-[#E5E5E2] hover:shadow-md hover:scale-[1.02] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-400 focus-visible:ring-offset-0 transition-all duration-150 disabled:pointer-events-none disabled:opacity-50 mb-8"
                       }
                     >
-                      {isChangingPlan && changingToTierId === tierId ? "Updating plan…" : isBusiness ? "Upgrade to Business" : `Switch to ${tier.name}`}
+                      {isChangingPlan && changingToTierId === tierId ? "Updating plan…" : isBusiness ? "Upgrade to Ultra" : `Switch to ${tier.name}`}
                     </button>
                   )}
 
@@ -313,15 +313,14 @@ function PlanModalContent({
 
       <div className="flex flex-col items-center gap-2 mt-8 text-center text-sm text-gray-500">
         <img
-          src="/velora-dash-logo.png"
+          src="/veloraAA.png"
           alt="Velora"
           className="h-7 w-auto"
         />
         <span>Need more capabilities for your business?</span>
         <a
-          href="#"
+          href="/enterprise"
           className="text-gray-700 underline hover:opacity-80"
-          onClick={(e) => e.preventDefault()}
         >
           See Velora Enterprise
         </a>
@@ -424,7 +423,7 @@ export const PlanSelectionModal: React.FC<PlanSelectionModalProps> = ({
           <button
             type="button"
             onClick={() => onOpenChange(false)}
-            className="fixed right-6 top-6 z-10 flex h-10 w-10 items-center justify-center rounded-md text-gray-500 hover:bg-gray-100 hover:text-gray-700 transition-colors"
+            className="fixed right-6 top-6 z-10 flex h-10 w-10 items-center justify-center rounded-md text-gray-500"
             aria-label="Close"
           >
             <span className="text-2xl font-extralight leading-none">×</span>
@@ -495,13 +494,13 @@ export const PlanSelectionModal: React.FC<PlanSelectionModalProps> = ({
     <>
       <Dialog open={open} onOpenChange={onOpenChange}>
         <DialogContent className="max-w-6xl w-[95vw] bg-background border border-gray-200 p-0 gap-0 overflow-hidden">
-          <DialogHeader className="p-6 pb-4">
-            <div className="flex flex-col sm:flex-row items-center justify-center gap-3 text-center">
+          <DialogHeader className="p-6 pb-4 text-center sm:text-center">
+            <div className="flex flex-col items-center justify-center gap-3 w-full">
               <DialogTitle className="text-2xl font-normal text-gray-900">
                 Upgrade your plan
               </DialogTitle>
               {currencyContext?.setCurrency && (
-                <label className="flex items-center gap-2 text-sm text-gray-600">
+                <label className="flex items-center justify-center gap-2 text-sm text-gray-600">
                   <span>Currency</span>
                   <CurrencyDropdown
                     value={currencyContext.currency}

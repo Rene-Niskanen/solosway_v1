@@ -456,6 +456,7 @@ const DashboardLayoutContent = ({
 
   // Ref to store MainContent's handler so we can call it
   const mainContentNewChatHandlerRef = React.useRef<(() => void) | null>(null);
+  const mainContentContainerRef = React.useRef<HTMLDivElement | null>(null);
   
   const handleNewChat = React.useCallback(() => {
     // Check if current chat has a running query
@@ -905,6 +906,7 @@ const DashboardLayoutContent = ({
       <SearchOrStartChatModal
         open={searchModalOpen}
         onOpenChange={setSearchModalOpen}
+        container={mainContentContainerRef.current}
         onNewChat={() => {
           handleRestoreActiveChat();
           handleNewChat();
@@ -993,6 +995,7 @@ const DashboardLayoutContent = ({
         openChatsViewTrigger={openChatsViewTrigger}
         onRegisterClearProjectSelection={(clear) => { clearProjectSelectionRef.current = clear; }}
         onProjectDetailOpen={setIsProjectDetailOpen}
+        mainContentContainerRef={mainContentContainerRef}
       />
     </div>
   );

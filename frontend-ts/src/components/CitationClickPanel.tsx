@@ -627,7 +627,7 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
                   lineHeight: 1,
                   fontWeight: 600,
                   color: "#666666",
-                  backgroundColor: "#F2F2EF",
+                  backgroundColor: "#ffffff",
                   border: "1px solid #d4d4d4",
                   borderRadius: 5.5,
                   cursor: "pointer",
@@ -638,10 +638,10 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
                   fontFamily: "system-ui, -apple-system, sans-serif",
                   letterSpacing: "-0.01em",
                 }}
-                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = "#E8E8E5"; }}
+                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = "#f5f5f5"; }}
                 onMouseLeave={(e) => {
                   const el = e.currentTarget as HTMLElement;
-                  el.style.backgroundColor = "#F2F2EF";
+                  el.style.backgroundColor = "#ffffff";
                   el.style.boxShadow = "0 1px 1px rgba(0,0,0,0.05)";
                 }}
                 onFocus={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = "0 1px 1px rgba(0,0,0,0.05), 0 0 0 2px #fff"; }}
@@ -666,7 +666,7 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
                   lineHeight: 1,
                   fontWeight: 500,
                   color: "#666666",
-                  backgroundColor: "#F2F2EF",
+                  backgroundColor: "#ffffff",
                   border: "1px solid #d4d4d4",
                   borderRadius: 5.5,
                   cursor: "pointer",
@@ -677,10 +677,10 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
                   fontFamily: "system-ui, -apple-system, sans-serif",
                   letterSpacing: "-0.01em",
                 }}
-                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = "#E8E8E5"; }}
+                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = "#f5f5f5"; }}
                 onMouseLeave={(e) => {
                   const el = e.currentTarget as HTMLElement;
-                  el.style.backgroundColor = "#F2F2EF";
+                  el.style.backgroundColor = "#ffffff";
                   el.style.boxShadow = "0 1px 1px rgba(0,0,0,0.05)";
                 }}
                 onFocus={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = "0 1px 1px rgba(0,0,0,0.05), 0 0 0 2px #fff"; }}
@@ -705,7 +705,7 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
                   lineHeight: 1,
                   fontWeight: 500,
                   color: "#666666",
-                  backgroundColor: "#F2F2EF",
+                  backgroundColor: "#ffffff",
                   border: "1px solid #d4d4d4",
                   borderRadius: 5.5,
                   cursor: "pointer",
@@ -716,10 +716,10 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
                   fontFamily: "system-ui, -apple-system, sans-serif",
                   letterSpacing: "-0.01em",
                 }}
-                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = "#E8E8E5"; }}
+                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = "#f5f5f5"; }}
                 onMouseLeave={(e) => {
                   const el = e.currentTarget as HTMLElement;
-                  el.style.backgroundColor = "#F2F2EF";
+                  el.style.backgroundColor = "#ffffff";
                   el.style.boxShadow = "0 1px 1px rgba(0,0,0,0.05)";
                 }}
                 onFocus={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = "0 1px 1px rgba(0,0,0,0.05), 0 0 0 2px #fff"; }}

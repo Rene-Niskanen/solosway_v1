@@ -28,6 +28,8 @@ export type SearchModalItem =
 export interface SearchOrStartChatModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** When set, modal is portaled into this element and centered within it (e.g. main content flex-1 area). */
+  container?: HTMLElement | null;
   /** When 'projects', open directly into the Projects list view (e.g. from "Choose project" button) */
   initialView?: 'search' | 'projects';
   onNewChat: () => void;
@@ -64,6 +66,7 @@ function formatRecentMeta(timestamp: string): string {
 export function SearchOrStartChatModal({
   open,
   onOpenChange,
+  container,
   initialView,
   onNewChat,
   onNewChatWithQuery,
@@ -378,6 +381,7 @@ export function SearchOrStartChatModal({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
+        container={container ?? undefined}
         className="p-0 gap-0 overflow-hidden border-0 bg-white shadow-xl max-h-[70vh] min-w-0 max-w-[840px] w-[min(840px,calc(100vw-32px))] rounded-xl flex flex-col !z-[100100]"
         style={{ boxShadow: "0 4px 24px rgba(0,0,0,0.08)" }}
         overlayClassName="bg-black/10 !z-[100100]"

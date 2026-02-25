@@ -24,8 +24,8 @@ export const TIERS = {
   },
   business: {
     id: 'business',
-    name: 'Business',
-    price: 129,
+    name: 'Ultra',
+    price: 200,
     pageLimit: 5000,
     overageRatePerPage: 0.04,
     seats: 10,
@@ -36,9 +36,9 @@ export const TIERS = {
 
 /** Supported display currencies with regional prices (UK-style rounded where applicable). */
 export const PRICES_BY_CURRENCY: Record<string, Record<TierKey, number>> = {
-  USD: { personal: 15, professional: 49, business: 129 },
-  GBP: { personal: 12, professional: 39, business: 99 },
-  EUR: { personal: 14, professional: 45, business: 119 },
+  USD: { personal: 15, professional: 49, business: 200 },
+  GBP: { personal: 12, professional: 39, business: 159 },
+  EUR: { personal: 14, professional: 45, business: 179 },
 };
 
 /** Overage per page by currency (approximate). */
@@ -93,6 +93,31 @@ export const USAGE_THRESHOLDS = {
 
 export type TierKey = keyof typeof TIERS;
 
+/** Order of tiers for upgrade progression (Starter → Pro → Business). */
+const TIER_ORDER: TierKey[] = ['personal', 'professional', 'business'];
+
+/**
+ * Next tier in upgrade order, or null if current is business (top tier).
+ */
+export function getNextTier(current: TierKey): TierKey | null {
+  const i = TIER_ORDER.indexOf(current);
+  if (i < 0 || i >= TIER_ORDER.length - 1) return null;
+  return TIER_ORDER[i + 1];
+}
+
+/**
+ * CTA label for dashboard upgrade button, e.g. "Upgrade to Velora AI Pro".
+ * Returns null when current is business (no upgrade to show).
+ */
+export function getUpgradeButtonLabel(current: TierKey | string | null | undefined): string | null {
+  const key = current as TierKey | undefined;
+  if (!key || !(key in TIERS)) return null;
+  const next = getNextTier(key as TierKey);
+  if (!next) return null;
+  const name = TIERS[next].name;
+  return `Upgrade to Velora AI ${name}`;
+}
+
 const BUSINESS_PAGE_LIMIT = TIERS.business.pageLimit;
 
 /**
@@ -108,11 +133,11 @@ export function usageMultiplierForBusiness(currentTier: string): number {
 }
 
 /**
- * Human-readable line for "upgrade to Business" copy, e.g. for the current-plan card.
+ * Human-readable line for "upgrade to Ultra" copy, e.g. for the current-plan card.
  */
 export function upgradeToBusinessCopy(currentTier: string): string {
   const multiplier = usageMultiplierForBusiness(currentTier);
   const businessLimit = TIERS.business.pageLimit.toLocaleString();
-  if (multiplier <= 1) return `Upgrade to Business for ${businessLimit} pages/month.`;
-  return `Upgrade to Business for ${multiplier}× page allowance (${businessLimit} pages/month).`;
+  if (multiplier <= 1) return `Upgrade to Ultra for ${businessLimit} pages/month.`;
+  return `Upgrade to Ultra for ${multiplier}× page allowance (${businessLimit} pages/month).`;
 }

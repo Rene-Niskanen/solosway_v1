@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { MapPin, User, Home, Building2, FileText, Edit2, Save, X, FolderOpen, Upload, Plus, ChevronLeft, ChevronRight, Mail, Phone } from "lucide-react";
+import { MapPin, User, Home, Building2, FileText, Edit2, Save, X, FolderOpen, Plus, ChevronLeft, ChevronRight, Mail, Phone } from "lucide-react";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { backendApi } from "@/services/backendApi";
 import { useProjects } from "@/contexts/ProjectsContext";
@@ -421,7 +421,7 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate, embeddedInSettings, initi
                 {/* Full name (avatar left) + Title in one row */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   <div className="space-y-1.5">
-                    <label className="block text-sm font-medium text-gray-900">Full name</label>
+                    <label className="block text-sm font-normal text-gray-900">Full name</label>
                     <div className="flex items-center gap-3">
                       <div
                         className="relative shrink-0 rounded-full overflow-hidden w-10 h-10 cursor-pointer ring-2 ring-transparent hover:ring-gray-300 transition-all"
@@ -474,7 +474,7 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate, embeddedInSettings, initi
                     </div>
                   </div>
                   <div className="space-y-1.5">
-                    <label className="block text-sm font-medium text-gray-900">Title</label>
+                    <label className="block text-sm font-normal text-gray-900">Title</label>
                     <EnhancedEditableField
                       containerBackgroundColor="#F3F1EF"
                       staticDisplay
@@ -492,7 +492,7 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate, embeddedInSettings, initi
 
                 {/* Location */}
                 <div className="space-y-1.5">
-                  <label className="block text-sm font-medium text-gray-900">Location</label>
+                  <label className="block text-sm font-normal text-gray-900">Location</label>
                   <EnhancedEditableField
                     containerBackgroundColor="#F3F1EF"
                     staticDisplay
@@ -509,7 +509,7 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate, embeddedInSettings, initi
 
                 {/* Email */}
                 <div className="space-y-1.5">
-                  <label className="block text-sm font-medium text-gray-900">Email</label>
+                  <label className="block text-sm font-normal text-gray-900">Email</label>
                   <EnhancedEditableField
                     containerBackgroundColor="#F3F1EF"
                     staticDisplay
@@ -527,7 +527,7 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate, embeddedInSettings, initi
 
                 {/* Phone */}
                 <div className="space-y-1.5">
-                  <label className="block text-sm font-medium text-gray-900">Phone</label>
+                  <label className="block text-sm font-normal text-gray-900">Phone</label>
                   <EnhancedEditableField
                     containerBackgroundColor="#F3F1EF"
                     staticDisplay
@@ -542,9 +542,9 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate, embeddedInSettings, initi
                   />
                 </div>
 
-                {/* Organization */}
+                {/* Company */}
                 <div className="space-y-1.5">
-                  <label className="block text-sm font-medium text-gray-900">Organization</label>
+                  <label className="block text-sm font-normal text-gray-900">Company</label>
                   <EnhancedEditableField
                     containerBackgroundColor="#F3F1EF"
                     staticDisplay
@@ -554,7 +554,7 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate, embeddedInSettings, initi
                       setUserData(prev => prev ? { ...prev, organization: value } : null);
                     }}
                     validate={validateOrganization}
-                    placeholder="Enter organization name"
+                    placeholder="Enter company name"
                     required
                   />
                   <div className="pt-1">
@@ -572,12 +572,7 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate, embeddedInSettings, initi
                           </Button>
                         </div>
                       </div>
-                    ) : (
-                      <Button variant="outline" onClick={() => setIsCompanyLogoModalOpen(true)} className="rounded-md border-gray-300 text-gray-600 text-sm font-medium">
-                        <Upload className="w-4 h-4 mr-2" />
-                        Upload company logo
-                      </Button>
-                    )}
+                    ) : null}
                   </div>
                 </div>
               </div>
@@ -611,7 +606,7 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate, embeddedInSettings, initi
                   </div>
                   <div style={{ height: 1, backgroundColor: '#e5e7eb', marginRight: -28, marginBottom: space.xl, marginLeft: -28 }} />
                   <div style={{ marginBottom: space.sm }}>
-                    <div style={{ fontSize: '11px', color: '#9ca3af', marginBottom: space.md, fontWeight: 600, letterSpacing: '0.05em', textTransform: 'uppercase' }}>Organization</div>
+                    <div style={{ fontSize: '11px', color: '#9ca3af', marginBottom: space.md, fontWeight: 600, letterSpacing: '0.05em', textTransform: 'uppercase' }}>Company</div>
                     <EnhancedEditableField
                       value={userData?.organization || 'Solosway'}
                       onSave={async (value) => {
@@ -619,7 +614,7 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate, embeddedInSettings, initi
                         setUserData(prev => prev ? { ...prev, organization: value } : null);
                       }}
                       validate={validateOrganization}
-                      placeholder="Enter organization name"
+                      placeholder="Enter company name"
                       required
                     />
                     <div style={{ marginTop: space.lg }}>
@@ -633,12 +628,7 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate, embeddedInSettings, initi
                             <button onClick={() => { if (window.confirm('Remove company logo?')) { removeCompanyLogo().then(() => setUserData(prev => prev ? { ...prev, company_logo_url: undefined } : null)).catch(console.error); } }} style={{ padding: '6px 12px', fontSize: '12px', fontWeight: 500, color: '#ef4444', backgroundColor: '#fef2f2', border: 'none', borderRadius: '6px', cursor: 'pointer' }}>Remove</button>
                           </div>
                         </div>
-                      ) : (
-                        <button onClick={() => setIsCompanyLogoModalOpen(true)} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 16px', fontSize: '13px', fontWeight: 500, color: '#6b7280', backgroundColor: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: '8px', cursor: 'pointer', width: '100%', justifyContent: 'center' }}>
-                          <Upload className="w-4 h-4" />
-                          <span>Upload company logo</span>
-                        </button>
-                      )}
+                      ) : null}
                     </div>
                   </div>
                 </div>

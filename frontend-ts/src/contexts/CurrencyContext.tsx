@@ -6,9 +6,9 @@ import { getLocaleCurrency } from "@/config/billing";
 const STORAGE_KEY = "velora_currency";
 
 export const CURRENCY_OPTIONS = [
-  { value: "USD", label: "USD ($)" },
-  { value: "GBP", label: "GBP (£)" },
-  { value: "EUR", label: "EUR (€)" },
+  { value: "USD", label: "USD" },
+  { value: "GBP", label: "GBP" },
+  { value: "EUR", label: "EUR" },
 ] as const;
 
 type CurrencyContextValue = {

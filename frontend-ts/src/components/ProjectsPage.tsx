@@ -878,7 +878,7 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
       </div>
 
       <div 
-        className={`w-full flex flex-col box-border ${showAllFiles ? 'h-full min-h-0' : 'min-h-full'}`}
+        className={`w-full flex flex-col box-border ${showAllFiles ? 'min-h-full' : 'min-h-full'}`}
         style={{ 
           paddingTop: `${CONTENT_PADDING_LEFT_PX}px`,
           paddingRight: `${CONTENT_PADDING_LEFT_PX}px`,

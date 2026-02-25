@@ -20,7 +20,8 @@ import { useSystem } from '@/contexts/SystemContext';
 import { backendApi } from '@/services/backendApi';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogOverlay } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { MapPin, Palette, Bell, Shield, Globe, Monitor, LibraryBig, Upload, BarChart3, Database, Settings, User, CloudUpload, Image, Map, Fullscreen, Minimize, Minimize2, Plus, ArrowUp, Folder, Layers, Check, Focus, Contrast, Search, Loader2, ArrowRight, ArrowLeft, CreditCard, Locate, Volume2 } from 'lucide-react';
+import { MapPin, Palette, Bell, Shield, Globe, Monitor, LibraryBig, Upload, BarChart3, Database, Settings, User, CloudUpload, Image, Map, Fullscreen, Minimize2, Plus, ArrowUp, Folder, Layers, Check, Focus, Contrast, Search, Loader2, ArrowRight, ArrowLeft, CreditCard, Locate, Volume2, Lock } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import { DocumentPreviewModal } from './DocumentPreviewModal';
@@ -46,12 +47,14 @@ import { preloadDocumentCovers } from '@/utils/preloadDocumentCovers';
 import {
   INPUT_BAR_SPACE_BELOW_DASHBOARD,
   INPUT_BAR_SPACE_BELOW_MAP,
+  CHAT_BAR_MAX_WIDTH_PX,
   getInputBarFixedContainerStyles,
 } from '@/utils/inputBarPosition';
 import { useChatHistory } from './ChatHistoryContext';
 import { useBrowserFullscreen } from '../contexts/BrowserFullscreenContext';
 import { usePropertySelection } from '../contexts/PropertySelectionContext';
 import { ChooseProjectModal } from './ChooseProjectModal';
+import { DashboardUpgradeCta } from './DashboardUpgradeCta';
 import type { QueryContentSegment } from '@/types/segmentInput';
 import {
   Select,
@@ -1109,16 +1112,16 @@ const LocationPickerModal: React.FC<{
           Choose where the map opens when you first view it.
         </p>
         {savedLocation && (
-          <div className="flex items-center gap-2 mb-4">
-            <Locate className="w-5 h-5 flex-shrink-0 text-gray-500" strokeWidth={2} />
-            <span className="text-[15px] font-normal text-gray-700">{savedLocation}</span>
+          <div className="flex items-center gap-2 mb-6">
+            <Locate className="w-3.5 h-3.5 flex-shrink-0 text-gray-500" strokeWidth={2} />
+            <span className="text-[13px] font-normal text-gray-700">{savedLocation}</span>
           </div>
         )}
-        {!savedLocation && <div className="mb-4" />}
+        {!savedLocation && <div className="mb-6" />}
         <Button
           variant="outline"
           onClick={() => setIsOpen(true)}
-          className="rounded-sm px-3 py-1 h-auto text-xs font-medium bg-transparent border border-gray-300 text-gray-700 hover:bg-transparent hover:text-gray-700 mt-4"
+          className="rounded-sm px-3 py-1 h-auto text-xs font-medium bg-transparent border border-gray-300 text-gray-700 hover:bg-transparent hover:text-gray-700 mt-6"
         >
           Set default location
         </Button>
@@ -1234,7 +1237,7 @@ const LocationPickerModal: React.FC<{
                         }}
                         className="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-left transition-colors hover:bg-gray-100 mx-2"
                       >
-                        <MapPin className="w-5 h-5 text-gray-400 flex-shrink-0" strokeWidth={1.5} />
+                        <MapPin className="w-4 h-4 text-gray-400 flex-shrink-0" strokeWidth={1.5} />
                         <span className="flex-1 min-w-0 text-[13px] font-normal text-gray-900 truncate">
                           {suggestion.place_name}
                         </span>
@@ -1661,7 +1664,7 @@ const NotificationsSettingsContent: React.FC = () => {
 
         {/* Volume: Spotify-style — speaker icon + horizontal slider */}
         <div className="flex items-center gap-3 mb-5">
-          <Volume2 className="h-6 w-6 shrink-0 text-gray-500" aria-hidden />
+          <Volume2 className="h-5 w-5 shrink-0 text-gray-500" aria-hidden />
           <Slider
             value={[volume]}
             onValueChange={([v]) => setVolume(v)}
@@ -1679,7 +1682,7 @@ const NotificationsSettingsContent: React.FC = () => {
           <Select value={soundOption} onValueChange={setSoundOption}>
             <SelectTrigger
               aria-label="Response completion sound"
-              className="h-9 w-[130px] shrink-0 rounded-md border border-gray-200 bg-white text-[13px] text-gray-900 focus:ring-1 focus:ring-gray-300 focus:ring-offset-0 focus:border-gray-300 [&_svg]:text-gray-500"
+              className="h-auto min-w-[130px] w-[130px] shrink-0 rounded-sm border border-gray-200 bg-white px-3 py-1 text-xs font-medium text-gray-700 focus:ring-1 focus:ring-gray-300 focus:ring-offset-0 focus:border-gray-300 [&_svg]:text-gray-500"
             >
               <SelectValue />
             </SelectTrigger>
@@ -1785,6 +1788,21 @@ const SettingsView: React.FC<{
     }
   };
 
+  const navigate = useNavigate();
+  const handleLogout = async () => {
+    try {
+      const result = await backendApi.logout();
+      if (result.success) {
+        localStorage.clear();
+      }
+      navigate('/auth');
+    } catch {
+      navigate('/auth');
+    }
+  };
+
+  const [privacyMode, setPrivacyMode] = React.useState<'share' | 'privacy'>('privacy');
+
   const settingsCategories = [
     { id: 'general', label: 'General', icon: User },
     { id: 'usage-billing', label: 'Usage & Billing', icon: CreditCard },
@@ -1838,6 +1856,7 @@ const SettingsView: React.FC<{
         // Return empty div - the sidebar will be rendered globally
         return <div />;
       case 'privacy':
+        const privacyModeLabel = privacyMode === 'share' ? 'Share Data' : 'Privacy Mode';
         return (
           <div className="space-y-6">
             <div>
@@ -1846,9 +1865,65 @@ const SettingsView: React.FC<{
                 Control your privacy and data settings.
               </p>
             </div>
-            <div className="text-slate-500 text-sm">
-              Privacy settings coming soon...
+            <div className="w-full min-w-0 rounded-xl border border-gray-200 p-6 shadow-sm" style={{ backgroundColor: '#F6F7F3' }}>
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <Lock className="h-3.5 w-3.5 shrink-0 text-gray-600" aria-hidden />
+                    <span className="text-[15px] font-medium text-gray-900">Privacy Mode</span>
+                  </div>
+                  <p className="text-[13px] text-gray-500 mt-1">
+                    Your code data will not be trained on or used to improve the product. We will not store your code.
+                  </p>
+                </div>
+                <div className="shrink-0 w-[240px]">
+                  <Select value={privacyMode} onValueChange={(v) => setPrivacyMode(v as 'share' | 'privacy')}>
+                    <SelectTrigger
+                      aria-label="Privacy mode"
+                      className="h-9 rounded-md border border-gray-300 bg-white text-[13px] text-gray-900 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 [&_svg]:h-3.5 [&_svg]:w-3.5"
+                    >
+                      <SelectValue>{privacyModeLabel}</SelectValue>
+                    </SelectTrigger>
+                    <SelectContent className="z-[200] w-[var(--radix-select-trigger-width)] min-w-0 max-w-[var(--radix-select-trigger-width)] border-gray-200 bg-white shadow-md text-[11px]" position="popper" viewportClassName="p-2">
+                      <SelectItem value="share" hideIndicator className="py-1 px-3 focus:bg-gray-100 text-[11px]">
+                        <div className="flex flex-col gap-0">
+                          <span className="font-medium text-gray-900 text-[11px]">Share Data</span>
+                          <span className="text-[10px] text-gray-500">Improve Velora for everyone</span>
+                        </div>
+                      </SelectItem>
+                      <SelectItem value="privacy" hideIndicator className="py-1 px-3 focus:bg-gray-100 text-[11px]">
+                        <div className="flex flex-col gap-0">
+                          <span className="font-medium text-gray-900 text-[11px]">Privacy Mode</span>
+                          <span className="text-[10px] text-gray-500">No training. Data may be stored for Background Agent and other features.</span>
+                        </div>
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <div className="border-t border-gray-200 my-4" />
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-[13px] text-gray-600">
+                  Privacy Mode is enabled. Background Agent and some features not available.
+                </span>
+                <button
+                  type="button"
+                  className="text-[13px] text-blue-600 underline hover:text-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500/20 rounded"
+                  onClick={() => setPrivacyMode('privacy')}
+                >
+                  Switch to Privacy Mode
+                </button>
+              </div>
             </div>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={handleLogout}
+              className="h-7 min-h-7 rounded-md bg-white hover:bg-gray-50 hover:text-gray-800 text-gray-800 border border-gray-200 px-2 py-0.5 text-xs font-medium focus-visible:ring-gray-200"
+            >
+              Log Out
+            </Button>
           </div>
         );
       case 'language':
@@ -2080,6 +2155,8 @@ export interface MainContentProps {
   openChatsViewTrigger?: number; // When incremented, open chats view (set hasPerformedSearch true for centered new-chat UI)
   onRegisterClearProjectSelection?: (clear: () => void) => void; // Register callback to clear project selection (show projects list when Projects nav is clicked)
   onProjectDetailOpen?: (open: boolean) => void; // Notify when fullscreen project detail is open so sidebar can unselect Projects button
+  /** Ref to the main content wrapper (flex-1 div). Used e.g. to portal/center the search modal inside it. */
+  mainContentContainerRef?: React.RefObject<HTMLDivElement | null>;
 }
 export const MainContent = ({
   className,
@@ -2114,7 +2191,8 @@ export const MainContent = ({
   onNewChat: onNewChatFromParent,
   openChatsViewTrigger = 0,
   onRegisterClearProjectSelection,
-  onProjectDetailOpen
+  onProjectDetailOpen,
+  mainContentContainerRef,
 }: MainContentProps) => {
   const { addActivity } = useSystem();
   const { isOpen: isFilingSidebarOpen, width: filingSidebarWidth, isResizing: isFilingSidebarResizing, closeSidebar } = useFilingSidebar();
@@ -2173,8 +2251,12 @@ export const MainContent = ({
   // Chats button clicked: open new-chat UI (centered welcome, no map). Parent signals via trigger.
   React.useEffect(() => {
     if (openChatsViewTrigger > 0) {
+      isTransitioningToChatRef.current = true;
       setHasPerformedSearch(true);
       setShouldExpandChat(false); // Ensure centered welcome layout, not expanded bottom bar
+      setTimeout(() => {
+        isTransitioningToChatRef.current = false;
+      }, 250);
     }
   }, [openChatsViewTrigger]);
 
@@ -2220,6 +2302,7 @@ export const MainContent = ({
   const [resetWidthForDocPreviewTrigger, setResetWidthForDocPreviewTrigger] = React.useState<number>(0); // Increment to force 50/50 when opening file from search modal
   const [chatBarGlowTrigger, setChatBarGlowTrigger] = React.useState<number>(0); // Timestamp to trigger chat bar border glow after query submit (dashboard/map)
   const [chooseProjectModalOpen, setChooseProjectModalOpen] = React.useState<boolean>(false);
+  const [chooseProjectModalAnchorRect, setChooseProjectModalAnchorRect] = React.useState<{ left: number; top: number; width: number; height: number } | null>(null);
 
   const { addPropertyAttachment } = usePropertySelection();
 
@@ -2281,7 +2364,9 @@ export const MainContent = ({
   } | null>(null);
   // When true, we navigated to search from "Analyse with AI" - don't reset map/chat in the currentView effect
   const openingFromAnalyseWithAIRef = React.useRef<boolean>(false);
-  
+  // Ref for main content wrapper so Choose Project modal can portal into dashboard area when on search/home view
+  const mainContentRef = React.useRef<HTMLDivElement>(null);
+
   // Hide QuickStartBar when switching away from map view
   React.useEffect(() => {
     if (!isMapVisible && isQuickStartBarVisible) {
@@ -2779,13 +2864,10 @@ export const MainContent = ({
       // Clear the bubble since we're restoring the full chat
       setIsChatBubbleVisible(false);
       
-      // Keep transition flag true longer to prevent chat closing effect from interfering
-      // Use requestAnimationFrame to clear after render completes
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          isTransitioningToChatRef.current = false;
-        });
-      });
+      // Keep transition flag true long enough to disable all movement/transitions when opening new chat section
+      setTimeout(() => {
+        isTransitioningToChatRef.current = false;
+      }, 250);
     }
   }, [shouldRestoreActiveChat, externalIsMapVisible, isMapVisible]);
   
@@ -2843,12 +2925,10 @@ export const MainContent = ({
         }
       }, 0);
       
-      // Clear transition flag after render completes
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          isTransitioningToChatRef.current = false;
-        });
-      });
+      // Keep transition flag true long enough to disable movement when opening chat
+      setTimeout(() => {
+        isTransitioningToChatRef.current = false;
+      }, 250);
     }
   }, [shouldRestoreSelectedChat, isMapVisible, getChatById]);
   
@@ -3877,7 +3957,11 @@ export const MainContent = ({
 
   // Open Choose Project modal when "Choose project" is clicked from chat bar (attach flow; do not navigate)
   React.useEffect(() => {
-    const handler = () => setChooseProjectModalOpen(true);
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent<{ anchorRect?: { left: number; top: number; width: number; height: number } }>).detail;
+      setChooseProjectModalAnchorRect(detail?.anchorRect ?? null);
+      setChooseProjectModalOpen(true);
+    };
     window.addEventListener('openChooseProjectModal', handler);
     return () => window.removeEventListener('openChooseProjectModal', handler);
   }, []);
@@ -3951,12 +4035,10 @@ export const MainContent = ({
         handleSearch(q);
         // Force fullscreen chat when opening from modal (handleSearch may set shouldExpandChat false when map is visible)
         setShouldExpandChat(true);
-        requestAnimationFrame(() => {
-          requestAnimationFrame(() => {
-            isTransitioningToChatRef.current = false;
-          });
-        });
       }, 0);
+      setTimeout(() => {
+        isTransitioningToChatRef.current = false;
+      }, 250);
     };
     window.addEventListener('searchModalNewChatQuery', handler);
     return () => window.removeEventListener('searchModalNewChatQuery', handler);
@@ -4308,6 +4390,12 @@ export const MainContent = ({
                       ? (shouldPositionAtBottom ? 'calc(100vh - 120px)' : `calc(100vh - ${searchBarHeight}px)`)
                       : (shouldCenterLogo ? (shouldPositionAtBottom ? 'calc(100vh - 120px)' : '100vh') : `${availableHeight}px`));
                   
+                  // When logo + search bar only (narrow viewport or projects hidden): place search bar using spacers
+                  const useSearchBarCenteredLayout = (effectiveIsVerySmall || effectiveShouldHideProjects) && !shouldPositionAtBottom;
+                  const topSpacerHeight = 'calc(50vh - 400px)'; // Smaller top spacer = logo + search bar higher
+                  // Fullscreen (projects visible): shift whole block up so logo + search bar sit higher
+                  const fullscreenUpwardShift = !useSearchBarCenteredLayout && !shouldPositionAtBottom ? 'translateY(-100px)' : 'none';
+
                   return (
                     <div 
                       className="flex flex-col items-center w-full max-w-6xl mx-auto px-4" 
@@ -4318,55 +4406,62 @@ export const MainContent = ({
                         minHeight: logoContainerHeight,
                         paddingTop: '0',
                         paddingBottom: shouldPositionAtBottom ? '120px' : (isLogoOnlyView ? `${searchBarHeight}px` : '0'), // Reserve space for search bar when in flow and logo-only view
-                        justifyContent: 'center', // Always center vertically - this centers the logo in the available space
+                        justifyContent: useSearchBarCenteredLayout ? 'flex-start' : 'center', // When centering search bar at 50vh we use top spacer instead
                         display: 'flex',
                         flexDirection: 'column',
                         alignItems: 'center',
                         position: 'relative',
-                        transform: (!effectiveIsVerySmall && !effectiveShouldHideProjects) ? 'translateY(-20px)' : 'none', // Apply transform consistently - don't toggle based on transition state
+                        transform: useSearchBarCenteredLayout ? 'none' : fullscreenUpwardShift,
                         zIndex: 2,
                         overflow: 'visible', // Ensure QuickStartBar is not clipped
-                        transition: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked) ? 'none' : 'transform 0.3s ease-out', // Smooth transition for transform, but disable during navigation transitions
-                        WebkitTransition: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked) ? 'none' : undefined,
-                        MozTransition: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked) ? 'none' : undefined,
-                        msTransition: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked) ? 'none' : undefined,
-                        OTransition: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked) ? 'none' : undefined
+                        transition: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked || isTransitioningToChatRef.current) ? 'none' : 'transform 0.3s ease-out', // Smooth transition for transform, but disable during navigation transitions
+                        WebkitTransition: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked || isTransitioningToChatRef.current) ? 'none' : undefined,
+                        MozTransition: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked || isTransitioningToChatRef.current) ? 'none' : undefined,
+                        msTransition: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked || isTransitioningToChatRef.current) ? 'none' : undefined,
+                        OTransition: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked || isTransitioningToChatRef.current) ? 'none' : undefined
                       }}
                     >
-                {/* VELORA Branding Section */}
+                {/* Top spacer: pushes logo + search bar so search bar center lands at 50vh */}
+                      {useSearchBarCenteredLayout && (
+                        <div style={{ flexShrink: 0, height: topSpacerHeight, width: '100%' }} aria-hidden />
+                      )}
+                {/* VELORA Branding Section - same width as search bar area so logo shrinks and centers at small width */}
                       <div className="flex flex-col items-center" style={{ 
                         marginTop: '0',
-                        marginBottom: (!effectiveIsVerySmall && !effectiveShouldHideProjects) ? 'clamp(2.5rem, 6vh, 4rem)' : '0', // Balanced spacing between logo and cards, use frozen values when transitioning
+                        marginBottom: (!effectiveIsVerySmall && !effectiveShouldHideProjects) ? 'clamp(2.25rem, 5vh, 3.25rem)' : '0',
                         position: 'relative',
-                        zIndex: 10 // Above background image
+                        zIndex: 10,
+                        width: '100%',
+                        maxWidth: '480px',
+                        minWidth: '200px',
+                        boxSizing: 'border-box'
                       }}>
-                        {/* Dashboard Logo - fixed pixel width + crisp scaling to avoid blur from vw/subpixel */}
+                        {/* Dashboard Logo - fills wrapper so it shrinks at small width and stays centered on search bar */}
                         <img 
-                          src="/OpenFind-darkbrown.png"
+                          src="/veloraAA.png"
                           width={906}
                           height={250}
-                          alt="OpenFind" 
+                          alt="Velora" 
                           // @ts-expect-error - use lowercase fetchpriority per React DOM warning; types still use fetchPriority
                           fetchpriority="high"
                           className="h-auto"
                           style={{ 
-                            width: 'min(320px, 70vw)',
-                            minWidth: '218px',
-                            maxWidth: '320px',
+                            width: '100%',
+                            maxWidth: '100%',
                             height: 'auto',
-                            minHeight: '70px',
-                            maxHeight: '136px',
-                            marginBottom: (!effectiveIsVerySmall && !effectiveShouldHideProjects) ? 'clamp(2rem, 4vh, 3rem)' : '0',
+                            minHeight: '80px',
+                            maxHeight: '200px',
+                            marginBottom: (!effectiveIsVerySmall && !effectiveShouldHideProjects) ? 'clamp(2rem, 4vh, 2.75rem)' : '0',
                             objectFit: 'contain',
                             transform: 'translateZ(0)',
                             backfaceVisibility: 'hidden' as const,
                             imageRendering: 'crisp-edges',
                           }}
                     onLoad={() => {
-                      console.log('✅ OpenFind logo loaded successfully');
+                      console.log('✅ Velora logo loaded successfully');
                     }}
                     onError={(e) => {
-                      console.error('❌ OpenFind logo failed to load:', e.currentTarget.src);
+                      console.error('❌ Velora logo failed to load:', e.currentTarget.src);
                     }}
                   />
                 </div>
@@ -4465,11 +4560,14 @@ export const MainContent = ({
                         // Determine if transition should be enabled
                         // Enable transition for sidebar state changes, but disable during chat transitions
                         // Component will automatically re-render when isSidebarCollapsed prop changes
-                        const shouldEnableTransition = !(isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked);
-                        const transitionValue = shouldEnableTransition 
+                        const shouldEnableTransition = !(isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked || isTransitioningToChatRef.current);
+                        const transitionValue = shouldEnableTransition
                           ? (isMapVisible ? 'left 0.3s ease-out' : 'all 0.3s ease-out')
                           : 'none';
                         
+                        // Cap dashboard wrapper so SearchBar matches SideChatPanel bar (same total width + same 16px padding each side)
+                        const DASHBOARD_BAR_PADDING_PX = 16; // Match SideChatPanel form padding so bar doesn't "grow" when switching panel -> dashboard
+                        const dashboardBarWrapperMaxPx = CHAT_BAR_MAX_WIDTH_PX + 2 * DASHBOARD_BAR_PADDING_PX;
                         return (
                           <div 
                             className={isMapVisible ? "" : "w-full flex justify-center items-center"} 
@@ -4479,8 +4577,8 @@ export const MainContent = ({
                               alignItems: isMapVisible ? 'center' : 'center', // Center content vertically
                               marginTop: shouldPositionAtBottom ? 'auto' : (isVerySmall ? 'auto' : '0'),
                               marginBottom: shouldPositionAtBottom ? '0' : (isVerySmall ? 'auto' : '0'),
-                              paddingLeft: isMapVisible ? `${EXTRA_HORIZONTAL_PADDING}px` : `${finalPadding + EXTRA_HORIZONTAL_PADDING}px`, // Equal padding left/right (extra so bar sits slightly inward)
-                              paddingRight: isMapVisible ? `${EXTRA_HORIZONTAL_PADDING}px` : `${finalPadding + EXTRA_HORIZONTAL_PADDING}px`, // Equal padding right
+                              paddingLeft: isMapVisible ? `${EXTRA_HORIZONTAL_PADDING}px` : `${DASHBOARD_BAR_PADDING_PX}px`,
+                              paddingRight: isMapVisible ? `${EXTRA_HORIZONTAL_PADDING}px` : `${DASHBOARD_BAR_PADDING_PX}px`,
                               paddingBottom: shouldPositionAtBottom ? '0' : '0', // No extra padding so bar bottom = INPUT_BAR_SPACE_BELOW_DASHBOARD (matches panel, no jump)
                               paddingTop: shouldPositionAtBottom ? '16px' : '0', // Top padding when fixed at bottom (ChatGPT-style)
                               overflow: 'visible', // Ensure content is never clipped
@@ -4490,7 +4588,7 @@ export const MainContent = ({
                               transform: mapViewTransform,
                               zIndex: Math.max(100002, isMapVisible ? 50 : (shouldPositionAtBottom ? 100 : 10)), // Above FilingSidebar (100001) so bar receives drag when hovering with file
                               width: isMapVisible ? 'clamp(400px, 85vw, 650px)' : '100%', // Full width in dashboard, constrained in map view
-                              maxWidth: isMapVisible ? 'clamp(400px, 85vw, 650px)' : 'none', // No max width constraint in dashboard (handled by padding)
+                              maxWidth: isMapVisible ? 'clamp(400px, 85vw, 650px)' : (shouldPositionAtBottom ? 'none' : `${dashboardBarWrapperMaxPx}px`), // Cap dashboard so bar width matches SideChatPanel
                               boxSizing: 'border-box', // Include padding in width calculation
                               backgroundColor: 'transparent', // Fully transparent - background shows through
                               background: 'transparent', // Fully transparent - background shows through
@@ -4549,6 +4647,10 @@ export const MainContent = ({
                           </div>
                         );
                       })()}
+                      {/* Bottom spacer: fills remaining space so top spacer places search bar center at 50vh */}
+                      {useSearchBarCenteredLayout && (
+                        <div style={{ flex: '1 1 0', minHeight: 0, width: '100%' }} aria-hidden />
+                      )}
                       
                       {/* Upload and Recent Projects Buttons - disabled for now */}
                       {false && !isMapVisible && !isInChatMode && (
@@ -5352,7 +5454,13 @@ export const MainContent = ({
     : 0;
   
   return (
-    <div 
+    <div
+    ref={(el) => {
+      (mainContentRef as React.MutableRefObject<HTMLDivElement | null>).current = el;
+      if (mainContentContainerRef && 'current' in mainContentContainerRef) {
+        (mainContentContainerRef as React.MutableRefObject<HTMLDivElement | null>).current = el;
+      }
+    }}
     className={`flex-1 relative ${(currentView === 'search' || currentView === 'home') ? '' : currentView === 'settings' ? 'bg-[#FAF9F6]' : 'bg-white'} ${className || ''}`} 
     style={{ 
       // Overlap 1px when Settings so dashboard background doesn't show through a subpixel gap (no reddish-brown leakage)
@@ -5384,8 +5492,8 @@ export const MainContent = ({
             opacity: (isMapVisible || externalIsMapVisible) ? 1 : 0, // Hide visually when not in map view
             pointerEvents: 'none', // Disable pointer events on wrapper - let SquareMap handle it
             overflow: 'hidden', // Clip any overflow
-            transition: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked) ? 'none' : 'opacity 0.2s ease-out', // Disable transition when transitioning from chat
-            willChange: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked) ? 'auto' : 'opacity', // Prevent layout shifts
+            transition: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked || isTransitioningToChatRef.current) ? 'none' : 'opacity 0.2s ease-out', // Disable transition when transitioning to/from chat
+            willChange: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked || isTransitioningToChatRef.current) ? 'auto' : 'opacity', // Prevent layout shifts
             backgroundColor: '#f5f5f5', // Match map background to prevent white gap
             background: '#f5f5f5' // Ensure background is set
           }}
@@ -5503,7 +5611,7 @@ export const MainContent = ({
         const mapViewTransform = 'translateX(-50%)';
         
         // Determine if transition should be enabled (same logic as first SearchBar)
-        const shouldEnableTransition = !(isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked);
+        const shouldEnableTransition = !(isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked || isTransitioningToChatRef.current);
         const transitionValue = shouldEnableTransition ? 'left 0.3s ease-out' : 'none';
         
         return (
@@ -5873,57 +5981,10 @@ export const MainContent = ({
         transition: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked) ? 'none' : undefined, // Disable all transitions when transitioning from chat
         willChange: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked) ? 'auto' : undefined // Prevent layout shifts during transitions
       }}>
-        {/* Browser Fullscreen Button - Top Right Corner of Dashboard */}
-        {(currentView === 'search' || currentView === 'home') && !isMapVisible && !isInChatMode && (
-          <div
-            style={{
-              position: 'absolute',
-              top: '16px',
-              right: '16px',
-              zIndex: 100,
-              pointerEvents: 'auto'
-            }}
-          >
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                e.preventDefault();
-                toggleBrowserFullscreen();
-              }}
-              className="group flex items-center rounded-md py-1.5 pl-2 pr-2 hover:bg-[#f5f5f5] hover:pr-3 active:bg-[#ebebeb] duration-150"
-              title={isBrowserFullscreen ? "Exit fullscreen (⌘⇧F)" : "Fullscreen (⌘⇧F)"}
-              type="button"
-              style={{
-                border: isBrowserFullscreen ? 'none' : '1px solid rgba(0, 0, 0, 0.1)',
-                cursor: 'pointer',
-                backgroundColor: isBrowserFullscreen ? 'rgba(0, 0, 0, 0.04)' : 'rgba(255, 255, 255, 0.9)',
-                boxShadow: isBrowserFullscreen ? 'none' : '0 1px 3px rgba(0, 0, 0, 0.06)',
-                transition: 'background-color 150ms ease, box-shadow 150ms ease, border-color 150ms ease'
-              }}
-            >
-              {isBrowserFullscreen ? (
-                <Minimize className="w-5 h-5 text-[#6B7280] flex-shrink-0" strokeWidth={2} />
-              ) : (
-                <Fullscreen className="w-5 h-5 text-[#6B7280] flex-shrink-0" strokeWidth={2} />
-              )}
-              <span className="inline-flex items-center gap-2 min-w-0 w-0 overflow-hidden opacity-0 whitespace-nowrap transition-none group-hover:w-auto group-hover:min-w-0 group-hover:opacity-100 group-hover:ml-1.5">
-                <span className="text-[13px] font-medium text-[#374151] leading-none">
-                  {isBrowserFullscreen ? "Exit fullscreen" : "Fullscreen"}
-                </span>
-                <span
-                  className="text-[10px] text-[#9CA3AF] font-medium px-1.5 py-0.5 rounded bg-[#F3F4F6] leading-none shrink-0"
-                  style={{
-                    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-                    letterSpacing: '0.01em'
-                  }}
-                >
-                  ⌘⇧F
-                </span>
-              </span>
-            </button>
-          </div>
+        {/* Dashboard upgrade CTA - absolute top-right within this content container, only when dashboard is visible */}
+        {(currentView === 'search' || currentView === 'home') && !shouldRestoreActiveChat && !(isInChatMode && hasPerformedSearch) && !isMapVisible && !externalIsMapVisible && (
+          <DashboardUpgradeCta />
         )}
-        
         <div className={`relative w-full ${
           isInChatMode 
             ? 'h-full w-full' 
@@ -6221,8 +6282,13 @@ export const MainContent = ({
 
       <ChooseProjectModal
         open={chooseProjectModalOpen}
-        onOpenChange={setChooseProjectModalOpen}
+        onOpenChange={(open) => {
+          setChooseProjectModalOpen(open);
+          if (!open) setChooseProjectModalAnchorRect(null);
+        }}
         onSelectProject={handleChooseProjectSelect}
+        anchorRect={chooseProjectModalAnchorRect}
+        portalContainer={(currentView === 'search' || currentView === 'home') ? mainContentRef.current : undefined}
         alignWithSearchBar={{
           sidebarWidth: effectiveSidebarWidthWithRail,
           isSidebarCollapsed,

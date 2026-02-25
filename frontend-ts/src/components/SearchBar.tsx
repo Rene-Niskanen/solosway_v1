@@ -23,7 +23,7 @@ import { SegmentInput, type SegmentInputHandle } from './SegmentInput';
 import { getFilteredAtMentionItems, preloadAtMentionCache } from '@/services/atMentionCache';
 import { useSegmentInput, buildInitialSegments } from '@/hooks/useSegmentInput';
 import { isTextSegment, isChipSegment, type QueryContentSegment, type ChipSegment, type TextSegment } from '@/types/segmentInput';
-import { INPUT_BAR_SPACE_BELOW_DASHBOARD, CHAT_INPUT_MAX_HEIGHT_PX } from '@/utils/inputBarPosition';
+import { INPUT_BAR_SPACE_BELOW_DASHBOARD, CHAT_INPUT_MAX_HEIGHT_PX, CHAT_BAR_MAX_WIDTH_PX } from '@/utils/inputBarPosition';
 
 export interface SearchBarProps {
   className?: string;
@@ -1314,7 +1314,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
       // QuickStartBar is now centered, so we just need to set maxWidth to match search bar
       quickStartWrapper.style.width = 'fit-content';
       // QuickStartBar should match search bar width for alignment
-      quickStartWrapper.style.maxWidth = '680px'; // Match content wrapper maxWidth
+      quickStartWrapper.style.maxWidth = `${CHAT_BAR_MAX_WIDTH_PX}px`; // Match content wrapper maxWidth
     };
 
     // Initial calculation with a small delay to ensure DOM is ready
@@ -1351,7 +1351,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
           ? "fixed bottom-5 left-1/2 transform -translate-x-1/2 z-40" 
           : isMapVisible 
             ? "w-full" // No padding in map view - parent container handles positioning
-            : "w-full flex justify-center px-6"
+            : "w-full flex justify-center" // No px-6 so bar width matches SideChatPanel (parent caps width)
       }`}
       style={{
         ...(contextConfig.position === "bottom" && !isMapVisible && { 
@@ -1389,9 +1389,9 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
           ...(isMapVisible
             ? { maxWidth: '100%', minWidth: '0', width: '100%' }
             : {
-                width: 'min(100%, 680px)',
+                width: `min(100%, ${CHAT_BAR_MAX_WIDTH_PX}px)`,
                 minWidth: '200px',
-                maxWidth: '680px',
+                maxWidth: `${CHAT_BAR_MAX_WIDTH_PX}px`,
               }),
           boxSizing: 'border-box',
           position: 'relative',
@@ -1408,7 +1408,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
               transform: 'translateX(-50%)', // Center the QuickStartBar
               zIndex: 10000,
               width: 'fit-content', // Let content determine width naturally
-              maxWidth: '680px', // Fixed maxWidth to match search bar - QuickStartBar should align with search bar
+              maxWidth: `${CHAT_BAR_MAX_WIDTH_PX}px`, // Fixed maxWidth to match search bar - QuickStartBar should align with search bar
               display: 'flex',
               justifyContent: 'center'
             }}
@@ -1690,7 +1690,17 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                       {!isMapVisible && (
                         <button
                           type="button"
-                          onClick={() => window.dispatchEvent(new CustomEvent('openChooseProjectModal'))}
+                          onClick={() => {
+                            const el = searchFormRef.current;
+                            const rect = el?.getBoundingClientRect();
+                            if (rect) {
+                              window.dispatchEvent(new CustomEvent('openChooseProjectModal', {
+                                detail: { anchorRect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height } },
+                              }));
+                            } else {
+                              window.dispatchEvent(new CustomEvent('openChooseProjectModal'));
+                            }
+                          }}
                           className="flex items-center justify-center gap-1.5 text-gray-700 transition-colors focus:outline-none outline-none rounded-md bg-black/[0.01] hover:bg-black/[0.05]"
                           style={{
                             border: 'none',

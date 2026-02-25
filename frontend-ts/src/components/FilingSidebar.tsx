@@ -3052,7 +3052,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                                   setHoveredItemId(null);
                                   cancelHoverPreload();
                                 }}
-                                className={`flex items-center gap-2 px-2 py-1.5 ml-4 mr-8 -mb-px cursor-pointer group rounded-md border transition-all duration-100 active:scale-[0.99] ${
+                                className={`flex items-center gap-2 px-2 py-1.5 ml-4 mr-8 -mb-px cursor-pointer group rounded-lg border transition-all duration-100 active:scale-[0.99] ${
                                   isSelectionMode 
                                     ? (isSelected 
                                         ? 'bg-gray-100/50 border-gray-300 hover:border-gray-400' 
@@ -3243,7 +3243,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                         setHoveredItemId(null);
                         cancelHoverPreload();
                       }}
-                      className={`flex items-center gap-2 px-2 py-1.5 mx-4 -mb-px cursor-pointer group rounded-md border transition-all duration-100 active:scale-[0.99] ${
+                      className={`flex items-center gap-2 px-2 py-1.5 mx-4 -mb-px cursor-pointer group rounded-lg border transition-all duration-100 active:scale-[0.99] ${
                         isSelectionMode 
                           ? (isSelected 
                               ? 'bg-gray-100/50 border-gray-300 hover:border-gray-400' 
@@ -3508,7 +3508,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                 animate={{ opacity: 1, scale: 1, y: 0 }}
                 exit={{ opacity: 0, scale: 0.95, y: -4 }}
                 transition={{ duration: 0.12 }}
-                className="fixed rounded-md py-0.5 w-max bg-white border border-slate-200"
+                className="fixed rounded-md py-0.5 min-w-0 max-w-[130px] bg-white border border-slate-200"
                 style={{
                   left: `${contextMenuPosition.x}px`,
                   top: `${contextMenuPosition.y}px`,
@@ -3531,7 +3531,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                             handleRename(openContextMenuId!, itemName || '', isFolder);
                           }
                         }}
-                        className="w-full px-2.5 py-1 text-left text-xs text-slate-700 hover:bg-slate-100 transition-colors"
+                        className="w-full px-2 py-1 text-left text-xs text-slate-700 hover:bg-slate-100 transition-colors truncate"
                       >
                         Rename
                       </button>
@@ -3542,7 +3542,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                             setOpenContextMenuId(null);
                             setContextMenuPosition(null);
                           }}
-                          className="w-full px-2.5 py-1 text-left text-xs text-slate-700 hover:bg-slate-100 transition-colors"
+                          className="w-full px-2 py-1 text-left text-xs text-slate-700 hover:bg-slate-100 transition-colors truncate"
                         >
                           Move to folder
                         </button>
@@ -3553,7 +3553,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                             handleDeleteClick(openContextMenuId, isFolder);
                           }
                         }}
-                        className="w-full px-2.5 py-1 text-left text-xs text-red-600 hover:bg-red-50 transition-colors"
+                        className="w-full px-2 py-1 text-left text-xs text-red-600 hover:bg-red-50 transition-colors truncate"
                       >
                         Delete
                       </button>

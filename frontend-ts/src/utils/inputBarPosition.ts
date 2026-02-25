@@ -17,6 +17,9 @@ export const INPUT_BAR_SPACE_BELOW_PANEL = 48;
 /** Shared width constraints for the fixed input bar container. */
 export const INPUT_BAR_CONTAINER_WIDTH = 'clamp(400px, 85vw, 650px)';
 
+/** Max width (px) for the dashboard SearchBar and SideChatPanel chat bar so they match. */
+export const CHAT_BAR_MAX_WIDTH_PX = 680;
+
 /** Max height (px) for chat input before it becomes scrollable. ~10 lines at 20px line-height. */
 export const CHAT_INPUT_MAX_HEIGHT_PX = 200;
 

@@ -684,7 +684,7 @@ const Auth: React.FC = () => {
             <img 
             src="/veloraboxlogo-fade.png" 
             alt="Velora Logo"
-            className="w-28 h-28 sm:w-36 sm:h-36 object-contain"
+            className="w-36 h-36 sm:w-48 sm:h-48 object-contain"
             style={{ filter: 'brightness(0) invert(1)' }}
             />
           </div>
