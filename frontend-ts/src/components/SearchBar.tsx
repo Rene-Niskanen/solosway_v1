@@ -51,7 +51,14 @@ export interface SearchBarProps {
   isQuickStartBarVisible?: boolean; // Whether QuickStartBar is currently visible
 }
 
-export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getValue: () => string; getAttachments: () => FileAttachmentData[] }, SearchBarProps>(({
+type FilingSidebarDocData = { documentId?: string; s3Path?: string; filename?: string; fileType?: string };
+
+export const SearchBar = forwardRef<{
+  handleFileDrop: (file: File) => void;
+  addFilingSidebarDocument: (data: FilingSidebarDocData) => void;
+  getValue: () => string;
+  getAttachments: () => FileAttachmentData[];
+}, SearchBarProps>(({
   className,
   onSearch,
   onQueryStart,
@@ -967,17 +974,92 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
     onFileDrop?.(file);
   }, [onFileDrop, attachedFiles.length]);
 
+  // Optimistic add for FilingSidebar documents — chip appears instantly, fetch runs in background
+  const addFilingSidebarDocument = useCallback((data: FilingSidebarDocData) => {
+    if (attachedFiles.length >= MAX_FILES) {
+      toast({
+        description: `Maximum of ${MAX_FILES} files allowed. Please remove a file before adding another.`,
+        duration: 3000,
+      });
+      return;
+    }
+    const attachmentId = `file-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    const placeholderFile = new File([], data.filename ?? 'Document', {
+      type: data.fileType || 'application/pdf',
+    });
+    const optimisticFileData: FileAttachmentData = {
+      id: attachmentId,
+      file: placeholderFile,
+      name: data.filename ?? 'Document',
+      type: data.fileType || 'application/pdf',
+      size: 0,
+      extractionStatus: 'extracting',
+    };
+    flushSync(() => {
+      setAttachedFiles(prev => {
+        const updated = [...prev, optimisticFileData];
+        attachedFilesRef.current = updated;
+        return updated;
+      });
+    });
+    if (onAttachmentsChange) {
+      onAttachmentsChange(attachedFilesRef.current);
+    }
+    (async () => {
+      try {
+        const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5001';
+        const downloadUrl = data.s3Path
+          ? `${backendUrl}/api/files/download?s3_path=${encodeURIComponent(data.s3Path)}`
+          : `${backendUrl}/api/files/download?document_id=${data.documentId}`;
+        const response = await fetch(downloadUrl, { credentials: 'include' });
+        if (!response.ok) throw new Error('Failed to fetch document');
+        const blob = await response.blob();
+        const actualFile = new File([blob], data.filename ?? 'Document', {
+          type: data.fileType || blob.type || 'application/pdf',
+        });
+        setAttachedFiles(prev => {
+          const updated = prev.map(att =>
+            att.id === attachmentId
+              ? { ...att, file: actualFile, size: actualFile.size, extractionStatus: undefined }
+              : att
+          );
+          attachedFilesRef.current = updated;
+          return updated;
+        });
+        queueMicrotask(() => {
+          if (onAttachmentsChange) onAttachmentsChange(attachedFilesRef.current);
+        });
+        try {
+          const blobUrl = URL.createObjectURL(actualFile);
+          if (!(window as any).__preloadedAttachmentBlobs) {
+            (window as any).__preloadedAttachmentBlobs = {};
+          }
+          (window as any).__preloadedAttachmentBlobs[attachmentId] = blobUrl;
+        } catch (_) {}
+      } catch (error) {
+        console.error('❌ SearchBar: Error fetching document:', error);
+        setAttachedFiles(prev => {
+          const updated = prev.filter(att => att.id !== attachmentId);
+          attachedFilesRef.current = updated;
+          return updated;
+        });
+        queueMicrotask(() => {
+          if (onAttachmentsChange) onAttachmentsChange(attachedFilesRef.current);
+        });
+        toast({ description: 'Failed to load document. Please try again.', duration: 3000 });
+      }
+    })();
+  }, [attachedFiles.length, onAttachmentsChange]);
+
   // Expose handleFileDrop via ref for drag-and-drop
   useImperativeHandle(ref, () => {
     return {
       handleFileDrop: handleFileUpload,
+      addFilingSidebarDocument,
       getValue: () => segmentInput.getPlainText(),
-      getAttachments: () => {
-        // Read from ref for synchronous access to current attachments
-        return attachedFilesRef.current;
-      }
+      getAttachments: () => attachedFilesRef.current,
     };
-  }, [handleFileUpload, segmentInput, attachedFiles]);
+  }, [handleFileUpload, addFilingSidebarDocument, segmentInput]);
 
   const handleRemoveFile = (id: string) => {
     // Clean up preloaded blob URL when file is removed
@@ -991,28 +1073,27 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
         console.error('Error cleaning up blob URL:', error);
       }
     }
-    
-    setAttachedFiles(prev => {
-      const updated = prev.filter(file => file.id !== id);
-      attachedFilesRef.current = updated; // Update ref immediately
-      return updated;
+    flushSync(() => {
+      setAttachedFiles(prev => {
+        const updated = prev.filter(file => file.id !== id);
+        attachedFilesRef.current = updated;
+        return updated;
+      });
+      setPreviewFiles(prev => {
+        const newFiles = prev.filter(f => f.id !== id);
+        if (newFiles.length === 0) {
+          setIsPreviewOpen(false);
+          setActivePreviewTabIndex(0);
+        } else if (activePreviewTabIndex >= newFiles.length) {
+          setActivePreviewTabIndex(newFiles.length - 1);
+        }
+        return newFiles;
+      });
     });
-    // Notify parent after state update
     queueMicrotask(() => {
       if (onAttachmentsChange) {
         onAttachmentsChange(attachedFilesRef.current);
       }
-    });
-    // Remove from preview tabs if it was open
-    setPreviewFiles(prev => {
-      const newFiles = prev.filter(f => f.id !== id);
-      if (newFiles.length === 0) {
-        setIsPreviewOpen(false);
-        setActivePreviewTabIndex(0);
-      } else if (activePreviewTabIndex >= newFiles.length) {
-        setActivePreviewTabIndex(newFiles.length - 1);
-      }
-      return newFiles;
     });
   };
 
@@ -1020,19 +1101,22 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
   const handleDrop = useCallback(async (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    // Clear drag state immediately so bar reverts in same frame
-    isDragOverRef.current = false;
-    flushSync(() => setIsDragOver(false));
 
     try {
-      // Handle native file drops first so the file appears immediately (no JSON parse or branching)
+      // Handle native file drops first — add files BEFORE clearing drag state so chip appears instantly
       const files = Array.from(e.dataTransfer.files);
       if (files.length > 0) {
-        files.forEach(file => {
-          flushSync(() => handleFileUpload(file, { skipExtraction: true }));
+        flushSync(() => {
+          files.forEach(file => handleFileUpload(file, { skipExtraction: true }));
+          isDragOverRef.current = false;
+          setIsDragOver(false);
         });
         return;
       }
+
+      // Clear drag state for non-file drops (FilingSidebar documents etc.)
+      isDragOverRef.current = false;
+      flushSync(() => setIsDragOver(false));
 
       // Check if this is a document from FilingSidebar (use text/plain for Chrome/cross-browser)
       let jsonData = e.dataTransfer.getData('application/json');
@@ -1045,109 +1129,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
           data = {};
         }
         if (data.type === 'filing-sidebar-document') {
-          if (attachedFiles.length >= MAX_FILES) {
-            toast({
-              description: `Maximum of ${MAX_FILES} files allowed. Please remove a file before adding another.`,
-              duration: 3000,
-            });
-            return;
-          }
-
-          // Create optimistic attachment and add synchronously for instant UI update
-          const attachmentId = `file-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-          const placeholderFile = new File([], data.filename, {
-            type: data.fileType || 'application/pdf',
-          });
-          const optimisticFileData: FileAttachmentData = {
-            id: attachmentId,
-            file: placeholderFile,
-            name: data.filename,
-            type: data.fileType || 'application/pdf',
-            size: 0, // Will be updated when file is fetched
-            extractionStatus: 'extracting', // Show spinner while fetching (same feedback as chat bar)
-          };
-          flushSync(() => {
-            setAttachedFiles(prev => {
-              const updated = [...prev, optimisticFileData];
-              attachedFilesRef.current = updated;
-              return updated;
-            });
-          });
-          if (onAttachmentsChange) {
-            onAttachmentsChange(attachedFilesRef.current);
-          }
-          
-          // Fetch the actual file in the background
-          (async () => {
-            try {
-              const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5001';
-              let downloadUrl: string;
-              
-              if (data.s3Path) {
-                downloadUrl = `${backendUrl}/api/files/download?s3_path=${encodeURIComponent(data.s3Path)}`;
-              } else {
-                downloadUrl = `${backendUrl}/api/files/download?document_id=${data.documentId}`;
-              }
-              
-              const response = await fetch(downloadUrl, { credentials: 'include' });
-              if (!response.ok) {
-                throw new Error('Failed to fetch document');
-              }
-              
-              const blob = await response.blob();
-              const actualFile = new File([blob], data.filename, {
-                type: data.fileType || blob.type || 'application/pdf',
-              });
-              
-              // Update the attachment with the actual file; clear loading spinner (no extraction tick for drop)
-              setAttachedFiles(prev => {
-                const updated = prev.map(att => 
-                  att.id === attachmentId 
-                    ? { ...att, file: actualFile, size: actualFile.size, extractionStatus: undefined }
-                    : att
-                );
-                attachedFilesRef.current = updated;
-                return updated;
-              });
-              // Notify parent after state update
-              queueMicrotask(() => {
-                if (onAttachmentsChange) {
-                  onAttachmentsChange(attachedFilesRef.current);
-                }
-              });
-              
-              // Preload blob URL for preview
-              try {
-                const blobUrl = URL.createObjectURL(actualFile);
-                if (!(window as any).__preloadedAttachmentBlobs) {
-                  (window as any).__preloadedAttachmentBlobs = {};
-                }
-                (window as any).__preloadedAttachmentBlobs[attachmentId] = blobUrl;
-              } catch (preloadError) {
-                console.error('Error preloading blob URL:', preloadError);
-              }
-              
-              console.log('✅ SearchBar: Document fetched and updated:', actualFile.name);
-            } catch (error) {
-              console.error('❌ SearchBar: Error fetching document:', error);
-              // Remove the optimistic attachment on error
-              setAttachedFiles(prev => {
-                const updated = prev.filter(att => att.id !== attachmentId);
-                attachedFilesRef.current = updated;
-                return updated;
-              });
-              // Notify parent after state update
-              queueMicrotask(() => {
-                if (onAttachmentsChange) {
-                  onAttachmentsChange(attachedFilesRef.current);
-                }
-              });
-              toast({
-                description: 'Failed to load document. Please try again.',
-                duration: 3000,
-              });
-            }
-          })();
+          addFilingSidebarDocument(data);
         }
       }
     } catch (error) {
@@ -1157,7 +1139,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
         duration: 3000,
       });
     }
-  }, [handleFileUpload, onAttachmentsChange]);
+  }, [handleFileUpload, addFilingSidebarDocument]);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -1453,7 +1435,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                 style={{
                   background: '#ffffff',
                   border: isDragOver ? '2px dashed #E0E0E0' : '1px solid #E0E0E0',
-                  boxShadow: '0 1px 3px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.02)',
+                  boxShadow: '0 4px 20px rgba(0, 0, 0, 0.07), 0 2px 8px rgba(0, 0, 0, 0.05)',
                   position: 'relative',
                   paddingTop: '16px',
                   paddingBottom: '12px',
@@ -1496,7 +1478,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                   animate={{ opacity: 1 }}
                   exit={{ opacity: 0 }}
                   transition={{ duration: 0.1, ease: "easeOut" }}
-                  style={{ maxHeight: '52px', overflowY: 'auto', marginBottom: '12px', flexShrink: 0 }}
+                  style={{ maxHeight: '52px', overflowY: 'auto', marginBottom: '12px', flexShrink: 0, position: 'relative', zIndex: 10, pointerEvents: 'auto' }}
                   className="flex flex-wrap gap-2 justify-start"
                   layout={false}
                 >

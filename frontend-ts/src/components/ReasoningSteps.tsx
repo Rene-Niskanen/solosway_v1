@@ -826,10 +826,20 @@ const StepRenderer: React.FC<{
         prefix = step.message.substring(0, colonIndex);
       }
 
-      // Only show "Analysing X documents" step when more than one document
+      // For "Analysing 1 document" - show actual document name instead of hiding
       const isAnalysingOneDocument = /^Analysing\s+1\s+document\s*:?$/i.test(prefix.trim());
       if (isAnalysingOneDocument) {
-        return <span style={{ display: 'none' }} aria-hidden />;
+        const docName = step.details?.document_names?.[0]
+          ?? step.details?.doc_previews?.[0]?.original_filename
+          ?? step.details?.doc_previews?.[0]?.classification_type?.replace(/_/g, ' ')?.replace(/\b\w/g, (l: string) => l.toUpperCase())
+          ?? 'Document';
+        const displayName = docName.length > 35 ? docName.substring(0, 32) + '...' : docName;
+        return (
+          <span style={{ display: 'inline-flex', alignItems: 'flex-start' }}>
+            <span style={foundActionStyle}>Analysing</span>
+            <span style={{ color: foundDetailColor, fontWeight: 500 }}> {displayName}:</span>
+          </span>
+        );
       }
 
       const nextStepExploring = stepIndex < allSteps.length - 1 ? allSteps[stepIndex + 1] : null;
@@ -872,10 +882,13 @@ const StepRenderer: React.FC<{
       const firstReadingStep = showDocsInline ? documentsDropdown!.readingSteps[0] : null;
       // When we have the bubble, main heading is just "Analysing:"; bubble shows "N documents"
       const headingText = showDocsInline ? 'Analysing' : prefix;
-      const bubbleLabel = docCount === 1 ? '1 document' : `${docCount} documents`;
       const showBubbleGlow = showDocsInline && isExploringActive && anyStillReading;
       const firstMeta = firstReadingStep?.details?.doc_metadata;
       const bubbleClickable = firstMeta && onDocumentClick;
+      // When single document, show actual filename in bubble instead of "1 document"
+      const bubbleLabel = docCount === 1
+        ? (firstMeta?.original_filename ?? firstReadingStep?.details?.filename ?? '1 document')
+        : `${docCount} documents`;
 
       return (
         <div>

@@ -29,6 +29,7 @@ import { FileAttachmentData } from './FileAttachment';
 import { usePreview } from '../contexts/PreviewContext';
 import { useChatStateStore, useActiveChatDocumentPreview, type CitationData, type DocumentPreview } from '../contexts/ChatStateStore';
 import { useAuthUser } from '@/contexts/AuthContext';
+import { useProfileUpdate } from '@/hooks/useProfileUpdate';
 import { StandaloneExpandedCardView } from './StandaloneExpandedCardView';
 import { AgentTaskOverlay } from './AgentTaskOverlay';
 import { RecentProjectsSection } from './RecentProjectsSection';
@@ -1600,6 +1601,7 @@ const BackgroundSettings: React.FC = () => {
 function normalizeUserForProfile(user: Record<string, unknown> | null | undefined): {
   first_name?: string; last_name?: string; email?: string; profile_image?: string; avatar_url?: string; profile_picture_url?: string;
   phone?: string; location?: string; address?: string; title?: string; organization?: string; company_logo_url?: string;
+  privacy_mode?: 'share' | 'privacy';
 } | null {
   if (!user) return null;
   return {
@@ -1664,7 +1666,7 @@ const NotificationsSettingsContent: React.FC = () => {
 
         {/* Volume: Spotify-style — speaker icon + horizontal slider */}
         <div className="flex items-center gap-3 mb-5">
-          <Volume2 className="h-5 w-5 shrink-0 text-gray-500" aria-hidden />
+          <Volume2 className="h-4 w-4 shrink-0 text-gray-500" aria-hidden />
           <Slider
             value={[volume]}
             onValueChange={([v]) => setVolume(v)}
@@ -1732,6 +1734,7 @@ const SettingsView: React.FC<{
   const [prefetchedUser, setPrefetchedUser] = React.useState<{
     first_name?: string; last_name?: string; email?: string; profile_image?: string; avatar_url?: string; profile_picture_url?: string;
     phone?: string; location?: string; address?: string; title?: string; organization?: string; company_logo_url?: string;
+    privacy_mode?: 'share' | 'privacy';
   } | null>(() => normalizeUserForProfile(authUser ?? undefined));
 
   // Sync from auth context when it becomes available (e.g. if Settings opened before AuthGuard finished)
@@ -1801,7 +1804,16 @@ const SettingsView: React.FC<{
     }
   };
 
+  const { updateProfile } = useProfileUpdate();
   const [privacyMode, setPrivacyMode] = React.useState<'share' | 'privacy'>('privacy');
+
+  // Sync privacy mode from prefetchedUser when it loads (same pattern as profile section)
+  React.useEffect(() => {
+    const mode = prefetchedUser?.privacy_mode;
+    if (mode === 'share' || mode === 'privacy') {
+      setPrivacyMode(mode);
+    }
+  }, [prefetchedUser?.privacy_mode]);
 
   const settingsCategories = [
     { id: 'general', label: 'General', icon: User },
@@ -1877,7 +1889,17 @@ const SettingsView: React.FC<{
                   </p>
                 </div>
                 <div className="shrink-0 w-[240px]">
-                  <Select value={privacyMode} onValueChange={(v) => setPrivacyMode(v as 'share' | 'privacy')}>
+                  <Select value={privacyMode} onValueChange={async (v) => {
+                      const mode = v as 'share' | 'privacy';
+                      setPrivacyMode(mode);
+                      try {
+                        await updateProfile({ privacy_mode: mode });
+                        setPrefetchedUser(prev => prev ? { ...prev, privacy_mode: mode } : null);
+                      } catch (err) {
+                        console.error('Failed to save privacy mode:', err);
+                        setPrivacyMode(prefetchedUser?.privacy_mode ?? 'privacy'); // Revert on error
+                      }
+                    }}>
                     <SelectTrigger
                       aria-label="Privacy mode"
                       className="h-9 rounded-md border border-gray-300 bg-white text-[13px] text-gray-900 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 [&_svg]:h-3.5 [&_svg]:w-3.5"
@@ -1909,7 +1931,10 @@ const SettingsView: React.FC<{
                 <button
                   type="button"
                   className="text-[13px] text-blue-600 underline hover:text-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500/20 rounded"
-                  onClick={() => setPrivacyMode('privacy')}
+                  onClick={async () => {
+                    setPrivacyMode('privacy');
+                    try { await updateProfile({ privacy_mode: 'privacy' }); setPrefetchedUser(prev => prev ? { ...prev, privacy_mode: 'privacy' as const } : null); } catch (err) { console.error('Failed to save privacy mode:', err); }
+                  }}
                 >
                   Switch to Privacy Mode
                 </button>
@@ -1920,7 +1945,7 @@ const SettingsView: React.FC<{
               variant="outline"
               size="sm"
               onClick={handleLogout}
-              className="h-7 min-h-7 rounded-md bg-white hover:bg-gray-50 hover:text-gray-800 text-gray-800 border border-gray-200 px-2 py-0.5 text-xs font-medium focus-visible:ring-gray-200"
+              className="-mt-2 h-7 min-h-7 rounded-md bg-white hover:bg-gray-50 hover:text-gray-800 text-gray-800 border border-gray-200 px-2 py-0.5 text-xs font-medium focus-visible:ring-gray-200"
             >
               Log Out
             </Button>
@@ -2069,6 +2094,7 @@ const FullscreenPropertyView: React.FC<FullscreenPropertyViewProps> = ({
         isVisible={true}
         query=""
         citationContext={null}
+        currentProperty={property}
         isSidebarCollapsed={isSidebarCollapsed}
         sidebarWidth={fullscreenSidebarWidth}
         isFilingSidebarClosing={false}
@@ -4438,7 +4464,7 @@ export const MainContent = ({
                       }}>
                         {/* Dashboard Logo - fills wrapper so it shrinks at small width and stays centered on search bar */}
                         <img 
-                          src="/veloraAA.png"
+                          src="/VELORA-----1.png"
                           width={906}
                           height={250}
                           alt="Velora" 
@@ -4449,8 +4475,8 @@ export const MainContent = ({
                             width: '100%',
                             maxWidth: '100%',
                             height: 'auto',
-                            minHeight: '80px',
-                            maxHeight: '200px',
+                            minHeight: '32px',
+                            maxHeight: '70px',
                             marginBottom: (!effectiveIsVerySmall && !effectiveShouldHideProjects) ? 'clamp(2rem, 4vh, 2.75rem)' : '0',
                             objectFit: 'contain',
                             transform: 'translateZ(0)',
@@ -4925,19 +4951,39 @@ export const MainContent = ({
   // Drag and drop state
   const [isDragging, setIsDragging] = React.useState(false);
   const [dragCounter, setDragCounter] = React.useState(0);
-  const searchBarRef = React.useRef<{ handleFileDrop: (file: File) => void; getValue: () => string; getAttachments: () => FileAttachmentData[] } | null>(null);
-  const mapSearchBarRef = React.useRef<{ handleFileDrop: (file: File) => void; getValue: () => string; getAttachments: () => FileAttachmentData[] } | null>(null);
+  const searchBarRef = React.useRef<{
+    handleFileDrop: (file: File) => void;
+    addFilingSidebarDocument: (data: { documentId?: string; s3Path?: string; filename?: string; fileType?: string }) => void;
+    getValue: () => string;
+    getAttachments: () => FileAttachmentData[];
+  } | null>(null);
+  const mapSearchBarRef = React.useRef<{
+    handleFileDrop: (file: File) => void;
+    addFilingSidebarDocument: (data: { documentId?: string; s3Path?: string; filename?: string; fileType?: string }) => void;
+    getValue: () => string;
+    getAttachments: () => FileAttachmentData[];
+  } | null>(null);
   const pendingFileDropRef = React.useRef<File | null>(null);
   const [refsReady, setRefsReady] = React.useState(false);
   
   // Memoize ref callbacks to ensure they're stable across renders
-  const searchBarRefCallback = React.useCallback((instance: { handleFileDrop: (file: File) => void; getValue: () => string; getAttachments: () => FileAttachmentData[] } | null) => {
+  const searchBarRefCallback = React.useCallback((instance: {
+    handleFileDrop: (file: File) => void;
+    addFilingSidebarDocument: (data: { documentId?: string; s3Path?: string; filename?: string; fileType?: string }) => void;
+    getValue: () => string;
+    getAttachments: () => FileAttachmentData[];
+  } | null) => {
     searchBarRef.current = instance;
     // Update state to trigger pending file processing
     setRefsReady(!!instance);
   }, []);
   
-  const mapSearchBarRefCallback = React.useCallback((instance: { handleFileDrop: (file: File) => void; getValue: () => string; getAttachments: () => FileAttachmentData[] } | null) => {
+  const mapSearchBarRefCallback = React.useCallback((instance: {
+    handleFileDrop: (file: File) => void;
+    addFilingSidebarDocument: (data: { documentId?: string; s3Path?: string; filename?: string; fileType?: string }) => void;
+    getValue: () => string;
+    getAttachments: () => FileAttachmentData[];
+  } | null) => {
     mapSearchBarRef.current = instance;
   }, []);
 
@@ -5223,39 +5269,24 @@ export const MainContent = ({
     if (propertyDocumentData) {
       try {
         const docData = JSON.parse(propertyDocumentData);
-        let downloadUrl: string | null = null;
-        if (docData.type === 'property-document' && docData.downloadUrl) {
-          downloadUrl = docData.downloadUrl;
-        } else if (docData.type === 'filing-sidebar-document') {
-          const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
-          if (docData.s3Path) {
-            downloadUrl = `${backendUrl}/api/files/download?s3_path=${encodeURIComponent(docData.s3Path)}`;
-          } else if (docData.documentId) {
-            downloadUrl = `${backendUrl}/api/files/download?document_id=${docData.documentId}`;
-          }
+        if (docData.type === 'filing-sidebar-document' && searchBarRef.current?.addFilingSidebarDocument) {
+          // Optimistic add — chip appears instantly, SearchBar fetches in background
+          flushSync(() => {
+            searchBarRef.current!.addFilingSidebarDocument(docData);
+          });
+          return;
         }
-        if (downloadUrl) {
-          console.log('📁 Document dropped:', docData.filename);
-          const response = await fetch(downloadUrl, { credentials: 'include' });
+        if (docData.type === 'property-document' && docData.downloadUrl) {
+          const response = await fetch(docData.downloadUrl, { credentials: 'include' });
           if (response.ok) {
             const blob = await response.blob();
             const file = new File([blob], docData.filename, { type: docData.fileType || 'application/pdf' });
-            console.log('✅ Document fetched:', file.name, file.size, 'bytes');
-            if (searchBarRef.current) {
-              try {
-                searchBarRef.current.handleFileDrop(file);
-                console.log('✅ Document passed to SearchBar');
-              } catch (err) {
-                console.error('❌ Error passing file to SearchBar:', err);
-                pendingFileDropRef.current = file;
-                setHasPendingFile(true);
-              }
+            if (searchBarRef.current?.handleFileDrop) {
+              flushSync(() => searchBarRef.current!.handleFileDrop(file));
             } else {
               pendingFileDropRef.current = file;
               setHasPendingFile(true);
             }
-          } else {
-            console.error('❌ Failed to fetch document:', response.status, response.statusText);
           }
           return;
         }

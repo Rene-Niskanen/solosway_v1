@@ -2568,7 +2568,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
             onClick={(e) => e.stopPropagation()}
           >
             {/* Panel header with Back (chat mode), 50/50 snap (when in split), and close button */}
-            <div className="px-10 pt-4 pb-3 bg-[#FCFCF9] relative flex items-center justify-between gap-2" style={{ zIndex: 1, borderBottom: 'none' }}>
+            <div className="pl-6 pr-10 pt-4 pb-3 bg-[#FCFCF9] relative flex items-center justify-between gap-2" style={{ zIndex: 1, borderBottom: 'none' }}>
               <div className="flex items-center gap-2">
                 {isInChatMode && (
                   <button
@@ -2763,7 +2763,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                         {(isLoadingAccess || canUpload()) && (
                         <motion.div
                           initial={false}
-                          className={`group relative bg-white border border-gray-200 flex flex-col overflow-hidden ${isLoadingAccess ? 'cursor-wait' : 'cursor-pointer'}`}
+                          className={`group relative bg-white border border-gray-200 rounded-lg flex flex-col overflow-hidden ${isLoadingAccess ? 'cursor-wait' : 'cursor-pointer'}`}
                           style={{
                             width: '160px',
                             height: '213px', // 3:4 aspect ratio (160 * 4/3)
@@ -2836,7 +2836,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                           return (
                             <motion.div
                               key={doc.id}
-                        className={`group relative bg-white border cursor-pointer flex flex-col overflow-hidden ${
+                        className={`group relative bg-white border rounded-lg cursor-pointer flex flex-col overflow-hidden ${
                           isSelected 
                             ? `border-2 ${borderColor} ${shadowColor}` 
                             : 'border-gray-200'

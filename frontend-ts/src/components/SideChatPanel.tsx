@@ -5740,6 +5740,8 @@ interface SideChatPanelProps {
   userFirstName?: string;
   /** When true, attachment preview is open in 50/50 split (chat resizes like document preview). */
   isAttachmentPreviewOpen?: boolean;
+  /** When in fullscreen property view, the current property (for resolving selected document IDs to names). */
+  currentProperty?: { propertyHub?: { documents?: Array<{ id: string; original_filename?: string }> }; documents?: Array<{ id: string; original_filename?: string }> };
 }
 
 export interface SideChatPanelRef {
@@ -5860,6 +5862,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   chatBarGlowTrigger,
   userFirstName,
   isAttachmentPreviewOpen = false,
+  currentProperty,
 }, ref) => {
   // Main navigation state:
   // - collapsed: icon-only sidebar (treat as "closed" for the purposes of showing open controls)
@@ -7685,7 +7688,21 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   // Ref so async query callback sees latest selection (avoids stale closure when documentIds is undefined)
   const selectedDocumentIdsRef = React.useRef(selectedDocumentIds);
   selectedDocumentIdsRef.current = selectedDocumentIds;
-  
+
+  // Resolve selected document IDs to names (for display above query, like attachments)
+  const selectedDocumentsWithNames = React.useMemo(() => {
+    if (selectedDocumentIds.size === 0 || !currentProperty) return [];
+    const docs = currentProperty?.propertyHub?.documents ?? currentProperty?.documents ?? [];
+    return Array.from(selectedDocumentIds)
+      .map((id) => {
+        const doc = docs.find((d: any) => String(d.id) === String(id));
+        const fullName = doc?.original_filename ?? id;
+        const displayName = fullName.length > 30 ? fullName.slice(0, 27) + '...' : fullName;
+        return { id, name: displayName, fullName };
+      })
+      .filter((d) => d.name);
+  }, [selectedDocumentIds, currentProperty]);
+
   // Filing sidebar integration (sidebarDocuments used by Searching carousel; prime when searching and empty)
   const { toggleSidebar: toggleFilingSidebar, isOpen: isFilingSidebarOpen, isResizing: isFilingSidebarResizing, width: filingSidebarWidth, sidebarDocuments, setSidebarDocuments } = useFilingSidebar();
   // Note: useChatPanel hook is declared earlier in the component for use in width calculations
@@ -9727,6 +9744,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       );
       
       if (!isAlreadyAdded) {
+        // Dismiss citation bar and close document preview so they don't affect the previous response
+        dismissCitationBarForNewQuery();
+        
         // FIRST: Show bot status overlay immediately (before any processing) - ONLY in agent mode
         if (isAgentMode) {
           console.log('🤖 [BOT_STATUS] Activating bot status overlay (from query prop)');
@@ -11519,7 +11539,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         })();
       }
     }
-  }, [query, initialContentSegments, isVisible, chatMessages, attachedFiles, initialAttachedFiles, propertyAttachments, selectedDocumentIds, hasExtractedAttachments, showFileChoiceAndWait, buildAttachmentContext, pendingSearchContentSegmentsRef]);
+  }, [query, initialContentSegments, isVisible, chatMessages, attachedFiles, initialAttachedFiles, propertyAttachments, selectedDocumentIds, hasExtractedAttachments, showFileChoiceAndWait, buildAttachmentContext, pendingSearchContentSegmentsRef, dismissCitationBarForNewQuery]);
   
   const inputRef = React.useRef<SegmentInputHandle | null>(null);
   const atMentionAnchorRef = React.useRef<HTMLDivElement>(null);
@@ -13657,19 +13677,22 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   const handleDrop = React.useCallback(async (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    // Clear drag state immediately so bar reverts in same frame
-    isDragOverRef.current = false;
-    flushSync(() => setIsDragOver(false));
 
     try {
-      // Handle native file drops first so the file appears immediately (no JSON parse or branching)
+      // Handle native file drops first — add files BEFORE clearing drag state so chip appears instantly
       const files = Array.from(e.dataTransfer.files);
       if (files.length > 0) {
-        files.forEach(file => {
-          flushSync(() => handleFileUpload(file, { skipExtraction: true }));
+        flushSync(() => {
+          files.forEach(file => handleFileUpload(file, { skipExtraction: true }));
+          isDragOverRef.current = false;
+          setIsDragOver(false);
         });
         return;
       }
+
+      // Clear drag state for non-file drops (FilingSidebar documents etc.)
+      isDragOverRef.current = false;
+      flushSync(() => setIsDragOver(false));
 
       // Check if this is a document from FilingSidebar (use text/plain for Chrome/cross-browser)
       let jsonData = e.dataTransfer.getData('application/json');
@@ -13860,12 +13883,13 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   }, [toggleDocumentSelectionMode]);
 
   const handleRemoveFile = React.useCallback((fileId: string) => {
-    setAttachedFiles(prev => {
-      const updated = prev.filter(f => f.id !== fileId);
-      attachedFilesRef.current = updated; // Update ref immediately
-      return updated;
+    flushSync(() => {
+      setAttachedFiles(prev => {
+        const updated = prev.filter(f => f.id !== fileId);
+        attachedFilesRef.current = updated;
+        return updated;
+      });
     });
-    
     // Clean up blob URL if it exists
     if ((window as any).__preloadedAttachmentBlobs?.[fileId]) {
       URL.revokeObjectURL((window as any).__preloadedAttachmentBlobs[fileId]);
@@ -15837,6 +15861,13 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       ? (lastAssistant.message.id || `msg-${lastAssistant.idx}`)
       : null;
 
+    // When user has sent a new query (last message is query or loading response), hide document preview and citation bar for previous responses
+    const lastMsg = validMessages[validMessages.length - 1]?.message;
+    const hasPendingNewQuery = !!lastMsg && (
+      lastMsg.type === 'query' ||
+      (lastMsg.type === 'response' && (lastMsg as { isLoading?: boolean }).isLoading && !(lastMsg as { text?: string }).text)
+    );
+
     // Only the latest no-results response shows Files and sources / Choose project buttons; earlier ones hide them
     const isNoResultsResponse = (m: { type: string; noResults?: boolean; text?: string }) =>
       m.type !== 'query' &&
@@ -16284,11 +16315,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 citationViewedInDocument={citationViewedInDocument}
                 onCloseDocumentFromCallout={closeExpandedCardView}
                 orderedCitationNumbersForMessage={(() => { const o = getOrderedCitationNumbersFromMessageText(message.text ?? ''); return o.length > 0 ? o : undefined; })()}
-                isCitationBarActive={isLatestAssistantMessage}
+                isCitationBarActive={isLatestAssistantMessage && !hasPendingNewQuery}
                 currentCitationIndex={citationReviewMessageId === finalKey ? citationReviewCurrentIndex : 0}
                 acceptedCitationIndices={citationReviewMessageId === finalKey ? citationReviewAcceptedIndices : (citationAcceptedByMessageId[finalKey] ?? undefined)}
                 showReviewNextOnly={citationReviewMessageId === finalKey ? citationReviewShowReviewNextOnly : false}
-                showInResponseCitationCallouts={!!(message.text && getOrderedCitationNumbersFromMessageText(message.text ?? '').length > 0)}
+                showInResponseCitationCallouts={!hasPendingNewQuery && !!(message.text && getOrderedCitationNumbersFromMessageText(message.text ?? '').length > 0)}
                 showCitationPreviewBar={showCitationPreviewBar && !citationPreviewClosedForMessageIds.has(finalKey)}
                 onCloseCitationPreviewBar={(id) => setCitationPreviewClosedForMessageIds((prev) => new Set(prev).add(id))}
                 rejectedCitationNumbers={rejectedCitationNumbersByMessage.get(String(message.id ?? finalKey))}
@@ -18040,7 +18071,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       style={{
                         background: '#ffffff',
                         border: isDragOver ? '2px dashed #E0E0E0' : '1px solid #E0E0E0',
-                        boxShadow: isDragOver ? '0 1px 3px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.02)' : '0 1px 3px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.02)',
+                        boxShadow: '0 4px 20px rgba(0, 0, 0, 0.07), 0 2px 8px rgba(0, 0, 0, 0.05)',
                         position: 'relative',
                         paddingTop: '16px',
                         paddingBottom: '12px',
@@ -18063,7 +18094,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       <>
                       {/* Files and projects in one row so they can stack on the same line when there's space */}
                       <AnimatePresence mode="wait">
-                        {(attachedFiles.length > 0 || propertyAttachments.length > 0) && (
+                        {(attachedFiles.length > 0 || propertyAttachments.length > 0 || selectedDocumentsWithNames.length > 0) && (
                           <motion.div
                             key="attachments-empty"
                             initial={false}
@@ -18074,14 +18105,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             className="flex flex-wrap gap-2 justify-start"
                             layout={false}
                           >
-                            {attachedFiles.map((file, attachmentIdx) => (
+                            {attachedFiles.map((file) => (
                               <FileAttachment
-                                key={generateAnimatePresenceKey(
-                                  'FileAttachment',
-                                  attachmentIdx,
-                                  file.id || file.name,
-                                  'file'
-                                )}
+                                key={file.id}
                                 attachment={file}
                                 onRemove={handleRemoveFile}
                                 onPreview={(file) => {
@@ -18107,6 +18133,32 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                 onRemove={() => removePropertyAttachment(a.id)}
                               />
                             ))}
+                            {selectedDocumentsWithNames.map((d) => (
+                              <span
+                                key={d.id}
+                                className="relative bg-white rounded-lg border border-gray-200 px-2.5 py-2 cursor-default hover:border-gray-300 transition-all duration-100 inline-flex items-center gap-2 flex-shrink-0"
+                                title={d.fullName ?? d.name}
+                              >
+                                <span className="flex h-6 w-6 shrink-0 items-center justify-center">
+                                  <FileText className="w-4 h-4 text-gray-500" strokeWidth={2} />
+                                </span>
+                                <span className="text-xs font-medium text-black truncate" style={{ whiteSpace: 'nowrap', maxWidth: '200px' }}>
+                                  {d.name}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    toggleDocumentSelection(d.id);
+                                  }}
+                                  className="w-6 h-6 flex items-center justify-center flex-shrink-0 text-gray-400 hover:text-gray-600 transition-colors ml-2"
+                                  title="Remove from selection"
+                                >
+                                  <X className="w-4 h-4" strokeWidth={2.5} />
+                                </button>
+                              </span>
+                            ))}
                           </motion.div>
                         )}
                       </AnimatePresence>
@@ -18124,7 +18176,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           onBlur={() => setIsFocused(false)}
                           onClick={(e) => e.stopPropagation()}
                         >
-                          {(segmentInput.getPlainText().trim() !== '' || propertyAttachments.length > 0 || atMentionDocumentChips.length > 0 || attachedFiles.length > 0) && (
+                          {(segmentInput.getPlainText().trim() !== '' || propertyAttachments.length > 0 || atMentionDocumentChips.length > 0 || attachedFiles.length > 0 || selectedDocumentIds.size > 0) && (
                             <button
                               type="button"
                               onClick={(e) => {
@@ -18134,6 +18186,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                 clearPropertyAttachments();
                                 setAttachedFiles([]);
                                 attachedFilesRef.current = [];
+                                clearSelectedDocuments();
                                 inputRef.current?.focus();
                               }}
                               className="absolute right-2 top-[11px] -translate-y-1/2 flex items-center justify-center w-6 h-6 text-gray-400 hover:text-gray-600 transition-colors z-10"
@@ -19109,7 +19162,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       borderWidth: isDragOver ? 2 : 1,
                       borderStyle: isDragOver ? 'dashed' : 'solid',
                       borderColor: showBarGlow ? 'transparent' : (isDragOver ? '#E0E0E0' : '#E0E0E0'),
-                      boxShadow: '0 1px 3px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.02)',
+                      boxShadow: '0 4px 20px rgba(0, 0, 0, 0.07), 0 2px 8px rgba(0, 0, 0, 0.05)',
                       position: 'relative',
                       paddingTop: '16px',
                       paddingBottom: '12px',
@@ -19146,7 +19199,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   >
                     {/* Files and projects in one row so they can stack on the same line when there's space */}
                     <AnimatePresence mode="wait">
-                      {(attachedFiles.length > 0 || propertyAttachments.length > 0) && (
+                      {(attachedFiles.length > 0 || propertyAttachments.length > 0 || selectedDocumentsWithNames.length > 0) && (
                         <motion.div
                           key="attachments"
                           initial={false}
@@ -19190,6 +19243,32 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               onRemove={() => removePropertyAttachment(a.id)}
                             />
                           ))}
+                          {selectedDocumentsWithNames.map((d) => (
+                            <span
+                              key={d.id}
+                              className="relative bg-white rounded-lg border border-gray-200 px-2.5 py-2 cursor-default hover:border-gray-300 transition-all duration-100 inline-flex items-center gap-2 flex-shrink-0"
+                              title={d.fullName ?? d.name}
+                            >
+                              <span className="flex h-6 w-6 shrink-0 items-center justify-center">
+                                <FileText className="w-4 h-4 text-gray-500" strokeWidth={2} />
+                              </span>
+                              <span className="text-xs font-medium text-black truncate" style={{ whiteSpace: 'nowrap', maxWidth: '200px' }}>
+                                {d.name}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  toggleDocumentSelection(d.id);
+                                }}
+                                className="w-6 h-6 flex items-center justify-center flex-shrink-0 text-gray-400 hover:text-gray-600 transition-colors ml-2"
+                                title="Remove from selection"
+                              >
+                                <X className="w-4 h-4" strokeWidth={2.5} />
+                              </button>
+                            </span>
+                          ))}
                         </motion.div>
                       )}
                     </AnimatePresence>
@@ -19207,7 +19286,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         onBlur={() => setIsFocused(false)}
                         onClick={(e) => e.stopPropagation()}
                       >
-                        {(segmentInput.getPlainText().trim() !== '' || propertyAttachments.length > 0 || atMentionDocumentChips.length > 0 || attachedFiles.length > 0) && (
+                        {(segmentInput.getPlainText().trim() !== '' || propertyAttachments.length > 0 || atMentionDocumentChips.length > 0 || attachedFiles.length > 0 || selectedDocumentIds.size > 0) && (
                             <button
                               type="button"
                               onClick={(e) => {
@@ -19217,6 +19296,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                 clearPropertyAttachments();
                                 setAttachedFiles([]);
                                 attachedFilesRef.current = [];
+                                clearSelectedDocuments();
                                 inputRef.current?.focus();
                               }}
                             className="absolute right-2 top-[11px] -translate-y-1/2 flex items-center justify-center w-6 h-6 text-gray-400 hover:text-gray-600 transition-colors z-10"

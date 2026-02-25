@@ -1143,11 +1143,12 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
     }
   };
 
-  // Context menu handlers
+  // Context menu handlers - position menu just left of the 3-dots trigger
   const handleContextMenuClick = (e: React.MouseEvent, itemId: string) => {
     e.stopPropagation();
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    setContextMenuPosition({ x: rect.right - 200, y: rect.top + 20 });
+    const menuWidth = 132;
+    setContextMenuPosition({ x: rect.left - menuWidth, y: rect.top });
     setOpenContextMenuId(openContextMenuId === itemId ? null : itemId);
   };
 

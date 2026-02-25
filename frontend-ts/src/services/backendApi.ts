@@ -2157,6 +2157,7 @@ class BackendApiService {
     address?: string;
     location?: string;
     organization?: string;
+    privacy_mode?: 'share' | 'privacy';
   }) {
     const result = await this.fetchApi<{ success: boolean; user?: unknown }>(
       '/api/user/profile',

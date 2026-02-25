@@ -6597,6 +6597,7 @@ def api_auth_me():
             'location': supabase_user.get('location') if supabase_user else None,
             'organization': supabase_user.get('company_name') if supabase_user else current_user.company_name,
             'company_logo_url': supabase_user.get('company_logo_url') if supabase_user else None,
+            'privacy_mode': (supabase_user.get('privacy_mode') or 'privacy') if supabase_user else 'privacy',
         }
         return jsonify({'user': user_data}), 200
     except Exception as e:
@@ -6766,8 +6767,8 @@ def update_user_profile():
     try:
         data = request.get_json(silent=True) or {}
         # Persist profile columns (migration add_profile_columns_to_users.sql adds last_name, title, phone, address, location)
-        allowed_for_db = {'first_name', 'last_name', 'title', 'email', 'company_name', 'phone', 'address', 'location'}
-        raw = {k: (v if v is not None else None) for k, v in data.items() if k in {'first_name', 'last_name', 'title', 'email', 'phone', 'address', 'location', 'organization'}}
+        allowed_for_db = {'first_name', 'last_name', 'title', 'email', 'company_name', 'phone', 'address', 'location', 'privacy_mode'}
+        raw = {k: (v if v is not None else None) for k, v in data.items() if k in {'first_name', 'last_name', 'title', 'email', 'phone', 'address', 'location', 'organization', 'privacy_mode'}}
         if 'organization' in raw:
             raw['company_name'] = raw.pop('organization')
         update = {k: v for k, v in raw.items() if k in allowed_for_db}

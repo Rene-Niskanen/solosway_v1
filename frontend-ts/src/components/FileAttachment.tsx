@@ -41,6 +41,7 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
   const [isDragging, setIsDragging] = React.useState(false);
   const imageDragRef = React.useRef<HTMLDivElement>(null);
   const fileDragRef = React.useRef<HTMLDivElement>(null);
+  const removeBtnRef = React.useRef<HTMLButtonElement>(null);
   const isImage = attachment.type.startsWith('image/');
   const isPDF = attachment.type === 'application/pdf';
   const isDOCX = attachment.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' || 
@@ -54,6 +55,11 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
                        (attachment.name && (attachment.name.toLowerCase().endsWith('.pptx') || attachment.name.toLowerCase().endsWith('.ppt')));
 
   const handleDragStart = (e: React.DragEvent) => {
+    // Don't start drag when clicking the remove button
+    if ((e.target as HTMLElement).closest('button[title="Remove file"]')) {
+      e.preventDefault();
+      return;
+    }
     e.dataTransfer.effectAllowed = 'move';
     e.dataTransfer.setData('fileId', attachment.id);
     // Set a type to distinguish from property card drags
@@ -80,6 +86,25 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
       onDragEnd();
     }
   };
+
+  // Native listeners on remove button — bypass React/overlays; mousedown fires before drag, click for touch devices
+  const attachmentIdRef = React.useRef(attachment.id);
+  attachmentIdRef.current = attachment.id;
+  React.useEffect(() => {
+    const el = removeBtnRef.current;
+    if (!el || compact) return;
+    const handler = (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      onRemove(attachmentIdRef.current);
+    };
+    el.addEventListener('mousedown', handler, { capture: true });
+    el.addEventListener('click', handler, { capture: true });
+    return () => {
+      el.removeEventListener('mousedown', handler, { capture: true });
+      el.removeEventListener('click', handler, { capture: true });
+    };
+  }, [compact, onRemove]);
 
   // Create preview URL for images
   React.useEffect(() => {
@@ -230,18 +255,22 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
           }}
         />
         
-        {/* Remove Button - Bottom right corner (hidden in compact) */}
+        {/* Remove Button - Bottom right corner (hidden in compact). Native listener in useEffect ensures it fires. */}
         {!compact && (
           <button
+            ref={removeBtnRef}
             type="button"
+            draggable={false}
             onClick={(e) => {
+              e.preventDefault();
               e.stopPropagation();
               onRemove(attachment.id);
             }}
-            className="absolute bottom-1 right-1 w-6 h-6 flex items-center justify-center flex-shrink-0 text-gray-400 hover:text-gray-600 transition-colors"
+            className="absolute bottom-1 right-1 w-6 h-6 flex items-center justify-center flex-shrink-0 text-gray-400 hover:text-gray-600 transition-colors cursor-pointer z-10"
             title="Remove file"
+            style={{ touchAction: 'manipulation' }}
           >
-            <X className="w-4 h-4" strokeWidth={2.5} />
+            <X className="w-4 h-4" strokeWidth={2.5} style={{ pointerEvents: 'none' }} />
           </button>
         )}
       </motion.div>
@@ -274,6 +303,9 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
         flexGrow: 0,
         alignSelf: 'flex-start',
         cursor: compact ? 'pointer' : (isDragging ? 'grabbing' : 'grab'),
+        position: 'relative',
+        zIndex: 1,
+        isolation: 'isolate',
       }}
       layout={false}
       draggable={!compact}
@@ -318,18 +350,22 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
           </div>
         </div>
         
-        {/* Remove Button - X only (hidden in compact) */}
+        {/* Remove Button - X only (hidden in compact). Native listener in useEffect ensures it fires. */}
         {!compact && (
           <button
+            ref={removeBtnRef}
             type="button"
+            draggable={false}
             onClick={(e) => {
+              e.preventDefault();
               e.stopPropagation();
               onRemove(attachment.id);
             }}
-            className="w-6 h-6 flex items-center justify-center flex-shrink-0 text-gray-400 hover:text-gray-600 transition-colors ml-2"
+            className="w-6 h-6 flex items-center justify-center flex-shrink-0 text-gray-400 hover:text-gray-600 transition-colors ml-2 cursor-pointer flex-shrink-0"
             title="Remove file"
+            style={{ touchAction: 'manipulation' }}
           >
-            <X className="w-4 h-4" strokeWidth={2.5} />
+            <X className="w-4 h-4" strokeWidth={2.5} style={{ pointerEvents: 'none' }} />
           </button>
         )}
       </div>

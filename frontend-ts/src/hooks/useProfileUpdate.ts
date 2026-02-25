@@ -15,6 +15,7 @@ interface ProfileUpdateData {
   address?: string;
   location?: string; // Keep for backward compatibility
   organization?: string;
+  privacy_mode?: 'share' | 'privacy';
 }
 
 interface UseProfileUpdateReturn {
