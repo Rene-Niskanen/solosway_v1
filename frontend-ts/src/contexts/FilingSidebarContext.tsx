@@ -32,6 +32,9 @@ interface FilingSidebarContextType {
   /** Current document list from the file sidebar (for Searching carousel to rotate through) */
   sidebarDocuments: Array<{ id: string; original_filename?: string }>;
   setSidebarDocuments: (docs: Array<{ id: string; original_filename?: string }>) => void;
+  /** Upload files from chat (Add to database) - routes through sidebar so processing is visible. Returns { successCount } when at least one file uploaded. */
+  uploadFilesFromChat: ((files: File[]) => Promise<{ successCount: number }>) | null;
+  registerUploadFromChat: (fn: ((files: File[]) => Promise<{ successCount: number }>) | null) => void;
 }
 
 const FilingSidebarContext = createContext<FilingSidebarContextType | undefined>(undefined);
@@ -48,6 +51,14 @@ export const FilingSidebarProvider: React.FC<{ children: React.ReactNode }> = ({
   const [initialPendingFiles, setInitialPendingFiles] = useState<File[] | null>(null);
   const [isFilesUploading, setFilesUploading] = useState<boolean>(false);
   const [sidebarDocuments, setSidebarDocuments] = useState<Array<{ id: string; original_filename?: string }>>([]);
+  const uploadFromChatRef = React.useRef<((files: File[]) => Promise<{ successCount: number }>) | null>(null);
+  const registerUploadFromChat = useCallback((fn: ((files: File[]) => Promise<{ successCount: number }>) | null) => {
+    uploadFromChatRef.current = fn;
+  }, []);
+  const uploadFilesFromChat = useCallback(async (files: File[]): Promise<{ successCount: number }> => {
+    if (uploadFromChatRef.current) return uploadFromChatRef.current(files);
+    return { successCount: 0 };
+  }, []);
 
   const openSidebar = useCallback(() => {
     setIsOpen(true);
@@ -172,6 +183,8 @@ export const FilingSidebarProvider: React.FC<{ children: React.ReactNode }> = ({
     setFilesUploading,
     sidebarDocuments,
     setSidebarDocuments,
+    uploadFilesFromChat,
+    registerUploadFromChat,
   };
 
   return (

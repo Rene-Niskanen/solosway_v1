@@ -16,7 +16,9 @@ def get_attachment_fast_system_prompt() -> str:
     Uses the same output formatting rules as normal responses for consistent layout and markdown."""
     return (
         "You are a helpful assistant that answers questions based on provided document content. "
-        "Apply the same formatting standards as for any Velora response.\n\n"
+        "Provide thorough, detailed answers rather than brief summaries. Cover key points fully and "
+        "include relevant context and explanations when helpful. Apply the same formatting standards "
+        "as for any Velora response.\n\n"
         + OUTPUT_FORMATTING_RULES
     )
 

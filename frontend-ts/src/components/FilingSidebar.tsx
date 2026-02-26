@@ -224,6 +224,8 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
     setInitialPendingFiles,
     setFilesUploading,
     setSidebarDocuments,
+    openSidebar: openFilingSidebar,
+    registerUploadFromChat,
   } = useFilingSidebar();
   const { getAllPropertyHubs } = useBackendApi();
 
@@ -1776,6 +1778,60 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
   const removeUploadingPlaceholder = useCallback((placeholderId: string) => {
     setUploadingPlaceholders((prev) => prev.filter((p) => p.id !== placeholderId));
   }, []);
+
+  // Register upload-from-chat handler so Add to database routes through sidebar and shows processing
+  useEffect(() => {
+    const uploadFromChat = async (files: File[]): Promise<{ successCount: number }> => {
+      if (files.length === 0) return { successCount: 0 };
+      openFilingSidebar();
+      const placeholders = files.map((f, i) => ({ id: `chat-${Date.now()}-${i}-${f.name}`, name: f.name }));
+      setUploadingPlaceholders((prev) => [...prev, ...placeholders]);
+      const uploadedIds: string[] = [];
+      let completed = 0;
+      let failed = 0;
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        const placeholderId = placeholders[i].id;
+        uploadEvents.start(file.name);
+        try {
+          const result = await backendApi.uploadDocument(file, (p) => uploadEvents.progress(p, file.name));
+          if (result.success && result.data?.document_id) {
+            uploadEvents.complete(file.name, result.data.document_id);
+            uploadedIds.push(result.data.document_id);
+            completed++;
+          } else {
+            uploadEvents.error(file.name, result.error || 'Upload failed');
+            failed++;
+          }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : 'Upload failed';
+          uploadEvents.error(file.name, msg);
+          failed++;
+        }
+        removeUploadingPlaceholder(placeholderId);
+      }
+      if (uploadedIds.length > 0) {
+        setProcessingDocumentIds((prev) => { const next = new Set(prev); uploadedIds.forEach((id) => next.add(id)); return next; });
+        const uploadCacheKey = 'global';
+        documentCacheRef.current.delete(uploadCacheKey);
+        cacheTimestampRef.current.delete(uploadCacheKey);
+        const response = await backendApi.getAllDocuments();
+        const docs = parseAllDocumentsResponse(response);
+        if (response.success) { setDocuments(docs); documentCacheRef.current.set(uploadCacheKey, docs); cacheTimestampRef.current.set(uploadCacheKey, Date.now()); }
+        try { const statsRes = await backendApi.getDocumentStats(); if (statsRes.success && statsRes.data) setDocStats(statsRes.data); } catch (_) {}
+      }
+      if (failed === 0 && completed > 0) {
+        toast({ description: completed === 1 ? 'File added to your database.' : `${completed} files added to your database.`, duration: 2500 });
+      } else if (failed > 0 && completed > 0) {
+        toast({ description: `${completed} uploaded; ${failed} failed.`, variant: 'destructive', duration: 3000 });
+      } else if (failed > 0) {
+        toast({ description: 'Upload failed.', variant: 'destructive', duration: 3000 });
+      }
+      return { successCount: completed };
+    };
+    registerUploadFromChat(uploadFromChat);
+    return () => registerUploadFromChat(null);
+  }, [openFilingSidebar, removeUploadingPlaceholder, registerUploadFromChat]);
 
   // Handle uploading all pending files: keep same list visible with inline loading, then refresh doc list and clear in one go
   const handleUploadPendingFiles = async () => {

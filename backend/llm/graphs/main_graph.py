@@ -620,11 +620,12 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
     builder.add_edge("handle_navigation_action", "format_response")
     logger.debug("Edge: handle_navigation_action -> format_response (INSTANT)")
     
-    # Chip-query paths go directly to END so response formatting matches main path (summarize_results → END).
-    # Skipping format_response keeps the same response text structure as normal (no extra LLM formatting pass).
-    builder.add_edge("handle_attachment_fast", END)
-    logger.debug("Edge: handle_attachment_fast -> END (same formatting as normal response)")
-    
+    # Attachment path: route through format_response for same structure as retrieval queries
+    # (H1/H2/H3 hierarchy, label-value format, canonical template)
+    builder.add_edge("handle_attachment_fast", "format_response")
+    logger.debug("Edge: handle_attachment_fast -> format_response (same structuring as retrieval)")
+
+    # Citation chip follow-ups go directly to END
     builder.add_edge("handle_citation_query", END)
     logger.debug("Edge: handle_citation_query -> END (same formatting as normal response)")
 

@@ -5903,6 +5903,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     setMapNavigating,
     setIsChatPanelVisible // CRITICAL: Update chat panel visibility directly from SideChatPanel
   } = usePreview();
+
+  // Filing sidebar (declared early so handleAddToDbConfirm can use uploadFilesFromChat)
+  const { toggleSidebar: toggleFilingSidebar, isOpen: isFilingSidebarOpen, isResizing: isFilingSidebarResizing, width: filingSidebarWidth, sidebarDocuments, setSidebarDocuments, uploadFilesFromChat } = useFilingSidebar();
   
   // NEW: Use ChatStateStore for per-chat document preview isolation
   const {
@@ -6284,8 +6287,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   const [downloadDropdownMessageId, setDownloadDropdownMessageId] = React.useState<string | null>(null);
   const [sourcesDropdownMessageId, setSourcesDropdownMessageId] = React.useState<string | null>(null);
   // Add to DB popover: which response's "Add to your database?" is open; auto-shown only when that response had new files
+  const [addedToDbResponseIds, setAddedToDbResponseIds] = React.useState<Set<string>>(new Set());
   const [addToDbPopoverMessageId, setAddToDbPopoverMessageId] = React.useState<string | null>(null);
-  const addToDbPopoverAutoShownRef = React.useRef<Set<string>>(new Set());
   // Toast shown at top-center of chat when user clicks Add to DB but message had no new files
   const [chatTopToastMessage, setChatTopToastMessage] = React.useState<string | null>(null);
   const chatTopToastTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -6302,14 +6305,18 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     if (feedbackBarHoverLeaveRef.current) clearTimeout(feedbackBarHoverLeaveRef.current);
   }, []);
 
-  const handleAddToDbConfirm = React.useCallback(async (attachments: FileAttachmentData[]) => {
-    const toUpload = attachments.filter((a) => a?.file instanceof File);
+  const handleAddToDbConfirm = React.useCallback(async (attachments: FileAttachmentData[], responseId?: string) => {
+    const toUpload = attachments.filter((a) => a?.file instanceof File).map((a) => a.file as File);
     if (toUpload.length === 0) return;
     setAddToDbPopoverMessageId(null);
+    if (uploadFilesFromChat) {
+      const { successCount } = await uploadFilesFromChat(toUpload);
+      if (responseId && successCount > 0) setAddedToDbResponseIds((prev) => new Set(prev).add(responseId));
+      return;
+    }
     let completed = 0;
     let failed = 0;
-    for (const att of toUpload) {
-      const file = att.file;
+    for (const file of toUpload) {
       uploadEvents.start(file.name);
       try {
         const result = await backendApi.uploadDocument(file, (p) => uploadEvents.progress(p, file.name));
@@ -6326,6 +6333,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         failed++;
       }
     }
+    if (responseId && completed > 0) setAddedToDbResponseIds((prev) => new Set(prev).add(responseId));
     if (failed === 0) {
       toast({
         description: completed === 1 ? 'File added to your database.' : `${completed} files added to your database.`,
@@ -6344,7 +6352,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         duration: 3000,
       });
     }
-  }, []);
+  }, [uploadFilesFromChat]);
 
   const handleThumbsUpResponse = React.useCallback((messageId: string) => {
     setLikedResponseIds((prev) => {
@@ -7713,9 +7721,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       .filter((d) => d.name);
   }, [selectedDocumentIds, currentProperty]);
 
-  // Filing sidebar integration (sidebarDocuments used by Searching carousel; prime when searching and empty)
-  const { toggleSidebar: toggleFilingSidebar, isOpen: isFilingSidebarOpen, isResizing: isFilingSidebarResizing, width: filingSidebarWidth, sidebarDocuments, setSidebarDocuments } = useFilingSidebar();
-  // Note: useChatPanel hook is declared earlier in the component for use in width calculations
+  // Note: useFilingSidebar is declared earlier (with usePreview) so handleAddToDbConfirm can use uploadFilesFromChat
   
   // Agent mode (reader vs agent vs plan)
   const { mode: agentMode, isAgentMode, isPlanMode } = useMode();
@@ -7888,44 +7894,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     citationReviewForWheelRef.current.active = true;
     citationReviewForWheelRef.current.total = ordered.length;
   }, [citationReviewMessageId, chatMessages, setCitationReviewCurrentIndex]);
-
-  // Response IDs that have feedback bar visible and had new files in the previous query (for auto-opening "Add to DB" popover)
-  const responseIdsWithNewFilesForAutoOpen = React.useMemo(() => {
-    const list: string[] = [];
-    let latestResponseId: string | null = null;
-    for (let i = chatMessages.length - 1; i >= 0; i--) {
-      const m = chatMessages[i];
-      if (m && m.type === 'response' && m.id) {
-        latestResponseId = m.id;
-        break;
-      }
-    }
-    for (let i = 0; i < chatMessages.length; i++) {
-      const msg = chatMessages[i];
-      if (!msg || msg.type !== 'response' || !msg.id) continue;
-      const prev = chatMessages[i - 1];
-      const hasNewFiles = prev?.type === 'query' && (prev as any).attachments?.length > 0 &&
-        (prev as any).attachments.some((a: any) => a?.file instanceof File);
-      if (!hasNewFiles) continue;
-      if (!revealEndedForResponseIdRef.current.has(msg.id)) continue;
-      const isLatest = msg.id === latestResponseId;
-      const showBar = isLatest || showBarForResponseId === msg.id;
-      if (showBar) list.push(msg.id);
-    }
-    return list;
-  }, [chatMessages, revealCompleteTick, showBarForResponseId]);
-
-  React.useEffect(() => {
-    const ids = responseIdsWithNewFilesForAutoOpen;
-    if (ids.length === 0) return;
-    const latestId = ids[ids.length - 1];
-    if (addToDbPopoverAutoShownRef.current.has(latestId)) return;
-    const t = setTimeout(() => {
-      setAddToDbPopoverMessageId(latestId);
-      addToDbPopoverAutoShownRef.current.add(latestId);
-    }, 300);
-    return () => clearTimeout(t);
-  }, [responseIdsWithNewFilesForAutoOpen]);
 
   // Searching step: show generic rotating file icons (PDF/DOCX) without fetching all documents.
   // ReasoningSteps/SearchingSourcesCarousel falls back to [...allowedTypes x 9] when no docPreviews.
@@ -13693,7 +13661,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       const files = Array.from(e.dataTransfer.files);
       if (files.length > 0) {
         flushSync(() => {
-          files.forEach(file => handleFileUpload(file, { skipExtraction: true }));
+          files.forEach(file => handleFileUpload(file));
           isDragOverRef.current = false;
           setIsDragOver(false);
         });
@@ -16358,7 +16326,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   fontWeight: 400,
                   fontSize: '14px',
                 }}
-                title="Files and sources"
               >
                 <Plus className="w-4 h-4 flex-shrink-0" strokeWidth={1.25} />
                 <span className="whitespace-nowrap">Files and sources</span>
@@ -16377,7 +16344,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   fontWeight: 400,
                   fontSize: '14px',
                 }}
-                title="Choose project"
               >
                 <FolderOpen className="w-4 h-4 flex-shrink-0" strokeWidth={1.25} />
                 <span className="whitespace-nowrap">Choose project</span>
@@ -16531,38 +16497,68 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 </Tooltip>
               )}
               <Popover open={addToDbPopoverMessageId === finalKey} onOpenChange={(open) => { if (!open) setAddToDbPopoverMessageId(null); }}>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <PopoverTrigger asChild>
-                      <button
-                        type="button"
-                        className="feedback-bar-icon-btn"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          if (hasNewFilesFromQuery) setAddToDbPopoverMessageId(addToDbPopoverMessageId === finalKey ? null : finalKey);
-                          else {
-                            if (chatTopToastTimeoutRef.current) clearTimeout(chatTopToastTimeoutRef.current);
-                            setChatTopToastMessage('No new files from this message.');
-                            chatTopToastTimeoutRef.current = setTimeout(() => {
-                              setChatTopToastMessage(null);
-                              chatTopToastTimeoutRef.current = null;
-                            }, 2000);
-                          }
-                        }}
-                        style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', border: 'none', cursor: 'pointer', color: '#9CA3AF' }}
-                      >
-                        <CloudDownload size={14} />
-                      </button>
-                    </PopoverTrigger>
-                  </TooltipTrigger>
-                  <TooltipContent side="bottom" sideOffset={6} className="bg-black text-white rounded-sm px-1.5 py-0.5 text-[11px] border-0 shadow-md">
-                    Add to database
-                  </TooltipContent>
-                </Tooltip>
+                {addToDbPopoverMessageId === finalKey || addedToDbResponseIds.has(finalKey) ? (
+                  <PopoverTrigger asChild>
+                    <button
+                      type="button"
+                      className="feedback-bar-icon-btn"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (hasNewFilesFromQuery) setAddToDbPopoverMessageId(addToDbPopoverMessageId === finalKey ? null : finalKey);
+                        else {
+                          if (chatTopToastTimeoutRef.current) clearTimeout(chatTopToastTimeoutRef.current);
+                          setChatTopToastMessage('No new files from this message.');
+                          chatTopToastTimeoutRef.current = setTimeout(() => {
+                            setChatTopToastMessage(null);
+                            chatTopToastTimeoutRef.current = null;
+                          }, 2000);
+                        }
+                      }}
+                      style={{
+                        display: 'flex', alignItems: 'center', justifyContent: 'center', border: 'none', cursor: 'pointer',
+                        ...(addedToDbResponseIds.has(finalKey) ? { backgroundColor: 'rgba(0,0,0,0.85)', color: 'white' } : { color: '#9CA3AF' })
+                      }}
+                    >
+                      <CloudDownload size={14} />
+                    </button>
+                  </PopoverTrigger>
+                ) : (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <PopoverTrigger asChild>
+                        <button
+                          type="button"
+                          className="feedback-bar-icon-btn"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (hasNewFilesFromQuery) setAddToDbPopoverMessageId(addToDbPopoverMessageId === finalKey ? null : finalKey);
+                            else {
+                              if (chatTopToastTimeoutRef.current) clearTimeout(chatTopToastTimeoutRef.current);
+                              setChatTopToastMessage('No new files from this message.');
+                              chatTopToastTimeoutRef.current = setTimeout(() => {
+                                setChatTopToastMessage(null);
+                                chatTopToastTimeoutRef.current = null;
+                              }, 2000);
+                            }
+                          }}
+                          style={{
+                            display: 'flex', alignItems: 'center', justifyContent: 'center', border: 'none', cursor: 'pointer',
+                            ...(addedToDbResponseIds.has(finalKey) ? { backgroundColor: 'rgba(0,0,0,0.85)', color: 'white' } : { color: '#9CA3AF' })
+                          }}
+                        >
+                          <CloudDownload size={14} />
+                        </button>
+                      </PopoverTrigger>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom" sideOffset={6} className="bg-black text-white rounded-sm px-1.5 py-0.5 text-[11px] border-0 shadow-md">
+                      Add to database
+                    </TooltipContent>
+                  </Tooltip>
+                )}
                 <PopoverContent side="bottom" align="center" sideOffset={6} className="bg-black text-white rounded-sm px-3 py-2 text-[11px] border-0 shadow-md" style={{ width: 'auto' }}>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                    <span>Add to your database?</span>
-                    <div style={{ display: 'flex', gap: '6px', justifyContent: 'flex-end' }}>
+                  <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: '10px' }}>
+                    <span>Add these files to your database?</span>
+                    <div style={{ display: 'flex', gap: '6px' }}>
                       <button
                         type="button"
                         onClick={(e) => {
@@ -16579,7 +16575,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         onClick={(e) => {
                           e.stopPropagation();
                           if (hasNewFilesFromQuery && prevMessage && (prevMessage as any).attachments?.length) {
-                            handleAddToDbConfirm((prevMessage as any).attachments);
+                            handleAddToDbConfirm((prevMessage as any).attachments, finalKey);
                           }
                           setAddToDbPopoverMessageId(null);
                         }}
@@ -16673,7 +16669,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         </CitationMessageVisibility>
       );
     }).filter(Boolean);
-  }, [chatMessages, showReasoningTrace, showHighlight, showCitations, showCitationPreviewBar, showBlueCitationHighlight, expandedThoughtMessageIds, toggleThoughtExpanded, restoredMessageIdsRef, reopenNoAnimationTick, handleUserCitationClick, onOpenProperty, scrollToBottom, expandedCardViewDoc, propertyAttachments, orangeCitationNumbersByMessage, citationClickPanel, citationViewedInDocument, currentChatId, skipSwoopForChatId, revealCompleteTick, likedResponseIds, dislikedResponseIds, copiedResponseId, shimmerTickMessageId, sourcesDropdownMessageId, addToDbPopoverMessageId, showBarForResponseId, handleThumbsUpResponse, handleThumbsDownResponse, handleCopyResponse, handleDownloadResponse, handleDownloadResponseAsDocxForMessage, openCitationInDocumentView, openFeedbackModal, handleAddToDbConfirm, isBotPaused, citationReviewMessageId, citationReviewCurrentIndex, citationReviewAcceptedIndices, citationReviewShowReviewNextOnly, rejectedCitationNumbersByMessage, handleCitationVisibilityChange]);
+  }, [chatMessages, showReasoningTrace, showHighlight, showCitations, showCitationPreviewBar, showBlueCitationHighlight, expandedThoughtMessageIds, toggleThoughtExpanded, restoredMessageIdsRef, reopenNoAnimationTick, handleUserCitationClick, onOpenProperty, scrollToBottom, expandedCardViewDoc, propertyAttachments, orangeCitationNumbersByMessage, citationClickPanel, citationViewedInDocument, currentChatId, skipSwoopForChatId, revealCompleteTick, likedResponseIds, dislikedResponseIds, copiedResponseId, shimmerTickMessageId, sourcesDropdownMessageId, addToDbPopoverMessageId, addedToDbResponseIds, showBarForResponseId, handleThumbsUpResponse, handleThumbsDownResponse, handleCopyResponse, handleDownloadResponse, handleDownloadResponseAsDocxForMessage, openCitationInDocumentView, openFeedbackModal, handleAddToDbConfirm, isBotPaused, citationReviewMessageId, citationReviewCurrentIndex, citationReviewAcceptedIndices, citationReviewShowReviewNextOnly, rejectedCitationNumbersByMessage, handleCitationVisibilityChange]);
 
   return (
     <>
@@ -18087,7 +18083,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         paddingBottom: '12px',
                         paddingRight: '24px',
                         paddingLeft: '16px',
-                        overflow: 'hidden',
+                        overflow: 'visible',
                         width: '100%',
                         height: 'auto',
                         minHeight: '160px',
@@ -18343,7 +18339,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                     fontWeight: 400,
                                     fontSize: '14px',
                                   }}
-                                  title="Choose project"
                                 >
                                   <FolderOpen className="w-4 h-4 flex-shrink-0" strokeWidth={1.25} />
                                   {!showAttachIconOnly && <span className="whitespace-nowrap">Choose project</span>}
@@ -18980,7 +18975,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               return (
                                 <button
                                   type="button"
-                                  title={isDocOpenForCurrent ? 'Close' : 'View'}
                                   onClick={(e) => {
                                     e.preventDefault();
                                     e.stopPropagation();
@@ -19068,7 +19062,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             </>
                           ) : (
                             <>
-                              <button type="button" title="Reject citation – remove this part from the response" onClick={(e) => {
+                              <button type="button" onClick={(e) => {
                                 e.preventDefault();
                                 e.stopPropagation();
                                 if (citationReviewMessageIdRef.current !== reviewMsgId) return;
@@ -19096,7 +19090,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               }} style={{ ...barBtn, fontWeight: 500, color: '#666666', backgroundColor: '#ffffff', border: '1px solid #d4d4d4', boxShadow: '0 1px 1px rgba(0,0,0,0.05)' }} onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#f5f5f5'; }} onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#ffffff'; }}>
                                 Reject
                               </button>
-                              <button type="button" title="Accept Citation" onClick={(e) => {
+                              <button type="button" onClick={(e) => {
                                 e.preventDefault();
                                 e.stopPropagation();
                                 if (citationReviewMessageIdRef.current !== reviewMsgId) return;
@@ -19533,7 +19527,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                   fontWeight: 400,
                                   fontSize: '14px',
                                 }}
-                                title="Choose project"
                               >
                                 <FolderOpen className="w-4 h-4 flex-shrink-0" strokeWidth={1.25} />
                                 {!showAttachIconOnly && <span className="whitespace-nowrap">Choose project</span>}

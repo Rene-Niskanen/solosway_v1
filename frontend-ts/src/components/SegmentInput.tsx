@@ -578,7 +578,8 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
                         ...(placeholderFontSize != null && { fontSize: effectiveFontSize }),
                       }
                     : {}),
-                ...(i === 0 ? { paddingLeft: "8px" } : {}),
+                // Use inline-block + paddingLeft so wrapped lines align with first line (padding applies to whole block)
+                ...(i === 0 ? { display: "inline-block", paddingLeft: "8px", verticalAlign: "top" } : {}),
               }}
             >
               {(isOnlyEmpty && showPlaceholderOverlay) || showPlaceholderHere ? placeholder : seg.value}
@@ -720,7 +721,8 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
                         ...(placeholderFontSize != null && { fontSize: effectiveFontSize }),
                       }
                     : {}),
-                ...(i === 0 ? { paddingLeft: "8px" } : {}),
+                // Use inline-block + paddingLeft so wrapped lines align with first line (padding applies to whole block)
+                ...(i === 0 ? { display: "inline-block", paddingLeft: "8px", verticalAlign: "top" } : {}),
               }}
             >
               {(isOnlyEmpty && showPlaceholderOverlay) || showPlaceholderHere ? placeholder : seg.value}

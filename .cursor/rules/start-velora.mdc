@@ -10,7 +10,7 @@ When the user says **"start velora go"** (or similar: "start velora", "start vel
 1. Run the start script from the **project root** in a **background** terminal so all services stay up:
    - Command: `./start-velora-go.sh` or `./scripts/start-velora-go.sh`
    - Use a terminal with the project root as the working directory.
-   - The script starts: Redis (Docker), Flask API (5001), Celery worker, and frontend (Vite). Press Ctrl+C in that terminal to stop all.
+   - The script starts: Redis (Docker), doc extraction (5002), Flask API (5001), Celery worker, and frontend (Vite). Press Ctrl+C in that terminal to stop all.
 
 2. Tell the user that Velora is starting and where to open the app (e.g. frontend at http://localhost:5173, API at http://localhost:5001).
 

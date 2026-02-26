@@ -651,19 +651,18 @@ async def handle_attachment_fast(state: MainWorkflowState) -> MainWorkflowState:
         api_key=config.openai_api_key,
         model=model,
         temperature=0,
+        max_tokens=8192,  # Allow long, detailed responses (default can truncate)
     )
     from backend.llm.prompts.routing import get_attachment_fast_system_prompt
     system_msg = SystemMessage(content=get_attachment_fast_system_prompt())
     human_msg = HumanMessage(content=prompt)
-    emitter = state.get("execution_events")
     logger.info(f"[ATTACHMENT_FAST] Calling LLM (stream) with {len(prompt)} chars of context, model={model}")
     chunks = []
+    # Don't emit raw tokens: format_response runs next and we stream the formatted output
     async for chunk in llm.astream([system_msg, human_msg]):
         if hasattr(chunk, "content") and chunk.content:
             part = chunk.content if isinstance(chunk.content, str) else str(chunk.content)
             chunks.append(part)
-            if emitter and hasattr(emitter, "emit_stream_token"):
-                emitter.emit_stream_token(part)
     final_summary = "".join(chunks).strip()
     logger.info(f"[ATTACHMENT_FAST] Response generated: {len(final_summary)} chars")
     # Persist one exchange so next turn has prior context (LobeHub: no missing history). Level B: skip when client sent conversation.

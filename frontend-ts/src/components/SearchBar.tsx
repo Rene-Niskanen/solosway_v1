@@ -121,6 +121,9 @@ export const SearchBar = forwardRef<{
   const isDragOverRef = useRef(false);
   const searchBarDropZoneRef = useRef<HTMLDivElement | null>(null);
   const [isWebSearchEnabled, setIsWebSearchEnabled] = useState(false);
+  // Button collapse level for responsive layout (matches SideChatPanel: 0=all labels, 1=attach/voice icons, 2=all icons, 3=hide Choose project)
+  const [buttonCollapseLevel, setButtonCollapseLevel] = useState(0);
+  const buttonRowRef = useRef<HTMLDivElement>(null);
   // Initialize attachedFiles from initialAttachedFiles prop if provided
   const [attachedFiles, setAttachedFiles] = useState<FileAttachmentData[]>(() => {
     const initial = initialAttachedFiles || [];
@@ -1110,7 +1113,7 @@ export const SearchBar = forwardRef<{
       const files = Array.from(e.dataTransfer.files);
       if (files.length > 0) {
         flushSync(() => {
-          files.forEach(file => handleFileUpload(file, { skipExtraction: true }));
+          files.forEach(file => handleFileUpload(file));
           isDragOverRef.current = false;
           setIsDragOver(false);
         });
@@ -1328,7 +1331,34 @@ export const SearchBar = forwardRef<{
       resizeObserver.disconnect();
     };
   }, [isMapVisible, isQuickStartBarVisible]); // Recalculate when visibility or map view changes
-  
+
+  // Detect button row overflow and set collapse level (same logic as SideChatPanel)
+  useEffect(() => {
+    const calculateCollapseLevel = () => {
+      const el = searchContainerRef.current;
+      if (!el) return;
+      const containerWidth = el.getBoundingClientRect().width;
+      if (containerWidth < 50) return; // Skip during initial layout
+      const isNarrow = containerWidth < 320;
+      const effectiveWidth = isNarrow
+        ? containerWidth - 36
+        : containerWidth - 56;
+      if (effectiveWidth < 320) {
+        setButtonCollapseLevel(3);
+      } else if (effectiveWidth < 400) {
+        setButtonCollapseLevel(2);
+      } else if (effectiveWidth < 500) {
+        setButtonCollapseLevel(1);
+      } else {
+        setButtonCollapseLevel(0);
+      }
+    };
+    calculateCollapseLevel();
+    const ro = new ResizeObserver(() => requestAnimationFrame(calculateCollapseLevel));
+    if (searchContainerRef.current) ro.observe(searchContainerRef.current);
+    return () => ro.disconnect();
+  }, [isMapVisible]);
+
   return (
     <div 
       className={`${className || ''} ${
@@ -1615,23 +1645,25 @@ export const SearchBar = forwardRef<{
               />
             </div>
             </div>
-            {/* Button row - same as SideChatPanel (direct child of bar, bar padding applies) */}
+            {/* Button row - same structure as SideChatPanel (uses buttonCollapseLevel for responsive layout) */}
             {(() => {
-                const isVeryNarrow = false; // dashboard search bar: match SideChatPanel structure; set true for narrow layout if needed
+                const isVeryNarrow = buttonCollapseLevel >= 3;
+                const showAttachIconOnly = buttonCollapseLevel >= 1;
                 return (
                   <div
+                    ref={buttonRowRef}
                     className={`relative flex w-full ${isVeryNarrow ? 'flex-col gap-2' : 'items-center justify-between'}`}
                     style={{
                       width: '100%',
                       minWidth: '0',
-                      height: isVeryNarrow ? 'auto' : '24px',
-                      minHeight: isVeryNarrow ? 'auto' : '24px',
+                      height: isVeryNarrow ? 'auto' : '36px',
+                      minHeight: isVeryNarrow ? 'auto' : '36px',
                       flexShrink: 0,
                       overflow: 'visible',
                       marginTop: '-4px',
                     }}
                   >
-                    {/* Left: Files and sources + Choose project (Choose project only when not map bar; map bar has it in dropdown) */}
+                    {/* Left: Files and sources + Choose project (matches SideChatPanel) */}
                     <div className={`flex items-center gap-0.5 ${isVeryNarrow ? 'justify-start' : ''}`} style={{ flexShrink: 1, minWidth: 0, overflow: 'hidden' }}>
                   {contextConfig.showMic && (
                     <>
@@ -1651,6 +1683,7 @@ export const SearchBar = forwardRef<{
                       />
                       <ChatBarAttachDropdown
                         onAttachClick={() => fileInputRef.current?.click()}
+                        compact={showAttachIconOnly}
                         toolsItems={onMapToggle != null ? [
                           ...(isMapVisible ? [{
                             id: 'choose-project',
@@ -1672,7 +1705,7 @@ export const SearchBar = forwardRef<{
                           }] : []),
                         ] : []}
                       />
-                      {!isMapVisible && (
+                      {!isMapVisible && buttonCollapseLevel < 3 && (
                         <button
                           type="button"
                           onClick={() => {
@@ -1691,18 +1724,17 @@ export const SearchBar = forwardRef<{
                             border: 'none',
                             height: '26px',
                             minHeight: '26px',
-                            paddingLeft: '6px',
-                            paddingRight: '6px',
+                            paddingLeft: showAttachIconOnly ? '4px' : '6px',
+                            paddingRight: showAttachIconOnly ? '4px' : '6px',
                             marginLeft: 0,
                             marginRight: '4px',
                             borderRadius: '6px',
                             fontWeight: 400,
                             fontSize: '14px',
                           }}
-                          title="Choose project"
                         >
                           <FolderOpen className="w-4 h-4 flex-shrink-0" strokeWidth={1.25} />
-                          <span className="whitespace-nowrap">Choose project</span>
+                          {!showAttachIconOnly && <span className="whitespace-nowrap">Choose project</span>}
                         </button>
                       )}
                     </>

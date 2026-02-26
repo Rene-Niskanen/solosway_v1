@@ -45,7 +45,6 @@ export function ChatBarAttachDropdown({
             fontWeight: 400,
             fontSize: "14px",
           }}
-          title="Files and sources"
         >
           <Plus className="w-4 h-4 flex-shrink-0" strokeWidth={1.25} />
           {!compact && <span className="whitespace-nowrap">Files and sources</span>}

@@ -615,7 +615,6 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
             {showFullActions && (
               <button
                 type="button"
-                title="View"
                 onClick={onViewInDocument}
                 style={{
                   display: "flex",

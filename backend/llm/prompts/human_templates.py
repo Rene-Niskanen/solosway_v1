@@ -981,9 +981,10 @@ The user has attached the following document(s) to their query. Answer based on 
 
 **INSTRUCTIONS:**
 - Answer based ONLY on attached document content
-- Be concise and direct
+- Provide thorough, detailed answers — explain key points, include relevant context, and expand on important findings. Avoid overly brief summaries.
 - Do NOT include citation markers ([1], [2], etc.) - fast response mode
 - Do NOT reference page numbers or document structure
+- Use clear structure (headers, bullets) when the answer spans multiple topics
 - If answer is not in documents, say so clearly
 
 **USER QUERY:** {query}
@@ -997,9 +998,10 @@ The user has attached the following document(s) for detailed analysis.
 
 **INSTRUCTIONS:**
 - Answer based on attached document content
+- Provide comprehensive, in-depth analysis — include key findings, supporting details, and relevant context
 - Include page references like "(Page 3)" or "(Pages 5-7)"
-- Be thorough but organized
-- Use headers and bullet points
+- Be thorough and well-organized
+- Use headers, bullet points, and clear sections for structure
 - If answer is not in documents, say so clearly
 
 **USER QUERY:** {query}
@@ -1014,9 +1016,9 @@ For now, answer based on extracted text below. Citations will become clickable o
 
 **INSTRUCTIONS:**
 - Answer based on attached document content
+- Provide comprehensive, professional analysis — include all relevant details, context, and implications
 - Include page references like "(Page X)" that will later become clickable citations
-- Be thorough and professional
-- Structure answer with clear sections
+- Be thorough and well-structured with clear sections and subsections
 - If answer is not in documents, say so clearly
 
 **NOTE:** Documents are being processed. Page references will become clickable citations once processing completes.

@@ -70,28 +70,51 @@ except Exception:
   sleep 1
 done
 
-# 3. Doc extraction service (Node, optional)
+# 3. Doc extraction service (Node) — required for chat file attachments (PDF, Word, Excel, etc.)
 if [ -d "$PROJECT_ROOT/services/doc-extraction-node" ] && command -v node &>/dev/null; then
   echo ""
   echo "3. Starting doc extraction service (port 5002)..."
-  (cd "$PROJECT_ROOT/services/doc-extraction-node" && npm run build 2>/dev/null)
-  if [ -f "$PROJECT_ROOT/services/doc-extraction-node/dist/server.js" ]; then
-    (cd "$PROJECT_ROOT/services/doc-extraction-node" && node dist/server.js) &>/tmp/velora-extraction.log &
-    EXTRACTION_PID=$!
-    sleep 2
-    if kill -0 "$EXTRACTION_PID" 2>/dev/null; then
-      if command -v curl &>/dev/null && curl -s -o /dev/null -w "%{http_code}" --connect-timeout 2 http://127.0.0.1:5002/health 2>/dev/null | grep -q 200; then
-        echo "   Doc extraction running (PID $EXTRACTION_PID). Health check OK. Logs: /tmp/velora-extraction.log"
+  EXTRACTION_DIR="$PROJECT_ROOT/services/doc-extraction-node"
+  if [ ! -d "$EXTRACTION_DIR/node_modules" ]; then
+    echo "   Installing dependencies (first run)..."
+    (cd "$EXTRACTION_DIR" && npm install) || { echo "   npm install failed. Run: cd services/doc-extraction-node && npm install"; }
+  fi
+  if (cd "$EXTRACTION_DIR" && npm run build); then
+    if [ -f "$PROJECT_ROOT/services/doc-extraction-node/dist/server.js" ]; then
+      (cd "$PROJECT_ROOT/services/doc-extraction-node" && node dist/server.js) &>/tmp/velora-extraction.log &
+      EXTRACTION_PID=$!
+      sleep 2
+      if kill -0 "$EXTRACTION_PID" 2>/dev/null; then
+        if command -v curl &>/dev/null && curl -s -o /dev/null -w "%{http_code}" --connect-timeout 2 http://127.0.0.1:5002/health 2>/dev/null | grep -q 200; then
+          echo "   Doc extraction running (PID $EXTRACTION_PID). Health check OK. Logs: /tmp/velora-extraction.log"
+          export EXTRACTION_SERVICE_URL="${EXTRACTION_SERVICE_URL:-http://localhost:5002}"
+        else
+          echo "   Doc extraction running (PID $EXTRACTION_PID). Logs: /tmp/velora-extraction.log"
+          export EXTRACTION_SERVICE_URL="${EXTRACTION_SERVICE_URL:-http://localhost:5002}"
+        fi
       else
-        echo "   Doc extraction running (PID $EXTRACTION_PID). Logs: /tmp/velora-extraction.log"
+        echo "   Doc extraction failed to start. Check /tmp/velora-extraction.log"
+        EXTRACTION_PID=""
       fi
     else
-      echo "   Doc extraction failed to start. Logs: /tmp/velora-extraction.log"
-      EXTRACTION_PID=""
+      echo "   Doc extraction skipped (dist/server.js missing after build)."
     fi
   else
-    echo "   Doc extraction skipped (build failed or dist missing)."
+    echo "   Doc extraction build failed. Run: cd services/doc-extraction-node && npm install && npm run build"
   fi
+else
+  if [ ! -d "$PROJECT_ROOT/services/doc-extraction-node" ]; then
+    echo ""
+    echo "3. Doc extraction skipped (services/doc-extraction-node not found)."
+  elif ! command -v node &>/dev/null; then
+    echo ""
+    echo "3. Doc extraction skipped (Node.js not found). Install Node >=18 for file attachment extraction."
+  fi
+fi
+# If extraction URL still unset but port 5002 is reachable (e.g. started manually), use it
+if [ -z "${EXTRACTION_SERVICE_URL}" ] && command -v curl &>/dev/null && curl -s -o /dev/null -w "%{http_code}" --connect-timeout 1 http://127.0.0.1:5002/health 2>/dev/null | grep -q 200; then
+  export EXTRACTION_SERVICE_URL="http://localhost:5002"
+  echo "   Using existing extraction service on port 5002."
 fi
 
 # 4. Fast extraction / local embedding server (port 5003, optional)

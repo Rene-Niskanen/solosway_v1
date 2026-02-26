@@ -1515,7 +1515,7 @@ def query_documents_stream():
                                             execution_results=cached_results,
                                             has_attachment=bool(attachment_context and isinstance(attachment_context, dict) and attachment_context.get("texts")),
                                         ),
-                                        timeout=4.0,
+                                        timeout=15.0,
                                     )
                                     if classification == "same_doc_follow_up":
                                         from backend.llm.utils.follow_up_classifier import (
@@ -2136,7 +2136,7 @@ def query_documents_stream():
                                             final_result['citations'] = citations_from_citation
                                             logger.info(f"⚡ [CITATION_QUERY] Captured {len(citations_from_citation)} citations")
                                     
-                                    # Handle attachment fast completion (same formatting as citation/summarize path)
+                                    # Handle attachment fast completion (raw; format_response will structure it)
                                     elif node_name == "handle_attachment_fast":
                                         state_data = state_update if state_update else output
                                         if final_result is None:
@@ -2147,18 +2147,31 @@ def query_documents_stream():
                                             final_summary_from_attachment = _strip_mid_response_generic_closings(final_summary_from_attachment or "")
                                             final_result['final_summary'] = final_summary_from_attachment
                                             logger.info(f"⚡ [ATTACHMENT_FAST] Captured final_summary ({len(final_summary_from_attachment)} chars)")
+                                            # Don't stream raw: format_response runs next; we'll stream formatted output there
+                                            if not summary_already_streamed:
+                                                yield f"data: {json.dumps({'type': 'status', 'message': 'Formatting response...'})}\n\n"
+                                    # format_response runs after handle_attachment_fast: capture and stream formatted output
+                                    elif node_name == "format_response":
+                                        state_data = state_update if state_update else output
+                                        formatted_summary = (state_data or {}).get('final_summary', '')
+                                        if formatted_summary:
+                                            if final_result is None:
+                                                final_result = {}
+                                            final_result['final_summary'] = formatted_summary
+                                            logger.info(f"⚡ [FORMAT_RESPONSE] Captured formatted attachment response ({len(formatted_summary)} chars)")
+                                            # Stream the formatted response (same structure as retrieval)
                                             if not summary_already_streamed:
                                                 yield f"data: {json.dumps({'type': 'status', 'message': 'Streaming response...'})}\n\n"
-                                                for i in range(0, len(final_summary_from_attachment), STREAM_CHUNK_SIZE):
+                                                for i in range(0, len(formatted_summary), STREAM_CHUNK_SIZE):
                                                     if i == 0 and not first_token_sent_marked:
                                                         timing.mark("first_token_sent")
                                                         first_token_sent_marked = True
-                                                    chunk = final_summary_from_attachment[i:i + STREAM_CHUNK_SIZE]
+                                                    chunk = formatted_summary[i:i + STREAM_CHUNK_SIZE]
                                                     yield f"data: {json.dumps({'type': 'token', 'token': chunk})}\n\n"
                                                     if STREAM_CHUNK_DELAY_MS > 0:
                                                         time.sleep(STREAM_CHUNK_DELAY_MS / 1000.0)
                                                 summary_already_streamed = True
-                                                logger.info("⚡ [ATTACHMENT_FAST] Streamed response (same formatting as citation path)")
+                                                logger.info("⚡ [FORMAT_RESPONSE] Streamed formatted attachment response")
                                     
                                     # Handle RunnableSequence end: inner LLM chain inside responder emits as "RunnableSequence", not "responder"
                                     # Capture LLM response content so we have final_summary for the post-loop stream
