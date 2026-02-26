@@ -17,47 +17,33 @@ logger = logging.getLogger(__name__)
 
 Result = Literal["same_doc_follow_up", "new_question", "paste_and_docs"]
 
-# Output-first, compact prompt. Safe default: unparseable or empty → new_question (do not cache).
+# Decision-checklist prompt (replaces long example list). Safe default: unparseable or empty → new_question.
 SYSTEM_PROMPT = """Reply with exactly one word: SAME_DOC or NEW_QUESTION or PASTE_AND_DOCS. No other text.
 
 Labels:
-- SAME_DOC: User is clearly continuing on the same doc(s)—asking for more detail, a reformat, or clarification of what was just discussed. The follow-up must refer to the same content; do not use SAME_DOC if they ask for "other info", "different details", or a new topic and it is unclear which doc they mean.
-- NEW_QUESTION: User asks about a different document/file, or asks for "other info" / "different details" / a new aspect and it is ambiguous, or you are unsure. When in doubt, use NEW_QUESTION.
-- PASTE_AND_DOCS: User wants to use pasted/attached content together with other document(s). If they say paste+docs but no attachment is present → NEW_QUESTION.
+- SAME_DOC: User continues on the same doc(s)—more detail, reformat, clarification, or another attribute of the same entity.
+- NEW_QUESTION: User asks about a different document/file, or it's ambiguous. When in doubt, use NEW_QUESTION.
+- PASTE_AND_DOCS: User wants pasted/attached content together with other docs. No attachment present → NEW_QUESTION.
 
-Rule: Wrong SAME_DOC returns the wrong document. Only use SAME_DOC when the follow-up unambiguously continues the same doc and same topic (e.g. "explain that", "format as a list", "key dates?"). Requests for "other info", restructuring of something not yet discussed, or a new aspect → NEW_QUESTION unless context clearly ties them to the same doc.
+Entity = property or document name. Attribute = value, condition, date, parties, terms, flood risk, EPC, etc. (details about that entity).
 
-Procedure:
-1. What document(s) was the previous turn about?
-2. Does the current message name or ask about a different document/file? → NEW_QUESTION.
-3. Paste+other docs intent with attachment present? → PASTE_AND_DOCS. No attachment? → NEW_QUESTION.
-4. Is the follow-up unambiguously about the same content just discussed (more detail, reformat, clarification)? → SAME_DOC.
-5. "Other info", "different details", new aspect, or unsure? → NEW_QUESTION.
+**CRITICAL: "The property", "of the property", "this property" = reference to the SAME entity from the previous turn.** Do NOT treat these as NEW_QUESTION. Queries like "what is the flood risk of the property" or "what is the EPC of the property" are SAME_DOC—they ask about an attribute of the same entity. Only treat as NEW_QUESTION when the user names a *different* specific entity (e.g. "Nzohe lease", "the other property", "Banda Lane").
 
-Examples (Previous | Current → label):
-Previous: "What's in the Highlands lease?" | Current: "Key dates?" → SAME_DOC
-Previous: "Summarise the lease." | Current: "What about the valuation?" → SAME_DOC
-Previous: "Who are the parties in the lease?" | Current: "Who prepared the valuation?" → SAME_DOC
-Previous: "Banda Lane valuation summary?" | Current: "What was the valuation date?" → SAME_DOC
-Previous: "What does the lease say about break clauses?" | Current: "Explain that simply." → SAME_DOC
-Previous: "Summarise the contract." | Current: "Who signed it?" → SAME_DOC
-Previous: "Valuation figure?" | Current: "What was the basis of valuation?" → SAME_DOC
-Previous: "Rent in the lease?" | Current: "Format as a list." → SAME_DOC
-Previous: "What is the land number for the Banda Lane property?" | Current: "What is the land number for the Nzohe lease?" → NEW_QUESTION
-Previous: "What's in the Nzohe lease?" | Current: "What about the Oak Street property?" → NEW_QUESTION
-Previous: "Summarise the lease." | Current: "What about the survey?" → NEW_QUESTION
-Previous: "Key dates in the lease?" | Current: "Different file—the EPC certificate." → NEW_QUESTION
-Previous: "What's in the Highlands lease?" | Current: "The other property?" → NEW_QUESTION
-Previous: "Summarise the invoice." | Current: "The other invoice?" → NEW_QUESTION
-Previous: "Contract key terms?" | Current: "Different file—the NDA." → NEW_QUESTION
-Previous: "Highlands valuation?" | Current: "And the Banda Lane valuation?" → NEW_QUESTION
-Previous: "Break options in the lease?" | Current: "Can you get me other info from that doc?" → NEW_QUESTION
-Previous: "Summarise the lease." | Current: "Compare what I pasted to the lease." → PASTE_AND_DOCS
-Previous: "What's in the valuation?" | Current: "Use this attachment and the lease to answer." → PASTE_AND_DOCS
-Previous: "Key terms in the contract?" | Current: "Combine the pasted text with the NDA and summarise." → PASTE_AND_DOCS
-Previous: "Invoice total?" | Current: "Use the file I pasted and the other invoices to compare." → PASTE_AND_DOCS
-Previous: "What does the memo say?" | Current: "Answer using this pasted doc and the policy." → PASTE_AND_DOCS
-Previous: "Summarise the lease." | Current: "With what I attached, plus the valuation, give me a summary." → PASTE_AND_DOCS
+Decision checklist (follow in order):
+1. What entity was the previous answer about?
+2. Does current query name a *different* entity (different doc/file/property by name)? → NEW_QUESTION
+3. Does current ask about an attribute of the same entity (value, condition, flood risk, date, parties)? → SAME_DOC
+4. Is it reformat / expand / clarify of the prior answer? → SAME_DOC
+5. Paste+attachment intent with file attached? → PASTE_AND_DOCS. No attachment? → NEW_QUESTION
+6. Unsure? → NEW_QUESTION
+
+Pattern exemplars:
+- "Value of Highlands?" → "What is the property condition?" = SAME_DOC (same entity, different attribute)
+- "Value of Highlands?" → "What is the flood risk of the property?" = SAME_DOC ("the property" = same entity)
+- "Key dates?" → "Format as a list" = SAME_DOC (reformat)
+- "Highlands valuation?" → "The other property?" = NEW_QUESTION (explicit switch to different entity)
+- "Banda Lane" → "Nzohe lease" = NEW_QUESTION (different entity)
+- "Compare pasted to lease" + attachment = PASTE_AND_DOCS
 
 Reply with exactly one word: SAME_DOC or NEW_QUESTION or PASTE_AND_DOCS. No other text."""
 
@@ -121,6 +107,7 @@ def _build_user_prompt(
 
 
 # Words that often follow a document/entity name in queries ("X lease", "X offer", ...)
+# Used only by current_query_mentions_different_document (optional utility, not used for routing)
 _DOC_TYPE_WORDS = frozenset({
     "lease", "leases", "offer", "offers", "valuation", "valuations",
     "property", "document", "documents", "file", "files", "contract",
@@ -164,14 +151,19 @@ def current_query_mentions_different_document(
     q = current_query.strip()
     # Find candidate document references: word(s) immediately before a doc-type word
     # e.g. "the Nzohe lease" -> "Nzohe", "from the Banda Lane offer" -> "Banda", "Lane"
+    # Skip when "the property", "of the property", "this property" etc. = anaphoric reference to same entity
+    _SAME_ENTITY_PREFIXES = ("the ", "of the ", "this ", "that ", "a ", "the same ")
     q_lower = q.lower()
     candidates = []
     for doc_word in _DOC_TYPE_WORDS:
         pos = q_lower.find(" " + doc_word)
         if pos == -1:
             continue
-        before = q[:pos].strip()
+        before = q[:pos].strip().lower()
         if not before:
+            continue
+        # "the property", "of the property" etc. = same entity; do not treat as different doc
+        if any(before.endswith(p.rstrip()) or before == p.rstrip() for p in _SAME_ENTITY_PREFIXES):
             continue
         # Take the last 1–3 words before the doc-type word (e.g. "from the Nzohe" -> "Nzohe")
         words_before = before.split()[-3:]
@@ -245,7 +237,7 @@ def extract_document_ids_from_results(execution_results: List[Dict[str, Any]]) -
         elif action == "retrieve_chunks":
             for chunk in result:
                 if isinstance(chunk, dict):
-                    did = chunk.get("document_id")
+                    did = chunk.get("document_id") or chunk.get("doc_id")
                     if did and str(did) not in seen:
                         seen.add(str(did))
                         doc_ids.append(str(did))
@@ -273,8 +265,10 @@ async def classify_follow_up(
     has_attachment: bool = False,
 ) -> Result:
     """
-    Use a fast LLM call to decide: same-doc follow-up (use cache), new question (run planner),
-    or paste_and_docs (use pasted/attached file + other documents).
+    Use LLM with decision checklist to classify. No hardcoded word matching for routing—
+    the model generalizes from the checklist (entity vs attribute, different doc, paste intent, etc.).
+
+    Decides: same-doc follow-up (use cache), new question (run planner), or paste_and_docs.
 
     On timeout or error returns "new_question" so we do not cache (safe default).
     has_attachment: when True, the current message includes an attached/pasted file (so PASTE_AND_DOCS is valid).

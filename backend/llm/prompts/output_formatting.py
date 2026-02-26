@@ -133,6 +133,20 @@ Wrong:
 Citations ([1], [2], etc.) are inline markers that the frontend renders
 as interactive chips. They require precise placement.
 
+**FIRST CITATION SEPARATION (CRITICAL FOR DOCUMENT PREVIEW):**
+Always give the first citation its own space. End the sentence or paragraph
+containing [1] with a full stop, then add a blank line before continuing with
+any further facts or citations. This allows the document preview card to
+display below the first cited fact, matching initial-response presentation.
+
+WRONG (citations crowded, no preview space):
+"The property has 524.3 sq m [1] including 40 sq m outbuildings [2] and 14.1 sq m limited use [3]. The plot is 11 acres [4]."
+
+CORRECT (first citation separated):
+"The property has **524.3 sq m** (5,644 sq ft) [1] including the main house and outbuildings.
+
+The breakdown includes **40 sq m** of outbuilding space [2] and **14.1 sq m** limited use area [3]. The plot is approximately **11 acres** [4]."
+
 Rules:
 - Place each citation **immediately after the fact it supports**, with
   no space before the citation: "The value is **£1,950,000**[1]"
@@ -218,5 +232,6 @@ Before completing a response, verify:
 - Are key figures on their own lines and bolded?
 - Is there a blank line after every heading and between every section?
 - Are citations placed correctly (no stray periods, no stacking)? In lists, is each citation on the same line as the fact it supports (not all at the end)?
+- **Is there a blank line after the sentence/paragraph containing the first citation [1]?** This is required so the document preview card can display below it.
 - Does the structure serve the content, not decorate it?
 """

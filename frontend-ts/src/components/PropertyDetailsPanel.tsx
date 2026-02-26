@@ -1431,7 +1431,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
   });
   
   // Use shared preview context
-  const { addPreviewFile, highlightCitation, setHighlightCitation } = usePreview();
+  const { addPreviewFile, openExpandedCardView, highlightCitation, setHighlightCitation } = usePreview();
   
   // Sync ref with state
   React.useEffect(() => {
@@ -1946,55 +1946,10 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
     if (docIndex !== -1) {
       setSelectedCardIndex(docIndex);
     } else {
-      console.warn('⚠️ Document not found in documents, falling back to DocumentPreviewModal');
-      // Fallback to old behavior if document not found
-    try {
-      const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
-      let downloadUrl: string | null = null;
-      
-      if ((document as any).url || (document as any).download_url || (document as any).file_url || (document as any).s3_url) {
-        downloadUrl = (document as any).url || (document as any).download_url || (document as any).file_url || (document as any).s3_url || null;
-        } else if ((document as any).s3_path) {
-        downloadUrl = `${backendUrl}/api/files/download?s3_path=${encodeURIComponent((document as any).s3_path)}`;
-        } else {
-        const docId = document.id;
-        if (docId) {
-          downloadUrl = `${backendUrl}/api/files/download?document_id=${docId}`;
-        }
-      }
-      
-      if (!downloadUrl) {
-        throw new Error('No download URL available');
-      }
-      
-      const response = await fetch(downloadUrl, {
-        credentials: 'include'
-      });
-      
-      if (!response.ok) {
-        throw new Error(`Download failed: ${response.status} ${response.statusText}`);
-      }
-      
-      const blob = await response.blob();
-      // @ts-ignore - File constructor is available in modern browsers
-      const file = new File([blob], document.original_filename, { 
-        type: (document as any).file_type || blob.type || 'application/pdf'
-      });
-      
-      const fileData: FileAttachmentData = {
-        id: document.id,
-        file: file,
-        name: document.original_filename,
-        type: (document as any).file_type || blob.type || 'application/pdf',
-        size: (document as any).file_size || blob.size
-      };
-      
-      addPreviewFile(fileData);
-    } catch (err) {
-      console.error('❌ Error opening document:', err);
+      // Fallback: open in document preview panel (document not in property docs list)
+      openExpandedCardView(document.id, document.original_filename || 'Document');
     }
-    }
-  }, [documents, addPreviewFile]);
+  }, [documents, openExpandedCardView]);
 
   const handleDeleteDocument = async (documentId: string) => {
     // Check access level

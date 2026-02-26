@@ -158,9 +158,14 @@ def _keyword_score(query: str, chunk: dict) -> float:
     if q in text:
         return 1.0
     score = 0.0
+    matches = 0
     for w in words:
         if w in text:
             score += 0.2
+            matches += 1
+    # Bonus for chunks matching multiple query terms (e.g. "EPC rating" prefers chunks with both)
+    if matches >= 2:
+        score += 0.2
     return min(1.0, score)
 
 

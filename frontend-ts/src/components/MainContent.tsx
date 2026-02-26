@@ -24,7 +24,6 @@ import { MapPin, Palette, Bell, Shield, Globe, Monitor, LibraryBig, Upload, BarC
 import { useNavigate } from 'react-router-dom';
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
-import { DocumentPreviewModal } from './DocumentPreviewModal';
 import { FileAttachmentData } from './FileAttachment';
 import { usePreview } from '../contexts/PreviewContext';
 import { useChatStateStore, useActiveChatDocumentPreview, type CitationData, type DocumentPreview } from '../contexts/ChatStateStore';
@@ -2641,14 +2640,6 @@ export const MainContent = ({
   
   // Use shared preview context
   const {
-    previewFiles,
-    activePreviewTabIndex,
-    isPreviewOpen,
-    setPreviewFiles,
-    setActivePreviewTabIndex,
-    setIsPreviewOpen,
-    addPreviewFile,
-    MAX_PREVIEW_TABS,
     expandedCardViewDoc: legacyExpandedCardViewDoc, // Legacy - will be removed
     closeExpandedCardView: legacyCloseExpandedCardView, // Legacy - will be removed
     openExpandedCardView,
@@ -2663,8 +2654,6 @@ export const MainContent = ({
 
   // File View pop-up (from FilingSidebar file row click) — only when not on Settings
   const [fileViewDocument, setFileViewDocument] = React.useState<FileViewDocument | null>(null);
-  /** Fullscreen document overlay (from "View Document" on file pop-up) — renders on top of everything */
-  const [fullscreenDocumentView, setFullscreenDocumentView] = React.useState<{ docId: string; filename: string } | null>(null);
   const filingSidebarContainerRef = React.useRef<HTMLDivElement>(null);
   React.useEffect(() => {
     if (currentView === 'settings') setFileViewDocument(null);
@@ -2725,8 +2714,7 @@ export const MainContent = ({
   }, [expandedCardViewDoc?.docId, messageForDocPreview]);
 
   // When on Projects with a doc open, use default chat width until panel reports (avoids doc preview jumping)
-  // Also used when attachment preview is open (50/50 with chat)
-  const isAttachmentPreviewOpen = Boolean(isPreviewOpen && previewFiles.length > 0);
+  const isAttachmentPreviewOpen = false; // Legacy DocumentPreviewModal removed - citation preview is in SideChatPanel
   const effectiveChatWidthForDocPreview = React.useMemo(() => {
     const base = chatPanelWidth || 0;
     if (currentView === 'projects' && expandedCardViewDoc && base === 0) return CHAT_PANEL_WIDTH.COLLAPSED;
@@ -2804,11 +2792,11 @@ export const MainContent = ({
     console.log('🔄 MainContent: New agent requested - cleared restoreChatId and triggered newAgentTrigger');
   }, []);
 
-  // File View modal: open fullscreen document preview over everything (close pop-up first)
+  // File View modal: open document in the 50/50 panel (beside chat) instead of fullscreen
   const handleFileViewDocument = React.useCallback((docId: string, filename: string) => {
     setFileViewDocument(null); // Close file pop-up
-    setFullscreenDocumentView({ docId, filename });
-  }, []);
+    openExpandedCardView(docId, filename || 'Document');
+  }, [openExpandedCardView]);
 
   // File View modal: close sidebar + open fullscreen chat with document in preview
   const handleFileViewAnalyseWithAI = React.useCallback((docId: string, filename: string) => {
@@ -6099,97 +6087,6 @@ export const MainContent = ({
         />
       )}
 
-      {/* Fullscreen document overlay (from file pop-up "View Document") — on top of everything */}
-      {fullscreenDocumentView && (
-        <StandaloneExpandedCardView
-          key="fullscreen-document-overlay"
-          docId={fullscreenDocumentView.docId}
-          filename={fullscreenDocumentView.filename}
-          onClose={() => setFullscreenDocumentView(null)}
-          initialFullscreen={true}
-          chatPanelWidth={0}
-          sidebarWidth={0}
-        />
-      )}
-
-      {/* Shared Document Preview Modal - 50/50 with chat when opened from attachments (split), else centered modal */}
-      <DocumentPreviewModal
-        files={previewFiles}
-        activeTabIndex={activePreviewTabIndex}
-        isOpen={isPreviewOpen}
-        displayMode={isAttachmentPreviewOpen ? 'split' : 'modal'}
-        splitPanelLeft={docPreviewBackdropLayout?.left ?? 0}
-        splitPanelWidth={docPreviewBackdropLayout?.width ?? 400}
-        onClose={() => {
-          setIsPreviewOpen(false);
-          setPreviewFiles([]);
-          setActivePreviewTabIndex(0);
-        }}
-        onTabChange={(index) => {
-          setActivePreviewTabIndex(index);
-        }}
-        onTabClose={(index) => {
-          setPreviewFiles(prev => {
-            const newFiles = prev.filter((_, i) => i !== index);
-            if (newFiles.length === 0) {
-              setIsPreviewOpen(false);
-              setActivePreviewTabIndex(0);
-            } else {
-              // Adjust active index if needed
-              if (index < activePreviewTabIndex) {
-                setActivePreviewTabIndex(activePreviewTabIndex - 1);
-              } else if (index === activePreviewTabIndex && activePreviewTabIndex >= newFiles.length) {
-                setActivePreviewTabIndex(newFiles.length - 1);
-              }
-            }
-            return newFiles;
-          });
-        }}
-        onTabReorder={(newOrder) => {
-          setPreviewFiles(newOrder);
-        }}
-        onAddAttachment={() => {
-          // Trigger file input click to add new attachment to preview
-          const fileInput = document.createElement('input');
-          fileInput.type = 'file';
-          fileInput.accept = '*/*';
-          fileInput.multiple = false;
-          fileInput.onchange = (e) => {
-            const target = e.target as HTMLInputElement;
-            const file = target.files?.[0];
-            if (file) {
-              // Create FileAttachmentData from the file
-              const fileData: FileAttachmentData = {
-                id: `preview-${Date.now()}-${Math.random()}`,
-                file: file,
-                name: file.name,
-                type: file.type,
-                size: file.size
-              };
-              addPreviewFile(fileData);
-            }
-          };
-          fileInput.click();
-        }}
-        isMapVisible={isMapVisible}
-        isSidebarCollapsed={isSidebarCollapsed}
-        chatPanelWidth={chatPanelWidth}
-        sidebarWidth={(() => {
-          // Use same pixel calculation as SideChatPanel for consistency
-          const SIDEBAR_COLLAPSED_WIDTH = 0;
-          const SIDEBAR_NORMAL_WIDTH = 224;
-          const TOGGLE_RAIL_WIDTH = 12;
-          const baseSidebarWidth = isSidebarCollapsed ? SIDEBAR_COLLAPSED_WIDTH : SIDEBAR_NORMAL_WIDTH;
-          // Include filing sidebar width when open
-          if (isFilingSidebarOpen || isFilingSidebarClosing) {
-            const filingSidebarStart = isSidebarCollapsed ? TOGGLE_RAIL_WIDTH : SIDEBAR_NORMAL_WIDTH;
-            return filingSidebarStart + filingSidebarWidth;
-          }
-          return baseSidebarWidth + TOGGLE_RAIL_WIDTH;
-        })()}
-        filingSidebarWidth={filingSidebarWidth} // Pass separately for instant recalculation tracking
-      />
-      
       {/* New Property Pin Workflow */}
       <NewPropertyPinWorkflow
         isVisible={showNewPropertyWorkflow}

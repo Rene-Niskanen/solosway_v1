@@ -61,7 +61,7 @@ interface FilingSidebarProps {
   isSmallSidebarMode?: boolean;
   /** When true, hide the header close button (e.g. when in chat – close is in View dropdown). */
   hideCloseButton?: boolean;
-  /** When provided, file row click opens the File View pop-up with this doc instead of the shared DocumentPreviewModal. */
+  /** When provided, file row click opens the File View pop-up with this doc. */
   onOpenFileView?: (doc: Document) => void;
   /** ID of the document currently open in the File View pop-up; that row gets a faint selection style. */
   openFileViewDocumentId?: string | null;
@@ -433,7 +433,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
   const preloadStartedRef = useRef(false);
   const hoverPreloadTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const { addPreviewFile, setPreviewFiles, setIsPreviewOpen } = usePreview();
+  const { addPreviewFile, openExpandedCardView } = usePreview();
 
   // Preload blob for a single doc (e.g. on hover) so click opens file popup instantly
   const scheduleHoverPreload = useCallback((doc: Document) => {
@@ -1058,39 +1058,9 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
     return !!doc.property_id || !!documentToPropertyHubMap.get(doc.id);
   };
 
-  // Handle document click - open in preview
-  const handleDocumentClick = async (doc: Document) => {
-    try {
-      const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
-      let downloadUrl: string;
-
-      if (doc.s3_path) {
-        downloadUrl = `${backendUrl}/api/files/download?s3_path=${encodeURIComponent(doc.s3_path)}`;
-      } else {
-        downloadUrl = `${backendUrl}/api/files/download?document_id=${doc.id}`;
-      }
-
-      const response = await fetch(downloadUrl, { credentials: 'include' });
-      if (!response.ok) throw new Error('Download failed');
-
-      const blob = await response.blob();
-      const file = new File([blob], doc.original_filename, {
-        type: doc.file_type || blob.type || 'application/pdf',
-      });
-
-      const fileData = {
-        id: doc.id,
-        name: doc.original_filename,
-        type: doc.file_type || blob.type,
-        size: blob.size,
-        file,
-      };
-
-      setPreviewFiles([fileData]);
-      setIsPreviewOpen(true);
-    } catch (err) {
-      console.error('Error opening document:', err);
-    }
+  // Handle document click - open in the 50/50 document preview panel
+  const handleDocumentClick = (doc: Document) => {
+    openExpandedCardView(doc.id, doc.original_filename || 'Document');
   };
 
   // Handle drag start for file items

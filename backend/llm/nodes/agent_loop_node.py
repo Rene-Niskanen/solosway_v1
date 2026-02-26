@@ -33,6 +33,7 @@ MAX_ITERATIONS = 6
 # Tool names (must match function names in _execute_tool)
 RETRIEVE_DOCS = "retrieve_docs"
 RETRIEVE_CHUNKS = "retrieve_chunks"
+FETCH_CHUNKS_BY_IDS = "fetch_chunks_by_ids"
 ADD_RESEARCH_NOTE = "add_research_note"
 
 
@@ -40,15 +41,16 @@ def _get_agent_loop_system_prompt() -> str:
     """System prompt instructing the model on when to use tools vs reply directly."""
     return """You are an assistant with access to a document search system. Your job is to decide when to search documents and when to reply from context alone.
 
-You have three tools:
+You have four tools:
 1. retrieve_docs(query) - Search for relevant documents. Returns document IDs and filenames. Use this FIRST when the user asks about documents, property information, valuations, leases, etc.
 2. retrieve_chunks(query, document_ids) - Get detailed text from specific documents. Use AFTER retrieve_docs. Pass the document_ids from the retrieve_docs result.
-3. add_research_note(content, chunk_id, cited_text) - Record a finding for a curated piece of writing. Use ONLY when the user asks for a curated piece (brief, report, summary from multiple findings). See "Research-then-write" below.
+3. fetch_chunks_by_ids(chunk_ids) - Get full chunk text by exact chunk IDs (UUIDs). Use for FOLLOW-UP questions when prior_chunk_context lists chunk_ids from a previous answer. No semantic search - direct lookup. Use when the user asks for more detail, expansion, or clarification about specific content already cited.
+4. add_research_note(content, chunk_id, cited_text) - Record a finding for a curated piece of writing. Use ONLY when the user asks for a curated piece (brief, report, summary from multiple findings). See "Research-then-write" below.
 
 When to use tools:
 - User asks about documents, property, valuations, leases, contracts, summaries, details, etc. -> Call retrieve_docs, then retrieve_chunks with the returned document_ids
 - User attaches documents (document_ids will be in scope) -> Call retrieve_chunks directly with those document_ids
-- Short follow-up like "more detail", "expand", "key dates?" -> Call retrieve_chunks with the same document_ids from the previous turn (they are in scope)
+- Short follow-up like "more detail", "expand", "key dates?" -> Use fetch_chunks_by_ids with chunk_ids from prior_chunk_context (if provided), else retrieve_chunks with document_ids from the previous turn
 - User asks to compare, find similar properties -> Call retrieve_docs with a broad query, then retrieve_chunks
 
 When to finish (no tools):
@@ -113,6 +115,24 @@ def _build_tool_definitions() -> List[Dict[str, Any]]:
                         },
                     },
                     "required": ["query", "document_ids"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": FETCH_CHUNKS_BY_IDS,
+                "description": "Get full chunk text by exact chunk IDs (UUIDs). Use for follow-up questions when prior_chunk_context lists chunk_ids. No semantic search - direct lookup.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "chunk_ids": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "List of chunk UUIDs from prior answer (prior_chunk_context or retrieve_chunks result)",
+                        },
+                    },
+                    "required": ["chunk_ids"],
                 },
             },
         },
@@ -195,7 +215,7 @@ def _summarize_tool_result_for_context(tool_name: str, result: Any) -> str:
             "filenames": filenames[:10],
             "message": f"Found {len(doc_ids)} documents. Use these document_ids for retrieve_chunks.",
         })
-    elif tool_name == RETRIEVE_CHUNKS:
+    elif tool_name in (RETRIEVE_CHUNKS, FETCH_CHUNKS_BY_IDS):
         count = len(result) if isinstance(result, list) else 0
         return json.dumps({
             "count": count,
@@ -274,7 +294,20 @@ def _execute_tool(tool_name: str, args: Dict[str, Any], state: MainWorkflowState
             business_id=business_id,
         )
         return result
-    
+
+    elif tool_name == FETCH_CHUNKS_BY_IDS:
+        from backend.llm.citation.document_store import fetch_chunks_by_ids as fetch_by_ids
+        chunk_ids = args.get("chunk_ids") or []
+        if isinstance(chunk_ids, list):
+            chunk_ids = [str(c) for c in chunk_ids if c]
+        else:
+            chunk_ids = []
+        if not chunk_ids:
+            logger.warning("[AGENT_LOOP] fetch_chunks_by_ids called with no chunk_ids")
+            return []
+        result = fetch_by_ids(chunk_ids=chunk_ids, business_id=business_id)
+        return result
+
     elif tool_name == ADD_RESEARCH_NOTE:
         # No external call; handled in the loop by appending to research_notes
         return None
@@ -287,6 +320,12 @@ def _build_messages_for_llm(state: MainWorkflowState) -> List:
     """Build messages array for the LLM: system + conversation history + current user query."""
     system_content = _get_agent_loop_system_prompt()
     messages = [SystemMessage(content=system_content)]
+    
+    # Add prior chunk context for follow-ups (chunk_ids the agent can fetch with fetch_chunks_by_ids)
+    prior_chunk_context = (state.get("prior_chunk_context") or "").strip()
+    if prior_chunk_context:
+        ctx_msg = prior_chunk_context + "\n\nUse fetch_chunks_by_ids with these chunk_ids to re-read that content for follow-up questions."
+        messages.append(SystemMessage(content=ctx_msg))
     
     # Add workspace context if document_ids or property_id in scope
     document_ids = state.get("document_ids") or []
@@ -413,11 +452,14 @@ async def agent_loop_node(state: MainWorkflowState, runnable_config=None) -> Mai
                 continue
             
             if emitter:
-                query = tool_args.get("query", "")
-                emitter.emit_reasoning(
-                    label=_choose_search_intro(query),
-                    detail=None,
-                )
+                if tool_name == FETCH_CHUNKS_BY_IDS:
+                    emitter.emit_reasoning(label="Fetching cited chunks", detail=None)
+                else:
+                    query = tool_args.get("query", "")
+                    emitter.emit_reasoning(
+                        label=_choose_search_intro(query),
+                        detail=None,
+                    )
             
             result = _execute_tool(tool_name, tool_args, state)
             
@@ -441,7 +483,7 @@ async def agent_loop_node(state: MainWorkflowState, runnable_config=None) -> Mai
                 if tool_name == RETRIEVE_DOCS:
                     # Don't show count here - that's "searched"; show count only after chunks (documents we're using)
                     emitter.emit_reasoning(label="Analysing documents...", detail=None)
-                elif tool_name == RETRIEVE_CHUNKS:
+                elif tool_name in (RETRIEVE_CHUNKS, FETCH_CHUNKS_BY_IDS):
                     # Show how many documents we're actually using (unique docs in chunk result)
                     unique_doc_ids = set()
                     for item in result:

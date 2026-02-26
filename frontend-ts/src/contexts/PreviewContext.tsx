@@ -309,7 +309,7 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
   // This allows silent background opening - document is already "opened" but not visible
   // When chat becomes visible again, document is already there and appears immediately
   // Only reset agent opening state, but keep the document in state
-  // NOTE: We removed the auto-close logic for DocumentPreviewModal because it's rendered
+  // NOTE: DocumentPreviewModal removed
   // in MainContent and can work independently of chat panel visibility
   React.useEffect(() => {
     if (!isChatPanelVisible && expandedCardViewDoc) {
@@ -518,80 +518,17 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
     }
   }, [getCachedRenderedPage, setCachedRenderedPage]);
 
-  const addPreviewFile = React.useCallback((file: FileAttachmentData, highlight?: CitationHighlight) => {
-    // Always open the preview modal, regardless of chat panel visibility
-    // The DocumentPreviewModal in MainContent can be displayed independently
-    setPreviewFiles(prev => {
-      // Check if file is already in preview tabs
-      const existingTabIndex = prev.findIndex(f => f.id === file.id);
-      
-      if (existingTabIndex !== -1) {
-        // File is already open - refresh the File object to ensure it's valid
-        // This fixes the issue where re-selecting the same document fails because the File object is stale
-        const updatedFiles = [...prev];
-        updatedFiles[existingTabIndex] = file; // Update with fresh File object
-        setActivePreviewTabIndex(existingTabIndex);
-        setIsPreviewOpen(true);
-        
-        // Set highlight if provided
-        if (highlight) {
-          setHighlightCitation({
-            ...highlight,
-            fileId: file.id
-          });
-        }
-        
-        return updatedFiles;
-      } else {
-        // Add new tab (limit to MAX_PREVIEW_TABS)
-        let newFiles: FileAttachmentData[];
-        let newActiveIndex: number;
-        
-        if (prev.length >= MAX_PREVIEW_TABS) {
-          // Remove oldest tab (first one) and add new one
-          // Clean up PDF cache for removed file
-          const removedFile = prev[0];
-          if (removedFile) {
-            setPdfDocumentCache(cache => {
-              const newCache = new Map(cache);
-              const pdf = newCache.get(removedFile.id);
-              if (pdf) {
-                pdf.destroy(); // Clean up PDF.js resources
-                newCache.delete(removedFile.id);
-              }
-              return newCache;
-            });
-          }
-          newActiveIndex = MAX_PREVIEW_TABS - 1;
-          newFiles = [...prev.slice(1), file];
-        } else {
-          // Add new tab
-          newActiveIndex = prev.length;
-          newFiles = [...prev, file];
-        }
-        
-        setActivePreviewTabIndex(newActiveIndex);
-        setIsPreviewOpen(true);
-        
-        // Set highlight if provided
-        if (highlight) {
-          setHighlightCitation({
-            ...highlight,
-            fileId: file.id
-          });
-        }
-        
-        return newFiles;
-      }
-    });
-  }, [setPreviewFiles, setActivePreviewTabIndex, setIsPreviewOpen, setHighlightCitation, setPdfDocumentCache, MAX_PREVIEW_TABS]);
+  // Legacy DocumentPreviewModal removed - open file in new tab as fallback
+  const addPreviewFile = React.useCallback((file: FileAttachmentData, _highlight?: CitationHighlight) => {
+    if (file?.file instanceof File) {
+      const blobUrl = URL.createObjectURL(file.file);
+      window.open(blobUrl, '_blank');
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 5000);
+    }
+  }, []);
 
-  // Gated setIsPreviewOpen - allows opening/closing regardless of chat visibility
-  // DocumentPreviewModal is rendered in MainContent and works independently
-  // This was previously gated to prevent reasoning steps from opening previews,
-  // but that should be handled at the source (don't call addPreviewFile from reasoning steps)
+  // Legacy - DocumentPreviewModal removed; keep for API compatibility
   const gatedSetIsPreviewOpen = React.useCallback((open: boolean) => {
-    // Always allow opening/closing - DocumentPreviewModal can work independently of chat panel
     setIsPreviewOpen(open);
   }, []);
 

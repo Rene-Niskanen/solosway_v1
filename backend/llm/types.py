@@ -135,6 +135,7 @@ class MainWorkflowState(TypedDict, total=False):
     format_instruction: Optional[str]  # User-requested output format (e.g. "one concise paragraph")
     personality_id: Optional[str]  # Chosen response tone (e.g. "default", "friendly", "efficient"); set by responder from LLM structured output
     research_notes: Optional[List[Dict[str, Any]]]  # Research-then-write: list of {content, chunk_id, cited_text} per turn (replaced each turn)
+    prior_chunk_context: Optional[str]  # Follow-up: compact list of chunk_ids/doc/page from prior retrieval for fetch_chunks_by_ids
 
 class DocumentQAState(TypedDict, total=False):
     """State for per-document Q&A subgraph"""

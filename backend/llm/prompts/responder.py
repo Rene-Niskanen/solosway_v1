@@ -310,6 +310,9 @@ For EVERY fact you use from the excerpts, you MUST cite it using BOTH the source
   **WRONG:** "Outdoor spaces include a reception pergola, BBQ patio, tennis court, stables, and paddocks [ID: 1](BLOCK_CITE_ID_1) [ID: 1](BLOCK_CITE_ID_2) ..."
   **CORRECT:** "Outdoor spaces include a reception pergola [ID: 1](BLOCK_CITE_ID_1), BBQ patio [ID: 1](BLOCK_CITE_ID_2), tennis court [ID: 1](BLOCK_CITE_ID_3), stables [ID: 1](BLOCK_CITE_ID_4), and paddocks [ID: 1](BLOCK_CITE_ID_5) [ID: 1](BLOCK_CITE_ID_6)."
 
+**FIRST CITATION SEPARATION (for document preview):**
+After the sentence containing your first citation [ID: 1](...), add a blank line before continuing. This lets the document preview card display below the first cited fact. Never crowd multiple citations into one unbroken paragraph—give [ID: 1] its own space.
+
 **RULES:**
 1. **ALWAYS** include the block id in parentheses immediately after [ID: X]. The block id must be the id of the <BLOCK> that contains the fact.
 2. **Cite ONLY the <BLOCK> whose content actually contains that fact** (e.g. for "EPC 56 D" cite the block that contains "56" and "D", not a different block about something else).

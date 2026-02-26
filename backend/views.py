@@ -1517,48 +1517,53 @@ def query_documents_stream():
                                         ),
                                         timeout=15.0,
                                     )
+                                    logger.info("🟡 [STREAM] Follow-up classification: %s", classification)
                                     if classification == "same_doc_follow_up":
-                                        from backend.llm.utils.follow_up_classifier import (
-                                            extract_document_ids_from_results,
-                                            current_query_mentions_different_document_from_results,
-                                        )
-                                        # Deterministic check: if query names a different doc (e.g. "Nzohe lease") than
-                                        # previous turn (e.g. Banda Lane), do not reuse cache
-                                        if current_query_mentions_different_document_from_results(query, cached_results):
+                                        from backend.llm.utils.follow_up_classifier import extract_document_ids_from_results
+                                        # Filter A (different doc) already runs inside classifier; no redundant check needed
+                                        same_doc_ids = extract_document_ids_from_results(cached_results)
+                                        if same_doc_ids:
+                                            # Try cache first: if we have full-doc chunks cached, search in-memory and skip DB
+                                            from backend.llm.utils.doc_chunk_cache import (
+                                                get_cached_chunks,
+                                                run_in_memory_retrieval,
+                                                build_execution_results_from_chunks,
+                                                schedule_prime as schedule_doc_chunk_prime,
+                                            )
+                                            cached_chunks = get_cached_chunks(session_id, same_doc_ids) if session_id else None
+                                            if cached_chunks:
+                                                top_chunks = run_in_memory_retrieval(query, cached_chunks, top_k=12)
+                                                exec_results = build_execution_results_from_chunks(top_chunks)
+                                                initial_state["use_cached_results"] = True
+                                                initial_state["execution_results"] = exec_results
+                                                logger.info(f"🟢 [STREAM] Same-doc follow-up: cache hit for {len(same_doc_ids)} doc(s), using {len(top_chunks)} chunks from cache")
+                                            else:
+                                                initial_state["document_ids"] = same_doc_ids
+                                                from backend.llm.utils.prior_context import extract_prior_chunk_context
+                                                prior_ctx = extract_prior_chunk_context(cached_results)
+                                                if prior_ctx:
+                                                    initial_state["prior_chunk_context"] = prior_ctx
+                                                logger.info(f"🟢 [STREAM] Same-doc follow-up: scoping to {len(same_doc_ids)} doc(s), will re-run retrieval for current query")
+                                                schedule_doc_chunk_prime(session_id, same_doc_ids)
+                                        else:
+                                            # Do NOT reuse cached_results when we cannot extract doc IDs.
+                                            # Stale chunks cause wrong citation mapping (e.g. EPC answer showing "owner occupied").
                                             initial_state["document_ids"] = []
                                             initial_state["use_cached_results"] = False
                                             initial_state["execution_results"] = []
-                                            logger.info("🟡 [STREAM] Same-doc overridden: query mentions different document (running planner)")
-                                        else:
-                                            same_doc_ids = extract_document_ids_from_results(cached_results)
-                                            if same_doc_ids:
-                                                # Try cache first: if we have full-doc chunks cached, search in-memory and skip DB
-                                                from backend.llm.utils.doc_chunk_cache import (
-                                                    get_cached_chunks,
-                                                    run_in_memory_retrieval,
-                                                    build_execution_results_from_chunks,
-                                                    schedule_prime as schedule_doc_chunk_prime,
-                                                )
-                                                cached_chunks = get_cached_chunks(session_id, same_doc_ids) if session_id else None
-                                                if cached_chunks:
-                                                    top_chunks = run_in_memory_retrieval(query, cached_chunks, top_k=12)
-                                                    exec_results = build_execution_results_from_chunks(top_chunks)
-                                                    initial_state["use_cached_results"] = True
-                                                    initial_state["execution_results"] = exec_results
-                                                    logger.info(f"🟢 [STREAM] Same-doc follow-up: cache hit for {len(same_doc_ids)} doc(s), using {len(top_chunks)} chunks from cache")
-                                                else:
-                                                    initial_state["document_ids"] = same_doc_ids
-                                                    logger.info(f"🟢 [STREAM] Same-doc follow-up: scoping to {len(same_doc_ids)} doc(s), will re-run retrieval for current query")
-                                                    schedule_doc_chunk_prime(session_id, same_doc_ids)
-                                            else:
-                                                initial_state["use_cached_results"] = True
-                                                initial_state["execution_results"] = list(cached_results)
-                                                logger.info(f"🟢 [STREAM] Same-doc follow-up: no doc IDs in cache, reusing {len(cached_results)} execution_results")
+                                            logger.info(
+                                                "🟡 [STREAM] Same-doc follow-up: could not extract doc IDs from cache, "
+                                                "running planner for fresh retrieval (avoids wrong citation mapping)"
+                                            )
                                     elif classification == "paste_and_docs":
                                         # Only set use_paste_plus_docs when classifier is paste_and_docs AND attachment_context
                                         # is present with content; otherwise set paste_requested_but_missing (see should_use_paste_plus_docs).
                                         if should_use_paste_plus_docs(classification, attachment_context):
                                             initial_state["use_paste_plus_docs"] = True
+                                            from backend.llm.utils.prior_context import extract_prior_chunk_context
+                                            prior_ctx = extract_prior_chunk_context(cached_results)
+                                            if prior_ctx:
+                                                initial_state["prior_chunk_context"] = prior_ctx
                                             logger.info("🟡 [STREAM] Classifier=paste_and_docs: running planner with paste+docs context")
                                         else:
                                             initial_state["paste_requested_but_missing"] = True

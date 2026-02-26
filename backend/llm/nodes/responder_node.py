@@ -442,6 +442,13 @@ def _distinctive_values_from_cited_text(cited_text: str) -> List[str]:
     for m in re.finditer(r"(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s+\d{4}", text, re.IGNORECASE):
         if m.group(0) not in values:
             values.append(m.group(0))
+    # EPC-style ratings: "56 D", "71 C" (score + grade)
+    for m in re.finditer(r"\b(\d{1,3})\s+([A-G])\b", text, re.IGNORECASE):
+        num, grade = m.group(1), m.group(2).upper()
+        if num not in values:
+            values.append(num)
+        if grade not in values:
+            values.append(grade)
     return values
 
 
@@ -919,7 +926,19 @@ def extract_citations_with_positions(
                             'match_score': match_score,
                             'content': block.get('content', '') or '',
                         }
-                
+
+                # Require non-trivial overlap: when we have no distinctive values, the chosen block
+                # must have meaningful overlap with cited_text. Otherwise we risk highlighting the
+                # wrong block (e.g. "owner occupied" when citing EPC rating). Prefer chunk-level bbox.
+                MIN_OVERLAP_FOR_BLOCK = 2
+                if best_block_info and not distinctive and best_match_score < MIN_OVERLAP_FOR_BLOCK:
+                    logger.warning(
+                        f"[CITATION_DEBUG] Citation {idx} (short_id={short_id}): "
+                        f"Best block has weak overlap (score={best_match_score}), using chunk-level bbox to avoid wrong highlight"
+                    )
+                    best_block_info = None
+                    best_bbox = metadata.get('bbox')
+
                 # Narrow bbox to the line containing the cited text (avoid highlighting whole block)
                 if best_block_info and cited_text_for_bbox and isinstance(best_bbox, dict):
                     block_content_for_narrow = best_block_info.get('content', '') or best_block_info.get('content_preview', '')
@@ -1201,6 +1220,34 @@ def replace_ids_with_citation_numbers(
             )
     
     return response
+
+
+def _ensure_paragraph_break_after_first_citation(text: str) -> str:
+    """
+    Insert a paragraph break after the first citation so the document preview card
+    can display below it. Ensures follow-up responses use the same presentation
+    as initial responses (one citation above the preview).
+    """
+    if not text or not text.strip():
+        return text
+    # Find first [1] - the first citation in order
+    match = re.search(r'\[1\]', text)
+    if not match:
+        return text
+    insert_pos = match.end()
+    # If we're at end of string or already followed by double newline, no change
+    rest = text[insert_pos:]
+    if not rest or rest.startswith('\n\n'):
+        return text
+    # Consume optional trailing period and spaces (e.g. "[1]. " or "[1] ")
+    trail_match = re.match(r'^(\s*\.?\s*)', rest)
+    if trail_match:
+        insert_pos += trail_match.end()
+        rest = rest[trail_match.end():]
+    if not rest or rest.startswith('\n\n'):
+        return text
+    # Insert double newline so next content starts a new paragraph
+    return text[:insert_pos] + '\n\n' + rest
 
 
 def format_citations_for_frontend(
@@ -2426,6 +2473,14 @@ async def generate_answer_with_direct_citations(
 
         logger.info(f"[DIRECT_CITATIONS] Extracted {len(chunks_metadata)} chunks with metadata")
 
+        # Follow-up debug: when using cached results, log chunk preview to diagnose citation mapping
+        if (state or {}).get("use_cached_results"):
+            first_preview = (chunks_metadata[0].get("chunk_text") or "")[:150] if chunks_metadata else ""
+            logger.info(
+                f"[CITATION_FOLLOWUP] use_cached_results=True: {len(chunks_metadata)} chunks, "
+                f"first preview: '{first_preview}...'"
+            )
+
         # Step 2: Format chunks with block-level BLOCK_CITE_ID tags and metadata table (jan28th-style)
         formatted_chunks, short_id_lookup, metadata_lookup_tables = format_chunks_with_block_ids(chunks_metadata)
         logger.info(
@@ -2494,6 +2549,27 @@ async def generate_answer_with_direct_citations(
         )
         logger.info(f"[DIRECT_CITATIONS] Extracted {len(citations)} citations from response")
 
+        # Follow-up debug: log each citation and detect mismatches (e.g. EPC answer showing "owner occupied")
+        if (state or {}).get("use_cached_results") and citations:
+            for c in citations:
+                debug_info = c.get("citation_debug") or {}
+                short_id = debug_info.get("short_id") or c.get("short_id")
+                cited = (debug_info.get("cited_text_for_bbox") or c.get("cited_text") or "").lower()
+                block_preview = (debug_info.get("block_content_preview") or "").lower()
+                logger.info(
+                    f"[CITATION_FOLLOWUP] Citation {c.get('citation_number')} (short_id={short_id}): "
+                    f"cited_text='{cited[:80]}...' block_preview='{block_preview[:80]}...'"
+                )
+                # Mismatch heuristic: cited talks about EPC/rating but block shows owner occupied (or vice versa)
+                cited_epc = "epc" in cited or "rating" in cited or "56" in cited or "71" in cited
+                block_owner = "owner occupied" in (block_preview or "")
+                cited_owner = "owner occupied" in cited or "occupi" in cited
+                block_epc = "epc" in (block_preview or "") or "56" in (block_preview or "") or "71" in (block_preview or "") or " rating" in (block_preview or "")
+                if (cited_epc and block_owner) or (cited_owner and block_epc):
+                    logger.warning(
+                        f"[CITATION_FOLLOWUP] Possible mismatch: cited_text suggests one topic but block shows different content"
+                    )
+
         # Step 4b: Assign sequential citation numbers 1, 2, 3... by order of appearance (position).
         # This ensures UI shows [1], [2], [3] and we never collapse two in-text citations into one.
         citations.sort(key=lambda c: c.get('position', 0))
@@ -2507,6 +2583,8 @@ async def generate_answer_with_direct_citations(
         # Step 6: Replace [ID: 1] with [1], [ID: 2] with [2], etc. (safe replacement)
         formatted_response = replace_ids_with_citation_numbers(llm_response, citations)
         formatted_response = _strip_mid_response_generic_closings(formatted_response)
+        # Step 6b: Ensure paragraph break after first citation so document preview appears below it
+        formatted_response = _ensure_paragraph_break_after_first_citation(formatted_response)
         logger.info(f"[DIRECT_CITATIONS] Replaced citation IDs with numbers")
         
         # Step 7: Format citations for frontend

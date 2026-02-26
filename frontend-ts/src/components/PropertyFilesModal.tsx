@@ -4,8 +4,6 @@ import * as React from "react";
 import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { FileText } from "lucide-react";
-import { DocumentPreviewModal } from './DocumentPreviewModal';
-import { FileAttachmentData } from './FileAttachment';
 import { usePreview } from '../contexts/PreviewContext';
 
 interface PropertyDocument {
@@ -48,18 +46,7 @@ export const PropertyFilesModal: React.FC<PropertyFilesModalProps> = ({
   const [error, setError] = React.useState<string | null>(null);
   const [hasFetched, setHasFetched] = React.useState(false); // Track if we've attempted to fetch
   const [searchQuery, setSearchQuery] = React.useState<string>(''); // Search query for filtering documents
-  
-  // Use shared preview context instead of local state
-  const {
-    previewFiles,
-    activePreviewTabIndex,
-    isPreviewOpen,
-    setPreviewFiles,
-    setActivePreviewTabIndex,
-    setIsPreviewOpen,
-    addPreviewFile,
-    MAX_PREVIEW_TABS
-  } = usePreview();
+  const { openExpandedCardView } = usePreview();
   const modalRef = React.useRef<HTMLDivElement>(null);
   const lastFetchedPropertyIdRef = React.useRef<string | null>(null);
 
@@ -153,14 +140,7 @@ export const PropertyFilesModal: React.FC<PropertyFilesModalProps> = ({
           target.closest('button')?.textContent?.includes('Close Files')
         );
         
-        // Don't close if clicking on the DocumentPreviewModal (preview modal) or if preview is open
-        const isPreviewModal = target.closest('[data-document-preview-modal]') ||
-                              target.closest('.document-preview-modal') ||
-                              (target.closest('[role="dialog"]') && target.closest('[class*="preview"]'));
-        
-        // Also check if preview modal is currently open (from shared context)
-        // If preview is open, don't close the files modal when clicking outside
-        if (!isChatElement && !isViewFilesButton && !isPropertyPanel && !isPreviewModal && !isPreviewOpen) {
+        if (!isChatElement && !isViewFilesButton && !isPropertyPanel) {
           onClose();
         }
       }
@@ -177,7 +157,7 @@ export const PropertyFilesModal: React.FC<PropertyFilesModalProps> = ({
         document.removeEventListener('mousedown', handleClickOutside, true);
       };
     }
-  }, [isOpen, onClose, isPreviewOpen]);
+  }, [isOpen, onClose]);
 
   const fetchDocuments = async (): Promise<void> => {
     // Don't show loading state - load silently
@@ -301,91 +281,11 @@ export const PropertyFilesModal: React.FC<PropertyFilesModalProps> = ({
     (e.target as HTMLElement).style.opacity = '0.5';
   };
 
-  const handleDocumentClick = async (document: PropertyDocument) => {
-    try {
-      const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5001';
-      
-      // Try multiple download URL patterns
-      let downloadUrl: string | null = null;
-      
-      // First, try if document has a direct URL (check all possible URL fields)
-      if (document.url || document.download_url || document.file_url || document.s3_url) {
-        downloadUrl = document.url || document.download_url || document.file_url || document.s3_url || null;
-      } 
-      // Try S3 path if available - construct download URL
-      else if (document.s3_path) {
-        // Use the standard files download endpoint with s3_path
-        downloadUrl = `${backendUrl}/api/files/download?s3_path=${encodeURIComponent(document.s3_path)}`;
-      }
-      // Fallback to document ID - use standard document download endpoint
-      else {
-        const docId = document.id || document.document_id;
-        if (docId) {
-          // Try standard document download endpoint
-          downloadUrl = `${backendUrl}/api/files/download?document_id=${docId}`;
-        } else {
-          downloadUrl = `${backendUrl}/api/files/download?document_id=${document.id}`;
-        }
-      }
-      
-      if (!downloadUrl) {
-        throw new Error('No download URL available');
-      }
-      
-      console.log('📄 Opening document:', document.original_filename, 'from URL:', downloadUrl);
-      
-      // Fetch the file
-      const response = await fetch(downloadUrl, {
-        credentials: 'include'
-      });
-      
-      if (!response.ok) {
-        console.error('❌ Download failed:', response.status, response.statusText);
-        // If download endpoint doesn't exist, try alternative endpoints
-        throw new Error(`Download failed: ${response.status} ${response.statusText}`);
-      }
-      
-      const blob = await response.blob();
-      const file = new File([blob], document.original_filename, { type: document.file_type || blob.type || 'application/pdf' });
-      
-      console.log('✅ Document loaded:', file.name, file.size, 'bytes');
-      
-      // Convert to FileAttachmentData format for DocumentPreviewModal
-      const fileData: FileAttachmentData = {
-        id: document.id || document.document_id || `doc-${Date.now()}`,
-        file: file,
-        name: document.original_filename,
-        type: document.file_type || blob.type || 'application/pdf',
-        size: document.file_size || blob.size
-      };
-      
-      // Use shared preview context to add file (will add to existing preview if open)
-      addPreviewFile(fileData);
-    } catch (err) {
-      console.error('❌ Error opening document:', err);
-      // Fallback: try to open in new tab using document URL or S3 path
-      const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5001';
-      let fallbackUrl: string;
-      
-      if (document.url || document.download_url || document.file_url || document.s3_url) {
-        fallbackUrl = document.url || document.download_url || document.file_url || document.s3_url || '';
-      } else if (document.s3_path) {
-        fallbackUrl = `${backendUrl}/api/files/download?s3_path=${encodeURIComponent(document.s3_path)}`;
-      } else {
-        const docId = document.id || document.document_id;
-        if (docId) {
-          fallbackUrl = `${backendUrl}/api/files/download?document_id=${docId}`;
-        } else {
-          fallbackUrl = `${backendUrl}/api/files/download?document_id=${document.id}`;
-        }
-      }
-      
-      if (fallbackUrl) {
-        console.log('🔄 Opening fallback URL:', fallbackUrl);
-        window.open(fallbackUrl, '_blank');
-      } else {
-        console.error('❌ No fallback URL available');
-      }
+  const handleDocumentClick = (document: PropertyDocument) => {
+    const docId = document.id || document.document_id;
+    const filename = document.original_filename || 'Document';
+    if (docId) {
+      openExpandedCardView(docId, filename);
     }
   };
 
