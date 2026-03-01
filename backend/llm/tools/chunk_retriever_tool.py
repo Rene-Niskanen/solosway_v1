@@ -109,15 +109,37 @@ def retrieve_chunks(
         
         logger.info(f"[RETRIEVER] Query profile: {query_profile} (top_k={effective_top_k}, min_score={effective_min_score}, per_doc_limit={per_doc_limit})")
         
-        # Precompute for keyword search (used by per-doc helper)
-        query_lower = query.lower().strip()
-        query_words = [w for w in query_lower.split() if len(w) > 3]
+        # Precompute for keyword search: use expanded query so we search for concrete terms
+        # (e.g. "zone 2", "flood zone") not just query wording ("flood risk")
+        try:
+            from backend.llm.utils.doc_chunk_cache import _expand_query_for_retrieval, get_concrete_retrieval_phrases
+            expanded = _expand_query_for_retrieval(query)
+            query_lower = (expanded or query).lower().strip()
+            query_words = [w for w in query_lower.split() if len(w) > 2]
+            concrete_phrases = get_concrete_retrieval_phrases(query)
+        except Exception:
+            query_lower = query.lower().strip()
+            query_words = [w for w in query_lower.split() if len(w) > 3]
+            concrete_phrases = []
         
-        # 3. Query embedding for vector search (HyDE when enabled; skip for summarize - we fetch all chunks). Keyword search always uses original query.
+        # 3. Query embedding for vector search. Prefer extraction-guided when enabled: use the
+        #    document's own wording (extracted with the user query) as the search vector for high precision.
         query_embedding = None
         if not is_summarize_query:
-            from backend.llm.hyde import get_query_embedding_for_retrieval
-            query_embedding = get_query_embedding_for_retrieval(query)
+            try:
+                from backend.llm.utils.extraction_guided_retrieval import get_extraction_guided_embedding
+                from backend.llm.config import config
+                if getattr(config, "use_extraction_guided_retrieval", True):
+                    query_embedding = get_extraction_guided_embedding(
+                        valid_document_ids, query, business_id=business_id
+                    )
+                    if query_embedding is not None:
+                        logger.info("   Using extraction-guided embedding for vector search")
+            except Exception as eg:
+                logger.debug("   Extraction-guided embedding skipped: %s", eg)
+            if query_embedding is None:
+                from backend.llm.hyde import get_query_embedding_for_retrieval
+                query_embedding = get_query_embedding_for_retrieval(query)
             if query_embedding is None:
                 logger.error("Failed to generate query embedding for chunk search")
                 return []
@@ -181,7 +203,7 @@ def retrieve_chunks(
                     vector_chunks = vector_response.data or []
                     logger.debug(f"   Vector search found {len(vector_chunks)} chunks in document {doc_id[:8]}")
                 
-                # 5b. Keyword search
+                # 5b. Keyword search (uses expanded query + concrete phrases e.g. "zone 2", "flood zone")
                 keyword_chunks = []
                 if not is_summarize_query:
                     try:
@@ -189,10 +211,15 @@ def retrieve_chunks(
                             'id, document_id, chunk_index, chunk_text, chunk_text_clean, page_number, metadata, bbox, blocks'
                         ).eq('document_id', doc_id)
                         or_conditions = [f'chunk_text.ilike.%{query_lower}%', f'chunk_text_clean.ilike.%{query_lower}%']
-                        if len(query_words) > 1:
-                            for word in query_words:
+                        for word in query_words:
+                            if word and len(word) > 2:
                                 or_conditions.append(f'chunk_text.ilike.%{word}%')
                                 or_conditions.append(f'chunk_text_clean.ilike.%{word}%')
+                        for phrase in (concrete_phrases or []):
+                            if phrase and phrase.strip():
+                                p = phrase.strip()
+                                or_conditions.append(f'chunk_text.ilike.%{p}%')
+                                or_conditions.append(f'chunk_text_clean.ilike.%{p}%')
                         keyword_query = keyword_query.or_(','.join(or_conditions)).limit(effective_top_k).execute()
                         keyword_chunks = keyword_query.data or []
                         logger.debug(f"   Keyword search found {len(keyword_chunks)} chunks in document {doc_id[:8]}")
@@ -248,8 +275,9 @@ def retrieve_chunks(
                         chunk_id = str(chunk.get('id', ''))
                         chunk_text = (chunk.get('chunk_text', '') or chunk.get('chunk_text_clean', '') or '').lower()
                         keyword_score = 0.0
+                        # Avoid favouring exact phrase match so value-rich chunks (Zone 2, EPC band) can rank higher
                         if query_lower in chunk_text:
-                            keyword_score = 0.7
+                            keyword_score = 0.45
                         elif any(word in chunk_text for word in query_words if len(word) > 3):
                             matched_words = sum(1 for word in query_words if word in chunk_text)
                             keyword_score = min(0.5, 0.1 * matched_words)
@@ -550,6 +578,14 @@ def retrieve_chunks(
             
             if boosted_count > 0:
                 logger.debug(f"   Applied document priority boost (0.8x) to {boosted_count} chunks from top documents")
+        
+        # 6.8. Value-seeking rerank: prefer chunks with actual values (EPC band, Zone 2) over disclaimers
+        try:
+            from backend.llm.utils.retrieval_rerank import apply_value_seeking_rerank
+            apply_value_seeking_rerank(query, unique_chunks)
+            logger.debug(f"   Applied value-seeking rerank (boost value chunks, penalize disclaimers)")
+        except Exception as rerank_err:
+            logger.debug(f"   Value-seeking rerank skipped: {rerank_err}")
         
         # 7. Global sorting - depends on search_goal
         if is_summarize_query:

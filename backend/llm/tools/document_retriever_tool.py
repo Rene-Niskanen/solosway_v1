@@ -45,6 +45,53 @@ _GENERIC_ENTITY_TOKENS = frozenset({
     "agreement", "document", "file", "sale", "purchase", "valuation", "letter",
 })
 
+# Words that are likely the question topic (not document/property names). Used for filename-boost extraction.
+_FILENAME_BOOST_TOPIC_STOP = frozenset({
+    "what", "which", "when", "where", "who", "how", "flood", "risk", "value", "rating",
+    "epc", "energy", "market", "price", "cost", "rent", "lease", "term", "document",
+    "property", "summary", "detail", "information", "assessment", "report", "valuation",
+})
+
+
+def _distinctive_name_tokens_from_query(query: str) -> List[str]:
+    """
+    Extract tokens from the query that may be document or property names (e.g. "highlands")
+    so we can boost documents whose filename or summary contains them. Excludes common
+    question and topic words so "flood risk of highlands" yields ["highlands"].
+    """
+    if not query or not query.strip():
+        return []
+    q = query.lower().strip()
+    words = [w for w in q.split() if len(w) >= 4 and w not in _FILENAME_BOOST_TOPIC_STOP and w not in _GENERIC_ENTITY_TOKENS]
+    return list(dict.fromkeys(words))  # dedupe, preserve order
+
+
+def resolve_single_document_from_query(query: str, business_id: Optional[str] = None) -> Optional[List[str]]:
+    """
+    When the query names a document or property (e.g. "flood risk of highlands"), try to
+    resolve to a single document whose filename contains that name. Returns [document_id]
+    if exactly one match, else None. Used to pre-populate document_ids so the agent can
+    scope to that doc (align retrieval with attachment path).
+    """
+    tokens = _distinctive_name_tokens_from_query(query)
+    if not tokens or not business_id:
+        return None
+    try:
+        supabase = get_supabase_client()
+        sel = supabase.table("documents").select("id").eq("business_uuid", business_id)
+        # Match first distinctive token in filename (e.g. "highlands")
+        sel = sel.ilike("original_filename", f"%{tokens[0]}%")
+        result = sel.limit(2).execute()
+        rows = result.data or []
+        if len(rows) == 1:
+            doc_id = rows[0].get("id")
+            if doc_id:
+                logger.info("[RETRIEVER] Resolved single doc from query name: %s -> %s", tokens[0], str(doc_id)[:8])
+                return [str(doc_id)]
+    except Exception as e:
+        logger.debug("resolve_single_document_from_query failed: %s", e)
+    return None
+
 
 def _get_conflicting_location_patterns() -> List[str]:
     """Load conflicting_location_patterns from entity_gate_config.json or return default list."""
@@ -536,6 +583,19 @@ def retrieve_documents(
                             break
             except Exception as e:
                 logger.debug("   Could not fetch missing summaries: %s", e)
+        
+        # 6a. Filename/summary boost: when the query names a document or property (e.g. "highlands"),
+        # strongly prefer docs whose filename or summary contains that name (align retrieval with attachment path).
+        name_tokens = _distinctive_name_tokens_from_query(entity_query or query)
+        if name_tokens:
+            FILENAME_SUMMARY_BOOST = 0.25
+            for r in results:
+                fn = ((r.get('filename') or '') + ' ').lower().replace('_', ' ').replace('-', ' ')
+                summary = (r.get('summary_text') or '').lower()
+                if any(t in fn or t in summary for t in name_tokens):
+                    r['score'] = round(r['score'] + FILENAME_SUMMARY_BOOST, 4)
+            results.sort(key=lambda x: x['score'], reverse=True)
+            logger.debug("   Filename/summary boost applied for name-like tokens: %s", name_tokens[:5])
         
         if gate_phrases:
             # Boost docs that mention the entity in filename (helps ranking)

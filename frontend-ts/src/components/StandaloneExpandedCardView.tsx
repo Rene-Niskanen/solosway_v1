@@ -36,13 +36,12 @@ function citationBboxMatch(a: CitationData, b: CitationData): boolean {
   );
 }
 
-/** Find messageId and citationNumber for a citation by searching messages and streaming citations. */
+/** Find messageId and citationNumber for a citation by searching messages and streaming citations.
+ * Does NOT match by bbox across messages—that leaks citations from previous responses. */
 function findViewedCitationForCitation(
   citation: CitationData,
   messages: ChatMessage[],
-  streamingCitations: Record<string, CitationData>,
-  lastResponseMessageId?: string,
-  lastResponseCitations?: Record<string, CitationData>
+  streamingCitations: Record<string, CitationData>
 ): { messageId: string; citationNumber: string } | null {
   for (const msg of messages) {
     if (!msg.citations) continue;
@@ -56,12 +55,8 @@ function findViewedCitationForCitation(
       if (lastResponse) return { messageId: lastResponse.id, citationNumber: num };
     }
   }
-  // Fallback: match against last response citations by bbox (e.g. when messages use different refs)
-  if (lastResponseMessageId && lastResponseCitations) {
-    for (const [num, c] of Object.entries(lastResponseCitations)) {
-      if (citationBboxMatch(c, citation)) return { messageId: lastResponseMessageId, citationNumber: num };
-    }
-  }
+  // Do NOT fall back to matching by bbox across messages—that leaks citations from
+  // previous responses into the current one (e.g. flood risk bbox shown for EPC response).
   return null;
 }
 
@@ -353,9 +348,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
       ? findViewedCitationForCitation(
           nextCitation,
           activeChatState.messages,
-          activeChatState.streaming?.citations ?? {},
-          lastResponseMessageId,
-          lastResponseCitations
+          activeChatState.streaming?.citations ?? {}
         )
       : null;
 
@@ -372,7 +365,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
     }
     openExpandedCardView(nextDocId, nextFilename, highlightData, false);
     if (activeChatId && viewed) setDocumentViewedCitation(activeChatId, viewed);
-  }, [sortedCitations, currentCitationIndex, docId, filename, openExpandedCardView, openDocumentForChat, activeChatId, activeChatState, setDocumentViewedCitation, lastResponseMessageId, lastResponseCitations]);
+  }, [sortedCitations, currentCitationIndex, docId, filename, openExpandedCardView, openDocumentForChat, activeChatId, activeChatState, setDocumentViewedCitation]);
 
   // Navigate to previous citation
   const handleReviewPrevCitation = useCallback(() => {
@@ -400,9 +393,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
       ? findViewedCitationForCitation(
           prevCitation,
           activeChatState.messages,
-          activeChatState.streaming?.citations ?? {},
-          lastResponseMessageId,
-          lastResponseCitations
+          activeChatState.streaming?.citations ?? {}
         )
       : null;
 
@@ -419,7 +410,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
     }
     openExpandedCardView(prevDocId, prevFilename, highlightData, false);
     if (activeChatId && viewed) setDocumentViewedCitation(activeChatId, viewed);
-  }, [sortedCitations, currentCitationIndex, docId, filename, openExpandedCardView, openDocumentForChat, activeChatId, activeChatState, setDocumentViewedCitation, lastResponseMessageId, lastResponseCitations]);
+  }, [sortedCitations, currentCitationIndex, docId, filename, openExpandedCardView, openDocumentForChat, activeChatId, activeChatState, setDocumentViewedCitation]);
 
   // Fetch document metadata to get the real filename
   useEffect(() => {

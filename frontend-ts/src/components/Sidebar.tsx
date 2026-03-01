@@ -548,6 +548,19 @@ export const Sidebar = ({
       >
         {!shouldHideSidebar && (
           <div className="flex flex-col h-full min-h-0 pb-3 pt-12">
+            {/* VELORA logo - smaller, inline with sidebar buttons; invert for light sidebar (logo is dark-on-black); hidden when icons-only */}
+            {!isIconsOnly && (
+              <div className="relative flex-shrink-0" style={{ height: 36 }}>
+                <div className="absolute left-0 right-0 flex items-center px-3" style={{ top: -21, marginLeft: 14 }}>
+                  <img
+                    src="/VELORA_WRITINGLOGO.png"
+                    alt="Velora"
+                    className="h-4 object-contain object-left"
+                    style={{ width: 'auto', maxWidth: '120px', filter: 'invert(1) brightness(0.2)', opacity: 0.8 }}
+                  />
+                </div>
+              </div>
+            )}
             {/* Top-right (expanded) / same column as icons (icons-only): Show only icons / Expand sidebar toggle */}
             {onIconsOnlyToggle && (
               <div className={`absolute top-1.5 pt-3 z-10 ${isIconsOnly ? 'left-0 right-0 flex justify-center pl-[14px] pr-0' : 'right-0 flex items-center justify-end pr-2'}`}>
@@ -564,13 +577,13 @@ export const Sidebar = ({
             )}
 
             {/* New chat + Search — same spacing in both modes; icons-only shifted right to center in sidebar+rail */}
-            <div className={isIconsOnly ? 'flex flex-col items-center pl-[14px] pr-0 space-y-px mt-8 mb-5' : 'px-3 mt-8 space-y-px mb-5'}>
+            <div className={isIconsOnly ? 'flex flex-col items-center pl-[14px] pr-0 space-y-px mt-12 mb-5' : 'px-3 mt-6 space-y-px mb-5'}>
               <button
                 onClick={() => {
                   onRestoreActiveChat?.();
                   onNewChat?.();
                 }}
-                className={`flex items-center rounded border border-transparent text-[#141413] hover:bg-white/60 hover:text-[#141413] active:bg-white active:text-[#141413] transition-colors ${isIconsOnly ? 'justify-center p-2 w-10 mt-6' : 'w-full gap-3 pl-2 pr-3 py-1.5 mt-6'}`}
+                className={`flex items-center rounded border border-transparent text-[#141413] hover:bg-white/60 hover:text-[#141413] active:bg-white active:text-[#141413] transition-colors ${isIconsOnly ? 'justify-center p-2 w-10 mt-6' : 'w-full gap-3 pl-2 pr-3 py-1.5'}`}
                 aria-label="New chat"
               >
                 <img src="/newchat1.png" alt="" className="h-6 w-6 flex-shrink-0 object-contain" />

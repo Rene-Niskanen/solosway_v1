@@ -2693,15 +2693,20 @@ export const MainContent = ({
     legacyCloseExpandedCardView();
   }, [activeChatId, closeDocumentForChat, legacyCloseExpandedCardView]);
 
-  // Message whose citations we use for the document preview (nav + highlight). Always use the
-  // latest response so prev/next go through all citations for this doc and are not limited by
-  // the message the document preview card is on (e.g. a single-citation callout).
+  // Message whose citations we use for the document preview. When opened from a citation click,
+  // viewedCitation.messageId tells us which message owns the view—use that to avoid leaking
+  // citations from other responses. Otherwise use the latest response.
   const messageForDocPreview = React.useMemo(() => {
     if (!chatMessages?.length) return null;
+    const viewedMsgId = (expandedCardViewDoc as { viewedCitation?: { messageId?: string } })?.viewedCitation?.messageId;
+    if (viewedMsgId) {
+      const owningMsg = chatMessages.find((m: { id?: string }) => (m.id ?? '') === viewedMsgId);
+      if (owningMsg?.citations) return owningMsg;
+    }
     return [...chatMessages].reverse().find((m: { type?: string }) => m.type === 'response') ?? null;
-  }, [chatMessages]);
+  }, [chatMessages, expandedCardViewDoc]);
 
-  // Citations from the owning message for the open document — so citation nav (prev/next) and highlight stay in that response
+  // Citations from the owning message only—never from a different response (wall between queries)
   const citationsForDocumentPreview = React.useMemo((): CitationData[] | undefined => {
     if (!expandedCardViewDoc?.docId || !messageForDocPreview?.citations) return undefined;
     const citations: CitationData[] = Object.values(messageForDocPreview.citations);
@@ -4450,34 +4455,40 @@ export const MainContent = ({
                         minWidth: '200px',
                         boxSizing: 'border-box'
                       }}>
-                        {/* Dashboard Logo - fills wrapper so it shrinks at small width and stays centered on search bar */}
-                        <img 
-                          src="/VELORA-----1.png"
-                          width={906}
-                          height={250}
-                          alt="Velora" 
-                          // @ts-expect-error - use lowercase fetchpriority per React DOM warning; types still use fetchPriority
-                          fetchpriority="high"
-                          className="h-auto"
-                          style={{ 
-                            width: '100%',
-                            maxWidth: '100%',
-                            height: 'auto',
-                            minHeight: '32px',
-                            maxHeight: '70px',
+                        {/* Dashboard Logo + greeting - same style as SideChatPanel empty state */}
+                        <div
+                          className="w-full flex justify-center items-center gap-3"
+                          style={{
                             marginBottom: (!effectiveIsVerySmall && !effectiveShouldHideProjects) ? 'clamp(2rem, 4vh, 2.75rem)' : '0',
-                            objectFit: 'contain',
-                            transform: 'translateZ(0)',
-                            backfaceVisibility: 'hidden' as const,
-                            imageRendering: 'crisp-edges',
                           }}
-                    onLoad={() => {
-                      console.log('✅ Velora logo loaded successfully');
-                    }}
-                    onError={(e) => {
-                      console.error('❌ Velora logo failed to load:', e.currentTarget.src);
-                    }}
-                  />
+                        >
+                          <img
+                            src="/VELORA_DASHLOGO.png"
+                            alt="Velora"
+                            // @ts-expect-error - use lowercase fetchpriority per React DOM warning; types still use fetchPriority
+                            fetchpriority="high"
+                            style={{
+                              height: 'clamp(1.5rem, 4vw, 2rem)',
+                              width: 'auto',
+                              objectFit: 'contain',
+                              flexShrink: 0,
+                            }}
+                          />
+                          <h2
+                            className="text-[#111]"
+                            style={{
+                              fontWeight: 400,
+                              fontSize: 'clamp(1.25rem, 3.5vw, 1.5rem)',
+                              lineHeight: 1.3,
+                              margin: 0,
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            {userData?.first_name?.trim()
+                              ? `Hey ${userData.first_name.trim()}, What can I help you with today?`
+                              : 'What can I help you with today?'}
+                          </h2>
+                        </div>
                 </div>
                 
                       

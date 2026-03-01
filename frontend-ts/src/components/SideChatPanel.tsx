@@ -23,7 +23,7 @@ import type { PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist';
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import citationIcon from '/citation.png';
 import agentIcon from '/agent.png';
-import { prepareResponseTextForDisplay, textForCopy } from '../utils/responseTextPreprocessing';
+import { prepareResponseTextForDisplay, textForCopy, normalizeIdCitationsToBracket, stripBlockCiteIdFromDisplay } from '../utils/responseTextPreprocessing';
 
 // Configure PDF.js worker globally (same as other components)
 pdfjs.GlobalWorkerOptions.workerSrc = pdfjsWorker;
@@ -2187,7 +2187,7 @@ const StreamingResponseText: React.FC<{
               margin: '0 0 0 0',
               padding: 0,
               textAlign: 'left',
-              lineHeight: 0,
+              lineHeight: '1.7',
               wordWrap: 'break-word',
               overflowWrap: 'break-word',
               wordBreak: 'break-word',
@@ -2195,12 +2195,12 @@ const StreamingResponseText: React.FC<{
             }}><span ref={firstPartTriggerRef} style={{ display: 'block', lineHeight: '1.7' }}>{showBarFirstPartOnly && <span aria-hidden style={citationLineBarInlineStyle} />}{firstPartContentToRender}</span></p>
             {showCitationPreviewBar && showInResponseCitationCallouts && (citationBarMode ? currentCitationNum === firstCitationNum : showCalloutForNum(firstCitationNum)) && renderFirstCalloutWithUnveil()}
             {restPartContent != null && restPartContent.length > 0 && (
-              <div style={{ ...getPostCalloutStyle(), marginTop: 4 }}>
+              <div style={{ ...getPostCalloutStyle(), marginTop: 10 }}>
                 <p style={{
                   margin: '0 0 17.5px 0',
                   padding: 0,
                   textAlign: 'left',
-                  lineHeight: 0,
+                  lineHeight: '1.7',
                   wordWrap: 'break-word',
                   overflowWrap: 'break-word',
                   wordBreak: 'break-word',
@@ -2224,7 +2224,7 @@ const StreamingResponseText: React.FC<{
               margin: '0 0 17.5px 0',
               padding: 0,
               textAlign: 'left',
-              lineHeight: 0,
+              lineHeight: '1.7',
               wordWrap: 'break-word',
               overflowWrap: 'break-word',
               wordBreak: 'break-word',
@@ -2530,7 +2530,7 @@ const StreamingResponseText: React.FC<{
               margin: '0 0 0 0',
               padding: 0,
               textAlign: 'left',
-              lineHeight: 0,
+              lineHeight: '1.7',
               wordWrap: 'break-word',
               overflowWrap: 'break-word',
               wordBreak: 'break-word',
@@ -2538,12 +2538,12 @@ const StreamingResponseText: React.FC<{
             }}><span ref={firstPartTriggerRefP} style={{ display: 'block', lineHeight: '1.7' }}>{showBarFirstPartOnlyP && <span aria-hidden style={citationLineBarInlineStyle} />}{innerFirst}</span></p>
             {showCitationPreviewBar && showInResponseCitationCallouts && (citationBarMode ? currentCitationNum === firstCitationNumP : showCalloutForNum(firstCitationNumP)) && renderFirstCalloutWithUnveilP()}
             {innerRest != null && (
-              <div style={{ ...getPostCalloutStyleP(), marginTop: 4 }}>
+              <div style={{ ...getPostCalloutStyleP(), marginTop: 10 }}>
                 <p style={{
                   margin: '0 0 17.5px 0',
                   padding: 0,
                   textAlign: 'left',
-                  lineHeight: 0,
+                  lineHeight: '1.7',
                   wordWrap: 'break-word',
                   overflowWrap: 'break-word',
                   wordBreak: 'break-word',
@@ -2569,7 +2569,7 @@ const StreamingResponseText: React.FC<{
               margin: '0 0 17.5px 0',
               padding: 0,
               textAlign: 'left',
-              lineHeight: 0,
+              lineHeight: '1.7',
               wordWrap: 'break-word',
               overflowWrap: 'break-word',
               wordBreak: 'break-word',
@@ -3548,11 +3548,16 @@ const CitationLink: React.FC<{
   );
 };
 
-/** Strip only internal block refs from citation excerpt; keep ** and * for bold/italic rendering. */
+/** Strip only internal block refs and fragment artifacts from citation excerpt; keep ** and * for bold/italic rendering. */
 function sanitizeCitationCalloutText(raw: string): string {
   let out = raw
     // Remove internal block cite refs e.g. [id: 9](block_cite_id_34) or [id: 2](block_cite_id_6)
-    .replace(/\[id:\s*\d+\]\(block_cite_id_\d+\)/g, '');
+    .replace(/\[id:\s*\d+\]\(block_cite_id_\d+\)/g, '')
+    // Remove [id: N](...) style refs that may be malformed or truncated
+    .replace(/\[id:\s*\d+\]\([^)]*\)?/g, '')
+    .replace(/\[id:\s*\d+\]\([^)]*$/g, '');
+  // Strip trailing clause ref artifacts (e.g. " C1.1.1") that sometimes leak as parsing remnants; preserve leading refs (valid in legal docs)
+  out = out.replace(/\s*(?:C\d+(?:\.\d+)*|\d+(?:\.\d+)+)\s*$/i, '');
   // Collapse multiple spaces and trim
   out = out.replace(/\s+/g, ' ').trim();
   return out;
@@ -6225,9 +6230,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     // Pattern matches: [CHUNK:0], [CHUNK:1], [CHUNK:123], [CHUNK:0:PAGE:1], etc.
     cleaned = cleaned.replace(/\[CHUNK:\d+(?::PAGE:\d+)?\]/g, '');
     
-    // Remove BLOCK_CITE_ID references (e.g., "(BLOCK_CITE_ID_136)", "BLOCK_CITE_ID_136", "[BLOCK_CITE_ID_136]")
-    // Pattern matches: (BLOCK_CITE_ID_123), BLOCK_CITE_ID_123, [BLOCK_CITE_ID_123], or any variation
-    cleaned = cleaned.replace(/\s*[\[\(]?BLOCK_CITE_ID_\d+[\]\)]?\s*/g, ' ');
+    // Normalize [ID: X](BLOCK_CITE_ID_N) -> [X]; [X] is the format citation buttons expect (citations[num])
+    // Must produce [1], [2], etc. so renderTextWithCitations can match citations["1"], citations["2"]
+    cleaned = normalizeIdCitationsToBracket(cleaned);
+    // Strip any remaining BLOCK_CITE_ID markers (mapping-only, never shown to user)
+    cleaned = stripBlockCiteIdFromDisplay(cleaned);
     
     // Strip internal MAIN tags so they never appear in the UI (allow 1–3 closing > for malformed LLM output)
     cleaned = cleaned.replace(/<<<MAIN>>>/g, '');
@@ -8411,19 +8418,18 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
 
   // ========== CHAT STATE STORE INTEGRATION ==========
   // Wrapper: Open document with per-chat isolation (writes to ChatStateStore)
-  // Also calls legacy openExpandedCardView during migration for backward compatibility
+  // viewedCitation: when opening from a citation click, pass messageId + citationNumber so the preview uses only that message's citations (wall between queries)
   const openExpandedCardView = React.useCallback((
     docId: string, 
     filename: string, 
     highlight?: CitationHighlight, 
-    isAgentTriggered?: boolean
+    isAgentTriggered?: boolean,
+    viewedCitation?: { messageId: string; citationNumber: string } | null
   ) => {
     const chatId = currentChatIdRef.current;
     if (chatId) {
-      // Write to ChatStateStore (per-chat isolation)
-      openDocumentForChat(chatId, { docId, filename, highlight });
+      openDocumentForChat(chatId, { docId, filename, highlight, viewedCitation: viewedCitation ?? null });
     }
-    // Also call legacy for backward compatibility during migration
     legacyOpenExpandedCardView(docId, filename, highlight, isAgentTriggered);
   }, [openDocumentForChat, legacyOpenExpandedCardView]);
   
@@ -10483,7 +10489,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     return normalized;
                   };
                   
-                  const finalCitations = normalizeCitations(data.citations || accumulatedCitations || {});
+                  const completeCitations = data.citations && typeof data.citations === 'object' && Object.keys(data.citations).length > 0
+                    ? data.citations
+                    : null;
+                  const finalCitations = normalizeCitations(completeCitations ?? accumulatedCitations ?? {});
                   
                   console.log('✅ SideChatPanel: finalizeText called:', {
                     finalTextLength: finalText.length,
@@ -11842,8 +11851,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   }, [expandedCardViewDoc]);
 
 
-  // Open citation in 50/50 document view (extracted for use from "View in document" and agent-triggered opens)
-  const openCitationInDocumentView = React.useCallback(async (citationData: CitationData, fromAgentAction: boolean = false) => {
+  // Open citation in 50/50 document view. viewedCitation: when known (from citation click), pass so preview uses only that message's citations (wall between queries).
+  const openCitationInDocumentView = React.useCallback(async (
+    citationData: CitationData,
+    fromAgentAction: boolean = false,
+    viewedCitation?: { messageId: string; citationNumber: string } | null
+  ) => {
     try {
       const rawDocId = citationData.doc_id ?? (citationData as { document_id?: string }).document_id;
       const docId = rawDocId != null ? String(rawDocId) : '';
@@ -11958,7 +11971,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       } else {
         wasFullscreenBeforeCitationRef.current = false;
       }
-      openExpandedCardView(docId, citationData.original_filename || 'document.pdf', highlightData || undefined, fromAgentAction);
+      openExpandedCardView(docId, citationData.original_filename || 'document.pdf', highlightData || undefined, fromAgentAction, viewedCitation ?? undefined);
       documentPreviewOwnerRef.current = currentChatIdRef.current || currentChatId;
     } catch (error: any) {
       console.error('❌ Error opening citation document:', error);
@@ -11975,11 +11988,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   // Citation pop-up and bar only show for the latest response; ignore clicks on citations in older messages
   const handleUserCitationClick = React.useCallback((data: CitationDataType, anchorRect?: DOMRect, highlightRect?: DOMRect | null, sourceMessageText?: string, messageId?: string, citationNumber?: string) => {
     if (isDocumentPreviewOpenRef.current) {
-      // Document preview already open: go straight to this citation in the document view (no panel)
-      openCitationInDocumentView(data as CitationData, false);
-      if (currentChatId && messageId != null && citationNumber != null) {
-        setDocumentViewedCitation(currentChatId, { messageId, citationNumber });
-      }
+      const viewed = messageId != null && citationNumber != null ? { messageId, citationNumber } : null;
+      openCitationInDocumentView(data as CitationData, false, viewed ?? undefined);
+      if (currentChatId && viewed) setDocumentViewedCitation(currentChatId, viewed);
       return;
     }
     // Only show citation pop-up for the latest assistant response
@@ -16284,10 +16295,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               });
                 }}
                 onViewInDocumentFromCallout={(citationData, msgId, citationNumber) => {
-                  openCitationInDocumentView(citationData as CitationData, false);
-                  if (msgId != null && citationNumber != null) {
-                    setCitationViewedInDocument({ messageId: msgId, citationNumber });
-                    if (currentChatId) setDocumentViewedCitation(currentChatId, { messageId: msgId, citationNumber });
+                  const viewed = msgId != null && citationNumber != null ? { messageId: msgId, citationNumber } : null;
+                  openCitationInDocumentView(citationData as CitationData, false, viewed ?? undefined);
+                  if (viewed) {
+                    setCitationViewedInDocument(viewed);
+                    if (currentChatId) setDocumentViewedCitation(currentChatId, viewed);
                   }
                 }}
                 citationViewedInDocument={citationViewedInDocument}
@@ -16724,10 +16736,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             messageCitedExcerpt={messageCitedExcerpt || undefined}
             onViewInDocument={() => {
               const { messageId, citationNumber } = citationClickPanel;
-              openCitationInDocumentView(citationClickPanel.citationData, false);
               const viewed = messageId != null && citationNumber != null ? { messageId, citationNumber } : null;
-              setCitationViewedInDocument(viewed);
-              if (currentChatId && viewed) setDocumentViewedCitation(currentChatId, viewed);
+              openCitationInDocumentView(citationClickPanel.citationData, false, viewed ?? undefined);
+              if (viewed) {
+                setCitationViewedInDocument(viewed);
+                if (currentChatId) setDocumentViewedCitation(currentChatId, viewed);
+              }
               setCitationClickPanel(null);
             }}
             onAskFollowUp={() => {
@@ -16771,10 +16785,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 if (ok) showCitationSavedFeedbackOnce();
                 else toast({ title: 'Could not save citation', description: 'Try again or open the document view to save from there.', variant: 'destructive' });
               } else {
-                openCitationInDocumentView(citationClickPanel.citationData, false);
                 const viewed = citationClickPanel.messageId != null && citationClickPanel.citationNumber != null ? { messageId: citationClickPanel.messageId, citationNumber: citationClickPanel.citationNumber } : null;
-                setCitationViewedInDocument(viewed);
-                if (currentChatId && viewed) setDocumentViewedCitation(currentChatId, viewed);
+                openCitationInDocumentView(citationClickPanel.citationData, false, viewed ?? undefined);
+                if (viewed) {
+                  setCitationViewedInDocument(viewed);
+                  if (currentChatId) setDocumentViewedCitation(currentChatId, viewed);
+                }
                 setCitationClickPanel(null);
                 toast({ title: 'Open document view to save citation', description: 'Use the document view to add this citation to your export.', variant: 'default' });
               }
@@ -17991,19 +18007,35 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 <div style={{ flexShrink: 0, height: 'calc(50vh - 400px)', width: '100%' }} aria-hidden />
                 {/* Logo-equivalent section: 200px + 5rem margin to match dashboard (logo maxHeight + clamp(2.25rem,5vh,3.25rem) + clamp(2rem,4vh,2.75rem)) so bar vertical position is identical */}
                 <div style={{ flexShrink: 0, minHeight: '200px', marginBottom: '5rem', width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'flex-end' }}>
-                  {/* Title above chat bar - slightly less bold */}
+                  {/* Title above chat bar - logo + greeting like reference */}
                   {emptyStateTitleMessage ? (
-                    <h2
-                      className="w-full text-center text-[#111]"
-                      style={{
-                        fontWeight: 400,
-                        fontSize: 'clamp(1.25rem, 3.5vw, 1.5rem)',
-                        lineHeight: 1.3,
-                        marginBottom: '40px',
-                      }}
+                    <div
+                      className="w-full flex justify-center items-center gap-3"
+                      style={{ marginBottom: '40px' }}
                     >
-                      {emptyStateTitleMessage}
-                    </h2>
+                      <img
+                        src="/VELORA_DASHLOGO.png"
+                        alt="Velora"
+                        style={{
+                          height: 'clamp(1.5rem, 4vw, 2rem)',
+                          width: 'auto',
+                          objectFit: 'contain',
+                          flexShrink: 0,
+                        }}
+                      />
+                      <h2
+                        className="text-[#111]"
+                        style={{
+                          fontWeight: 400,
+                          fontSize: 'clamp(1.25rem, 3.5vw, 1.5rem)',
+                          lineHeight: 1.3,
+                          margin: 0,
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {emptyStateTitleMessage}
+                      </h2>
+                    </div>
                   ) : null}
                 </div>
                 {/* Expanded Chat Input Container - drag handlers + ref for document-level drag detection */}
@@ -18077,7 +18109,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       style={{
                         background: '#ffffff',
                         border: isDragOver ? '2px dashed #E0E0E0' : '1px solid #E0E0E0',
-                        boxShadow: '0 4px 20px rgba(0, 0, 0, 0.07), 0 2px 8px rgba(0, 0, 0, 0.05)',
+                        boxShadow: '0 2px 8px rgba(0, 0, 0, 0.05), 0 1px 3px rgba(0, 0, 0, 0.03)',
                         position: 'relative',
                         paddingTop: '16px',
                         paddingBottom: '12px',
@@ -19166,7 +19198,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       borderWidth: isDragOver ? 2 : 1,
                       borderStyle: isDragOver ? 'dashed' : 'solid',
                       borderColor: showBarGlow ? 'transparent' : (isDragOver ? '#E0E0E0' : '#E0E0E0'),
-                      boxShadow: '0 4px 20px rgba(0, 0, 0, 0.07), 0 2px 8px rgba(0, 0, 0, 0.05)',
+                      boxShadow: '0 2px 8px rgba(0, 0, 0, 0.05), 0 1px 3px rgba(0, 0, 0, 0.03)',
                       position: 'relative',
                       paddingTop: '16px',
                       paddingBottom: '12px',

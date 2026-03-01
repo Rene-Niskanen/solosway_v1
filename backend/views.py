@@ -1045,6 +1045,18 @@ def query_documents_stream():
                 # retrieval is scoped by property_id to all docs for that project (not a single doc).
                 effective_document_ids = document_ids if document_ids else None
 
+                # Optional: when no document_ids but query names a document (e.g. "flood risk of highlands"),
+                # resolve to a single doc so retrieval scopes to it (align with attachment path).
+                if (not effective_document_ids or (isinstance(effective_document_ids, list) and len(effective_document_ids) == 0)) and business_id:
+                    try:
+                        from backend.llm.tools.document_retriever_tool import resolve_single_document_from_query
+                        resolved = resolve_single_document_from_query(query, business_id)
+                        if resolved and len(resolved) == 1:
+                            effective_document_ids = resolved
+                            logger.info("[STREAM] Resolved single document from query name: %s", resolved[0][:8])
+                    except Exception as e:
+                        logger.debug("[STREAM] Single-doc resolution skipped: %s", e)
+
                 # Scope resolution: when user sent document_ids but no property_id, resolve property_id from first document
                 resolved_property_id = None
                 if (not property_id) and effective_document_ids and len(effective_document_ids) > 0:
@@ -1382,9 +1394,23 @@ def query_documents_stream():
                         logger.info("🟡 [STREAM] run_and_stream() async function started (runner_graph=%s)", runner_graph is not None)
                         # Yield immediately so the client gets feedback (don't block on get_document/Supabase)
                         if effective_document_ids:
-                            # Yield first so client sees "Reading..." without waiting for Supabase
-                            yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'reading_documents', 'action_type': 'reading', 'message': 'Reading selected documents...', 'details': {}, 'timestamp': time.time()})}\n\n"
-                            # get_document no longer blocks first byte; filename could be fetched later if needed for UI
+                            # Include first document name in step so UI shows actual filename instead of "Document"
+                            details_reading = {}
+                            try:
+                                ids_list = list(effective_document_ids)[:5] if effective_document_ids else []
+                                if ids_list and business_id:
+                                    supabase = get_supabase_client()
+                                    name_res = supabase.table("documents").select("id, original_filename").in_("id", ids_list).eq("business_uuid", str(business_id)).limit(5).execute()
+                                    if name_res.data and len(name_res.data) > 0:
+                                        names = [row.get("original_filename") or "" for row in name_res.data if (row.get("original_filename") or "").strip()]
+                                        if names:
+                                            details_reading["filename"] = names[0].strip() or None
+                                            details_reading["document_names"] = names
+                            except Exception as name_err:
+                                logger.debug("Reading step filename lookup skipped: %s", name_err)
+                            first_name = (details_reading.get("filename") or (details_reading.get("document_names") or [None])[0]) if details_reading else None
+                            message_reading = f"Read {first_name}" if first_name else "Reading selected documents..."
+                            yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'reading_documents', 'action_type': 'reading', 'message': message_reading, 'details': details_reading, 'timestamp': time.time()})}\n\n"
                         else:
                             yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'preparing', 'action_type': 'planning', 'message': 'Preparing...', 'details': {}, 'timestamp': time.time()})}\n\n"
                         
@@ -1503,8 +1529,10 @@ def query_documents_stream():
                             initial_state["conversation_from_client"] = False
                         
                         # Cache-first only when fast classifier says same-doc follow-up (else run planner for new question)
+                        logger.warning(f"🔍 [FOLLOW_UP_ROUTING] is_followup={is_followup}, has_existing_state={existing_state is not None}, has_values={bool(getattr(existing_state, 'values', None))}")
                         if is_followup and existing_state is not None and getattr(existing_state, "values", None):
                             cached_results = existing_state.values.get("execution_results") or []
+                            logger.warning(f"🔍 [FOLLOW_UP_ROUTING] cached_results count={len(cached_results)}")
                             if cached_results and len(cached_results) > 0:
                                 from backend.llm.utils.follow_up_classifier import classify_follow_up, should_use_paste_plus_docs
                                 try:
@@ -1517,7 +1545,7 @@ def query_documents_stream():
                                         ),
                                         timeout=15.0,
                                     )
-                                    logger.info("🟡 [STREAM] Follow-up classification: %s", classification)
+                                    logger.warning("🟡 [FOLLOW_UP_ROUTING] classification=%s for query='%s'", classification, query[:80])
                                     if classification == "same_doc_follow_up":
                                         from backend.llm.utils.follow_up_classifier import extract_document_ids_from_results
                                         # Filter A (different doc) already runs inside classifier; no redundant check needed
@@ -1532,18 +1560,18 @@ def query_documents_stream():
                                             )
                                             cached_chunks = get_cached_chunks(session_id, same_doc_ids) if session_id else None
                                             if cached_chunks:
-                                                top_chunks = run_in_memory_retrieval(query, cached_chunks, top_k=12)
+                                                top_chunks = run_in_memory_retrieval(query, cached_chunks, top_k=18)
                                                 exec_results = build_execution_results_from_chunks(top_chunks)
                                                 initial_state["use_cached_results"] = True
                                                 initial_state["execution_results"] = exec_results
-                                                logger.info(f"🟢 [STREAM] Same-doc follow-up: cache hit for {len(same_doc_ids)} doc(s), using {len(top_chunks)} chunks from cache")
+                                                logger.warning(f"🟢 [FOLLOW_UP_ROUTING] CACHE HIT: {len(same_doc_ids)} doc(s), {len(top_chunks)} chunks from in-memory cache → document_cached path")
                                             else:
                                                 initial_state["document_ids"] = same_doc_ids
                                                 from backend.llm.utils.prior_context import extract_prior_chunk_context
                                                 prior_ctx = extract_prior_chunk_context(cached_results)
                                                 if prior_ctx:
                                                     initial_state["prior_chunk_context"] = prior_ctx
-                                                logger.info(f"🟢 [STREAM] Same-doc follow-up: scoping to {len(same_doc_ids)} doc(s), will re-run retrieval for current query")
+                                                logger.warning(f"🟡 [FOLLOW_UP_ROUTING] CACHE MISS: scoping to {len(same_doc_ids)} doc(s), will re-run retrieval via agent_loop")
                                                 schedule_doc_chunk_prime(session_id, same_doc_ids)
                                         else:
                                             # Do NOT reuse cached_results when we cannot extract doc IDs.
@@ -1551,8 +1579,8 @@ def query_documents_stream():
                                             initial_state["document_ids"] = []
                                             initial_state["use_cached_results"] = False
                                             initial_state["execution_results"] = []
-                                            logger.info(
-                                                "🟡 [STREAM] Same-doc follow-up: could not extract doc IDs from cache, "
+                                            logger.warning(
+                                                "🟡 [FOLLOW_UP_ROUTING] NO DOC IDS: could not extract doc IDs from cache, "
                                                 "running planner for fresh retrieval (avoids wrong citation mapping)"
                                             )
                                     elif classification == "paste_and_docs":
@@ -1573,7 +1601,7 @@ def query_documents_stream():
                                         initial_state["document_ids"] = []
                                         initial_state["use_cached_results"] = False
                                         initial_state["execution_results"] = []
-                                        logger.info(f"🟡 [STREAM] Cache-first skipped: classifier={classification} (running planner)")
+                                        logger.warning(f"🟡 [FOLLOW_UP_ROUTING] NEW_QUESTION: classifier={classification}, clearing cache → agent_loop")
                                     # If we did not set use_cached_results=True above, ensure checkpoint cannot leak old results into this turn
                                     if initial_state.get("use_cached_results") is not True:
                                         initial_state["use_cached_results"] = False
@@ -2210,12 +2238,19 @@ def query_documents_stream():
                                             final_result['final_summary'] = final_summary_from_responder
                                             logger.info(f"🟢 [STREAM] Captured final_summary from responder ({len(final_summary_from_responder)} chars)")
                                         chunk_citations_from_responder = state_data.get('chunk_citations', []) or state_data.get('citations', [])
+                                        logger.warning(
+                                            "🔍 [CITATION_DIAG] responder on_chain_end: chunk_citations=%d, citations=%d, no_results=%s, final_summary_len=%d",
+                                            len(state_data.get('chunk_citations', []) or []),
+                                            len(state_data.get('citations', []) or []),
+                                            state_data.get('no_results'),
+                                            len(state_data.get('final_summary', '') or ''),
+                                        )
                                         if chunk_citations_from_responder:
                                             final_result['chunk_citations'] = chunk_citations_from_responder
                                             final_result['citations'] = chunk_citations_from_responder
-                                            logger.info(
-                                                f"🟢 [CITATION_STREAM] Captured {len(chunk_citations_from_responder)} citations from responder "
-                                                "(same citation mapping as regular queries)"
+                                            logger.warning(
+                                                f"🔍 [CITATION_DIAG] Stored {len(chunk_citations_from_responder)} citations in final_result, "
+                                                f"first doc_id={chunk_citations_from_responder[0].get('doc_id', 'MISSING')[:12] if chunk_citations_from_responder else 'N/A'}"
                                             )
                                             # Stream citation events so frontend gets same real-time citation handling
                                             try:
@@ -2448,22 +2483,24 @@ def query_documents_stream():
                                             logger.info(f"🚀 [STREAM] Summary fully streamed ({len(final_summary_from_state)} chars) - continuing event loop for cleanup")
                                     
                                     # MERGE state updates from each node (don't overwrite!)
-                                    # CRITICAL: This captures final_summary from extract_final_answer and other nodes
+                                    # CRITICAL: chunk_citations must ONLY come from responder—never from state_update merge (avoids leaking previous-turn citations)
                                     if state_update:
                                         if final_result is None:
                                             final_result = {}
-                                        final_result.update(state_update)  # Merge instead of overwrite
+                                        merge_safe = {k: v for k, v in state_update.items() if k not in ("chunk_citations", "citations")}
+                                        final_result.update(merge_safe)
                                         
                                         # Log important captures for debugging
                                         if node_name == "extract_final_answer" and state_update.get("final_summary"):
                                             logger.info(f"🟢 [STREAM] Captured final_summary from extract_final_answer ({len(state_update.get('final_summary', ''))} chars)")
                                         elif node_name == "agent" and state_update.get("messages"):
                                             logger.info(f"🟢 [STREAM] Captured messages from agent node ({len(state_update.get('messages', []))} messages)")
-                                    # Also try output field as fallback
+                                    # Also try output field as fallback (exclude chunk_citations/citations—responder-only)
                                     elif output and isinstance(output, dict):
                                         if final_result is None:
                                             final_result = {}
-                                        final_result.update(output)
+                                        merge_safe = {k: v for k, v in output.items() if k not in ("chunk_citations", "citations")}
+                                        final_result.update(merge_safe)
                                         logger.info(f"🟢 [STREAM] Captured state from {node_name} output field")
                         except Exception as exec_error:
                             error_msg = str(exec_error)
@@ -2808,6 +2845,14 @@ def query_documents_stream():
                         chunk_citations_list = final_result.get('chunk_citations', [])
                         citations_map_for_frontend = {}
                         structured_citations = []
+                        logger.warning(
+                            "🔍 [CITATION_DIAG] Post-loop: summary_already_streamed=%s, processed_citations=%d, chunk_citations=%d, "
+                            "final_result_keys=%s",
+                            summary_already_streamed,
+                            len(processed_citations) if processed_citations else 0,
+                            len(chunk_citations_list) if chunk_citations_list else 0,
+                            list(final_result.keys()) if isinstance(final_result, dict) else type(final_result).__name__,
+                        )
                         
                         use_processed = (
                             summary_already_streamed
@@ -3368,6 +3413,11 @@ def query_documents_stream():
                         #     ... (auto-open logic disabled - citations are clickable instead)
                         
                         # Send complete message with metadata (include streamed title for persistence)
+                        logger.warning(
+                            "🔍 [CITATION_DIAG] complete event: citations_map_count=%d, first_doc_id=%s",
+                            len(citations_map_for_frontend),
+                            next(iter(citations_map_for_frontend.values()), {}).get('doc_id', 'N/A')[:12] if citations_map_for_frontend else 'EMPTY',
+                        )
                         complete_data = {
                             'type': 'complete',
                             'data': {

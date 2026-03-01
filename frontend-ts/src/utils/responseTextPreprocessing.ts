@@ -80,6 +80,22 @@ export function stripBlockCiteIdFromDisplay(text: string): string {
   return text.replace(/\s*[\[\(]?BLOCK_CITE_ID_\d+[\]\)]?\s*/g, ' ').replace(/\s{2,}/g, ' ');
 }
 
+/** Remove orphan lines that are only clause refs (e.g. "C1.1.1") or parsing artifacts that leak from document structure. */
+export function stripOrphanFragmentLines(text: string): string {
+  if (!text || typeof text !== 'string') return text;
+  const lines = text.split('\n');
+  const result: string[] = [];
+  const clauseRefOnly = /^\s*(?:C\d+(?:\.\d+)*|\d+(?:\.\d+)+)\s*$/i;
+  for (const line of lines) {
+    if (line.trim() !== '' && clauseRefOnly.test(line)) {
+      // Skip orphan clause ref lines (parsing artifacts)
+      continue;
+    }
+    result.push(line);
+  }
+  return result.join('\n');
+}
+
 /** Normalize [ID: 1](BLOCK_CITE_ID_N) or [ID: 1] to [1] so citation matching and display use bracket numbers. */
 export function normalizeIdCitationsToBracket(text: string): string {
   if (!text || typeof text !== 'string') return text;
@@ -328,6 +344,7 @@ export function prepareResponseTextForDisplay(text: string): string {
   // Normalize [ID: X](BLOCK_CITE_ID_N) -> [X] and strip any remaining BLOCK_CITE_ID so they never leak into the UI
   let out = normalizeIdCitationsToBracket(text);
   out = stripBlockCiteIdFromDisplay(out);
+  out = stripOrphanFragmentLines(out);
   const withBold = ensureBalancedBoldForDisplay(out);
   const withSectionBreaks = ensureParagraphBreaksBeforeBoldSections(withBold);
   const noDoubleColon = stripRedundantColonAfterBoldLabel(withSectionBreaks);
