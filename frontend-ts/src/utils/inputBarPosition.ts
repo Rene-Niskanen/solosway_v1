@@ -23,6 +23,29 @@ export const CHAT_BAR_MAX_WIDTH_PX = 680;
 /** Max height (px) for chat input before it becomes scrollable. ~10 lines at 20px line-height. */
 export const CHAT_INPUT_MAX_HEIGHT_PX = 200;
 
+/**
+ * Shared layout constants for dashboard and chat section empty state.
+ * Must be identical so search bar + welcome message have the same vertical position when switching between dashboard and chat.
+ */
+export const DASHBOARD_CHAT_LAYOUT = {
+  /** Top spacer height – pushes logo + bar down so bar center lands at ~50vh */
+  TOP_SPACER_HEIGHT: 'calc(50vh - 400px)',
+  /** Logo-equivalent section min height (dashboard logo + greeting + margins) */
+  LOGO_SECTION_MIN_HEIGHT: '200px',
+  /** Margin below logo section – matches dashboard logo maxHeight + clamp margins */
+  LOGO_SECTION_MARGIN_BOTTOM: '5rem',
+  /** Gap between welcome message (logo + greeting) and search/chat bar */
+  WELCOME_TO_BAR_GAP: '40px',
+  /** Horizontal padding for content – same on dashboard and chat */
+  HORIZONTAL_PADDING: 'clamp(1rem, 2vw, 1rem)',
+  /** Logo section max width */
+  LOGO_SECTION_MAX_WIDTH: '480px',
+  /** Logo section min width */
+  LOGO_SECTION_MIN_WIDTH: '200px',
+  /** Top padding to match dashboard's content container (p-8 lg:p-16) so welcome/bar align */
+  CONTAINER_TOP_PADDING: 'clamp(2rem, 5vw, 4rem)',
+} as const;
+
 export interface InputBarFixedContainerOptions {
   /** Override left (e.g. '50%' or 'calc(50vw + 116px)'). */
   left?: string;

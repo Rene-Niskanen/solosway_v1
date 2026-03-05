@@ -13,4 +13,6 @@ export const CHAT_PANEL_WIDTH = {
   DOC_PREVIEW_MIN: 380,
   /** Minimum width for the projects (left) side when dragging the chat panel divider (px) */
   PROJECTS_MIN: 480,
+  /** When document preview is open: chat gets this fraction of available width (0.55 = 55% chat, 45% doc) */
+  DOC_PREVIEW_CHAT_RATIO: 0.55,
 } as const;

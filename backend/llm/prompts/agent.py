@@ -89,7 +89,7 @@ Relevant document excerpts:
 
 ⚠️ IMPORTANT: Read the excerpts carefully. If the answer to the user's question is present in the excerpts above, extract and present it directly. Do NOT say the information is not found if it is actually in the excerpts.
 
-⚠️ CRITICAL: You MUST wrap the key value or fact that answers the user's question in <<<MAIN>>>...<<<END_MAIN>>> (e.g. <<<MAIN>>>£2,300,000<<<END_MAIN>>> or <<<MAIN>>>Flood Zone 2<<<END_MAIN>>>). Do not omit these tags.
+⚠️ CRITICAL: You MUST wrap the key value or fact that answers the user's question in <<<MAIN>>>...<<<END_MAIN>>> (e.g. <<<MAIN>>>£2,300,000<<<END_MAIN>>> or the exact zone/rating from the excerpt). Do not omit these tags. Only put a value in <<<MAIN>>> if it appears in the retrieved excerpts—if the excerpts do not state the flood zone or rating, say so and do not invent a value.
 
 Provide a helpful, conversational answer using Markdown formatting:
 - Use `##` for main section headings, `###` for subsections

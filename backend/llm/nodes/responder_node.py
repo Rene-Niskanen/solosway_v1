@@ -12,7 +12,7 @@ import logging
 import re
 import uuid
 import json
-from typing import Dict, Any, List, Tuple, Optional, Literal
+from typing import Dict, Any, List, Tuple, Optional, Literal, Set
 from dataclasses import dataclass
 from pydantic import BaseModel, Field
 from langchain_openai import ChatOpenAI
@@ -36,6 +36,8 @@ from backend.llm.prompts.responder import (
     get_responder_block_citation_system_content,
     get_responder_formatted_answer_system_prompt,
     get_responder_formatted_answer_human_prompt,
+    CITATION_BLOCK_SELECTION_SYSTEM,
+    get_citation_block_selection_prompt,
 )
 from backend.llm.utils.personality_prompts import (
     PERSONALITY_CHOICE_INSTRUCTION,
@@ -405,64 +407,85 @@ def _build_responder_workspace_section(
         return "", None
 
 
-def _strip_markdown_for_citation(text: str) -> str:
-    """Strip common markdown so we can extract values from e.g. **£2,400,000**."""
-    if not text:
-        return text
-    return re.sub(r'\*+', '', text).strip()
+_VALIDATION_STOP_WORDS = frozenset({
+    'the', 'a', 'an', 'is', 'are', 'was', 'were', 'of', 'for', 'to', 'in', 'on', 'at',
+    'by', 'with', 'it', 'this', 'that', 'and', 'or', 'not', 'has', 'have', 'had', 'been',
+    'its', 'from', 'would', 'will', 'can', 'could', 'does', 'do', 'did', 'may', 'might',
+    'being', 'which', 'who', 'whom', 'what', 'where', 'when', 'how', 'than', 'then',
+    'also', 'just', 'only', 'very', 'more', 'most', 'some', 'such', 'into', 'over',
+    'after', 'before', 'between', 'under', 'about', 'each', 'but', 'they', 'their',
+    'there', 'these', 'those', 'any', 'all', 'both', 'other', 'our', 'your', 'we',
+})
 
 
-def _distinctive_values_from_cited_text(cited_text: str) -> List[str]:
+def _block_content_validates_against_query(
+    block_content: str, user_query: str, cited_text: str
+) -> bool:
     """
-    Extract distinctive values (numbers, currency, dates) from cited text so we can
-    prefer the block that actually contains the cited figure (e.g. £2,300,000)
-    over a similar block (e.g. "Market Value... 180 days") when multiple blocks
-    in the same chunk have overlapping wording.
+    Lightweight check: does the resolved block's content plausibly match
+    the cited text from the LLM response? Catches obvious mismatches like
+    citing a 'mortgageability' block when the cited text talks about 'Flood Zone 2'.
+
+    Uses token overlap between cited_text and block_content. If the block
+    doesn't contain enough of the words the LLM actually wrote, the LLM
+    probably cited the wrong block_id.
     """
-    if not cited_text or not cited_text.strip():
-        return []
-    # Strip markdown so **£2,400,000** is matched as £2,400,000
-    text = _strip_markdown_for_citation(cited_text)
-    values = []
-    # Currency amounts: £2,300,000 or £6,000 (keep as-is for substring match)
-    for m in re.finditer(r"£[\d,]+(?:\.[\d]+)?", text):
-        values.append(m.group(0))
-    # Large numbers with commas (often valuations): 2,300,000
-    for m in re.finditer(r"\b[\d]{1,3}(?:,[\d]{3})+\b", text):
-        val = m.group(0)
-        if val not in values:
-            values.append(val)
-        # Also add digits-only form so we match blocks that have "2400000" or "2 400 000"
-        digits_only = val.replace(",", "")
-        if digits_only not in values:
-            values.append(digits_only)
-    # Date-like: "12th February 2024" or "February 12, 2024"
-    for m in re.finditer(r"\d{1,2}(?:st|nd|rd|th)?\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4}", text, re.IGNORECASE):
-        values.append(m.group(0))
-    for m in re.finditer(r"(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s+\d{4}", text, re.IGNORECASE):
-        if m.group(0) not in values:
-            values.append(m.group(0))
-    # EPC-style ratings: "56 D", "71 C" (score + grade)
-    for m in re.finditer(r"\b(\d{1,3})\s+([A-G])\b", text, re.IGNORECASE):
-        num, grade = m.group(1), m.group(2).upper()
-        if num not in values:
-            values.append(num)
-        if grade not in values:
-            values.append(grade)
-    return values
+    if not block_content or not cited_text:
+        return True
+
+    content_lower = block_content.lower()
+    cited_lower = cited_text.lower()
+
+    cited_words = set(
+        w for w in re.findall(r'\b\w{3,}\b', cited_lower)
+        if w not in _VALIDATION_STOP_WORDS
+    )
+    if not cited_words:
+        return True
+
+    block_words = set(re.findall(r'\b\w{3,}\b', content_lower))
+    overlap = len(cited_words & block_words)
+    ratio = overlap / len(cited_words)
+
+    if ratio < 0.15:
+        return False
+
+    return True
 
 
-def _block_looks_like_footer_or_url(block_content: str) -> bool:
-    """True if block is likely footer/header/URL, not the cited factual content."""
-    if not block_content or len(block_content.strip()) < 20:
-        return True
-    s = block_content.lower().strip()
-    if "www." in s or ".com" in s or ".co.uk" in s:
-        return True
-    # Short boilerplate line like "United Kingdom - Spain - Portugal - Gibraltar"
-    if len(block_content) < 100 and "united kingdom" in s and ("spain" in s or "portugal" in s or "gibraltar" in s):
-        return True
-    return False
+async def _select_block_for_citation_llm(
+    user_query: str,
+    cited_text: str,
+    blocks: List[Dict[str, Any]],
+) -> Optional[Tuple[int, Dict[str, Any]]]:
+    """
+    Use LLM to select which block best answers the user's question.
+    Returns (original_block_index, block) or None if no suitable block.
+    """
+    if not blocks or not isinstance(blocks, list):
+        return None
+    valid = [(i, b) for i, b in enumerate(blocks) if isinstance(b, dict) and b.get('content') and isinstance(b.get('bbox'), dict)]
+    if not valid:
+        return None
+    valid_blocks = [b for _, b in valid]
+    try:
+        llm = ChatOpenAI(model=config.openai_model, temperature=0)
+        msgs = [
+            SystemMessage(content=CITATION_BLOCK_SELECTION_SYSTEM),
+            HumanMessage(content=get_citation_block_selection_prompt(user_query or "", cited_text or "", valid_blocks)),
+        ]
+        response = await llm.ainvoke(msgs)
+        text = (response.content or "").strip()
+        if "```" in text:
+            text = re.sub(r"```(?:json)?\s*", "", text).replace("```", "").strip()
+        data = json.loads(text)
+        idx = data.get("block_index")
+        if idx is not None and isinstance(idx, int) and 0 <= idx < len(valid):
+            orig_idx, block = valid[idx]
+            return orig_idx, block
+    except Exception as e:
+        logger.warning("[CITATION_BLOCK_SELECT] LLM block selection failed: %s", e)
+    return None
 
 
 # Evidence-First Citation Architecture Types
@@ -744,15 +767,16 @@ def _resolve_block_id_to_metadata(
     return None
 
 
-def extract_citations_with_positions(
+async def extract_citations_with_positions(
     llm_response: str,
     short_id_lookup: Dict[str, Dict[str, Any]],
     metadata_lookup_tables: Optional[Dict[str, Dict[str, Dict[str, Any]]]] = None,
+    user_query: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
     Extract citations from LLM response. Prefers jan28th-style [ID: X](BLOCK_CITE_ID_N):
     when (BLOCK_CITE_ID_N) is present, resolve bbox from metadata_lookup_tables. Otherwise
-    use short_id_lookup and select best block within the chunk.
+    use short_id_lookup and select best block via LLM (prompt-driven, no hardcoded heuristics).
     """
     citations = []
     pattern = r'\[ID:\s*([^\]]+)\]'
@@ -778,10 +802,10 @@ def extract_citations_with_positions(
                 block_id_from_response = block_id_match.group(1)
                 end_position = end_position + block_id_match.end()
         
-        # Extract context around the citation to help match to the right block
-        # Use a smaller context window to get more specific context
-        context_start = max(0, start_position - 50)
-        context_end = min(len(llm_response), end_position + 50)
+        # Extract context for block matching: entire text before the citation
+        # so distinctive values (e.g. "56 D") earlier in the sentence are included
+        context_start = 0
+        context_end = start_position
         citation_context = llm_response[context_start:context_end].lower()
         
         # Extract the sentence containing the citation for better matching
@@ -799,175 +823,114 @@ def extract_citations_with_positions(
         
         # Use the sentence containing the citation as the primary context
         sentence_context = citation_context[sentence_start:sentence_end].strip()
-        # Cited text for sub-level bbox: phrase that should be highlighted (sentence or key value)
-        # Prefer sentence; fallback to short window before marker (often contains "£X" or "value")
-        cited_text_for_bbox = sentence_context if sentence_context else llm_response[max(0, start_position - 80):start_position].strip()
-        if len(cited_text_for_bbox) > 200:
-            cited_text_for_bbox = cited_text_for_bbox[-200:]
+        # Cited text for block mapping: full sentence or full text before citation (no char limit)
+        # so distinctive values like "56 D" are always included for matching
+        cited_text_for_bbox = sentence_context if sentence_context else citation_context.strip()
 
-        # Jan28th-style: resolve by block_id when present (exact bbox, no heuristic)
-        # Citation number = order of appearance (1, 2, 3...) so UI shows [1], [2], [3], not block id.
+        # Jan28th-style: resolve by block_id when present, but VALIDATE content first.
+        # If the block content doesn't match the cited text, fall through to LLM selection.
+        block_id_accepted = False
         if block_id_from_response and metadata_lookup_tables:
             resolved = _resolve_block_id_to_metadata(block_id_from_response, metadata_lookup_tables)
             if resolved:
-                citation_number = idx  # Sequential by appearance in response
-                bbox = resolved.get('bbox')
-                page_number = int(resolved.get('page', 0))
-                citation = {
-                    'citation_number': citation_number,
-                    'short_id': short_id,
-                    'chunk_id': '',
-                    'position': start_position,
-                    'end_position': end_position,
-                    'bbox': bbox,
-                    'page_number': page_number,
-                    'doc_id': resolved.get('doc_id', ''),
-                    'original_filename': resolved.get('original_filename', ''),
-                    'block_id': block_id_from_response,
-                    'method': 'block-id-lookup',
-                    'block_info': None,
-                    'cited_text': cited_text_for_bbox,
-                    'citation_debug': {
-                        'short_id': short_id,
-                        'citation_number': citation_number,
-                        'cited_text_for_bbox': cited_text_for_bbox,
-                        'distinctive_values': [],
-                        'chosen_bbox': dict(bbox) if isinstance(bbox, dict) else None,
-                        'block_id': block_id_from_response,
-                        'block_index': None,
-                        'block_type': None,
-                        'block_content_preview': None,
-                        'match_score': None,
-                        'source': 'block-id-lookup',
-                        'num_blocks_considered': 0,
-                    },
-                }
-                citations.append(citation)
-                logger.info(
-                    f"[CITATION_DEBUG] Citation {idx} resolved by block_id {block_id_from_response} "
-                    f"(page={page_number}, doc_id={resolved.get('doc_id', '')[:8]})"
+                block_content_resolved = (resolved.get('content') or '').strip()
+                content_valid = _block_content_validates_against_query(
+                    block_content_resolved, user_query or '', cited_text_for_bbox
                 )
-                continue
+                if content_valid:
+                    citation_number = idx
+                    bbox = resolved.get('bbox')
+                    page_number = int(resolved.get('page', 0))
+                    citation = {
+                        'citation_number': citation_number,
+                        'short_id': short_id,
+                        'chunk_id': '',
+                        'position': start_position,
+                        'end_position': end_position,
+                        'bbox': bbox,
+                        'page_number': page_number,
+                        'doc_id': resolved.get('doc_id', ''),
+                        'original_filename': resolved.get('original_filename', ''),
+                        'block_id': block_id_from_response,
+                        'method': 'block-id-lookup',
+                        'block_info': None,
+                        'cited_text': cited_text_for_bbox,
+                        'citation_debug': {
+                            'short_id': short_id,
+                            'citation_number': citation_number,
+                            'cited_text_for_bbox': cited_text_for_bbox,
+                            'distinctive_values': [],
+                            'chosen_bbox': dict(bbox) if isinstance(bbox, dict) else None,
+                            'block_id': block_id_from_response,
+                            'block_index': None,
+                            'block_type': None,
+                            'block_content_preview': block_content_resolved[:200] if block_content_resolved else None,
+                            'match_score': None,
+                            'source': 'block-id-lookup-validated',
+                            'num_blocks_considered': 0,
+                        },
+                    }
+                    citations.append(citation)
+                    block_id_accepted = True
+                    logger.info(
+                        f"[CITATION_DEBUG] Citation {idx} resolved by block_id {block_id_from_response} "
+                        f"(page={page_number}, doc_id={resolved.get('doc_id', '')[:8]}, content_validated=True)"
+                    )
+                    continue
+                else:
+                    logger.warning(
+                        f"[CITATION_DEBUG] Citation {idx}: block_id {block_id_from_response} FAILED content validation "
+                        f"(block='{block_content_resolved[:80]}...', cited='{cited_text_for_bbox[:80]}...'). "
+                        f"Falling through to LLM block selection."
+                    )
 
-        # Look up full metadata for this short ID (fallback when no block_id in response)
+        # Look up full metadata for this short ID (fallback: no block_id, or block_id failed validation)
         metadata = short_id_lookup.get(short_id)
         if metadata:
-            # Find the best matching block for this citation
-            best_bbox = metadata.get('bbox')  # Fallback to chunk-level bbox
+            best_bbox = metadata.get('bbox')
             best_block_info = None
-            
             blocks = metadata.get('blocks', [])
-            distinctive = _distinctive_values_from_cited_text(cited_text_for_bbox) if cited_text_for_bbox else []
+
             if blocks and isinstance(blocks, list) and len(blocks) > 0:
-                # Distinctive values (e.g. £2,300,000, 12th February 2024) so we pick the block
-                # that actually contains the cited figure, not a similar block (e.g. "180 days").
-                best_match_score = 0
+                # LLM-based block selection: prompt contains all rules (flood risk, EPC, legal, etc.)
+                result = await _select_block_for_citation_llm(
+                    user_query or "", cited_text_for_bbox or "", blocks
+                )
+                if result:
+                    original_block_idx, selected_block = result
+                    block_bbox = selected_block.get('bbox')
+                    block_content = selected_block.get('content', '') or ''
+                    block_type = (selected_block.get('type') or '').lower()
+                    best_bbox = block_bbox
+                    best_block_info = {
+                        'block_index': original_block_idx,
+                        'block_type': block_type,
+                        'content_preview': block_content[:80],
+                        'content': block_content,
+                    }
 
-                for block_idx, block in enumerate(blocks):
-                    if not isinstance(block, dict):
-                        continue
-
-                    block_content_lower = (block.get('content', '') or '').lower()
-                    block_content_raw = (block.get('content', '') or '')
-                    block_type = block.get('type', '').lower()
-                    block_bbox = block.get('bbox')
-
-                    if not block_content_lower or not isinstance(block_bbox, dict):
-                        continue
-
-                    # Skip headings/titles (they're usually not what we want to highlight)
-                    if block_type in ['title', 'heading']:
-                        continue
-
-                    # When we have cited figures, skip blocks that look like footer/URL
-                    # (e.g. "www.mjgroupint.com" or "United Kingdom - Spain - Portugal")
-                    if distinctive and _block_looks_like_footer_or_url(block_content_raw):
-                        continue
-
-                    # Normalize block content for value check (remove spaces in numbers: "2 400 000" -> "2400000")
-                    block_normalized = re.sub(r'(\d)\s+(\d)', r'\1\2', block_content_raw) if block_content_raw else ''
-
-                    # Calculate match score based on keyword overlap
-                    context_words = set(word for word in citation_context.split() if len(word) > 3)
-                    block_words = set(word for word in block_content_lower.split() if len(word) > 3)
-                    overlap = len(context_words & block_words)
-                    match_score = overlap
-
-                    if sentence_context:
-                        sentence_words = set(word for word in sentence_context.split() if len(word) > 3)
-                        sentence_overlap = len(sentence_words & block_words)
-                        match_score += sentence_overlap * 2
-
-                    if len(block_content_lower) > 50:
-                        match_score += 1
-
-                    if sentence_context and sentence_context in block_content_lower:
-                        match_score += 10
-
-                    # When the citation contains distinctive values (e.g. £2,300,000, 12th February 2024),
-                    # only consider blocks that contain at least one of them. Otherwise we can highlight
-                    # the wrong block (e.g. "Market Value... 180 days" or footer "www.mjgroupint.com").
-                    if distinctive:
-                        block_has_value = any(
-                            val in block_content_raw or val in block_normalized
-                            for val in distinctive
-                        )
-                        if not block_has_value:
-                            continue  # skip this block
-                        match_score += 100  # strong bonus for containing the cited value
-
-                    if match_score > best_match_score:
-                        best_match_score = match_score
-                        best_bbox = block_bbox
-                        best_block_info = {
-                            'block_index': block_idx,
-                            'block_type': block_type,
-                            'content_preview': block.get('content', '')[:80],
-                            'match_score': match_score,
-                            'content': block.get('content', '') or '',
-                        }
-
-                # Require non-trivial overlap: when we have no distinctive values, the chosen block
-                # must have meaningful overlap with cited_text. Otherwise we risk highlighting the
-                # wrong block (e.g. "owner occupied" when citing EPC rating). Prefer chunk-level bbox.
-                MIN_OVERLAP_FOR_BLOCK = 2
-                if best_block_info and not distinctive and best_match_score < MIN_OVERLAP_FOR_BLOCK:
-                    logger.warning(
-                        f"[CITATION_DEBUG] Citation {idx} (short_id={short_id}): "
-                        f"Best block has weak overlap (score={best_match_score}), using chunk-level bbox to avoid wrong highlight"
-                    )
-                    best_block_info = None
-                    best_bbox = metadata.get('bbox')
-
-                # Narrow bbox to the line containing the cited text (avoid highlighting whole block)
-                if best_block_info and cited_text_for_bbox and isinstance(best_bbox, dict):
-                    block_content_for_narrow = best_block_info.get('content', '') or best_block_info.get('content_preview', '')
-                    if block_content_for_narrow:
+                    # Narrow bbox to the line containing the cited text
+                    if cited_text_for_bbox and isinstance(best_bbox, dict) and block_content:
                         try:
                             narrowed = _narrow_bbox_to_cited_line(
-                                block_content_for_narrow, best_bbox, cited_text_for_bbox
+                                block_content, best_bbox, cited_text_for_bbox
                             )
                             if narrowed and narrowed != best_bbox:
                                 best_bbox = narrowed
                         except Exception as e:
                             logger.debug("Could not narrow bbox to cited line: %s", e)
-                
-                # Log block selection for debugging
+                else:
+                    best_bbox = metadata.get('bbox')
+
                 if best_block_info:
                     logger.info(
                         f"[CITATION_DEBUG] Citation {idx} (short_id={short_id}): "
-                        f"Selected block {best_block_info['block_index']} "
-                        f"(type={best_block_info['block_type']}, "
-                        f"score={best_block_info['match_score']}, "
-                        f"bbox={best_bbox is not None})"
-                    )
-                    logger.debug(
-                        f"  Block content preview: '{best_block_info['content_preview']}...'"
+                        f"Selected block {best_block_info['block_index']} (LLM, type={best_block_info['block_type']})"
                     )
                 else:
                     logger.warning(
                         f"[CITATION_DEBUG] Citation {idx} (short_id={short_id}): "
-                        f"No matching block found, using chunk-level bbox"
+                        f"No block selected by LLM, using chunk-level bbox"
                     )
             
             # Ensure bbox is a dict (not None or invalid)
@@ -995,13 +958,13 @@ def extract_citations_with_positions(
                 'short_id': short_id,
                 'citation_number': citation_number,
                 'cited_text_for_bbox': cited_text_for_bbox,  # Exact sentence/markdown used for matching
-                'distinctive_values': list(distinctive),
+                'distinctive_values': [],
                 'chosen_bbox': dict(best_bbox) if isinstance(best_bbox, dict) else None,
                 'block_id': block_id,
                 'block_index': block_index,
                 'block_type': best_block_info.get('block_type') if best_block_info else None,
                 'block_content_preview': (best_block_info.get('content', '') or best_block_info.get('content_preview', ''))[:300] if best_block_info else None,
-                'match_score': best_block_info.get('match_score') if best_block_info else None,
+                'match_score': 'llm' if best_block_info else None,
                 'source': 'block' if best_block_info else 'chunk',
                 'num_blocks_considered': len(blocks) if blocks else 0,
             }
@@ -1103,6 +1066,7 @@ def format_chunks_with_block_ids(
                     'bbox_height': round(bbox_height, 4),
                     'doc_id': doc_id,
                     'original_filename': original_filename,
+                    'content': block_content,
                 }
         if not block_parts:
             # No blocks: one block per chunk
@@ -1125,6 +1089,7 @@ def format_chunks_with_block_ids(
                 'bbox_height': round(bbox_height, 4),
                 'doc_id': doc_id,
                 'original_filename': original_filename,
+                'content': chunk_text,
             }
 
         formatted_parts.append(f"[SOURCE_ID: {short_id}]\n" + "\n".join(block_parts))
@@ -2372,7 +2337,7 @@ Is this the first message in the conversation? {is_first_message}
 {formatted_chunks}
 {metadata_section}
 """
-    instructions = "- Answer based on the content above. For each fact you use, cite it as [ID: X](BLOCK_CITE_ID_N) where the block id is from the <BLOCK> whose content actually contains that fact (e.g. the block with \"56\" and \"D\" for EPC current rating)."
+    instructions = "- Answer based on the content above. For each fact you use, cite it as [ID: X](BLOCK_CITE_ID_N). Before citing, ask: 'If the user clicked this citation, would the highlighted block show them the direct answer to their question?' Only cite blocks that contain the specific fact/figure/value the user asked about — never cite a block that merely mentions the topic, discusses implications, or promises to advise."
     if research_notes_instruction and research_notes_instruction.strip():
         instructions = instructions + research_notes_instruction.strip()
     if paste_section:
@@ -2544,8 +2509,8 @@ async def generate_answer_with_direct_citations(
         logger.info(f"[DIRECT_CITATIONS] LLM response generated ({len(llm_response)} chars), personality_id={personality_id}")
 
         # Step 4: Extract citations (prefer block_id lookup when (BLOCK_CITE_ID_N) present)
-        citations = extract_citations_with_positions(
-            llm_response, short_id_lookup, metadata_lookup_tables
+        citations = await extract_citations_with_positions(
+            llm_response, short_id_lookup, metadata_lookup_tables, user_query=user_query
         )
         logger.info(f"[DIRECT_CITATIONS] Extracted {len(citations)} citations from response")
 
@@ -2669,7 +2634,7 @@ async def responder_node(state: MainWorkflowState, runnable_config=None) -> Main
     plan_refinement_count = state.get("plan_refinement_count", 0)
     refinement_limit_reached = plan_refinement_count >= 3
     
-    logger.info(f"[RESPONDER] Generating answer from {len(execution_results)} execution results")
+    logger.warning(f"[RESPONDER] Generating answer from {len(execution_results)} execution results, use_cached={state.get('use_cached_results')}")
 
     # Format branch: user asked to restructure/format (refine + copy-paste)
     if format_instruction:
@@ -2741,6 +2706,24 @@ async def responder_node(state: MainWorkflowState, runnable_config=None) -> Main
                     logger.info(f"[RESPONDER] Paste+docs path: truncated pasted context to {MAX_PASTE_CONTEXT_CHARS} chars")
                 else:
                     logger.info(f"[RESPONDER] Paste+docs path: including {len(paste_context_str)} chars of pasted/attachment context")
+            elif not state.get("attachment_context") and (state.get("document_ids") or derived_document_ids):
+                # Retrieval path: no attachment but we have document scope (from chip or from retrieve_chunks).
+                # Feed full document text so the model can find and cite the answer like the attachment path.
+                doc_ids = state.get("document_ids") or derived_document_ids or []
+                if isinstance(doc_ids, list) and doc_ids:
+                    try:
+                        from backend.llm.utils.extraction_guided_retrieval import get_document_text_for_responder
+                        full_doc_text = get_document_text_for_responder(
+                            document_ids=doc_ids,
+                            business_id=state.get("business_id"),
+                            max_chars=MAX_PASTE_CONTEXT_CHARS,
+                            max_docs=2,
+                        )
+                        if full_doc_text:
+                            paste_context_str = "[Full document text from retrieved documents]\n\n" + full_doc_text
+                            logger.info(f"[RESPONDER] Synthetic full-doc context: {len(full_doc_text)} chars from {min(2, len(doc_ids))} doc(s)")
+                    except Exception as e:
+                        logger.debug("[RESPONDER] Synthetic full-doc context failed: %s", e)
             # Prior context for follow-ups: last N exchanges (LobeHub-style), capped
             prior_exchange_summary = ""
             conv_hist = state.get("conversation_history")
@@ -2809,6 +2792,8 @@ async def responder_node(state: MainWorkflowState, runnable_config=None) -> Main
             error_output = {
                 "final_summary": error_answer,
                 "personality_id": previous_personality or DEFAULT_PERSONALITY_ID,
+                "citations": [],
+                "chunk_citations": [],
                 "messages": [AIMessage(content=error_answer)],
             }
             if not state.get("conversation_from_client"):
@@ -2847,6 +2832,8 @@ async def responder_node(state: MainWorkflowState, runnable_config=None) -> Main
             "final_summary": answer,
             "no_results": True,
             "personality_id": previous_personality or DEFAULT_PERSONALITY_ID,
+            "citations": [],
+            "chunk_citations": [],
             "messages": [AIMessage(content=answer)],
         }
         if not state.get("conversation_from_client"):

@@ -447,6 +447,14 @@ button:focus-visible:not(:focus-within) {
   background: rgba(0, 0, 0, 0.22);
 }
 
+/* FilingSidebar search input – no blue focus outline */
+.filing-sidebar-search-input:focus,
+.filing-sidebar-search-input:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
+  border-color: inherit !important;
+}
+
 /* FilingSidebar main file list – scrollable area */
 .filing-sidebar-main-scroll {
   scrollbar-width: thin;

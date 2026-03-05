@@ -722,11 +722,13 @@ def clean_extracted_property(property_data):
 # Removed extract_images_from_document function - now using ReductoImageService directly
 
 
-@shared_task(bind=True)
+@shared_task(bind=True, acks_late=True, reject_on_worker_lost=True, max_retries=2)
 def process_document_classification(self, document_id, original_filename, business_id):
     """
     Step 1: Document Classification with Event Logging.
     Downloads file from S3 so we do not pass large file content through Celery (avoids uploads getting stuck).
+    acks_late + reject_on_worker_lost: if the worker crashes (e.g. SIGSEGV), the task
+    is requeued rather than silently lost, up to max_retries times.
     """
     from . import create_app
     from .models import db, Document, DocumentStatus
@@ -739,7 +741,26 @@ def process_document_classification(self, document_id, original_filename, busine
     app = create_app()
     
     with app.app_context():
-        # Fetch document from Supabase (not local PostgreSQL)
+        # Track worker-crash retries via Redis (SIGSEGV kills the process before
+        # Python exception handlers run, so max_retries alone can't prevent loops)
+        MAX_CRASH_RETRIES = 3
+        try:
+            import redis as _redis
+            _r = _redis.from_url(os.environ.get('REDIS_URL', 'redis://localhost:6379/0'))
+            crash_key = f'doc_classification_attempts:{document_id}'
+            attempt = _r.incr(crash_key)
+            _r.expire(crash_key, 600)  # 10 min TTL
+            if attempt > MAX_CRASH_RETRIES:
+                logger.error(f"❌ Document {document_id} has crashed {attempt} times during classification, marking as failed")
+                doc_storage_tmp = DocumentStorageService()
+                doc_storage_tmp.update_document_status(
+                    document_id=str(document_id), status='failed', business_id=business_id
+                )
+                _r.delete(crash_key)
+                return {"error": "Document processing failed repeatedly (worker crash)"}
+        except Exception as redis_err:
+            logger.warning(f"Could not check crash retry count: {redis_err}")
+
         doc_storage = DocumentStorageService()
         success, document_dict, error = doc_storage.get_document(str(document_id), business_id)
         
@@ -1313,6 +1334,10 @@ def process_document_classification(self, document_id, original_filename, busine
                 )
                 
                 logger.info(f"✅ EXTRACTION TASK QUEUED: {task.id}")
+                try:
+                    _r.delete(crash_key)
+                except Exception:
+                    pass
                 return task
             else:
                 logger.info(f"🎯 CLASSIFICATION COMPLETE: {classification_result['type']}")
@@ -1329,6 +1354,10 @@ def process_document_classification(self, document_id, original_filename, busine
                 )
                 
                 logger.info(f"✅ MINIMAL EXTRACTION TASK QUEUED: {task.id}")
+                try:
+                    _r.delete(crash_key)
+                except Exception:
+                    pass
                 return task
             
             return {
@@ -3429,8 +3458,8 @@ def _run_fast_pipeline_after_parse(
     logger.info(f"   Breakdown: parse={parse_time:.2f}s, extract={chunk_extract_time:.2f}s, embed={embed_time:.2f}s")
 
     try:
-        doc_storage.supabase.table('documents').update({'status': 'processed'}).eq('id', document_id).execute()
-        logger.info(f"✅ Updated document status to 'processed'")
+        doc_storage.supabase.table('documents').update({'status': 'completed'}).eq('id', document_id).execute()
+        logger.info(f"✅ Updated document status to 'completed'")
         doc_storage_service = DocumentStorageService()
         step_metadata = {
             'chunk_count': len(chunk_texts),

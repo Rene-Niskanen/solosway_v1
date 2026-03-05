@@ -251,17 +251,15 @@ interface ReasoningStepsProps {
   steps: ReasoningStep[];
   isLoading?: boolean;
   onDocumentClick?: (metadata: DocumentMetadata) => void;
-  hasResponseText?: boolean; // Stop animations when response text has started
-  isAgentMode?: boolean; // Show agent-specific steps only in Agent mode
-  skipAnimations?: boolean; // Skip animations when restoring a chat (instant display)
-  /** When true, collapse to max 2 steps (first searching + first "No relevant") for display */
+  hasResponseText?: boolean;
+  isAgentMode?: boolean;
+  skipAnimations?: boolean;
   isNoResultsResponse?: boolean;
-  /** When true, steps are shown under the thought dropdown after completion - use faint font for "Analysing X documents:" and document names */
   thoughtCompleted?: boolean;
-  /** When true (e.g. expanded Thought dropdown), show all reasoning steps including Searching, Generating response, etc. */
   showAllStepsInTrace?: boolean;
-  /** Shown as the current step without adding to the list (replaced when next step arrives). Enables "Thinking" in parallel. */
   transientStep?: { message: string };
+  /** Called when user asks a question about a document from the hover-to-ask input */
+  onAskQuestion?: (query: string, docMeta: { doc_id: string; original_filename?: string | null; classification_type: string }) => void;
 }
 
 // True 3D Globe component using CSS 3D transforms (scaled for reasoning steps) - Blue version
@@ -642,8 +640,8 @@ const ReadingStepWithTransition: React.FC<{
   );
 };
 
-// Planning indicator - text only with faint pulse (no icon)
-const PlanningIndicator: React.FC = () => (
+// Planning indicator - text only. Shimmer only when actively loading (no response text yet).
+const PlanningIndicator: React.FC<{ shimmer?: boolean }> = ({ shimmer = true }) => (
   <div
     style={{
       fontSize: '12px',
@@ -653,7 +651,11 @@ const PlanningIndicator: React.FC = () => (
       gap: '6px'
     }}
   >
-    <span className="planning-shimmer-full">Planning next moves</span>
+    {shimmer ? (
+      <span className="planning-shimmer-full">Planning next moves</span>
+    ) : (
+      <span style={{ color: ACTION_COLOR, fontWeight: 500 }}>Planning next moves</span>
+    )}
   </div>
 );
 
@@ -1055,21 +1057,31 @@ const StepRenderer: React.FC<{
             }
           : undefined;
       const stepStatus = step.details?.status; // 'reading' or 'read' from backend
-      
+      const docId = docMetadata?.doc_id;
+
       // Build filename from multiple sources - include step.message so @-tagged docs show actual name (not "Document")
+      // When backend sends empty details (e.g. "Reading selected documents...") or doc_metadata without filename, use sidebar list
       const fromMessage = (step.message || '').replace(/^Read\s+/i, '').trim();
       const isGenericSentence = /^(Reading|Searching|Analysing|Using|selected documents)/i.test(fromMessage);
       const nameFromMessage = fromMessage && fromMessage !== 'Document' && !isGenericSentence ? fromMessage : '';
-      const rawFilename = step.details?.filename || docMetadata?.original_filename || nameFromMessage || '';
-      const classificationLabel = docMetadata?.classification_type 
+      const sidebarDocByName = docId && sidebarDocuments?.length ? sidebarDocuments.find((d) => d.id === docId)?.original_filename : undefined;
+      const sidebarFirstDocName = sidebarDocuments?.length === 1 ? sidebarDocuments[0].original_filename : sidebarDocuments?.[0]?.original_filename;
+      const rawFilename = step.details?.filename
+        || docMetadata?.original_filename
+        || step.details?.document_names?.[0]
+        || firstDocPreview?.original_filename
+        || (step.details?.doc_previews?.[0] as { original_filename?: string } | undefined)?.original_filename
+        || sidebarDocByName
+        || nameFromMessage
+        || '';
+      const classificationLabel = docMetadata?.classification_type
         ? docMetadata.classification_type.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase())
         : '';
-      const displayFilename = rawFilename || classificationLabel || 'Document';
+      const displayFilename = rawFilename || classificationLabel || sidebarFirstDocName || 'Document';
       const truncatedFilename = displayFilename.length > 35 ? displayFilename.substring(0, 32) + '...' : displayFilename;
-      
+
       // Check if this is the first time we're showing this document in this query
       // Only require doc_id to show preview - filename can use fallbacks
-      const docId = docMetadata?.doc_id;
       const hasValidMetadata = docMetadata && docId; // Only require doc_id, not original_filename
       
       // Determine if we should show the preview card
@@ -1462,7 +1474,7 @@ const StepRenderer: React.FC<{
  * Cursor-style compact stacked list of reasoning steps.
  * Always visible (no dropdown), subtle design, fits seamlessly into chat UI.
  */
-export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading, onDocumentClick, hasResponseText = false, isAgentMode = true, skipAnimations = false, isNoResultsResponse = false, thoughtCompleted = false, showAllStepsInTrace = false, transientStep }) => {
+export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading, onDocumentClick, hasResponseText = false, isAgentMode = true, skipAnimations = false, isNoResultsResponse = false, thoughtCompleted = false, showAllStepsInTrace = false, transientStep, onAskQuestion }) => {
   // Get current model from context
   const { model } = useModel();
   
@@ -2004,6 +2016,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
   if (!filteredSteps || filteredSteps.length === 0 || onlyPlanningStep) {
     // Show planning indicator when loading but no steps yet, or when the only step is "Planning next moves"
     // Using one consistent block avoids: appear in one place → then move up when the planning step arrives
+    // Never shimmer when response text has arrived (covers race where isLoading may lag)
     if (isLoading) {
       return (
         <motion.div
@@ -2022,7 +2035,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
             minHeight: '20px'
           }}
         >
-          <PlanningIndicator />
+          <PlanningIndicator shimmer={!hasResponseText} />
           
           {/* CSS for shimmer animations */}
           <style>{`
@@ -2276,7 +2289,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
                 contain: 'layout style',
               }}
             >
-              <PlanningIndicator />
+              <PlanningIndicator shimmer={!hasResponseText} />
             </motion.div>
           ) : currentPhaseAndItem.displayItem ? (() => {
             const displayItem = currentPhaseAndItem.displayItem;

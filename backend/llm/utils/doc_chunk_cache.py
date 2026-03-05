@@ -146,17 +146,97 @@ def schedule_prime(thread_id: str, document_ids: List[str]) -> None:
         logger.debug("[DOC_CHUNK_CACHE] Could not schedule prime: %s", e)
 
 
-def _keyword_score(query: str, chunk: dict) -> float:
-    """Score a chunk by keyword overlap with query (chunk_text / chunk_text_clean)."""
+def get_concrete_retrieval_phrases(query: str) -> List[str]:
+    """
+    Return concrete document phrases to search for when the query is value-seeking.
+    These are terms that appear in docs (e.g. "Zone 2", "flood zone") so we don't
+    rely only on query wording ("flood risk") and surface actual values.
+    """
+    if not query or not isinstance(query, str):
+        return []
+    q = query.lower().strip()
+    out: List[str] = []
+    if any(phrase in q for phrase in ("flood", "risk", "flood risk")):
+        out.extend(["zone 2", "zone 3", "flood zone", "flood risk", "probability", "medium probability", "high probability"])
+    if any(phrase in q for phrase in ("epc", "energy", "rating", "certificate")):
+        out.extend(["epc", "energy performance", "band", "rating", "certificate"])
+    if any(phrase in q for phrase in ("size", "area", "dimensions", "square", "sq ft", "sqft", "gia", "gross internal")):
+        out.extend(["gia", "gross internal", "sq ft", "square metres", "square feet"])
+    return list(dict.fromkeys(out))  # dedupe, preserve order
+
+
+def _get_keybert_phrases_for_retrieval(query: str) -> List[str]:
+    """
+    Use KeyBERT to extract semantic keyphrases from the query, then merge in
+    concrete document phrases (e.g. "zone 2", "flood zone") so retrieval
+    searches for actual values, not just query wording.
+    """
+    if not query or not query.strip():
+        return []
+    phrases: List[str] = []
+    try:
+        from backend.llm.utils import entity_extraction
+        if getattr(entity_extraction, "_use_keybert", True):
+            keybert = entity_extraction._get_keybert_phrases(query)
+            if keybert:
+                phrases.extend(keybert[:8])
+    except Exception as e:
+        logger.debug("[DOC_CHUNK_CACHE] KeyBERT expansion skipped: %s", e)
+    # Always add concrete phrases for value-seeking so we search for Zone 2, EPC band, etc.
+    concrete = get_concrete_retrieval_phrases(query)
+    for p in concrete:
+        if p not in phrases:
+            phrases.append(p)
+    return phrases[:12]  # cap total so we don't blow up the query
+
+
+def _expand_query_for_retrieval(query: str) -> str:
+    """
+    Add retrieval-relevant terms: KeyBERT keyphrases (semantic) plus hand-coded fallbacks for
+    common property concepts so in-doc phrasing (e.g. "Zone 2", "EPC 56 D", "GIA 4,480 sq ft")
+    matches user queries ("flood risk", "EPC rating", "size of the property") without requiring
+    exact keyword overlap.
+    """
     q = (query or "").lower().strip()
+    if not q:
+        return q
+    parts = [q]
+
+    # KeyBERT: semantic keyphrases from the query (e.g. "property size", "market value")
+    keybert_phrases = _get_keybert_phrases_for_retrieval(query)
+    if keybert_phrases:
+        parts.append(" ".join(keybert_phrases))
+        logger.debug("[DOC_CHUNK_CACHE] KeyBERT expansion added: %s", keybert_phrases[:5])
+
+    # Hand-coded fallbacks when KeyBERT doesn't add relevant terms (or is unavailable)
+    additions = []
+    if any(phrase in q for phrase in ("flood", "risk", "flood risk")):
+        additions.extend(["flood", "zone", "zone 2", "zone 3", "probability", "medium", "high"])
+    if any(phrase in q for phrase in ("epc", "energy", "rating", "certificate")):
+        additions.extend(["epc", "energy", "performance", "certificate", "rating"])
+    if any(phrase in q for phrase in ("size", "area", "dimensions", "square", "sq ft", "sqft", "gia", "gross internal")):
+        additions.extend(["size", "area", "dimensions", "gia", "gross", "internal", "sq", "ft", "square", "metres", "meters"])
+    if additions:
+        parts.append(" ".join(additions))
+
+    return " ".join(parts)
+
+
+def _keyword_score(query: str, chunk: dict) -> float:
+    """Score a chunk by keyword overlap with query (chunk_text / chunk_text_clean).
+    Avoids giving 1.0 for exact phrase match so semantic relevance and value signals
+    (e.g. Zone 2, EPC band) can outrank generic disclaimers that repeat the query words."""
+    expanded = _expand_query_for_retrieval(query)
+    q = (expanded or "").lower().strip()
     if not q:
         return 0.0
     words = [w for w in q.split() if len(w) > 2]
     text = ((chunk.get("chunk_text") or "") + " " + (chunk.get("chunk_text_clean") or "")).lower()
     if not text:
         return 0.0
+    # Cap exact-phrase match so value-rich chunks (Zone 2, EPC band) can win via semantic score
     if q in text:
-        return 1.0
+        return 0.55
     score = 0.0
     matches = 0
     for w in words:
@@ -169,14 +249,32 @@ def _keyword_score(query: str, chunk: dict) -> float:
     return min(1.0, score)
 
 
+def _cosine_similarity(a: List[float], b: List[float]) -> float:
+    """Cosine similarity between two vectors. Returns 0 if invalid."""
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    try:
+        import math
+        dot = sum(x * y for x, y in zip(a, b))
+        norm_a = math.sqrt(sum(x * x for x in a))
+        norm_b = math.sqrt(sum(x * x for x in b))
+        if norm_a <= 0 or norm_b <= 0:
+            return 0.0
+        return float(dot / (norm_a * norm_b))
+    except Exception:
+        return 0.0
+
+
 def run_in_memory_retrieval(
     query: str,
     cached_chunks_by_doc: Dict[str, List[dict]],
     top_k: int = 12,
 ) -> List[dict]:
     """
-    Score cached chunks by keyword overlap with query, return top_k chunks in the same
-    format as retrieve_chunks (so they can be used as execution_results result).
+    Score cached chunks by keyword overlap and optional semantic similarity. Returns top_k chunks
+    in the format expected by retrieve_chunks. Uses hybrid scoring when embeddings are available
+    so conceptually related content (e.g. "flood risk" matching "Zone 2 probability") surfaces without
+    hardcoding domain terms.
     """
     all_chunks = []
     for doc_id, chunks in cached_chunks_by_doc.items():
@@ -185,6 +283,63 @@ def run_in_memory_retrieval(
             c["score"] = _keyword_score(query, c)
             all_chunks.append(c)
     all_chunks.sort(key=lambda x: -float(x.get("score", 0)))
+
+    # Run semantic scoring on a larger pool so chunks with weak keyword match (e.g. "Zone 2"
+    # for "flood risk") can still surface. Supabase in_() handles up to ~100 IDs.
+    semantic_pool = min(len(all_chunks), max(top_k * 5, 60))
+    candidate_chunks = all_chunks[:semantic_pool]
+    chunk_ids = [c.get("chunk_id") for c in candidate_chunks if c.get("chunk_id")]
+
+    if chunk_ids:
+        try:
+            from backend.llm.hyde import get_query_embedding_for_retrieval
+            query_embedding = get_query_embedding_for_retrieval(query)
+            if query_embedding:
+                from backend.services.supabase_client_factory import get_supabase_client
+                supabase = get_supabase_client()
+                emb_response = supabase.table("document_vectors").select("id, embedding").in_("id", chunk_ids).execute()
+                chunk_embeddings = {}
+                for row in emb_response.data or []:
+                    emb = row.get("embedding")
+                    if emb is not None:
+                        if isinstance(emb, str):
+                            import ast
+                            try:
+                                emb = ast.literal_eval(emb)
+                            except Exception:
+                                try:
+                                    import json
+                                    emb = json.loads(emb)
+                                except Exception:
+                                    continue
+                        chunk_embeddings[str(row["id"])] = emb
+
+                if chunk_embeddings:
+                    from backend.llm.utils.retrieval_rerank import is_value_seeking_query
+                    value_seeking = is_value_seeking_query(query)
+                    # For value-seeking queries (flood risk, EPC, etc.) weight semantic more
+                    # so chunks with actual values (Zone 2, band D) outrank exact-phrase disclaimers
+                    kw_w = 0.35 if value_seeking else 0.5
+                    sem_w = 0.65 if value_seeking else 0.5
+                    for c in all_chunks:
+                        cid = c.get("chunk_id")
+                        emb = chunk_embeddings.get(str(cid)) if cid else None
+                        if emb:
+                            sem = _cosine_similarity(query_embedding, emb)
+                            kw = float(c.get("score", 0))
+                            c["score"] = kw_w * kw + sem_w * max(0, sem)
+                    all_chunks.sort(key=lambda x: -float(x.get("score", 0)))
+        except Exception as e:
+            logger.debug("[DOC_CHUNK_CACHE] Semantic scoring skipped: %s", e)
+
+    # Value-seeking rerank: prefer chunks with actual values (EPC band, Zone 2) over disclaimers
+    try:
+        from backend.llm.utils.retrieval_rerank import apply_value_seeking_rerank
+        apply_value_seeking_rerank(query, all_chunks)
+        all_chunks.sort(key=lambda x: -float(x.get("score", 0)))
+    except Exception as e:
+        logger.debug("[DOC_CHUNK_CACHE] Value-seeking rerank skipped: %s", e)
+
     return all_chunks[:top_k]
 
 

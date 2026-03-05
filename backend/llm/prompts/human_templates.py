@@ -108,14 +108,14 @@ def _get_main_answer_tagging_rule() -> str:
 You MUST wrap the exact thing the user is looking for in <<<MAIN>>>...<<<END_MAIN>>>. This is non-negotiable. Every answer must highlight the key value, fact, or phrase that directly answers the question. If you omit these tags, the user will not see the answer highlighted.
 
 Inside <<<MAIN>>> put ONLY the single value or fact the user asked for (number, date, name, category, phone number). Never include introductory words or the sentence that leads up to it.
-- **Category/classification questions** (e.g. "what is the flood risk?", "what is the zoning?"): Put ONLY the category label in <<<MAIN>>>, e.g. <<<MAIN>>>Flood Zone 2 (Medium Probability)<<<END_MAIN>>>. Do not put <<<MAIN>>> around the sentence "The flood risk for the [property] is assessed as follows" or "...is categorized as follows"—those are titles; they must NOT be inside <<<MAIN>>>.
+- **Category/classification questions** (e.g. "what is the flood risk?", "what is the zoning?"): Put ONLY the category label that actually appears in the excerpts in <<<MAIN>>> (e.g. <<<MAIN>>>Zone 2 (Medium Probability)<<<END_MAIN>>> if that wording is in a cited block). Do not put <<<MAIN>>> around a title. **Only state a zone/rating that appears in the excerpts—if none do, say the documents do not state it and do not invent a value.**
 - **Value/amount questions** (e.g. "what is the value?", "how much is the rent?"): Put ONLY the figure in <<<MAIN>>>, e.g. <<<MAIN>>>£2,300,000<<<END_MAIN>>> or <<<MAIN>>>£6,000 per calendar month<<<END_MAIN>>>. Never wrap "The market value is" or similar lead-ins.
 - **Objective/purpose questions** (e.g. "what are the objectives of the stablecoin bill?"): Put ONLY the clause that states the objective or purpose in <<<MAIN>>>, not the lead-in. E.g. "The objective of the stablecoin bill (STABLE Act of 2025) is to <<<MAIN>>>provide for the regulation of payment stablecoins and to address various related purposes<<<END_MAIN>>>." Do NOT wrap "The objective of X is to" in <<<MAIN>>>.
 - **Phone/contact/name queries** (e.g. "what is the phone number of...", "who valued...", "what is the company..."): Put ONLY the value in <<<MAIN>>> (e.g. <<<MAIN>>>+44 (0) 203 463 8725<<<END_MAIN>>> or <<<MAIN>>>MJ Group International Ltd<<<END_MAIN>>> or <<<MAIN>>>Graham Finegold MRICS<<<END_MAIN>>>). Never put "The phone number of... is", "The company that valued X, Y, is", or similar lead-ins inside MAIN.
 - **Never wrap**: A sentence starting with "The [X] for the property is..." or "...is assessed as follows" or "...is categorized as follows"; any heading or title; any phrase that only introduces or describes the answer; any phrase that introduces the value (e.g. "The X of Y is", "The company that... is").
 - **Always wrap**: The value, category name, date, reference, phone number, company name, person name, or (for objective/purpose) only the answer clause that follows "is to" / "are to" / "objectives include". When there are multiple direct answers (e.g. market value and market rent), wrap EACH in its own <<<MAIN>>>...<<<END_MAIN>>>.
 - **WRONG**: <<<MAIN>>>The flood risk for the Highlands property is assessed as follows.<<<END_MAIN>>> or <<<MAIN>>>The Market Value... is £2,300,000<<<END_MAIN>>> or <<<MAIN>>>The phone number of the company that valued the Highlands property, MJ Group International Ltd, is +44 (0) 203 463 8725<<<END_MAIN>>>
-- **RIGHT**: <<<MAIN>>>Flood Zone 2 (Medium Probability)<<<END_MAIN>>> is the flood risk category. Or: <<<MAIN>>>£2,300,000<<<END_MAIN>>> is the Market Value. Or: The phone number is <<<MAIN>>>+44 (0) 203 463 8725<<<END_MAIN>>> [1]. Or: The valuers are <<<MAIN>>>Sukhbir Tiwana MRICS<<<END_MAIN>>> and <<<MAIN>>>Graham Finegold MRICS<<<END_MAIN>>>.
+- **RIGHT**: <<<MAIN>>>[zone/rating from excerpt]<<<END_MAIN>>> (e.g. Zone 2 or Medium Probability—only if it appears in the excerpts). Or: <<<MAIN>>>£2,300,000<<<END_MAIN>>> is the Market Value. Or: The phone number is <<<MAIN>>>+44 (0) 203 463 8725<<<END_MAIN>>> [1]. Or: The valuers are <<<MAIN>>>Sukhbir Tiwana MRICS<<<END_MAIN>>> and <<<MAIN>>>Graham Finegold MRICS<<<END_MAIN>>>.
 The tags are for display only (hidden from the user); do not repeat them elsewhere."""
 
 
@@ -291,7 +291,7 @@ Focus your search on information related to or near this cited text.
 
 **INSTRUCTIONS**:
 
-1. **Answer first**: Start with the figure or fact that answers the question (amount, date, name, reference number, or the specific category e.g. "Flood Zone 2 (Medium Probability)") in one flowing sentence. You MUST wrap the actual answer in <<<MAIN>>>...<<<END_MAIN>>> (e.g. <<<MAIN>>>Flood Zone 2 (Medium Probability)<<<END_MAIN>>> or <<<MAIN>>>£2,300,000<<<END_MAIN>>>). Do not put <<<MAIN>>> around a title or lead-in. This highlighting is mandatory.
+1. **Answer first**: Start with the figure or fact that answers the question (amount, date, name, reference number, or the category that appears in the excerpts) in one flowing sentence. You MUST wrap the actual answer in <<<MAIN>>>...<<<END_MAIN>>> (e.g. <<<MAIN>>>£2,300,000<<<END_MAIN>>> or the zone/rating from the excerpt). Only state a value that appears in the excerpts—do not invent a flood zone or rating. Do not put <<<MAIN>>> around a title or lead-in. This highlighting is mandatory.
 
 {_get_search_instructions("excerpt")}
 
@@ -362,7 +362,7 @@ def get_summary_human_content(
    
    {_get_valuation_extraction_instructions(detail_level, is_valuation_query=(lambda: (lambda q: ('valuation' in q.lower() or 'value' in q.lower() or 'price' in q.lower()))(user_query) or False)())}
 
-4. **Structure & Clarity**: The first token(s) of your response must be the figure or fact that answers the question (amount, number, date, reference, or the specific category/term e.g. "Flood Zone 2 (Medium Probability)"). You MUST wrap that actual answer in <<<MAIN>>> and <<<END_MAIN>>>—this is extremely important so the user sees the answer highlighted. Write one flowing sentence: [FIGURE] is the [label] [optional context]. Do not start with a title or lead-in. Never omit MAIN tags. If you use an H1 (#), its text must start with the answer (e.g. "Flood Zone 2 (Medium Probability)"), not a topic sentence like "The flood risk for the property is assessed as follows" or "categorized as follows." Use H2 (##) for major sections. Make values immediately clear and scannable. **Use a blank line (double newline) before each major section**—e.g. before each **Flood Zone 2:**, **Flood Zone 3:**, **Surface Water Flooding:**—so the answer appears as separate paragraphs, not one long block. **Do not add a colon after a value or duration in the middle of a sentence** (e.g. write "This period is for one year, and it is renewable" not "This period is for one year:"). Use colons only after standalone section headings that introduce a block of content, never after figures, dates, durations, or amounts in running prose.
+4. **Structure & Clarity**: The first token(s) of your response must be the figure or fact that answers the question (amount, number, date, reference, or the category/term that appears in the excerpts). You MUST wrap that actual answer in <<<MAIN>>> and <<<END_MAIN>>>. Only state a value (e.g. flood zone, EPC rating) that appears in the excerpts—never invent one. Write one flowing sentence: [FIGURE] is the [label] [optional context]. Do not start with a title or lead-in. Never omit MAIN tags. Use H2 (##) for major sections. Make values immediately clear and scannable. **Do not add a colon after a value or duration in the middle of a sentence** (e.g. write "This period is for one year, and it is renewable" not "This period is for one year:"). Use colons only after standalone section headings that introduce a block of content, never after figures, dates, durations, or amounts in running prose.
 
 {_get_entity_normalization_instructions()}
 
@@ -624,7 +624,7 @@ def get_final_answer_prompt(
     category_main_reminder = ""
     if is_category_query:
         category_main_reminder = """
-**CATEGORY/CLASSIFICATION QUERY**: The user is asking for a category or classification (e.g. flood risk). Put <<<MAIN>>> only around the actual category name (e.g. "Flood Zone 2 (Medium Probability)"). Do NOT put <<<MAIN>>> around a sentence like "The flood risk for the [property] is assessed as follows" or "categorized as follows"—that is a title, not the answer."""
+**CATEGORY/CLASSIFICATION QUERY**: The user is asking for a category or classification (e.g. flood risk). Put <<<MAIN>>> only around the actual category name that appears in the excerpts (e.g. "Zone 2", "Medium Probability"—whatever the document states). Do NOT put <<<MAIN>>> around a title. **Only state a zone/rating that appears in the excerpts; if no excerpt states the flood zone or rating, say "The documents do not state the flood risk" and do not invent a value.**"""
     
     if is_citation_query:
         sourcing_rules = """**CITATION QUERY**: ONLY use information from DOCUMENT EXTRACTS above. Focus on information related to the citation context. Do NOT use general knowledge or generic examples."""
@@ -684,7 +684,7 @@ def get_final_answer_prompt(
 **⚠️ FOR VALUATION QUERIES**: Include ALL valuation scenarios found (primary Market Value, 90-day, 180-day, Market Rent) with their assumptions. Do NOT skip any scenarios.
 
 **CANONICAL TEMPLATE STRUCTURE**:
-1. **Primary Answer (MANDATORY MAIN TAGGING)**: The first line must be or start with the actual answer (figure, category, or fact). You MUST wrap that answer phrase in <<<MAIN>>>...<<<END_MAIN>>>—highlighting the thing the user is looking for is extremely important. E.g. "<<<MAIN>>>Flood Zone 2 (Medium Probability)<<<END_MAIN>>> is the flood risk category." Do not use a first line that only states the topic. Never omit MAIN tags. Short, direct answer (2-3 sentences max).
+1. **Primary Answer (MANDATORY MAIN TAGGING)**: The first line must be or start with the actual answer (figure, category, or fact) that appears in the excerpts. You MUST wrap that answer in <<<MAIN>>>...<<<END_MAIN>>>. Only state a specific value (flood zone, EPC rating, etc.) if a cited block contains it—if no excerpt states it, say the documents do not state it and do not invent a value. Do not use a first line that only states the topic. Never omit MAIN tags. Short, direct answer (2-3 sentences max).
 2. **Present Information Directly**: No separate "Key Concepts" section. Present key facts directly in response with citations.
 3. **Optional Sections (H2)**: Process/Steps (only if procedural), Practical Application (only if application guidance needed), Risks/Edge Cases (only if relevant), Next Actions (only if appropriate).
 
@@ -769,8 +769,8 @@ You MUST respond with a valid JSON array of segments. No other text. Each segmen
 - For valuation queries include ALL valuation figures (Market Value, 90-day, 180-day, Market Rent) with cite segments.
 - Optional: you may include "block_id" (and "doc_id" if known) in a cite segment to pin the citation to a specific block; if omitted, resolution uses anchor_quote only.
 
-**EXAMPLE** (MAIN wraps only the direct answer – category, value, or phone):
-For "What is the flood risk?": [{{"type": "text", "content": "<<<MAIN>>>Flood Zone 2 (Medium Probability)<<<END_MAIN>>> is the flood risk category. "}}, ...]
+**EXAMPLE** (MAIN wraps only the direct answer – category, value, or phone; only if that value appears in the excerpts):
+For "What is the flood risk?": State the zone/rating that appears in the excerpts inside <<<MAIN>>> (e.g. "<<<MAIN>>>Zone 2 (Medium Probability)<<<END_MAIN>>>" only if that appears in a cited block). If no excerpt states it, say the documents do not state the flood risk; do not invent a zone.
 For valuation: [{{"type": "text", "content": "<<<MAIN>>>£1,950,000<<<END_MAIN>>> is the estimated Market Value. "}}, {{"type": "cite", "anchor_quote": "Market Value: £1,950,000", "citation_number": 1}}, {{"type": "text", "content": " The property is [name] at [address], as of 15 March 2024."}}]
 For "What is the phone number of the company that valued the property?": [{{"type": "text", "content": "The phone number of the company that valued the Highlands property, MJ Group International Ltd, is <<<MAIN>>>+44 (0) 203 463 8725<<<END_MAIN>>> "}}, {{"type": "cite", "anchor_quote": "+44 (0) 203 463 8725", "citation_number": 1}}]
 
@@ -984,7 +984,8 @@ The user has attached the following document(s) to their query. Answer based on 
 - Provide thorough, detailed answers — explain key points, include relevant context, and expand on important findings. Avoid overly brief summaries.
 - Do NOT include citation markers ([1], [2], etc.) - fast response mode
 - Do NOT reference page numbers or document structure
-- Use clear structure (headers, bullets) when the answer spans multiple topics
+- Use **bold section labels** for structure (e.g. **Key Findings**, **Summary**). Do NOT use markdown headings (#, ##, ###).
+- Use bullets when listing 3+ items
 - If answer is not in documents, say so clearly
 
 **USER QUERY:** {query}

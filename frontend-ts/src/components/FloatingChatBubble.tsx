@@ -235,9 +235,6 @@ const QueryAttachment: React.FC<{ attachment: FileAttachmentData }> = ({ attachm
         <span style={{ fontWeight: 600, color: '#111', fontSize: '11px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {formatFileName(attachment.name)}
         </span>
-        <span style={{ fontSize: '9px', color: '#6B7280' }}>
-          {getFileTypeLabel(attachment.type)}
-        </span>
       </div>
     </div>
   );

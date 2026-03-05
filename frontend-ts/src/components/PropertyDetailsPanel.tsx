@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { File, X, Upload, FileText, Image as ImageIcon, ArrowUp, CheckSquare, Square, Trash2, Search, Maximize2, Minimize2, Building2, ChevronLeft, ChevronRight, Plus, RefreshCw, Loader2, ChevronDown, Files } from 'lucide-react';
+import { File, X, Upload, FileText, Image as ImageIcon, ArrowUp, CheckSquare, Square, Trash2, Search, Maximize2, Minimize2, Building2, ChevronLeft, ChevronRight, Plus, RefreshCw, Loader2, ChevronDown } from 'lucide-react';
 import { useBackendApi } from './BackendApi';
 import { backendApi } from '../services/backendApi';
 import { usePreview } from '../contexts/PreviewContext';
@@ -715,7 +715,7 @@ const ExpandedCardView: React.FC<{
       }}
     >
         {/* Preview Header */}
-        <div className="h-14 px-4 border-b border-gray-100 flex items-center justify-between shrink-0" style={{ backgroundColor: '#F2F2EF' }}>
+        <div className="h-14 px-4 border-b border-gray-100 flex items-center justify-between shrink-0 bg-white">
           <div className="flex items-center gap-3 overflow-hidden">
             <div className="w-8 h-8 rounded-lg bg-gray-50 flex items-center justify-center shrink-0">
               {isPDF ? <FileText size={16} className="text-slate-700" /> : 
@@ -1056,7 +1056,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
   const isChatPanelOpen = chatPanelWidth > 0 || isInChatMode;
   
   // FilingSidebar integration
-  const { openSidebar: openFilingSidebar, setSelectedProperty, setViewMode, width: filingSidebarWidth, isOpen: isFilingSidebarOpen } = useFilingSidebar();
+  const { openSidebar: openFilingSidebar, closeSidebar: closeFilingSidebar, setSelectedProperty, setViewMode, width: filingSidebarWidth, isOpen: isFilingSidebarOpen } = useFilingSidebar();
   // ChatPanel (agent sidebar) integration – reserve panel width + 12px toggle rail when open
   const { isOpen: isChatPanelOpenContext, width: chatPanelWidthContext } = useChatPanel();
   const AGENT_SIDEBAR_RAIL_WIDTH = 12;
@@ -1138,6 +1138,8 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
   const coverElementsRef = useRef<Map<string, HTMLElement>>(new Map()); // docId -> actual DOM element
   const [isFilesModalOpen, setIsFilesModalOpen] = useState(false);
   const [filesSearchQuery, setFilesSearchQuery] = useState<string>(''); // Search query for filtering documents
+  const [filesSearchExpanded, setFilesSearchExpanded] = useState(false);
+  const filesSearchInputRef = useRef<HTMLInputElement>(null);
   const [selectedCardIndex, setSelectedCardIndex] = useState<number | null>(null); // Track which card is expanded
   const [hoveredCardIndex, setHoveredCardIndex] = useState<number | null>(null); // Track hover state for wave effect
   const [isFullscreen, setIsFullscreen] = useState(false); // Fullscreen state for document preview
@@ -1149,6 +1151,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDraggingToDelete, setIsDraggingToDelete] = useState(false);
   const [draggedDocumentId, setDraggedDocumentId] = useState<string | null>(null);
+  const [dividerHovered, setDividerHovered] = useState(false);
   // Use document selection context
   const {
     selectedDocumentIds,
@@ -1941,6 +1944,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
   }, [documents]);
 
   const handleDocumentClick = useCallback(async (document: Document) => {
+    closeFilingSidebar(); // Collapse FilingSidebar to small state when opening a file
     // Find the document index in documents and open it in ExpandedCardView
     const docIndex = documents.findIndex(doc => doc.id === document.id);
     if (docIndex !== -1) {
@@ -1949,7 +1953,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
       // Fallback: open in document preview panel (document not in property docs list)
       openExpandedCardView(document.id, document.original_filename || 'Document');
     }
-  }, [documents, openExpandedCardView]);
+  }, [documents, openExpandedCardView, closeFilingSidebar]);
 
   const handleDeleteDocument = async (documentId: string) => {
     // Check access level
@@ -2480,7 +2484,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
               ease: [0.12, 0, 0.39, 0],
               layout: isChatPanelOpen ? { duration: 0 } : (isChatPanelResizing ? { duration: 0 } : { duration: 0.3 })
             }}
-            className={`bg-[#FCFCF9] flex overflow-hidden pointer-events-auto ${
+            className={`bg-white flex overflow-hidden pointer-events-auto ${
               // In split-view (chat + property details), remove heavy shadows so there's no "divider shadow"
               isChatPanelOpen ? '' : 'shadow-2xl ring-1 ring-black/5'
             }`}
@@ -2515,68 +2519,94 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
               display: 'flex',
               flexDirection: 'column',
               zIndex: 9999,
-              // Add left border in chat mode to create visible divider line (faint)
-              borderLeft: isChatPanelOpen ? '1px solid rgba(156, 163, 175, 0.08)' : 'none',
+              // Divider line is rendered as separate hoverable element when chat is open
+              borderLeft: 'none',
               // Optimize rendering during layout changes
               willChange: selectedCardIndex !== null ? 'auto' : 'transform'
             }}
             onClick={(e) => e.stopPropagation()}
           >
-            {/* Panel header with Back (chat mode), 50/50 snap (when in split), and close button */}
-            <div className="pl-6 pr-10 pt-4 pb-3 bg-[#FCFCF9] relative flex items-center justify-between gap-2" style={{ zIndex: 1, borderBottom: 'none' }}>
-              <div className="flex items-center gap-2">
-                {isInChatMode && (
+            {/* Divider between chat and panel: faint by default, current darkness on hover (wide hit area for hover) */}
+            {isChatPanelOpen && (
+              <div
+                className="absolute left-0 top-0 bottom-0 w-2 z-10 shrink-0 cursor-default"
+                onMouseEnter={() => setDividerHovered(true)}
+                onMouseLeave={() => setDividerHovered(false)}
+                aria-hidden
+              >
+                <div
+                  className="absolute left-0 top-0 bottom-0 w-px transition-colors duration-150"
+                  style={{
+                    backgroundColor: dividerHovered ? 'rgba(156, 163, 175, 0.01)' : 'rgba(156, 163, 175, 0.001)',
+                  }}
+                />
+              </div>
+            )}
+            {/* Single header row: Back | Search (icon expands to bar) | Select | Fullscreen? | Close (X) */}
+            <div className="px-6 pb-3 bg-white relative flex items-center gap-3" style={{ zIndex: 1, borderBottom: 'none', paddingTop: 17 }}>
+              {isInChatMode && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onClose();
+                  }}
+                  className="flex items-center gap-1 rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150 flex-shrink-0 border-none cursor-pointer"
+                  title="Back to Projects"
+                  type="button"
+                  style={{
+                    padding: '6px 8px',
+                    height: '32px',
+                    minHeight: '32px',
+                    backgroundColor: 'rgba(0, 0, 0, 0.02)',
+                  }}
+                >
+                  <ChevronLeft className="w-3.5 h-3.5 text-[#666]" strokeWidth={1.75} />
+                  <span className="text-[13px] font-normal text-[#666]">Back</span>
+                </button>
+              )}
+              {filesSearchExpanded ? (
+                <div className="relative flex-1 min-w-0 max-w-[240px] flex items-center h-8 rounded">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400 pointer-events-none" />
+                  <input
+                    ref={filesSearchInputRef}
+                    type="text"
+                    placeholder="Search documents..."
+                    value={filesSearchQuery}
+                    onChange={(e) => setFilesSearchQuery(e.target.value)}
+                    onBlur={() => { if (!filesSearchQuery.trim()) setFilesSearchExpanded(false); }}
+                    onKeyDown={(e) => { if (e.key === 'Escape') { setFilesSearchExpanded(false); e.currentTarget.blur(); } }}
+                    className="w-full h-full pl-9 pr-8 py-0 bg-white border border-gray-200 text-[13px] text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-0 focus:border-gray-300 rounded-lg"
+                    style={{ WebkitTapHighlightColor: 'transparent', boxShadow: 'none' }}
+                    autoFocus
+                  />
                   <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onClose();
-                    }}
-                    className="flex items-center gap-1 rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150"
-                    title="Back to Projects"
                     type="button"
+                    onClick={() => { setFilesSearchExpanded(false); if (!filesSearchQuery.trim()) setFilesSearchQuery(''); }}
+                    className="absolute right-1 top-1/2 -translate-y-1/2 flex items-center justify-center rounded flex-shrink-0 text-gray-500 hover:text-gray-700"
+                    style={{ width: '24px', height: '24px', minWidth: '24px', minHeight: '24px' }}
+                    title="Close search"
+                  >
+                    <X className="w-3.5 h-3.5" strokeWidth={1.5} />
+                  </button>
+                </div>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => { setFilesSearchExpanded(true); setTimeout(() => filesSearchInputRef.current?.focus(), 0); }}
+                    className="flex items-center justify-center rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150 flex-shrink-0 border-none cursor-pointer"
+                    title="Search documents"
                     style={{
-                      padding: '5px 8px',
-                      height: '26px',
-                      minHeight: '26px',
-                      border: 'none',
-                      cursor: 'pointer',
-                      backgroundColor: 'rgba(0, 0, 0, 0.02)'
+                      padding: '6px 8px',
+                      height: '32px',
+                      minHeight: '32px',
+                      minWidth: '32px',
+                      backgroundColor: 'rgba(0, 0, 0, 0.02)',
                     }}
                   >
-                    <ChevronLeft className="w-3.5 h-3.5 text-[#666]" strokeWidth={1.75} />
-                    <span className="text-[12px] font-normal text-[#666]">Back</span>
+                    <Search className="w-3.5 h-3.5 text-[#666]" strokeWidth={1.5} />
                   </button>
-                )}
-              </div>
-              <div className="flex items-center gap-2">
-              <button
-                onClick={onClose}
-                className="p-2 hover:bg-gray-50 rounded-lg text-gray-400 hover:text-gray-600 transition-colors"
-                title="Close Panel"
-                style={{ zIndex: 10 }}
-              >
-                <X size={16} />
-              </button>
-              </div>
-            </div>
-
-            {/* Header Area - Clean & Minimal (documents only) */}
-            <div className="px-6 bg-[#FCFCF9]" style={{ borderTop: 'none' }}>
-              <div className="flex items-center gap-3">
-                <>
-                    <div className="relative flex-1 group">
-                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400 group-focus-within:text-blue-500 transition-colors" />
-                      <input
-                        type="text"
-                        placeholder="Search documents..."
-                        value={filesSearchQuery}
-                        onChange={(e) => setFilesSearchQuery(e.target.value)}
-                        className="w-full bg-white border border-gray-200 text-[13px] text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-0 focus:border-blue-500 rounded-lg py-1.5 pl-9 pr-3 h-8"
-                        style={{ borderRadius: '8px', WebkitTapHighlightColor: 'transparent', boxShadow: 'none' }}
-                  />
-                          </div>
-                
-                    <div className="flex items-center gap-2 border-l border-gray-200 pl-3">
+                  <div className="flex items-center gap-2 flex-shrink-0">
                     <button
                       onClick={() => {
                         setIsLocalSelectionMode(!isLocalSelectionMode);
@@ -2584,109 +2614,64 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                           setLocalSelectedDocumentIds(new Set());
                         }
                       }}
-                      className="flex items-center gap-1 rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150 cursor-pointer border-none"
+                      className="flex items-center justify-center gap-1 rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150 cursor-pointer border-none"
                       title="Select documents to delete"
                       type="button"
                       style={{
-                        padding: '5px 8px',
-                        height: '26px',
-                        minHeight: '26px',
+                        padding: '6px 8px',
+                        height: '32px',
+                        minHeight: '32px',
                         backgroundColor: isLocalSelectionMode ? 'rgba(0, 0, 0, 0.04)' : 'rgba(0, 0, 0, 0.02)',
                       }}
                     >
-                      <span className="text-[12px] font-normal text-[#666]">Select</span>
-                    </button>
-                    <button
-                      onClick={() => {
-                        if (property?.id) {
-                          const propertyId = typeof property.id === 'string' ? property.id : String(property.id);
-                          setSelectedProperty(propertyId);
-                          setViewMode('property');
-                          openFilingSidebar();
-                        }
-                      }}
-                      className="flex items-center gap-1 rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150 cursor-pointer border-none"
-                      title="Open in Filing Sidebar"
-                      type="button"
-                      style={{
-                        padding: '5px 8px',
-                        height: '26px',
-                        minHeight: '26px',
-                        backgroundColor: 'rgba(0, 0, 0, 0.02)',
-                      }}
-                    >
-                      <Files className="w-3.5 h-3.5 flex-shrink-0 text-[#666]" size={14} strokeWidth={1.75} />
-                      <span className="text-[12px] font-normal text-[#666]">Files</span>
+                      <span className="text-[13px] font-normal text-[#666]">Select</span>
                     </button>
                   </div>
                 </>
-                
-                {/* Fullscreen Toggle Button - Always visible in top right when document is open */}
-                {selectedCardIndex !== null && (
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setIsFullscreen(!isFullscreen);
-                    }}
-                    className="p-2 hover:bg-gray-50 rounded-lg text-gray-400 hover:text-gray-600 transition-colors"
-                    title={isFullscreen ? "Exit Fullscreen" : "Enter Fullscreen"}
-                  >
-                    {isFullscreen ? (
-                      <Minimize2 className="w-4 h-4" />
-                    ) : (
-                      <Maximize2 className="w-4 h-4" />
-                        )}
-                      </button>
-                )}
-                  </div>
-                
-              {/* Filter Pills */}
-              <div className="flex items-center gap-2 overflow-x-auto pb-2 pt-3 scrollbar-hide">
-                  <button
-                    onClick={() => setActiveFilter('all')}
-                    className="flex items-center gap-1 rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150 cursor-pointer border-none"
-                    type="button"
-                    style={{
-                      padding: '5px 8px',
-                      height: '26px',
-                      minHeight: '26px',
-                      backgroundColor: activeFilter === 'all' ? 'rgba(0, 0, 0, 0.04)' : 'rgba(0, 0, 0, 0.02)',
-                    }}
-                  >
-                    <span className="text-[12px] font-normal text-[#666]">All</span>
-                  </button>
-                  <button
-                    onClick={() => setActiveFilter('images')}
-                    className="flex items-center gap-1 rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150 cursor-pointer border-none"
-                    type="button"
-                    style={{
-                      padding: '5px 8px',
-                      height: '26px',
-                      minHeight: '26px',
-                      backgroundColor: activeFilter === 'images' ? 'rgba(0, 0, 0, 0.04)' : 'rgba(0, 0, 0, 0.02)',
-                    }}
-                  >
-                    <span className="text-[12px] font-normal text-[#666]">Images</span>
-                  </button>
-                  <button
-                    onClick={() => setActiveFilter('pdfs')}
-                    className="flex items-center gap-1 rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150 cursor-pointer border-none"
-                    type="button"
-                    style={{
-                      padding: '5px 8px',
-                      height: '26px',
-                      minHeight: '26px',
-                      backgroundColor: activeFilter === 'pdfs' ? 'rgba(0, 0, 0, 0.04)' : 'rgba(0, 0, 0, 0.02)',
-                    }}
-                  >
-                    <span className="text-[12px] font-normal text-[#666]">PDFs</span>
-                  </button>
-                </div>
-              </div>
+              )}
+              {selectedCardIndex !== null && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setIsFullscreen(!isFullscreen);
+                  }}
+                  className="flex items-center justify-center rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150 flex-shrink-0 border-none cursor-pointer text-gray-500 hover:text-gray-700"
+                  title={isFullscreen ? "Exit Fullscreen" : "Enter Fullscreen"}
+                  style={{
+                    padding: '6px 8px',
+                    height: '32px',
+                    minHeight: '32px',
+                    minWidth: '32px',
+                    backgroundColor: 'rgba(0, 0, 0, 0.02)',
+                  }}
+                >
+                  {isFullscreen ? (
+                    <Minimize2 className="w-4 h-4" />
+                  ) : (
+                    <Maximize2 className="w-4 h-4" />
+                  )}
+                </button>
+              )}
+              <button
+                onClick={onClose}
+                className="flex items-center justify-center rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150 flex-shrink-0 border-none cursor-pointer text-gray-500 hover:text-gray-700"
+                title="Close Panel"
+                style={{
+                  zIndex: 10,
+                  padding: '6px 8px',
+                  height: '32px',
+                  minHeight: '32px',
+                  minWidth: '32px',
+                  backgroundColor: 'rgba(0, 0, 0, 0.02)',
+                }}
+              >
+                <X size={16} />
+              </button>
+            </div>
                   
             {/* Content Area - Both sections rendered, inactive one hidden to preserve state */}
             {/* Documents Section - hidden when not active to prevent PDF iframe reload */}
-              <div className={`flex-1 bg-[#FCFCF9] relative ${selectedCardIndex !== null ? 'overflow-hidden' : 'overflow-y-auto px-10 py-6'}`}>
+              <div className={`flex-1 bg-white relative ${selectedCardIndex !== null ? 'overflow-hidden' : 'overflow-y-auto px-10 py-6'}`}>
               {/* Delete Zone */}
                     <AnimatePresence>
                       {isDraggingToDelete && draggedDocumentId && (
@@ -3095,7 +3080,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                     </div>
                             
             {/* Property Details Section - removed from UI (tabs removed) */}
-                <div className="flex-1 overflow-hidden bg-[#FCFCF9] hidden" aria-hidden="true">
+                <div className="flex-1 overflow-hidden bg-white hidden" aria-hidden="true">
                   {(() => {
                     // Use local property details if available (for optimistic updates), then propertyHub.property_details, then fallback to top-level property fields (e.g. from /api/properties flat response)
                     const hubDetails = property?.propertyHub?.property_details;

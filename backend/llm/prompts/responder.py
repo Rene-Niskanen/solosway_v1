@@ -4,6 +4,7 @@ Responder node prompts: fact-mapping, natural-language renderer, conversational 
 Callables:
 - get_responder_fact_mapping_system_prompt() -> str
 - get_responder_fact_mapping_human_prompt(user_query, evidence_table) -> str
+- get_citation_block_selection_prompt(user_query, cited_text, blocks) -> str  # LLM-based block selection fallback
 - get_responder_natural_language_system_prompt() -> str
 - get_responder_natural_language_human_prompt(user_query, claims_text, evidence_table) -> str
 - get_responder_conversational_tool_citations_system_prompt(main_tagging_rule) -> str
@@ -15,6 +16,16 @@ Callables:
 
 from backend.llm.prompts.personality import get_personality_choice_instruction
 from backend.llm.prompts.output_formatting import OUTPUT_FORMATTING_RULES
+
+# Domain hints so the LLM recognises property-doc phrasing (avoids false "cannot find" when info is present)
+DOMAIN_HINTS = """
+**Domain phrasing:** Property documents often use specific terms. Treat these as answers when they appear in the excerpts:
+- **Flood risk**: "Zone 2", "Zone 3", "Flood Zone", "medium/high/low probability" = flood risk info. Extract the exact wording that appears.
+- **EPC rating**: "EPC", "energy performance", "rating D", "56 D", "Band C", certificate scores = EPC rating. Extract it.
+- **Condition/tenure/etc.**: Look for section headings, tables, and standard report wording. Extract what you see.
+**If you see any of these in the excerpts, extract and present them. Do NOT say the information is not found.**
+**Only state a specific value (zone, rating, amount) that actually appears in the excerpts—never invent or assume a value (e.g. do not say "Flood Zone 2" unless that phrase or "Zone 2" appears in a cited block).**
+"""
 
 # Shared closing/follow-up block (used in conversational and block-citation prompts)
 CLOSING_AND_FOLLOWUP_PROMPT = """
@@ -179,6 +190,7 @@ The excerpts provided ARE the source of truth. When the user asks a question:
 
 **DO NOT say "the excerpts do not contain" if the information IS actually in the excerpts.**
 **DO NOT be overly cautious - if you see the information, extract and present it.**
+{DOMAIN_HINTS}
 
 When information IS in the excerpts:
 - Put the key figure or fact first (number, date, name), then add what it refers to
@@ -255,6 +267,7 @@ The excerpts provided ARE the source of truth. When the user asks a question:
 
 **DO NOT say "the excerpts do not contain" if the information IS actually in the excerpts.**
 **DO NOT be overly cautious - if you see the information, extract and present it.**
+{DOMAIN_HINTS}
 
 When information IS in the excerpts:
 - Put the key figure or fact first (number, date, name), then add what it refers to
@@ -292,6 +305,11 @@ For EVERY fact you use from the excerpts, you MUST cite it using BOTH the source
 
 - X = the SOURCE_ID number (1, 2, 3, ...) of the excerpt.
 - BLOCK_CITE_ID_N = the id of the <BLOCK> tag that contains the fact you are citing (e.g. BLOCK_CITE_ID_42).
+- The block id in parentheses is used for mapping only; it will not be shown to the user. Include it so we can highlight the correct content in the document preview.
+
+**CRITICAL - NEVER OMIT THE BLOCK ID:** Writing [ID: 1] or [1] without the block id in parentheses will cause the document preview to highlight the wrong content. You MUST include (BLOCK_CITE_ID_N) every time.
+- **WRONG:** "The EPC rating is **56 D** [ID: 1]."
+- **CORRECT:** "The EPC rating is **56 D** [ID: 1](BLOCK_CITE_ID_42)."
 
 **EXAMPLES:**
 - "The **EPC rating** is **56 D** [ID: 1](BLOCK_CITE_ID_42) with a potential of **71 C** [ID: 1](BLOCK_CITE_ID_42)."
@@ -313,14 +331,36 @@ For EVERY fact you use from the excerpts, you MUST cite it using BOTH the source
 **FIRST CITATION SEPARATION (for document preview):**
 After the sentence containing your first citation [ID: 1](...), add a blank line before continuing. This lets the document preview card display below the first cited fact. Never crowd multiple citations into one unbroken paragraph—give [ID: 1] its own space.
 
+**WHICH BLOCK TO CITE (THE MOST IMPORTANT RULE):**
+
+Before writing a citation, ask yourself: **"If the user clicked this citation, would the highlighted block contain the direct answer to their question?"**
+- **YES** = the block contains the specific fact, figure, rating, zone, date, or value they asked about. Cite it.
+- **NO** = the block merely mentions the topic, discusses implications, states what the valuer will do, or is legal/procedural text. Do NOT cite it.
+
+Always cite the block that contains the **direct answer**—not a block that talks about the topic indirectly.
+
+**Examples of WRONG vs CORRECT block selection:**
+- User asks "what is the flood risk?" → WRONG: citing a block that says "would not preclude mortgageability" (that's the implication, not the risk). CORRECT: citing the block that actually states the zone or probability (e.g. "Zone 2", "Zone 3", "medium probability"—whatever wording appears in that block).
+- User asks "what is the EPC rating?" → WRONG: citing a block about tenure or owner-occupied. CORRECT: citing the block with "56 D" or "71 C" (or whatever rating appears there).
+- User asks "what is the market value?" → WRONG: citing a block about fees or terms. CORRECT: citing the block with "£2,400,000" and the date.
+- User asks about any topic → WRONG: citing a block that says "we shall comment on [topic]" or "we will advise on [topic]". CORRECT: citing the block that states the actual answer.
+
+**CRITICAL – NO FABRICATION:** Only state a specific flood zone, EPC rating, or value if a cited block contains that exact (or near-exact) wording. If no block in the excerpts contains the zone/rating/value, say that the documents do not state it or that you could not find it—do NOT invent or assume a value (e.g. do not say "Flood Zone 2" or "medium probability" unless those words appear in a block you cite).
+
+If no block contains the direct answer, do not cite. State what you can infer and note the document does not explicitly state it.
+
 **RULES:**
-1. **ALWAYS** include the block id in parentheses immediately after [ID: X]. The block id must be the id of the <BLOCK> that contains the fact.
+1. **ALWAYS** include the block id in parentheses immediately after [ID: X]. The block id must be the id of the <BLOCK> that contains the fact. Without it, the document preview will show the wrong highlight.
 2. **Cite ONLY the <BLOCK> whose content actually contains that fact** (e.g. for "EPC 56 D" cite the block that contains "56" and "D", not a different block about something else).
 3. **Place each citation immediately after the fact or phrase it supports**—never group all citations at the end of a sentence.
 4. **Use the exact block id** from the <BLOCK> tag (e.g. BLOCK_CITE_ID_42, not BLOCK_CITE_ID_41).
 5. You may cite the same block multiple times for different facts from that block.
-6. Do NOT use [1], [2] - use [ID: 1], [ID: 2] followed by (BLOCK_CITE_ID_N).
+6. **Every citation must be [ID: X](BLOCK_CITE_ID_N)**. Never write [1], [2], or [ID: 1] alone—always add (BLOCK_CITE_ID_N).
 7. Do NOT invent block ids - only use ids that appear in the excerpts above.
+
+# EXTRACTING INFORMATION
+
+The excerpts provided ARE the source of truth. If the answer IS present, extract and present it. **DO NOT say "the excerpts do not contain" if the information IS actually in the excerpts.** Property documents often use specific terms: "Zone 2", "Zone 3", "Flood Zone", "Medium Probability" = flood risk; "EPC", "56 D", "Band C" = EPC rating. If you see these in the excerpts, extract the exact wording. **Only state a value (zone, rating, amount) that appears in the excerpts—never invent or assume a value.** If no excerpt contains the flood zone or rating, say "The documents do not state the flood risk" or "I could not find the flood zone in the provided excerpts" and do not give a specific zone.
 
 # TONE & STYLE
 
@@ -329,10 +369,55 @@ After the sentence containing your first citation [ID: 1](...), add a blank line
 """
 
 
+BLOCK_CITATION_OUTPUT_OVERRIDE = """
+**CITATION FORMAT OVERRIDE (for block-citation responses only):**
+The layout rules below sometimes show [1], [2] as shorthand. In this response you MUST use the full format: [ID: 1](BLOCK_CITE_ID_N), [ID: 2](BLOCK_CITE_ID_M), etc. Never output [1] or [ID: 1] without the block id in parentheses.
+
+"""
+
+
+# --- Citation block selection (LLM-based fallback when block_id not in response) ---
+# Used by extract_citations_with_positions when the model omits block IDs.
+
+CITATION_BLOCK_SELECTION_SYSTEM = """You select which document block to highlight when a user clicks a citation.
+
+Ask yourself: "If the user clicked this citation, would this block show them the direct answer to their question?"
+
+**Pick the block that contains the DIRECT ANSWER — the specific fact, figure, rating, zone, date, or value the user asked about.**
+
+**Never pick a block that:**
+- Only mentions the topic indirectly (e.g. "would not preclude mortgageability" when user asked about flood risk — that's the implication, not the risk itself)
+- Only promises to advise on the topic (e.g. "we shall comment on...")
+- Is a footer, URL, or heading
+- Discusses the topic without stating the actual answer
+
+If no block contains the direct answer, return null.
+
+Respond with JSON only: {"block_index": N} or {"block_index": null}."""
+
+
+def get_citation_block_selection_prompt(user_query: str, cited_text: str, blocks: list) -> str:
+    """Build human prompt for citation block selection."""
+    blocks_text = "\n".join(
+        f"[{i}] {b.get('content', '')[:500]}{'...' if len(b.get('content', '') or '') > 500 else ''}"
+        for i, b in enumerate(blocks) if isinstance(b, dict)
+    )
+    return f"""User question: {user_query}
+
+Cited text (from the model's response): {cited_text}
+
+Blocks in this chunk (choose the one that best answers the user's question):
+{blocks_text}
+
+Which block index (0-based) best answers the user's question? Reply with JSON only: {{"block_index": N}} or {{"block_index": null}}."""
+
+
+
 def get_responder_block_citation_system_content(personality_context: str) -> str:
     """Full system content for block-citation answer with personality selection (generate_conversational_answer_with_citations)."""
     return (
         BLOCK_CITATION_BASE
+        + BLOCK_CITATION_OUTPUT_OVERRIDE
         + OUTPUT_FORMATTING_RULES
         + CLOSING_AND_FOLLOWUP_PROMPT
         + get_personality_choice_instruction()

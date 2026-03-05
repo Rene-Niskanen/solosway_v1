@@ -57,6 +57,7 @@ WHEN TO USE HOW MANY STEPS
 • **1 step** — "Documents in scope" is provided below with [id: <uuid>] on each line (follow-up or user chose docs).
   Output only retrieve_chunks. Set document_ids to the exact UUIDs from the workspace (copy [id: <uuid>] values). Never use placeholder text.
   Set query to a KEYWORD-RICH phrase for retrieval (e.g. "who are the parties?" → "parties landlord tenant names"; "main terms" → "main terms conditions lease"). Do NOT use the literal user message—rewrite for retrieval.
+  For value-seeking questions (EPC, flood risk, market value), use terms that appear in passages stating the value: e.g. "EPC rating?" → "EPC rating band score energy performance"; "flood risk?" → "flood zone probability".
 
 • **2 steps** — New or self-contained question, or short follow-up with no workspace.
   Step 1: retrieve_docs. Step 2: retrieve_chunks with document_ids = ["<from_step_<Step1Id>>"].

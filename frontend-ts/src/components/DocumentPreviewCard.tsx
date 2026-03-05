@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { FileText, File, FileSpreadsheet, Image, ChevronRight } from 'lucide-react';
+import { FileText, File, FileSpreadsheet, Image, ChevronRight, ArrowUp } from 'lucide-react';
 import * as pdfjs from 'pdfjs-dist';
 
 // Vite handles this import and returns the correct URL for the worker
@@ -22,8 +22,9 @@ interface DocumentMetadata {
 interface DocumentPreviewCardProps {
   metadata: DocumentMetadata;
   onClick?: () => void;
-  defaultExpanded?: boolean; // Control initial expanded state
-  autoCollapse?: boolean; // Auto-collapse after loading completes
+  defaultExpanded?: boolean;
+  autoCollapse?: boolean;
+  onAskQuestion?: (query: string, docMeta: DocumentMetadata) => void;
 }
 
 // PDF icon from public assets (replaces lucide FileText for PDFs)
@@ -118,7 +119,8 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({
   metadata, 
   onClick, 
   defaultExpanded = false,
-  autoCollapse = false 
+  autoCollapse = false,
+  onAskQuestion,
 }) => {
   const { doc_id, original_filename, classification_type, s3_path, download_url } = metadata;
   
@@ -155,6 +157,36 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({
     initialCache?.thumbnailUrl ?? null
   );
   
+  // Hover-to-ask state
+  const [showAskInput, setShowAskInput] = useState(false);
+  const [askQuery, setAskQuery] = useState('');
+  const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const askInputRef = useRef<HTMLTextAreaElement>(null);
+  const cardContainerRef = useRef<HTMLDivElement>(null);
+
+  const handleCardMouseEnter = () => {
+    if (!onAskQuestion) return;
+    hoverTimerRef.current = setTimeout(() => setShowAskInput(true), 300);
+  };
+  const handleCardMouseLeave = () => {
+    if (hoverTimerRef.current) { clearTimeout(hoverTimerRef.current); hoverTimerRef.current = null; }
+    if (!askQuery.trim()) setShowAskInput(false);
+  };
+  useEffect(() => {
+    if (showAskInput && askInputRef.current) askInputRef.current.focus();
+  }, [showAskInput]);
+  useEffect(() => { return () => { if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current); }; }, []);
+
+  const handleAskSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const trimmed = askQuery.trim();
+    if (!trimmed || !onAskQuestion) return;
+    onAskQuestion(trimmed, metadata);
+    setAskQuery('');
+    setShowAskInput(false);
+  };
+
   // Auto-collapse after loading completes
   useEffect(() => {
     if (autoCollapse && !loading && isExpanded) {
@@ -320,10 +352,13 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({
   return (
     <>
       <motion.div
+        ref={cardContainerRef}
         className={`document-preview-card${isExpanded ? ' document-preview-card--expanded' : ''}`}
         initial={{ opacity: 0, y: 4 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.2, ease: [0.25, 0.1, 0.25, 1] }}
+        onMouseEnter={handleCardMouseEnter}
+        onMouseLeave={handleCardMouseLeave}
         style={{
           display: 'flex',
           flexDirection: 'column',
@@ -336,7 +371,8 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({
           transition: 'border-color 0.1s ease, box-shadow 0.1s ease',
           overflow: 'hidden',
           boxShadow: 'none',
-          boxSizing: 'border-box'
+          boxSizing: 'border-box',
+          position: 'relative',
         }}
       >
         {/* Collapsible Header Row */}
@@ -507,6 +543,54 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({
             </motion.div>
           )}
         </AnimatePresence>
+        {/* Hover-to-ask input overlay */}
+        <AnimatePresence>
+          {showAskInput && onAskQuestion && (
+            <motion.div
+              initial={{ opacity: 0, y: 4 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 4 }}
+              transition={{ duration: 0.15, ease: [0.16, 1, 0.3, 1] }}
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                padding: '4px 6px 6px',
+                borderTop: '1px solid rgba(0,0,0,0.06)',
+                backgroundColor: 'rgba(255,255,255,0.95)',
+                backdropFilter: 'blur(4px)',
+              }}
+            >
+              <form onSubmit={handleAskSubmit} style={{ display: 'flex', alignItems: 'flex-end', gap: 4 }}>
+                <textarea
+                  ref={askInputRef}
+                  value={askQuery}
+                  onChange={(e) => setAskQuery(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleAskSubmit(e); } if (e.key === 'Escape') { setShowAskInput(false); setAskQuery(''); } }}
+                  placeholder="Ask anything..."
+                  rows={1}
+                  style={{
+                    flex: 1, resize: 'none', border: 'none', outline: 'none',
+                    background: 'transparent', fontSize: 12, fontWeight: 400,
+                    color: '#1F2937', lineHeight: 1.5, minHeight: 24, maxHeight: 60,
+                    padding: '2px 0', fontFamily: 'inherit',
+                  }}
+                />
+                <button
+                  type="submit"
+                  disabled={!askQuery.trim()}
+                  style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    width: 24, height: 24, borderRadius: '50%', border: 'none',
+                    backgroundColor: askQuery.trim() ? '#4A4A4A' : '#F3F4F6',
+                    cursor: askQuery.trim() ? 'pointer' : 'not-allowed', flexShrink: 0,
+                    opacity: askQuery.trim() ? 1 : 0.5, transition: 'background-color 0.15s, opacity 0.15s',
+                  }}
+                >
+                  <ArrowUp style={{ width: 14, height: 14, color: askQuery.trim() ? '#fff' : '#6B7280' }} strokeWidth={2.5} />
+                </button>
+              </form>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </motion.div>
       
       <style>{`
@@ -551,7 +635,7 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({
 export const StackedDocumentPreviews: React.FC<{
   documents: Array<{
     doc_id: string;
-    original_filename?: string | null; // Can be null
+    original_filename?: string | null;
     classification_type: string;
     page_range?: string;
     page_numbers?: number[];
@@ -559,8 +643,9 @@ export const StackedDocumentPreviews: React.FC<{
     download_url?: string;
   }>;
   onDocumentClick?: (metadata: any) => void;
-  isAnimating?: boolean; // True when transitioning from spread to stacked
-}> = ({ documents, onDocumentClick, isAnimating = false }) => {
+  isAnimating?: boolean;
+  onAskQuestion?: (query: string, docMeta: { doc_id: string; original_filename?: string | null; classification_type: string }) => void;
+}> = ({ documents, onDocumentClick, isAnimating = false, onAskQuestion }) => {
   
   if (documents.length === 0) return null;
   
@@ -590,88 +675,122 @@ export const StackedDocumentPreviews: React.FC<{
         gap: '4px' // Subtle space between stacked cards
       }}
     >
-      {/* Stacked Document Headers - Light cards matching background */}
-      {documents.map((doc, index) => {
-        const totalDocs = documents.length;
-        // Stacking animation: cards drop in from above with staggered timing
-        // Higher cards drop from further away for a cascading effect
-        const dropDistance = (totalDocs - index) * 25;
-        
-        // Build display filename with fallbacks: original_filename -> classification_type label -> "Document"
-        const classificationLabel = doc.classification_type 
-          ? doc.classification_type.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase())
-          : '';
-        const displayFilename = doc.original_filename || classificationLabel || 'Document';
-        
-        // Truncate filename
-        const truncateFilename = (name: string, maxLength: number = 45) => {
-          if (name.length <= maxLength) return name;
-          const ext = name.split('.').pop() || '';
-          const nameWithoutExt = name.slice(0, name.lastIndexOf('.'));
-          const truncatedName = nameWithoutExt.slice(0, maxLength - ext.length - 4) + '...';
-          return ext ? `${truncatedName}.${ext}` : truncatedName;
-        };
-        
-        return (
+      {documents.map((doc, index) => (
+        <StackedDocCardWithAsk
+          key={doc.doc_id || `stacked-doc-${index}`}
+          doc={doc}
+          index={index}
+          totalDocs={documents.length}
+          isAnimating={isAnimating}
+          onDocumentClick={onDocumentClick}
+          onAskQuestion={onAskQuestion}
+        />
+      ))}
+    </motion.div>
+  );
+};
+
+/**
+ * StackedDocCardWithAsk - individual stacked card with optional hover-to-ask.
+ * Extracted to allow React hooks (useState) inside the list.
+ */
+const StackedDocCardWithAsk: React.FC<{
+  doc: { doc_id: string; original_filename?: string | null; classification_type: string };
+  index: number;
+  totalDocs: number;
+  isAnimating: boolean;
+  onDocumentClick?: (metadata: any) => void;
+  onAskQuestion?: (query: string, docMeta: { doc_id: string; original_filename?: string | null; classification_type: string }) => void;
+}> = ({ doc, index, totalDocs, isAnimating, onDocumentClick, onAskQuestion }) => {
+  const [showAsk, setShowAsk] = useState(false);
+  const [askQ, setAskQ] = useState('');
+  const hoverRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  const dropDistance = (totalDocs - index) * 25;
+  const classLabel = doc.classification_type
+    ? doc.classification_type.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase())
+    : '';
+  const displayName = doc.original_filename || classLabel || 'Document';
+  const truncated = displayName.length <= 45 ? displayName : displayName.slice(0, 41) + '...';
+
+  useEffect(() => { if (showAsk && inputRef.current) inputRef.current.focus(); }, [showAsk]);
+  useEffect(() => () => { if (hoverRef.current) clearTimeout(hoverRef.current); }, []);
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault(); e.stopPropagation();
+    const trimmed = askQ.trim();
+    if (!trimmed || !onAskQuestion) return;
+    onAskQuestion(trimmed, doc);
+    setAskQ(''); setShowAsk(false);
+  };
+
+  return (
+    <motion.div
+      key={doc.doc_id || `stacked-doc-${index}`}
+      initial={isAnimating ? { y: -dropDistance - 40, opacity: 0, scale: 0.8, rotateZ: -2 } : false}
+      animate={{ y: 0, opacity: 1, scale: 1, rotateZ: 0 }}
+      transition={{ duration: 0.5, delay: isAnimating ? index * 0.1 : 0, ease: [0.34, 1.56, 0.64, 1] }}
+      onMouseEnter={() => { if (onAskQuestion) hoverRef.current = setTimeout(() => setShowAsk(true), 300); }}
+      onMouseLeave={() => { if (hoverRef.current) { clearTimeout(hoverRef.current); hoverRef.current = null; } if (!askQ.trim()) setShowAsk(false); }}
+      style={{
+        display: 'flex', flexDirection: 'column', backgroundColor: 'transparent',
+        borderRadius: '8px', border: '1px solid rgba(0,0,0,0.08)',
+        cursor: onDocumentClick ? 'pointer' : 'default', transition: 'all 0.1s ease', overflow: 'hidden',
+      }}
+      whileHover={onDocumentClick ? { backgroundColor: 'rgba(0,0,0,0.02)', borderColor: 'rgba(0,0,0,0.12)' } : undefined}
+    >
+      <div
+        onClick={() => onDocumentClick?.(doc)}
+        style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px' }}
+      >
+        <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center' }}>
+          {getFileIcon(doc.original_filename, 14, doc.classification_type)}
+        </div>
+        <span style={{
+          fontSize: 13, fontWeight: 500, color: '#374151', whiteSpace: 'nowrap',
+          overflow: 'hidden', textOverflow: 'ellipsis', letterSpacing: '-0.01em', lineHeight: 1.4, flex: 1,
+          fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+        }}>
+          {truncated}
+        </span>
+      </div>
+      <AnimatePresence>
+        {showAsk && onAskQuestion && (
           <motion.div
-            key={doc.doc_id || `stacked-doc-${index}`}
-            initial={isAnimating ? { 
-              y: -dropDistance - 40, 
-              opacity: 0,
-              scale: 0.8,
-              rotateZ: -2 // Slight rotation for dynamic effect
-            } : false}
-            animate={{ 
-              y: 0, 
-              opacity: 1,
-              scale: 1,
-              rotateZ: 0
-            }}
-            transition={{ 
-              duration: 0.5, 
-              delay: isAnimating ? index * 0.1 : 0,
-              ease: [0.34, 1.56, 0.64, 1] // Bouncy spring effect
-            }}
-            onClick={() => onDocumentClick?.(doc)}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '8px',
-              padding: '8px 12px',
-              backgroundColor: 'transparent',
-              borderRadius: '8px',
-              border: '1px solid rgba(0, 0, 0, 0.08)',
-              cursor: onDocumentClick ? 'pointer' : 'default',
-              transition: 'all 0.1s ease'
-            }}
-            whileHover={onDocumentClick ? { 
-              backgroundColor: 'rgba(0, 0, 0, 0.02)',
-              borderColor: 'rgba(0, 0, 0, 0.12)'
-            } : undefined}
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.12 }}
+            style={{ borderTop: '1px solid rgba(0,0,0,0.06)', padding: '4px 8px 6px', overflow: 'hidden' }}
           >
-            {/* File icon */}
-            <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center' }}>
-              {getFileIcon(doc.original_filename, 14, doc.classification_type)}
-            </div>
-            <span
-              style={{
-                fontSize: '13px',
-                fontWeight: 500,
-                color: '#374151',
-                whiteSpace: 'nowrap',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                letterSpacing: '-0.01em',
-                lineHeight: 1.4,
-                flex: 1,
-                fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
-              }}
-            >
-              {truncateFilename(displayFilename)}
-            </span>
+            <form onSubmit={handleSubmit} style={{ display: 'flex', alignItems: 'flex-end', gap: 4 }} onClick={e => e.stopPropagation()}>
+              <textarea
+                ref={inputRef}
+                value={askQ}
+                onChange={e => setAskQ(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSubmit(e); } if (e.key === 'Escape') { setShowAsk(false); setAskQ(''); } }}
+                placeholder="Ask anything..."
+                rows={1}
+                style={{ flex: 1, resize: 'none', border: 'none', outline: 'none', background: 'transparent', fontSize: 12, color: '#1F2937', lineHeight: 1.5, minHeight: 24, maxHeight: 60, padding: '2px 0', fontFamily: 'inherit' }}
+              />
+              <button
+                type="submit"
+                disabled={!askQ.trim()}
+                style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  width: 22, height: 22, borderRadius: '50%', border: 'none',
+                  backgroundColor: askQ.trim() ? '#4A4A4A' : '#F3F4F6',
+                  cursor: askQ.trim() ? 'pointer' : 'not-allowed', flexShrink: 0,
+                  opacity: askQ.trim() ? 1 : 0.5, transition: 'background-color 0.15s, opacity 0.15s',
+                }}
+              >
+                <ArrowUp style={{ width: 13, height: 13, color: askQ.trim() ? '#fff' : '#6B7280' }} strokeWidth={2.5} />
+              </button>
+            </form>
           </motion.div>
-        );
-      })}
+        )}
+      </AnimatePresence>
     </motion.div>
   );
 };

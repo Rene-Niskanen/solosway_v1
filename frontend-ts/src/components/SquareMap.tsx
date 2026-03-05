@@ -29,6 +29,8 @@ interface SquareMapProps {
   onCreateProject?: () => void; // Callback to create a new project
   isWorkflowVisible?: boolean; // Whether the new property workflow is visible
   onCloseWorkflow?: () => void; // Callback to close the workflow
+  /** When true, skip the entrance fade (opacity 0→1) for instant appearance when transitioning from dashboard */
+  skipEntranceAnimation?: boolean;
 }
 
 export interface SquareMapRef {
@@ -210,7 +212,8 @@ export const SquareMap = React.forwardRef<SquareMapRef, SquareMapProps>(({
   onPropertyDetailsVisibilityChange,
   onCreateProject,
   isWorkflowVisible = false,
-  onCloseWorkflow
+  onCloseWorkflow,
+  skipEntranceAnimation = false,
 }, ref) => {
   // Use refs to store current chat panel and sidebar widths so click handlers can access latest values
   const chatPanelWidthRef = useRef(chatPanelWidth);
@@ -5541,10 +5544,10 @@ export const SquareMap = React.forwardRef<SquareMapRef, SquareMapProps>(({
         {/* Always render map container (hidden when not visible) for early initialization */}
         <motion.div
           key="square-map-container"
-          initial={{ opacity: 0 }}
+          initial={skipEntranceAnimation ? false : { opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          transition={{ duration: 0.3 }}
+          transition={{ duration: skipEntranceAnimation ? 0 : 0.3 }}
           style={{ 
             display: 'block',
             pointerEvents: isInteractive ? 'auto' : 'none',
@@ -5738,30 +5741,24 @@ export const SquareMap = React.forwardRef<SquareMapRef, SquareMapProps>(({
                 console.warn('onCreateProject is not defined');
               }
             }}
-            className="flex items-center gap-1.5 rounded-none transition-all duration-200 group focus:outline-none outline-none"
+            className="flex items-center gap-1 rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150 cursor-pointer border-none group focus:outline-none outline-none"
             style={{
-              padding: '4px 8px',
-              height: '24px',
-              minHeight: '24px',
+              padding: '6px 8px',
+              height: '32px',
+              minHeight: '32px',
               backgroundColor: '#FFFFFF',
-              border: '1px solid rgba(82, 101, 128, 0.35)',
-              borderRadius: '8px',
-              boxShadow: 'inset 0 1px 0 rgba(255, 255, 255, 0.55), 0 1px 2px rgba(0, 0, 0, 0.08)',
-              opacity: 1,
-              backdropFilter: 'none',
+              border: 'none',
             }}
             onMouseEnter={(e) => {
-              e.currentTarget.style.backgroundColor = '#F9FAFB';
-              e.currentTarget.style.boxShadow = 'inset 0 1px 0 rgba(255, 255, 255, 0.55), 0 2px 4px rgba(0, 0, 0, 0.12)';
+              e.currentTarget.style.backgroundColor = '#f0f0f0';
             }}
             onMouseLeave={(e) => {
               e.currentTarget.style.backgroundColor = '#FFFFFF';
-              e.currentTarget.style.boxShadow = 'inset 0 1px 0 rgba(255, 255, 255, 0.55), 0 1px 2px rgba(0, 0, 0, 0.08)';
             }}
             title="Create Project"
           >
-            <Plus className="w-3.5 h-3.5 text-slate-600 group-hover:text-slate-700" strokeWidth={1.5} />
-            <span className="text-slate-600 text-xs">
+            <Plus className="w-5 h-5 text-[#666] flex-shrink-0" strokeWidth={1.25} />
+            <span className="text-[13px] font-normal text-[#666] text-left whitespace-nowrap">
               Create Project
             </span>
           </button>

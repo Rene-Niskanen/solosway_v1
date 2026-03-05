@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { Sidebar } from './Sidebar';
 import { MainContent } from './MainContent';
 import { ChatPanel } from './ChatPanel';
@@ -21,6 +21,7 @@ import { SearchOrStartChatModal } from './SearchOrStartChatModal';
 import { UploadOverlay } from './UploadOverlay';
 import { PlanModalProvider, usePlanModal } from '../contexts/PlanModalContext';
 import { CurrencyProvider } from '../contexts/CurrencyContext';
+import { AgentOrchestrationProvider } from '../contexts/AgentOrchestrationContext';
 import { UsageProvider, useUsage } from '../contexts/UsageContext';
 import { PlanSelectionModal } from './PlanSelectionModal';
 import { useToast } from '@/hooks/use-toast';
@@ -40,8 +41,10 @@ const DashboardLayoutContent = ({
   className
 }: DashboardLayoutProps) => {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { closeSidebar: closeFilingSidebar, openSidebar: openFilingSidebar, isOpen: isFilingSidebarOpen, width: filingSidebarWidth, setUploadOverlayOpen, setInitialPendingFiles } = useFilingSidebar();
-  const { togglePanel: toggleChatPanel, closePanel: closeChatPanel, isOpen: isChatPanelOpen } = useChatPanel();
+  const { togglePanel: toggleChatPanel, closePanel: closeChatPanel, openPanel: openChatPanel, isOpen: isChatPanelOpen } = useChatPanel();
+  const chatsOpenedOnceThisSessionRef = React.useRef(false);
   const { isOpen: isFeedbackModalOpen, setIsOpen: setFeedbackModalOpen, messageId: feedbackMessageId, conversationSnippet: feedbackConversationSnippet } = useFeedbackModal();
   const { isOpen: planModalOpen, currentPlan: planModalCurrentPlan, billingCycleEnd: planModalBillingCycleEnd, closePlanModal } = usePlanModal();
   const { setUsageOptimistic, refetch: refetchUsage } = useUsage();
@@ -100,6 +103,25 @@ const DashboardLayoutContent = ({
     window.addEventListener('openSearchModal', handler);
     return () => window.removeEventListener('openSearchModal', handler);
   }, []);
+
+  // After Stripe Checkout success redirect: refetch usage and show toast
+  const checkoutParam = searchParams.get('checkout');
+  React.useEffect(() => {
+    if (checkoutParam === 'success') {
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete('checkout');
+        return next;
+      }, { replace: true });
+      refetchUsage();
+      window.dispatchEvent(new CustomEvent('usageShouldRefresh'));
+      showToast({
+        title: "Subscription updated",
+        description: "Your plan has been updated successfully.",
+        variant: "success",
+      });
+    }
+  }, [checkoutParam, setSearchParams, refetchUsage, showToast]);
 
   // Get background image URL based on selected background
   // Returns null for default-background (which uses solid color instead)
@@ -161,11 +183,7 @@ const DashboardLayoutContent = ({
       setShowChatNotification(true);
     }
     
-    // Close agent sidebar when navigating to different sections
-    if (viewId !== currentView) {
-      closeChatPanel();
-    }
-    
+    // Keep agent sidebar open when navigating between sections (user can close via backdrop/button)
     if (viewId !== 'upload') {
       setIsChatVisible(false); // Also clear chat visibility state
     }
@@ -188,8 +206,6 @@ const DashboardLayoutContent = ({
       setHasPerformedSearch(false);
       setResetTrigger(prev => prev + 1); // Trigger reset in SearchBar
       setHomeClicked(true); // Flag that home was clicked
-      // Close agent sidebar when navigating to home
-      closeChatPanel();
       setIsChatVisible(false); // Clear chat visibility state
       closeFilingSidebar(); // Close filing sidebar
       // Set view to search since home displays the search interface
@@ -560,7 +576,12 @@ const DashboardLayoutContent = ({
     setIsMapVisibleFromChat(false);
     setIsInChatMode(true);
     setOpenChatsViewTrigger((t) => t + 1);
-  }, []);
+    // First time opening Chats this session: open agent sidebar; when returning to chat after closing it, leave it closed
+    if (!chatsOpenedOnceThisSessionRef.current) {
+      chatsOpenedOnceThisSessionRef.current = true;
+      openChatPanel();
+    }
+  }, [openChatPanel]);
   
   // Callback from MainContent when active chat state changes
   const handleActiveChatChange = React.useCallback((isActive: boolean) => {
@@ -595,13 +616,11 @@ const DashboardLayoutContent = ({
     setHasPerformedSearch(false);
     setResetTrigger(prev => prev + 1); // Trigger reset in SearchBar
     setHomeClicked(true); // Flag that home was clicked
-    // Close agent sidebar when navigating to dashboard
-    closeChatPanel();
     setIsChatVisible(false); // Clear chat visibility state
     closeFilingSidebar(); // Close filing sidebar
     // Set view to search since home displays the search interface
     setCurrentView('search');
-  }, [closeFilingSidebar, closeChatPanel]);
+  }, [closeFilingSidebar]);
 
   // Handler to open map view from sidebar
   const handleMapToggle = React.useCallback(() => {
@@ -628,10 +647,8 @@ const DashboardLayoutContent = ({
     setCurrentChatData(null);
     // Clear previous chat data to prevent any restoration attempts
     setPreviousChatData(null);
-    // Close agent sidebar when navigating to map
-    closeChatPanel();
     setIsChatVisible(false);
-  }, [isMapVisibleFromSidebar, isMapVisibleFromChat, closeChatPanel]);
+  }, [isMapVisibleFromSidebar, isMapVisibleFromChat]);
 
   const handleReturnToChat = React.useCallback(() => {
     if (previousChatData) {
@@ -787,27 +804,47 @@ const DashboardLayoutContent = ({
             setPlanChangeTierId(tierId);
             setPlanChangeInProgress(true);
             const timeoutMs = 15000;
+            const base = typeof window !== 'undefined' ? window.location.origin : '';
+            const successUrl = `${base}/dashboard?checkout=success`;
+            const cancelUrl = `${base}/dashboard?checkout=cancel`;
             try {
-              const res = await Promise.race([
-                backendApi.updatePlan(tierId),
-                new Promise<never>((_, reject) =>
-                  setTimeout(() => reject(new Error('Request timed out')), timeoutMs)
-                ),
-              ]);
-              if (res.success) {
-                closePlanModal();
-                setUsageOptimistic(tierId);
-                refetchUsage();
-                window.dispatchEvent(new CustomEvent('usageShouldRefresh', { detail: { plan: tierId } }));
-                const name = TIERS[tierId]?.name ?? tierId;
-                showToast({
-                  title: "You're all set",
-                  description: `You're now on the ${name} plan.`,
-                  variant: "success",
-                });
+              const configRes = await backendApi.getBillingConfig();
+              const useStripe = configRes.success && (configRes.data as { stripeEnabled?: boolean } | undefined)?.stripeEnabled === true;
+              if (useStripe) {
+                const sessionRes = await Promise.race([
+                  backendApi.createCheckoutSession(tierId, successUrl, cancelUrl),
+                  new Promise<never>((_, reject) =>
+                    setTimeout(() => reject(new Error('Request timed out')), timeoutMs)
+                  ),
+                ]);
+                if (sessionRes.success && (sessionRes.data as { url?: string } | undefined)?.url) {
+                  closePlanModal();
+                  window.location.href = (sessionRes.data as { url: string }).url;
+                  return;
+                }
+                showToast({ title: 'Checkout unavailable', description: (sessionRes as { error?: string }).error ?? 'Please try again.', variant: 'destructive' });
               } else {
-                closePlanModal();
-                showToast({ title: 'Could not update plan', description: res.error ?? 'Please try again.', variant: 'destructive' });
+                const res = await Promise.race([
+                  backendApi.updatePlan(tierId),
+                  new Promise<never>((_, reject) =>
+                    setTimeout(() => reject(new Error('Request timed out')), timeoutMs)
+                  ),
+                ]);
+                if (res.success) {
+                  closePlanModal();
+                  setUsageOptimistic(tierId);
+                  refetchUsage();
+                  window.dispatchEvent(new CustomEvent('usageShouldRefresh', { detail: { plan: tierId } }));
+                  const name = TIERS[tierId]?.name ?? tierId;
+                  showToast({
+                    title: "You're all set",
+                    description: `You're now on the ${name} plan.`,
+                    variant: "success",
+                  });
+                } else {
+                  closePlanModal();
+                  showToast({ title: 'Could not update plan', description: (res as { error?: string }).error ?? 'Please try again.', variant: 'destructive' });
+                }
               }
             } catch {
               closePlanModal();
@@ -821,27 +858,47 @@ const DashboardLayoutContent = ({
             setPlanChangeTierId(tierId);
             setPlanChangeInProgress(true);
             const timeoutMs = 15000;
+            const base = typeof window !== 'undefined' ? window.location.origin : '';
+            const successUrl = `${base}/dashboard?checkout=success`;
+            const cancelUrl = `${base}/dashboard?checkout=cancel`;
             try {
-              const res = await Promise.race([
-                backendApi.updatePlan(tierId),
-                new Promise<never>((_, reject) =>
-                  setTimeout(() => reject(new Error('Request timed out')), timeoutMs)
-                ),
-              ]);
-              if (res.success) {
-                closePlanModal();
-                setUsageOptimistic(tierId);
-                refetchUsage();
-                window.dispatchEvent(new CustomEvent('usageShouldRefresh', { detail: { plan: tierId } }));
-                const name = TIERS[tierId]?.name ?? tierId;
-                showToast({
-                  title: "You're all set",
-                  description: `You're now on the ${name} plan.`,
-                  variant: "success",
-                });
+              const configRes = await backendApi.getBillingConfig();
+              const useStripe = configRes.success && (configRes.data as { stripeEnabled?: boolean } | undefined)?.stripeEnabled === true;
+              if (useStripe) {
+                const sessionRes = await Promise.race([
+                  backendApi.createCheckoutSession(tierId, successUrl, cancelUrl),
+                  new Promise<never>((_, reject) =>
+                    setTimeout(() => reject(new Error('Request timed out')), timeoutMs)
+                  ),
+                ]);
+                if (sessionRes.success && (sessionRes.data as { url?: string } | undefined)?.url) {
+                  closePlanModal();
+                  window.location.href = (sessionRes.data as { url: string }).url;
+                  return;
+                }
+                showToast({ title: 'Checkout unavailable', description: (sessionRes as { error?: string }).error ?? 'Please try again.', variant: 'destructive' });
               } else {
-                closePlanModal();
-                showToast({ title: 'Could not update plan', description: res.error ?? 'Please try again.', variant: 'destructive' });
+                const res = await Promise.race([
+                  backendApi.updatePlan(tierId),
+                  new Promise<never>((_, reject) =>
+                    setTimeout(() => reject(new Error('Request timed out')), timeoutMs)
+                  ),
+                ]);
+                if (res.success) {
+                  closePlanModal();
+                  setUsageOptimistic(tierId);
+                  refetchUsage();
+                  window.dispatchEvent(new CustomEvent('usageShouldRefresh', { detail: { plan: tierId } }));
+                  const name = TIERS[tierId]?.name ?? tierId;
+                  showToast({
+                    title: "You're all set",
+                    description: `You're now on the ${name} plan.`,
+                    variant: "success",
+                  });
+                } else {
+                  closePlanModal();
+                  showToast({ title: 'Could not update plan', description: (res as { error?: string }).error ?? 'Please try again.', variant: 'destructive' });
+                }
               }
             } catch {
               closePlanModal();
@@ -1012,7 +1069,9 @@ export const DashboardLayout = (props: DashboardLayoutProps) => {
                 <PlanModalProvider>
                   <UsageProvider>
                     <CurrencyProvider>
-                      <DashboardLayoutContent {...props} />
+                      <AgentOrchestrationProvider>
+                        <DashboardLayoutContent {...props} />
+                      </AgentOrchestrationProvider>
                     </CurrencyProvider>
                   </UsageProvider>
                 </PlanModalProvider>

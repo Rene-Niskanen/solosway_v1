@@ -6,6 +6,7 @@ import { TIERS, upgradeToBusinessCopy, getLocaleCurrency, getPriceForTier, forma
 import { usePlanModal } from "@/contexts/PlanModalContext";
 import { useUsage } from "@/contexts/UsageContext";
 import { useCurrencyOptional, CURRENCY_OPTIONS } from "@/contexts/CurrencyContext";
+import { backendApi } from "@/services/backendApi";
 import {
   Select,
   SelectContent,
@@ -17,6 +18,13 @@ import {
 export const UsageAndBillingSection: React.FC = () => {
   const { openPlanModal } = usePlanModal();
   const { usage, loading, error } = useUsage();
+  const [stripeEnabled, setStripeEnabled] = React.useState<boolean | null>(null);
+
+  React.useEffect(() => {
+    backendApi.getBillingConfig().then((res) => {
+      setStripeEnabled(res.success && (res.data as { stripeEnabled?: boolean })?.stripeEnabled === true);
+    }).catch(() => setStripeEnabled(false));
+  }, []);
 
   if (loading) {
     return (
@@ -123,7 +131,17 @@ export const UsageAndBillingSection: React.FC = () => {
         {!businessCopy && <div className="mb-4" />}
         <Button
           variant="outline"
-          onClick={() => openPlanModal(usage.plan, usage.billing_cycle_end)}
+          onClick={async () => {
+            if (stripeEnabled === true) {
+              const returnUrl = typeof window !== 'undefined' ? `${window.location.origin}/dashboard` : '/dashboard';
+              const res = await backendApi.createPortalSession(returnUrl);
+              if (res.success && (res.data as { url?: string })?.url) {
+                window.location.href = (res.data as { url: string }).url;
+                return;
+              }
+            }
+            openPlanModal(usage.plan, usage.billing_cycle_end);
+          }}
           className="rounded-sm px-3 py-1 h-auto text-xs font-medium border border-gray-300 text-gray-700 mt-4 bg-[#F6F7F3] hover:bg-[#EEEFE9] hover:text-gray-700"
         >
           Manage Subscription

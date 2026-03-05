@@ -1393,16 +1393,15 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
                       className="relative flex items-center"
                       style={{
                         background: '#FCFCFC',
-                        border: '1px solid rgba(82, 101, 128, 0.35)',
-                        // Add a subtle divider line when suggestions are visible
+                        border: 'none',
                         borderBottom: showSuggestions && suggestions.length > 0 
-                          ? '1px solid rgba(229, 229, 229, 1)' // Subtle divider line
+                          ? '1px solid rgba(229, 229, 229, 1)'
                           : undefined,
                         // Remove bottom shadow when suggestions are visible
                         boxShadow: showSuggestions && suggestions.length > 0
-                          ? '0 0 0 rgba(0, 0, 0, 0)' // No shadow when suggestions visible
-                          : '0 2px 8px rgba(0, 0, 0, 0.15), 0 1px 2px rgba(0, 0, 0, 0.1)',
-                        borderRadius: showSuggestions && suggestions.length > 0 ? '6px 6px 0 0' : '6px',
+                          ? '0 0 0 rgba(0, 0, 0, 0)'
+                          : '0 1px 3px rgba(0, 0, 0, 0.06)',
+                        borderRadius: showSuggestions && suggestions.length > 0 ? '12px 12px 0 0' : '12px',
                         padding: '12px 16px',
                         width: '100%',
                         height: '100%',
@@ -1523,11 +1522,11 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
                           right: 0,
                           width: '100%',
                           background: '#FCFCFC',
-                          backgroundColor: '#FCFCFC', // Ensure solid color, no transparency
-                          border: '1px solid rgba(82, 101, 128, 0.35)',
+                          backgroundColor: '#FCFCFC',
+                          border: 'none',
                           borderTop: 'none',
-                          borderRadius: '0 0 6px 6px',
-                          boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15), 0 2px 4px rgba(0, 0, 0, 0.1)',
+                          borderRadius: '0 0 12px 12px',
+                          boxShadow: '0 1px 3px rgba(0, 0, 0, 0.06)',
                           maxHeight: '400px',
                           overflowY: 'auto',
                           zIndex: 51,

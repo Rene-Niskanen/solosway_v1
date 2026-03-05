@@ -593,11 +593,11 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
         
         # Cache-first: same-doc follow-up -> responder directly
         if state.get("use_cached_results") and state.get("execution_results"):
-            logger.info("[GRAPH] document_cached -> responder (cache-first)")
+            logger.warning("[GRAPH] document_cached -> responder (cache-first, use_cached_results=True)")
             return "document_cached"
         
         # Everything else -> agent_loop (LobeHub-style: model decides tools)
-        logger.info("[GRAPH] default -> agent_loop")
+        logger.warning("[GRAPH] default -> agent_loop (use_cached_results=%s, has_exec_results=%s)", state.get("use_cached_results"), bool(state.get("execution_results")))
         return "agent_loop"
 
     builder.add_conditional_edges(
@@ -620,10 +620,11 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
     builder.add_edge("handle_navigation_action", "format_response")
     logger.debug("Edge: handle_navigation_action -> format_response (INSTANT)")
     
-    # Attachment path: route through format_response for same structure as retrieval queries
-    # (H1/H2/H3 hierarchy, label-value format, canonical template)
-    builder.add_edge("handle_attachment_fast", "format_response")
-    logger.debug("Edge: handle_attachment_fast -> format_response (same structuring as retrieval)")
+    # Attachment path: go directly to END (already formatted via system prompt OUTPUT_FORMATTING_RULES).
+    # Skipping format_response avoids a second LLM pass that adds H1/H2/H3 headings, which
+    # render at 23-33px in the frontend and make file summaries look oversized.
+    builder.add_edge("handle_attachment_fast", END)
+    logger.debug("Edge: handle_attachment_fast -> END (already formatted, skip heading inflation)")
 
     # Citation chip follow-ups go directly to END
     builder.add_edge("handle_citation_query", END)

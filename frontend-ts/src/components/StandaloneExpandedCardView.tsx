@@ -1413,8 +1413,8 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
     // Minimum width for document preview
     const minDocPreviewWidth = CHAT_PANEL_WIDTH.DOC_PREVIEW_MIN;
     const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1920;
-    // Expected chat width in 50/50 split (matches SideChatPanel's calculateChatPanelWidth when doc preview is open)
-    const expected50ChatWidth = Math.round((viewportWidth - sidebarWidth - agentSidebarWidth) / 2);
+    // Expected chat width when doc preview is open (matches SideChatPanel's DOC_PREVIEW_CHAT_RATIO)
+    const expectedChatWidth = Math.round((viewportWidth - sidebarWidth - agentSidebarWidth) * CHAT_PANEL_WIDTH.DOC_PREVIEW_CHAT_RATIO);
     const roundedProp = Math.round(chatPanelWidth);
     // Set open time synchronously on first render for this doc so position is correct immediately (no jump when loading)
     if (docId && !isFullscreen && docOpenTimeSetForRef.current !== docId) {
@@ -1422,14 +1422,14 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
       docOpenTimeSetForRef.current = docId;
     }
     const isWithinStaleWindow = docOpenTimeRef.current > 0 && Date.now() - docOpenTimeRef.current < DOC_OPEN_STALE_MS;
-    // Snap to 50% when within 2px to avoid 1px rounding jitter and glitchy re-renders at exactly 50/50
-    const isNear50 = Math.abs(roundedProp - expected50ChatWidth) <= 2;
-    // During open window: always use 50% so the panel never moves when it loads (no jump after load)
+    // Snap to expected ratio when within 2px to avoid 1px rounding jitter and glitchy re-renders
+    const isNearExpected = Math.abs(roundedProp - expectedChatWidth) <= 2;
+    // During open window: always use expected so the panel never moves when it loads (no jump after load)
     const effectiveChatWidth =
       isWithinStaleWindow
-        ? expected50ChatWidth
-        : isNear50
-          ? expected50ChatWidth
+        ? expectedChatWidth
+        : isNearExpected
+          ? expectedChatWidth
           : roundedProp;
     const roundedChatPanelWidth = effectiveChatWidth;
     
@@ -1974,7 +1974,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
         width: `${panelWidth + 24}px`, // Extend to cover rounded corner area
         top: 0,
         bottom: 0,
-        backgroundColor: '#FCFCF9', // Same as chat panel
+        backgroundColor: '#FFFFFF', // Match chat background (white)
         zIndex: 9998, // Below the document preview (9999)
         pointerEvents: 'none',
         transition: 'none',

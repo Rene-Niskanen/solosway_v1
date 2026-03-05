@@ -77,6 +77,9 @@ class LLMConfig(BaseSettings):
     hyde_skip_max_words: int = int(os.getenv("HYDE_SKIP_MAX_WORDS", "8"))  # skip HyDE for short/entity-like queries (e.g. "value of highlands")
     hyde_cache_ttl_seconds: int = int(os.getenv("HYDE_CACHE_TTL_SECONDS", "60"))
 
+    # Extraction-guided retrieval: extract the answer passage from doc text with the user query, embed it, use as vector search query (high precision)
+    use_extraction_guided_retrieval: bool = os.getenv("USE_EXTRACTION_GUIDED_RETRIEVAL", "true").lower() == "true"
+
     # Bootstrap / USER.md (project context injected into system prompt)
     bootstrap_max_chars: int = int(os.getenv("VELORA_BOOTSTRAP_MAX_CHARS", "20000"))
     bootstrap_total_max_chars: int = int(os.getenv("VELORA_BOOTSTRAP_TOTAL_MAX_CHARS", "150000"))

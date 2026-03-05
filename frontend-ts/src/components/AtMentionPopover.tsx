@@ -226,10 +226,11 @@ export function AtMentionPopover({
               aria-selected={isSelected}
               onClick={() => onSelect(item)}
               onMouseEnter={() => onSelectedIndexChange(index)}
+              title={item.primaryLabel}
               style={{
                 padding: ROW_PADDING,
                 cursor: "pointer",
-                backgroundColor: isSelected ? FOCUSED_ROW_BG : "transparent",
+                backgroundColor: isSelected ? FOCUSED_ROW_BG : "#FFFFFF",
                 display: "flex",
                 alignItems: "center",
                 gap: ROW_GAP,

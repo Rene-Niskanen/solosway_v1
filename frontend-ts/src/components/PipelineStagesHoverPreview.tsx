@@ -586,7 +586,7 @@ export const PipelineStagesDetail: React.FC<PipelineStagesDetailProps> = ({
                       style={{
                         fontSize: 12,
                         lineHeight: 1.2,
-                        fontWeight: isActive ? 600 : 500,
+                        fontWeight: 500,
                         color: isPending ? '#6B7280' : isFailed ? '#B91C1C' : '#4A4A4A',
                       }}
                     >

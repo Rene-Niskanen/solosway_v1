@@ -5,10 +5,20 @@ This script properly initializes the Flask app and starts the Celery worker.
 """
 import os
 import sys
+import platform
 from dotenv import load_dotenv
 
 # Load environment variables first
 load_dotenv()
+
+# macOS: disable fork safety check to prevent SIGSEGV in Celery prefork workers
+# caused by Objective-C runtime + native libs (e.g. PDF parsers, SSL) after fork()
+if platform.system() == 'Darwin':
+    os.environ.setdefault('OBJC_DISABLE_INITIALIZE_FORK_SAFETY', 'YES')
+
+# Enable faulthandler for SIGSEGV stack traces
+import faulthandler
+faulthandler.enable()
 
 # Add the current directory to Python path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -36,8 +46,9 @@ def main():
         else:
             print(f"📊 Supabase DB URL: {supabase_db_url}")
         
-        # Start the worker
-        celery_app.start(['worker', '--loglevel=info', '--concurrency=1'])
+        # Start the worker (solo pool avoids fork-related SIGSEGV on macOS)
+        pool = '--pool=solo' if platform.system() == 'Darwin' else '--pool=prefork'
+        celery_app.start(['worker', '--loglevel=info', '--concurrency=1', pool])
         
     except Exception as e:
         print(f"❌ Failed to start Celery worker: {e}")

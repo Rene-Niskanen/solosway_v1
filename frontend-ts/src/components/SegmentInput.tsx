@@ -8,7 +8,7 @@ import { PropertyPillChip } from "./PropertyPillChip";
 
 export interface SegmentInputHandle {
   getRectForPlainOffset: (plainOffset: number) => DOMRect | null;
-  focus: () => void;
+  focus: (options?: FocusOptions) => void;
   getBoundingClientRect: () => DOMRect;
   /** Whether the input's root element contains the given node (for click-outside). */
   contains: (node: Node) => boolean;
@@ -110,7 +110,7 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
 
   React.useImperativeHandle(ref, () => ({
     getRectForPlainOffset,
-    focus: () => internalRef.current?.focus(),
+    focus: (options?: FocusOptions) => internalRef.current?.focus(options),
     getBoundingClientRect: () => internalRef.current?.getBoundingClientRect() ?? new DOMRect(0, 0, 0, 0),
     contains: (node: Node) => internalRef.current?.contains(node) ?? false,
     getRootElement: () => internalRef.current,

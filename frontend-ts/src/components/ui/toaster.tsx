@@ -17,7 +17,7 @@ export function Toaster() {
           (typeof description === "string" ? description : null) ||
           (typeof title === "string" ? title : null) ||
           "Error";
-        const displayIcon = isSuccess ? (icon ?? <CheckCircle2 className="h-6 w-6 text-green-600 shrink-0" aria-hidden />) : icon;
+        const displayIcon = isSuccess ? (icon ?? <CheckCircle2 className="h-5 w-5 text-emerald-600 shrink-0" aria-hidden />) : icon;
 
         return (
           <Toast key={id} duration={duration || 3000} variant={variant} {...props}>
@@ -27,9 +27,18 @@ export function Toaster() {
                 {action}
                 <ToastClose />
               </>
+            ) : isSuccess ? (
+              <>
+                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-emerald-100/80">{displayIcon}</span>
+                <div className="grid gap-0.5 min-w-0 flex-1">
+                  {title && <ToastTitle className="text-[13px] font-semibold text-[#141413]">{title}</ToastTitle>}
+                  {description && <ToastDescription className="text-xs text-emerald-700/70">{description}</ToastDescription>}
+                </div>
+                {action}
+              </>
             ) : (
               <>
-                {displayIcon && <span className={cn("flex shrink-0 items-center", isSuccess && "text-green-600")}>{displayIcon}</span>}
+                {displayIcon && <span className="flex shrink-0 items-center">{displayIcon}</span>}
                 <div className={isCompact ? "grid gap-0 min-w-0" : "grid gap-0.5"}>
                   {title && <ToastTitle className={isCompact ? "text-xs font-medium" : undefined}>{title}</ToastTitle>}
                   {description && <ToastDescription className={isCompact ? "text-[11px] leading-tight" : undefined}>{description}</ToastDescription>}

@@ -114,11 +114,16 @@ def _normalize_document_ids(execution_plan: dict, state: MainWorkflowState) -> d
 
 # Prompt for chip-path query rewrite (one short LLM call so retrieval matches document wording)
 CHIP_QUERY_REWRITE_PROMPT = """The user is asking a follow-up question about a document they were just viewing. Output a short keyword phrase (3-8 words) that would appear in the document and help find the right passage. Use terms from legal/lease docs when relevant.
+
+When the user asks for a specific VALUE (EPC rating, flood risk, market value, price, rent, etc.), include terms that appear in passages that STATE the value—not disclaimers. E.g. for EPC: "EPC rating band score energy performance"; for flood risk: "flood zone probability"; for value: "market value valuation amount".
+
 Examples:
 - "who are the parties involved?" → parties landlord tenant names
 - "key dates?" → key dates commencement expiry term
 - "main terms?" → main terms conditions
 - "renewal options?" → renewal extension options
+- "EPC rating?" or "what is the EPC?" → EPC rating band score energy performance
+- "flood risk?" → flood zone probability
 Output ONLY the keyword phrase, nothing else."""
 
 async def _rewrite_chip_query_for_retrieval(user_query: str) -> str:

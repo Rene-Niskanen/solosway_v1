@@ -203,7 +203,7 @@ export const ChatPanel = ({
           if (openMenuId) setOpenMenuId(null);
         }}
         style={{
-          background: '#4A4A4A',
+          background: '#FFFFFF',
           right: isOpen ? '0px' : '-1000px', // Move off-screen when closed
           width: isOpen ? `${totalSidebarWidth}px` : '332px',
           transition: 'right 0s ease-out, width 0s ease-out',
@@ -223,8 +223,8 @@ export const ChatPanel = ({
             className="relative shrink-0 h-full flex items-center justify-center cursor-ew-resize group"
             style={{
               width: AGENT_SIDEBAR_RAIL_WIDTH,
-              background: '#4A4A4A',
-              borderLeft: '1px solid rgba(255,255,255,0.08)',
+              background: '#FFFFFF',
+              borderLeft: '1px solid rgba(0,0,0,0.08)',
               pointerEvents: 'auto',
               WebkitTapHighlightColor: 'transparent',
             }}
@@ -232,7 +232,7 @@ export const ChatPanel = ({
           >
             <div
               className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity"
-              style={{ background: 'rgba(255, 255, 255, 0.08)' }}
+              style={{ background: 'rgba(0, 0, 0, 0.06)' }}
             />
           </div>
         )}
@@ -258,12 +258,12 @@ export const ChatPanel = ({
               className={`h-full w-full flex flex-col relative ${className || ''}`}
               style={{ background: 'transparent' }}
             >
-            {/* Header – minimal top padding so search row aligns with SideChatPanel Response button row */}
+            {/* Header – top padding matches SideChatPanel view bar (18px) so search row and New Agent align with Close/Response/X */}
             <div
               className="px-4 flex flex-col"
               style={{
-                backgroundColor: '#4A4A4A',
-                paddingTop: 24,
+                backgroundColor: '#FFFFFF',
+                paddingTop: 18,
                 paddingBottom: 19,
               }}
             >
@@ -275,8 +275,8 @@ export const ChatPanel = ({
                     whileTap={{ scale: 0.95 }}
                     className={`p-1.5 text-xs rounded-md transition-colors duration-75 ease-out ${
                       showArchived 
-                        ? 'bg-amber-500/30 text-amber-200 hover:bg-amber-500/40' 
-                        : 'bg-white/15 text-[#C5C5C5] hover:bg-white/20'
+                        ? 'bg-amber-500/30 text-amber-800 hover:bg-amber-500/40' 
+                        : 'bg-black/8 text-[#374151] hover:bg-black/12'
                     }`}
                   >
                     {showArchived ? <ArchiveRestore className="w-3.5 h-3.5" /> : <Archive className="w-3.5 h-3.5" />}
@@ -290,8 +290,8 @@ export const ChatPanel = ({
                   placeholder="Search"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full h-full pl-2 pr-14 py-0 text-[15px] font-normal bg-transparent border-none focus:outline-none placeholder:text-[15px] placeholder:text-[#8F8F8F] placeholder:font-normal"
-                  style={{ color: '#C5C5C5', caretColor: '#C5C5C5', height: 32, minHeight: 32 }}
+                  className="w-full h-full pl-2 pr-14 py-0 text-[15px] font-normal bg-transparent border-none focus:outline-none placeholder:text-[15px] placeholder:text-[#9CA3AF] placeholder:font-normal"
+                  style={{ color: '#374151', caretColor: '#374151', height: 32, minHeight: 32 }}
                 />
                 {/* Options (sliders) + Close - Inline with Search Input */}
                 <div className="absolute right-1 top-1/2 -translate-y-1/2 flex items-center gap-0.5 z-10">
@@ -300,12 +300,12 @@ export const ChatPanel = ({
                       <button
                         type="button"
                         onClick={(e) => e.stopPropagation()}
-                        className="p-1 rounded-full hover:bg-white/15 active:bg-white/20 transition-colors duration-75 ease-out flex items-center justify-center"
+                        className="p-1 rounded-full hover:bg-black/8 active:bg-black/12 transition-colors duration-75 ease-out flex items-center justify-center"
                         title="Options"
                         aria-haspopup="true"
                         aria-expanded={optionsMenuOpen}
                       >
-                        <SlidersHorizontal className="w-5 h-5 text-[#B0B0B0] hover:text-[#D0D0D0]" strokeWidth={1.75} />
+                        <SlidersHorizontal className="w-5 h-5 text-[#6B7280] hover:text-[#374151]" strokeWidth={1.75} />
                       </button>
                     </PopoverTrigger>
                     <PopoverContent
@@ -341,11 +341,12 @@ export const ChatPanel = ({
                       e.stopPropagation();
                       closePanel();
                     }}
-                    className="p-1 rounded-full hover:bg-white/15 active:bg-white/20 transition-colors duration-75 ease-out flex items-center justify-center"
+                    className="rounded-full hover:bg-black/8 active:bg-black/12 transition-colors duration-75 ease-out flex items-center justify-center flex-shrink-0"
+                    style={{ width: 32, height: 32, minWidth: 32, minHeight: 32 }}
                     title="Close Agent Sidebar"
                     type="button"
                   >
-                    <X className="w-5 h-5 text-[#B0B0B0] hover:text-[#D0D0D0]" strokeWidth={1.75} />
+                    <X className="w-5 h-5 text-[#6B7280] hover:text-[#374151]" strokeWidth={1.75} />
                   </button>
                 </div>
               </div>
@@ -363,8 +364,8 @@ export const ChatPanel = ({
                 }} 
                 whileHover={{ scale: 1.01 }} 
                 whileTap={{ scale: 0.99 }} 
-                className="w-full flex items-center justify-center gap-1.5 px-2.5 py-1.5 border border-gray-200/80 hover:border-gray-300 rounded transition-[border-color,background-color] duration-75 ease-out group"
-                style={{ backgroundColor: '#F2F2EF', opacity: 1, backdropFilter: 'none' }}
+                className="w-full flex items-center justify-center gap-1.5 px-2.5 py-1.5 border border-gray-300/80 hover:border-gray-400 rounded transition-[border-color,background-color] duration-75 ease-out group"
+                style={{ backgroundColor: '#FFFFFF', opacity: 1, backdropFilter: 'none' }}
               >
                 <Plus className="w-3 h-3 text-[#141413]" />
                 <span className="text-[11px] font-medium text-[#141413]">
@@ -377,12 +378,12 @@ export const ChatPanel = ({
             {showChatHistory && (
               <div
                 className="flex-1 overflow-y-auto overflow-x-hidden px-3 pt-2 pb-3 scrollbar-thin scrollbar-track-transparent min-h-0"
-                style={{ backgroundColor: '#4A4A4A', scrollbarColor: 'rgba(255,255,255,0.2) transparent' }}
+                style={{ backgroundColor: '#FFFFFF', scrollbarColor: 'rgba(0,0,0,0.2) transparent' }}
               >
                 {/* Agents Heading */}
                 {displayedChats.length > 0 && (
                   <div className="px-0 pt-2 pb-0.5 mb-0.5">
-                    <h2 className="text-[12px] font-medium pl-2" style={{ color: '#B0B0B0' }}>Agents</h2>
+                    <h2 className="text-[12px] font-medium pl-2" style={{ color: '#6B7280' }}>Agents</h2>
                   </div>
                 )}
                 <AnimatePresence mode="popLayout">
@@ -427,9 +428,9 @@ export const ChatPanel = ({
                         className={`group relative px-2.5 py-1.5 rounded-md cursor-pointer w-full mb-0.5 transition-[background-color] duration-75 ease-out ${
                           selectedChatId === chat.id 
                             ? '' 
-                            : openMenuId ? '' : 'hover:bg-white/10'
+                            : openMenuId ? '' : 'hover:bg-black/[0.06]'
                         }`}
-                        style={selectedChatId === chat.id ? { backgroundColor: '#5A5A5A' } : undefined}
+                        style={selectedChatId === chat.id ? { backgroundColor: '#E8E8E5' } : undefined}
                       >
                         {isEditing ? (
                           <div className="flex items-center space-x-2" onClick={(e) => e.stopPropagation()}>
@@ -449,16 +450,16 @@ export const ChatPanel = ({
                         ) : (
                           <div className="flex flex-col w-full relative">
                             {/* Title row */}
-                            <div className="flex items-center gap-1.5 text-[12px] font-normal truncate pr-5" style={{ color: '#D0D0D0' }}>
+                            <div className="flex items-center gap-1.5 text-[12px] font-normal truncate pr-5" style={{ color: '#374151' }}>
                               {chat.status === 'loading' && (
-                                <Loader2 className="w-3 h-3 animate-spin flex-shrink-0" style={{ color: '#B0B0B0' }} />
+                                <Loader2 className="w-3 h-3 animate-spin flex-shrink-0" style={{ color: '#6B7280' }} />
                               )}
                               {chat.status === 'completed' && (
-                                <CircleCheck className="w-3 h-3 flex-shrink-0" style={{ color: '#B0B0B0' }} aria-hidden />
+                                <CircleCheck className="w-3 h-3 flex-shrink-0" style={{ color: '#6B7280' }} aria-hidden />
                               )}
                               <span
                                 className="text-[12px] font-normal truncate cursor-pointer flex-1 min-w-0 hover:opacity-90"
-                                style={{ color: '#D0D0D0', display: 'inline-block', padding: 0, margin: 0 }}
+                                style={{ color: '#374151', display: 'inline-block', padding: 0, margin: 0 }}
                                 title="Click to edit chat name"
                               >
                                 {chat.title || 'New chat'}
@@ -466,7 +467,7 @@ export const ChatPanel = ({
                             </div>
                             
                             {/* Timestamp below title */}
-                            <div className="text-[10px] mt-0.5" style={{ color: '#A0A0A0' }}>
+                            <div className="text-[10px] mt-0.5" style={{ color: '#9CA3AF' }}>
                               {formatTimestamp(new Date(chat.timestamp))}
                             </div>
                             
@@ -476,7 +477,7 @@ export const ChatPanel = ({
                                 onClick={(e) => handleMenuToggle(e, chat.id)}
                                 className="opacity-0 group-hover:opacity-100 p-0.5 rounded transition-[opacity,transform] duration-75 ease-out transform hover:scale-110 active:scale-95"
                               >
-                                <MoreVertical className="w-3.5 h-3.5 transition-colors duration-75 ease-out" style={{ color: '#A0A0A0' }} />
+                                <MoreVertical className="w-3.5 h-3.5 transition-colors duration-75 ease-out" style={{ color: '#9CA3AF' }} />
                               </button>
                               
                               {openMenuId === chat.id && (
@@ -579,15 +580,15 @@ export const ChatPanel = ({
 
             {/* Empty State when no chat history should be shown - sticky with panel */}
             {!showChatHistory && (
-              <div className="flex-1 min-h-0 flex items-center justify-center p-8" style={{ backgroundColor: '#4A4A4A' }}>
+              <div className="flex-1 min-h-0 flex items-center justify-center p-8" style={{ backgroundColor: '#FFFFFF' }}>
                 <div className="text-center max-w-xs">
-                  <div className="w-20 h-20 rounded-3xl flex items-center justify-center mx-auto mb-6 border-2 border-white/15" style={{ background: 'linear-gradient(to bottom right, rgba(255,255,255,0.08), rgba(255,255,255,0.04))' }}>
-                    <MessageSquare className="w-8 h-8" style={{ color: '#A0A0A0' }} strokeWidth={1.5} />
+                  <div className="w-20 h-20 rounded-3xl flex items-center justify-center mx-auto mb-6 border-2 border-black/10" style={{ background: 'linear-gradient(to bottom right, rgba(0,0,0,0.04), rgba(0,0,0,0.02))' }}>
+                    <MessageSquare className="w-8 h-8" style={{ color: '#9CA3AF' }} strokeWidth={1.5} />
                   </div>
-                  <h3 className="font-semibold text-xl mb-3 tracking-tight" style={{ color: '#D0D0D0' }}>
+                  <h3 className="font-semibold text-xl mb-3 tracking-tight" style={{ color: '#374151' }}>
                     <span>Start a Conversation</span>
                   </h3>
-                  <p className="text-sm leading-relaxed font-medium" style={{ color: '#A0A0A0' }}>
+                  <p className="text-sm leading-relaxed font-medium" style={{ color: '#6B7280' }}>
                     <span>Search for something to begin an intelligent conversation with AI</span>
                   </p>
                 </div>

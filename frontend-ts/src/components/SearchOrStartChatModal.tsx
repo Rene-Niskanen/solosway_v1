@@ -491,7 +491,8 @@ export function SearchOrStartChatModal({
                     <button
                       key={d.id}
                       type="button"
-                      className="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-left transition-colors hover:bg-gray-100"
+                      title={label}
+                      className="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-left transition-colors bg-white hover:bg-gray-100"
                       onClick={() => {
                         const label = d.original_filename || d.filename || d.name || "Document";
                         onOpenFile?.(d.id, label);
@@ -566,7 +567,7 @@ export function SearchOrStartChatModal({
                   type="button"
                   data-selected={isSelected ? true : undefined}
                   className={cn(
-                    "w-full flex items-center gap-3 px-4 py-3 rounded-lg text-left transition-colors",
+                    "w-full flex items-center gap-3 px-4 py-3 rounded-lg text-left transition-colors bg-white",
                     isSelected || (isNewChat && index === 0)
                   ? "bg-[#F5F5F5]"
                   : "hover:bg-gray-100"

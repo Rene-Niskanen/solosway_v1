@@ -1026,7 +1026,7 @@ export const SearchBar = forwardRef<{
         setAttachedFiles(prev => {
           const updated = prev.map(att =>
             att.id === attachmentId
-              ? { ...att, file: actualFile, size: actualFile.size, extractionStatus: undefined }
+              ? { ...att, file: actualFile, size: actualFile.size }
               : att
           );
           attachedFilesRef.current = updated;
@@ -1042,6 +1042,60 @@ export const SearchBar = forwardRef<{
           }
           (window as any).__preloadedAttachmentBlobs[attachmentId] = blobUrl;
         } catch (_) {}
+        
+        // Run quick extraction so text is available for chat queries
+        const fileName = actualFile.name.toLowerCase();
+        const supportsExtraction = fileName.endsWith('.pdf') || fileName.endsWith('.docx') || fileName.endsWith('.doc')
+          || fileName.endsWith('.xlsx') || fileName.endsWith('.xls') || fileName.endsWith('.pptx') || fileName.endsWith('.ppt')
+          || fileName.endsWith('.txt');
+        
+        if (supportsExtraction) {
+          try {
+            const result = await backendApi.quickExtractText(actualFile, true);
+            if (result.success) {
+              setAttachedFiles(prev => {
+                const updated = prev.map(att =>
+                  att.id === attachmentId
+                    ? { ...att, extractionStatus: 'complete' as const, extractedText: result.text, pageTexts: result.pageTexts, pageCount: result.pageCount, tempFileId: result.tempFileId }
+                    : att
+                );
+                attachedFilesRef.current = updated;
+                return updated;
+              });
+            } else {
+              setAttachedFiles(prev => {
+                const updated = prev.map(att =>
+                  att.id === attachmentId
+                    ? { ...att, extractionStatus: 'error' as const, extractionError: result.error }
+                    : att
+                );
+                attachedFilesRef.current = updated;
+                return updated;
+              });
+            }
+          } catch (extractError) {
+            setAttachedFiles(prev => {
+              const updated = prev.map(att =>
+                att.id === attachmentId
+                  ? { ...att, extractionStatus: 'error' as const, extractionError: extractError instanceof Error ? extractError.message : 'Extraction failed' }
+                  : att
+              );
+              attachedFilesRef.current = updated;
+              return updated;
+            });
+          }
+        } else {
+          setAttachedFiles(prev => {
+            const updated = prev.map(att =>
+              att.id === attachmentId ? { ...att, extractionStatus: undefined } : att
+            );
+            attachedFilesRef.current = updated;
+            return updated;
+          });
+        }
+        queueMicrotask(() => {
+          if (onAttachmentsChange) onAttachmentsChange(attachedFilesRef.current);
+        });
       } catch (error) {
         console.error('❌ SearchBar: Error fetching document:', error);
         setAttachedFiles(prev => {

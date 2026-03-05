@@ -125,7 +125,7 @@ export function ChooseProjectModal({
           boxShadow: "0 4px 24px rgba(0,0,0,0.08)",
           ...(anchorStyle ?? leftStyle),
         }}
-        overlayClassName="bg-black/10 !z-[100100]"
+        overlayClassName="bg-transparent !z-[100100]"
         onPointerDownOutside={() => onOpenChange(false)}
         onEscapeKeyDown={() => onOpenChange(false)}
       >

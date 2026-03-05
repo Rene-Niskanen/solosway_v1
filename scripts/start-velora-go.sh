@@ -83,18 +83,28 @@ if [ -d "$PROJECT_ROOT/services/doc-extraction-node" ] && command -v node &>/dev
     if [ -f "$PROJECT_ROOT/services/doc-extraction-node/dist/server.js" ]; then
       (cd "$PROJECT_ROOT/services/doc-extraction-node" && node dist/server.js) &>/tmp/velora-extraction.log &
       EXTRACTION_PID=$!
-      sleep 2
-      if kill -0 "$EXTRACTION_PID" 2>/dev/null; then
-        if command -v curl &>/dev/null && curl -s -o /dev/null -w "%{http_code}" --connect-timeout 2 http://127.0.0.1:5002/health 2>/dev/null | grep -q 200; then
-          echo "   Doc extraction running (PID $EXTRACTION_PID). Health check OK. Logs: /tmp/velora-extraction.log"
-          export EXTRACTION_SERVICE_URL="${EXTRACTION_SERVICE_URL:-http://localhost:5002}"
+      export EXTRACTION_SERVICE_URL="${EXTRACTION_SERVICE_URL:-http://localhost:5002}"
+      # Wait for extraction service to be ready (retry health check)
+      EXTRACTION_READY=""
+      for _ in 1 2 3 4 5 6 7 8 9 10; do
+        if kill -0 "$EXTRACTION_PID" 2>/dev/null; then
+          if command -v curl &>/dev/null && curl -s -o /dev/null -w "%{http_code}" --connect-timeout 2 http://127.0.0.1:5002/health 2>/dev/null | grep -q 200; then
+            EXTRACTION_READY=1
+            break
+          fi
         else
-          echo "   Doc extraction running (PID $EXTRACTION_PID). Logs: /tmp/velora-extraction.log"
-          export EXTRACTION_SERVICE_URL="${EXTRACTION_SERVICE_URL:-http://localhost:5002}"
+          echo "   Doc extraction process exited. Check /tmp/velora-extraction.log"
+          EXTRACTION_PID=""
+          break
         fi
-      else
-        echo "   Doc extraction failed to start. Check /tmp/velora-extraction.log"
-        EXTRACTION_PID=""
+        sleep 2
+      done
+      if [ -n "$EXTRACTION_PID" ]; then
+        if [ -n "$EXTRACTION_READY" ]; then
+          echo "   Doc extraction running (PID $EXTRACTION_PID). Health check OK. Logs: /tmp/velora-extraction.log"
+        else
+          echo "   Doc extraction running (PID $EXTRACTION_PID). Health check not ready yet; may be available shortly. Logs: /tmp/velora-extraction.log"
+        fi
       fi
     else
       echo "   Doc extraction skipped (dist/server.js missing after build)."

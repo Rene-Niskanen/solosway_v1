@@ -10,6 +10,7 @@
 import * as React from "react";
 import { RecentDocumentCard, preloadDocumentThumbnails, PRELOAD_THUMBNAIL_LIMIT } from "./RecentDocumentCard";
 import { usePreview } from "../contexts/PreviewContext";
+import { useFilingSidebar } from "../contexts/FilingSidebarContext";
 
 interface DocumentData {
   id: string;
@@ -33,6 +34,8 @@ interface RecentDocumentsSectionProps {
   showAllMode?: boolean;
   /** When true (e.g. on Projects page), use no left padding in showAllMode so content aligns with sibling sections */
   alignLeftWithContainer?: boolean;
+  /** Called when a file is clicked – collapse main sidebar to small (icons-only) state */
+  onCollapseSidebarToSmall?: () => void;
 }
 
 const CARD_WIDTH_COMPACT = 128;
@@ -47,8 +50,10 @@ export const RecentDocumentsSection: React.FC<RecentDocumentsSectionProps> = ({
   scrollable = true,
   showAllMode = false,
   alignLeftWithContainer = false,
+  onCollapseSidebarToSmall,
 }) => {
   const { openExpandedCardView } = usePreview();
+  const { closeSidebar: closeFilingSidebar } = useFilingSidebar();
 
   // Preload only first N thumbnails; rest load when cards scroll into view
   React.useEffect(() => {
@@ -58,8 +63,10 @@ export const RecentDocumentsSection: React.FC<RecentDocumentsSectionProps> = ({
   }, [documents]);
 
   const handleDocumentClick = React.useCallback((doc: DocumentData) => {
+    onCollapseSidebarToSmall?.(); // Collapse main sidebar to small (icons-only) when opening a file from projects
+    closeFilingSidebar(); // Collapse FilingSidebar if open
     openExpandedCardView(doc.id, doc.original_filename);
-  }, [openExpandedCardView]);
+  }, [onCollapseSidebarToSmall, closeFilingSidebar, openExpandedCardView]);
 
   if (!documents || documents.length === 0) {
     return null;

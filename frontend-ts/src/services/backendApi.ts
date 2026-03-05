@@ -706,6 +706,114 @@ class BackendApiService {
   }
 
   /**
+   * Dispatch a focused agent task - lightweight SSE stream for document-scoped Q&A.
+   * Used by the AgentOrchestrationContext for parallel agent tasks.
+   */
+  async dispatchAgentTask(
+    query: string,
+    documentIds: string[],
+    sessionId: string,
+    callbacks: {
+      onStatus: (message: string) => void;
+      onReasoningStep: (step: { step: string; message: string; details: any; action_type?: string; count?: number }) => void;
+      onToken: (token: string) => void;
+      onCitation: (citation: { citation_number: string; data: any }) => void;
+      onComplete: (data: { summary: string; citations: any }) => void;
+      onError: (error: string) => void;
+    },
+    abortSignal?: AbortSignal,
+  ): Promise<void> {
+    const baseUrl = this.baseUrl || BACKEND_URL;
+    const url = `${baseUrl}/api/llm/agent-task/stream`;
+
+    const requestBody = { query, document_ids: documentIds, session_id: sessionId };
+
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        signal: abortSignal,
+        body: JSON.stringify(requestBody),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => response.statusText);
+        throw new Error(`HTTP ${response.status}: ${errorText.substring(0, 200)}`);
+      }
+
+      const reader = response.body?.getReader();
+      const decoder = new TextDecoder();
+      if (!reader) throw new Error('Response body is not readable');
+
+      if (abortSignal) {
+        abortSignal.addEventListener('abort', () => { reader.cancel(); });
+      }
+
+      let buffer = '';
+      let receivedComplete = false;
+
+      while (true) {
+        if (abortSignal?.aborted) { reader.cancel(); return; }
+
+        const { done, value } = await reader.read();
+        if (done) {
+          if (buffer.trim()) {
+            for (const line of buffer.split('\n')) {
+              if (line.startsWith('data: ')) {
+                try {
+                  const data = JSON.parse(line.slice(6).trim());
+                  if (data.type === 'complete') { receivedComplete = true; callbacks.onComplete(data.data); return; }
+                } catch (_) { /* ignore */ }
+              }
+            }
+          }
+          if (!receivedComplete) callbacks.onComplete({ summary: '', citations: {} });
+          break;
+        }
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          try {
+            const data = JSON.parse(line.slice(6).trim());
+            switch (data.type) {
+              case 'status':
+                callbacks.onStatus(data.message);
+                break;
+              case 'reasoning_step':
+                callbacks.onReasoningStep({
+                  step: data.step, action_type: data.action_type || 'analysing',
+                  message: data.message, count: data.count, details: data.details || {},
+                });
+                break;
+              case 'token':
+                callbacks.onToken(data.token || '');
+                break;
+              case 'citation':
+                callbacks.onCitation({ citation_number: String(data.citation_number), data: data.data || data });
+                break;
+              case 'complete':
+                receivedComplete = true;
+                callbacks.onComplete(data.data);
+                return;
+              case 'error':
+                callbacks.onError(data.message);
+                return;
+            }
+          } catch (_) { /* ignore parse errors */ }
+        }
+      }
+    } catch (error) {
+      if (error instanceof Error && (error.name === 'AbortError' || error.message === 'Request aborted')) return;
+      callbacks.onError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  /**
    * Build Plan - Execute a previously generated research plan
    * Called when user clicks "Build" in the Plan Viewer
    */
@@ -1004,11 +1112,32 @@ class BackendApiService {
     };
   }
 
-  /** Update subscription tier (personal, professional, business). No billing; for testing you can switch back and forth. */
+  /** Update subscription tier (personal, professional, business). Used when Stripe is disabled (e.g. testing). */
   async updatePlan(plan: string): Promise<ApiResponse<{ plan: string }>> {
     return this.fetchApi<{ plan: string }>('/api/usage/plan', {
       method: 'PATCH',
       body: JSON.stringify({ plan }),
+    });
+  }
+
+  /** Whether Stripe billing is enabled (checkout/portal available). */
+  async getBillingConfig(): Promise<ApiResponse<{ stripeEnabled: boolean }>> {
+    return this.fetchApi<{ stripeEnabled: boolean }>('/api/billing/config', { method: 'GET' });
+  }
+
+  /** Create Stripe Checkout session for the given plan; returns URL to redirect to. */
+  async createCheckoutSession(plan: string, successUrl?: string, cancelUrl?: string): Promise<ApiResponse<{ url: string }>> {
+    return this.fetchApi<{ url: string }>('/api/billing/create-checkout-session', {
+      method: 'POST',
+      body: JSON.stringify({ plan, success_url: successUrl, cancel_url: cancelUrl }),
+    });
+  }
+
+  /** Create Stripe Customer Portal session; returns URL to redirect to. */
+  async createPortalSession(returnUrl?: string): Promise<ApiResponse<{ url: string }>> {
+    return this.fetchApi<{ url: string }>('/api/billing/create-portal-session', {
+      method: 'POST',
+      body: JSON.stringify({ return_url: returnUrl }),
     });
   }
 

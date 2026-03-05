@@ -1,4 +1,4 @@
-from flask import Blueprint, render_template, request, flash, redirect, url_for, jsonify, current_app, Response
+from flask import Blueprint, render_template, request, flash, redirect, url_for, jsonify, current_app, Response, stream_with_context
 from flask_login import login_required, current_user, login_user, logout_user
 from .models import Document, DocumentStatus, Property, PropertyDetails, DocumentRelationship, User, UserRole, UserStatus, PropertyCardCache, db
 from .services.property_enrichment_service import PropertyEnrichmentService
@@ -3690,6 +3690,154 @@ def query_documents_stream():
         response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
         return response, 500
 
+
+@views.route('/api/llm/agent-task/stream', methods=['POST', 'OPTIONS'])
+@login_required
+def agent_task_stream():
+    """
+    Lightweight SSE endpoint for focused agent tasks.
+    Scoped to specific documents with a user question.
+    Used by the frontend agent orchestration layer for parallel tasks.
+    """
+    if request.method == 'OPTIONS':
+        response = jsonify({})
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
+        response.headers.add('Access-Control-Max-Age', '3600')
+        return response, 200
+
+    import asyncio
+    import traceback
+    from queue import Queue, Empty
+    from backend.llm.utils.execution_events import ExecutionEventEmitter, ExecutionEvent
+    from backend.llm.graphs.focused_task_graph import build_focused_task_graph
+
+    data = request.get_json(force=True, silent=True) or {}
+    query = (data.get('query') or '').strip()
+    document_ids = data.get('document_ids') or []
+    session_id = data.get('session_id') or ''
+
+    if not query:
+        return jsonify({'success': False, 'error': 'query is required'}), 400
+    if not document_ids:
+        return jsonify({'success': False, 'error': 'document_ids is required'}), 400
+
+    logger.info(f"🔵 [AGENT_TASK] Received focused task: query='{query[:60]}...', docs={len(document_ids)}")
+
+    def generate_focused_stream():
+        try:
+            business_id = _ensure_business_uuid()
+            if not business_id:
+                yield f"data: {json.dumps({'type': 'error', 'message': 'User not associated with a business'})}\n\n"
+                return
+
+            yield f"data: {json.dumps({'type': 'status', 'message': f'Searching {len(document_ids)} documents...'})}\n\n"
+
+            emitter = ExecutionEventEmitter()
+            event_queue = Queue()
+            emitter.set_stream_queue(event_queue)
+
+            initial_state = {
+                'user_query': query,
+                'document_ids': [str(d) for d in document_ids],
+                'business_id': business_id,
+                'user_id': str(current_user.id) if current_user.is_authenticated else 'anonymous',
+                'session_id': session_id,
+                'execution_events': emitter,
+                'execution_results': [],
+                'citations': [],
+            }
+
+            graph = build_focused_task_graph()
+            loop = asyncio.new_event_loop()
+
+            final_state = {}
+            graph_error = None
+
+            def run_graph():
+                nonlocal final_state, graph_error
+                try:
+                    asyncio.set_event_loop(loop)
+                    result = loop.run_until_complete(
+                        graph.ainvoke(initial_state, config={"recursion_limit": 10})
+                    )
+                    final_state = result or {}
+                except Exception as e:
+                    graph_error = e
+                    logger.error(f"[AGENT_TASK] Graph error: {e}", exc_info=True)
+                finally:
+                    try:
+                        event_queue.put(None, block=False)
+                    except Exception:
+                        pass
+
+            import threading
+            graph_thread = threading.Thread(target=run_graph, daemon=True)
+            graph_thread.start()
+
+            while True:
+                try:
+                    event = event_queue.get(timeout=0.5)
+                except Empty:
+                    if not graph_thread.is_alive():
+                        break
+                    continue
+
+                if event is None:
+                    break
+
+                if isinstance(event, ExecutionEvent):
+                    if event.type == 'stream_token':
+                        token = (event.metadata or {}).get('token', '')
+                        if token:
+                            yield f"data: {json.dumps({'type': 'token', 'token': token})}\n\n"
+                    elif event.type == 'phase':
+                        meta = event.metadata or {}
+                        label = meta.get('label', event.description)
+                        detail = meta.get('detail', '')
+                        is_analysing = 'analys' in label.lower()
+                        yield f"data: {json.dumps({'type': 'status', 'message': label})}\n\n"
+                        yield f"data: {json.dumps({'type': 'reasoning_step', 'step': label, 'action_type': 'analysing' if is_analysing else 'searching', 'message': label, 'details': {'detail': detail}})}\n\n"
+
+            graph_thread.join(timeout=60)
+
+            if graph_error:
+                yield f"data: {json.dumps({'type': 'error', 'message': str(graph_error)})}\n\n"
+                return
+
+            final_summary = final_state.get('final_summary', '')
+            citations_raw = final_state.get('citations', [])
+
+            citations_for_sse = {}
+            for cit in citations_raw:
+                if isinstance(cit, dict):
+                    num = str(cit.get('citation_number', ''))
+                    if num:
+                        citations_for_sse[num] = cit
+                        yield f"data: {json.dumps({'type': 'citation', 'citation_number': num, 'data': cit})}\n\n"
+
+            yield f"data: {json.dumps({'type': 'complete', 'data': {'summary': final_summary, 'citations': citations_for_sse}})}\n\n"
+
+        except Exception as e:
+            logger.error(f"[AGENT_TASK] Stream error: {e}", exc_info=True)
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+
+    response = Response(
+        stream_with_context(generate_focused_stream()),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+            'X-Accel-Buffering': 'no',
+            'Access-Control-Allow-Origin': request.headers.get('Origin', '*'),
+            'Access-Control-Allow-Credentials': 'true',
+        }
+    )
+    return response
+
+
 @views.route('/api/llm/sessions/<session_id>', methods=['DELETE', 'OPTIONS'])
 @login_required
 def delete_session(session_id):
@@ -7045,6 +7193,167 @@ def get_usage():
     except Exception as e:
         logger.exception("Error fetching usage: %s", e)
         return jsonify({'error': str(e)}), 500
+
+
+# ---------- Stripe billing (optional): checkout, portal, webhook ----------
+@views.route('/api/billing/config', methods=['GET', 'OPTIONS'])
+def billing_config():
+    """Return whether Stripe is enabled so frontend can use Checkout or fallback to PATCH plan."""
+    if request.method == 'OPTIONS':
+        return '', 200
+    try:
+        from .services.stripe_service import is_stripe_configured
+        return jsonify({'stripeEnabled': is_stripe_configured()})
+    except Exception:
+        return jsonify({'stripeEnabled': False})
+
+
+@views.route('/api/billing/create-checkout-session', methods=['POST', 'OPTIONS'])
+@login_required
+def create_checkout_session():
+    """Create a Stripe Checkout Session for the given plan; return the session URL."""
+    if request.method == 'OPTIONS':
+        return '', 200
+    try:
+        from .services.stripe_service import (
+            is_stripe_configured,
+            create_checkout_session as do_create_checkout_session,
+            get_or_create_stripe_customer,
+            TIER_TO_PRICE_ID,
+        )
+        from .services.usage_service import ALLOWED_TIERS
+        if not is_stripe_configured():
+            return jsonify({'success': False, 'error': 'Stripe is not configured'}), 503
+        body = request.get_json(silent=True) or {}
+        plan = (body.get('plan') or '').strip().lower()
+        if plan not in ALLOWED_TIERS or not TIER_TO_PRICE_ID.get(plan):
+            return jsonify({'success': False, 'error': 'Invalid plan'}), 400
+        success_url = (body.get('success_url') or '').strip() or request.host_url.rstrip('/') + '/dashboard'
+        cancel_url = (body.get('cancel_url') or '').strip() or request.host_url.rstrip('/') + '/dashboard'
+        email = getattr(current_user, 'email', None) or ''
+        if not email:
+            return jsonify({'success': False, 'error': 'User email required'}), 400
+        import stripe
+        stripe.api_key = os.environ.get('STRIPE_SECRET_KEY')
+        stripe_customer_id = getattr(current_user, 'stripe_customer_id', None) or None
+        customer_id = get_or_create_stripe_customer(stripe, email, stripe_customer_id)
+        if not current_user.stripe_customer_id:
+            current_user.stripe_customer_id = customer_id
+            from .models import db
+            db.session.commit()
+        url = do_create_checkout_session(
+            stripe,
+            plan=plan,
+            success_url=success_url,
+            cancel_url=cancel_url,
+            customer_email=email,
+            stripe_customer_id=customer_id,
+        )
+        return jsonify({'success': True, 'url': url})
+    except ValueError as e:
+        return jsonify({'success': False, 'error': str(e)}), 400
+    except Exception as e:
+        logger.exception("Stripe create-checkout-session error: %s", e)
+        return jsonify({'success': False, 'error': 'Could not create checkout session'}), 500
+
+
+@views.route('/api/billing/create-portal-session', methods=['POST', 'OPTIONS'])
+@login_required
+def create_portal_session():
+    """Create a Stripe Customer Portal session; return the portal URL."""
+    if request.method == 'OPTIONS':
+        return '', 200
+    try:
+        from .services.stripe_service import is_stripe_configured, get_or_create_stripe_customer
+        if not is_stripe_configured():
+            return jsonify({'success': False, 'error': 'Stripe is not configured'}), 503
+        stripe_customer_id = getattr(current_user, 'stripe_customer_id', None) or None
+        if not stripe_customer_id:
+            email = getattr(current_user, 'email', None) or ''
+            if not email:
+                return jsonify({'success': False, 'error': 'User email required'}), 400
+            import stripe
+            stripe.api_key = os.environ.get('STRIPE_SECRET_KEY')
+            stripe_customer_id = get_or_create_stripe_customer(stripe, email, None)
+            current_user.stripe_customer_id = stripe_customer_id
+            from .models import db
+            db.session.commit()
+        body = request.get_json(silent=True) or {}
+        return_url = (body.get('return_url') or '').strip() or request.host_url.rstrip('/') + '/dashboard'
+        import stripe
+        stripe.api_key = os.environ.get('STRIPE_SECRET_KEY')
+        from .services.stripe_service import create_portal_session as do_create_portal_session
+        url = do_create_portal_session(stripe, stripe_customer_id, return_url)
+        return jsonify({'success': True, 'url': url})
+    except Exception as e:
+        logger.exception("Stripe create-portal-session error: %s", e)
+        return jsonify({'success': False, 'error': 'Could not create portal session'}), 500
+
+
+@views.route('/api/billing/webhook', methods=['POST'])
+def stripe_webhook():
+    """
+    Stripe webhook: verify signature and sync subscription events to User (subscription_tier, period).
+    Do not use @login_required; Stripe signs the payload.
+    """
+    import stripe
+    from .services.stripe_service import (
+        STRIPE_WEBHOOK_SECRET,
+        tier_from_subscription,
+    )
+    from .services.usage_service import DEFAULT_TIER
+    payload = request.get_data()
+    sig = request.headers.get('Stripe-Signature', '')
+    if not STRIPE_WEBHOOK_SECRET:
+        logger.warning("Stripe webhook called but STRIPE_WEBHOOK_SECRET is not set")
+        return '', 400
+    try:
+        event = stripe.Webhook.construct_event(payload, sig, STRIPE_WEBHOOK_SECRET)
+    except ValueError as e:
+        logger.warning("Stripe webhook invalid payload: %s", e)
+        return '', 400
+    except Exception as e:
+        logger.warning("Stripe webhook signature verification failed: %s", e)
+        return '', 400
+    if event.type in ('customer.subscription.created', 'customer.subscription.updated', 'customer.subscription.deleted'):
+        subscription = event.data.object
+        customer_id = subscription.get('customer') if isinstance(subscription, dict) else getattr(subscription, 'customer', None)
+        if not customer_id:
+            return '', 200
+        user = User.query.filter_by(stripe_customer_id=customer_id).first()
+        if not user:
+            logger.info("Stripe webhook: no user for customer %s", customer_id)
+            return '', 200
+        if event.type == 'customer.subscription.deleted':
+            user.subscription_tier = DEFAULT_TIER
+            user.subscription_period_ends_at = None
+            user.subscription_period_started_at = None
+        else:
+            tier = tier_from_subscription(None, subscription)
+            if tier:
+                user.subscription_tier = tier
+            current_period_end = subscription.get('current_period_end') if isinstance(subscription, dict) else getattr(subscription, 'current_period_end', None)
+            if current_period_end:
+                from datetime import datetime, timezone
+                try:
+                    end_dt = datetime.fromtimestamp(int(current_period_end), tz=timezone.utc)
+                    user.subscription_period_ends_at = end_dt.date()
+                except (TypeError, ValueError):
+                    pass
+            current_period_start = subscription.get('current_period_start') if isinstance(subscription, dict) else getattr(subscription, 'current_period_start', None)
+            if current_period_start:
+                try:
+                    start_dt = datetime.fromtimestamp(int(current_period_start), tz=timezone.utc)
+                    user.subscription_period_started_at = start_dt
+                except (TypeError, ValueError):
+                    pass
+        try:
+            db.session.commit()
+        except Exception as e:
+            logger.exception("Stripe webhook commit error: %s", e)
+            db.session.rollback()
+            return '', 500
+    return '', 200
 
 
 @views.route('/api/usage/plan', methods=['PATCH', 'OPTIONS'])

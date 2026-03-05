@@ -33,6 +33,8 @@ import { backendApi } from '../services/backendApi';
 import { uploadEvents } from './UploadProgressBar';
 import { QuickStartBar } from './QuickStartBar';
 import { ReasoningSteps, ReasoningStep } from './ReasoningSteps';
+import { AgentTaskPanel } from './AgentTaskPanel';
+import { useAgentOrchestration } from '../contexts/AgentOrchestrationContext';
 import { ResponseModeChoice } from './FileChoiceStep';
 import { ModeSelector } from './ModeSelector';
 import { ModelSelector } from './ModelSelector';
@@ -62,7 +64,7 @@ import { useCitationExportOptional } from '../contexts/CitationExportContext';
 import { buildDocxMarkdownWithCitationImages, cropPageImageToBbox } from '../utils/citationExport';
 import { convertMarkdownToDocx, downloadDocx } from '@mohtasham/md-to-docx';
 import { playCompletionSound } from '../utils/playCompletionSound';
-import { INPUT_BAR_SPACE_BELOW_PANEL, CHAT_INPUT_MAX_HEIGHT_PX, CHAT_BAR_MAX_WIDTH_PX } from '@/utils/inputBarPosition';
+import { INPUT_BAR_SPACE_BELOW_PANEL, CHAT_INPUT_MAX_HEIGHT_PX, CHAT_BAR_MAX_WIDTH_PX, DASHBOARD_CHAT_LAYOUT } from '@/utils/inputBarPosition';
 import { CHAT_PANEL_WIDTH } from './chatPanelConstants';
 
 /** Strip HTML/SVG tags from query string so submitted text never includes e.g. <svg /> from icons. */
@@ -211,14 +213,15 @@ export function calculateChatPanelWidth(params: WidthCalculationParams): WidthCa
     };
   }
 
-  // PRIORITY 3: Document preview or property details is open - 50% split
+  // PRIORITY 3: Document preview or property details is open - chat gets slightly more than half (55/45 split)
   // Account for agent sidebar + rail so chat and property panel don't extend under the agent sidebar when it opens.
   if (isExpanded && shouldUse50Percent) {
     const availableForSplit = (typeof window !== 'undefined' ? window.innerWidth : 1920) - sidebarWidth - agentSidebarReserve;
-    const halfWidth = availableForSplit / 2;
+    const chatRatio = CHAT_PANEL_WIDTH.DOC_PREVIEW_CHAT_RATIO;
+    const chatWidth = availableForSplit * chatRatio;
     return {
-      widthPx: halfWidth,
-      widthCss: `calc((100vw - ${sidebarWidth}px - ${agentSidebarReserve}px) / 2)`,
+      widthPx: chatWidth,
+      widthCss: `calc((100vw - ${sidebarWidth}px - ${agentSidebarReserve}px) * ${chatRatio})`,
     };
   }
 
@@ -3832,11 +3835,16 @@ const CitationCallout: React.FC<{
     e?.preventDefault();
     const trimmed = askInputValue.trim();
     if (!trimmed) return;
-    window.dispatchEvent(new CustomEvent('citation-context-prepare', {
-      detail: { citationContext, documentIds: docId ? [docId] : undefined }
-    }));
-    window.dispatchEvent(new CustomEvent('citation-query-submit', {
-      detail: { query: trimmed, citationContext, documentIds: docId ? [docId] : undefined }
+    window.dispatchEvent(new CustomEvent('citation-agent-task-dispatch', {
+      detail: {
+        query: trimmed,
+        documentId: docId,
+        documentMeta: {
+          filename: citation?.original_filename || 'Document',
+          type: filename.endsWith('.docx') || filename.endsWith('.doc') ? 'docx' : 'pdf',
+          doc_id: docId,
+        },
+      }
     }));
     setAskInputValue('');
     const overlay = askOverlayRef.current;
@@ -3844,7 +3852,7 @@ const CitationCallout: React.FC<{
       overlay.style.opacity = '0';
       overlay.style.pointerEvents = 'none';
     }
-  }, [askInputValue, citationContext, docId]);
+  }, [askInputValue, docId, citation, filename]);
 
   // Keep local closed state in sync with parent (so close persists across parent re-renders)
   React.useEffect(() => {
@@ -4215,7 +4223,7 @@ const CitationCallout: React.FC<{
                           style={{
                             flex: 1,
                             height: '100%',
-                            padding: '0 2px 0 2px',
+                            padding: '0 2px 0 12px',
                             paddingRight: 38,
                             fontSize: 14,
                             lineHeight: '20px',
@@ -4356,7 +4364,7 @@ const CitationCallout: React.FC<{
                         flex: 1,
                         minWidth: 120,
                         height: '100%',
-                        padding: '0 2px 0 2px',
+                        padding: '0 2px 0 12px',
                         paddingRight: 38,
                         fontSize: 14,
                         lineHeight: '20px',
@@ -5747,6 +5755,10 @@ interface SideChatPanelProps {
   isAttachmentPreviewOpen?: boolean;
   /** When in fullscreen property view, the current property (for resolving selected document IDs to names). */
   currentProperty?: { propertyHub?: { documents?: Array<{ id: string; original_filename?: string }> }; documents?: Array<{ id: string; original_filename?: string }> };
+  /** When true, "New chat" dropdown should not close the document preview (e.g. projects view with doc open). */
+  keepDocumentOpenOnNewChat?: boolean;
+  /** When true, we're transitioning from dashboard to chat - disable all animations/transitions for instant switch. */
+  isTransitioningToChat?: boolean;
 }
 
 export interface SideChatPanelRef {
@@ -5868,6 +5880,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   userFirstName,
   isAttachmentPreviewOpen = false,
   currentProperty,
+  keepDocumentOpenOnNewChat = false,
+  isTransitioningToChat = false,
 }, ref) => {
   // Main navigation state:
   // - collapsed: icon-only sidebar (treat as "closed" for the purposes of showing open controls)
@@ -5934,8 +5948,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   } = useChatStateStore();
   
   // ChatPanel (agent sidebar) integration - declared early for use in width calculations
-  const { isOpen: isChatPanelOpen, width: chatPanelWidth, isResizing: isChatPanelResizing, togglePanel: toggleChatPanel, closePanel: closeChatPanel, triggerGlow } = useChatPanel();
-  
+  const { isOpen: isChatPanelOpen, width: chatPanelWidth, isResizing: isChatPanelResizing, togglePanel: toggleChatPanel, openPanel: openChatPanel, closePanel: closeChatPanel, triggerGlow } = useChatPanel();
+
+  // Agent orchestration - parallel tasks
+  const { getTasksForChat, cancelTask: cancelAgentTask, retryTask: retryAgentTask, injectResultToChat, dispatchTask: dispatchAgentTask } = useAgentOrchestration();
+
   // Track ChatPanel (agent sidebar) open/close to disable transitions for instant updates
   const prevChatPanelOpenRef = React.useRef(isChatPanelOpen);
   const [isChatPanelJustToggled, setIsChatPanelJustToggled] = React.useState(false);
@@ -6670,6 +6687,30 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       window.removeEventListener('citation-context-prepare', handleCitationContextPrepare as EventListener);
       window.removeEventListener('citation-context-clear', handleCitationContextClear as EventListener);
     };
+  }, []);
+
+  // Agent task result injection - when user clicks a completed agent task card
+  React.useEffect(() => {
+    const handleAgentTaskResultInject = (event: CustomEvent) => {
+      const { taskId, query, resultText, citations, parentChatId } = event.detail || {};
+      if (!resultText) return;
+
+      const agentResultMessage = {
+        id: `agent-result-${taskId || Date.now()}`,
+        type: 'response' as const,
+        text: resultText,
+        citations: citations || {},
+        isLoading: false,
+        isAgentTaskResult: true,
+        agentTaskQuery: query || '',
+        timestamp: Date.now(),
+      };
+
+      setChatMessages(prev => [...prev, agentResultMessage]);
+    };
+
+    window.addEventListener('agent-task-result-inject', handleAgentTaskResultInject as EventListener);
+    return () => window.removeEventListener('agent-task-result-inject', handleAgentTaskResultInject as EventListener);
   }, []);
 
   // Handle property selection - will be defined after usePropertySelection hook
@@ -7921,6 +7962,38 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   
   // Chat title state management
   const [currentChatId, setCurrentChatId] = React.useState<string | null>(null);
+
+  // Agent orchestration: dispatch a focused task from a document hover-to-ask input
+  const handleAskQuestionFromDoc = React.useCallback((query: string, docMeta: { doc_id: string; original_filename?: string | null; classification_type: string }) => {
+    if (!currentChatId) return;
+    const ext = (docMeta.original_filename || '').split('.').pop()?.toLowerCase() || 'pdf';
+    const docType = (ext === 'doc' || ext === 'docx') ? 'docx' as const : 'pdf' as const;
+    dispatchAgentTask({
+      query,
+      documentIds: [docMeta.doc_id],
+      documentMeta: [{ filename: docMeta.original_filename || 'Document', type: docType, doc_id: docMeta.doc_id }],
+      sessionId,
+      parentChatId: currentChatId,
+    });
+  }, [currentChatId, sessionId, dispatchAgentTask]);
+
+  // Listen for citation-agent-task-dispatch events from CitationCallout "Ask about this..." input
+  React.useEffect(() => {
+    const handleCitationAgentDispatch = (event: CustomEvent) => {
+      const { query, documentId, documentMeta } = event.detail || {};
+      if (!query || !documentId || !currentChatId) return;
+      dispatchAgentTask({
+        query,
+        documentIds: [documentId],
+        documentMeta: [documentMeta],
+        sessionId,
+        parentChatId: currentChatId,
+      });
+    };
+    window.addEventListener('citation-agent-task-dispatch', handleCitationAgentDispatch as EventListener);
+    return () => window.removeEventListener('citation-agent-task-dispatch', handleCitationAgentDispatch as EventListener);
+  }, [currentChatId, sessionId, dispatchAgentTask]);
+
   /** When set, we just switched to this chat – disable response highlight swoop for a brief period. */
   const [skipSwoopForChatId, setSkipSwoopForChatId] = React.useState<string | null>(null);
   const [chatTitle, setChatTitle] = React.useState<string>('');
@@ -8452,7 +8525,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     legacyCloseExpandedCardView();
   }, [closeDocumentForChat, legacyCloseExpandedCardView, getChatState]);
 
-  /** Dismiss citation bar, close document preview, and hide buttons when user sends a new query. Prevents bar/buttons from affecting the previous response. */
+  /** Dismiss citation bar, close document preview, and hide buttons when user sends a new query. Prevents bar/buttons from affecting the previous response. When keepDocumentOpenOnNewChat, preserve document (e.g. projects view). */
   const dismissCitationBarForNewQuery = React.useCallback(() => {
     setCitationReviewMessageId(null);
     citationReviewMessageIdRef.current = null;
@@ -8461,8 +8534,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     setCitationReviewShowReviewNextOnly(false);
     setCitationReviewJustRejected(false);
     setCitationClickPanel(null);
-    closeExpandedCardView();
-  }, [closeExpandedCardView]);
+    if (!keepDocumentOpenOnNewChat) {
+      closeExpandedCardView();
+    }
+  }, [closeExpandedCardView, keepDocumentOpenOnNewChat]);
 
   /** When user moves to a different citation (prev/next or click), close the previous citation's document preview and click panel so only the new citation's callout shows. */
   const citationReviewCurrentIndexRef = React.useRef<number>(citationReviewCurrentIndex);
@@ -8647,7 +8722,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       setCurrentChatId(null);
       currentChatIdRef.current = null;
       activeChatIdRef.current = null;
-      if (expandedCardViewDoc) {
+      if (expandedCardViewDoc && !keepDocumentOpenOnNewChat) {
         closeExpandedCardView();
         documentPreviewOwnerRef.current = null;
       }
@@ -8696,13 +8771,13 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       setStreamedTitle('');
       setIsEditingTitle(false);
       setEditingTitleValue('');
-      if (expandedCardViewDoc) {
+      if (expandedCardViewDoc && !keepDocumentOpenOnNewChat) {
         closeExpandedCardView();
         documentPreviewOwnerRef.current = null;
       }
       if (onNewChat) onNewChat();
     }
-  }, [chatMessages, currentChatId, chatTitle, addChatToHistory, updateChatTitle, getChatById, updateChatInHistory, getBufferedState, closeExpandedCardView, clearPropertyAttachments, onNewChat, expandedCardViewDoc]);
+  }, [chatMessages, currentChatId, chatTitle, addChatToHistory, updateChatTitle, getChatById, updateChatInHistory, getBufferedState, closeExpandedCardView, clearPropertyAttachments, onNewChat, expandedCardViewDoc, keepDocumentOpenOnNewChat]);
 
   // Track last processed newAgentTrigger to prevent infinite loops
   const lastProcessedTriggerRef = React.useRef<number>(0);
@@ -11536,7 +11611,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   const panelRef = React.useRef<HTMLDivElement>(null);
   
   // Track actual rendered width of panel for responsive design
-  React.useEffect(() => {
+  // Use useLayoutEffect for initial measurement so we have correct width before paint - avoids "drop" when entering new chat section
+  React.useLayoutEffect(() => {
     if (!panelRef.current) return;
     
     const updateWidth = () => {
@@ -11546,7 +11622,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       }
     };
     
-    // Initial measurement
+    // Initial measurement (before paint when possible)
     updateWidth();
     
     // Observe width changes
@@ -11559,7 +11635,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   }, [isVisible]);
 
   // Track actual input container width for button responsive design
-  React.useEffect(() => {
+  // Use useLayoutEffect so we have correct width before paint - avoids layout jump when entering new chat section
+  React.useLayoutEffect(() => {
     if (!chatInputContainerRef.current) return;
     
     const updateInputWidth = () => {
@@ -13745,11 +13822,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 type: data.fileType || blob.type || 'application/pdf',
               });
               
-              // Update the attachment with the actual file; clear loading spinner (no extraction tick for drop)
+              // Update the attachment with the actual file (keep extracting status while extraction runs)
               setAttachedFiles(prev => {
                 const updated = prev.map(att => 
                   att.id === attachmentId 
-                    ? { ...att, file: actualFile, size: actualFile.size, extractionStatus: undefined }
+                    ? { ...att, file: actualFile, size: actualFile.size }
                     : att
                 );
                 attachedFilesRef.current = updated;
@@ -13767,7 +13844,58 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 console.error('Error preloading blob URL:', preloadError);
               }
               
-              console.log('✅ SideChatPanel: Document fetched and updated:', actualFile.name);
+              console.log('✅ SideChatPanel: Document fetched, starting extraction:', actualFile.name);
+              
+              // Run quick extraction so the file text is available for chat queries
+              const fileName = actualFile.name.toLowerCase();
+              const supportsExtraction = fileName.endsWith('.pdf') || fileName.endsWith('.docx') || fileName.endsWith('.doc')
+                || fileName.endsWith('.xlsx') || fileName.endsWith('.xls') || fileName.endsWith('.pptx') || fileName.endsWith('.ppt')
+                || fileName.endsWith('.txt');
+              
+              if (supportsExtraction) {
+                try {
+                  const result = await backendApi.quickExtractText(actualFile, true);
+                  if (result.success) {
+                    setAttachedFiles(prev => {
+                      const updated = prev.map(att =>
+                        att.id === attachmentId
+                          ? { ...att, extractionStatus: 'complete' as const, extractedText: result.text, pageTexts: result.pageTexts, pageCount: result.pageCount, tempFileId: result.tempFileId }
+                          : att
+                      );
+                      attachedFilesRef.current = updated;
+                      return updated;
+                    });
+                  } else {
+                    setAttachedFiles(prev => {
+                      const updated = prev.map(att =>
+                        att.id === attachmentId
+                          ? { ...att, extractionStatus: 'error' as const, extractionError: result.error }
+                          : att
+                      );
+                      attachedFilesRef.current = updated;
+                      return updated;
+                    });
+                  }
+                } catch (extractError) {
+                  setAttachedFiles(prev => {
+                    const updated = prev.map(att =>
+                      att.id === attachmentId
+                        ? { ...att, extractionStatus: 'error' as const, extractionError: extractError instanceof Error ? extractError.message : 'Extraction failed' }
+                        : att
+                    );
+                    attachedFilesRef.current = updated;
+                    return updated;
+                  });
+                }
+              } else {
+                setAttachedFiles(prev => {
+                  const updated = prev.map(att =>
+                    att.id === attachmentId ? { ...att, extractionStatus: undefined } : att
+                  );
+                  attachedFilesRef.current = updated;
+                  return updated;
+                });
+              }
             } catch (error) {
               console.error('❌ SideChatPanel: Error fetching document:', error);
               // Remove the optimistic attachment on error
@@ -15761,7 +15889,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   const isEmptyChat = chatMessages.length === 0 && !showPlanViewer;
 
   // When opened via "New chat" (fullscreen), show input at bottom even when empty; centered layout only when not fullscreen
-  const useCenteredEmptyState = isEmptyChat && !isFullscreenMode && !shouldExpand;
+  // When keepDocumentOpenOnNewChat (projects+doc): always use message layout to prevent jump when first query is sent
+  const useCenteredEmptyState = isEmptyChat && !isFullscreenMode && !shouldExpand && !keepDocumentOpenOnNewChat;
 
   // Chats section with no map: show centered welcome + bar. Clear fullscreen when returning to Chats so we don't show bottom bar.
   const isChatOnlyViewHere = isVisible && !isMapVisible;
@@ -15773,10 +15902,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     }
   }, [isChatOnlyViewHere, isEmptyChat, isFullscreenMode, shouldExpand]);
 
-  // When switching to the new chat (centered empty) section, disable movement/transitions briefly
+  // When switching to the new chat (centered empty) section, disable movement/transitions briefly.
+  // useLayoutEffect so the flag is set before paint (prevents one-frame transition flash).
   const prevUseCenteredEmptyStateRef = React.useRef<boolean>(useCenteredEmptyState);
   const prevIsVisibleForNewChatRef = React.useRef<boolean>(isVisible);
-  React.useEffect(() => {
+  React.useLayoutEffect(() => {
     const becameVisible = !prevIsVisibleForNewChatRef.current && isVisible;
     const becameEmptyState = !prevUseCenteredEmptyStateRef.current && useCenteredEmptyState && isVisible;
     prevUseCenteredEmptyStateRef.current = useCenteredEmptyState;
@@ -15789,11 +15919,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   }, [useCenteredEmptyState, isVisible]);
 
   // Auto-focus the chat input when we enter the new-chat (centered empty) section so the caret is already bouncing.
+  // Use preventScroll: true to avoid the "drop" feeling. Delay 300ms so layout is fully settled before focus.
   React.useEffect(() => {
     if (!isVisible || !useCenteredEmptyState) return;
     const t = setTimeout(() => {
-      inputRef.current?.focus();
-    }, 150);
+      inputRef.current?.focus({ preventScroll: true });
+    }, 300);
     return () => clearTimeout(t);
   }, [isVisible, useCenteredEmptyState]);
 
@@ -16180,7 +16311,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           {/* Reasoning Steps: show instantly when loading (Planning next moves) then real steps replace it; when finished show under collapsible "Thought Xs" header (collapsed by default). Hide entirely when query is paused. */}
           {(message.isLoading || (message.reasoningSteps && message.reasoningSteps.length > 0 && (message.isLoading || showReasoningTrace))) && !isBotPaused && (
             message.isLoading ? (
-              <ReasoningSteps key={`reasoning-${finalKey}`} steps={message.reasoningSteps ?? []} isLoading={message.isLoading} hasResponseText={!!message.text} isAgentMode={isAgentMode} skipAnimations={!!isRestored} transientStep={message.id === transientThinkingMessageId ? { message: 'Thinking' } : undefined} />
+                <ReasoningSteps key={`reasoning-${finalKey}`} steps={message.reasoningSteps ?? []} isLoading={message.isLoading} hasResponseText={!!message.text} isAgentMode={isAgentMode} skipAnimations={!!isRestored} transientStep={message.id === transientThinkingMessageId ? { message: 'Thinking' } : undefined} onAskQuestion={handleAskQuestionFromDoc} />
             ) : (
               <div key={`thought-${finalKey}`} style={{ marginBottom: '17.6px' }}>
                 <button
@@ -16851,9 +16982,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             // Use local tracking (isSidebarJustCollapsed) for immediate detection, plus props for MainContent tracking
             // This ensures chat panel adjusts immediately with no animation delay
             // Also disable transitions when ChatPanel (agent sidebar) opens/closes for instant width adjustment
-            transition: (isResizing || isFilingSidebarResizing || isChatPanelResizing || isChatPanelJustToggled || isFilingSidebarClosing || isFilingSidebarOpening || isSidebarCollapsing || isSidebarJustCollapsed || !isFilingSidebarOpen || justEnteredFullscreen || justEnteredNewChatSection || shouldExpand || isRestoringFullscreen || (isFullscreenMode && !isRestoringFullscreen) || isFirstOpen || isPropertyDetailsOpen) ? 'none' : 'width 0.4s cubic-bezier(0.4, 0, 0.2, 1)',
-            transitionProperty: (isResizing || isFilingSidebarResizing || isChatPanelResizing || isChatPanelJustToggled || isFilingSidebarClosing || isFilingSidebarOpening || isSidebarCollapsing || isSidebarJustCollapsed || !isFilingSidebarOpen || isFirstOpen || justEnteredNewChatSection || isPropertyDetailsOpen) ? 'none' : 'width',
-            willChange: (isResizing || isFilingSidebarResizing || isChatPanelResizing || isChatPanelJustToggled || isFilingSidebarClosing || isFilingSidebarOpening || isSidebarCollapsing || isSidebarJustCollapsed || justEnteredNewChatSection) ? 'left, width' : 'width', // Optimize for instant changes when closing/opening or ChatPanel toggle
+            transition: (isResizing || isFilingSidebarResizing || isChatPanelResizing || isChatPanelJustToggled || isFilingSidebarClosing || isFilingSidebarOpening || isSidebarCollapsing || isSidebarJustCollapsed || !isFilingSidebarOpen || justEnteredFullscreen || justEnteredNewChatSection || isTransitioningToChat || shouldExpand || keepDocumentOpenOnNewChat || isRestoringFullscreen || (isFullscreenMode && !isRestoringFullscreen) || isFirstOpen || isPropertyDetailsOpen) ? 'none' : 'width 0.4s cubic-bezier(0.4, 0, 0.2, 1)',
+            transitionProperty: (isResizing || isFilingSidebarResizing || isChatPanelResizing || isChatPanelJustToggled || isFilingSidebarClosing || isFilingSidebarOpening || isSidebarCollapsing || isSidebarJustCollapsed || !isFilingSidebarOpen || isFirstOpen || justEnteredNewChatSection || isTransitioningToChat || keepDocumentOpenOnNewChat || isPropertyDetailsOpen) ? 'none' : 'width',
+            willChange: (isResizing || isFilingSidebarResizing || isChatPanelResizing || isChatPanelJustToggled || isFilingSidebarClosing || isFilingSidebarOpening || isSidebarCollapsing || isSidebarJustCollapsed || justEnteredNewChatSection || isTransitioningToChat) ? 'left, width' : 'width', // Optimize for instant changes when closing/opening or ChatPanel toggle
             backfaceVisibility: 'hidden', // Prevent flickering
             transform: 'translateZ(0)' // Force GPU acceleration
           }}
@@ -17150,7 +17281,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 flex: 1,
               }}
             >
-            {/* Header - Fixed at top; when scrolled (showTopBlur) uses backdrop blur + chat tint so content underneath is frosted. Slightly less top padding in new-chat so the button bar sits a bit higher and aligns with active chat. */}
+            {/* Header - Hidden in centered empty state so layout matches dashboard exactly (no movement when switching) */}
+            {!useCenteredEmptyState && (
             <div 
               className="pr-4 pl-6" 
               style={{ 
@@ -17167,8 +17299,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 isolation: 'isolate'
               }}
             >
-              <div 
-                className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 group"
+              <div
+                className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 group min-h-[32px]"
                 onMouseMove={(e) => {
                   if (editButtonRef.current && actualPanelWidth >= 940) {
                     const buttonRect = editButtonRef.current.getBoundingClientRect();
@@ -17200,11 +17332,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         setViewOptionsOpen(false);
                         if (onSidebarToggle) onSidebarToggle();
                       }}
-                      className={`flex items-center ${isPropertyDetailsOpen ? 'justify-center' : actualPanelWidth >= 750 ? 'gap-1.5' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150 cursor-pointer border-none`}
+                      className={`flex items-center ${isPropertyDetailsOpen ? 'justify-center' : actualPanelWidth >= 750 ? 'gap-1' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150 cursor-pointer border-none`}
                       title="Close sidebar"
                       type="button"
                       style={{
-                        padding: isPropertyDetailsOpen ? '6px' : actualPanelWidth >= 750 ? '7px 11px' : '6px',
+                        padding: actualPanelWidth >= 750 ? '6px 8px' : '6px',
                         height: '32px',
                         minHeight: '32px',
                         position: 'relative',
@@ -17228,11 +17360,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         setViewOptionsOpen(false);
                         handleMinimiseChat();
                       }}
-                      className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1.5' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150`}
+                      className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150`}
                       title="Minimise chat"
                       type="button"
                       style={{
-                        padding: actualPanelWidth >= 750 ? '7px 11px' : '6px',
+                        padding: actualPanelWidth >= 750 ? '6px 8px' : '6px',
                         height: '32px',
                         minHeight: '32px',
                         border: 'none',
@@ -17257,11 +17389,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         setViewOptionsOpen(false);
                         handleExpandChat();
                       }}
-                      className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1.5' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150`}
+                      className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150`}
                       title="Expand chat"
                       type="button"
                       style={{
-                        padding: actualPanelWidth >= 750 ? '7px 11px' : '6px',
+                        padding: actualPanelWidth >= 750 ? '6px 8px' : '6px',
                         height: '32px',
                         minHeight: '32px',
                         border: 'none',
@@ -17285,9 +17417,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         aria-haspopup="true"
                         aria-expanded={viewOptionsOpen}
                         title={viewOptionsOpen ? 'Close' : 'View – sidebar, files, new chat, fullscreen'}
-                        className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1.5' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150 cursor-pointer border-none`}
+                        className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150 cursor-pointer border-none`}
                         style={{
-                          padding: actualPanelWidth >= 750 ? '7px 11px' : '6px',
+                          padding: actualPanelWidth >= 750 ? '6px 8px' : '6px',
                           height: '32px',
                           minHeight: '32px',
                           position: 'relative',
@@ -17302,7 +17434,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           setViewOptionsOpen((prev) => !prev);
                         }}
                       >
-                        <PictureInPicture2 className="w-6 h-6 text-[#666] flex-shrink-0" strokeWidth={1.25} />
+                        <PictureInPicture2 className="w-5 h-5 text-[#666] flex-shrink-0" strokeWidth={1.25} />
                         {actualPanelWidth >= 750 && (
                           <span className="text-[13px] font-normal text-[#666]">{viewOptionsOpen ? 'Close' : 'View'}</span>
                         )}
@@ -17417,7 +17549,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   {/* Chat name dropdown to the right of View button (when not new chat) */}
                   {!isNewChatSection && (
                   actualPanelWidth >= 900 ? (
-                    <div className="flex items-center gap-2.5 max-w-[220px] mr-1 ml-16 py-1">
+                    <div className="flex items-center gap-2.5 max-w-[220px] mr-1 ml-16 min-h-[32px]">
                       {isEditingTitle ? (
                         <>
                           <MessageSquare className="w-6 h-6 text-gray-300 flex-shrink-0" style={{ pointerEvents: 'none' }} strokeWidth={1.25} />
@@ -17449,7 +17581,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               type="button"
                               onClick={(e) => e.stopPropagation()}
                               className="flex items-center gap-2 rounded-md text-left hover:bg-gray-100/80 transition-colors min-w-0 max-w-full border-0 bg-transparent"
-                              style={{ padding: '7px 11px', height: '32px', minHeight: '32px' }}
+                              style={{ padding: '6px 8px', height: '32px', minHeight: '32px' }}
                             >
                               <MessageSquare className="w-6 h-6 text-gray-300 flex-shrink-0" style={{ pointerEvents: 'none' }} strokeWidth={1.25} />
                               <span className="text-[14px] font-normal text-slate-600 truncate flex-1 min-w-0 text-left">
@@ -17519,7 +17651,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             type="button"
                             onClick={(e) => e.stopPropagation()}
                             className="flex items-center gap-2 rounded-md text-left hover:bg-gray-100/80 transition-colors min-w-0 max-w-full border-0 bg-transparent"
-                            style={{ padding: '7px 11px', height: '32px', minHeight: '32px' }}
+                            style={{ padding: '6px 8px', height: '32px', minHeight: '32px' }}
                           >
                             <MessageSquare className="w-6 h-6 text-gray-300 flex-shrink-0" strokeWidth={1.25} />
                             <span className="text-[14px] font-normal text-slate-600 truncate flex-1 min-w-0 text-left">
@@ -17578,9 +17710,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       title="Back to Projects"
                       type="button"
                       style={{
-                        padding: '5px 8px',
-                        height: '26px',
-                        minHeight: '26px',
+                        padding: '6px 8px',
+                        height: '32px',
+                        minHeight: '32px',
                         border: 'none',
                         position: 'relative',
                         zIndex: 10001,
@@ -17590,7 +17722,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       }}
                     >
                       <ChevronLeft className="w-5 h-5 text-[#666]" strokeWidth={1.25} />
-                      <span className="text-[12px] font-normal text-[#666]">Back</span>
+                      <span className="text-[13px] font-normal text-[#666]">Back</span>
                     </button>
                   )}
                   {/* Citations bar Open/Close – same slot left of Agents: Close when bar is visible, Open when bar closed or all citations accepted */}
@@ -17609,7 +17741,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     const showOpen = !citationBarVisible && (hasCitationBarClosedInChat || hasCompletedReviewInChat);
                     if (!citationBarVisible && !showOpen) return null;
                     const buttonStyle = {
-                      padding: actualPanelWidth >= 750 ? '7px 11px' : '6px',
+                      padding: actualPanelWidth >= 750 ? '6px 8px' : '6px',
                       height: '32px',
                       minHeight: '32px',
                       border: 'none',
@@ -17639,7 +17771,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           }}
                           title="Close citations bar"
                           aria-label="Close citations bar"
-                          className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1.5' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150 cursor-pointer border-none`}
+                          className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150 cursor-pointer border-none`}
                           style={buttonStyle}
                         >
                           <CaptionsOff className="w-5 h-5 text-[#666] flex-shrink-0" strokeWidth={1.25} />
@@ -17683,10 +17815,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           }
                         }}
                         title="Show citations bar"
-                        className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1.5' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150 cursor-pointer border-none`}
+                        className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150 cursor-pointer border-none`}
                         style={buttonStyle}
                       >
-<Captions className="w-5 h-5 text-[#666] flex-shrink-0" strokeWidth={1.25} />
+                        <Captions className="w-5 h-5 text-[#666] flex-shrink-0" strokeWidth={1.25} />
                           {actualPanelWidth >= 750 && (
                             <span className="text-[13px] font-normal text-[#666]">Open</span>
                         )}
@@ -17747,9 +17879,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         aria-haspopup="true"
                         aria-expanded={displayOptionsOpen}
                         title="Response – reasoning trace, highlight key points, and citations"
-                        className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1.5' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150 cursor-pointer border-none`}
+                        className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150 cursor-pointer border-none`}
                         style={{
-                          padding: actualPanelWidth >= 750 ? '7px 11px' : '6px',
+                          padding: actualPanelWidth >= 750 ? '6px 8px' : '6px',
                           height: '32px',
                           minHeight: '32px',
                           position: 'relative',
@@ -17934,10 +18066,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         onMapToggle();
                       }
                     }}
-                    className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1.5' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150`}
+                    className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150`}
                     title="Close chat"
                     style={{
-                      padding: actualPanelWidth >= 750 ? '7px 11px' : '6px',
+                      padding: actualPanelWidth >= 750 ? '6px 8px' : '6px',
                       height: '32px',
                       minHeight: '32px',
                       marginLeft: '8px',
@@ -17975,6 +18107,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 </div>
               )}
             </div>
+            )}
             
             {/* Conditional layout: Centered empty state OR normal messages + bottom input */}
             {/* When fullscreen (e.g. opened via New chat), use bottom input even when empty. Stable key so no unmount/remount = no jump. */}
@@ -17982,8 +18115,35 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               key="chat-content-area"
               style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', position: 'relative', width: '100%' }}
             >
+            {/* Agents button in top right – same UI as existing Agents button; only on new chat (centered empty) screen when agent sidebar is closed */}
+            {isVisible && !isChatPanelOpen && useCenteredEmptyState && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  openChatPanel();
+                }}
+                aria-label="Open agents"
+                title="Agents"
+                className="flex items-center gap-1.5 rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150 cursor-pointer border-none"
+                style={{
+                  position: 'absolute',
+                  top: 20,
+                  right: 20,
+                  zIndex: 20,
+                  pointerEvents: 'auto',
+                  padding: '6px 8px',
+                  height: '32px',
+                  minHeight: '32px',
+                  backgroundColor: 'rgba(0, 0, 0, 0.02)',
+                }}
+              >
+                <img src={agentIcon} alt="" className="h-5 w-5 object-contain flex-shrink-0" aria-hidden />
+                <span className="text-[13px] font-normal text-[#666] whitespace-nowrap">Agents</span>
+              </button>
+            )}
             {useCenteredEmptyState ? (
-              /* Empty chat state - Same vertical positioning as dashboard: top spacer calc(50vh - 400px) + logo-equivalent (200px) so bar sits at 50vh - 200px (no jump when switching) */
+              /* Empty chat state - Same positioning as dashboard (shared DASHBOARD_CHAT_LAYOUT) so bar + welcome have identical vertical position */
               <div
                 key="empty-chat-layout-inner"
                 ref={contentAreaRefWithWheel}
@@ -17995,23 +18155,26 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   flexDirection: 'column',
                   justifyContent: 'flex-start',
                   alignItems: 'center',
-                  // Minimal horizontal padding so chat bar can reach CHAT_BAR_MAX_WIDTH_PX (680) and match SearchBar width
-                  padding: actualPanelWidth < 320 ? '0 20px' : '0 16px',
+                  paddingLeft: DASHBOARD_CHAT_LAYOUT.HORIZONTAL_PADDING,
+                  paddingRight: DASHBOARD_CHAT_LAYOUT.HORIZONTAL_PADDING,
                   paddingTop: 0,
-                  minWidth: '200px', // Allow narrower layouts
+                  paddingBottom: 0,
+                  minWidth: DASHBOARD_CHAT_LAYOUT.LOGO_SECTION_MIN_WIDTH,
                   position: 'relative',
                   overflowX: 'hidden'
                 }}
               >
-                {/* Top spacer: must match dashboard exactly (calc(50vh - 400px)) so logo + bar do not jump */}
-                <div style={{ flexShrink: 0, height: 'calc(50vh - 400px)', width: '100%' }} aria-hidden />
-                {/* Logo-equivalent section: 200px + 5rem margin to match dashboard (logo maxHeight + clamp(2.25rem,5vh,3.25rem) + clamp(2rem,4vh,2.75rem)) so bar vertical position is identical */}
-                <div style={{ flexShrink: 0, minHeight: '200px', marginBottom: '5rem', width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'flex-end' }}>
+                {/* Top padding: match dashboard content container (p-8 lg:p-16) so welcome/bar align vertically */}
+                <div style={{ flexShrink: 0, height: DASHBOARD_CHAT_LAYOUT.CONTAINER_TOP_PADDING, width: '100%' }} aria-hidden />
+                {/* Top spacer: shared with dashboard (DASHBOARD_CHAT_LAYOUT) so logo + bar do not jump */}
+                <div style={{ flexShrink: 0, height: DASHBOARD_CHAT_LAYOUT.TOP_SPACER_HEIGHT, width: '100%' }} aria-hidden />
+                {/* Logo-equivalent section: identical to dashboard (shared constants) */}
+                <div style={{ flexShrink: 0, minHeight: DASHBOARD_CHAT_LAYOUT.LOGO_SECTION_MIN_HEIGHT, marginBottom: DASHBOARD_CHAT_LAYOUT.LOGO_SECTION_MARGIN_BOTTOM, width: '100%', maxWidth: DASHBOARD_CHAT_LAYOUT.LOGO_SECTION_MAX_WIDTH, minWidth: DASHBOARD_CHAT_LAYOUT.LOGO_SECTION_MIN_WIDTH, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'flex-end', boxSizing: 'border-box' }}>
                   {/* Title above chat bar - logo + greeting like reference */}
                   {emptyStateTitleMessage ? (
                     <div
                       className="w-full flex justify-center items-center gap-3"
-                      style={{ marginBottom: '40px' }}
+                      style={{ marginBottom: DASHBOARD_CHAT_LAYOUT.WELCOME_TO_BAR_GAP }}
                     >
                       <img
                         src="/VELORA_DASHLOGO.png"
@@ -18803,6 +18966,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         )}
                       </div>
                     )}
+                    {/* Agent task panel - always visible when tasks exist for current chat */}
+                    {currentChatId && (() => { const agentTasks = getTasksForChat(currentChatId); return agentTasks.length > 0 ? (
+                      <AgentTaskPanel tasks={agentTasks} onInjectResult={injectResultToChat} onCancel={cancelAgentTask} onRetry={retryAgentTask} />
+                    ) : null; })()}
                     {/* Scroll anchor - ensures bottom of response is visible above chat bar */}
                     {/* Extra padding ensures content isn't hidden behind chat input when scrolled to bottom */}
                     <div ref={messagesEndRef} style={{ height: '160px', minHeight: '160px', flexShrink: 0 }} />

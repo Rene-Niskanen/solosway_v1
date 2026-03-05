@@ -86,21 +86,20 @@ export function UploadOverlay() {
             className={`relative cursor-pointer select-none transition-all duration-150 ease-out w-full overflow-hidden rounded-lg
               hover:bg-gray-50/40 active:scale-[0.99] active:opacity-95 active:bg-gray-100/50
               ${isDragOver ? "opacity-90 scale-[1.01]" : ""}`}
-            style={{
-              border: "2px dotted #D1D5DB",
-              borderRadius: "8px",
-            }}
+              style={{
+                borderRadius: "8px",
+              }}
           >
             <img
-              src="/fileuploaduse.png"
+              src="/fileupload3.png"
               alt="Secure file uploads"
               className="block w-full h-auto pointer-events-none rounded-lg"
               style={{
                 width: "100%",
                 height: "auto",
                 display: "block",
-                transform: "scale(1.12) translateY(-8px)",
-                transformOrigin: "center top",
+                transform: "scale(1.05)",
+                transformOrigin: "center center",
               }}
             />
 

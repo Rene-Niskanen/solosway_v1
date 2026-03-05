@@ -267,9 +267,11 @@ interface ProjectsPageProps {
   onCreateProject: () => void;
   sidebarWidth?: number;
   onPropertySelect?: (property: PropertyData) => void;
+  /** Called when a file is clicked – collapse main sidebar to small (icons-only) state */
+  onCollapseSidebarToSmall?: () => void;
 }
 
-export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sidebarWidth = 0, onPropertySelect }) => {
+export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sidebarWidth = 0, onPropertySelect, onCollapseSidebarToSmall }) => {
   // Initialize with cached data immediately for instant display
   const cachedData = React.useMemo(() => getCachedData(), []);
   
@@ -810,7 +812,7 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
             pointerEvents: 'auto',
           }}
         >
-          <span className="text-[12px] font-normal text-[#666]" style={isSelectionMode ? { color: '#3B82F6' } : undefined}>Select</span>
+          <span className="text-[12px] font-normal text-[#666]">Select</span>
         </button>
         {allDocuments.length > 0 && (
           <button
@@ -1028,6 +1030,7 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
               scrollable={true}
               showAllMode={showAllFiles}
               alignLeftWithContainer={true}
+              onCollapseSidebarToSmall={onCollapseSidebarToSmall}
             />
           </div>
         )}

@@ -20,7 +20,7 @@ import { useSystem } from '@/contexts/SystemContext';
 import { backendApi } from '@/services/backendApi';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogOverlay } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { MapPin, Palette, Bell, Shield, Globe, Monitor, LibraryBig, Upload, BarChart3, Database, Settings, User, CloudUpload, Image, Map, Fullscreen, Minimize2, Plus, ArrowUp, Folder, Layers, Check, Focus, Contrast, Search, Loader2, ArrowRight, ArrowLeft, CreditCard, Locate, Volume2, Lock } from 'lucide-react';
+import { MapPin, Palette, Bell, Shield, Monitor, LibraryBig, Upload, BarChart3, Database, Settings, User, CloudUpload, Image, Map, Minimize2, Plus, ArrowUp, Folder, Layers, Check, Focus, Contrast, Search, Loader2, ArrowRight, ArrowLeft, CreditCard, Locate, Volume2, Lock } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
@@ -48,6 +48,7 @@ import {
   INPUT_BAR_SPACE_BELOW_DASHBOARD,
   INPUT_BAR_SPACE_BELOW_MAP,
   CHAT_BAR_MAX_WIDTH_PX,
+  DASHBOARD_CHAT_LAYOUT,
   getInputBarFixedContainerStyles,
 } from '@/utils/inputBarPosition';
 import { useChatHistory } from './ChatHistoryContext';
@@ -1821,8 +1822,6 @@ const SettingsView: React.FC<{
     { id: 'map-settings', label: 'Map Settings', icon: Map },
     { id: 'notifications', label: 'Notifications', icon: Bell },
     { id: 'privacy', label: 'Privacy', icon: Shield },
-    { id: 'language', label: 'Language & Region', icon: Globe },
-    { id: 'display', label: 'Display', icon: Fullscreen },
   ];
 
   const renderSettingsContent = () => {
@@ -1948,34 +1947,6 @@ const SettingsView: React.FC<{
             >
               Log Out
             </Button>
-          </div>
-        );
-      case 'language':
-        return (
-          <div className="space-y-6">
-            <div>
-              <h3 className="text-[15px] font-medium text-gray-900">Language & Region</h3>
-              <p className="text-[13px] text-gray-500 mt-1.5 font-normal">
-                Set your language and regional preferences.
-              </p>
-            </div>
-            <div className="text-slate-500 text-sm">
-              Language settings coming soon...
-            </div>
-          </div>
-        );
-      case 'display':
-        return (
-          <div className="space-y-6">
-            <div>
-              <h3 className="text-[15px] font-medium text-gray-900">Display</h3>
-              <p className="text-[13px] text-gray-500 mt-1.5 font-normal">
-                Adjust display and layout preferences.
-              </p>
-            </div>
-            <div className="text-slate-500 text-sm">
-              Display settings coming soon...
-            </div>
           </div>
         );
       default:
@@ -2274,16 +2245,8 @@ export const MainContent = ({
   }, [isMapVisible]);
 
   // Chats button clicked: open new-chat UI (centered welcome, no map). Parent signals via trigger.
-  React.useEffect(() => {
-    if (openChatsViewTrigger > 0) {
-      isTransitioningToChatRef.current = true;
-      setHasPerformedSearch(true);
-      setShouldExpandChat(false); // Ensure centered welcome layout, not expanded bottom bar
-      setTimeout(() => {
-        isTransitioningToChatRef.current = false;
-      }, 250);
-    }
-  }, [openChatsViewTrigger]);
+  // Ref to detect trigger change synchronously during render (see render-time block below ref declarations).
+  const prevOpenChatsViewTriggerRef = React.useRef(openChatsViewTrigger);
 
   // When parent hides map (e.g. Chats clicked), clear search-bar map state so isMapVisible becomes false and chat shows centered bar
   React.useEffect(() => {
@@ -2327,6 +2290,7 @@ export const MainContent = ({
   const [resetWidthForDocPreviewTrigger, setResetWidthForDocPreviewTrigger] = React.useState<number>(0); // Increment to force 50/50 when opening file from search modal
   const [chatBarGlowTrigger, setChatBarGlowTrigger] = React.useState<number>(0); // Timestamp to trigger chat bar border glow after query submit (dashboard/map)
   const [chooseProjectModalOpen, setChooseProjectModalOpen] = React.useState<boolean>(false);
+  const [projectsChatActive, setProjectsChatActive] = React.useState<boolean>(false); // Chat opened from projects; keep visible when doc preview is closed
   const [chooseProjectModalAnchorRect, setChooseProjectModalAnchorRect] = React.useState<{ left: number; top: number; width: number; height: number } | null>(null);
 
   const { addPropertyAttachment } = usePropertySelection();
@@ -2369,8 +2333,29 @@ export const MainContent = ({
   const [isTransitioningFromChat, setIsTransitioningFromChat] = React.useState<boolean>(false);
   // Use a ref to track transition state synchronously (before React re-renders)
   const isTransitioningFromChatRef = React.useRef<boolean>(false);
-  // Track if we're transitioning TO chat (to prevent dashboard flash)
+  // Track if we're transitioning TO chat (to prevent dashboard flash and panel animations)
   const isTransitioningToChatRef = React.useRef<boolean>(false);
+  const [isTransitioningToChat, setIsTransitioningToChat] = React.useState<boolean>(false);
+
+  // Chats button: set ref synchronously during render so dashboard-hide condition fires on the SAME frame.
+  if (openChatsViewTrigger > 0 && openChatsViewTrigger !== prevOpenChatsViewTriggerRef.current) {
+    prevOpenChatsViewTriggerRef.current = openChatsViewTrigger;
+    isTransitioningToChatRef.current = true;
+  }
+  // useLayoutEffect so state updates commit before browser paint (no visible flash/movement).
+  React.useLayoutEffect(() => {
+    if (openChatsViewTrigger > 0) {
+      isTransitioningToChatRef.current = true;
+      setIsTransitioningToChat(true);
+      setHasPerformedSearch(true);
+      setShouldExpandChat(false);
+      setTimeout(() => {
+        isTransitioningToChatRef.current = false;
+        setIsTransitioningToChat(false);
+      }, 250);
+    }
+  }, [openChatsViewTrigger]);
+
   // Track when chat was opened to prevent premature closing
   const chatOpenedTimestampRef = React.useRef<number | null>(null);
   // Preserve chat state when navigating away so it can be restored when returning
@@ -2465,6 +2450,18 @@ export const MainContent = ({
     window.addEventListener('citation-query-submit', handleCitationQuerySubmit as EventListener);
     return () => window.removeEventListener('citation-query-submit', handleCitationQuerySubmit as EventListener);
   }, [isMapVisible, isPropertyDetailsOpen, citationContext]);
+
+  // Agent task result injection - expand chat when an agent task result is injected
+  React.useEffect(() => {
+    const handleAgentTaskResultInject = () => {
+      setHasPerformedSearch(true);
+      if (isPropertyDetailsOpen) {
+        setShouldExpandChat(true);
+      }
+    };
+    window.addEventListener('agent-task-result-inject', handleAgentTaskResultInject as EventListener);
+    return () => window.removeEventListener('agent-task-result-inject', handleAgentTaskResultInject as EventListener);
+  }, [isPropertyDetailsOpen]);
 
   // Clear citation context when chat is closed or new chat starts
   React.useEffect(() => {
@@ -2679,10 +2676,18 @@ export const MainContent = ({
 
   // Reset chat panel width when panel is not visible (including when not on Projects with doc open)
   const isChatPanelVisibleForAnyReason = (currentView === 'search' || currentView === 'home') && isMapVisible && hasPerformedSearch
-    || (currentView === 'projects' && !!expandedCardViewDoc);
+    || (currentView === 'projects' && (!!expandedCardViewDoc || projectsChatActive));
   React.useEffect(() => {
     if (!isChatPanelVisibleForAnyReason) setChatPanelWidth(0);
   }, [isChatPanelVisibleForAnyReason]);
+
+  // Keep chat visible on Projects when user closes doc preview (X); clear when navigating away
+  React.useEffect(() => {
+    if (currentView === 'projects' && expandedCardViewDoc) setProjectsChatActive(true);
+  }, [currentView, expandedCardViewDoc]);
+  React.useEffect(() => {
+    if (currentView !== 'projects') setProjectsChatActive(false);
+  }, [currentView]);
   
   // Close document for the active chat AND legacy state (both must be cleared)
   // Always close for active chat when user presses X (e.g. previous chat with restored preview)
@@ -2739,13 +2744,14 @@ export const MainContent = ({
       ? (isSidebarCollapsed ? TOGGLE_RAIL_WIDTH : effectiveSidebarWidth) + filingSidebarWidth
       : (isSidebarCollapsed ? 0 : effectiveSidebarWidth) + TOGGLE_RAIL_WIDTH;
     const agentSidebarWidth = isChatHistoryPanelOpen ? (chatHistoryPanelWidth || 320) + AGENT_RAIL : 0;
-    const expected50 = Math.round((viewportWidth - sidebarWidth - agentSidebarWidth) / 2);
+    const availableForSplit = viewportWidth - sidebarWidth - agentSidebarWidth;
+    const expectedChatWidth = Math.round(availableForSplit * CHAT_PANEL_WIDTH.DOC_PREVIEW_CHAT_RATIO);
     const roundedChat = Math.round(effectiveChatWidthForDocPreview || 0);
-    const isNear50 = Math.abs(roundedChat - expected50) <= 2;
-    // When attachment preview just opened, chat width may not have updated yet; use 50% for first frame
+    const isNearExpected = Math.abs(roundedChat - expectedChatWidth) <= 2;
+    // When attachment preview just opened, chat width may not have updated yet; use expected for first frame
     const effectiveChatWidth = isAttachmentPreviewOpen && roundedChat === 0
-      ? expected50
-      : (isNear50 ? expected50 : roundedChat);
+      ? expectedChatWidth
+      : (isNearExpected ? expectedChatWidth : roundedChat);
     const naturalDocLeft = sidebarWidth + effectiveChatWidth + 12;
     const maxDocLeft = viewportWidth - agentSidebarWidth - DOC_PREVIEW_MIN - DOC_PREVIEW_RIGHT_PADDING;
     const docLeft = Math.min(naturalDocLeft, maxDocLeft);
@@ -2763,10 +2769,11 @@ export const MainContent = ({
   // CRITICAL: Use the same logic as SideChatPanel's isVisible prop to ensure consistency
   React.useEffect(() => {
     const isSearchOrHome = currentView === 'search' || currentView === 'home';
-    const chatPanelIsVisible = isSearchOrHome && hasPerformedSearch && (isMapVisible || inChatMode);
+    const chatPanelIsVisible = (isSearchOrHome && hasPerformedSearch && (isMapVisible || inChatMode) && !showNewPropertyWorkflow)
+      || (currentView === 'projects' && (!!expandedCardViewDoc || projectsChatActive));
     setIsChatPanelVisible(chatPanelIsVisible);
     onChatVisibilityChange?.(chatPanelIsVisible);
-  }, [currentView, isMapVisible, hasPerformedSearch, inChatMode, setIsChatPanelVisible, onChatVisibilityChange, expandedCardViewDoc, activeChatId, chatStateDocumentPreview]);
+  }, [currentView, isMapVisible, hasPerformedSearch, inChatMode, showNewPropertyWorkflow, expandedCardViewDoc, projectsChatActive, setIsChatPanelVisible, onChatVisibilityChange, activeChatId, chatStateDocumentPreview]);
   
   // Callback from SideChatPanel to track active chat state
   const handleActiveChatChange = React.useCallback((isActive: boolean) => {
@@ -2843,6 +2850,7 @@ export const MainContent = ({
       // Mark that we're transitioning to chat (prevents dashboard flash and chat closing)
       // Set this IMMEDIATELY before any state updates to prevent render race conditions
       isTransitioningToChatRef.current = true;
+      setIsTransitioningToChat(true);
       
       const isNewChatNoRestore = !preservedChatStateRef.current;
       // New chat: fullscreen chat only (no map). Restored chat: map visible if external wants it.
@@ -2886,6 +2894,7 @@ export const MainContent = ({
       // Keep transition flag true long enough to disable all movement/transitions when opening new chat section
       setTimeout(() => {
         isTransitioningToChatRef.current = false;
+        setIsTransitioningToChat(false);
       }, 250);
     }
   }, [shouldRestoreActiveChat, externalIsMapVisible, isMapVisible]);
@@ -2905,6 +2914,7 @@ export const MainContent = ({
       
       // Mark that we're transitioning to chat (prevents dashboard flash)
       isTransitioningToChatRef.current = true;
+      setIsTransitioningToChat(true);
       
       // CRITICAL: Ensure map is visible immediately for fullscreen chat
       if (!isMapVisible) {
@@ -2947,6 +2957,7 @@ export const MainContent = ({
       // Keep transition flag true long enough to disable movement when opening chat
       setTimeout(() => {
         isTransitioningToChatRef.current = false;
+        setIsTransitioningToChat(false);
       }, 250);
     }
   }, [shouldRestoreSelectedChat, isMapVisible, getChatById]);
@@ -3672,8 +3683,11 @@ export const MainContent = ({
     pendingSearchContentSegmentsRef.current = segments.length > 0 ? segments : undefined;
     setMapSearchQuery(query);
     setMapSearchContentSegments(segments);
-    // Trigger chat bar border glow when SideChatPanel shows (dashboard or map with attachments)
-    setChatBarGlowTrigger(Date.now());
+    // Trigger chat bar border glow when SideChatPanel shows - but NOT when submitting from dashboard
+    // (avoids flash feeling during instant dashboard->chat transition)
+    if (isMapVisible) {
+      setChatBarGlowTrigger(Date.now());
+    }
 
     // If map is visible and there are no attachments, only search on the map, don't enter chat
     // BUT if there are attachments, we need to show SideChatPanel to handle file choice
@@ -3717,6 +3731,7 @@ export const MainContent = ({
     // Open map view and show SideChatPanel
     // CRITICAL: Hide dashboard immediately (same frame) so user always sees chat after submit
     isTransitioningToChatRef.current = true;
+    setIsTransitioningToChat(true);
     setIsMapVisibleFromSearchBar(true);
     setIsMapVisible(true);
     setHasPerformedSearch(true);
@@ -3726,11 +3741,11 @@ export const MainContent = ({
     
     // Track when chat was opened to prevent premature closing
     chatOpenedTimestampRef.current = Date.now();
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        isTransitioningToChatRef.current = false;
-      });
-    });
+    // Keep transition disabled long enough to prevent jump/click feeling (no animation)
+    setTimeout(() => {
+      isTransitioningToChatRef.current = false;
+      setIsTransitioningToChat(false);
+    }, 250);
     
     // Query from dashboard - expand to fullscreen view
     setShouldExpandChat(true);
@@ -4048,6 +4063,7 @@ export const MainContent = ({
       const q = query.trim();
       // Ensure we navigate to chat view immediately (hide dashboard) even if parent/effect order lags
       isTransitioningToChatRef.current = true;
+      setIsTransitioningToChat(true);
       setHasPerformedSearch(true);
       setShouldExpandChat(true);
       setTimeout(() => {
@@ -4057,6 +4073,7 @@ export const MainContent = ({
       }, 0);
       setTimeout(() => {
         isTransitioningToChatRef.current = false;
+        setIsTransitioningToChat(false);
       }, 250);
     };
     window.addEventListener('searchModalNewChatQuery', handler);
@@ -4409,28 +4426,25 @@ export const MainContent = ({
                       ? (shouldPositionAtBottom ? 'calc(100vh - 120px)' : `calc(100vh - ${searchBarHeight}px)`)
                       : (shouldCenterLogo ? (shouldPositionAtBottom ? 'calc(100vh - 120px)' : '100vh') : `${availableHeight}px`));
                   
-                  // When logo + search bar only (narrow viewport or projects hidden): place search bar using spacers
-                  const useSearchBarCenteredLayout = (effectiveIsVerySmall || effectiveShouldHideProjects) && !shouldPositionAtBottom;
-                  const topSpacerHeight = 'calc(50vh - 400px)'; // Smaller top spacer = logo + search bar higher
-                  // Fullscreen (projects visible): shift whole block up so logo + search bar sit higher
-                  const fullscreenUpwardShift = !useSearchBarCenteredLayout && !shouldPositionAtBottom ? 'translateY(-100px)' : 'none';
+                  // Use same positioning logic as chat section: top spacer + logo section so bar lands at same vertical position
+                  const useTopSpacerLayout = !shouldPositionAtBottom;
 
                   return (
                     <div 
-                      className="flex flex-col items-center w-full max-w-6xl mx-auto px-4" 
+                      className="flex flex-col items-center w-full max-w-6xl mx-auto" 
                       style={{ 
-                        paddingLeft: 'clamp(1rem, 2vw, 1rem)', 
-                        paddingRight: 'clamp(1rem, 2vw, 1rem)',
+                        paddingLeft: DASHBOARD_CHAT_LAYOUT.HORIZONTAL_PADDING, 
+                        paddingRight: DASHBOARD_CHAT_LAYOUT.HORIZONTAL_PADDING,
                         height: logoContainerHeight,
                         minHeight: logoContainerHeight,
                         paddingTop: '0',
                         paddingBottom: shouldPositionAtBottom ? '120px' : (isLogoOnlyView ? `${searchBarHeight}px` : '0'), // Reserve space for search bar when in flow and logo-only view
-                        justifyContent: useSearchBarCenteredLayout ? 'flex-start' : 'center', // When centering search bar at 50vh we use top spacer instead
+                        justifyContent: useTopSpacerLayout ? 'flex-start' : 'center', // Same as chat section: top spacer places bar at 50vh
                         display: 'flex',
                         flexDirection: 'column',
                         alignItems: 'center',
                         position: 'relative',
-                        transform: useSearchBarCenteredLayout ? 'none' : fullscreenUpwardShift,
+                        transform: 'none', // No translateY – always use top spacer for consistent position with chat section
                         zIndex: 2,
                         overflow: 'visible', // Ensure QuickStartBar is not clipped
                         transition: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked || isTransitioningToChatRef.current) ? 'none' : 'transform 0.3s ease-out', // Smooth transition for transform, but disable during navigation transitions
@@ -4440,26 +4454,31 @@ export const MainContent = ({
                         OTransition: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked || isTransitioningToChatRef.current) ? 'none' : undefined
                       }}
                     >
-                {/* Top spacer: pushes logo + search bar so search bar center lands at 50vh */}
-                      {useSearchBarCenteredLayout && (
-                        <div style={{ flexShrink: 0, height: topSpacerHeight, width: '100%' }} aria-hidden />
+                {/* Top spacer: same as chat section so bar center lands at 50vh (no jump when switching) */}
+                      {useTopSpacerLayout && (
+                        <div style={{ flexShrink: 0, height: DASHBOARD_CHAT_LAYOUT.TOP_SPACER_HEIGHT, width: '100%' }} aria-hidden />
                       )}
-                {/* VELORA Branding Section - same width as search bar area so logo shrinks and centers at small width */}
+                {/* VELORA Branding Section - same dimensions as chat section logo-equivalent for identical positioning */}
                       <div className="flex flex-col items-center" style={{ 
-                        marginTop: '0',
-                        marginBottom: (!effectiveIsVerySmall && !effectiveShouldHideProjects) ? 'clamp(2.25rem, 5vh, 3.25rem)' : '0',
+                        flexShrink: 0,
+                        minHeight: useTopSpacerLayout ? DASHBOARD_CHAT_LAYOUT.LOGO_SECTION_MIN_HEIGHT : undefined,
+                        marginBottom: useTopSpacerLayout ? DASHBOARD_CHAT_LAYOUT.LOGO_SECTION_MARGIN_BOTTOM : (!effectiveIsVerySmall && !effectiveShouldHideProjects) ? 'clamp(2.25rem, 5vh, 3.25rem)' : '0',
+                        display: useTopSpacerLayout ? 'flex' : undefined,
+                        flexDirection: useTopSpacerLayout ? 'column' : undefined,
+                        alignItems: useTopSpacerLayout ? 'center' : undefined,
+                        justifyContent: useTopSpacerLayout ? 'flex-end' : undefined,
                         position: 'relative',
                         zIndex: 10,
                         width: '100%',
-                        maxWidth: '480px',
-                        minWidth: '200px',
+                        maxWidth: DASHBOARD_CHAT_LAYOUT.LOGO_SECTION_MAX_WIDTH,
+                        minWidth: DASHBOARD_CHAT_LAYOUT.LOGO_SECTION_MIN_WIDTH,
                         boxSizing: 'border-box'
                       }}>
-                        {/* Dashboard Logo + greeting - same style as SideChatPanel empty state */}
+                        {/* Dashboard Logo + greeting - same style and spacing as SideChatPanel empty state */}
                         <div
                           className="w-full flex justify-center items-center gap-3"
                           style={{
-                            marginBottom: (!effectiveIsVerySmall && !effectiveShouldHideProjects) ? 'clamp(2rem, 4vh, 2.75rem)' : '0',
+                            marginBottom: useTopSpacerLayout ? DASHBOARD_CHAT_LAYOUT.WELCOME_TO_BAR_GAP : (!effectiveIsVerySmall && !effectiveShouldHideProjects) ? 'clamp(2rem, 4vh, 2.75rem)' : '0',
                           }}
                         >
                           <img
@@ -4672,8 +4691,8 @@ export const MainContent = ({
                           </div>
                         );
                       })()}
-                      {/* Bottom spacer: fills remaining space so top spacer places search bar center at 50vh */}
-                      {useSearchBarCenteredLayout && (
+                      {/* Bottom spacer: fills remaining space so top spacer places search bar center at 50vh (same as chat section) */}
+                      {useTopSpacerLayout && (
                         <div style={{ flex: '1 1 0', minHeight: 0, width: '100%' }} aria-hidden />
                       )}
                       
@@ -4871,6 +4890,7 @@ export const MainContent = ({
               onCreateProject={handleCreateProject}
               onPropertySelect={handleProjectPropertySelect}
               sidebarWidth={effectiveSidebarWidthWithRail}
+              onCollapseSidebarToSmall={onCollapseSidebarToSmall}
             />
           </div>
         );
@@ -5531,6 +5551,7 @@ export const MainContent = ({
           <SquareMap
             ref={mapRef}
             isVisible={isMapVisible || externalIsMapVisible}
+            skipEntranceAnimation={isTransitioningToChat || isTransitioningToChatRef.current}
             isInteractive={isMapVisible || externalIsMapVisible}
             searchQuery={mapSearchQuery}
             hasPerformedSearch={hasPerformedSearch}
@@ -5576,7 +5597,7 @@ export const MainContent = ({
             width: docPreviewBackdropLayout.backdropWidth,
             top: 0,
             bottom: 0,
-            backgroundColor: '#FCFCF9',
+            backgroundColor: '#FFFFFF',
             zIndex: 9998,
             pointerEvents: 'none',
           }}
@@ -5783,7 +5804,7 @@ export const MainContent = ({
       {/* SideChatPanel - Always rendered to allow background processing. Also visible on Projects when a document is open (chat alongside doc preview). */}
       <SideChatPanel
         ref={sideChatPanelRef}
-        isVisible={((currentView === 'search' || currentView === 'home') && hasPerformedSearch && (isMapVisible || isInChatMode) && !showNewPropertyWorkflow) || (currentView === 'projects' && !!expandedCardViewDoc)}
+        isVisible={((currentView === 'search' || currentView === 'home') && hasPerformedSearch && (isMapVisible || isInChatMode) && !showNewPropertyWorkflow) || (currentView === 'projects' && (!!expandedCardViewDoc || projectsChatActive))}
         query={mapSearchQuery}
         userFirstName={userData == null ? undefined : (userData.first_name?.trim() || 'there')}
         initialContentSegments={mapSearchContentSegments.length > 0 ? mapSearchContentSegments : undefined}
@@ -5827,6 +5848,8 @@ export const MainContent = ({
         chatBarGlowTrigger={chatBarGlowTrigger}
         isMapVisible={isMapVisible}
         isAttachmentPreviewOpen={isAttachmentPreviewOpen}
+        keepDocumentOpenOnNewChat={currentView === 'projects' && !!expandedCardViewDoc}
+        isTransitioningToChat={isTransitioningToChat}
         onQuickStartToggle={() => {
           setIsQuickStartBarVisible(!isQuickStartBarVisible);
         }}
@@ -5835,8 +5858,13 @@ export const MainContent = ({
           // Handle new query from panel
           setMapSearchQuery(newQuery);
           // Keep hasPerformedSearch true
-          // Query from within SideChatPanel - don't expand (keep current state or collapse)
-          setShouldExpandChat(false);
+          // When on projects with doc open: keep expanded so chat stays in 55/45 split (no "exit" on submit)
+          // Otherwise: don't expand (keep current state or collapse)
+          if (currentView === 'projects' && expandedCardViewDoc) {
+            setShouldExpandChat(true);
+          } else {
+            setShouldExpandChat(false);
+          }
         }}
         onMinimize={(chatMessages) => {
           // Disable animations when closing chat
@@ -6008,8 +6036,8 @@ export const MainContent = ({
         background: (currentView === 'search' || currentView === 'home') ? 'transparent' : undefined,
         pointerEvents: currentView === 'settings' ? 'auto' : (isMapVisible || externalIsMapVisible) ? 'none' : 'auto', // Settings always receives clicks; otherwise block when map visible
         zIndex: currentView === 'settings' ? 1 : (isMapVisible || externalIsMapVisible) ? 0 : 1, // Settings always on top; below map when map visible otherwise
-        transition: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked) ? 'none' : undefined, // Disable all transitions when transitioning from chat
-        willChange: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked) ? 'auto' : undefined // Prevent layout shifts during transitions
+        transition: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked || isTransitioningToChat || isTransitioningToChatRef.current) ? 'none' : undefined, // Disable all transitions when transitioning to/from chat
+        willChange: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked || isTransitioningToChat || isTransitioningToChatRef.current) ? 'auto' : undefined // Prevent layout shifts during transitions
       }}>
         {/* Dashboard upgrade CTA - absolute top-right within this content container, only when dashboard is visible */}
         {(currentView === 'search' || currentView === 'home') && !shouldRestoreActiveChat && !(isInChatMode && hasPerformedSearch) && !isMapVisible && !externalIsMapVisible && (
@@ -6156,30 +6184,24 @@ export const MainContent = ({
               setShowNewPropertyWorkflow(false);
               setInitialMapState(null);
             }}
-            className="flex items-center gap-1.5 rounded-none transition-all duration-200 group focus:outline-none outline-none"
+            className="flex items-center gap-1 rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150 cursor-pointer border-none focus:outline-none outline-none"
             style={{
-              padding: '4px 8px',
-              height: '24px',
-              minHeight: '24px',
+              padding: '6px 8px',
+              height: '32px',
+              minHeight: '32px',
               backgroundColor: '#FFFFFF',
-              border: '1px solid rgba(82, 101, 128, 0.35)',
-              borderRadius: '8px',
-              boxShadow: 'inset 0 1px 0 rgba(255, 255, 255, 0.55), 0 1px 2px rgba(0, 0, 0, 0.08)',
-              opacity: 1,
-              backdropFilter: 'none',
+              border: 'none',
             }}
             onMouseEnter={(e) => {
-              e.currentTarget.style.backgroundColor = '#F9FAFB';
-              e.currentTarget.style.boxShadow = 'inset 0 1px 0 rgba(255, 255, 255, 0.55), 0 2px 4px rgba(0, 0, 0, 0.12)';
+              e.currentTarget.style.backgroundColor = '#f0f0f0';
             }}
             onMouseLeave={(e) => {
               e.currentTarget.style.backgroundColor = '#FFFFFF';
-              e.currentTarget.style.boxShadow = 'inset 0 1px 0 rgba(255, 255, 255, 0.55), 0 1px 2px rgba(0, 0, 0, 0.08)';
             }}
             title="Back"
           >
-            <ArrowLeft className="w-4 h-4 text-slate-600 group-hover:text-slate-700" strokeWidth={1.5} />
-            <span className="text-slate-600 text-xs">
+            <ArrowLeft className="w-5 h-5 text-[#666] flex-shrink-0" strokeWidth={1.25} />
+            <span className="text-[13px] font-normal text-[#666] text-left whitespace-nowrap">
               Back
             </span>
           </button>

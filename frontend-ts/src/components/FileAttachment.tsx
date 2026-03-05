@@ -311,21 +311,24 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
           <span className={`${nameClass}`} style={{ whiteSpace: 'nowrap' }}>
             {formatFileName(attachment.name)}
           </span>
-          <div className="flex items-center gap-1">
-            <span className={typeClass}>
-              {getFileTypeLabel(attachment.type)}
-            </span>
-            {/* Extraction Status Indicator (hidden in compact to keep bubble minimal) */}
-            {!compact && attachment.extractionStatus === 'extracting' && (
-              <Loader2 className="w-2.5 h-2.5 text-blue-500 animate-spin" />
-            )}
-            {!compact && attachment.extractionStatus === 'complete' && (
-              <Check className="w-2.5 h-2.5 text-green-500" strokeWidth={3} />
-            )}
-            {!compact && attachment.extractionStatus === 'error' && (
-              <AlertCircle className="w-2.5 h-2.5 text-red-500" />
-            )}
-          </div>
+          {/* In query bubble (compact), hide type label and extraction tick for cleaner look */}
+          {!compact && (
+            <div className="flex items-center gap-1">
+              <span className={typeClass}>
+                {getFileTypeLabel(attachment.type)}
+              </span>
+              {/* Extraction status: spinner when extracting, tick when complete, alert when error */}
+              {attachment.extractionStatus === 'extracting' && (
+                <Loader2 className="w-2.5 h-2.5 text-blue-500 animate-spin" />
+              )}
+              {attachment.extractionStatus === 'complete' && (
+                <Check className="w-3.5 h-3.5 text-green-500 flex-shrink-0" strokeWidth={3} aria-label="Ready" />
+              )}
+              {attachment.extractionStatus === 'error' && (
+                <AlertCircle className="w-2.5 h-2.5 text-red-500" />
+              )}
+            </div>
+          )}
         </div>
         
         {/* Remove Button - X only (hidden in compact) */}

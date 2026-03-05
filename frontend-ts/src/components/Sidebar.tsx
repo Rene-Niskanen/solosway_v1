@@ -436,12 +436,14 @@ export const Sidebar = ({
           aria-label={item.label}
         >
           <div className="relative">
-            <Icon className="w-5 h-5 flex-shrink-0 text-[#141413]" strokeWidth={1.25} />
+            <span className="relative z-10 block">
+              <Icon className="w-5 h-5 flex-shrink-0 text-[#141413]" strokeWidth={1.25} />
+            </span>
             {showChatIndicator && (
               <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-amber-500 rounded-full animate-pulse" />
             )}
             {showFilesUploadingIndicator && (
-              <span className="absolute -top-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-amber-500/30 border-t-amber-500 animate-spin" aria-hidden title="Uploading" />
+              <span className="absolute -top-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-amber-500/30 border-t-amber-500 animate-spin z-0" aria-hidden title="Uploading" />
             )}
           </div>
         </button>
@@ -468,15 +470,17 @@ export const Sidebar = ({
         aria-label={item.label}
       >
         <div className="relative">
-          <Icon
-            className="w-5 h-5 flex-shrink-0 text-[#141413]"
-            strokeWidth={1.25}
-          />
+          <span className="relative z-10 block">
+            <Icon
+              className="w-5 h-5 flex-shrink-0 text-[#141413]"
+              strokeWidth={1.25}
+            />
+          </span>
           {showChatIndicator && (
             <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-amber-500 rounded-full animate-pulse" />
           )}
           {showFilesUploadingIndicator && (
-            <span className="absolute -top-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-amber-500/30 border-t-amber-500 animate-spin" aria-hidden title="Uploading" />
+            <span className="absolute -top-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-amber-500/30 border-t-amber-500 animate-spin z-0" aria-hidden title="Uploading" />
           )}
         </div>
         <span className="text-[14px] font-normal flex-1 text-left text-[#141413]">
@@ -537,7 +541,8 @@ export const Sidebar = ({
           bottom: '0',
           // When map is visible, MainContent uses z-index 10000 (so chat bar stays clickable).
           // Sidebar must be above that so the map doesn't paint on top of the sidebar.
-          zIndex: className?.includes('z-[150]') ? 150 : (isMapVisible ? 10001 : 1000),
+          // When agent sidebar (chat panel) is open, backdrop is 9999 – keep sidebar above it so nav clicks register in one click.
+          zIndex: className?.includes('z-[150]') ? 150 : (isMapVisible ? 10001 : (isChatPanelOpen ? 10000 : 1000)),
           // Extend slightly beyond to ensure full coverage
           minWidth: `${sidebarWidthValue}px`,
           right: 'auto',
