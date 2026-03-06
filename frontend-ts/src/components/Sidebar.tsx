@@ -28,6 +28,7 @@ import {
   Info,
   CircleArrowUp
 } from "lucide-react";
+import OrbitProgress from "react-loading-indicators/OrbitProgress";
 import { useChatHistory } from "./ChatHistoryContext";
 import { useFilingSidebar } from "../contexts/FilingSidebarContext";
 import { useFeedbackModal } from "../contexts/FeedbackModalContext";
@@ -443,7 +444,9 @@ export const Sidebar = ({
               <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-amber-500 rounded-full animate-pulse" />
             )}
             {showFilesUploadingIndicator && (
-              <span className="absolute -top-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-amber-500/30 border-t-amber-500 animate-spin z-0" aria-hidden title="Uploading" />
+              <span className="absolute -top-0.5 -right-0.5 w-4 h-4 flex items-center justify-center z-0" aria-hidden title="Uploading">
+                <OrbitProgress color="#f59e0b" size="small" dense text="" textColor="" speedPlus={1} style={{ fontSize: '2px' }} />
+              </span>
             )}
           </div>
         </button>
@@ -480,7 +483,9 @@ export const Sidebar = ({
             <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-amber-500 rounded-full animate-pulse" />
           )}
           {showFilesUploadingIndicator && (
-            <span className="absolute -top-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-amber-500/30 border-t-amber-500 animate-spin z-0" aria-hidden title="Uploading" />
+            <span className="absolute -top-0.5 -right-0.5 w-4 h-4 flex items-center justify-center z-0" aria-hidden title="Uploading">
+              <OrbitProgress color="#f59e0b" size="small" dense text="" textColor="" speedPlus={1} style={{ fontSize: '2px' }} />
+            </span>
           )}
         </div>
         <span className="text-[14px] font-normal flex-1 text-left text-[#141413]">

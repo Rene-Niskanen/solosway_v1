@@ -35,9 +35,7 @@ function DocTypeIcons({ docs }: { docs: AgentTaskDocMeta[] }) {
           key={doc.doc_id}
           style={{
             display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-            width: 20, height: 20, borderRadius: '50%', backgroundColor: '#F3F4F6',
-            border: '1px solid #E5E7EB', marginLeft: i > 0 ? -8 : 0,
-            zIndex: displayed.length - i, position: 'relative',
+            marginLeft: i > 0 ? 4 : 0,
           }}
         >
           <DocTypeIcon type={doc.type} />
@@ -69,6 +67,9 @@ export const AgentTaskCard: React.FC<AgentTaskCardProps> = ({ task, onInjectResu
   return (
     <motion.div
       layout
+      role={task.status === 'complete' ? 'button' : undefined}
+      tabIndex={task.status === 'complete' ? -1 : undefined}
+      onMouseDown={task.status === 'complete' ? (e) => e.preventDefault() : undefined}
       initial={{ opacity: 0, y: 8, scale: 0.98 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
       exit={{ opacity: 0, y: -4, scale: 0.98 }}
@@ -190,6 +191,9 @@ export const AgentTaskCard: React.FC<AgentTaskCardProps> = ({ task, onInjectResu
               Failed
             </span>
             <button
+              type="button"
+              tabIndex={-1}
+              onMouseDown={(e) => e.preventDefault()}
               onClick={(e) => { e.stopPropagation(); onRetry(task.id); }}
               style={{
                 display: 'inline-flex', alignItems: 'center', gap: 3,
@@ -207,6 +211,9 @@ export const AgentTaskCard: React.FC<AgentTaskCardProps> = ({ task, onInjectResu
 
       {isInFlight && isHovered && (
         <motion.button
+          type="button"
+          tabIndex={-1}
+          onMouseDown={(e) => e.preventDefault()}
           initial={{ opacity: 0, scale: 0.9 }}
           animate={{ opacity: 1, scale: 1 }}
           exit={{ opacity: 0 }}

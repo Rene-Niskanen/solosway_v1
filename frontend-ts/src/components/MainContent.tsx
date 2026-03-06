@@ -2664,6 +2664,7 @@ export const MainContent = ({
     activeChatId, 
     getActiveDocumentPreview, 
     closeDocumentForChat,
+    openDocumentForChat,
     setActiveChatId 
   } = useChatStateStore();
   
@@ -2807,8 +2808,13 @@ export const MainContent = ({
   // File View modal: open document in the 50/50 panel (beside chat) instead of fullscreen
   const handleFileViewDocument = React.useCallback((docId: string, filename: string) => {
     setFileViewDocument(null); // Close file pop-up
-    openExpandedCardView(docId, filename || 'Document');
-  }, [openExpandedCardView]);
+    const label = filename || 'Document';
+    openExpandedCardView(docId, label);
+    // Also set in ChatStateStore when there's an active chat so the UI shows this doc (expandedCardViewDoc = chatStateDocumentPreview || legacy)
+    if (activeChatId) {
+      openDocumentForChat(activeChatId, { docId, filename: label });
+    }
+  }, [openExpandedCardView, activeChatId, openDocumentForChat]);
 
   // File View modal: close sidebar + open fullscreen chat with document in preview
   const handleFileViewAnalyseWithAI = React.useCallback((docId: string, filename: string) => {
@@ -4298,6 +4304,19 @@ export const MainContent = ({
     prevHasPerformedSearchForHomeRef.current = hasPerformedSearch;
   }, [hasPerformedSearch]);
 
+  // Auto-focus dashboard SearchBar when entering dashboard (home/search view, not map, not chat)
+  const isDashboardVisible =
+    (currentView === 'search' || currentView === 'home') &&
+    !isMapVisible &&
+    !(inChatMode && hasPerformedSearch);
+  React.useEffect(() => {
+    if (!isDashboardVisible) return;
+    const t = setTimeout(() => {
+      searchBarRef.current?.focus?.();
+    }, 50);
+    return () => clearTimeout(t);
+  }, [isDashboardVisible]);
+
   // Reset SearchBar when switching to chat mode or creating new chat
   React.useEffect(() => {
     if (isInChatMode && currentChatData?.query) {
@@ -4975,6 +4994,7 @@ export const MainContent = ({
     addFilingSidebarDocument: (data: { documentId?: string; s3Path?: string; filename?: string; fileType?: string }) => void;
     getValue: () => string;
     getAttachments: () => FileAttachmentData[];
+    focus?: () => void;
   } | null>(null);
   const mapSearchBarRef = React.useRef<{
     handleFileDrop: (file: File) => void;
@@ -4991,6 +5011,7 @@ export const MainContent = ({
     addFilingSidebarDocument: (data: { documentId?: string; s3Path?: string; filename?: string; fileType?: string }) => void;
     getValue: () => string;
     getAttachments: () => FileAttachmentData[];
+    focus?: () => void;
   } | null) => {
     searchBarRef.current = instance;
     // Update state to trigger pending file processing

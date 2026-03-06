@@ -70,11 +70,10 @@ export function ModeSelector({ className, compact = false, small = false, large 
   const gapClass = showText ? 'gap-2.5' : ''; // Gap between icon and label text
   const paddingClass = compact ? 'px-2 py-0.5' : 'px-2.5 py-0.5'; // Padding - reduced py from 1 to 0.5
 
-  // Set background: Agent = light grey, Plan = orange/beige, Reader = green
-  const backgroundColor = mode === 'agent' ? '#F3F3F3' : mode === 'plan' ? '#F2DEB6' : '#EBF1DE';
-  // Set text and icon: Agent = medium grey, Plan = dark orange, Reader = dark green
-  const textColor = mode === 'agent' ? '#7F7F7F' : mode === 'plan' ? '#78350F' : '#3D5A1F';
-  const iconColor = mode === 'agent' ? '#7F7F7F' : mode === 'plan' ? '#78350F' : '#3D5A1F';
+  // White and grey scheme for all modes
+  const backgroundColor = mode === 'agent' ? '#F3F3F3' : mode === 'plan' ? '#E8E8E8' : '#EDEDED';
+  const textColor = '#525252';
+  const iconColor = '#525252';
 
   return (
     <DropdownMenu
@@ -95,7 +94,7 @@ export function ModeSelector({ className, compact = false, small = false, large 
           style={{
             backgroundColor: backgroundColor,
             color: textColor,
-            border: mode !== 'agent' ? '1px solid rgba(229, 231, 235, 0.6)' : 'none',
+            border: '1px solid #E5E5E5',
             fontSize: textSize,
             fontWeight: 500,
             cursor: 'pointer',
@@ -115,10 +114,10 @@ export function ModeSelector({ className, compact = false, small = false, large 
         sideOffset={6}
         className="p-0"
         style={{
-          backgroundColor: '#FDF6ED',
-          border: '1px solid rgba(244, 192, 133, 0.3)',
+          backgroundColor: '#FFFFFF',
+          border: '1px solid #E5E5E5',
           borderRadius: '4px',
-          boxShadow: '0 4px 16px rgba(0, 0, 0, 0.12)',
+          boxShadow: '0 4px 16px rgba(0, 0, 0, 0.08)',
           minWidth: '150px',
         }}
       >
@@ -138,8 +137,8 @@ export function ModeSelector({ className, compact = false, small = false, large 
               }}
               className="flex items-center gap-1.5 pl-2 pr-2.5 cursor-pointer"
               style={{
-                backgroundColor: showSelectionColor ? 'rgba(0, 0, 0, 0.05)' : 'transparent',
-                color: '#4A4A4A',
+                backgroundColor: showSelectionColor ? '#F5F5F5' : 'transparent',
+                color: '#404040',
                 fontSize: '11px',
                 fontWeight: 400,
                 borderRadius: '2px',

@@ -23,7 +23,7 @@ import { SegmentInput, type SegmentInputHandle } from './SegmentInput';
 import { getFilteredAtMentionItems, preloadAtMentionCache } from '@/services/atMentionCache';
 import { useSegmentInput, buildInitialSegments } from '@/hooks/useSegmentInput';
 import { isTextSegment, isChipSegment, type QueryContentSegment, type ChipSegment, type TextSegment } from '@/types/segmentInput';
-import { INPUT_BAR_SPACE_BELOW_DASHBOARD, CHAT_INPUT_MAX_HEIGHT_PX, CHAT_BAR_MAX_WIDTH_PX } from '@/utils/inputBarPosition';
+import { INPUT_BAR_SPACE_BELOW_DASHBOARD, CHAT_INPUT_MAX_HEIGHT_PX, CHAT_BAR_MAX_WIDTH_PX, CHAT_BAR_BORDER, CHAT_BAR_BORDER_DRAG, CHAT_BAR_BOX_SHADOW } from '@/utils/inputBarPosition';
 
 export interface SearchBarProps {
   className?: string;
@@ -58,6 +58,7 @@ export const SearchBar = forwardRef<{
   addFilingSidebarDocument: (data: FilingSidebarDocData) => void;
   getValue: () => string;
   getAttachments: () => FileAttachmentData[];
+  focus: () => void;
 }, SearchBarProps>(({
   className,
   onSearch,
@@ -1111,13 +1112,14 @@ export const SearchBar = forwardRef<{
     })();
   }, [attachedFiles.length, onAttachmentsChange]);
 
-  // Expose handleFileDrop via ref for drag-and-drop
+  // Expose handleFileDrop and focus via ref for drag-and-drop and auto-focus
   useImperativeHandle(ref, () => {
     return {
       handleFileDrop: handleFileUpload,
       addFilingSidebarDocument,
       getValue: () => segmentInput.getPlainText(),
       getAttachments: () => attachedFilesRef.current,
+      focus: () => inputRef.current?.focus?.(),
     };
   }, [handleFileUpload, addFilingSidebarDocument, segmentInput]);
 
@@ -1521,8 +1523,8 @@ export const SearchBar = forwardRef<{
             onDrop={handleDrop}
                 style={{
                   background: '#ffffff',
-                  border: isDragOver ? '2px dashed #E0E0E0' : 'none',
-                  boxShadow: '0 2px 8px rgba(0, 0, 0, 0.05), 0 1px 3px rgba(0, 0, 0, 0.03)',
+                  border: isDragOver ? CHAT_BAR_BORDER_DRAG : CHAT_BAR_BORDER,
+                  boxShadow: CHAT_BAR_BOX_SHADOW,
                   position: 'relative',
                   paddingTop: '16px',
                   paddingBottom: '12px',

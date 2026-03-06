@@ -161,6 +161,8 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
   const [showPipelineModal, setShowPipelineModal] = useState(false);
   const [pipelineLoading, setPipelineLoading] = useState(false);
   const [pipelineProgress, setPipelineProgress] = useState<PipelineProgressData | null>(null);
+  /** Upload progress 0–100 when modal is open during upload (from upload-progress events) */
+  const [uploadProgress, setUploadProgress] = useState<number | undefined>(undefined);
 
   // File size resolved from blob when doc.file_size is missing (e.g. older records)
   const [resolvedFileSize, setResolvedFileSize] = useState<number | null>(null);
@@ -569,6 +571,23 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
     }
   }, [showPipelineModal]);
 
+  // Real-time upload progress for pipeline modal (when current doc is uploading)
+  useEffect(() => {
+    if (!showPipelineModal || !doc?.original_filename) return;
+    const currentFileName = doc.original_filename;
+    const handle = (e: Event) => {
+      const { fileName, progress } = (e as CustomEvent<{ fileName?: string; progress?: number }>).detail ?? {};
+      if (fileName === currentFileName && typeof progress === 'number') {
+        setUploadProgress(progress);
+      }
+    };
+    window.addEventListener('upload-progress', handle as EventListener);
+    return () => {
+      window.removeEventListener('upload-progress', handle as EventListener);
+      setUploadProgress(undefined);
+    };
+  }, [showPipelineModal, doc?.original_filename]);
+
   // Reset exiting when opened; capture doc when starting exit so we can render during animation
   useEffect(() => {
     if (isOpen) {
@@ -951,6 +970,7 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
               documentName={displayDoc?.original_filename}
               pipelineProgress={pipelineProgress}
               isLoading={pipelineLoading}
+              uploadProgress={uploadProgress}
               onClose={() => setShowPipelineModal(false)}
             />
           </div>

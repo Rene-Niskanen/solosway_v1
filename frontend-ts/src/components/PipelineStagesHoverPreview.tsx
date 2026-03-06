@@ -230,8 +230,10 @@ export interface PipelineStagesDetailProps {
   isComplete: boolean;
   documentName?: string;
   pipelineProgress?: PipelineProgressData | null;
-  /** Only for modal: show loading spinner in body */
+  /** When true, show loading spinner + percentage in header instead of title + 5/5 */
   isLoading?: boolean;
+  /** Upload progress 0–100 when isLoading (optional; else pipeline % from completedStages) */
+  uploadProgress?: number;
   /** Only for modal: close button callback */
   onClose?: () => void;
   /** Hover variant: mouse handlers so card stays open when hovering the card */
@@ -251,6 +253,7 @@ export const PipelineStagesDetail: React.FC<PipelineStagesDetailProps> = ({
   documentName,
   pipelineProgress,
   isLoading = false,
+  uploadProgress,
   onClose,
   onMouseEnter,
   onMouseLeave,
@@ -282,6 +285,10 @@ export const PipelineStagesDetail: React.FC<PipelineStagesDetailProps> = ({
   const currentStepLabel =
     currentStageIndex != null ? PIPELINE_STAGE_LABELS[currentStageIndex] : null;
 
+  /** Percentage to show next to spinner/title: upload progress when isLoading, else pipeline stages (0–100) */
+  const progressPercent =
+    typeof uploadProgress === 'number' ? uploadProgress : Math.round((completedStages / 5) * 100);
+
   const rootStyle: React.CSSProperties = {
     backgroundColor: 'white',
     border: '1px solid #D1D5DB',
@@ -311,9 +318,9 @@ export const PipelineStagesDetail: React.FC<PipelineStagesDetailProps> = ({
         onMouseLeave={onMouseLeave}
         role="status"
         aria-live="polite"
-        aria-label={`Pipeline status: ${shortTitle}. Step ${completedStages} of 5 complete.`}
+        aria-label={isLoading ? `Upload in progress: ${progressPercent}%` : `Pipeline status: ${shortTitle}. Step ${completedStages} of 5 complete. ${progressPercent}%`}
       >
-        {/* Header: hover = title then progress on separate rows so "Processing" shows in full; modal = single row */}
+        {/* Header: when loading show spinner + %; else title + progress (hover = two rows, modal = single row) */}
         <div
           style={{
             display: 'flex',
@@ -324,63 +331,83 @@ export const PipelineStagesDetail: React.FC<PipelineStagesDetailProps> = ({
             borderBottom: '1px solid #E5E7EB',
           }}
         >
-          {variant === 'hover' ? (
-            <>
-              <span style={{ fontSize: 11, fontWeight: 600, color: '#4A4A4A', letterSpacing: '-0.01em' }}>
-                {shortTitle}
+          {isLoading ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+              <span
+                style={{
+                  width: 14,
+                  height: 14,
+                  border: '1.5px solid #E5E7EB',
+                  borderTopColor: '#9CA3AF',
+                  borderRadius: '50%',
+                  animation: 'pipeline-spinner 0.7s linear infinite',
+                  flexShrink: 0,
+                }}
+              />
+              <span style={{ fontSize: 11, fontWeight: 600, color: '#4A4A4A' }}>
+                {progressPercent}%
               </span>
-              {!isLoading && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 4, minWidth: 0, width: '100%' }}>
-                  <div
-                    role="progressbar"
-                    aria-valuenow={completedStages}
-                    aria-valuemin={0}
-                    aria-valuemax={5}
-                    aria-label={`Step ${completedStages} of 5 complete`}
-                    style={{ display: 'flex', alignItems: 'center', gap: 5, flex: 1, minWidth: 0 }}
-                  >
-                    <div style={{ display: 'flex', gap: 2, flex: 1, minWidth: 0, height: 6 }}>
-                      {[0, 1, 2, 3, 4].map((i) => (
-                        <div
-                          key={i}
-                          style={{
-                            flex: 1,
-                            height: '100%',
-                            borderRadius: 2,
-                            backgroundColor: i < completedStages ? '#4CAF50' : '#E0E0E0',
-                            transition: 'background-color 0.2s ease',
-                          }}
-                        />
-                      ))}
-                    </div>
-                    <span style={{ fontSize: 10, fontWeight: 500, minWidth: 18, flexShrink: 0 }}>
-                      <span style={{ color: '#4CAF50' }}>{completedStages}</span>
-                      <span style={{ color: '#A0A0A0' }}>/5</span>
-                    </span>
+            </div>
+          ) : variant === 'hover' ? (
+            <>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+                <span style={{ fontSize: 11, fontWeight: 600, color: '#4A4A4A', letterSpacing: '-0.01em' }}>
+                  {shortTitle}
+                </span>
+                <span style={{ fontSize: 11, fontWeight: 600, color: '#4A4A4A', flexShrink: 0 }}>
+                  {progressPercent}%
+                </span>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 4, minWidth: 0, width: '100%' }}>
+                <div
+                  role="progressbar"
+                  aria-valuenow={completedStages}
+                  aria-valuemin={0}
+                  aria-valuemax={5}
+                  aria-label={`Step ${completedStages} of 5 complete`}
+                  style={{ display: 'flex', alignItems: 'center', gap: 5, flex: 1, minWidth: 0 }}
+                >
+                  <div style={{ display: 'flex', gap: 2, flex: 1, minWidth: 0, height: 6 }}>
+                    {[0, 1, 2, 3, 4].map((i) => (
+                      <div
+                        key={i}
+                        style={{
+                          flex: 1,
+                          height: '100%',
+                          borderRadius: 2,
+                          backgroundColor: i < completedStages ? '#4CAF50' : '#E0E0E0',
+                          transition: 'background-color 0.2s ease',
+                        }}
+                      />
+                    ))}
                   </div>
-                  <button
-                    type="button"
-                    onClick={(e) => { e.stopPropagation(); setStagesDropdownOpen((open) => !open); }}
-                    style={{
-                      padding: 2,
-                      margin: 0,
-                      border: 'none',
-                      background: 'transparent',
-                      cursor: 'pointer',
-                      color: '#6B7280',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      borderRadius: 2,
-                      flexShrink: 0,
-                    }}
-                    aria-expanded={stagesDropdownOpen}
-                    aria-label={stagesDropdownOpen ? 'Hide pipeline stages' : 'Show pipeline stages'}
-                  >
-                    <span style={{ fontSize: 11, lineHeight: 1, fontWeight: 600 }}>{stagesDropdownOpen ? '↑' : '↓'}</span>
-                  </button>
+                  <span style={{ fontSize: 10, fontWeight: 500, minWidth: 18, flexShrink: 0 }}>
+                    <span style={{ color: '#4CAF50' }}>{completedStages}</span>
+                    <span style={{ color: '#A0A0A0' }}>/5</span>
+                  </span>
                 </div>
-              )}
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); setStagesDropdownOpen((open) => !open); }}
+                  style={{
+                    padding: 2,
+                    margin: 0,
+                    border: 'none',
+                    background: 'transparent',
+                    cursor: 'pointer',
+                    color: '#6B7280',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    borderRadius: 2,
+                    flexShrink: 0,
+                  }}
+                  aria-expanded={stagesDropdownOpen}
+                  aria-label={stagesDropdownOpen ? 'Hide pipeline stages' : 'Show pipeline stages'}
+                >
+                  <span style={{ fontSize: 11, lineHeight: 1, fontWeight: 600 }}>{stagesDropdownOpen ? '↑' : '↓'}</span>
+                </button>
+              </div>
             </>
           ) : (
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
@@ -471,20 +498,7 @@ export const PipelineStagesDetail: React.FC<PipelineStagesDetailProps> = ({
                 overflowY: variant === 'modal' ? 'auto' : 'hidden',
               }}
             >
-              {isLoading ? (
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 10 }}>
-                  <span
-                    style={{
-                      width: 14,
-                      height: 14,
-                      border: '1.5px solid #E5E7EB',
-                      borderTopColor: '#9CA3AF',
-                      borderRadius: '50%',
-                      animation: 'pipeline-spinner 0.7s linear infinite',
-                    }}
-                  />
-                </div>
-              ) : (
+              {isLoading ? null : (
                 PIPELINE_STAGE_LABELS.map((label, index) => {
               const isDone = index < completedStages;
               const isActive = currentStageIndex === index;

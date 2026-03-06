@@ -59,12 +59,13 @@ import { SegmentInput, type SegmentInputHandle } from './SegmentInput';
 import { useSegmentInput, buildInitialSegments } from '@/hooks/useSegmentInput';
 import { isTextSegment, isChipSegment, contentSegmentsToLinkedQuery, segmentsToLinkedQuery, type QueryContentSegment, type ChipSegment, type TextSegment } from '@/types/segmentInput';
 import { CitationClickPanel, computeCitationPreviewTransform, CitationPagePreviewContent, type CachedPageImage } from './CitationClickPanel';
+import { AskVeloraFloatingButton } from './AskVeloraFloatingButton';
 import { useFeedbackModal } from '../contexts/FeedbackModalContext';
 import { useCitationExportOptional } from '../contexts/CitationExportContext';
 import { buildDocxMarkdownWithCitationImages, cropPageImageToBbox } from '../utils/citationExport';
 import { convertMarkdownToDocx, downloadDocx } from '@mohtasham/md-to-docx';
 import { playCompletionSound } from '../utils/playCompletionSound';
-import { INPUT_BAR_SPACE_BELOW_PANEL, CHAT_INPUT_MAX_HEIGHT_PX, CHAT_BAR_MAX_WIDTH_PX, DASHBOARD_CHAT_LAYOUT } from '@/utils/inputBarPosition';
+import { INPUT_BAR_SPACE_BELOW_PANEL, CHAT_INPUT_MAX_HEIGHT_PX, CHAT_BAR_MAX_WIDTH_PX, DASHBOARD_CHAT_LAYOUT, CHAT_BAR_BORDER, CHAT_BAR_BORDER_DRAG, CHAT_BAR_BOX_SHADOW } from '@/utils/inputBarPosition';
 import { CHAT_PANEL_WIDTH } from './chatPanelConstants';
 
 /** Strip HTML/SVG tags from query string so submitted text never includes e.g. <svg /> from icons. */
@@ -1475,37 +1476,8 @@ const StreamingResponseText: React.FC<{
         if (citData) {
           return <CitationLink key={key} citationNumber={num} citationData={citData} onClick={onClick} isSelected={isCitationSelectedStable(num)} isSaved={isSavedNum(num)} />;
         }
-        // Never show raw "[1]" — render same pill style as CitationLink so citation appears instantly during streaming
-        return (
-          <span
-            key={key}
-            aria-label={`Citation ${num} (loading)`}
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              marginLeft: '0.35em',
-              marginRight: '1px',
-              minWidth: '20.9px',
-              height: '20.9px',
-              padding: '0 6.6px',
-              fontSize: '12px',
-              fontWeight: 600,
-              fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-              color: '#9CA3AF',
-              backgroundColor: '#F3F4F6',
-              borderRadius: '6.6px',
-              border: '1px solid #E5E7EB',
-              verticalAlign: 'middle',
-              position: 'relative',
-              top: '-1px',
-              lineHeight: 1,
-              userSelect: 'none',
-            }}
-          >
-            {num}
-          </span>
-        );
+        // No citation data yet (streaming): render nothing; real CitationLink appears when data arrives
+        return null;
       }
     }
     if (superscriptMatch) {
@@ -2156,7 +2128,7 @@ const StreamingResponseText: React.FC<{
     const firstCitationNum = orderedCitationNumbersForMessage?.[0] ?? null;
     const renderCallout = (num: string, keyPrefix: string, i: number) => (
       <div key={`${keyPrefix}-${i}-${num}`} style={{ width: '100%', maxWidth: '100%', minWidth: 0, boxSizing: 'border-box' }}>
-        <CitationCallout key={`callout-${messageId ?? ''}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumberRef.current[num]} skipEntranceAnimation={citationEntranceDoneRef.current.has(num)} onEntranceComplete={() => citationEntranceDoneRef.current.add(num)} onClosePreviewBar={onCloseCitationPreviewBar ? () => onCloseCitationPreviewBar(messageId ?? '') : undefined} />
+        <CitationCallout key={`callout-${messageId ?? ''}-${num}`} messageId={messageId ?? ''} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumberRef.current[num]} skipEntranceAnimation={citationEntranceDoneRef.current.has(num)} onEntranceComplete={() => citationEntranceDoneRef.current.add(num)} onClosePreviewBar={onCloseCitationPreviewBar ? () => onCloseCitationPreviewBar(messageId ?? '') : undefined} />
       </div>
     );
     // No hiding: parent pauses streaming at first citation and resumes when document preview unveils, so post-callout text only appears when ready.
@@ -2497,7 +2469,7 @@ const StreamingResponseText: React.FC<{
     const firstCitationNumP = orderedCitationNumbersForMessage?.[0] ?? null;
     const renderCalloutP = (num: string, keyPrefix: string, i: number) => (
       <div key={`${keyPrefix}-${i}-${num}`} style={{ width: '100%', maxWidth: '100%', minWidth: 0, boxSizing: 'border-box' }}>
-        <CitationCallout key={`callout-${messageId ?? ''}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumberRef.current[num]} skipEntranceAnimation={citationEntranceDoneRef.current.has(num)} onEntranceComplete={() => citationEntranceDoneRef.current.add(num)} onClosePreviewBar={onCloseCitationPreviewBar ? () => onCloseCitationPreviewBar(messageId ?? '') : undefined} />
+        <CitationCallout key={`callout-${messageId ?? ''}-${num}`} messageId={messageId ?? ''} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumberRef.current[num]} skipEntranceAnimation={citationEntranceDoneRef.current.has(num)} onEntranceComplete={() => citationEntranceDoneRef.current.add(num)} onClosePreviewBar={onCloseCitationPreviewBar ? () => onCloseCitationPreviewBar(messageId ?? '') : undefined} />
       </div>
     );
     // No hiding: parent pauses streaming at first citation and resumes when document preview unveils.
@@ -2626,7 +2598,7 @@ const StreamingResponseText: React.FC<{
         }}>{showBar && <span aria-hidden style={citationLineBarInlineStyle} />}{h1Content}</h1>
         {showCitationPreviewBar && showInResponseCitationCallouts && !citationBarMode && citationNumbers.filter(showCalloutForNum).map((num, i) => (
           <div key={`callout-h1-${i}-${num}`} style={{ width: '100%', maxWidth: '100%', minWidth: 0, boxSizing: 'border-box' }}>
-            <CitationCallout key={`callout-${messageId ?? ''}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumberRef.current[num]} skipEntranceAnimation={citationEntranceDoneRef.current.has(num)} onEntranceComplete={() => citationEntranceDoneRef.current.add(num)} onClosePreviewBar={onCloseCitationPreviewBar ? () => onCloseCitationPreviewBar(messageId ?? '') : undefined} />
+            <CitationCallout key={`callout-${messageId ?? ''}-${num}`} messageId={messageId ?? ''} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumberRef.current[num]} skipEntranceAnimation={citationEntranceDoneRef.current.has(num)} onEntranceComplete={() => citationEntranceDoneRef.current.add(num)} onClosePreviewBar={onCloseCitationPreviewBar ? () => onCloseCitationPreviewBar(messageId ?? '') : undefined} />
           </div>
         ))}
         {citationBarMode && renderSingleCalloutIfHere(citationNumbers, 'h1')}
@@ -2656,7 +2628,7 @@ const StreamingResponseText: React.FC<{
         }}>{showBar && <span aria-hidden style={citationLineBarInlineStyle} />}{h2Content}</h2>
         {showCitationPreviewBar && showInResponseCitationCallouts && !citationBarMode && citationNumbers.filter(showCalloutForNum).map((num, i) => (
           <div key={`callout-h2-${i}-${num}`} style={{ width: '100%', maxWidth: '100%', minWidth: 0, boxSizing: 'border-box' }}>
-            <CitationCallout key={`callout-${messageId ?? ''}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumberRef.current[num]} skipEntranceAnimation={citationEntranceDoneRef.current.has(num)} onEntranceComplete={() => citationEntranceDoneRef.current.add(num)} onClosePreviewBar={onCloseCitationPreviewBar ? () => onCloseCitationPreviewBar(messageId ?? '') : undefined} />
+            <CitationCallout key={`callout-${messageId ?? ''}-${num}`} messageId={messageId ?? ''} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumberRef.current[num]} skipEntranceAnimation={citationEntranceDoneRef.current.has(num)} onEntranceComplete={() => citationEntranceDoneRef.current.add(num)} onClosePreviewBar={onCloseCitationPreviewBar ? () => onCloseCitationPreviewBar(messageId ?? '') : undefined} />
           </div>
         ))}
         {citationBarMode && renderSingleCalloutIfHere(citationNumbers, 'h2')}
@@ -2686,7 +2658,7 @@ const StreamingResponseText: React.FC<{
         }}>{showBar && <span aria-hidden style={citationLineBarInlineStyle} />}{h3Content}</h3>
         {showCitationPreviewBar && showInResponseCitationCallouts && !citationBarMode && citationNumbers.filter(showCalloutForNum).map((num, i) => (
           <div key={`callout-h3-${i}-${num}`} style={{ width: '100%', maxWidth: '100%', minWidth: 0, boxSizing: 'border-box' }}>
-            <CitationCallout key={`callout-${messageId ?? ''}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumberRef.current[num]} skipEntranceAnimation={citationEntranceDoneRef.current.has(num)} onEntranceComplete={() => citationEntranceDoneRef.current.add(num)} onClosePreviewBar={onCloseCitationPreviewBar ? () => onCloseCitationPreviewBar(messageId ?? '') : undefined} />
+            <CitationCallout key={`callout-${messageId ?? ''}-${num}`} messageId={messageId ?? ''} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumberRef.current[num]} skipEntranceAnimation={citationEntranceDoneRef.current.has(num)} onEntranceComplete={() => citationEntranceDoneRef.current.add(num)} onClosePreviewBar={onCloseCitationPreviewBar ? () => onCloseCitationPreviewBar(messageId ?? '') : undefined} />
           </div>
         ))}
         {citationBarMode && renderSingleCalloutIfHere(citationNumbers, 'h3')}
@@ -2723,7 +2695,7 @@ const StreamingResponseText: React.FC<{
           )}
           {showCitationPreviewBar && showInResponseCitationCallouts && !citationBarMode && citationNumbers.filter(showCalloutForNum).map((num, i) => (
             <div key={`callout-li-${i}-${num}`} style={{ width: '100%', maxWidth: '100%', minWidth: 0, boxSizing: 'border-box' }}>
-              <CitationCallout key={`callout-${messageId ?? ''}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumberRef.current[num]} skipEntranceAnimation={citationEntranceDoneRef.current.has(num)} onEntranceComplete={() => citationEntranceDoneRef.current.add(num)} onClosePreviewBar={onCloseCitationPreviewBar ? () => onCloseCitationPreviewBar(messageId ?? '') : undefined} />
+              <CitationCallout key={`callout-${messageId ?? ''}-${num}`} messageId={messageId ?? ''} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumberRef.current[num]} skipEntranceAnimation={citationEntranceDoneRef.current.has(num)} onEntranceComplete={() => citationEntranceDoneRef.current.add(num)} onClosePreviewBar={onCloseCitationPreviewBar ? () => onCloseCitationPreviewBar(messageId ?? '') : undefined} />
             </div>
           ))}
           {citationBarMode && renderSingleCalloutIfHere(citationNumbers, 'li')}
@@ -2750,7 +2722,7 @@ const StreamingResponseText: React.FC<{
           }}>{showBar && <span aria-hidden style={citationLineBarInlineStyle} />}{bqContent}</blockquote>
           {showCitationPreviewBar && showInResponseCitationCallouts && !citationBarMode && citationNumbers.filter(showCalloutForNum).map((num, i) => (
             <div key={`callout-blockquote-${i}-${num}`} style={{ width: '100%', maxWidth: '100%', minWidth: 0, boxSizing: 'border-box' }}>
-              <CitationCallout key={`callout-${messageId ?? ''}-${num}`} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumberRef.current[num]} skipEntranceAnimation={citationEntranceDoneRef.current.has(num)} onEntranceComplete={() => citationEntranceDoneRef.current.add(num)} onClosePreviewBar={onCloseCitationPreviewBar ? () => onCloseCitationPreviewBar(messageId ?? '') : undefined} />
+              <CitationCallout key={`callout-${messageId ?? ''}-${num}`} messageId={messageId ?? ''} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumberRef.current[num]} skipEntranceAnimation={citationEntranceDoneRef.current.has(num)} onEntranceComplete={() => citationEntranceDoneRef.current.add(num)} onClosePreviewBar={onCloseCitationPreviewBar ? () => onCloseCitationPreviewBar(messageId ?? '') : undefined} />
             </div>
           ))}
           {citationBarMode && renderSingleCalloutIfHere(citationNumbers, 'blockquote')}
@@ -3765,9 +3737,14 @@ const CitationCalloutUnveilWrapper: React.FC<{
 };
 
 
+/** Persist "user submitted from this callout" across remounts so bar stays visible after chat updates. */
+const citationCalloutSubmittedKeys = new Set<string>();
+
 /** Inline citation callout: gray box with cited excerpt and optional document preview (same as citation panel). */
 const CitationCallout: React.FC<{
   citationNumber: string;
+  /** Parent message id — used to persist "bar stays visible after submit" across remounts. */
+  messageId?: string;
   citation: {
     cited_text?: string;
     block_content?: string;
@@ -3798,7 +3775,7 @@ const CitationCallout: React.FC<{
   skipEntranceAnimation?: boolean;
   /** Called when entrance animation has run (or was skipped). Parent uses this to mark citation so future mounts skip animation. */
   onEntranceComplete?: () => void;
-}> = ({ citationNumber, citation, onAskFollowUp, onViewInDocument, isViewedInDocument, onCloseDocument, isCalloutClosed, onCloseCallout, onClosePreviewBar, hideBarActions, messageCitedExcerpt: messageCitedExcerptProp, skipEntranceAnimation = false, onEntranceComplete }) => {
+}> = ({ citationNumber, messageId: messageIdProp, citation, onAskFollowUp, onViewInDocument, isViewedInDocument, onCloseDocument, isCalloutClosed, onCloseCallout, onClosePreviewBar, hideBarActions, messageCitedExcerpt: messageCitedExcerptProp, skipEntranceAnimation = false, onEntranceComplete }) => {
   const raw = (citation?.cited_text ?? citation?.block_content ?? '').trim();
   const text = raw ? sanitizeCitationCalloutText(raw) : '';
   const fallbackDisplay = text || 'View in document for full source.';
@@ -3811,6 +3788,7 @@ const CitationCallout: React.FC<{
   const filename = (citation?.original_filename ?? '').toLowerCase();
   const isWordDoc = filename.endsWith('.docx') || filename.endsWith('.doc');
   const canShowPreview = docId && hasBbox && !isWordDoc;
+  const submittedKey = `${messageIdProp ?? ''}-${citationNumber}`;
 
   // Initialize from cache when present so we don't flash "Loading preview…" on remount or when cache was pre-filled
   const [cachedPageImage, setCachedPageImage] = React.useState<CachedPageImage | null>(() => {
@@ -3829,8 +3807,12 @@ const CitationCallout: React.FC<{
   const NARROW_CALLOUT_WIDTH = 380;
   /** When hideBarActions, Ask Question overlay visibility (ref + DOM only to avoid re-render on hover). */
   const askOverlayRef = React.useRef<HTMLDivElement | null>(null);
+  /** No-preview path (e.g. DOCX): bar container ref for same hover-to-show behavior. */
+  const askBarNoPreviewRef = React.useRef<HTMLDivElement | null>(null);
   const hoverEnterTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const hoverLeaveTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** "Ask about this..." bar: hidden by default, shown only on hover, hidden again on mouse leave. */
+  const userHasSubmittedFromCalloutRef = React.useRef<boolean>(false);
   /** Inline ask input value for the hover popup chat bar. */
   const [askInputValue, setAskInputValue] = React.useState('');
   const askInputRef = React.useRef<HTMLInputElement | HTMLTextAreaElement | null>(null);
@@ -3854,6 +3836,9 @@ const CitationCallout: React.FC<{
     e?.preventDefault();
     const trimmed = askInputValue.trim();
     if (!trimmed) return;
+    userHasSubmittedFromCalloutRef.current = true;
+    const submittedKey = `${messageIdProp ?? ''}-${citationNumber}`;
+    citationCalloutSubmittedKeys.add(submittedKey); // Persist across remounts
     window.dispatchEvent(new CustomEvent('citation-agent-task-dispatch', {
       detail: {
         query: trimmed,
@@ -3866,11 +3851,23 @@ const CitationCallout: React.FC<{
       }
     }));
     setAskInputValue('');
-    const overlay = askOverlayRef.current;
-    if (overlay) {
-      overlay.style.opacity = '0';
-      overlay.style.pointerEvents = 'none';
-    }
+    // Refocus input so user can immediately type another query — multiple retries in case AgentTaskPanel mount steals focus
+    const focusInput = () => askInputRef.current?.focus({ preventScroll: true });
+    // Defer first focus so React can process setAskInputValue before we focus
+    queueMicrotask(focusInput);
+    requestAnimationFrame(() => requestAnimationFrame(focusInput));
+    const t1 = setTimeout(focusInput, 50);
+    const t2 = setTimeout(focusInput, 150);
+    const t3 = setTimeout(focusInput, 350);
+    const t4 = setTimeout(focusInput, 550);
+    const t5 = setTimeout(focusInput, 750);
+    setTimeout(() => {
+      clearTimeout(t1);
+      clearTimeout(t2);
+      clearTimeout(t3);
+      clearTimeout(t4);
+      clearTimeout(t5);
+    }, 800);
   }, [askInputValue, docId, citation, filename]);
 
   // Keep local closed state in sync with parent (so close persists across parent re-renders)
@@ -4021,20 +4018,36 @@ const CitationCallout: React.FC<{
           overlay.style.pointerEvents = 'auto';
           if (onAskFollowUp) askInputRef.current?.focus();
         }
+        const noPreviewBar = askBarNoPreviewRef.current;
+        if (noPreviewBar) {
+          noPreviewBar.style.opacity = '1';
+          noPreviewBar.style.pointerEvents = 'auto';
+          if (onAskFollowUp) askInputRef.current?.focus();
+        }
       });
     }, HOVER_SHOW_MS);
   }, [onAskFollowUp]);
-  const handleCardHoverLeave = React.useCallback(() => {
+  const handleCardHoverLeave = React.useCallback((e: React.MouseEvent) => {
+    const related = e.relatedTarget as Node | null;
+    if (related != null && calloutRootRef.current?.contains(related)) {
+      return;
+    }
     if (hoverEnterTimeoutRef.current) {
       clearTimeout(hoverEnterTimeoutRef.current);
       hoverEnterTimeoutRef.current = null;
     }
     hoverLeaveTimeoutRef.current = setTimeout(() => {
       requestAnimationFrame(() => {
+        // Always hide when not hovering — bar only shows on hover
         const overlay = askOverlayRef.current;
         if (overlay) {
           overlay.style.opacity = '0';
           overlay.style.pointerEvents = 'none';
+        }
+        const noPreview = askBarNoPreviewRef.current;
+        if (noPreview) {
+          noPreview.style.opacity = '0';
+          noPreview.style.pointerEvents = 'none';
         }
       });
     }, HOVER_HIDE_MS);
@@ -4127,12 +4140,56 @@ const CitationCallout: React.FC<{
           {/* Hover perimeter: only the bbox preview + bar area triggers show/hide of the bar (avoids glitchy enter/leave) */}
           <div
             style={{ display: 'flex', flexDirection: 'column', width: '100%', minWidth: 0 }}
-            onMouseEnter={canShowPreview ? handleCardHoverEnter : undefined}
-            onMouseLeave={canShowPreview ? handleCardHoverLeave : undefined}
+            onMouseEnter={handleCardHoverEnter}
+            onMouseLeave={handleCardHoverLeave}
           >
           {/* When preview: bar is overlay with opacity transition (hover-only so it doesn't span below the card) */}
           {canShowPreview ? (
             <div style={{ position: 'relative', width: '100%', height: 180, minHeight: 180, flexShrink: 0, boxSizing: 'border-box' }}>
+              {/* Small tick in top-right to close this document preview */}
+              {showAccept && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    (e.currentTarget as HTMLElement).blur();
+                    handleClose();
+                  }}
+                  title="Close preview"
+                  style={{
+                    position: 'absolute',
+                    top: 8,
+                    right: 8,
+                    zIndex: 10,
+                    width: 28,
+                    height: 28,
+                    minWidth: 28,
+                    minHeight: 28,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    padding: 0,
+                    backgroundColor: 'rgba(255,255,255,0.9)',
+                    border: '1px solid rgba(0,0,0,0.08)',
+                    borderRadius: 6,
+                    cursor: 'pointer',
+                    boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
+                    outline: 'none',
+                  }}
+                  onMouseEnter={(e) => {
+                    const el = e.currentTarget as HTMLElement;
+                    el.style.backgroundColor = '#EBF1DE';
+                    el.style.borderColor = 'rgba(0,0,0,0.12)';
+                  }}
+                  onMouseLeave={(e) => {
+                    const el = e.currentTarget as HTMLElement;
+                    el.style.backgroundColor = 'rgba(255,255,255,0.9)';
+                    el.style.borderColor = 'rgba(0,0,0,0.08)';
+                  }}
+                >
+                  <Check size={16} strokeWidth={3} style={{ color: '#1f2937' }} />
+                </button>
+              )}
               <div
                 ref={previewContainerRef}
                 style={{
@@ -4183,7 +4240,7 @@ const CitationCallout: React.FC<{
                   }}
                 />
               </div>
-              {/* Ask citation popup overlay: white panel with document info + "Ask about this..." input (matches reference); visibility via ref to avoid re-render on hover */}
+              {/* Ask citation bar: hidden by default, show only on hover */}
               <div
                 ref={askOverlayRef}
                 style={{
@@ -4199,7 +4256,6 @@ const CitationCallout: React.FC<{
                   transition: 'opacity 0.12s ease-out',
                   willChange: 'opacity',
                 }}
-                onMouseEnter={handleCardHoverEnter}
               >
                 <div
                   style={{
@@ -4242,7 +4298,7 @@ const CitationCallout: React.FC<{
                           style={{
                             flex: 1,
                             height: '100%',
-                            padding: '0 2px 0 12px',
+                            padding: '0 2px 0 10px',
                             paddingRight: 38,
                             fontSize: 14,
                             lineHeight: '20px',
@@ -4255,6 +4311,7 @@ const CitationCallout: React.FC<{
                         />
                         <button
                           type="button"
+                          onMouseDown={(e) => e.preventDefault()}
                           onClick={() => handleAskSubmit()}
                           disabled={!askInputValue.trim()}
                           style={{
@@ -4339,9 +4396,10 @@ const CitationCallout: React.FC<{
               />
             </div>
           )}
-          {/* Document bar: only when no preview (e.g. DOCX); when canShowPreview the bar is in the hover overlay above) */}
+          {/* Document bar: only when no preview (e.g. DOCX); hidden by default, show only on hover */}
           {!canShowPreview && (
           <div
+            ref={askBarNoPreviewRef}
             style={{
               flexShrink: 0,
               backgroundColor: '#FFFFFF',
@@ -4349,6 +4407,9 @@ const CitationCallout: React.FC<{
               borderRadius: 16,
               border: '1px solid rgba(0,0,0,0.06)',
               boxShadow: '0 4px 24px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.06)',
+              opacity: 0,
+              pointerEvents: 'none',
+              transition: 'opacity 0.12s ease-out',
             }}
           >
             {/* Ask bar + View/Accept row (send button inside input) */}
@@ -4383,7 +4444,7 @@ const CitationCallout: React.FC<{
                         flex: 1,
                         minWidth: 120,
                         height: '100%',
-                        padding: '0 2px 0 12px',
+                        padding: '0 2px 0 10px',
                         paddingRight: 38,
                         fontSize: 14,
                         lineHeight: '20px',
@@ -4396,6 +4457,7 @@ const CitationCallout: React.FC<{
                     />
                     <button
                       type="button"
+                      onMouseDown={(e) => e.preventDefault()}
                       onClick={() => handleAskSubmit()}
                       disabled={!askInputValue.trim()}
                       style={{
@@ -5990,6 +6052,14 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     messageId?: string;
     citationNumber?: string;
   } | null>(null);
+  // Ask Velora: highlight selection in response text → floating "Ask Velora" button → insert chip
+  const [highlightSelection, setHighlightSelection] = React.useState<{
+    text: string;
+    rect: DOMRect;
+    messageId: string;
+  } | null>(null);
+  // Button only appears after user hovers over the selection (not immediately on mouseup)
+  const [hasHoveredSelection, setHasHoveredSelection] = React.useState(false);
   // When user clicks "View in document", keep this citation highlighted (blue) in chat while document view is open
   const [citationViewedInDocument, setCitationViewedInDocument] = React.useState<{ messageId: string; citationNumber: string } | null>(null);
   // Citation bar: which message we're reviewing, which citation index (0-based), which indices accepted, and whether we're showing "Review Next Citation"
@@ -6723,11 +6793,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       if (!resultText) return;
 
       const messageId = `agent-result-${taskId || Date.now()}`;
+      const citationsMap = citations || {};
       const agentResultMessage = {
         id: messageId,
         type: 'response' as const,
         text: resultText,
-        citations: citations || {},
+        citations: citationsMap,
         isLoading: false,
         isAgentTaskResult: true,
         agentTaskQuery: query || '',
@@ -6735,6 +6806,24 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       };
 
       setChatMessages(prev => [...prev, agentResultMessage]);
+
+      // Preload document previews for all citations immediately so inline callouts render instantly when the green response is shown
+      Object.entries(citationsMap).forEach(([, cit]) => {
+        if (!cit) return;
+        const docId = (cit as { doc_id?: string; document_id?: string }).doc_id ?? (cit as { document_id?: string }).document_id;
+        const pageNum = (cit as { page?: number; page_number?: number; bbox?: { page?: number } }).page
+          ?? (cit as { page_number?: number }).page_number
+          ?? (cit as { bbox?: { page?: number } }).bbox?.page
+          ?? 1;
+        const bbox = (cit as { bbox?: { left: number; top: number; width: number; height: number } }).bbox;
+        const hasBbox = bbox && typeof bbox.left === 'number' && typeof bbox.top === 'number' && typeof bbox.width === 'number' && typeof bbox.height === 'number';
+        const filename = ((cit as { original_filename?: string }).original_filename ?? '').toLowerCase();
+        const isWordDoc = filename.endsWith('.docx') || filename.endsWith('.doc');
+        if (docId && hasBbox && !isWordDoc) {
+          preloadHoverPreview(docId, pageNum);
+          preloadCitationBboxSegment({ document_id: docId, page_number: pageNum, bbox });
+        }
+      });
 
       // Do not auto-open the big document preview when injecting agent result — user wants only the small inline preview in the response.
     };
@@ -6943,6 +7032,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   React.useEffect(() => () => { if (starredToastTimeoutRef.current) clearTimeout(starredToastTimeoutRef.current); }, []);
   const displayOptionsOpenTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const displayOptionsCloseTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const responsePopoverContentRef = React.useRef<HTMLDivElement | null>(null);
   const HOVER_OPEN_DELAY_MS = 150;
   const HOVER_CLOSE_DELAY_MS = 400; // Longer delay so moving to dropdown or sidebar doesn't close it too easily
 
@@ -7086,9 +7176,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   // Save fullscreen state when chat closes, restore when it reopens
   const prevIsVisibleRef = React.useRef<boolean>(isVisible);
   React.useEffect(() => {
+    let focusTimeoutId: ReturnType<typeof setTimeout> | null = null;
     const wasVisible = prevIsVisibleRef.current;
     prevIsVisibleRef.current = isVisible;
-    
+
     if (wasVisible && !isVisible) {
       // Chat is closing - save fullscreen state
       wasFullscreenWhenClosedRef.current = isFullscreenMode || isManualFullscreenRef.current || isFullscreenFromDashboardRef.current;
@@ -7137,8 +7228,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           });
         });
       }
-      
+
+      // Auto-focus chat input when entering chat section so user can type immediately
+      focusTimeoutId = setTimeout(() => {
+        inputRef.current?.focus?.();
+      }, 100);
     }
+
+    return () => {
+      if (focusTimeoutId != null) clearTimeout(focusTimeoutId);
+    };
   }, [isVisible, isFullscreenMode, shouldExpand, isPropertyDetailsOpen]);
   
   // Calculate QuickStartBar position dynamically based on chat bar position
@@ -8010,11 +8109,14 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     });
   }, [currentChatId, sessionId, dispatchAgentTask, isWebSearchEnabled]);
 
+  /** When true, last agent task came from citation callout hover bar — don't steal focus to main chat bar. */
+  const lastSubmitFromCitationCalloutRef = React.useRef(false);
   // Listen for citation-agent-task-dispatch events from CitationCallout "Ask about this..." input
   React.useEffect(() => {
     const handleCitationAgentDispatch = (event: CustomEvent) => {
       const { query, documentId, documentMeta } = event.detail || {};
       if (!query || !documentId || !currentChatId) return;
+      lastSubmitFromCitationCalloutRef.current = true;
       dispatchAgentTask({
         query,
         documentIds: [documentId],
@@ -10066,6 +10168,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         attachedFilesRef.current = [];
         onInitialAttachmentsConsumed?.();
         
+        // Focus chat input so user can type follow-up immediately (same as handleSubmit path)
+        keepInputAndSelectAll();
+        
         // Call LLM API to query documents (same logic as handleSubmit)
         (async () => {
           try {
@@ -11855,8 +11960,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     (contentAreaRef as React.MutableRefObject<HTMLDivElement | null>).current = el;
   }, []);
 
-  // Main scroll effect - handles all scroll scenarios
-  const hasLoadingMessage = chatMessages.some(msg => msg.isLoading);
+  // Main scroll effect - handles all scroll scenarios (shared with streaming refocus effect below)
+  const hasLoadingMessage = chatMessages.some((m) => m.type === 'response' && (m as { isLoading?: boolean }).isLoading);
   const latestMessageText = chatMessages[chatMessages.length - 1]?.text || '';
   
   // Track message count to detect new queries
@@ -11881,8 +11986,13 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     // Do NOT force auto-scroll on during streaming: if the user manually scrolls up, respect that until they scroll back near bottom.
 
     // When loading completes, do a final scroll so the full response is visible above the chat bar
+    // Skip scroll for agent task results (green response) so user can stay in place to view citations
     if (prevLoadingRef.current && !hasLoadingMessage) {
-      setTimeout(() => scrollToBottom(true), 50);
+      const lastMsg = chatMessages[chatMessages.length - 1];
+      const isAgentTaskResult = !!(lastMsg as { isAgentTaskResult?: boolean })?.isAgentTaskResult;
+      if (!isAgentTaskResult) {
+        setTimeout(() => scrollToBottom(true), 50);
+      }
     }
     
     prevLoadingRef.current = hasLoadingMessage;
@@ -12124,14 +12234,100 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     }
   }, [openCitationInDocumentView, currentChatId, setDocumentViewedCitation, latestAssistantMessageKey]);
 
-  // Close citation panel on scroll (messages area), window resize, or Escape
+  // Ask Velora: insert highlighted text as citation_snippet chip (no document/bbox context)
+  const onAskVeloraFromHighlight = React.useCallback((highlightedText: string) => {
+    const snippet = highlightedText.trim().replace(/\s+/g, ' ').slice(0, 300);
+    if (!snippet) return;
+    const label = snippet.length > 80 ? `${snippet.slice(0, 77)}…` : snippet;
+    const id = `highlight-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+    segmentInput.insertChipAtCursor(
+      {
+        type: 'chip',
+        kind: 'citation_snippet',
+        id,
+        label,
+        payload: { snippet },
+      },
+      { trailingSpace: true }
+    );
+    setHighlightSelection(null);
+    setHasHoveredSelection(false);
+    requestAnimationFrame(() => {
+      inputRef.current?.focus();
+      requestAnimationFrame(() => restoreSelectionRef.current?.());
+    });
+  }, [segmentInput]);
+
+  // Ask Velora: detect text selection in assistant response messages
   React.useEffect(() => {
-    if (!citationClickPanel) return;
+    const checkSelection = () => {
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed || !sel.toString().trim()) {
+        setHighlightSelection(null);
+        setHasHoveredSelection(false);
+        return;
+      }
+      const anchor = sel.anchorNode;
+      const focus = sel.focusNode;
+      if (!anchor || !focus) return;
+      // Ignore selection inside inputs, buttons, contenteditable
+      const anchorEl = anchor.nodeType === Node.ELEMENT_NODE ? anchor as Element : anchor.parentElement;
+      if (anchorEl?.closest?.('input, textarea, button, [contenteditable="true"]')) return;
+      const container = (anchor as Node).nodeType === Node.TEXT_NODE
+        ? (anchor as Text).parentElement?.closest?.('[data-ask-velora-content]')
+        : (anchor as Element).closest?.('[data-ask-velora-content]');
+      if (!container || !(container instanceof HTMLElement)) {
+        setHighlightSelection(null);
+        return;
+      }
+      // Ensure selection is within same message (anchor and focus in same container)
+      if (!container.contains(focus)) {
+        setHighlightSelection(null);
+        return;
+      }
+      const loading = container.getAttribute('data-message-loading') === 'true';
+      if (loading) return;
+      const messageId = container.getAttribute('data-message-id') ?? '';
+      const text = sel.toString().trim().slice(0, 300);
+      if (!text) return;
+      try {
+        const range = sel.getRangeAt(0);
+        const rect = range.getBoundingClientRect();
+        if (rect.width < 2 && rect.height < 2) return;
+        setHighlightSelection({ text, rect, messageId });
+        setHasHoveredSelection(false); // Reset — button appears only after hover
+      } catch {
+        setHighlightSelection(null);
+      }
+    };
+    // Only check on mouseup (end of drag) — not selectionchange, which fires during the drag
+    const onMouseUp = () => requestAnimationFrame(checkSelection);
+    document.addEventListener('mouseup', onMouseUp);
+    return () => {
+      document.removeEventListener('mouseup', onMouseUp);
+    };
+  }, []);
+
+  // Close citation panel and Ask Velora highlight on scroll (messages area), window resize, or Escape
+  React.useEffect(() => {
+    if (!citationClickPanel && !highlightSelection) return;
     const contentArea = contentAreaRef.current;
-    const onScroll = () => setCitationClickPanel(null);
-    const onResize = () => setCitationClickPanel(null);
+    const onScroll = () => {
+      setCitationClickPanel(null);
+      setHighlightSelection(null);
+      setHasHoveredSelection(false);
+    };
+    const onResize = () => {
+      setCitationClickPanel(null);
+      setHighlightSelection(null);
+      setHasHoveredSelection(false);
+    };
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setCitationClickPanel(null);
+      if (e.key === 'Escape') {
+        setCitationClickPanel(null);
+        setHighlightSelection(null);
+        setHasHoveredSelection(false);
+      }
     };
     contentArea?.addEventListener('scroll', onScroll, true);
     window.addEventListener('resize', onResize);
@@ -12141,7 +12337,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       window.removeEventListener('resize', onResize);
       window.removeEventListener('keydown', onKeyDown);
     };
-  }, [citationClickPanel]);
+  }, [citationClickPanel, highlightSelection]);
   
   // Add custom scrollbar styling and animations for WebKit browsers (Chrome, Safari, Edge)
   React.useEffect(() => {
@@ -12916,6 +13112,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           return updated;
         });
         loadingReasoningStepsRef.current = [];
+        
+        // Focus chat input so user can type follow-up immediately (same as handleSubmit path)
+        keepInputAndSelectAll();
         
         // Call LLM API for initial query
         (async () => {
@@ -14080,6 +14279,146 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     segmentInput.setSegments([{ type: 'text', value: '' }]);
     setAtMentionDocumentChips([]);
   }, [segmentInput]);
+
+  /** Keep input content and select it all — so user can modify and resend without reselecting. */
+  const [pendingSelectAll, setPendingSelectAll] = React.useState(false);
+  const justSubmittedRef = React.useRef(false);
+  const prevMessageCountForFocusRef = React.useRef(0);
+  const keepInputAndSelectAll = React.useCallback(() => {
+    // Focus immediately (synchronously) so we capture focus before state updates / re-renders steal it
+    const handle = inputRef.current;
+    if (handle) {
+      handle.focus?.({ preventScroll: false });
+      handle.selectAll?.();
+    }
+    setPendingSelectAll(true);
+    justSubmittedRef.current = true;
+  }, []);
+  // Run selection after React commit; multiple retries in case chat scroll/AgentTaskPanel overwrites it
+  React.useEffect(() => {
+    if (!pendingSelectAll) return;
+    setPendingSelectAll(false);
+    const run = () => {
+      const handle = inputRef.current;
+      if (!handle) return;
+      handle.focus?.({ preventScroll: false });
+      // Defer selectAll to next microtask so focus has fully taken effect
+      queueMicrotask(() => handle.selectAll?.());
+    };
+    requestAnimationFrame(() => requestAnimationFrame(run));
+    const t1 = setTimeout(run, 100);
+    const t2 = setTimeout(run, 300);
+    const t3 = setTimeout(run, 600);
+    const t4 = setTimeout(run, 1000);
+    const t5 = setTimeout(run, 1500);
+    const t6 = setTimeout(run, 2000);
+    return () => {
+      clearTimeout(t1);
+      clearTimeout(t2);
+      clearTimeout(t3);
+      clearTimeout(t4);
+      clearTimeout(t5);
+      clearTimeout(t6);
+    };
+  }, [pendingSelectAll]);
+  // Refocus input when new messages appear after submit (catches scroll/render stealing focus)
+  React.useEffect(() => {
+    const count = chatMessages.length;
+    const increased = count > prevMessageCountForFocusRef.current;
+    prevMessageCountForFocusRef.current = count;
+    if (increased && justSubmittedRef.current) {
+      const run = () => {
+        const handle = inputRef.current;
+        if (handle) {
+          handle.focus?.({ preventScroll: false });
+          queueMicrotask(() => handle.selectAll?.());
+        }
+      };
+      requestAnimationFrame(() => requestAnimationFrame(run));
+      const t = setTimeout(run, 150);
+      return () => clearTimeout(t);
+    }
+  }, [chatMessages.length]);
+  // Refocus during streaming — scroll/render updates can steal focus when tokens arrive (uses hasLoadingMessage from scroll effect above)
+  const prevHasLoadingRef = React.useRef(hasLoadingMessage);
+  React.useEffect(() => {
+    const wasLoading = prevHasLoadingRef.current;
+    prevHasLoadingRef.current = hasLoadingMessage;
+    if (!hasLoadingMessage) {
+      const hadJustSubmitted = justSubmittedRef.current;
+      justSubmittedRef.current = false;
+      // Refocus when streaming completes — final scroll/render can steal focus
+      if (wasLoading && hadJustSubmitted) {
+        const run = () => {
+          const handle = inputRef.current;
+          if (handle) {
+            handle.focus?.({ preventScroll: false });
+            queueMicrotask(() => handle.selectAll?.());
+          }
+        };
+        requestAnimationFrame(() => requestAnimationFrame(run));
+        const t1 = setTimeout(run, 100);
+        const t2 = setTimeout(run, 300);  // Extra retry after final scroll settles
+        return () => {
+          clearTimeout(t1);
+          clearTimeout(t2);
+        };
+      }
+      return;
+    }
+    if (!justSubmittedRef.current) return;
+    const run = () => {
+      const handle = inputRef.current;
+      if (handle) {
+        handle.focus?.({ preventScroll: false });
+        queueMicrotask(() => handle.selectAll?.());
+      }
+    };
+    const t1 = setTimeout(run, 500);
+    const t2 = setTimeout(run, 1500);
+    const t3 = setTimeout(run, 2500);
+    const t4 = setTimeout(run, 4000);
+    return () => {
+      clearTimeout(t1);
+      clearTimeout(t2);
+      clearTimeout(t3);
+      clearTimeout(t4);
+    };
+  }, [hasLoadingMessage]);
+  // Refocus input when agent tasks appear — AgentTaskPanel mount/animation can steal focus
+  // Skip when task came from citation callout hover bar — that bar keeps focus for follow-ups
+  const agentTaskCount = (currentChatId && getTasksForChat(currentChatId).length) ?? 0;
+  const prevAgentTaskCountRef = React.useRef(agentTaskCount);
+  React.useEffect(() => {
+    const increased = agentTaskCount > prevAgentTaskCountRef.current;
+    prevAgentTaskCountRef.current = agentTaskCount;
+    if (increased && agentTaskCount > 0 && !lastSubmitFromCitationCalloutRef.current) {
+      const run = () => {
+        const handle = inputRef.current;
+        if (handle) {
+          handle.focus?.({ preventScroll: false });
+          queueMicrotask(() => handle.selectAll?.());
+        }
+      };
+      requestAnimationFrame(() => requestAnimationFrame(run));
+      const t1 = setTimeout(run, 50);
+      const t2 = setTimeout(run, 150);
+      const t3 = setTimeout(run, 350);
+      const t4 = setTimeout(run, 550);  // After task card entrance animation
+      return () => {
+        clearTimeout(t1);
+        clearTimeout(t2);
+        clearTimeout(t3);
+        clearTimeout(t4);
+      };
+    }
+    if (increased && lastSubmitFromCitationCalloutRef.current) {
+      // Delay reset so CitationCallout refocus retries (up to 750ms) can complete before we allow focus redirect
+      setTimeout(() => {
+        lastSubmitFromCitationCalloutRef.current = false;  // Reset so next main-bar submit still refocuses
+      }, 800);
+    }
+  }, [agentTaskCount]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -15771,8 +16110,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       })();
       
       startChatBarGlow();
+      keepInputAndSelectAll();
       onQuerySubmit(submitted);
-      clearInputAndChips();
       setAttachedFiles([]);
       if (selectedDocumentIds.size > 0) {
         clearSelectedDocuments();
@@ -16020,6 +16359,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     return m;
   }, [segmentInput.segments]);
 
+  // Explicit dep so useMemo re-runs when agent tasks are added (keeps citation callouts visible after submit from citation form)
+  const citationAgentTaskCount = (currentChatId && getTasksForChat(currentChatId).length) ?? 0;
+
   // CRITICAL: This useMemo MUST be at top level (not inside JSX) to follow React's Rules of Hooks
   // This fixes "Rendered more hooks than during the previous render" error
   const renderedMessages = useMemo(() => {
@@ -16041,6 +16383,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       lastMsg.type === 'query' ||
       (lastMsg.type === 'response' && (lastMsg as { isLoading?: boolean }).isLoading && !(lastMsg as { text?: string }).text)
     );
+    // Keep citation callouts visible when: (a) no pending query, OR (b) pending query came from citation (fromCitation), OR (c) active agent task (submitted from citation form)
+    const hasCitationFollowUpInProgress = (lastMsg as { fromCitation?: boolean })?.fromCitation === true;
+    const hasActiveAgentTask = !!(currentChatId && getTasksForChat(currentChatId).length > 0);
+    const shouldHideCitationCallouts = hasPendingNewQuery && !hasCitationFollowUpInProgress && !hasActiveAgentTask;
 
     // Only the latest no-results response shows Files and sources / Choose project buttons; earlier ones hide them
     const isNoResultsResponse = (m: { type: string; noResults?: boolean; text?: string }) =>
@@ -16410,17 +16756,22 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           {/* Show streaming text as it arrives - inline with typing effect */}
           {/* Show text as soon as it exists - allow streaming to display immediately */}
           {message.text && (
-            <div style={{
-              position: 'relative',
-              minHeight: '1px'
-            }}>
+            <div
+              data-ask-velora-content
+              data-message-id={finalKey}
+              data-message-loading={message.isLoading ? 'true' : 'false'}
+              style={{
+                position: 'relative',
+                minHeight: '1px'
+              }}
+            >
               <StreamingResponseTextMemo
                 text={message.text}
                 isStreaming={message.isLoading || message.responseStreamComplete === false}
                 citations={message.citations}
                 handleCitationClick={(data: CitationDataType, anchorRect?: DOMRect, citationNumber?: string, highlightRect?: DOMRect | null) => handleUserCitationClick(data, anchorRect, highlightRect, message.text, finalKey, citationNumber)}
                 renderTextWithCitations={renderTextWithCitations}
-                onTextUpdate={() => scrollToBottom()}
+                onTextUpdate={isInjectedAgentResult ? undefined : () => scrollToBottom()}
                 messageId={finalKey}
                 skipHighlight={!isLatestAssistantMessage || !showHighlight || (orangeCitationNumbersByMessage.get(message.id ?? finalKey)?.size ?? 0) > 0}
                 showCitations={showCitations}
@@ -16492,11 +16843,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 citationViewedInDocument={citationViewedInDocument}
                 onCloseDocumentFromCallout={closeExpandedCardView}
                 orderedCitationNumbersForMessage={(() => { const o = getOrderedCitationNumbersFromMessageText(message.text ?? ''); return o.length > 0 ? o : undefined; })()}
-                isCitationBarActive={isLatestAssistantMessage && !hasPendingNewQuery}
+                isCitationBarActive={isLatestAssistantMessage && !shouldHideCitationCallouts}
                 currentCitationIndex={citationReviewMessageId === finalKey ? citationReviewCurrentIndex : 0}
                 acceptedCitationIndices={citationReviewMessageId === finalKey ? citationReviewAcceptedIndices : (citationAcceptedByMessageId[finalKey] ?? undefined)}
                 showReviewNextOnly={citationReviewMessageId === finalKey ? citationReviewShowReviewNextOnly : false}
-                showInResponseCitationCallouts={!hasPendingNewQuery && !!(message.text && getOrderedCitationNumbersFromMessageText(message.text ?? '').length > 0)}
+                showInResponseCitationCallouts={!shouldHideCitationCallouts && !!(message.text && getOrderedCitationNumbersFromMessageText(message.text ?? '').length > 0)}
                 showCitationPreviewBar={showCitationPreviewBar && !citationPreviewClosedForMessageIds.has(finalKey)}
                 onCloseCitationPreviewBar={(id) => setCitationPreviewClosedForMessageIds((prev) => new Set(prev).add(id))}
                 rejectedCitationNumbers={rejectedCitationNumbersByMessage.get(String(message.id ?? finalKey))}
@@ -16873,7 +17224,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         </CitationMessageVisibility>
       );
     }).filter(Boolean);
-  }, [chatMessages, showReasoningTrace, showHighlight, showCitations, showCitationPreviewBar, showBlueCitationHighlight, expandedThoughtMessageIds, toggleThoughtExpanded, restoredMessageIdsRef, reopenNoAnimationTick, handleUserCitationClick, onOpenProperty, scrollToBottom, expandedCardViewDoc, propertyAttachments, orangeCitationNumbersByMessage, citationClickPanel, citationViewedInDocument, currentChatId, skipSwoopForChatId, revealCompleteTick, likedResponseIds, dislikedResponseIds, copiedResponseId, shimmerTickMessageId, sourcesDropdownMessageId, addToDbPopoverMessageId, addedToDbResponseIds, showBarForResponseId, handleThumbsUpResponse, handleThumbsDownResponse, handleCopyResponse, handleDownloadResponse, handleDownloadResponseAsDocxForMessage, openCitationInDocumentView, openFeedbackModal, handleAddToDbConfirm, isBotPaused, citationReviewMessageId, citationReviewCurrentIndex, citationReviewAcceptedIndices, citationReviewShowReviewNextOnly, rejectedCitationNumbersByMessage, handleCitationVisibilityChange, getTasksForChat, injectResultToChat, cancelAgentTask, retryAgentTask]);
+  }, [chatMessages, citationAgentTaskCount, showReasoningTrace, showHighlight, showCitations, showCitationPreviewBar, showBlueCitationHighlight, expandedThoughtMessageIds, toggleThoughtExpanded, restoredMessageIdsRef, reopenNoAnimationTick, handleUserCitationClick, onOpenProperty, scrollToBottom, expandedCardViewDoc, propertyAttachments, orangeCitationNumbersByMessage, citationClickPanel, citationViewedInDocument, currentChatId, citationAgentTaskCount, skipSwoopForChatId, revealCompleteTick, likedResponseIds, dislikedResponseIds, copiedResponseId, shimmerTickMessageId, sourcesDropdownMessageId, addToDbPopoverMessageId, addedToDbResponseIds, showBarForResponseId, handleThumbsUpResponse, handleThumbsDownResponse, handleCopyResponse, handleDownloadResponse, handleDownloadResponseAsDocxForMessage, openCitationInDocumentView, openFeedbackModal, handleAddToDbConfirm, isBotPaused, citationReviewMessageId, citationReviewCurrentIndex, citationReviewAcceptedIndices, citationReviewShowReviewNextOnly, rejectedCitationNumbersByMessage, handleCitationVisibilityChange, getTasksForChat, injectResultToChat, cancelAgentTask, retryAgentTask]);
 
   return (
     <>
@@ -16994,6 +17345,36 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           document.body
         );
       })()}
+      {/* Ask Velora floating button - appears above text selection in assistant responses */}
+      {highlightSelection && createPortal(
+        <>
+          {/* Invisible overlay over selection — hover reveals the button */}
+          {!hasHoveredSelection && (
+            <div
+              role="presentation"
+              aria-hidden
+              onMouseEnter={() => setHasHoveredSelection(true)}
+              style={{
+                position: 'fixed',
+                left: highlightSelection.rect.left,
+                top: highlightSelection.rect.top,
+                width: Math.max(highlightSelection.rect.width, 1),
+                height: Math.max(highlightSelection.rect.height, 1),
+                zIndex: 10049,
+                pointerEvents: 'auto',
+              }}
+            />
+          )}
+          {hasHoveredSelection && (
+            <AskVeloraFloatingButton
+              position={{ x: highlightSelection.rect.left, y: highlightSelection.rect.top - 44 }}
+              selectedText={highlightSelection.text}
+              onAsk={() => onAskVeloraFromHighlight(highlightSelection.text)}
+            />
+          )}
+        </>,
+        document.body
+      )}
     <AnimatePresence mode="wait">
       {isVisible && (
         <motion.div
@@ -17518,7 +17899,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       className="min-w-[165px] w-auto rounded-md border border-gray-200 bg-white p-2 shadow-md"
                       onOpenAutoFocus={(e) => e.preventDefault()}
                     >
-                      <div className="flex flex-col gap-0.5">
+                      <div className="flex flex-col gap-2">
                         {!isMainSidebarOpen && (
                           <button
                             type="button"
@@ -17527,7 +17908,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               setViewOptionsOpen(false);
                               if (onSidebarToggle) onSidebarToggle();
                             }}
-                            className="flex items-center gap-2 w-full rounded-sm px-2 text-left hover:bg-[#f5f5f5] text-[13px] font-normal text-[#374151]"
+                            className="flex items-center gap-2 w-full rounded-md px-2 py-1.5 h-8 min-h-8 text-left hover:bg-[#f5f5f5] text-[13px] font-normal text-[#374151]"
                           >
                             <PanelLeftOpen className="w-6 h-6 text-[#666] flex-shrink-0 scale-x-[-1]" strokeWidth={1.25} />
                             Sidebar
@@ -17541,7 +17922,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               setViewOptionsOpen(false);
                               toggleFilingSidebar();
                             }}
-                            className="flex items-center gap-2 w-full rounded-sm px-2 text-left hover:bg-[#f5f5f5] text-[13px] font-normal text-[#374151]"
+                            className="flex items-center gap-2 w-full rounded-md px-2 py-1.5 h-8 min-h-8 text-left hover:bg-[#f5f5f5] text-[13px] font-normal text-[#374151]"
                           >
                             <Files className="w-6 h-6 text-[#666] flex-shrink-0" strokeWidth={1.25} />
                             Files
@@ -17555,7 +17936,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               setViewOptionsOpen(false);
                               handleMinimiseChat();
                             }}
-                            className="flex items-center gap-2 w-full rounded-sm px-2 text-left hover:bg-[#f5f5f5] text-[13px] font-normal text-[#374151]"
+                            className="flex items-center gap-2 w-full rounded-md px-2 py-1.5 h-8 min-h-8 text-left hover:bg-[#f5f5f5] text-[13px] font-normal text-[#374151]"
                           >
                             <Minimize2 className="w-6 h-6 text-[#666] flex-shrink-0" strokeWidth={1.25} />
                             Minimise
@@ -17568,7 +17949,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               setViewOptionsOpen(false);
                               handleExpandChat();
                             }}
-                            className="flex items-center gap-2 w-full rounded-sm px-2 text-left hover:bg-[#f5f5f5] text-[13px] font-normal text-[#374151]"
+                            className="flex items-center gap-2 w-full rounded-md px-2 py-1.5 h-8 min-h-8 text-left hover:bg-[#f5f5f5] text-[13px] font-normal text-[#374151]"
                           >
                             <MoveDiagonal className="w-6 h-6 text-[#666] flex-shrink-0" strokeWidth={1.25} />
                             Expand
@@ -17583,7 +17964,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             void toggleBrowserFullscreen();
                             setViewOptionsOpen(false);
                           }}
-                          className="flex items-center gap-2 w-full rounded-sm px-2 text-left hover:bg-[#f5f5f5] text-[13px] font-normal text-[#374151]"
+                          className="flex items-center gap-2 w-full rounded-md px-2 py-1.5 h-8 min-h-8 text-left hover:bg-[#f5f5f5] text-[13px] font-normal text-[#374151]"
                         >
                           {isBrowserFullscreen ? (
                             <Minimize className="w-6 h-6 text-[#666] flex-shrink-0" strokeWidth={1.25} />
@@ -17600,7 +17981,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               setViewOptionsOpen(false);
                               handleNewChatClick();
                             }}
-                            className="flex items-center gap-2 w-full rounded-sm px-2 text-left hover:bg-[#f5f5f5] text-[13px] font-normal text-[#374151]"
+                            className="flex items-center gap-2 w-full rounded-md px-2 py-1.5 h-8 min-h-8 text-left hover:bg-[#f5f5f5] text-[13px] font-normal text-[#374151]"
                           >
                             <img src="/newchat1.png" alt="" className="h-6 w-6 flex-shrink-0 object-contain" />
                             New chat
@@ -17654,15 +18035,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             </button>
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="start" sideOffset={4} onClick={(e) => e.stopPropagation()} className="min-w-[165px] w-auto rounded-md border border-gray-200 bg-white p-2 shadow-md">
-                            <DropdownMenuItem onClick={(e) => { e.stopPropagation(); if (starredToastTimeoutRef.current) clearTimeout(starredToastTimeoutRef.current); setShowStarredToast(true); starredToastTimeoutRef.current = setTimeout(() => { setShowStarredToast(false); starredToastTimeoutRef.current = null; }, 3000); }} className="flex items-center gap-2 cursor-pointer rounded-sm px-2 text-left text-[13px] font-normal text-[#374151] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#374151]">
+                            <DropdownMenuItem onClick={(e) => { e.stopPropagation(); if (starredToastTimeoutRef.current) clearTimeout(starredToastTimeoutRef.current); setShowStarredToast(true); starredToastTimeoutRef.current = setTimeout(() => { setShowStarredToast(false); starredToastTimeoutRef.current = null; }, 3000); }} className="flex items-center gap-2 cursor-pointer rounded-md px-2 py-1.5 h-8 min-h-8 text-left text-[13px] font-normal text-[#374151] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#374151]">
                               <Star className="w-4 h-4 text-[#666] flex-shrink-0" strokeWidth={1.25} />
                               Star
                             </DropdownMenuItem>
-                            <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleToggleEdit(); }} className="flex items-center gap-2 cursor-pointer rounded-sm px-2 text-left text-[13px] font-normal text-[#374151] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#374151]">
+                            <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleToggleEdit(); }} className="flex items-center gap-2 cursor-pointer rounded-md px-2 py-1.5 h-8 min-h-8 text-left text-[13px] font-normal text-[#374151] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#374151]">
                               <Pencil className="w-4 h-4 text-[#666] flex-shrink-0" strokeWidth={1.25} />
                               Rename
                             </DropdownMenuItem>
-                            <DropdownMenuItem onClick={(e) => { e.stopPropagation(); toast({ title: 'Add to project', description: 'Add to project coming soon.' }); }} className="flex items-center gap-2 cursor-pointer rounded-sm px-2 text-left text-[13px] font-normal text-[#374151] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#374151]">
+                            <DropdownMenuItem onClick={(e) => { e.stopPropagation(); toast({ title: 'Add to project', description: 'Add to project coming soon.' }); }} className="flex items-center gap-2 cursor-pointer rounded-md px-2 py-1.5 h-8 min-h-8 text-left text-[13px] font-normal text-[#374151] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#374151]">
                               <FolderPlus className="w-4 h-4 text-[#666] flex-shrink-0" strokeWidth={1.25} />
                               Add to project
                             </DropdownMenuItem>
@@ -17675,7 +18056,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                   if (onNewChat) onNewChat();
                                 }
                               }}
-                              className="flex items-center gap-2 cursor-pointer rounded-sm px-2 text-left text-[13px] font-normal text-red-600 hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-red-600"
+                              className="flex items-center gap-2 cursor-pointer rounded-md px-2 py-1.5 h-8 min-h-8 text-left text-[13px] font-normal text-red-600 hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-red-600"
                             >
                               <Trash2 className="w-4 h-4 text-red-600 flex-shrink-0" strokeWidth={1.25} />
                               Delete
@@ -17724,15 +18105,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           </button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="start" sideOffset={4} onClick={(e) => e.stopPropagation()} className="min-w-[165px] w-auto rounded-md border border-gray-200 bg-white p-2 shadow-md">
-                          <DropdownMenuItem onClick={(e) => { e.stopPropagation(); if (starredToastTimeoutRef.current) clearTimeout(starredToastTimeoutRef.current); setShowStarredToast(true); starredToastTimeoutRef.current = setTimeout(() => { setShowStarredToast(false); starredToastTimeoutRef.current = null; }, 3000); }} className="flex items-center gap-2 cursor-pointer rounded-sm px-2 text-left text-[13px] font-normal text-[#374151] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#374151]">
+                          <DropdownMenuItem onClick={(e) => { e.stopPropagation(); if (starredToastTimeoutRef.current) clearTimeout(starredToastTimeoutRef.current); setShowStarredToast(true); starredToastTimeoutRef.current = setTimeout(() => { setShowStarredToast(false); starredToastTimeoutRef.current = null; }, 3000); }} className="flex items-center gap-2 cursor-pointer rounded-md px-2 py-1.5 h-8 min-h-8 text-left text-[13px] font-normal text-[#374151] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#374151]">
                             <Star className="w-4 h-4 text-[#666] flex-shrink-0" strokeWidth={1.25} />
                             Star
                           </DropdownMenuItem>
-                          <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleToggleEdit(); }} className="flex items-center gap-2 cursor-pointer rounded-sm px-2 text-left text-[13px] font-normal text-[#374151] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#374151]">
+                          <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleToggleEdit(); }} className="flex items-center gap-2 cursor-pointer rounded-md px-2 py-1.5 h-8 min-h-8 text-left text-[13px] font-normal text-[#374151] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#374151]">
                             <Pencil className="w-4 h-4 text-[#666] flex-shrink-0" strokeWidth={1.25} />
                             Rename
                           </DropdownMenuItem>
-                          <DropdownMenuItem onClick={(e) => { e.stopPropagation(); toast({ title: 'Add to project', description: 'Add to project coming soon.' }); }} className="flex items-center gap-2 cursor-pointer rounded-sm px-2 text-left text-[13px] font-normal text-[#374151] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#374151]">
+                          <DropdownMenuItem onClick={(e) => { e.stopPropagation(); toast({ title: 'Add to project', description: 'Add to project coming soon.' }); }} className="flex items-center gap-2 cursor-pointer rounded-md px-2 py-1.5 h-8 min-h-8 text-left text-[13px] font-normal text-[#374151] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#374151]">
                             <FolderPlus className="w-4 h-4 text-[#666] flex-shrink-0" strokeWidth={1.25} />
                             Add to project
                           </DropdownMenuItem>
@@ -17745,7 +18126,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                 if (onNewChat) onNewChat();
                               }
                             }}
-                            className="flex items-center gap-2 cursor-pointer rounded-sm px-2 text-left text-[13px] font-normal text-red-600 hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-red-600"
+                            className="flex items-center gap-2 cursor-pointer rounded-md px-2 py-1.5 h-8 min-h-8 text-left text-[13px] font-normal text-red-600 hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-red-600"
                           >
                             <Trash2 className="w-4 h-4 text-red-600 flex-shrink-0" strokeWidth={1.25} />
                             Delete
@@ -17966,15 +18347,25 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       </button>
                     </PopoverTrigger>
                     <PopoverContent
+                      ref={responsePopoverContentRef}
                       align="end"
                       side="bottom"
                       sideOffset={4}
                       onMouseEnter={handleDisplayOptionsContentEnter}
                       onMouseLeave={handleDisplayOptionsContentLeave}
+                      onPointerDownOutside={(e) => {
+                        if (responsePopoverContentRef.current?.contains(e.target as Node)) {
+                          e.preventDefault();
+                        }
+                      }}
                       className="min-w-[200px] w-auto rounded-lg border border-gray-200 bg-white p-3 shadow-md"
                       onOpenAutoFocus={(e) => e.preventDefault()}
                     >
-                      <div className="flex flex-col gap-3">
+                      <div
+                        className="flex flex-col gap-3"
+                        onMouseEnter={handleDisplayOptionsContentEnter}
+                        onMouseLeave={handleDisplayOptionsContentLeave}
+                      >
                         <div className="flex items-center justify-between gap-3">
                           <div className="flex items-center gap-2 min-w-0">
                             <BrainCircuit className="w-5 h-5 text-[#666] flex-shrink-0" strokeWidth={1.25} />
@@ -18334,8 +18725,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       onDrop={handleDrop}
                       style={{
                         background: '#ffffff',
-                        border: isDragOver ? '2px dashed #E0E0E0' : '1px solid #E0E0E0',
-                        boxShadow: '0 2px 8px rgba(0, 0, 0, 0.05), 0 1px 3px rgba(0, 0, 0, 0.03)',
+                        border: isDragOver ? CHAT_BAR_BORDER_DRAG : CHAT_BAR_BORDER,
+                        boxShadow: CHAT_BAR_BOX_SHADOW,
                         position: 'relative',
                         paddingTop: '16px',
                         paddingBottom: '12px',
@@ -18635,6 +19026,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               <motion.button 
                                 key="send-button-empty"
                                 type="submit" 
+                                onMouseDown={(e) => e.preventDefault()}
                                 onClick={handleSubmit} 
                                 initial={{ opacity: 1, scale: 1 }}
                                 animate={{ opacity: 1, scale: 1, backgroundColor: '#4A4A4A' }}
@@ -18724,11 +19116,20 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       {renderedMessages}
                     </AnimatePresence>
 
-                    {/* Agent task panel (Searching / Analysing) - below all messages, not inside any response card */}
+                    {/* Agent task panel (Searching / Analysing) - below all messages, isolated so it doesn't steal chat bar focus */}
                     {currentChatId && (() => {
                       const agentTasks = getTasksForChat(currentChatId);
                       return agentTasks.length > 0 ? (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginTop: 4 }}>
+                        <div
+                          tabIndex={-1}
+                          onFocusCapture={() => {
+                            // When submit came from citation callout hover bar, don't redirect — keep focus there for follow-ups
+                            if (lastSubmitFromCitationCalloutRef.current) return;
+                            // Redirect focus back to main chat input — agent tasks must not steal typing focus
+                            inputRef.current?.focus?.({ preventScroll: true });
+                          }}
+                          style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginTop: 4, outline: 'none' }}
+                        >
                           <AgentTaskPanel tasks={agentTasks} onInjectResult={injectResultToChat} onCancel={cancelAgentTask} onRetry={retryAgentTask} />
                         </div>
                       ) : null;
@@ -19288,7 +19689,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                   setCitationReviewShowReviewNextOnly(false);
                                   setCitationReviewCurrentIndex(next);
                                 }
-                              }} style={{ ...barBtn, fontWeight: 500, color: '#666666', backgroundColor: '#F2F2EF', border: '1px solid #d4d4d4', boxShadow: '0 1px 1px rgba(0,0,0,0.05)' }} onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#E8E8E5'; }} onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#F2F2EF'; }}>
+                              }} style={{ ...barBtn, fontWeight: 500, color: '#666666', backgroundColor: '#F5F5F5', border: '1px solid #E5E5E5', boxShadow: '0 1px 1px rgba(0,0,0,0.05)' }} onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#EBEBEB'; }} onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#F5F5F5'; }}>
                                 Review Next Source
                               </button>
                               <button type="button" title="Undo reject – restore this part of the response" onClick={(e) => {
@@ -19309,7 +19710,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                 }
                                 setCitationReviewJustRejected(false);
                                 setCitationReviewShowReviewNextOnly(false);
-                              }} style={{ ...barBtn, fontWeight: 500, color: '#64748b', backgroundColor: '#f1f5f9', border: '1px solid #e2e8f0', boxShadow: '0 1px 1px rgba(0,0,0,0.05)' }} onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#e2e8f0'; }} onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#f1f5f9'; }}>
+                              }} style={{ ...barBtn, fontWeight: 500, color: '#525252', backgroundColor: '#F5F5F5', border: '1px solid #E5E5E5', boxShadow: '0 1px 1px rgba(0,0,0,0.05)' }} onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#EBEBEB'; }} onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#F5F5F5'; }}>
                                 <Undo2 size={18} style={{ marginRight: 4.4 }} />
                                 Undo
                               </button>
@@ -19331,7 +19732,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                 setCitationReviewShowReviewNextOnly(false);
                                 setCitationReviewCurrentIndex(next);
                               }
-                            }} style={{ ...barBtn, fontWeight: 500, color: '#666666', backgroundColor: '#F2F2EF', border: '1px solid #d4d4d4', boxShadow: '0 1px 1px rgba(0,0,0,0.05)' }} onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#E8E8E5'; }} onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#F2F2EF'; }}>
+                            }} style={{ ...barBtn, fontWeight: 500, color: '#666666', backgroundColor: '#F5F5F5', border: '1px solid #E5E5E5', boxShadow: '0 1px 1px rgba(0,0,0,0.05)' }} onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#EBEBEB'; }} onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#F5F5F5'; }}>
                               Review Next Source
                             </button>
                             </>
@@ -19386,7 +19787,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                   setCitationReviewAcceptedIndices((s) => new globalThis.Set(s).add(effectiveIndex));
                                   setCitationReviewShowReviewNextOnly(true);
                                 }
-                              }} style={{ ...barBtn, fontWeight: 600, color: '#2a8f56', backgroundColor: '#E5F5E0', border: '1px solid rgba(60, 179, 113, 0.22)', boxShadow: '0 1px 1px rgba(0,0,0,0.05)' }} onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#DDF0D8'; }} onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#E5F5E0'; }}>
+                              }} style={{ ...barBtn, fontWeight: 600, color: '#1f2937', backgroundColor: '#EBF1DE', border: '1px solid rgba(0,0,0,0.12)', boxShadow: '0 1px 1px rgba(0,0,0,0.05)' }} onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#E0E8D4'; }} onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#EBF1DE'; }}>
                                 Accept
                               </button>
                             </>
@@ -19438,10 +19839,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     onDrop={handleDrop}
                     style={{
                       background: '#ffffff',
-                      borderWidth: isDragOver ? 2 : 1,
-                      borderStyle: isDragOver ? 'dashed' : 'solid',
-                      borderColor: showBarGlow ? 'transparent' : (isDragOver ? '#E0E0E0' : '#E0E0E0'),
-                      boxShadow: '0 2px 8px rgba(0, 0, 0, 0.05), 0 1px 3px rgba(0, 0, 0, 0.03)',
+                      border: showBarGlow ? '1px solid transparent' : (isDragOver ? CHAT_BAR_BORDER_DRAG : CHAT_BAR_BORDER),
+                      boxShadow: CHAT_BAR_BOX_SHADOW,
                       position: 'relative',
                       paddingTop: '16px',
                       paddingBottom: '12px',
@@ -19956,6 +20355,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                 <motion.button 
                                   key="send-button"
                                   type="submit" 
+                                  onMouseDown={(e) => e.preventDefault()}
                                   onClick={handleSubmit} 
                                   initial={{ opacity: 1, scale: 1, backgroundColor: '#4A4A4A' }}
                                   animate={{ opacity: 1, scale: 1, backgroundColor: '#4A4A4A' }}

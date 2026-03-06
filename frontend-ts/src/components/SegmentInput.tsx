@@ -14,6 +14,8 @@ export interface SegmentInputHandle {
   contains: (node: Node) => boolean;
   /** Root DOM element of the input (for focus checks). */
   getRootElement: () => HTMLElement | null;
+  /** Select all content in the input (for keeping query selected after submit). */
+  selectAll: () => void;
 }
 
 export interface SegmentInputProps {
@@ -111,13 +113,43 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
     return null;
   }, [segments]);
 
+  const selectAll = React.useCallback(() => {
+    const sel = window.getSelection();
+    if (!sel || segments.length === 0) return;
+    const firstSpan = segmentRefs.current[0];
+    const lastIdx = segments.length - 1;
+    const lastSpan = segmentRefs.current[lastIdx];
+    const lastSeg = segments[lastIdx];
+    if (!firstSpan || !lastSpan) return;
+    const range = document.createRange();
+    if (isTextSegment(segments[0])) {
+      const textNode = firstSpan.firstChild;
+      range.setStart(textNode ?? firstSpan, 0);
+    } else {
+      range.setStart(firstSpan, 0);
+    }
+    if (lastSeg && isTextSegment(lastSeg)) {
+      const textNode = lastSpan.firstChild;
+      if (textNode) {
+        range.setEnd(textNode, (lastSeg as TextSegment).value.length);
+      } else {
+        range.setEnd(lastSpan, 1);
+      }
+    } else {
+      range.setEnd(lastSpan, 1);
+    }
+    sel.removeAllRanges();
+    sel.addRange(range);
+  }, [segments]);
+
   React.useImperativeHandle(ref, () => ({
     getRectForPlainOffset,
     focus: (options?: FocusOptions) => internalRef.current?.focus(options),
     getBoundingClientRect: () => internalRef.current?.getBoundingClientRect() ?? new DOMRect(0, 0, 0, 0),
     contains: (node: Node) => internalRef.current?.contains(node) ?? false,
     getRootElement: () => internalRef.current,
-  }), [getRectForPlainOffset]);
+    selectAll,
+  }), [getRectForPlainOffset, selectAll]);
 
   function segmentOffsetToPlain(segmentIndex: number, segmentOffset: number, segs: Segment[]): number {
     let plain = 0;
@@ -677,7 +709,7 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
                 type={seg.kind}
                 label={seg.label}
                 onRemove={
-                  seg.kind === "citation_snippet" ? undefined : seg.kind === "document" ? removeDoc : undefined
+                  seg.kind === "citation_snippet" ? (removeChipAtSegmentIndex ? () => removeChipAtSegmentIndex(i) : undefined) : seg.kind === "document" ? removeDoc : undefined
                 }
               />
             </span>
@@ -850,7 +882,7 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
                 type={seg.kind}
                 label={seg.label}
                 onRemove={
-                  seg.kind === "citation_snippet" ? undefined : seg.kind === "document" ? removeDoc : undefined
+                  seg.kind === "citation_snippet" ? (removeChipAtSegmentIndex ? () => removeChipAtSegmentIndex(i) : undefined) : seg.kind === "document" ? removeDoc : undefined
                 }
               />
             </span>

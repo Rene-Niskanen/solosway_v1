@@ -20,6 +20,13 @@ export const INPUT_BAR_CONTAINER_WIDTH = 'clamp(400px, 85vw, 650px)';
 /** Max width (px) for the dashboard SearchBar and SideChatPanel chat bar so they match. */
 export const CHAT_BAR_MAX_WIDTH_PX = 680;
 
+/** Border for the chat bar (dashboard and SideChatPanel). Use with isDragOver for dashed variant. */
+export const CHAT_BAR_BORDER = '1px solid rgba(0, 0, 0, 0.08)';
+/** Border when drag-over (dashboard and SideChatPanel). */
+export const CHAT_BAR_BORDER_DRAG = '2px dashed #E0E0E0';
+/** Box shadow for the chat bar – same as dashboard so panel bar matches. */
+export const CHAT_BAR_BOX_SHADOW = '0 2px 5px rgba(0, 0, 0, 0.05), 0 1px 2px rgba(0, 0, 0, 0.03)';
+
 /** Max height (px) for chat input before it becomes scrollable. ~10 lines at 20px line-height. */
 export const CHAT_INPUT_MAX_HEIGHT_PX = 200;
 

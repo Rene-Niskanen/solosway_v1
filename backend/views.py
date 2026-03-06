@@ -2156,6 +2156,7 @@ def query_documents_stream():
                                                     yield f"data: {json.dumps(reasoning_data)}\n\n"
                                     
                                     # Handle citation query completion (ULTRA-FAST path)
+                                    # Stream response immediately with same structure as normal path (tokens + citation events)
                                     if node_name == "handle_citation_query":
                                         state_data = state_update if state_update else output
                                         
@@ -2169,32 +2170,51 @@ def query_documents_stream():
                                             final_result['final_summary'] = final_summary_from_citation
                                             logger.info(f"⚡ [CITATION_QUERY] Captured final_summary ({len(final_summary_from_citation)} chars)")
                                         
-                                        # Capture citations in same shape as responder (chunk_citations) so post-loop uses same mapping
+                                        # Capture citations
                                         citations_from_citation = state_data.get('citations', [])
                                         if citations_from_citation:
                                             final_result['citations'] = citations_from_citation
-                                            final_result['chunk_citations'] = citations_from_citation  # Same mapping path as normal results
-                                            logger.info(f"⚡ [CITATION_QUERY] Captured {len(citations_from_citation)} citations (chunk_citations for consistent mapping)")
-                                            # Stream citation event(s) so frontend gets same real-time mapping as normal path
-                                            try:
-                                                for citation in citations_from_citation:
-                                                    citation_bbox = citation.get('bbox', {})
-                                                    citation_page = citation.get('page_number') or citation.get('page', 1)
-                                                    if isinstance(citation_bbox, dict) and 'page' not in citation_bbox:
-                                                        citation_bbox = {**citation_bbox, 'page': citation_page}
-                                                    citation_data = {
-                                                        'doc_id': citation.get('doc_id', '') or citation.get('document_id', ''),
-                                                        'document_id': citation.get('doc_id', '') or citation.get('document_id', ''),
-                                                        'page': citation_page if isinstance(citation_page, int) else int(citation_page) if str(citation_page).strip() not in ('', 'unknown') else 1,
-                                                        'bbox': citation_bbox,
-                                                        'method': citation.get('method', 'citation-query'),
-                                                        'block_id': citation.get('block_id', ''),
-                                                        'cited_text': citation.get('cited_text', ''),
-                                                        'original_filename': citation.get('original_filename', '')
-                                                    }
-                                                    yield f"data: {json.dumps({'type': 'citation', 'citation_number': citation.get('citation_number'), 'data': citation_data})}\n\n"
-                                            except Exception as cit_err:
-                                                logger.warning(f"🟡 [CITATION_QUERY] Error streaming citation event: {cit_err}")
+                                            logger.info(f"⚡ [CITATION_QUERY] Captured {len(citations_from_citation)} citations")
+                                        
+                                        # Stream citation response immediately (same structure as summarize_results) so
+                                        # the frontend gets token + citation events and presents it like normal responses
+                                        if final_summary_from_citation and not summary_already_streamed:
+                                            summary_to_stream = _strip_intent_fragment_from_response(final_summary_from_citation or "")
+                                            summary_to_stream = _strip_mid_response_generic_closings(summary_to_stream or "")
+                                            summary_to_stream = _normalize_citation_text_for_display(summary_to_stream or "")
+                                            if final_result is not None:
+                                                final_result['final_summary'] = summary_to_stream
+                                            streamed_summary = summary_to_stream
+                                            yield f"data: {json.dumps({'type': 'documents_found', 'count': 1})}\n\n"
+                                            yield f"data: {json.dumps({'type': 'status', 'message': 'Streaming response...'})}\n\n"
+                                            for i in range(0, len(summary_to_stream), STREAM_CHUNK_SIZE):
+                                                if i == 0 and not first_token_sent_marked:
+                                                    timing.mark("first_token_sent")
+                                                    first_token_sent_marked = True
+                                                chunk = summary_to_stream[i:i + STREAM_CHUNK_SIZE]
+                                                yield f"data: {json.dumps({'type': 'token', 'token': chunk})}\n\n"
+                                                if STREAM_CHUNK_DELAY_MS > 0:
+                                                    time.sleep(STREAM_CHUNK_DELAY_MS / 1000.0)
+                                            summary_already_streamed = True
+                                            logger.info("⚡ [CITATION_QUERY] Streamed response (same structure as normal path)")
+                                            # Emit citation events so frontend gets real-time citation data (like responder path)
+                                            for citation in citations_from_citation:
+                                                citation_num_str = str(citation.get('citation_number', 1))
+                                                citation_bbox = citation.get('bbox') or {}
+                                                if isinstance(citation_bbox, dict):
+                                                    citation_bbox = citation_bbox.copy()
+                                                    citation_bbox.setdefault('page', citation.get('page_number', 0))
+                                                citation_data = {
+                                                    'doc_id': citation.get('doc_id', ''),
+                                                    'document_id': citation.get('doc_id', ''),
+                                                    'page': citation.get('page_number', 0),
+                                                    'bbox': citation_bbox,
+                                                    'method': 'direct-id-extraction',
+                                                    'block_id': citation.get('block_id', ''),
+                                                    'cited_text': citation.get('cited_text', ''),
+                                                    'original_filename': citation.get('original_filename', '')
+                                                }
+                                                yield f"data: {json.dumps({'type': 'citation', 'citation_number': citation_num_str, 'data': citation_data})}\n\n"
                                     
                                     # Handle attachment fast completion (raw; format_response will structure it)
                                     elif node_name == "handle_attachment_fast":
@@ -2807,8 +2827,10 @@ def query_documents_stream():
                                 logger.warning("🟡 [STREAM] No final_summary found in result")
                                 full_summary = ""  # Let agent handle empty responses naturally
                         
-                        # Send document count (use doc_outputs if available, otherwise relevant_docs)
+                        # Send document count (use doc_outputs if available, otherwise relevant_docs; citation path has citations list only)
                         doc_count = len(doc_outputs) if doc_outputs else len(relevant_docs)
+                        if doc_count == 0 and final_result and final_result.get('citations'):
+                            doc_count = len(final_result['citations'])
                         yield f"data: {json.dumps({'type': 'documents_found', 'count': doc_count})}\n\n"
                         
                         # If we have a summary, proceed even if doc_outputs is empty (documents were already processed)
@@ -3103,19 +3125,12 @@ def query_documents_stream():
                                     except Exception as e:
                                         logger.warning(f"🟡 [CITATIONS] Failed to batch lookup filenames: {e}")
                                 
-                                # Process citations with filenames (same key shape as chunk_citations for citation-query/hover follow-up)
+                                # Process citations with filenames
                                 for cit in citations_list:
                                     citation_num = str(cit.get('citation_number', 1))
-                                    doc_id = (cit.get('doc_id') or cit.get('document_id') or '').strip()
-                                    # Normalize page to int (citation_query can send "unknown"; frontend expects number)
-                                    _p = cit.get('page_number') or cit.get('page')
-                                    try:
-                                        page = int(_p) if _p is not None and str(_p).strip() not in ('', 'unknown') else 1
-                                    except (TypeError, ValueError):
-                                        page = 1
-                                    bbox = dict(cit.get('bbox') or {})
-                                    if isinstance(bbox, dict) and 'page' not in bbox:
-                                        bbox['page'] = page
+                                    doc_id = cit.get('doc_id', '')
+                                    page = cit.get('page_number', 0)
+                                    bbox = cit.get('bbox', {})
                                     
                                     # Get original_filename from citation, cache, or fallback
                                     original_filename = cit.get('original_filename')

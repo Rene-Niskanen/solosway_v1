@@ -409,7 +409,8 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
     return () => clearInterval(interval);
   }, [viewMode, selectedPropertyId, processingDocumentIds.size]);
 
-  // Sync uploading state to context so Sidebar can show spinner until upload + processing are done
+  // Sync uploading state to context so Sidebar can show spinner until upload + processing are done.
+  // Match FilingSidebar file list: show spinner whenever any file is still uploading or processing.
   useEffect(() => {
     const now = Date.now();
     const hasProcessingDocs =
@@ -420,8 +421,15 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
         const doc = documents.find((d) => d.id === id);
         return !doc || doc.status === 'uploaded' || doc.status === 'processing';
       });
+    // Also show sidebar spinner when any document in the list is still processing (same as file row spinner)
+    const hasAnyProcessingInList = documents.some(
+      (d) => d.status === 'uploaded' || d.status === 'processing'
+    );
     const uploading =
-      uploadingFileKeys.size > 0 || uploadingPlaceholders.length > 0 || hasProcessingDocs;
+      uploadingFileKeys.size > 0 ||
+      uploadingPlaceholders.length > 0 ||
+      hasProcessingDocs ||
+      hasAnyProcessingInList;
     setFilesUploading(uploading);
   }, [uploadingFileKeys, uploadingPlaceholders, processingDocumentIds, documents, setFilesUploading]);
 
@@ -1861,22 +1869,27 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
     return () => registerUploadFromChat(null);
   }, [openFilingSidebar, removeUploadingPlaceholder, registerUploadFromChat]);
 
-  // Handle uploading all pending files: keep same list visible with inline loading, then refresh doc list and clear in one go
+  // Handle uploading all pending files: clear drop zone immediately and show uploading state only in file list (at top so visible instantly)
   const handleUploadPendingFiles = async () => {
     if (pendingFiles.length === 0) return;
 
     const filesToUpload = [...pendingFiles];
+    const placeholders = filesToUpload.map((f, i) => ({ id: `pending-${Date.now()}-${i}-${f.name}`, name: f.name }));
 
-    // (1) Keep files in place: mark them as uploading (spinner) instead of clearing the list
-    setSelectedPendingFileIndex(null);
-    setOutlinedPendingFileIndex(null);
-    setShowPropertySelector(false);
-    setUploadingFileKeys(new Set(filesToUpload.map((f) => getPendingFileKey(f))));
+    // (1) Clear drop zone and add placeholders in one flush so the list shows loading indicators immediately
+    flushSync(() => {
+      setUploadingPlaceholders((prev) => [...prev, ...placeholders]);
+      setPendingFiles([]);
+      setSelectedPendingFileIndex(null);
+      setOutlinedPendingFileIndex(null);
+      setShowPropertySelector(false);
+      setSelectedPropertyForUpload(null);
+    });
 
-    // (2) Process all uploads in parallel (no full-page loading spinner); collect document IDs for processing tracking
+    // (2) Process all uploads in parallel; each completion removes its placeholder from the list
     const uploadResults = await Promise.all(
-      filesToUpload.map((file) =>
-        handleFileUpload(file, undefined).then(
+      filesToUpload.map((file, i) =>
+        handleFileUpload(file, placeholders[i].id).then(
           (documentId) => ({ ok: true as const, documentId }),
           () => ({ ok: false as const, documentId: undefined })
         )
@@ -3078,15 +3091,9 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
               {/* Files - Grouped by property in property view - pr-8 keeps property header narrow */}
               {viewMode === 'property' && groupedDocumentsByProperty && !currentFolderId ? (
                 <div className="pr-8 w-full" style={{ boxSizing: 'border-box' }}>
-                {/* Uploading placeholders at top so user sees them uploading */}
+                {/* Uploading placeholders at top so they appear instantly when user clicks Upload */}
                 {uploadingPlaceholders.length > 0 && (
                   <div className="px-0 mb-0.5">
-                    <div className="flex items-center gap-2 px-2 py-1.5 ml-4 mr-8 rounded-md bg-gray-50/80">
-                      <div className="w-6 h-6 flex-shrink-0 flex items-center justify-center">
-                        <OrbitProgress color="#22c55e" size="small" dense text="" textColor="" speedPlus={1} style={{ fontSize: '2px' }} />
-                      </div>
-                      <span className="text-xs font-medium text-gray-600">Uploading</span>
-                    </div>
                     <div className="py-0.5 w-full space-y-px" style={{ boxSizing: 'border-box' }}>
                       {uploadingPlaceholders.map((p) => (
                         <div
@@ -3281,9 +3288,9 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                 })}
                 </div>
               ) : (
-                // Flat list for global view or when inside a folder - Premium Design; uploading placeholders at top
+                // Flat list for global view or when inside a folder - uploading placeholders at top so they appear instantly
                 <div className="py-0.5 w-full space-y-px" style={{ boxSizing: 'border-box' }}>
-                  {uploadingPlaceholders.map((p) => (
+                  {uploadingPlaceholders.length > 0 && uploadingPlaceholders.map((p) => (
                     <div
                       key={p.id}
                       className="flex items-center gap-2.5 pl-3 pr-3 py-1.5 mx-4 bg-white rounded-md"
