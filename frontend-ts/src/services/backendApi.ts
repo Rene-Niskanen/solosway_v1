@@ -416,7 +416,9 @@ class BackendApiService {
     // STREAMED TITLE: Chat title streamed from backend (so everything shown to user is streamed)
     onTitleChunk?: (token: string) => void,
     // NEW CHAT: Skip checkpoint load on backend when true (first message of new chat)
-    isNewChat?: boolean
+    isNewChat?: boolean,
+    // WEB SEARCH: Enable Exa web search when true
+    webSearch?: boolean
   ): Promise<void> {
     const baseUrl = this.baseUrl || BACKEND_URL;
     const url = `${baseUrl}/api/llm/query/stream`;
@@ -445,7 +447,8 @@ class BackendApiService {
       model: model || 'gpt-4o-mini', // MODEL SELECTION: User-selected LLM model
       planMode: planMode ?? false, // PLAN MODE: Generate plan before execution
       existingPlan: existingPlan || undefined, // PLAN UPDATE: Existing plan for follow-up updates
-      isNewChat: isNewChat ?? false // Skip checkpoint load when true (first message of new chat)
+      isNewChat: isNewChat ?? false, // Skip checkpoint load when true (first message of new chat)
+      webSearch: webSearch ?? false // WEB SEARCH: Enable Exa web search
     };
     
     if (import.meta.env.DEV) {
@@ -722,11 +725,12 @@ class BackendApiService {
       onError: (error: string) => void;
     },
     abortSignal?: AbortSignal,
+    webSearch?: boolean,
   ): Promise<void> {
     const baseUrl = this.baseUrl || BACKEND_URL;
     const url = `${baseUrl}/api/llm/agent-task/stream`;
 
-    const requestBody = { query, document_ids: documentIds, session_id: sessionId };
+    const requestBody = { query, document_ids: documentIds, session_id: sessionId, web_search: webSearch ?? false };
 
     try {
       const response = await fetch(url, {

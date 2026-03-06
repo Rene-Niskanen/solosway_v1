@@ -935,7 +935,9 @@ def query_documents_stream():
         response_mode = data.get('responseMode')  # NEW: Response mode for file attachments (fast/detailed/full)
         attachment_context = data.get('attachmentContext')  # NEW: Extracted text from attached files
         is_agent_mode = data.get('isAgentMode', True)  # AGENT MODE: Enable LLM tool-based actions (default to True for new architecture)
-        
+        # Accept both keys: frontend agent-task stream sends web_search (snake_case)
+        web_search_enabled = bool(data.get('web_search', data.get('webSearch', False)))  # WEB SEARCH: Exa integration
+
         # CRITICAL: Log agent mode setting for debugging
         logger.info(f"🔑 [STREAM] isAgentMode from request: {data.get('isAgentMode', 'not provided')}, final is_agent_mode: {is_agent_mode}")
         
@@ -1098,6 +1100,7 @@ def query_documents_stream():
                     "response_mode": response_mode if response_mode else None,  # NEW: Response mode for file attachments (fast/detailed/full) - ensure None not empty string
                     "attachment_context": attachment_context if attachment_context else None,  # NEW: Extracted text from attached files - ensure None not empty dict
                     "is_agent_mode": is_agent_mode,  # AGENT MODE: Enable LLM tool-based actions for proactive document display
+                    "web_search_enabled": web_search_enabled,  # WEB SEARCH: Enable Exa web search tool in agent loop
                     "execution_events": emitter,  # NEW: Execution event emitter for execution trace
                     # Reset retry counts and refined query for new queries (prevents stale state)
                     "document_retry_count": 0,
@@ -3418,6 +3421,9 @@ def query_documents_stream():
                             len(citations_map_for_frontend),
                             next(iter(citations_map_for_frontend.values()), {}).get('doc_id', 'N/A')[:12] if citations_map_for_frontend else 'EMPTY',
                         )
+                        # Collect web citations from graph state (Exa web search results)
+                        web_citations_list = final_result.get('web_citations') or []
+
                         complete_data = {
                             'type': 'complete',
                             'data': {
@@ -3426,6 +3432,7 @@ def query_documents_stream():
                                 'document_outputs': doc_outputs,
                                 'citations': citations_map_for_frontend,  # Frontend expects Record<string, CitationDataType>
                                 'citations_array': structured_citations,  # NEW: Structured array format (for future use)
+                                'web_citations': web_citations_list,  # Web search citations (Exa)
                                 'session_id': session_id,
                                 'title': streamed_chat_title,  # Streamed earlier as title_chunk; include for persistence
                                 'no_results': final_result.get('no_results', False),  # Show "Files and sources" / "Choose project" when true
@@ -3718,6 +3725,7 @@ def agent_task_stream():
     query = (data.get('query') or '').strip()
     document_ids = data.get('document_ids') or []
     session_id = data.get('session_id') or ''
+    web_search_enabled = bool(data.get('web_search', False))
 
     if not query:
         return jsonify({'success': False, 'error': 'query is required'}), 400

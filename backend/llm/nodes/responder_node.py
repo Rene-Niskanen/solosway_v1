@@ -609,6 +609,37 @@ def extract_chunks_with_metadata(execution_results: list[Dict[str, Any]]) -> Lis
     return chunks_metadata
 
 
+def extract_web_results(execution_results: list[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Extract web search results from execution_results (action == 'web_search')."""
+    web_results = []
+    for result in execution_results:
+        if result.get("action") == "web_search" and result.get("success"):
+            result_data = result.get("result", [])
+            if isinstance(result_data, list):
+                web_results.extend(result_data)
+    return web_results
+
+
+def format_web_results_for_prompt(web_results: List[Dict[str, Any]]) -> str:
+    """Format web results into a text block the LLM can reference and cite."""
+    if not web_results:
+        return ""
+    lines = ["---", "WEB SOURCES (cite using [Web N] where N is the number):", ""]
+    for i, r in enumerate(web_results, start=1):
+        title = r.get("title") or "Untitled"
+        url = r.get("url") or ""
+        summary = r.get("summary") or ""
+        highlights = r.get("highlights") or []
+        lines.append(f"[Web {i}] {title}")
+        lines.append(f"URL: {url}")
+        if summary:
+            lines.append(f"Summary: {summary}")
+        if highlights:
+            lines.append(f"Key excerpt: {highlights[0][:500]}")
+        lines.append("")
+    return "\n".join(lines)
+
+
 def format_chunks_with_ids(chunks_metadata: List[Dict[str, Any]]) -> str:
     """
     Format chunks with chunk_ids visible to LLM.
@@ -2674,7 +2705,12 @@ async def responder_node(state: MainWorkflowState, runnable_config=None) -> Main
     # Extract chunks WITH metadata (chunk_id, chunk_text, document_id)
     chunks_metadata = extract_chunks_with_metadata(execution_results)
     has_chunks = len(chunks_metadata) > 0
-    
+
+    # Extract web search results (if any)
+    web_results = extract_web_results(execution_results)
+    has_web = len(web_results) > 0
+    web_context_block = format_web_results_for_prompt(web_results) if has_web else ""
+
     if has_chunks:
         logger.info(f"[RESPONDER] ✅ Chunks detected ({len(chunks_metadata)} chunks), generating answer with direct citations...")
         
@@ -2733,6 +2769,11 @@ async def responder_node(state: MainWorkflowState, runnable_config=None) -> Main
                 prior_exchange_summary = "Previous answer (summary): " + (
                     (state["prior_turn_content"] or "")[:MAX_PRIOR_ANSWER_CHARS]
                 )
+            # Append web results to paste_context so the LLM sees them alongside document chunks
+            if web_context_block:
+                paste_context_str = (paste_context_str + "\n\n" + web_context_block).strip()
+                logger.info(f"[RESPONDER] Injected {len(web_results)} web results into prompt context")
+
             logger.info(f"[RESPONDER] Generating answer with direct citation system...")
             formatted_answer, citations, personality_id = await generate_answer_with_direct_citations(
                 user_query, execution_results,
@@ -2748,7 +2789,21 @@ async def responder_node(state: MainWorkflowState, runnable_config=None) -> Main
             if state.get("paste_requested_but_missing"):
                 formatted_answer = "You asked to use pasted content, but no attachment was included with this message. Below is an answer based on the documents I found.\n\n" + formatted_answer
 
-            logger.info(f"[RESPONDER] ✅ Answer generated ({len(formatted_answer)} chars) with {len(citations)} citations, personality_id={personality_id}")
+            # Build web citation objects for the frontend (emitted alongside document citations)
+            web_citation_objects = []
+            if has_web:
+                for i, wr in enumerate(web_results, start=1):
+                    web_citation_objects.append({
+                        "source_type": "web",
+                        "citation_number": f"web_{i}",
+                        "title": wr.get("title") or "Web source",
+                        "url": wr.get("url") or "",
+                        "summary": wr.get("summary") or "",
+                        "published_date": wr.get("published_date"),
+                        "author": wr.get("author"),
+                    })
+
+            logger.info(f"[RESPONDER] ✅ Answer generated ({len(formatted_answer)} chars) with {len(citations)} citations + {len(web_citation_objects)} web citations, personality_id={personality_id}")
 
             # Prepare output with citations and persist chosen personality for next turn.
             # When we had no attachment but derived document_ids from retrieval, persist them so
@@ -2759,6 +2814,7 @@ async def responder_node(state: MainWorkflowState, runnable_config=None) -> Main
                 "personality_id": personality_id,
                 "citations": citations if citations else [],
                 "chunk_citations": citations if citations else [],
+                "web_citations": web_citation_objects,
                 "messages": [AIMessage(content=formatted_answer)],
             }
             if not state.get("conversation_from_client"):
@@ -2822,11 +2878,69 @@ async def responder_node(state: MainWorkflowState, runnable_config=None) -> Main
             
             return error_output
     
+    elif has_web and not has_chunks:
+        # Web-only path: no document chunks but we have web results
+        logger.info(f"[RESPONDER] Web-only path: {len(web_results)} web results, no document chunks")
+        if emitter:
+            emitter.emit_reasoning(label="Generating answer from web sources", detail=None)
+
+        from langchain_openai import ChatOpenAI as _ChatOpenAI
+        from langchain_core.messages import HumanMessage as _HumanMessage, SystemMessage as _SystemMessage
+        try:
+            web_llm = _ChatOpenAI(api_key=config.openai_api_key, model=config.openai_model, temperature=0)
+            web_system = (
+                "You are a helpful assistant. Answer the user's question using ONLY the web sources provided below. "
+                "Cite sources using [Web N] markers (e.g. [Web 1], [Web 2]) inline. "
+                "Be concise and factual. If the sources don't contain the answer, say so.\n\n"
+                + web_context_block
+            )
+            web_response = await web_llm.ainvoke([
+                _SystemMessage(content=web_system),
+                _HumanMessage(content=user_query),
+            ])
+            web_answer = web_response.content if hasattr(web_response, "content") else str(web_response)
+            web_answer = ensure_main_tags_when_missing(web_answer, user_query)
+        except Exception as e:
+            logger.error("[RESPONDER] Web-only LLM call failed: %s", e, exc_info=True)
+            web_answer = "I found web results but encountered an error generating the answer. Please try again."
+
+        web_citation_objects = []
+        for i, wr in enumerate(web_results, start=1):
+            web_citation_objects.append({
+                "source_type": "web",
+                "citation_number": f"web_{i}",
+                "title": wr.get("title") or "Web source",
+                "url": wr.get("url") or "",
+                "summary": wr.get("summary") or "",
+                "published_date": wr.get("published_date"),
+                "author": wr.get("author"),
+            })
+
+        web_output = {
+            "final_summary": web_answer,
+            "personality_id": previous_personality or DEFAULT_PERSONALITY_ID,
+            "citations": [],
+            "chunk_citations": [],
+            "web_citations": web_citation_objects,
+            "messages": [AIMessage(content=web_answer)],
+        }
+        if not state.get("conversation_from_client"):
+            web_output["conversation_history"] = [{"query": (user_query or "")[:500], "summary": (web_answer or "")[:2000]}]
+        try:
+            validate_responder_output(web_output)
+        except ValueError as e:
+            logger.error(f"[RESPONDER] ❌ Web-only output contract violation: {e}")
+        return web_output
+
     else:
         # No chunks found - use canonical template message and set no_results for frontend actions
         logger.warning("[RESPONDER] ⚠️ No chunks found in execution results")
         has_documents = any(r.get("action") == "retrieve_docs" and r.get("result") for r in execution_results)
+        web_search_was_used = any(r.get("action") == "web_search" for r in execution_results)
+        web_search_enabled = state.get("web_search_enabled", False)
         answer = get_no_results_template_message(has_documents, refinement_limit_reached)
+        if web_search_enabled and not has_documents and web_search_was_used:
+            answer += "\n\nIf you have Web search enabled, ensure EXA_API_KEY is set in your environment so web search can return results."
         # Prepare no-results output (keep previous personality). Level B: do not persist conversation when client sent it
         no_results_output = {
             "final_summary": answer,

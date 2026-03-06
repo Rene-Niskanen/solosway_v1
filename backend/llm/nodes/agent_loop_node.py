@@ -35,11 +35,12 @@ RETRIEVE_DOCS = "retrieve_docs"
 RETRIEVE_CHUNKS = "retrieve_chunks"
 FETCH_CHUNKS_BY_IDS = "fetch_chunks_by_ids"
 ADD_RESEARCH_NOTE = "add_research_note"
+WEB_SEARCH = "web_search"
 
 
-def _get_agent_loop_system_prompt() -> str:
+def _get_agent_loop_system_prompt(web_search_enabled: bool = False) -> str:
     """System prompt instructing the model on when to use tools vs reply directly."""
-    return """You are an assistant with access to a document search system. Your job is to decide when to search documents and when to reply from context alone.
+    base = """You are an assistant with access to a document search system. Your job is to decide when to search documents and when to reply from context alone.
 
 You have four tools:
 1. retrieve_docs(query) - Search for relevant documents. Returns document IDs and filenames. Use this FIRST when the user asks about documents, property information, valuations, leases, etc.
@@ -75,10 +76,31 @@ CITATION FORMATTING (mandatory for add_research_note):
 - chunk_id: Use the exact **chunk_id** from the retrieve_chunks result for the chunk you are noting (the UUID string).
 - cited_text: Use an **exact** substring from that chunk's **chunk_text** — the exact words that support the note. Do NOT paraphrase. Do NOT reword. If the chunk says "Market Value: £1,950,000", then cited_text must be exactly that (or a contiguous substring of it), not "market value of 1.95M". The system uses cited_text to attach the correct source and highlight in the document. If you paraphrase, the citation will not match and the reader will not see the correct highlight."""
 
+    if web_search_enabled:
+        base += """
 
-def _build_tool_definitions() -> List[Dict[str, Any]]:
-    """OpenAI function-calling format for retrieve_docs and retrieve_chunks."""
-    return [
+---
+WEB SEARCH (enabled)
+---
+You also have a web_search(query) tool. Use it to find real-time information from the internet.
+
+When to use web_search:
+- The user's question requires current/external knowledge not found in uploaded documents (e.g. market trends, news, regulations, comparable data from external sources)
+- After searching documents and finding insufficient information, supplement with web results
+- The user explicitly asks about something external to their documents
+
+Strategy:
+- If the question could be answered by uploaded documents, try retrieve_docs/retrieve_chunks FIRST
+- Use web_search to supplement or when documents don't have the answer
+- You may call both document tools and web_search in the same turn if the question benefits from both internal and external information
+- After web_search returns results, you may finish — the system will generate the final answer citing both document and web sources"""
+
+    return base
+
+
+def _build_tool_definitions(web_search_enabled: bool = False) -> List[Dict[str, Any]]:
+    """OpenAI function-calling format for retrieve_docs, retrieve_chunks, and optionally web_search."""
+    tools = [
         {
             "type": "function",
             "function": {
@@ -163,6 +185,27 @@ def _build_tool_definitions() -> List[Dict[str, Any]]:
         },
     ]
 
+    if web_search_enabled:
+        tools.append({
+            "type": "function",
+            "function": {
+                "name": WEB_SEARCH,
+                "description": "Search the web for real-time information using Exa. Use when the user's question requires current or external knowledge not found in uploaded documents, or to supplement document findings with broader context.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Search query — be specific and include relevant keywords for best results",
+                        },
+                    },
+                    "required": ["query"],
+                },
+            },
+        })
+
+    return tools
+
 
 def _get_chunk_doc_and_page(chunk_id: str, execution_results: List[Dict[str, Any]]) -> Tuple[Optional[str], Optional[int]]:
     """Get document filename and page number for a chunk_id from the most recent retrieve_chunks result. Returns (filename, page_number) or (None, None)."""
@@ -223,6 +266,24 @@ def _summarize_tool_result_for_context(tool_name: str, result: Any) -> str:
         })
     elif tool_name == ADD_RESEARCH_NOTE:
         return json.dumps({"message": "Research note recorded. Add more notes or finish to generate the curated piece."})
+    elif tool_name == WEB_SEARCH:
+        if not isinstance(result, list) or len(result) == 0:
+            return json.dumps({"count": 0, "message": "No web results found."})
+        summaries = []
+        for i, r in enumerate(result[:5]):
+            entry = f"[{i+1}] {r.get('title', 'Untitled')} — {r.get('url', '')}"
+            s = r.get("summary", "")
+            if s:
+                entry += f"\nSummary: {s}"
+            highlights = r.get("highlights") or []
+            if highlights:
+                entry += f"\nHighlight: {highlights[0][:300]}"
+            summaries.append(entry)
+        return json.dumps({
+            "count": len(result),
+            "message": f"Found {len(result)} web results. The system will cite these as web sources.",
+            "results": "\n\n".join(summaries),
+        })
     return json.dumps({"message": "Tool executed"})
 
 
@@ -311,14 +372,23 @@ def _execute_tool(tool_name: str, args: Dict[str, Any], state: MainWorkflowState
     elif tool_name == ADD_RESEARCH_NOTE:
         # No external call; handled in the loop by appending to research_notes
         return None
-    
+
+    elif tool_name == WEB_SEARCH:
+        from backend.llm.tools.web_search_tool import exa_web_search
+        query = (args.get("query") or user_query or "").strip()
+        if not query:
+            logger.warning("[AGENT_LOOP] web_search called with empty query")
+            return []
+        return exa_web_search(query=query, num_results=5)
+
     logger.warning("[AGENT_LOOP] Unknown tool: %s", tool_name)
     return []
 
 
 def _build_messages_for_llm(state: MainWorkflowState) -> List:
     """Build messages array for the LLM: system + conversation history + current user query."""
-    system_content = _get_agent_loop_system_prompt()
+    web_search_enabled = state.get("web_search_enabled", False)
+    system_content = _get_agent_loop_system_prompt(web_search_enabled=web_search_enabled)
     messages = [SystemMessage(content=system_content)]
     
     # Add prior chunk context for follow-ups (chunk_ids the agent can fetch with fetch_chunks_by_ids)
@@ -327,10 +397,17 @@ def _build_messages_for_llm(state: MainWorkflowState) -> List:
         ctx_msg = prior_chunk_context + "\n\nUse fetch_chunks_by_ids with these chunk_ids to re-read that content for follow-up questions."
         messages.append(SystemMessage(content=ctx_msg))
     
-    # Add workspace context if document_ids or property_id in scope
+    # When user selected Web search: treat as general web query only (no document/property context).
+    # Answer from the internet via Exa—e.g. "what is the size of new york", facts, etc.
     document_ids = state.get("document_ids") or []
     property_id = state.get("property_id")
-    if document_ids or property_id:
+    if web_search_enabled:
+        messages.append(SystemMessage(
+            content="The user has selected Web search. Answer using ONLY the web_search(query) tool. "
+            "Do not use retrieve_docs or retrieve_chunks. Do not finish without calling web_search."
+        ))
+    elif document_ids or property_id:
+        # Document/property scope only when Web search is NOT selected
         workspace_parts = []
         if document_ids:
             doc_list = "\n".join(f"  - {d}" for d in document_ids[:20])
@@ -368,7 +445,8 @@ async def agent_loop_node(state: MainWorkflowState, runnable_config=None) -> Mai
     Accumulates execution_results for the responder's citation pipeline.
     """
     messages = _build_messages_for_llm(state)
-    tools = _build_tool_definitions()
+    web_search_enabled = state.get("web_search_enabled", False)
+    tools = _build_tool_definitions(web_search_enabled=web_search_enabled)
     execution_results: List[Dict[str, Any]] = []
     research_notes: List[Dict[str, Any]] = []  # Fresh per turn for research-then-write
     emitter = state.get("execution_events")
@@ -452,7 +530,9 @@ async def agent_loop_node(state: MainWorkflowState, runnable_config=None) -> Mai
                 continue
             
             if emitter:
-                if tool_name == FETCH_CHUNKS_BY_IDS:
+                if tool_name == WEB_SEARCH:
+                    emitter.emit_reasoning(label="Searching the web...", detail=None)
+                elif tool_name == FETCH_CHUNKS_BY_IDS:
                     emitter.emit_reasoning(label="Fetching cited chunks", detail=None)
                 else:
                     query = tool_args.get("query", "")
@@ -471,20 +551,32 @@ async def agent_loop_node(state: MainWorkflowState, runnable_config=None) -> Mai
                 )
             )
             
+            action_label = tool_name
+            if tool_name == RETRIEVE_DOCS:
+                action_label = "retrieve_docs"
+            elif tool_name in (RETRIEVE_CHUNKS, FETCH_CHUNKS_BY_IDS):
+                action_label = "retrieve_chunks"
+            elif tool_name == WEB_SEARCH:
+                action_label = "web_search"
+
             execution_results.append({
                 "step_id": f"tool_{iteration}_{tool_name}",
-                "action": "retrieve_docs" if tool_name == RETRIEVE_DOCS else "retrieve_chunks",
+                "action": action_label,
                 "query": tool_args.get("query", ""),
                 "result": result,
                 "success": bool(result) if isinstance(result, list) else result is not None,
             })
             
             if emitter and isinstance(result, list):
-                if tool_name == RETRIEVE_DOCS:
-                    # Don't show count here - that's "searched"; show count only after chunks (documents we're using)
+                if tool_name == WEB_SEARCH:
+                    n = len(result)
+                    emitter.emit_reasoning(
+                        label=f"Found {n} web result{'s' if n != 1 else ''}",
+                        detail=None,
+                    )
+                elif tool_name == RETRIEVE_DOCS:
                     emitter.emit_reasoning(label="Analysing documents...", detail=None)
                 elif tool_name in (RETRIEVE_CHUNKS, FETCH_CHUNKS_BY_IDS):
-                    # Show how many documents we're actually using (unique docs in chunk result)
                     unique_doc_ids = set()
                     for item in result:
                         if isinstance(item, dict):

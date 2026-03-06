@@ -1521,7 +1521,7 @@ export const SearchBar = forwardRef<{
             onDrop={handleDrop}
                 style={{
                   background: '#ffffff',
-                  border: isDragOver ? '2px dashed #E0E0E0' : '1px solid #E0E0E0',
+                  border: isDragOver ? '2px dashed #E0E0E0' : 'none',
                   boxShadow: '0 2px 8px rgba(0, 0, 0, 0.05), 0 1px 3px rgba(0, 0, 0, 0.03)',
                   position: 'relative',
                   paddingTop: '16px',

@@ -102,10 +102,25 @@ export const AgentTaskCard: React.FC<AgentTaskCardProps> = ({ task, onInjectResu
             style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1, minWidth: 0 }}
           >
             <ScanText style={{ width: 15, height: 15, color: '#6B7280', flexShrink: 0 }} />
-            <span className="searching-shimmer-active" style={{ fontSize: 13, fontWeight: 500, color: '#374151', whiteSpace: 'nowrap' }}>
+            <span className="searching-shimmer-active" style={{ fontSize: 13, fontWeight: 500, color: '#374151', whiteSpace: 'nowrap', flexShrink: 0 }}>
               Searching
             </span>
             <DocTypeIcons docs={task.documentMeta} />
+            {task.query?.trim() && (
+              <span
+                style={{
+                  fontSize: 11,
+                  color: '#9CA3AF',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                  flex: 1,
+                  minWidth: 0,
+                }}
+              >
+                {task.query.trim()}
+              </span>
+            )}
           </motion.div>
         )}
 
@@ -119,10 +134,25 @@ export const AgentTaskCard: React.FC<AgentTaskCardProps> = ({ task, onInjectResu
             style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1, minWidth: 0 }}
           >
             <ScanText style={{ width: 15, height: 15, color: '#6B7280', flexShrink: 0 }} />
-            <span style={{ fontSize: 13, fontWeight: 500, color: '#374151', whiteSpace: 'nowrap' }}>
+            <span style={{ fontSize: 13, fontWeight: 500, color: '#374151', whiteSpace: 'nowrap', flexShrink: 0 }}>
               Analysing
             </span>
             <DocCountChip count={task.documentIds.length} />
+            {task.query?.trim() && (
+              <span
+                style={{
+                  fontSize: 11,
+                  color: '#9CA3AF',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                  flex: 1,
+                  minWidth: 0,
+                }}
+              >
+                {task.query.trim()}
+              </span>
+            )}
           </motion.div>
         )}
 

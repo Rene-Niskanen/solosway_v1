@@ -48,6 +48,8 @@ export interface SegmentInputProps {
   scrollWrapperPaddingBottom?: string;
   /** Optional font size for placeholder text only (e.g. "18.2px" for 30% larger). Does not affect typed input fontSize. */
   placeholderFontSize?: string;
+  /** Optional pill to show at the start of the input (e.g. WebSearchPill). Renders inline before placeholder/text, like citation chips. */
+  leadingPill?: React.ReactNode;
 }
 
 export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputProps>(function SegmentInput({
@@ -72,6 +74,7 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
   restoreSelectionRef,
   scrollWrapperPaddingBottom,
   placeholderFontSize,
+  leadingPill,
 }, ref) {
   const internalRef = React.useRef<HTMLDivElement>(null);
   const scrollWrapperRef = React.useRef<HTMLDivElement>(null);
@@ -551,10 +554,40 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
           >
             {showPlaceholderOverlay && (
               <div aria-hidden contentEditable={false} suppressContentEditableWarning style={overlayStyle}>
+                {leadingPill && (
+                  <span
+                    contentEditable={false}
+                    suppressContentEditableWarning
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      flexShrink: 0,
+                      marginRight: "6px",
+                      pointerEvents: "auto",
+                    }}
+                  >
+                    {leadingPill}
+                  </span>
+                )}
                 {isFocused && <span style={bobbingCaretStyle} aria-hidden />}
                 <span style={{ flex: 1, minWidth: 0, whiteSpace: "pre-wrap", wordWrap: "break-word" }}>{placeholder}</span>
               </div>
             )}
+        {leadingPill && !showPlaceholderOverlay && (
+          <span
+            contentEditable={false}
+            suppressContentEditableWarning
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              verticalAlign: "middle",
+              marginRight: "6px",
+              flexShrink: 0,
+            }}
+          >
+            {leadingPill}
+          </span>
+        )}
         {segments.map((seg, i) => {
         if (isTextSegment(seg)) {
           const isOnlyEmpty = segments.length === 1 && seg.value === "";
@@ -694,10 +727,40 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
       >
             {showPlaceholderOverlay && (
               <div aria-hidden contentEditable={false} suppressContentEditableWarning style={overlayStyle}>
+                {leadingPill && (
+                  <span
+                    contentEditable={false}
+                    suppressContentEditableWarning
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      flexShrink: 0,
+                      marginRight: "6px",
+                      pointerEvents: "auto",
+                    }}
+                  >
+                    {leadingPill}
+                  </span>
+                )}
                 {isFocused && <span style={bobbingCaretStyle} aria-hidden />}
                 <span style={{ flex: 1, minWidth: 0, whiteSpace: "pre-wrap", wordWrap: "break-word" }}>{placeholder}</span>
               </div>
             )}
+        {leadingPill && !showPlaceholderOverlay && (
+          <span
+            contentEditable={false}
+            suppressContentEditableWarning
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              verticalAlign: "middle",
+              marginRight: "6px",
+              flexShrink: 0,
+            }}
+          >
+            {leadingPill}
+          </span>
+        )}
         {segments.map((seg, i) => {
         if (isTextSegment(seg)) {
           const isOnlyEmpty = segments.length === 1 && seg.value === "";

@@ -112,9 +112,28 @@ function getUniqueSourcesFromCitations(citations: Record<string, any> | undefine
   return { count: items.length, items };
 }
 
-/** Sources for the dropdown: only documents that are actually cited in the response (citation markers like (1), (2), etc.). */
-function getSourcesFromReadingStepsOrCitations(message: { reasoningSteps?: ReasoningStep[]; citations?: Record<string, any> }): { count: number; items: Array<{ docId: string; filename?: string; citationData: any }> } {
-  return getUniqueSourcesFromCitations(message.citations);
+/** Sources for the dropdown: documents + web sources cited in the response. */
+function getSourcesFromReadingStepsOrCitations(message: { reasoningSteps?: ReasoningStep[]; citations?: Record<string, any>; webCitations?: Array<{ source_type: string; citation_number: string; title: string; url: string; summary?: string }> }): { count: number; items: Array<{ docId: string; filename?: string; citationData: any; isWeb?: boolean; url?: string }> } {
+  const docSources = getUniqueSourcesFromCitations(message.citations);
+  const items: Array<{ docId: string; filename?: string; citationData: any; isWeb?: boolean; url?: string }> = docSources.items.map(i => ({ ...i }));
+
+  if (Array.isArray(message.webCitations)) {
+    const seenUrls = new Set<string>();
+    for (const wc of message.webCitations) {
+      const url = wc.url || '';
+      if (!url || seenUrls.has(url)) continue;
+      seenUrls.add(url);
+      items.push({
+        docId: `web_${wc.citation_number}`,
+        filename: wc.title || new URL(url).hostname,
+        citationData: wc,
+        isWeb: true,
+        url,
+      });
+    }
+  }
+
+  return { count: items.length, items };
 }
 
 // Re-export for consumers that still import from SideChatPanel
@@ -661,14 +680,14 @@ export const MainAnswerHighlight: React.FC<{
         .main-answer-highlight {
           display: inline;
           margin: 0;
-          padding: 0;
-          padding-block: 0;
+          padding: 4px 6px;
+          padding-block: 4px;
           border-radius: 4px;
           font-weight: 800;
           line-height: inherit;
           box-decoration-break: clone;
           -webkit-box-decoration-break: clone;
-          background: linear-gradient(90deg, rgba(225, 231, 240, 0.85) 0%, rgba(225, 231, 240, 0.85) 100%);
+          background: linear-gradient(90deg, rgba(210, 228, 248, 0.38) 0%, rgba(210, 228, 248, 0.38) 100%);
           background-repeat: no-repeat;
           background-position: 0 50%;
           background-size: 0% 80%;
@@ -4425,6 +4444,10 @@ const CitationCallout: React.FC<{
       animate={citationCalloutEntrance.animate}
       transition={citationCalloutEntrance.transition}
       onAnimationComplete={!skipEntranceAnimation && onEntranceComplete ? () => onEntranceComplete() : undefined}
+      role={onViewInDocument ? 'button' : undefined}
+      tabIndex={onViewInDocument ? 0 : undefined}
+      onClick={onViewInDocument ? (e) => { if ((e.target as HTMLElement).closest?.('button')) return; onViewInDocument(); } : undefined}
+      onKeyDown={onViewInDocument ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onViewInDocument(); } } : undefined}
       style={{
         position: 'relative',
         display: 'flex',
@@ -4447,6 +4470,7 @@ const CitationCallout: React.FC<{
         overflowWrap: 'break-word',
         whiteSpace: 'pre-wrap',
         overflow: 'hidden',
+        cursor: onViewInDocument ? 'pointer' : undefined,
       }}
     >
       {docId && isWordDoc && (
@@ -6689,14 +6713,18 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     };
   }, []);
 
+  // Ref for openCitationInDocumentView so the agent-task injection effect can call it without stale closures
+  const openCitationInDocumentViewRef = React.useRef<((citationData: any, fromAgentAction?: boolean, viewedCitation?: { messageId: string; citationNumber: string } | null) => void) | null>(null);
+
   // Agent task result injection - when user clicks a completed agent task card
   React.useEffect(() => {
     const handleAgentTaskResultInject = (event: CustomEvent) => {
       const { taskId, query, resultText, citations, parentChatId } = event.detail || {};
       if (!resultText) return;
 
+      const messageId = `agent-result-${taskId || Date.now()}`;
       const agentResultMessage = {
-        id: `agent-result-${taskId || Date.now()}`,
+        id: messageId,
         type: 'response' as const,
         text: resultText,
         citations: citations || {},
@@ -6707,6 +6735,23 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       };
 
       setChatMessages(prev => [...prev, agentResultMessage]);
+
+      // Auto-open document preview for the first citation that has valid data
+      const citationsObj = citations || {};
+      const orderedKeys = Object.keys(citationsObj).sort((a, b) => parseInt(a) - parseInt(b));
+      const firstKey = orderedKeys[0];
+      if (firstKey && citationsObj[firstKey]) {
+        const cit = citationsObj[firstKey];
+        const docId = cit.doc_id || cit.document_id;
+        if (docId) {
+          requestAnimationFrame(() => {
+            const openFn = openCitationInDocumentViewRef.current;
+            if (openFn) {
+              openFn(cit, false, { messageId, citationNumber: firstKey });
+            }
+          });
+        }
+      }
     };
 
     window.addEventListener('agent-task-result-inject', handleAgentTaskResultInject as EventListener);
@@ -7902,6 +7947,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     responseStreamComplete?: boolean;
     /** When true, show "Files and sources" and "Choose project" buttons below the response. */
     noResults?: boolean;
+    /** Web citations from Exa web search (source_type, title, url, summary) */
+    webCitations?: Array<{ source_type: string; citation_number: string; title: string; url: string; summary?: string; published_date?: string; author?: string }>;
   }
   
   const [submittedQueries, setSubmittedQueries] = React.useState<SubmittedQuery[]>([]);
@@ -7974,8 +8021,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       documentMeta: [{ filename: docMeta.original_filename || 'Document', type: docType, doc_id: docMeta.doc_id }],
       sessionId,
       parentChatId: currentChatId,
+      webSearch: isWebSearchEnabled,
     });
-  }, [currentChatId, sessionId, dispatchAgentTask]);
+  }, [currentChatId, sessionId, dispatchAgentTask, isWebSearchEnabled]);
 
   // Listen for citation-agent-task-dispatch events from CitationCallout "Ask about this..." input
   React.useEffect(() => {
@@ -7988,11 +8036,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         documentMeta: [documentMeta],
         sessionId,
         parentChatId: currentChatId,
+        webSearch: isWebSearchEnabled,
       });
     };
     window.addEventListener('citation-agent-task-dispatch', handleCitationAgentDispatch as EventListener);
     return () => window.removeEventListener('citation-agent-task-dispatch', handleCitationAgentDispatch as EventListener);
-  }, [currentChatId, sessionId, dispatchAgentTask]);
+  }, [currentChatId, sessionId, dispatchAgentTask, isWebSearchEnabled]);
 
   /** When set, we just switched to this chat – disable response highlight swoop for a brief period. */
   const [skipSwoopForChatId, setSkipSwoopForChatId] = React.useState<string | null>(null);
@@ -10568,6 +10617,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     ? data.citations
                     : null;
                   const finalCitations = normalizeCitations(completeCitations ?? accumulatedCitations ?? {});
+                  const webCitationsFromComplete = Array.isArray(data.web_citations) ? data.web_citations : [];
                   
                   console.log('✅ SideChatPanel: finalizeText called:', {
                     finalTextLength: finalText.length,
@@ -10607,6 +10657,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           reasoningSteps: [],
                           citations: finalCitations,
                           noResults: data?.no_results === true,
+                          webCitations: webCitationsFromComplete.length > 0 ? webCitationsFromComplete : undefined,
                         };
                         const updated = [...prev, newResponseMessage];
                         persistedChatMessagesRef.current = updated;
@@ -10629,6 +10680,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         responseStartedAt: existingMessage?.responseStartedAt,
                         responseCompletedAt: existingMessage?.responseCompletedAt ?? Date.now(),
                         noResults: data?.no_results === true,
+                        webCitations: webCitationsFromComplete.length > 0 ? webCitationsFromComplete : undefined,
                       };
                       
                       const updated = prev.map(msg =>
@@ -11577,7 +11629,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               false, // planMode
               undefined, // existingPlan
               undefined, // onTitleChunk (main query path uses title from onComplete)
-              messageHistory.length === 0 // isNewChat: skip checkpoint load for first message
+              messageHistory.length === 0, // isNewChat: skip checkpoint load for first message
+              isWebSearchEnabled // webSearch: Exa web search toggle
             );
           } catch (error: any) {
             isProcessingQueryRef.current = false;
@@ -12055,6 +12108,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       toast({ title: "Error", description: error.message || "Failed to open document", variant: "destructive" });
     }
   }, [openExpandedCardView, toast, expandedCardViewDoc]);
+
+  // Keep ref in sync so agent-task injection effect can call it without stale closures
+  openCitationInDocumentViewRef.current = openCitationInDocumentView;
 
   // Agent-triggered citation open: open 50/50 directly. User clicks on citation numbers open the small panel instead.
   const handleCitationClick = React.useCallback((citationData: CitationData, fromAgentAction: boolean = false) => {
@@ -13132,10 +13188,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   for (const [k, v] of Object.entries(mergedRaw)) {
                     mergedCitations[String(k)] = normalizeCitationDocId(v) as CitationDataType;
                   }
+                const webCitationsFromCompleteInit = Array.isArray(data.web_citations) ? data.web_citations : [];
                 console.log('✅ SideChatPanel: LLM streaming complete for initial query:', {
                   summary: finalText.substring(0, 100),
                   documentsFound: data.relevant_documents?.length || 0,
-                    citations: Object.keys(mergedCitations).length
+                    citations: Object.keys(mergedCitations).length,
+                    webCitations: webCitationsFromCompleteInit.length
                 });
                 // Full-PDF preload for "View document" so it opens instantly
                 const seenDocsInitial = new Set<string>();
@@ -13164,7 +13222,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     reasoningSteps: existingMessage?.reasoningSteps || [], // Preserve reasoning steps
                       citations: mergedCitations, // Merged citations applied once
                     responseStartedAt: existingMessage?.responseStartedAt,
-                    responseCompletedAt: existingMessage?.responseCompletedAt ?? Date.now()
+                    responseCompletedAt: existingMessage?.responseCompletedAt ?? Date.now(),
+                    webCitations: webCitationsFromCompleteInit.length > 0 ? webCitationsFromCompleteInit : undefined,
                 };
                 
                   const updated = prev.map(msg =>
@@ -13556,7 +13615,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 setIsTitleStreaming(true);
                 setStreamedTitle(prev => prev + token);
               },
-              true // isNewChat (this path uses empty messageHistory [])
+              true, // isNewChat (this path uses empty messageHistory [])
+              isWebSearchEnabled // webSearch: Exa web search toggle
             );
             
             // Clear abort controller and processing flag on completion
@@ -14851,11 +14911,13 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 for (const [k, v] of Object.entries(mergedRaw)) {
                   mergedCitations[String(k)] = normalizeCitationDocId(v) as CitationDataType;
                 }
+              const webCitationsFromCompleteNoFile = Array.isArray(data.web_citations) ? data.web_citations : [];
               console.log('✅ SideChatPanel: LLM streaming complete:', {
                 summary: finalText.substring(0, 100),
                 documentsFound: data.relevant_documents?.length || 0,
                   citationCount: Object.keys(mergedCitations).length,
                   citationKeys: Object.keys(mergedCitations),
+                  webCitations: webCitationsFromCompleteNoFile.length,
                   chatIsActive,
                   queryChatId
                 });
@@ -14911,7 +14973,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       reasoningSteps: latestReasoningSteps.length > 0 ? latestReasoningSteps : (existingMessage?.reasoningSteps || []), // Preserve reasoning steps
                       citations: mergedCitations, // Merged citations applied once
                       responseStartedAt: existingMessage?.responseStartedAt,
-                      responseCompletedAt: existingMessage?.responseCompletedAt ?? Date.now()
+                      responseCompletedAt: existingMessage?.responseCompletedAt ?? Date.now(),
+                      webCitations: webCitationsFromCompleteNoFile.length > 0 ? webCitationsFromCompleteNoFile : undefined,
                     };
                     
                     const updated = prev.map(msg =>
@@ -14937,7 +15000,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     reasoningSteps: latestReasoningSteps.length > 0 ? latestReasoningSteps : (existingMessage?.reasoningSteps || []),
                     citations: mergedCitations,
                     responseStartedAt: existingMessage?.responseStartedAt,
-                    responseCompletedAt: existingMessage?.responseCompletedAt ?? Date.now()
+                    responseCompletedAt: existingMessage?.responseCompletedAt ?? Date.now(),
+                    webCitations: webCitationsFromCompleteNoFile.length > 0 ? webCitationsFromCompleteNoFile : undefined,
                   };
                   
                   // Update buffered messages
@@ -15649,7 +15713,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               setIsTitleStreaming(true);
               setStreamedTitle(prev => prev + token);
             },
-            messageHistory.length === 0 // isNewChat: skip checkpoint load for first message
+            messageHistory.length === 0, // isNewChat: skip checkpoint load for first message
+            isWebSearchEnabled // webSearch: Exa web search toggle
           );
           
           // Clear abort controller and processing flag on completion
@@ -16524,21 +16589,25 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   {copiedResponseId === finalKey ? 'Copied!' : 'Copy'}
                 </TooltipContent>
               </Tooltip>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <span style={{ display: 'inline-flex' }}>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <button
-                          type="button"
-                          className="feedback-bar-icon-btn"
-                          onClick={(e) => e.stopPropagation()}
-                          style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', border: 'none', cursor: 'pointer', color: '#9CA3AF' }}
-                        >
-                          <Download size={14} />
-                        </button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="start" sideOffset={4} onClick={(e) => e.stopPropagation()} style={{ width: '220px', borderRadius: '10px', overflow: 'hidden', padding: 0 }}>
+              <DropdownMenu modal={false}>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <DropdownMenuTrigger asChild>
+                      <button
+                        type="button"
+                        className="feedback-bar-icon-btn"
+                        onClick={(e) => e.stopPropagation()}
+                        style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', border: 'none', cursor: 'pointer', color: '#9CA3AF' }}
+                      >
+                        <Download size={14} />
+                      </button>
+                    </DropdownMenuTrigger>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom" sideOffset={6} className="bg-black text-white rounded-sm px-1.5 py-0.5 text-[11px] border-0 shadow-md">
+                    Download
+                  </TooltipContent>
+                </Tooltip>
+                <DropdownMenuContent align="start" sideOffset={4} onClick={(e) => e.stopPropagation()} style={{ width: '220px', borderRadius: '10px', overflow: 'hidden', padding: 0 }}>
                   <DropdownMenuItem
                     onClick={(e) => { e.stopPropagation(); handleDownloadResponseAsDocxForMessage(message.text || '', finalKey); }}
                     style={{
@@ -16587,13 +16656,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>Text file (.txt)</span>
                   </DropdownMenuItem>
                 </DropdownMenuContent>
-                    </DropdownMenu>
-                  </span>
-                </TooltipTrigger>
-                <TooltipContent side="bottom" sideOffset={6} className="bg-black text-white rounded-sm px-1.5 py-0.5 text-[11px] border-0 shadow-md">
-                  Download
-                </TooltipContent>
-              </Tooltip>
+              </DropdownMenu>
               <Tooltip>
                 <TooltipTrigger asChild>
                   <button
@@ -16752,8 +16815,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 <PopoverContent className="p-0 bg-transparent border-0 shadow-none" align="start" sideOffset={4} style={{ width: '240px', borderRadius: '10px', zIndex: 1, background: 'transparent' }}>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', background: 'none' }}>
                     {sources.items.map((item) => {
-                        const rawName = item.filename || `Document ${item.docId.slice(0, 8)}`;
-                        const isPDF = rawName.toLowerCase().endsWith('.pdf');
+                        const isWebSource = !!(item as any).isWeb;
+                        const rawName = item.filename || (isWebSource ? 'Web source' : `Document ${item.docId.slice(0, 8)}`);
+                        const isPDF = !isWebSource && rawName.toLowerCase().endsWith('.pdf');
                         const truncatedName = (() => {
                           const lastDot = rawName.lastIndexOf('.');
                           if (lastDot === -1 || rawName.length <= 32) return rawName.length > 32 ? rawName.slice(0, 29) + '...' : rawName;
@@ -16768,34 +16832,40 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             type="button"
                             onClick={(e) => {
                               e.stopPropagation();
-                              openCitationInDocumentView(item.citationData as CitationData, false);
+                              if (isWebSource && (item as any).url) {
+                                window.open((item as any).url, '_blank', 'noopener,noreferrer');
+                              } else {
+                                openCitationInDocumentView(item.citationData as CitationData, false);
+                              }
                               setSourcesDropdownMessageId(null);
                             }}
                             style={{
                               display: 'flex', alignItems: 'center', gap: '10px',
-                              padding: '6px 12px', border: '1px solid rgba(229, 231, 235, 0.6)', borderRadius: '6px',
-                              background: '#ffffff', cursor: 'pointer', color: '#374151', fontSize: '12px',
+                              padding: '6px 12px', border: '1px solid rgba(255, 255, 255, 0.2)', borderRadius: '6px',
+                              background: '#374151', cursor: 'pointer', color: '#ffffff', fontSize: '12px',
                               textAlign: 'left', width: '100%', boxSizing: 'border-box',
                               transition: 'background-color 0.15s ease-out, border-color 0.15s ease-out',
                             }}
-                            title={rawName}
+                            title={isWebSource ? (item as any).url : rawName}
                             onMouseEnter={(e) => {
                               const el = e.currentTarget as HTMLButtonElement;
-                              el.style.background = 'rgba(239, 246, 255, 0.9)';
-                              el.style.borderColor = 'rgba(191, 219, 254, 0.7)';
+                              el.style.background = 'rgba(55, 65, 81, 0.9)';
+                              el.style.borderColor = 'rgba(255, 255, 255, 0.35)';
                             }}
                             onMouseLeave={(e) => {
                               const el = e.currentTarget as HTMLButtonElement;
-                              el.style.background = '#ffffff';
-                              el.style.borderColor = 'rgba(229, 231, 235, 0.6)';
+                              el.style.background = '#374151';
+                              el.style.borderColor = 'rgba(255, 255, 255, 0.2)';
                             }}
                           >
-                            {isPDF ? (
-                              <img src="/pdfnew.png" alt="PDF" style={{ width: 12, height: 12, flexShrink: 0, objectFit: 'contain' }} />
+                            {isWebSource ? (
+                              <Globe size={12} style={{ flexShrink: 0, color: '#ffffff' }} />
+                            ) : isPDF ? (
+                              <img src="/pdfnew.png" alt="PDF" style={{ width: 12, height: 12, flexShrink: 0, objectFit: 'contain', filter: 'brightness(0) invert(1)' }} />
                             ) : (
-                              <Files size={14} style={{ flexShrink: 0, color: '#9ca3af' }} />
+                              <Files size={14} style={{ flexShrink: 0, color: '#ffffff' }} />
                             )}
-                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{truncatedName}</span>
+                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#ffffff' }}>{truncatedName}</span>
                           </button>
                         );
                       })}
@@ -16812,7 +16882,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         </CitationMessageVisibility>
       );
     }).filter(Boolean);
-  }, [chatMessages, showReasoningTrace, showHighlight, showCitations, showCitationPreviewBar, showBlueCitationHighlight, expandedThoughtMessageIds, toggleThoughtExpanded, restoredMessageIdsRef, reopenNoAnimationTick, handleUserCitationClick, onOpenProperty, scrollToBottom, expandedCardViewDoc, propertyAttachments, orangeCitationNumbersByMessage, citationClickPanel, citationViewedInDocument, currentChatId, skipSwoopForChatId, revealCompleteTick, likedResponseIds, dislikedResponseIds, copiedResponseId, shimmerTickMessageId, sourcesDropdownMessageId, addToDbPopoverMessageId, addedToDbResponseIds, showBarForResponseId, handleThumbsUpResponse, handleThumbsDownResponse, handleCopyResponse, handleDownloadResponse, handleDownloadResponseAsDocxForMessage, openCitationInDocumentView, openFeedbackModal, handleAddToDbConfirm, isBotPaused, citationReviewMessageId, citationReviewCurrentIndex, citationReviewAcceptedIndices, citationReviewShowReviewNextOnly, rejectedCitationNumbersByMessage, handleCitationVisibilityChange]);
+  }, [chatMessages, showReasoningTrace, showHighlight, showCitations, showCitationPreviewBar, showBlueCitationHighlight, expandedThoughtMessageIds, toggleThoughtExpanded, restoredMessageIdsRef, reopenNoAnimationTick, handleUserCitationClick, onOpenProperty, scrollToBottom, expandedCardViewDoc, propertyAttachments, orangeCitationNumbersByMessage, citationClickPanel, citationViewedInDocument, currentChatId, skipSwoopForChatId, revealCompleteTick, likedResponseIds, dislikedResponseIds, copiedResponseId, shimmerTickMessageId, sourcesDropdownMessageId, addToDbPopoverMessageId, addedToDbResponseIds, showBarForResponseId, handleThumbsUpResponse, handleThumbsDownResponse, handleCopyResponse, handleDownloadResponse, handleDownloadResponseAsDocxForMessage, openCitationInDocumentView, openFeedbackModal, handleAddToDbConfirm, isBotPaused, citationReviewMessageId, citationReviewCurrentIndex, citationReviewAcceptedIndices, citationReviewShowReviewNextOnly, rejectedCitationNumbersByMessage, handleCitationVisibilityChange, getTasksForChat, injectResultToChat, cancelAgentTask, retryAgentTask]);
 
   return (
     <>
@@ -17464,7 +17534,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               setViewOptionsOpen(false);
                               if (onSidebarToggle) onSidebarToggle();
                             }}
-                            className="flex items-center gap-2 w-full rounded-sm px-2 py-2 text-left hover:bg-[#f5f5f5] text-[13px] font-normal text-[#374151]"
+                            className="flex items-center gap-2 w-full rounded-sm px-2 text-left hover:bg-[#f5f5f5] text-[13px] font-normal text-[#374151]"
                           >
                             <PanelLeftOpen className="w-6 h-6 text-[#666] flex-shrink-0 scale-x-[-1]" strokeWidth={1.25} />
                             Sidebar
@@ -17478,7 +17548,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               setViewOptionsOpen(false);
                               toggleFilingSidebar();
                             }}
-                            className="flex items-center gap-2 w-full rounded-sm px-2 py-2 text-left hover:bg-[#f5f5f5] text-[13px] font-normal text-[#374151]"
+                            className="flex items-center gap-2 w-full rounded-sm px-2 text-left hover:bg-[#f5f5f5] text-[13px] font-normal text-[#374151]"
                           >
                             <Files className="w-6 h-6 text-[#666] flex-shrink-0" strokeWidth={1.25} />
                             Files
@@ -17492,7 +17562,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               setViewOptionsOpen(false);
                               handleMinimiseChat();
                             }}
-                            className="flex items-center gap-2 w-full rounded-sm px-2 py-2 text-left hover:bg-[#f5f5f5] text-[13px] font-normal text-[#374151]"
+                            className="flex items-center gap-2 w-full rounded-sm px-2 text-left hover:bg-[#f5f5f5] text-[13px] font-normal text-[#374151]"
                           >
                             <Minimize2 className="w-6 h-6 text-[#666] flex-shrink-0" strokeWidth={1.25} />
                             Minimise
@@ -17505,7 +17575,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               setViewOptionsOpen(false);
                               handleExpandChat();
                             }}
-                            className="flex items-center gap-2 w-full rounded-sm px-2 py-2 text-left hover:bg-[#f5f5f5] text-[13px] font-normal text-[#374151]"
+                            className="flex items-center gap-2 w-full rounded-sm px-2 text-left hover:bg-[#f5f5f5] text-[13px] font-normal text-[#374151]"
                           >
                             <MoveDiagonal className="w-6 h-6 text-[#666] flex-shrink-0" strokeWidth={1.25} />
                             Expand
@@ -17520,7 +17590,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             void toggleBrowserFullscreen();
                             setViewOptionsOpen(false);
                           }}
-                          className="flex items-center gap-2 w-full rounded-sm px-2 py-2 text-left hover:bg-[#f5f5f5] text-[13px] font-normal text-[#374151]"
+                          className="flex items-center gap-2 w-full rounded-sm px-2 text-left hover:bg-[#f5f5f5] text-[13px] font-normal text-[#374151]"
                         >
                           {isBrowserFullscreen ? (
                             <Minimize className="w-6 h-6 text-[#666] flex-shrink-0" strokeWidth={1.25} />
@@ -17537,7 +17607,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               setViewOptionsOpen(false);
                               handleNewChatClick();
                             }}
-                            className="flex items-center gap-2 w-full rounded-sm px-2 py-2 text-left hover:bg-[#f5f5f5] text-[13px] font-normal text-[#374151]"
+                            className="flex items-center gap-2 w-full rounded-sm px-2 text-left hover:bg-[#f5f5f5] text-[13px] font-normal text-[#374151]"
                           >
                             <img src="/newchat1.png" alt="" className="h-6 w-6 flex-shrink-0 object-contain" />
                             New chat
@@ -17591,16 +17661,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             </button>
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="start" sideOffset={4} onClick={(e) => e.stopPropagation()} className="min-w-[165px] w-auto rounded-md border border-gray-200 bg-white p-2 shadow-md">
-                            <DropdownMenuItem onClick={(e) => { e.stopPropagation(); if (starredToastTimeoutRef.current) clearTimeout(starredToastTimeoutRef.current); setShowStarredToast(true); starredToastTimeoutRef.current = setTimeout(() => { setShowStarredToast(false); starredToastTimeoutRef.current = null; }, 3000); }} className="flex items-center gap-2 cursor-pointer rounded-sm px-2 py-2 text-left text-[13px] font-normal text-[#374151] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#374151]">
-                              <Star className="w-6 h-6 text-[#666] flex-shrink-0" strokeWidth={1.25} />
+                            <DropdownMenuItem onClick={(e) => { e.stopPropagation(); if (starredToastTimeoutRef.current) clearTimeout(starredToastTimeoutRef.current); setShowStarredToast(true); starredToastTimeoutRef.current = setTimeout(() => { setShowStarredToast(false); starredToastTimeoutRef.current = null; }, 3000); }} className="flex items-center gap-2 cursor-pointer rounded-sm px-2 text-left text-[13px] font-normal text-[#374151] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#374151]">
+                              <Star className="w-4 h-4 text-[#666] flex-shrink-0" strokeWidth={1.25} />
                               Star
                             </DropdownMenuItem>
-                            <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleToggleEdit(); }} className="flex items-center gap-2 cursor-pointer rounded-sm px-2 py-2 text-left text-[13px] font-normal text-[#374151] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#374151]">
-                              <Pencil className="w-6 h-6 text-[#666] flex-shrink-0" strokeWidth={1.25} />
+                            <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleToggleEdit(); }} className="flex items-center gap-2 cursor-pointer rounded-sm px-2 text-left text-[13px] font-normal text-[#374151] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#374151]">
+                              <Pencil className="w-4 h-4 text-[#666] flex-shrink-0" strokeWidth={1.25} />
                               Rename
                             </DropdownMenuItem>
-                            <DropdownMenuItem onClick={(e) => { e.stopPropagation(); toast({ title: 'Add to project', description: 'Add to project coming soon.' }); }} className="flex items-center gap-2 cursor-pointer rounded-sm px-2 py-2 text-left text-[13px] font-normal text-[#374151] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#374151]">
-                              <FolderPlus className="w-6 h-6 text-[#666] flex-shrink-0" strokeWidth={1.25} />
+                            <DropdownMenuItem onClick={(e) => { e.stopPropagation(); toast({ title: 'Add to project', description: 'Add to project coming soon.' }); }} className="flex items-center gap-2 cursor-pointer rounded-sm px-2 text-left text-[13px] font-normal text-[#374151] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#374151]">
+                              <FolderPlus className="w-4 h-4 text-[#666] flex-shrink-0" strokeWidth={1.25} />
                               Add to project
                             </DropdownMenuItem>
                             <DropdownMenuSeparator className="my-1 bg-gray-200" />
@@ -17612,9 +17682,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                   if (onNewChat) onNewChat();
                                 }
                               }}
-                              className="flex items-center gap-2 cursor-pointer rounded-sm px-2 py-2 text-left text-[13px] font-normal text-red-600 hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-red-600"
+                              className="flex items-center gap-2 cursor-pointer rounded-sm px-2 text-left text-[13px] font-normal text-red-600 hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-red-600"
                             >
-                              <Trash2 className="w-6 h-6 text-red-600 flex-shrink-0" strokeWidth={1.25} />
+                              <Trash2 className="w-4 h-4 text-red-600 flex-shrink-0" strokeWidth={1.25} />
                               Delete
                             </DropdownMenuItem>
                           </DropdownMenuContent>
@@ -17661,16 +17731,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           </button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="start" sideOffset={4} onClick={(e) => e.stopPropagation()} className="min-w-[165px] w-auto rounded-md border border-gray-200 bg-white p-2 shadow-md">
-                          <DropdownMenuItem onClick={(e) => { e.stopPropagation(); if (starredToastTimeoutRef.current) clearTimeout(starredToastTimeoutRef.current); setShowStarredToast(true); starredToastTimeoutRef.current = setTimeout(() => { setShowStarredToast(false); starredToastTimeoutRef.current = null; }, 3000); }} className="flex items-center gap-2 cursor-pointer rounded-sm px-2 py-2 text-left text-[13px] font-normal text-[#374151] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#374151]">
-                            <Star className="w-6 h-6 text-[#666] flex-shrink-0" strokeWidth={1.25} />
+                          <DropdownMenuItem onClick={(e) => { e.stopPropagation(); if (starredToastTimeoutRef.current) clearTimeout(starredToastTimeoutRef.current); setShowStarredToast(true); starredToastTimeoutRef.current = setTimeout(() => { setShowStarredToast(false); starredToastTimeoutRef.current = null; }, 3000); }} className="flex items-center gap-2 cursor-pointer rounded-sm px-2 text-left text-[13px] font-normal text-[#374151] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#374151]">
+                            <Star className="w-4 h-4 text-[#666] flex-shrink-0" strokeWidth={1.25} />
                             Star
                           </DropdownMenuItem>
-                          <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleToggleEdit(); }} className="flex items-center gap-2 cursor-pointer rounded-sm px-2 py-2 text-left text-[13px] font-normal text-[#374151] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#374151]">
-                            <Pencil className="w-6 h-6 text-[#666] flex-shrink-0" strokeWidth={1.25} />
+                          <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleToggleEdit(); }} className="flex items-center gap-2 cursor-pointer rounded-sm px-2 text-left text-[13px] font-normal text-[#374151] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#374151]">
+                            <Pencil className="w-4 h-4 text-[#666] flex-shrink-0" strokeWidth={1.25} />
                             Rename
                           </DropdownMenuItem>
-                          <DropdownMenuItem onClick={(e) => { e.stopPropagation(); toast({ title: 'Add to project', description: 'Add to project coming soon.' }); }} className="flex items-center gap-2 cursor-pointer rounded-sm px-2 py-2 text-left text-[13px] font-normal text-[#374151] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#374151]">
-                            <FolderPlus className="w-6 h-6 text-[#666] flex-shrink-0" strokeWidth={1.25} />
+                          <DropdownMenuItem onClick={(e) => { e.stopPropagation(); toast({ title: 'Add to project', description: 'Add to project coming soon.' }); }} className="flex items-center gap-2 cursor-pointer rounded-sm px-2 text-left text-[13px] font-normal text-[#374151] hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-[#374151]">
+                            <FolderPlus className="w-4 h-4 text-[#666] flex-shrink-0" strokeWidth={1.25} />
                             Add to project
                           </DropdownMenuItem>
                           <DropdownMenuSeparator className="my-1 bg-gray-200" />
@@ -17682,9 +17752,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                 if (onNewChat) onNewChat();
                               }
                             }}
-                            className="flex items-center gap-2 cursor-pointer rounded-sm px-2 py-2 text-left text-[13px] font-normal text-red-600 hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-red-600"
+                            className="flex items-center gap-2 cursor-pointer rounded-sm px-2 text-left text-[13px] font-normal text-red-600 hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-red-600"
                           >
-                            <Trash2 className="w-6 h-6 text-red-600 flex-shrink-0" strokeWidth={1.25} />
+                            <Trash2 className="w-4 h-4 text-red-600 flex-shrink-0" strokeWidth={1.25} />
                             Delete
                           </DropdownMenuItem>
                         </DropdownMenuContent>
@@ -18424,6 +18494,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             restoreSelectionRef={restoreSelectionRef}
                             placeholder="Ask anything..."
                             placeholderFontSize="16.38px"
+                            leadingPill={isWebSearchEnabled ? <WebSearchPill onDismiss={() => setIsWebSearchEnabled(false)} /> : undefined}
                             disabled={isSubmitted}
                             style={{
                               width: '100%',
@@ -18564,9 +18635,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                   <AudioLines className="w-6 h-6 text-gray-900" strokeWidth={1.25} />
                                 </button>
                               )}
-                              {buttonCollapseLevel < 3 && isWebSearchEnabled && (
-                                <WebSearchPill onDismiss={() => setIsWebSearchEnabled(false)} />
-                              )}
                               
                               {/* Send button */}
                           <AnimatePresence mode="wait">
@@ -18662,6 +18730,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     <AnimatePresence>
                       {renderedMessages}
                     </AnimatePresence>
+
+                    {/* Agent task panel (Searching / Analysing) - below all messages, not inside any response card */}
+                    {currentChatId && (() => {
+                      const agentTasks = getTasksForChat(currentChatId);
+                      return agentTasks.length > 0 ? (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginTop: 4 }}>
+                          <AgentTaskPanel tasks={agentTasks} onInjectResult={injectResultToChat} onCancel={cancelAgentTask} onRetry={retryAgentTask} />
+                        </div>
+                      ) : null;
+                    })()}
                     
                     {/* Plan Generation Reasoning Steps - show only the latest step during streaming */}
                     {planGenerationReasoningSteps.length > 0 && planBuildStatus === 'streaming' && !showPlanViewer && (
@@ -18966,10 +19044,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         )}
                       </div>
                     )}
-                    {/* Agent task panel - always visible when tasks exist for current chat */}
-                    {currentChatId && (() => { const agentTasks = getTasksForChat(currentChatId); return agentTasks.length > 0 ? (
-                      <AgentTaskPanel tasks={agentTasks} onInjectResult={injectResultToChat} onCancel={cancelAgentTask} onRetry={retryAgentTask} />
-                    ) : null; })()}
                     {/* Scroll anchor - ensures bottom of response is visible above chat bar */}
                     {/* Extra padding ensures content isn't hidden behind chat input when scrolled to bottom */}
                     <div ref={messagesEndRef} style={{ height: '160px', minHeight: '160px', flexShrink: 0 }} />
@@ -19171,6 +19245,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           <div style={{ minWidth: 48, minHeight: 26, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                             {(() => {
                               const isDocOpenForCurrent = !!citationViewedInDocument && citationViewedInDocument.messageId === reviewMsgId && citationViewedInDocument.citationNumber === String(currentNum);
+                              const isBigPanelOpen = !!expandedCardViewDoc && citationViewedInDocument?.messageId === reviewMsgId && citationViewedInDocument?.citationNumber === String(currentNum);
                               return (
                                 <button
                                   type="button"
@@ -19178,14 +19253,22 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                     e.preventDefault();
                                     e.stopPropagation();
                                     if (citationReviewMessageIdRef.current !== reviewMsgId) return; // Guard: bar must apply to current response only
-                                    if (isDocOpenForCurrent) closeExpandedCardView();
-                                    else if (citationData) openCitationInDocumentView(citationData as CitationData, false);
+                                    if (isBigPanelOpen) {
+                                      closeExpandedCardView();
+                                      return;
+                                    }
+                                    // View = show document preview below the answer only (inline callout), do NOT open the big 50/50 document panel
+                                    if (citationData) {
+                                      const viewed = { messageId: reviewMsgId, citationNumber: String(currentNum) };
+                                      setCitationViewedInDocument(viewed);
+                                      if (currentChatId) setDocumentViewedCitation(currentChatId, viewed);
+                                    }
                                   }}
                                   style={{ ...barBtn, fontWeight: 600, color: '#666666', backgroundColor: '#ffffff', border: '1px solid #d4d4d4', boxShadow: '0 1px 1px rgba(0,0,0,0.05)' }}
                                   onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#f5f5f5'; }}
                                   onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#ffffff'; }}
                                 >
-                                  {isDocOpenForCurrent ? 'Close' : 'View'}
+                                  {isBigPanelOpen ? 'Close' : 'View'}
                                 </button>
                               );
                             })()}
@@ -19536,6 +19619,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           restoreSelectionRef={restoreSelectionRef}
                           placeholder="Ask anything..."
                           placeholderFontSize="16.38px"
+                          leadingPill={isWebSearchEnabled ? <WebSearchPill onDismiss={() => setIsWebSearchEnabled(false)} /> : undefined}
                           disabled={isSubmitted}
                           style={{
                             width: '100%',
@@ -19828,9 +19912,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               </button>
                             )}
                           </div>
-                        )}
-                        {buttonCollapseLevel < 3 && isWebSearchEnabled && (
-                          <WebSearchPill onDismiss={() => setIsWebSearchEnabled(false)} />
                         )}
                         
                         {/* Send button or Stop button (when streaming) */}

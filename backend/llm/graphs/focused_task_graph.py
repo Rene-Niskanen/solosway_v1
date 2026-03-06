@@ -133,7 +133,7 @@ async def focused_responder_node(state: FocusedTaskState) -> FocusedTaskState:
         page = chunk.get("page_number", "?")
         filename = chunk.get("document_filename") or chunk.get("original_filename") or "document"
         chunk_context_parts.append(
-            f"[Chunk {i+1}] (doc: {filename}, page {page}, doc_id: {doc_id})\n{text}"
+            f"[{i+1}] (doc: {filename}, page {page}, doc_id: {doc_id})\n{text}"
         )
 
     chunk_context = "\n\n---\n\n".join(chunk_context_parts)
@@ -186,6 +186,10 @@ async def focused_responder_node(state: FocusedTaskState) -> FocusedTaskState:
 
     citations = []
     import re
+
+    # Normalize [Chunk N] → [N] in case the LLM echoed the old chunk label format
+    answer = re.sub(r'\[Chunk\s+(\d+)\]', r'[\1]', answer, flags=re.IGNORECASE)
+
     citation_nums = set(re.findall(r'\[(\d+)\]', answer))
     for num_str in citation_nums:
         idx = int(num_str) - 1
@@ -199,6 +203,10 @@ async def focused_responder_node(state: FocusedTaskState) -> FocusedTaskState:
                     bbox = json.loads(bbox)
                 except Exception:
                     bbox = {}
+
+            # Ensure bbox has page field for frontend document preview
+            if isinstance(bbox, dict) and bbox and "page" not in bbox and page_number:
+                bbox = {**bbox, "page": page_number}
 
             citations.append({
                 "citation_number": int(num_str),
