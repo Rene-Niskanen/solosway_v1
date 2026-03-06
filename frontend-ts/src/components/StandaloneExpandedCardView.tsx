@@ -1479,7 +1479,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
       transition={{ duration: 0 }}
       className={isFullscreen ? `fixed inset-0 flex flex-col ${initialFullscreen ? 'z-[100010]' : 'z-[10000]'}` : "flex flex-col z-[9999]"}
       style={{
-        backgroundColor: '#F9F9F8',
+        backgroundColor: '#FFFFFF',
         ...(isFullscreen ? {
           position: 'fixed',
           top: 0,
@@ -1556,9 +1556,9 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
       
       {/* Header - filename bar (close, PDF icon, name, fullscreen) */}
       <div className="pr-4 pl-6 shrink-0" style={{ 
-        background: '#F9F9F8',
-        backgroundColor: '#F9F9F8',
-        border: '4px solid #F9F9F8',
+        background: '#FFFFFF',
+        backgroundColor: '#FFFFFF',
+        border: '4px solid #FFFFFF',
         paddingTop: '12px',
         paddingBottom: '8px',
         borderTopLeftRadius: isFullscreen ? 0 : '16px',
@@ -1609,7 +1609,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
                   className="flex items-center gap-1.5 rounded-md border border-slate-200/70"
                   style={{
                     padding: '3px 6px',
-                    backgroundColor: '#F9F9F8',
+                    backgroundColor: '#FFFFFF',
                   }}
                 >
                   <button
@@ -1746,7 +1746,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
           flex: '1 1 0%', // flex-basis 0 so this column gets correct height at opening width (fixes scroll when narrow)
           minHeight: 0, // Critical: allows flex item to shrink and enable scrolling
           overflow: 'auto',
-          backgroundColor: '#F9F9F8',
+          backgroundColor: '#FFFFFF',
           borderBottomLeftRadius: isFullscreen ? 0 : '16px',
           borderBottomRightRadius: isFullscreen ? 0 : '16px',
           position: 'relative'
@@ -1879,7 +1879,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
                               height: `${Math.min(dimensions.height, finalBboxHeight)}px`,
                               backgroundColor: 'rgba(188, 212, 235, 0.4)',
                               border: 'none',
-                              borderRadius: '2px',
+                              borderRadius: '3px',
                               pointerEvents: 'auto',
                               cursor: 'pointer',
                               zIndex: 10,

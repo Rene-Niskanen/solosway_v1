@@ -681,14 +681,14 @@ export const MainAnswerHighlight: React.FC<{
         .main-answer-highlight {
           display: inline;
           margin: 0;
-          padding: 4px 6px;
+          padding: 4px 8px;
           padding-block: 4px;
-          border-radius: 4px;
-          font-weight: 800;
+          border-radius: 6px;
+          font-weight: 700;
           line-height: inherit;
           box-decoration-break: clone;
           -webkit-box-decoration-break: clone;
-          background: linear-gradient(90deg, rgba(210, 228, 248, 0.38) 0%, rgba(210, 228, 248, 0.38) 100%);
+          background: linear-gradient(90deg, rgba(219, 234, 254, 0.55) 0%, rgba(219, 234, 254, 0.55) 100%);
           background-repeat: no-repeat;
           background-position: 0 50%;
           background-size: 0% 80%;
@@ -721,8 +721,8 @@ const OrangeCitationSwoopHighlight: React.FC<{ children: React.ReactNode }> = ({
       .orange-citation-swoop {
         display: inline;
         margin: 0;
-        padding: 3px 0;
-        border-radius: 0;
+        padding: 3px 4px;
+        border-radius: 3px;
         box-decoration-break: clone;
         -webkit-box-decoration-break: clone;
         font-weight: inherit;
@@ -730,7 +730,7 @@ const OrangeCitationSwoopHighlight: React.FC<{ children: React.ReactNode }> = ({
         line-height: inherit;
         overflow: visible;
         pointer-events: none;
-        background: linear-gradient(90deg, #F5EBD9 0%, #F5EBD9 100%);
+        background: linear-gradient(90deg, rgba(254, 243, 199, 0.85) 0%, rgba(254, 243, 199, 0.85) 100%);
         background-repeat: no-repeat;
         background-size: 0% 100%;
         animation: orange-citation-swoop 0.22s cubic-bezier(0.22, 1, 0.36, 1) 0.04s forwards;
@@ -775,11 +775,12 @@ const BlueCitedTextHighlight: React.FC<{
       style={{
         display: 'inline',
         margin: 0,
-        padding: '3.4px 2px',
-        borderRadius: 0,
-        boxDecorationBreak: 'slice',
-        WebkitBoxDecorationBreak: 'slice',
-        backgroundColor: 'rgba(188, 212, 235, 0.4)',
+        padding: '3.45px 5px',
+        borderRadius: 3,
+        boxDecorationBreak: 'clone',
+        WebkitBoxDecorationBreak: 'clone',
+        backgroundColor: 'rgba(191, 219, 254, 0.45)',
+        border: 'none',
         lineHeight: 1.5,
         overflow: 'visible',
         pointerEvents: 'none',
@@ -811,7 +812,7 @@ const GreenCitedTextHighlight: React.FC<{ children: React.ReactNode }> = ({ chil
     style={{
       display: 'inline',
       margin: 0,
-      padding: '0 1px',
+      padding: '0 2px',
       borderRadius: 4,
       boxDecorationBreak: 'clone',
       WebkitBoxDecorationBreak: 'clone',
@@ -1558,8 +1559,9 @@ const StreamingResponseText: React.FC<{
     });
   }
 
-  // Turn a single string segment into React nodes (MAIN placeholder split + render)
-  const renderStringSegment = (part: string, keyPrefix: string): React.ReactNode[] => {
+  // Turn a single string segment into React nodes (MAIN placeholder split + render).
+  // When rawMarkdown is true (e.g. in citation highlight), show literal ** and * instead of rendering bold/italic.
+  const renderStringSegment = (part: string, keyPrefix: string, rawMarkdown?: boolean): React.ReactNode[] => {
     const mainPlaceholderRe = /%%MAIN_(\d+)%%/g;
     const mainParts = part.split(mainPlaceholderRe);
     const nodesToAdd: React.ReactNode[] = [];
@@ -1579,14 +1581,33 @@ const StreamingResponseText: React.FC<{
           );
         }
       } else if (segment) {
-        nodesToAdd.push(...renderTextSegment(segment).map((node, wrapIdx) =>
-          React.isValidElement(node)
-            ? React.cloneElement(node, { key: `${keyPrefix}-text-${i}-${wrapIdx}` })
-            : <React.Fragment key={`${keyPrefix}-text-${i}-${wrapIdx}`}>{node}</React.Fragment>
-        ));
+        if (rawMarkdown) {
+          nodesToAdd.push(<React.Fragment key={`${keyPrefix}-text-${i}`}>{segment}</React.Fragment>);
+        } else {
+          nodesToAdd.push(...renderTextSegment(segment).map((node, wrapIdx) =>
+            React.isValidElement(node)
+              ? React.cloneElement(node, { key: `${keyPrefix}-text-${i}-${wrapIdx}` })
+              : <React.Fragment key={`${keyPrefix}-text-${i}-${wrapIdx}`}>{node}</React.Fragment>
+          ));
+        }
       }
     }
     return nodesToAdd.length > 0 ? nodesToAdd : [<React.Fragment key={keyPrefix}>{part}</React.Fragment>];
+  };
+
+  // Convert React node (strong/em) to raw markdown string for display in citation highlight.
+  const toRawMarkdownString = (node: React.ReactNode): string => {
+    if (node == null) return '';
+    if (typeof node === 'string') return node;
+    if (React.isValidElement(node)) {
+      const type = (node as React.ReactElement).type;
+      const children = (node.props as { children?: React.ReactNode }).children;
+      const text = React.Children.map(children, toRawMarkdownString)?.join('') ?? '';
+      if (type === 'strong') return `**${text}**`;
+      if (type === 'em') return `*${text}*`;
+      return text;
+    }
+    return String(node);
   };
 
   // Explode one strong/em element so citation placeholders become sibling segments; then the full
@@ -2122,9 +2143,9 @@ const StreamingResponseText: React.FC<{
       return citationNumbers.filter(showCalloutForNum).length > 0;
     };
     const citationLineBarBlockStyle = { position: 'relative' as const };
-    const citationLineBarInlineStyle = { position: 'absolute' as const, left: '-16px', top: 0, bottom: 0, width: '3px', background: '#d1d5db', pointerEvents: 'none' as const, borderRadius: '2px' };
+    const citationLineBarInlineStyle = { position: 'absolute' as const, left: '-14px', top: -1, bottom: -1, width: '2px', background: '#e5e7eb', pointerEvents: 'none' as const, borderRadius: '2px' };
     /* List items need extra offset so the line stays left of bullet/text (ul/ol + li padding reduce effective space) */
-    const citationLineBarLiBarStyle = { position: 'absolute' as const, left: '-40px', top: 0, bottom: 0, width: '3px', background: '#d1d5db', pointerEvents: 'none' as const, borderRadius: '2px' };
+    const citationLineBarLiBarStyle = { position: 'absolute' as const, left: '-38px', top: -1, bottom: -1, width: '2px', background: '#e5e7eb', pointerEvents: 'none' as const, borderRadius: '2px' };
     const firstCitationNum = orderedCitationNumbersForMessage?.[0] ?? null;
     const renderCallout = (num: string, keyPrefix: string, i: number) => (
       <div key={`${keyPrefix}-${i}-${num}`} style={{ width: '100%', maxWidth: '100%', minWidth: 0, boxSizing: 'border-box' }}>
@@ -2399,7 +2420,7 @@ const StreamingResponseText: React.FC<{
       const content = (
         <>
           <blockquote style={{
-            ...(showBar ? citationLineBarBlockStyle : { borderLeft: '3px solid #d1d5db', paddingLeft: '13.1px' }),
+            ...(showBar ? citationLineBarBlockStyle : { borderLeft: '2px solid #e5e7eb', paddingLeft: '13.1px' }),
             margin: '8.8px 0',
             color: '#6b7280',
             wordWrap: 'break-word',
@@ -2463,9 +2484,9 @@ const StreamingResponseText: React.FC<{
       return citationNumbers.filter(showCalloutForNum).length > 0;
     };
     const citationLineBarBlockStyle = { position: 'relative' as const };
-    const citationLineBarInlineStyle = { position: 'absolute' as const, left: '-16px', top: 0, bottom: 0, width: '3px', background: '#d1d5db', pointerEvents: 'none' as const, borderRadius: '2px' };
+    const citationLineBarInlineStyle = { position: 'absolute' as const, left: '-14px', top: -1, bottom: -1, width: '2px', background: '#e5e7eb', pointerEvents: 'none' as const, borderRadius: '2px' };
     /* List items need extra offset so the line stays left of bullet/text (ul/ol + li padding reduce effective space) */
-    const citationLineBarLiBarStyle = { position: 'absolute' as const, left: '-40px', top: 0, bottom: 0, width: '3px', background: '#d1d5db', pointerEvents: 'none' as const, borderRadius: '2px' };
+    const citationLineBarLiBarStyle = { position: 'absolute' as const, left: '-38px', top: -1, bottom: -1, width: '2px', background: '#e5e7eb', pointerEvents: 'none' as const, borderRadius: '2px' };
     const firstCitationNumP = orderedCitationNumbersForMessage?.[0] ?? null;
     const renderCalloutP = (num: string, keyPrefix: string, i: number) => (
       <div key={`${keyPrefix}-${i}-${num}`} style={{ width: '100%', maxWidth: '100%', minWidth: 0, boxSizing: 'border-box' }}>
@@ -2713,7 +2734,7 @@ const StreamingResponseText: React.FC<{
       const content = (
         <>
           <blockquote style={{
-            ...(showBar ? citationLineBarBlockStyle : { borderLeft: '3px solid #d1d5db', paddingLeft: '13.1px' }),
+            ...(showBar ? citationLineBarBlockStyle : { borderLeft: '2px solid #e5e7eb', paddingLeft: '13.1px' }),
             margin: '8.8px 0',
             color: '#6b7280',
             wordWrap: 'break-word',
@@ -3811,6 +3832,9 @@ const CitationCallout: React.FC<{
   const askBarNoPreviewRef = React.useRef<HTMLDivElement | null>(null);
   const hoverEnterTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const hoverLeaveTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hoverLeaveCoordsRef = React.useRef<{ x: number; y: number } | null>(null);
+  /** Current mouse position (document mousemove) — used for final hide verification to avoid stale coords. */
+  const currentMouseRef = React.useRef<{ x: number; y: number } | null>(null);
   /** "Ask about this..." bar: hidden by default, shown only on hover, hidden again on mouse leave. */
   const userHasSubmittedFromCalloutRef = React.useRef<boolean>(false);
   /** Inline ask input value for the hover popup chat bar. */
@@ -3906,6 +3930,24 @@ const CitationCallout: React.FC<{
     return () => ro.disconnect();
   }, []);
 
+  // Track current mouse position for hide verification (avoids stale coords from leave event)
+  React.useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      currentMouseRef.current = { x: e.clientX, y: e.clientY };
+    };
+    document.addEventListener('mousemove', onMove, { passive: true });
+    return () => document.removeEventListener('mousemove', onMove);
+  }, []);
+
+  // Track current mouse position for hide verification (avoids stale coords from leave event)
+  React.useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      currentMouseRef.current = { x: e.clientX, y: e.clientY };
+    };
+    document.addEventListener('mousemove', onMove, { passive: true });
+    return () => document.removeEventListener('mousemove', onMove);
+  }, []);
+
   // Track in-view for potential future use (e.g. prefetch prioritization)
   React.useEffect(() => {
     const el = calloutRootRef.current;
@@ -3918,6 +3960,24 @@ const CitationCallout: React.FC<{
     );
     io.observe(el);
     return () => io.disconnect();
+  }, []);
+
+  // Track current mouse position for hide verification (avoids stale coords from leave event)
+  React.useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      currentMouseRef.current = { x: e.clientX, y: e.clientY };
+    };
+    document.addEventListener('mousemove', onMove, { passive: true });
+    return () => document.removeEventListener('mousemove', onMove);
+  }, []);
+
+  // Track current mouse position for hide verification (avoids stale coords from leave event)
+  React.useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      currentMouseRef.current = { x: e.clientX, y: e.clientY };
+    };
+    document.addEventListener('mousemove', onMove, { passive: true });
+    return () => document.removeEventListener('mousemove', onMove);
   }, []);
 
   // Load preview as soon as callout can show it (don't wait for inView) so preview appears quickly when preload already ran during streaming
@@ -4003,8 +4063,9 @@ const CitationCallout: React.FC<{
     onCloseCallout?.();
   }, [onCloseCallout]);
 
-  const HOVER_SHOW_MS = 120;
-  const HOVER_HIDE_MS = 150;
+  const HOVER_SHOW_MS = 80;
+  const HOVER_HIDE_MS = 400;
+  const BAR_TRANSITION = 'opacity 0.28s cubic-bezier(0.16, 1, 0.3, 1), transform 0.28s cubic-bezier(0.16, 1, 0.3, 1)';
   const handleCardHoverEnter = React.useCallback(() => {
     if (hoverLeaveTimeoutRef.current) {
       clearTimeout(hoverLeaveTimeoutRef.current);
@@ -4015,38 +4076,72 @@ const CitationCallout: React.FC<{
         const overlay = askOverlayRef.current;
         if (overlay) {
           overlay.style.opacity = '1';
+          overlay.style.transform = 'translateY(0)';
           overlay.style.pointerEvents = 'auto';
-          if (onAskFollowUp) askInputRef.current?.focus();
         }
         const noPreviewBar = askBarNoPreviewRef.current;
         if (noPreviewBar) {
           noPreviewBar.style.opacity = '1';
+          noPreviewBar.style.transform = 'translateY(0)';
           noPreviewBar.style.pointerEvents = 'auto';
-          if (onAskFollowUp) askInputRef.current?.focus();
         }
       });
     }, HOVER_SHOW_MS);
   }, [onAskFollowUp]);
   const handleCardHoverLeave = React.useCallback((e: React.MouseEvent) => {
     const related = e.relatedTarget as Node | null;
-    if (related != null && calloutRootRef.current?.contains(related)) {
+    const root = calloutRootRef.current;
+    // When relatedTarget is null, the browser couldn't determine where the cursor went (common
+    // during transitions, scrolls, or pointer-events changes). Don't hide — avoids flicker when
+    // the user is still hovering.
+    if (related == null) {
+      // Can't determine target — don't hide immediately; fall through to delayed check.
+      // The timeout will use elementFromPoint with current position to verify before hiding.
+    } else if (root?.contains(related)) {
+      return; // Moving to a child, stay visible
+    } else if (root) {
+      const under = document.elementFromPoint(e.clientX, e.clientY);
+      if (under && root.contains(under)) return; // Still over callout, spurious leave
+    } else {
       return;
+    }
+    if (root?.contains(related)) return;
+    // related points outside — double-check with elementFromPoint (handles iframe/portal edge cases)
+    if (root) {
+      const under = document.elementFromPoint(e.clientX, e.clientY);
+      if (under && root.contains(under)) return;
     }
     if (hoverEnterTimeoutRef.current) {
       clearTimeout(hoverEnterTimeoutRef.current);
       hoverEnterTimeoutRef.current = null;
     }
+    hoverLeaveCoordsRef.current = { x: e.clientX, y: e.clientY };
     hoverLeaveTimeoutRef.current = setTimeout(() => {
       requestAnimationFrame(() => {
-        // Always hide when not hovering — bar only shows on hover
+        // Final verification: use CURRENT mouse position (from mousemove) — leave-event coords can be stale
+        const root = calloutRootRef.current;
+        const coords = currentMouseRef.current ?? hoverLeaveCoordsRef.current;
+        // If we can't verify (no coords), don't hide — avoids flicker from uncertain state
+        if (!root || !coords) {
+          hoverLeaveCoordsRef.current = null;
+          return;
+        }
+        const under = document.elementFromPoint(coords.x, coords.y);
+        if (under && root.contains(under)) {
+          hoverLeaveCoordsRef.current = null;
+          return; // Cursor still over callout, don't hide
+        }
+        hoverLeaveCoordsRef.current = null;
         const overlay = askOverlayRef.current;
         if (overlay) {
           overlay.style.opacity = '0';
+          overlay.style.transform = 'translateY(4px)';
           overlay.style.pointerEvents = 'none';
         }
         const noPreview = askBarNoPreviewRef.current;
         if (noPreview) {
           noPreview.style.opacity = '0';
+          noPreview.style.transform = 'translateY(4px)';
           noPreview.style.pointerEvents = 'none';
         }
       });
@@ -4097,7 +4192,7 @@ const CitationCallout: React.FC<{
             justifyContent: 'center',
             color: '#9ca3af',
             fontSize: '13px',
-            backgroundColor: '#f9fafb',
+            backgroundColor: '#fafafa',
           }}
         >
           Loading source…
@@ -4119,6 +4214,8 @@ const CitationCallout: React.FC<{
         animate={citationCalloutEntrance.animate}
         transition={citationCalloutEntrance.transition}
         onAnimationComplete={!skipEntranceAnimation && onEntranceComplete ? () => onEntranceComplete() : undefined}
+        onMouseEnter={handleCardHoverEnter}
+        onMouseLeave={handleCardHoverLeave}
         style={{
           position: 'relative',
           display: 'flex',
@@ -4127,21 +4224,20 @@ const CitationCallout: React.FC<{
           maxWidth: '100%',
           minWidth: 0,
           boxSizing: 'border-box',
-          marginTop: '8.8px',
-          marginBottom: '12px',
-          borderRadius: 6,
+          marginTop: '10px',
+          marginBottom: '14px',
+          borderRadius: 12,
           overflow: 'hidden',
-          border: '1px solid #e5e7eb',
-          boxShadow: '0 0 6px rgba(0,0,0,0.06)',
+          border: '1px solid rgba(0,0,0,0.06)',
+          boxShadow: '0 1px 2px rgba(0,0,0,0.04), 0 4px 12px rgba(0,0,0,0.03)',
+          backgroundColor: '#ffffff',
           contain: 'layout',
         }}
       >
-          <style>{`.citation-callout-ask-input::placeholder { color: #8F8F8F; } .citation-callout-ask-input:focus { outline: none; box-shadow: none; }`}</style>
-          {/* Hover perimeter: only the bbox preview + bar area triggers show/hide of the bar (avoids glitchy enter/leave) */}
+          <style>{`.citation-callout-ask-input::placeholder { color: #a1a1aa; } .citation-callout-ask-input:focus { outline: none; box-shadow: none; }`}</style>
+          {/* Hover perimeter: entire callout card — handlers on motion.div to avoid internal boundary leaves */}
           <div
             style={{ display: 'flex', flexDirection: 'column', width: '100%', minWidth: 0 }}
-            onMouseEnter={handleCardHoverEnter}
-            onMouseLeave={handleCardHoverLeave}
           >
           {/* When preview: bar is overlay with opacity transition (hover-only so it doesn't span below the card) */}
           {canShowPreview ? (
@@ -4158,36 +4254,39 @@ const CitationCallout: React.FC<{
                   title="Close preview"
                   style={{
                     position: 'absolute',
-                    top: 8,
-                    right: 8,
+                    top: 10,
+                    right: 10,
                     zIndex: 10,
-                    width: 28,
-                    height: 28,
-                    minWidth: 28,
-                    minHeight: 28,
+                    width: 26,
+                    height: 26,
+                    minWidth: 26,
+                    minHeight: 26,
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
                     padding: 0,
-                    backgroundColor: 'rgba(255,255,255,0.9)',
-                    border: '1px solid rgba(0,0,0,0.08)',
-                    borderRadius: 6,
+                    backgroundColor: 'rgba(255,255,255,0.85)',
+                    backdropFilter: 'blur(8px)',
+                    WebkitBackdropFilter: 'blur(8px)',
+                    border: '1px solid rgba(0,0,0,0.05)',
+                    borderRadius: 8,
                     cursor: 'pointer',
-                    boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
+                    boxShadow: '0 1px 2px rgba(0,0,0,0.04)',
                     outline: 'none',
+                    transition: 'background-color 0.15s ease, border-color 0.15s ease',
                   }}
                   onMouseEnter={(e) => {
                     const el = e.currentTarget as HTMLElement;
-                    el.style.backgroundColor = '#EBF1DE';
-                    el.style.borderColor = 'rgba(0,0,0,0.12)';
+                    el.style.backgroundColor = 'rgba(255,255,255,0.95)';
+                    el.style.borderColor = 'rgba(0,0,0,0.08)';
                   }}
                   onMouseLeave={(e) => {
                     const el = e.currentTarget as HTMLElement;
-                    el.style.backgroundColor = 'rgba(255,255,255,0.9)';
-                    el.style.borderColor = 'rgba(0,0,0,0.08)';
+                    el.style.backgroundColor = 'rgba(255,255,255,0.85)';
+                    el.style.borderColor = 'rgba(0,0,0,0.05)';
                   }}
                 >
-                  <Check size={16} strokeWidth={3} style={{ color: '#1f2937' }} />
+                  <Check size={14} strokeWidth={2.5} style={{ color: '#525252' }} />
                 </button>
               )}
               <div
@@ -4198,7 +4297,7 @@ const CitationCallout: React.FC<{
                   minHeight: 164,
                   position: 'relative',
                   overflow: 'hidden',
-                  backgroundColor: '#f9fafb',
+                  backgroundColor: '#fafafa',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
@@ -4248,23 +4347,24 @@ const CitationCallout: React.FC<{
                   bottom: 0,
                   left: 0,
                   right: 0,
-                  padding: '8px',
+                  padding: '10px 6px 16px 6px',
                   display: 'flex',
                   justifyContent: 'center',
                   opacity: 0,
+                  transform: 'translateY(4px)',
                   pointerEvents: 'none',
-                  transition: 'opacity 0.12s ease-out',
-                  willChange: 'opacity',
+                  transition: BAR_TRANSITION,
+                  willChange: 'opacity, transform',
                 }}
               >
                 <div
                   style={{
                     width: '100%',
-                    maxWidth: 340,
+                    maxWidth: 360,
                     backgroundColor: '#FFFFFF',
-                    borderRadius: 16,
-                    padding: 8,
-                    boxShadow: '0 4px 24px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.06)',
+                    borderRadius: 24,
+                    padding: '6px 8px',
+                    boxShadow: '0 1px 3px rgba(0,0,0,0.08)',
                     border: '1px solid rgba(0,0,0,0.06)',
                   }}
                 >
@@ -4276,9 +4376,9 @@ const CitationCallout: React.FC<{
                           position: 'relative',
                           display: 'flex',
                           alignItems: 'center',
-                          height: 36,
+                          height: 44,
                           backgroundColor: '#FFFFFF',
-                          borderRadius: 12,
+                          borderRadius: 22,
                           overflow: 'hidden',
                         }}
                       >
@@ -4298,8 +4398,8 @@ const CitationCallout: React.FC<{
                           style={{
                             flex: 1,
                             height: '100%',
-                            padding: '0 2px 0 10px',
-                            paddingRight: 38,
+                            padding: '0 2px 0 6px',
+                            paddingRight: 34,
                             fontSize: 14,
                             lineHeight: '20px',
                             color: '#0D0D0D',
@@ -4323,8 +4423,8 @@ const CitationCallout: React.FC<{
                             minHeight: 28,
                             borderRadius: '50%',
                             border: 'none',
-                            backgroundColor: askInputValue.trim() ? '#4A4A4A' : '#F3F4F6',
-                            color: askInputValue.trim() ? '#ffffff' : '#4B5563',
+                            backgroundColor: askInputValue.trim() ? '#18181b' : '#f4f4f5',
+                            color: askInputValue.trim() ? '#ffffff' : '#71717a',
                             display: 'flex',
                             alignItems: 'center',
                             justifyContent: 'center',
@@ -4352,7 +4452,7 @@ const CitationCallout: React.FC<{
                 minHeight: 180,
                 position: 'relative',
                 overflow: 'hidden',
-                backgroundColor: '#f9fafb',
+                backgroundColor: '#fafafa',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
@@ -4403,13 +4503,14 @@ const CitationCallout: React.FC<{
             style={{
               flexShrink: 0,
               backgroundColor: '#FFFFFF',
-              padding: 8,
-              borderRadius: 16,
+              padding: 4,
+              borderRadius: 24,
               border: '1px solid rgba(0,0,0,0.06)',
-              boxShadow: '0 4px 24px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.06)',
+              boxShadow: '0 2px 8px rgba(0,0,0,0.06), 0 8px 24px rgba(0,0,0,0.04)',
               opacity: 0,
+              transform: 'translateY(4px)',
               pointerEvents: 'none',
-              transition: 'opacity 0.12s ease-out',
+              transition: BAR_TRANSITION,
             }}
           >
             {/* Ask bar + View/Accept row (send button inside input) */}
@@ -4421,9 +4522,9 @@ const CitationCallout: React.FC<{
                       position: 'relative',
                       display: 'flex',
                       alignItems: 'center',
-                      height: 36,
+                      height: 44,
                       backgroundColor: '#FFFFFF',
-                      borderRadius: 12,
+                      borderRadius: 22,
                       overflow: 'hidden',
                     }}
                   >
@@ -4444,8 +4545,8 @@ const CitationCallout: React.FC<{
                         flex: 1,
                         minWidth: 120,
                         height: '100%',
-                        padding: '0 2px 0 10px',
-                        paddingRight: 38,
+                        padding: '0 2px 0 6px',
+                        paddingRight: 34,
                         fontSize: 14,
                         lineHeight: '20px',
                         color: '#0D0D0D',
@@ -4469,7 +4570,7 @@ const CitationCallout: React.FC<{
                         minHeight: 28,
                         borderRadius: '50%',
                         border: 'none',
-                        backgroundColor: askInputValue.trim() ? '#4A4A4A' : '#F3F4F6',
+                        backgroundColor: askInputValue.trim() ? '#18181b' : '#f4f4f5',
                         color: askInputValue.trim() ? '#ffffff' : '#4B5563',
                         display: 'flex',
                         alignItems: 'center',
@@ -5489,7 +5590,8 @@ const CitationBboxPreview: React.FC<CitationBboxPreviewProps> = ({ citationBboxD
           width: `${widthPct}%`,
           height: `${heightPct}%`,
           backgroundColor: 'rgba(188, 212, 235, 0.4)',
-          borderRadius: '2px',
+          border: 'none',
+          borderRadius: '3px',
           pointerEvents: 'none',
           zIndex: 10
         }}
@@ -5681,7 +5783,7 @@ const CitationHoverPreview: React.FC<CitationHoverPreviewProps> = ({
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          backgroundColor: '#f9fafb'
+          backgroundColor: '#fafafa'
         }}>
           <div style={{ color: '#9ca3af', fontSize: '13px' }}>Loading...</div>
         </div>
@@ -5727,8 +5829,8 @@ const CitationHoverPreview: React.FC<CitationHoverPreviewProps> = ({
                 width: `${Math.min(imageWidth, finalBboxWidth)}px`,
                 height: `${Math.min(imageHeight, finalBboxHeight)}px`,
                 backgroundColor: 'rgba(188, 212, 235, 0.4)',
-                borderRadius: '2px',
                 border: 'none',
+                borderRadius: '3px',
                 pointerEvents: 'none',
                 zIndex: 10
               }}
@@ -5742,7 +5844,7 @@ const CitationHoverPreview: React.FC<CitationHoverPreviewProps> = ({
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          backgroundColor: '#f9fafb'
+          backgroundColor: '#fafafa'
         }}>
           <div style={{ color: '#9ca3af', fontSize: '13px' }}>Preview unavailable</div>
         </div>
@@ -16535,7 +16637,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               strong: ({ children }) => <strong style={{ fontWeight: 700 }}>{children}</strong>,
                               em: ({ children }) => <em style={{ fontStyle: 'italic' }}>{children}</em>,
                               code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2.2px 5.5px', borderRadius: '4.4px', fontSize: '14px', fontFamily: 'monospace' }}>{children}</code>,
-                              blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #d1d5db', paddingLeft: '15.3px', margin: '10.9px 0', color: '#6b7280' }}>{children}</blockquote>,
+                              blockquote: ({ children }) => <blockquote style={{ borderLeft: '2px solid #e5e7eb', paddingLeft: '15.3px', margin: '10.9px 0', color: '#6b7280' }}>{children}</blockquote>,
                               hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '6px 0' }} />,
                             }}>{segText}</ReactMarkdown>
                           </span>
@@ -16631,7 +16733,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             strong: ({ children }) => <strong style={{ fontWeight: 600 }}>{children}</strong>,
                             em: ({ children }) => <em style={{ fontStyle: 'italic' }}>{children}</em>,
                             code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2.2px 5.5px', borderRadius: '4.4px', fontSize: '14px', fontFamily: 'monospace' }}>{children}</code>,
-                            blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #d1d5db', paddingLeft: '15.3px', margin: '10.9px 0', color: '#6b7280' }}>{children}</blockquote>,
+                            blockquote: ({ children }) => <blockquote style={{ borderLeft: '2px solid #e5e7eb', paddingLeft: '15.3px', margin: '10.9px 0', color: '#6b7280' }}>{children}</blockquote>,
                             hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '6px 0' }} />,
                           }}>{truncatedText}</ReactMarkdown>
                         </span>
@@ -16832,9 +16934,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               });
                 }}
                 onViewInDocumentFromCallout={(citationData, msgId, citationNumber) => {
-                  // Only update viewed state so the small inline callout shows as "viewed" (blue highlight).
-                  // Do not open the big document preview panel — user wants only the small preview in the response.
                   const viewed = msgId != null && citationNumber != null ? { messageId: msgId, citationNumber } : null;
+                  if (citationData) {
+                    const normalized = normalizeCitationDocId(citationData) as CitationData;
+                    openCitationInDocumentView(normalized, false, viewed ?? undefined);
+                  }
                   if (viewed) {
                     setCitationViewedInDocument(viewed);
                     if (currentChatId) setDocumentViewedCitation(currentChatId, viewed);
@@ -17144,7 +17248,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     style={{
                       display: 'flex', alignItems: 'center', gap: '5px',
                       padding: '2px 8px', border: '1px solid rgba(0,0,0,0.08)', cursor: 'pointer',
-                      borderRadius: '9999px', backgroundColor: 'transparent',
+                      borderRadius: '6px', backgroundColor: 'white',
                       color: '#374151', fontSize: '12px',
                       marginLeft: '8px',
                     }}
@@ -17159,7 +17263,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     {sources.items.map((item) => {
                         const isWebSource = !!(item as any).isWeb;
                         const rawName = item.filename || (isWebSource ? 'Web source' : `Document ${item.docId.slice(0, 8)}`);
-                        const isPDF = !isWebSource && rawName.toLowerCase().endsWith('.pdf');
+                        const rawLower = rawName.toLowerCase();
                         const truncatedName = (() => {
                           const lastDot = rawName.lastIndexOf('.');
                           if (lastDot === -1 || rawName.length <= 32) return rawName.length > 32 ? rawName.slice(0, 29) + '...' : rawName;
@@ -17183,31 +17287,37 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             }}
                             style={{
                               display: 'flex', alignItems: 'center', gap: '10px',
-                              padding: '6px 12px', border: '1px solid rgba(255, 255, 255, 0.2)', borderRadius: '6px',
-                              background: '#374151', cursor: 'pointer', color: '#ffffff', fontSize: '12px',
+                              padding: '6px 12px', border: '1px solid rgba(0, 0, 0, 0.08)', borderRadius: '6px',
+                              background: 'white', cursor: 'pointer', color: '#374151', fontSize: '12px',
                               textAlign: 'left', width: '100%', boxSizing: 'border-box',
                               transition: 'background-color 0.15s ease-out, border-color 0.15s ease-out',
                             }}
                             title={isWebSource ? (item as any).url : rawName}
                             onMouseEnter={(e) => {
                               const el = e.currentTarget as HTMLButtonElement;
-                              el.style.background = 'rgba(55, 65, 81, 0.9)';
-                              el.style.borderColor = 'rgba(255, 255, 255, 0.35)';
+                              el.style.background = '#f3f4f6';
+                              el.style.borderColor = 'rgba(0, 0, 0, 0.12)';
                             }}
                             onMouseLeave={(e) => {
                               const el = e.currentTarget as HTMLButtonElement;
-                              el.style.background = '#374151';
-                              el.style.borderColor = 'rgba(255, 255, 255, 0.2)';
+                              el.style.background = 'white';
+                              el.style.borderColor = 'rgba(0, 0, 0, 0.08)';
                             }}
                           >
                             {isWebSource ? (
-                              <Globe size={12} style={{ flexShrink: 0, color: '#ffffff' }} />
-                            ) : isPDF ? (
-                              <img src="/pdfnew.png" alt="PDF" style={{ width: 12, height: 12, flexShrink: 0, objectFit: 'contain', filter: 'brightness(0) invert(1)' }} />
+                              <Globe size={12} style={{ flexShrink: 0, color: '#374151' }} />
+                            ) : rawLower.endsWith('.pdf') ? (
+                              <img src="/pdfnew.png" alt="PDF" style={{ width: 12, height: 12, flexShrink: 0, objectFit: 'contain' }} />
+                            ) : rawLower.endsWith('.doc') || rawLower.endsWith('.docx') ? (
+                              <img src="/word.png" alt="Word" style={{ width: 12, height: 12, flexShrink: 0, objectFit: 'contain' }} />
+                            ) : rawLower.endsWith('.xlsx') || rawLower.endsWith('.xls') ? (
+                              <img src="/excel.png" alt="Excel" style={{ width: 12, height: 12, flexShrink: 0, objectFit: 'contain' }} />
+                            ) : rawLower.endsWith('.pptx') || rawLower.endsWith('.ppt') ? (
+                              <img src="/powerpoint.png" alt="PowerPoint" style={{ width: 12, height: 12, flexShrink: 0, objectFit: 'contain' }} />
                             ) : (
-                              <Files size={14} style={{ flexShrink: 0, color: '#ffffff' }} />
+                              <Files size={14} style={{ flexShrink: 0, color: '#374151' }} />
                             )}
-                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#ffffff' }}>{truncatedName}</span>
+                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#374151' }}>{truncatedName}</span>
                           </button>
                         );
                       })}
@@ -19651,14 +19761,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                       closeExpandedCardView();
                                       return;
                                     }
-                                    // View = show document preview below the answer only (inline callout), do NOT open the big 50/50 document panel
+                                    // View = open the big 50/50 document panel on the right
                                     if (citationData) {
                                       const viewed = { messageId: reviewMsgId, citationNumber: String(currentNum) };
+                                      const normalized = normalizeCitationDocId(citationData) as CitationData;
                                       setCitationViewedInDocument(viewed);
                                       if (currentChatId) setDocumentViewedCitation(currentChatId, viewed);
+                                      openCitationInDocumentView(normalized, false, viewed);
                                     }
                                   }}
-                                  style={{ ...barBtn, fontWeight: 600, color: '#666666', backgroundColor: '#ffffff', border: '1px solid #d4d4d4', boxShadow: '0 1px 1px rgba(0,0,0,0.05)' }}
+                                  style={{ ...barBtn, fontWeight: 500, color: '#666666', backgroundColor: '#ffffff', border: '1px solid #d4d4d4', boxShadow: '0 1px 1px rgba(0,0,0,0.05)' }}
                                   onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#f5f5f5'; }}
                                   onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#ffffff'; }}
                                 >
@@ -19787,8 +19899,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                   setCitationReviewAcceptedIndices((s) => new globalThis.Set(s).add(effectiveIndex));
                                   setCitationReviewShowReviewNextOnly(true);
                                 }
-                              }} style={{ ...barBtn, fontWeight: 600, color: '#1f2937', backgroundColor: '#EBF1DE', border: '1px solid rgba(0,0,0,0.12)', boxShadow: '0 1px 1px rgba(0,0,0,0.05)' }} onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#E0E8D4'; }} onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#EBF1DE'; }}>
-                                Accept
+                              }} style={{ ...barBtn, fontWeight: 500, color: '#666666', backgroundColor: '#EBF1DE', border: '1px solid rgba(0,0,0,0.12)', boxShadow: '0 1px 1px rgba(0,0,0,0.05)' }} onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#E0E8D4'; }} onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#EBF1DE'; }}>
+                                {"Accept"}
                               </button>
                             </>
                           )}

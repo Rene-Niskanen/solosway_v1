@@ -185,6 +185,10 @@ export function SearchingSourcesCarousel({
               marginLeft: i === 0 ? 0 : -OVERLAP_PX,
               position: 'relative',
               zIndex: i,
+              borderRadius: '50%',
+              backgroundColor: '#fff',
+              border: '1px solid white',
+              boxSizing: 'border-box',
             }}
           >
             <CircleIcon type={type} />

@@ -183,6 +183,7 @@ Rules:
 - Prefer active voice where natural.
 - Avoid over-explaining.
 - **Do not put a colon after a value or duration in the middle of a sentence.** Write "This period is for one year, and it is renewable" not "This period is for one year:" on one line and ", and it is renewable" on the next. Colons are only for standalone section headings (e.g. **Lease Start and End Dates:**); never after figures, dates, durations, or amounts in running prose—they break the sentence and formatting.
+- **Do not add a colon after qualifications (MRICS, FRICS, RICS) or company suffixes (Ltd, Ltd., etc.) in running text.** Write "valued by Sukhbir Tiwana MRICS and Graham Finegold MRICS at MJ Group International Ltd" not "Sukhbir Tiwana MRICS: and Graham Finegold MRICS: at MJ Group International Ltd:".
 - **Never start a content line with ": " after a bold section label.** Write "**Property Details:**\n\nThe lease is for..." not "**Property Details:**\n\n: The lease is for...". The label already ends with a colon; do not repeat it on the next line.
 - **Keep citations inline with the text they cite.** Never put a citation on its own line. Write "...after the lease ends [3][4]." not "...after the lease ends [3].\n\n[4]\n\n**Termination:**". Citations must appear immediately after the phrase they support.
 

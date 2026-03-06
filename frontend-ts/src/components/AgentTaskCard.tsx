@@ -79,7 +79,7 @@ export const AgentTaskCard: React.FC<AgentTaskCardProps> = ({ task, onInjectResu
       style={{
         position: 'relative',
         display: 'flex', alignItems: 'center', gap: 8,
-        padding: task.status === 'complete' ? '8px 10px' : '6px 10px',
+        padding: task.status === 'complete' ? '8px 10px' : `6px ${isInFlight ? 32 : 10}px 6px 10px`,
         borderRadius: 10,
         backgroundColor: task.status === 'error' ? '#FEF2F2' : task.status === 'complete' ? '#F0FDF4' : '#FFFFFF',
         border: `1px solid ${task.status === 'error' ? '#FECACA' : task.status === 'complete' ? '#BBF7D0' : '#E5E7EB'}`,
@@ -87,7 +87,7 @@ export const AgentTaskCard: React.FC<AgentTaskCardProps> = ({ task, onInjectResu
         cursor: task.status === 'complete' ? 'pointer' : 'default',
         transition: 'border-color 0.15s, box-shadow 0.15s, background-color 0.15s',
         ...(task.status === 'complete' && isHovered ? { borderColor: '#86EFAC', boxShadow: '0 2px 8px rgba(0,0,0,0.06)' } : {}),
-        overflow: 'hidden',
+        overflow: isInFlight ? 'visible' : 'hidden',
         minWidth: 200,
       }}
       onClick={task.status === 'complete' ? () => onInjectResult(task.id) : undefined}
@@ -219,15 +219,15 @@ export const AgentTaskCard: React.FC<AgentTaskCardProps> = ({ task, onInjectResu
           exit={{ opacity: 0 }}
           onClick={(e) => { e.stopPropagation(); onCancel(task.id); }}
           style={{
-            position: 'absolute', right: 4, top: '50%', transform: 'translateY(-50%)',
+            position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-            width: 20, height: 20, borderRadius: '50%',
+            width: 18, height: 18, borderRadius: '50%',
             backgroundColor: 'rgba(0,0,0,0.06)', border: 'none', cursor: 'pointer',
-            padding: 0,
+            padding: 0, flexShrink: 0,
           }}
           title="Cancel"
         >
-          <X style={{ width: 11, height: 11, color: '#6B7280' }} strokeWidth={2.5} />
+          <X style={{ width: 10, height: 10, color: '#6B7280', flexShrink: 0 }} strokeWidth={2.5} />
         </motion.button>
       )}
 

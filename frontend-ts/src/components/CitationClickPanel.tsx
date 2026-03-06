@@ -182,8 +182,8 @@ export const CitationPagePreviewContent: React.FC<{
             width: `${Math.min(cachedPageImage.imageWidth, transform.finalBboxWidth)}px`,
             height: `${Math.min(cachedPageImage.imageHeight, transform.finalBboxHeight)}px`,
             backgroundColor: "rgba(188, 212, 235, 0.4)",
-            borderRadius: "2px",
             border: "none",
+            borderRadius: "3px",
             pointerEvents: "none",
             zIndex: 10,
           }}

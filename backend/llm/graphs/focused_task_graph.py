@@ -141,7 +141,13 @@ async def focused_responder_node(state: FocusedTaskState) -> FocusedTaskState:
     system_prompt = (
         "You are a document analysis assistant. Answer the user's question based ONLY on the provided document chunks. "
         "Cite your sources using [N] notation where N corresponds to the chunk number. "
-        "Be concise and factual. If the answer is not in the provided chunks, say so."
+        "Be concise and factual. If the answer is not in the provided chunks, say so.\n\n"
+        "Formatting: Use **bold** markdown for key facts and figures such as: names (people, companies, organisations), "
+        "dates, monetary amounts, percentages, addresses, property identifiers, qualifications (e.g. MRICS, RICS), "
+        "standards or definitions (e.g. Red Book), and other important values. This helps readers quickly scan for "
+        "the most important information. Do not add colons after qualifications (MRICS, FRICS) or company names (Ltd) "
+        "in running text—e.g. write 'Sukhbir Tiwana MRICS and Graham Finegold MRICS at MJ Group International Ltd' "
+        "not 'Sukhbir Tiwana MRICS: and Graham Finegold MRICS: at MJ Group International Ltd:'."
     )
 
     human_prompt = (

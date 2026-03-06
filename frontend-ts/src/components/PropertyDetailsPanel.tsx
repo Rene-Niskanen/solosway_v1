@@ -795,7 +795,7 @@ const ExpandedCardView: React.FC<{
               {isPDF ? (
                 <div 
                   ref={pdfWrapperRef}
-                  className="w-full h-full overflow-auto bg-gray-100 document-preview-scroll"
+                  className="w-full h-full overflow-auto bg-white document-preview-scroll"
                   style={{ scrollBehavior: 'smooth' }}
                 >
                   {renderedPages.size > 0 ? (
@@ -911,7 +911,7 @@ const ExpandedCardView: React.FC<{
                                       height: `${Math.min(pageDimensions.height, finalBboxHeight)}px`,
                                       backgroundColor: 'rgba(188, 212, 235, 0.4)',
                                       border: 'none',
-                                      borderRadius: '2px',
+                                      borderRadius: '3px',
                                       pointerEvents: 'auto',
                                       cursor: 'pointer',
                                       zIndex: 10,
