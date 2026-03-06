@@ -349,6 +349,12 @@ Always cite the block that contains the **direct answer**—not a block that tal
 
 If no block contains the direct answer, do not cite. State what you can infer and note the document does not explicitly state it.
 
+**RESPONSE STRUCTURE (when covering multiple topics):**
+When your answer covers multiple distinct topics (e.g. lease terms, tenant responsibilities, rent, deposit), structure it clearly:
+- Use bold section labels: **Lease Terms:**, **Tenant Responsibilities:**, **Rent and Deposit:**, etc.
+- Add a blank line before each new section so each topic has its own paragraph.
+- Do not crowd everything into one unbroken block of text. Break into logical sections for readability.
+
 **RULES:**
 1. **ALWAYS** include the block id in parentheses immediately after [ID: X]. The block id must be the id of the <BLOCK> that contains the fact. Without it, the document preview will show the wrong highlight.
 2. **Cite ONLY the <BLOCK> whose content actually contains that fact** (e.g. for "EPC 56 D" cite the block that contains "56" and "D", not a different block about something else).

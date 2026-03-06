@@ -2146,7 +2146,10 @@ const StreamingResponseText: React.FC<{
     const citationLineBarInlineStyle = { position: 'absolute' as const, left: '-14px', top: -1, bottom: -1, width: '2px', background: '#e5e7eb', pointerEvents: 'none' as const, borderRadius: '2px' };
     /* List items need extra offset so the line stays left of bullet/text (ul/ol + li padding reduce effective space) */
     const citationLineBarLiBarStyle = { position: 'absolute' as const, left: '-38px', top: -1, bottom: -1, width: '2px', background: '#e5e7eb', pointerEvents: 'none' as const, borderRadius: '2px' };
-    const firstCitationNum = orderedCitationNumbersForMessage?.[0] ?? null;
+    // Prefer "1" for first-citation layout when it exists (backend should send [1] first; fallback for wrong order)
+    const firstCitationNum = orderedCitationNumbersForMessage?.includes('1')
+      ? '1'
+      : (orderedCitationNumbersForMessage?.[0] ?? null);
     const renderCallout = (num: string, keyPrefix: string, i: number) => (
       <div key={`${keyPrefix}-${i}-${num}`} style={{ width: '100%', maxWidth: '100%', minWidth: 0, boxSizing: 'border-box' }}>
         <CitationCallout key={`callout-${messageId ?? ''}-${num}`} messageId={messageId ?? ''} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumberRef.current[num]} skipEntranceAnimation={citationEntranceDoneRef.current.has(num)} onEntranceComplete={() => citationEntranceDoneRef.current.add(num)} onClosePreviewBar={onCloseCitationPreviewBar ? () => onCloseCitationPreviewBar(messageId ?? '') : undefined} />
@@ -2487,7 +2490,10 @@ const StreamingResponseText: React.FC<{
     const citationLineBarInlineStyle = { position: 'absolute' as const, left: '-14px', top: -1, bottom: -1, width: '2px', background: '#e5e7eb', pointerEvents: 'none' as const, borderRadius: '2px' };
     /* List items need extra offset so the line stays left of bullet/text (ul/ol + li padding reduce effective space) */
     const citationLineBarLiBarStyle = { position: 'absolute' as const, left: '-38px', top: -1, bottom: -1, width: '2px', background: '#e5e7eb', pointerEvents: 'none' as const, borderRadius: '2px' };
-    const firstCitationNumP = orderedCitationNumbersForMessage?.[0] ?? null;
+    // Prefer "1" for first-citation layout when it exists (backend should send [1] first; fallback for wrong order)
+    const firstCitationNumP = orderedCitationNumbersForMessage?.includes('1')
+      ? '1'
+      : (orderedCitationNumbersForMessage?.[0] ?? null);
     const renderCalloutP = (num: string, keyPrefix: string, i: number) => (
       <div key={`${keyPrefix}-${i}-${num}`} style={{ width: '100%', maxWidth: '100%', minWidth: 0, boxSizing: 'border-box' }}>
         <CitationCallout key={`callout-${messageId ?? ''}-${num}`} messageId={messageId ?? ''} citationNumber={num} citation={citations?.[num]} onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', num, citations?.[num]) : undefined} onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[num], messageId ?? '', num) : undefined} isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === num} onCloseDocument={onCloseDocumentFromCallout} messageCitedExcerpt={citedExcerptByNumberRef.current[num]} skipEntranceAnimation={citationEntranceDoneRef.current.has(num)} onEntranceComplete={() => citationEntranceDoneRef.current.add(num)} onClosePreviewBar={onCloseCitationPreviewBar ? () => onCloseCitationPreviewBar(messageId ?? '') : undefined} />
@@ -4155,51 +4161,9 @@ const CitationCallout: React.FC<{
   const effectivelyClosed = isCalloutClosed || isClosed;
   if (effectivelyClosed) return null;
 
-  // Placeholder card when citation marker is in text but citation data not yet available (e.g. during streaming).
-  // Renders so CitationCalloutUnveilWrapper can animate; when citation data arrives, we re-render with hasCalloutCard.
-  if (!hasCalloutCard) {
-    return (
-      <motion.div
-        ref={calloutRootRef}
-        {...rootProps}
-        initial={citationCalloutEntrance.initial}
-        animate={citationCalloutEntrance.animate}
-        transition={citationCalloutEntrance.transition}
-        onAnimationComplete={!skipEntranceAnimation && onEntranceComplete ? () => onEntranceComplete() : undefined}
-        style={{
-          position: 'relative',
-          display: 'flex',
-          flexDirection: 'column',
-          width: '100%',
-          maxWidth: '100%',
-          minWidth: 0,
-          boxSizing: 'border-box',
-          marginTop: '8.8px',
-          marginBottom: '12px',
-          borderRadius: 6,
-          overflow: 'hidden',
-          border: '1px solid #e5e7eb',
-          boxShadow: '0 0 6px rgba(0,0,0,0.06)',
-          contain: 'layout',
-        }}
-      >
-        <div
-          style={{
-            padding: '24px 16px',
-            minHeight: 80,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            color: '#9ca3af',
-            fontSize: '13px',
-            backgroundColor: '#fafafa',
-          }}
-        >
-          Loading source…
-        </div>
-      </motion.div>
-    );
-  }
+  // Don't show document preview card when citation data is not available.
+  // Previously showed "Loading source…" placeholder which could get stuck when citation resolution failed.
+  if (!hasCalloutCard) return null;
 
   if (hasCalloutCard) {
     const showAskQuestion = !!onAskFollowUp;
@@ -4347,7 +4311,7 @@ const CitationCallout: React.FC<{
                   bottom: 0,
                   left: 0,
                   right: 0,
-                  padding: '10px 6px 16px 6px',
+                  padding: '6px 6px 10px 6px',
                   display: 'flex',
                   justifyContent: 'center',
                   opacity: 0,
@@ -4362,8 +4326,8 @@ const CitationCallout: React.FC<{
                     width: '100%',
                     maxWidth: 360,
                     backgroundColor: '#FFFFFF',
-                    borderRadius: 24,
-                    padding: '6px 8px',
+                    borderRadius: 20,
+                    padding: '4px 6px',
                     boxShadow: '0 1px 3px rgba(0,0,0,0.08)',
                     border: '1px solid rgba(0,0,0,0.06)',
                   }}
@@ -4376,9 +4340,9 @@ const CitationCallout: React.FC<{
                           position: 'relative',
                           display: 'flex',
                           alignItems: 'center',
-                          height: 44,
+                          height: 36,
                           backgroundColor: '#FFFFFF',
-                          borderRadius: 22,
+                          borderRadius: 18,
                           overflow: 'hidden',
                         }}
                       >
@@ -4399,8 +4363,8 @@ const CitationCallout: React.FC<{
                             flex: 1,
                             height: '100%',
                             padding: '0 2px 0 6px',
-                            paddingRight: 34,
-                            fontSize: 14,
+                            paddingRight: 30,
+                            fontSize: 13,
                             lineHeight: '20px',
                             color: '#0D0D0D',
                             backgroundColor: 'transparent',
@@ -4416,11 +4380,11 @@ const CitationCallout: React.FC<{
                           disabled={!askInputValue.trim()}
                           style={{
                             position: 'absolute',
-                            right: 6,
-                            width: 28,
-                            height: 28,
-                            minWidth: 28,
-                            minHeight: 28,
+                            right: 5,
+                            width: 24,
+                            height: 24,
+                            minWidth: 24,
+                            minHeight: 24,
                             borderRadius: '50%',
                             border: 'none',
                             backgroundColor: askInputValue.trim() ? '#18181b' : '#f4f4f5',

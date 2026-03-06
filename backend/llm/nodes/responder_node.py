@@ -1223,11 +1223,12 @@ def _ensure_paragraph_break_after_first_citation(text: str) -> str:
     Insert a paragraph break after the first citation so the document preview card
     can display below it. Ensures follow-up responses use the same presentation
     as initial responses (one citation above the preview).
+    Uses first [N] by position (not only [1]) so it works even if citation order is wrong.
     """
     if not text or not text.strip():
         return text
-    # Find first [1] - the first citation in order
-    match = re.search(r'\[1\]', text)
+    # Find first citation by position (whatever number: [1], [2], [3], etc.)
+    match = re.search(r'\[\d+\]', text)
     if not match:
         return text
     insert_pos = match.end()
@@ -2582,6 +2583,14 @@ async def generate_answer_with_direct_citations(
         # Step 6b: Ensure paragraph break after first citation so document preview appears below it
         formatted_response = _ensure_paragraph_break_after_first_citation(formatted_response)
         logger.info(f"[DIRECT_CITATIONS] Replaced citation IDs with numbers")
+        # Sanity check: first citation in text should be [1] (catches replace_ids failures)
+        if citations:
+            first_match = re.search(r'\[(\d+)\]', formatted_response)
+            if first_match and int(first_match.group(1)) != 1:
+                logger.warning(
+                    "[CITATION_SANITY] First citation in text is [%s], expected [1]. Sample: %s",
+                    first_match.group(1), formatted_response[:300],
+                )
         
         # Step 7: Format citations for frontend
         frontend_citations = format_citations_for_frontend(citations)

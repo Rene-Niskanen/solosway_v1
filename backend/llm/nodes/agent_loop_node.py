@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 MAX_ITERATIONS = 6
 
 # Tool names (must match function names in _execute_tool)
+SEARCH = "search"
 RETRIEVE_DOCS = "retrieve_docs"
 RETRIEVE_CHUNKS = "retrieve_chunks"
 FETCH_CHUNKS_BY_IDS = "fetch_chunks_by_ids"
@@ -48,17 +49,18 @@ You have one tool: web_search(query). Use it to answer the user's question with 
 Always call web_search with a clear, specific query (e.g. the user's question or a focused sub-question). Do not finish without calling web_search at least once. After you receive results, you may finish so the system can format the answer with web citations."""
     base = """You are an assistant with access to a document search system. Your job is to decide when to search documents and when to reply from context alone.
 
-You have four tools:
-1. retrieve_docs(query) - Search for relevant documents. Returns document IDs and filenames. Use this FIRST when the user asks about documents, property information, valuations, leases, etc.
-2. retrieve_chunks(query, document_ids) - Get detailed text from specific documents. Use AFTER retrieve_docs. Pass the document_ids from the retrieve_docs result.
-3. fetch_chunks_by_ids(chunk_ids) - Get full chunk text by exact chunk IDs (UUIDs). Use for FOLLOW-UP questions when prior_chunk_context lists chunk_ids from a previous answer. No semantic search - direct lookup. Use when the user asks for more detail, expansion, or clarification about specific content already cited.
-4. add_research_note(content, chunk_id, cited_text) - Record a finding for a curated piece of writing. Use ONLY when the user asks for a curated piece (brief, report, summary from multiple findings). See "Research-then-write" below.
+You have five tools:
+1. search(query) - Search documents and get relevant text in one call. Use for most content questions (value, price, EPC, lease terms, summaries, etc.). Returns documents and chunks. Prefer this over retrieve_docs + retrieve_chunks when you need to answer from document content.
+2. retrieve_docs(query) - Search for relevant documents. Returns document IDs and filenames. Use ONLY when you need the document list, not the content.
+3. retrieve_chunks(query, document_ids) - Get detailed text from specific documents. Use when document_ids are already in scope (attachments, prior turn).
+4. fetch_chunks_by_ids(chunk_ids) - Get full chunk text by exact chunk IDs (UUIDs). Use for FOLLOW-UP questions when prior_chunk_context lists chunk_ids from a previous answer. No semantic search - direct lookup. Use when the user asks for more detail, expansion, or clarification about specific content already cited.
+5. add_research_note(content, chunk_id, cited_text) - Record a finding for a curated piece of writing. Use ONLY when the user asks for a curated piece (brief, report, summary from multiple findings). See "Research-then-write" below.
 
 When to use tools:
-- User asks about documents, property, valuations, leases, contracts, summaries, details, etc. -> Call retrieve_docs, then retrieve_chunks with the returned document_ids
+- User asks about documents, property, valuations, leases, contracts, summaries, details, etc. -> Call search(query) - one call does document + chunk retrieval.
 - User attaches documents (document_ids will be in scope) -> Call retrieve_chunks directly with those document_ids
 - Short follow-up like "more detail", "expand", "key dates?" -> Use fetch_chunks_by_ids with chunk_ids from prior_chunk_context (if provided), else retrieve_chunks with document_ids from the previous turn
-- User asks to compare, find similar properties -> Call retrieve_docs with a broad query, then retrieve_chunks
+- User asks to compare, find similar properties -> Call search with a broad query, or retrieve_docs then retrieve_chunks if you need the full document list first
 
 When to finish (no tools):
 - Obvious greeting with no info request: "hi", "thanks", "bye"
@@ -67,7 +69,7 @@ When to finish (no tools):
 
 If the user's message is ambiguous, prefer using tools (search) over finishing. Better to search and find nothing than miss relevant documents.
 
-After calling retrieve_chunks and receiving results, you may finish - the system will generate the final answer with citations from those chunks.
+After calling search or retrieve_chunks and receiving results, you may finish - the system will generate the final answer with citations from those chunks.
 
 ---
 RESEARCH-THEN-WRITE (curated piece)
@@ -112,8 +114,25 @@ def _build_tool_definitions(web_search_enabled: bool = False) -> List[Dict[str, 
         {
             "type": "function",
             "function": {
+                "name": SEARCH,
+                "description": "Search documents and get relevant text in one call. Use for most content questions (value, price, EPC, lease terms, summaries, etc.). Returns documents and chunks. Prefer this over retrieve_docs + retrieve_chunks when you need to answer from document content.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Search query - include property names, document types, or keywords",
+                        },
+                    },
+                    "required": ["query"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": RETRIEVE_DOCS,
-                "description": "Search for relevant documents by query. Returns document IDs and filenames. Use this first before retrieve_chunks.",
+                "description": "Search for relevant documents by query. Returns document IDs and filenames. Use ONLY when you need the document list, not the content.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -235,6 +254,18 @@ def _summarize_tool_result_for_context(tool_name: str, result: Any) -> str:
     Create a short summary of tool result for the model's next call.
     Full result is stored in execution_results for the responder.
     """
+    if tool_name == SEARCH:
+        if not isinstance(result, dict):
+            return json.dumps({"documents": 0, "chunks": 0, "message": "Search failed."})
+        docs = result.get("documents") or []
+        chunks = result.get("chunks") or []
+        n_docs = len(docs) if isinstance(docs, list) else 0
+        n_chunks = len(chunks) if isinstance(chunks, list) else 0
+        return json.dumps({
+            "documents": n_docs,
+            "chunks": n_chunks,
+            "message": f"Found {n_docs} documents and {n_chunks} relevant sections. The system will now generate the answer with citations.",
+        })
     if tool_name == RETRIEVE_DOCS:
         if not isinstance(result, list):
             return json.dumps({"document_ids": [], "count": 0, "message": "No documents found"})
@@ -284,6 +315,10 @@ def _inject_state_context(args: Dict[str, Any], state: MainWorkflowState, tool_n
     
     if business_id:
         injected["business_id"] = business_id
+    if tool_name == SEARCH:
+        injected["property_id"] = property_id
+        if document_ids and isinstance(document_ids, list):
+            injected["document_ids"] = [str(d) for d in document_ids if d]
     if tool_name == RETRIEVE_CHUNKS:
         existing_doc_ids = injected.get("document_ids") or []
         if not existing_doc_ids and document_ids:
@@ -308,7 +343,21 @@ def _execute_tool(tool_name: str, args: Dict[str, Any], state: MainWorkflowState
     business_id = args.get("business_id") or state.get("business_id")
     user_query = state.get("user_query") or ""
     
-    if tool_name == RETRIEVE_DOCS:
+    if tool_name == SEARCH:
+        from backend.llm.tools.search_tool import search as search_tool
+        query = (args.get("query") or user_query or "").strip()
+        if not query:
+            logger.warning("[AGENT_LOOP] search called with empty query")
+            return {"documents": [], "chunks": []}
+        return search_tool(
+            query=query,
+            business_id=business_id,
+            property_id=args.get("property_id") or state.get("property_id"),
+            document_ids=args.get("document_ids"),
+            user_query_for_entity=user_query or None,
+        )
+    
+    elif tool_name == RETRIEVE_DOCS:
         query = (args.get("query") or user_query or "").strip()
         if not query:
             logger.warning("[AGENT_LOOP] retrieve_docs called with empty query")
@@ -539,48 +588,85 @@ async def agent_loop_node(state: MainWorkflowState, runnable_config=None) -> Mai
                 )
             )
             
-            action_label = tool_name
-            if tool_name == RETRIEVE_DOCS:
-                action_label = "retrieve_docs"
-            elif tool_name in (RETRIEVE_CHUNKS, FETCH_CHUNKS_BY_IDS):
-                action_label = "retrieve_chunks"
-            elif tool_name == WEB_SEARCH:
-                action_label = "web_search"
+            q = tool_args.get("query", "")
 
-            execution_results.append({
-                "step_id": f"tool_{iteration}_{tool_name}",
-                "action": action_label,
-                "query": tool_args.get("query", ""),
-                "result": result,
-                "success": bool(result) if isinstance(result, list) else result is not None,
-            })
-            
-            if emitter and isinstance(result, list):
-                if tool_name == WEB_SEARCH:
-                    n = len(result)
-                    emitter.emit_reasoning(
-                        label=f"Found {n} web result{'s' if n != 1 else ''}",
-                        detail=None,
-                    )
-                elif tool_name == RETRIEVE_DOCS:
-                    emitter.emit_reasoning(label="Analysing documents...", detail=None)
+            if tool_name == SEARCH:
+                # Append two execution_results for responder/views compatibility
+                docs = (result.get("documents") or []) if isinstance(result, dict) else []
+                chunks = (result.get("chunks") or []) if isinstance(result, dict) else []
+                execution_results.append({
+                    "step_id": f"tool_{iteration}_search_docs",
+                    "action": "retrieve_docs",
+                    "query": q,
+                    "result": docs,
+                    "success": bool(docs),
+                })
+                execution_results.append({
+                    "step_id": f"tool_{iteration}_search_chunks",
+                    "action": "retrieve_chunks",
+                    "query": q,
+                    "result": chunks,
+                    "success": bool(chunks),
+                })
+                if emitter:
+                    if docs:
+                        emitter.emit_reasoning(label="Analysing documents...", detail=None)
+                    if chunks:
+                        unique_doc_ids = set()
+                        for item in chunks:
+                            if isinstance(item, dict):
+                                did = item.get("document_id") or item.get("doc_id")
+                                if did is not None:
+                                    unique_doc_ids.add(str(did))
+                        n_docs_used = len(unique_doc_ids)
+                        doc_word = "document" if n_docs_used == 1 else "documents"
+                        emitter.emit_reasoning(
+                            label=f"Retrieved {len(chunks)} passage{'s' if len(chunks) != 1 else ''} from {n_docs_used} {doc_word}",
+                            detail=None,
+                        )
+            else:
+                action_label = tool_name
+                if tool_name == RETRIEVE_DOCS:
+                    action_label = "retrieve_docs"
                 elif tool_name in (RETRIEVE_CHUNKS, FETCH_CHUNKS_BY_IDS):
-                    unique_doc_ids = set()
-                    for item in result:
-                        if isinstance(item, dict):
-                            did = item.get("document_id") or item.get("doc_id")
-                            if did is not None:
-                                unique_doc_ids.add(str(did))
-                    n_docs_used = len(unique_doc_ids)
-                    doc_word = "document" if n_docs_used == 1 else "documents"
-                    emitter.emit_reasoning(
-                        label=f"Analysing {n_docs_used} {doc_word}",
-                        detail=None,
-                    )
-                    emitter.emit_reasoning(
-                        label=f"Retrieved {len(result)} passage{'s' if len(result) != 1 else ''} from {n_docs_used} {doc_word}",
-                        detail=None,
-                    )
+                    action_label = "retrieve_chunks"
+                elif tool_name == WEB_SEARCH:
+                    action_label = "web_search"
+
+                execution_results.append({
+                    "step_id": f"tool_{iteration}_{tool_name}",
+                    "action": action_label,
+                    "query": q,
+                    "result": result,
+                    "success": bool(result) if isinstance(result, list) else result is not None,
+                })
+
+                if emitter and isinstance(result, list):
+                    if tool_name == WEB_SEARCH:
+                        n = len(result)
+                        emitter.emit_reasoning(
+                            label=f"Found {n} web result{'s' if n != 1 else ''}",
+                            detail=None,
+                        )
+                    elif tool_name == RETRIEVE_DOCS:
+                        emitter.emit_reasoning(label="Analysing documents...", detail=None)
+                    elif tool_name in (RETRIEVE_CHUNKS, FETCH_CHUNKS_BY_IDS):
+                        unique_doc_ids = set()
+                        for item in result:
+                            if isinstance(item, dict):
+                                did = item.get("document_id") or item.get("doc_id")
+                                if did is not None:
+                                    unique_doc_ids.add(str(did))
+                        n_docs_used = len(unique_doc_ids)
+                        doc_word = "document" if n_docs_used == 1 else "documents"
+                        emitter.emit_reasoning(
+                            label=f"Analysing {n_docs_used} {doc_word}",
+                            detail=None,
+                        )
+                        emitter.emit_reasoning(
+                            label=f"Retrieved {len(result)} passage{'s' if len(result) != 1 else ''} from {n_docs_used} {doc_word}",
+                            detail=None,
+                        )
     
     logger.info("[AGENT_LOOP] Finished after %d iterations, %d execution results, %d research notes", iteration + 1, len(execution_results), len(research_notes))
     
