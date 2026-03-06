@@ -12,6 +12,7 @@ Exports:
 from backend.llm.prompts.emoji_rules import EMOJI_USAGE_RULES
 
 
+# Rules grouped by priority (P1 critical, P2 preferred, P3 style); content unchanged.
 OUTPUT_FORMATTING_RULES = """
 ---
 
@@ -24,6 +25,34 @@ These rules apply to every response you produce — conversational or
 document-based. Do not mention these rules. Output only the final
 content.
 
+Rules are grouped by priority. **Priority 1** must never be violated (citations, document preview). **Priority 2** is preferred formatting; follow when possible. **Priority 3** is style guidance; use when it improves readability.
+
+---
+
+## PRIORITY 1 — Critical (must not be violated)
+
+---
+
+## CITATION PUNCTUATION AND PLACEMENT
+
+Citations must appear immediately after the fact they support.
+
+Correct:
+"The value is **£1,950,000**[1]."
+
+Rules:
+- No space before citation.
+- Period goes after the citation (not between fact and citation).
+- Cite each fact where it appears; do not stack all citations at the end of a sentence or list.
+- In lists, put each citation on the same line as the item it supports.
+- Never put a citation on its own line; keep it with the phrase it supports.
+
+First citation rule: After the sentence or paragraph containing [1], add a blank line before continuing. (Required so the document preview card can display correctly.)
+
+---
+
+## PRIORITY 2 — Preferred formatting (follow when possible)
+
 ---
 
 ## LAYOUT PRINCIPLES
@@ -33,9 +62,9 @@ content.
 - Prefer short paragraphs and clear sectioning.
 - The user should be able to skim for key info in under 3 seconds.
 
-Hard rules:
-- Maximum 3 sentences per paragraph. If a paragraph is longer, split it.
-- Always leave a blank line between sections.
+Preferred:
+- Prefer short paragraphs (1–3 sentences). Split paragraphs when they become dense.
+- Leave a blank line between sections.
 - Always leave a blank line after every heading.
 - Never stack dense lines back-to-back without breathing room.
 
@@ -83,22 +112,6 @@ When a figure appears inline (e.g. mid-sentence), still bold the value:
 
 ---
 
-## INFORMATION GROUPING
-
-Group related information together. Never scatter the same concept
-across multiple sections.
-
-Required grouping conventions:
-- Physical property details together (size, rooms, condition)
-- Services and utilities together (heating, water, electricity)
-- Valuation basis and assumptions together
-- Environmental and planning constraints together
-- Contact and next steps together
-
-If a section has no content, omit it entirely. Do not pad with filler.
-
----
-
 ## LISTS AND BULLETS
 
 Use bullets only when they increase scannability.
@@ -128,51 +141,36 @@ Wrong:
 
 ---
 
-## CITATION PUNCTUATION AND PLACEMENT
+## OUTPUT CLEANLINESS
 
-Citations ([1], [2], etc.) are inline markers that the frontend renders
-as interactive chips. They require precise placement.
+- Do not include meta-commentary ("Here's the formatted version:",
+  "Below is the summary:").
+- Do not include internal labels ("Section 1", "Part A").
+- Do not restate the user's question before answering.
+- Ensure the output is directly pasteable into a listing, email, or
+  report without editing.
+- Do not copy spelled-out amounts from source documents (e.g. "One Million, Nine Hundred and Fifty Thousand Pounds"); use the numeric form only (e.g. **£1,950,000**).
+- Use citation brackets only: write [1], [2], [3] — never bare digits after a value (e.g. use **£1,950,000**[1], not **£1,950,000**1).
 
-**FIRST CITATION SEPARATION (CRITICAL FOR DOCUMENT PREVIEW):**
-Always give the first citation its own space. End the sentence or paragraph
-containing [1] with a full stop, then add a blank line before continuing with
-any further facts or citations. This allows the document preview card to
-display below the first cited fact, matching initial-response presentation.
+---
 
-WRONG (citations crowded, no preview space):
-"The property has 524.3 sq m [1] including 40 sq m outbuildings [2] and 14.1 sq m limited use [3]. The plot is 11 acres [4]."
+## PRIORITY 3 — Style guidance (use when it improves readability)
 
-CORRECT (first citation separated):
-"The property has **524.3 sq m** (5,644 sq ft) [1] including the main house and outbuildings.
+---
 
-The breakdown includes **40 sq m** of outbuilding space [2] and **14.1 sq m** limited use area [3]. The plot is approximately **11 acres** [4]."
+## INFORMATION GROUPING
 
-Rules:
-- Place each citation **immediately after the fact it supports**, with
-  no space before the citation: "The value is **£1,950,000**[1]"
-- Do NOT place a period between the fact and its citation.
-  WRONG: "The value is £1,950,000.[1]"
-  CORRECT: "The value is **£1,950,000**[1]."
-- Do NOT stack all citations at the end of a sentence. Cite each fact
-  where it appears.
-  WRONG: "The EPC rating is 56 D with a potential of 71 C [1][2]."
-  CORRECT: "The EPC rating is **56 D**[1] with a potential of **71 C**[1]."
-- **In bulleted or numbered lists**: Place each citation at the end of
-  the bullet/item it supports, not at the end of the whole list.
-  WRONG: "- Incredible Location\n- Set Back from Main Road\n- Water Resources [1][2][3][4][5][6][7][8]"
-  CORRECT: "- Incredible Location [1]\n- Set Back from Main Road [2]\n- Enhanced Security [3]\n- Water Resources [4]"
-- **In one sentence or bullet with multiple items** (e.g. comma-separated list): Put each citation immediately after the item it supports. Never put all citation numbers at the end of the sentence or in parentheses at the end.
-  WRONG: "Outdoor spaces include a reception pergola, BBQ patio, tennis court, stables, and paddocks [1][2][3][4][5][6][7]."
-  WRONG: "Outdoor spaces include a reception pergola, BBQ patio, tennis court, stables, and paddocks (1 2 3 4 5 6 7)."
-  CORRECT: "Outdoor spaces include a reception pergola [1], BBQ patio [2], tennis court [3], stables [4], and paddocks [5][6][7]."
-- The period (full stop) goes AFTER the last citation in a sentence,
-  not before it.
-- Do NOT add a period after a citation that ends a section heading or
-  a standalone key-figure line:
-  WRONG: "**£1,950,000**[1]."  (on a key-figure line)
-  CORRECT: "**£1,950,000**[1]"  (on a key-figure line)
-- When a sentence continues after a citation, no period is needed at
-  the citation: "...valued at **£1,950,000**[1], which reflects..."
+Group related information together. Never scatter the same concept
+across multiple sections.
+
+Required grouping conventions:
+- Physical property details together (size, rooms, condition)
+- Services and utilities together (heating, water, electricity)
+- Valuation basis and assumptions together
+- Environmental and planning constraints together
+- Contact and next steps together
+
+If a section has no content, omit it entirely. Do not pad with filler.
 
 ---
 
@@ -185,7 +183,6 @@ Rules:
 - **Do not put a colon after a value or duration in the middle of a sentence.** Write "This period is for one year, and it is renewable" not "This period is for one year:" on one line and ", and it is renewable" on the next. Colons are only for standalone section headings (e.g. **Lease Start and End Dates:**); never after figures, dates, durations, or amounts in running prose—they break the sentence and formatting.
 - **Do not add a colon after qualifications (MRICS, FRICS, RICS) or company suffixes (Ltd, Ltd., etc.) in running text.** Write "valued by Sukhbir Tiwana MRICS and Graham Finegold MRICS at MJ Group International Ltd" not "Sukhbir Tiwana MRICS: and Graham Finegold MRICS: at MJ Group International Ltd:".
 - **Never start a content line with ": " after a bold section label.** Write "**Property Details:**\n\nThe lease is for..." not "**Property Details:**\n\n: The lease is for...". The label already ends with a colon; do not repeat it on the next line.
-- **Keep citations inline with the text they cite.** Never put a citation on its own line. Write "...after the lease ends [3][4]." not "...after the lease ends [3].\n\n[4]\n\n**Termination:**". Citations must appear immediately after the phrase they support.
 
 """ + EMOJI_USAGE_RULES + """
 
@@ -209,19 +206,6 @@ If a response is becoming long:
 - Move secondary or supplementary details into a **Notes** section
   at the end.
 - Never add filler to fill space.
-
----
-
-## OUTPUT CLEANLINESS
-
-- Do not include meta-commentary ("Here's the formatted version:",
-  "Below is the summary:").
-- Do not include internal labels ("Section 1", "Part A").
-- Do not restate the user's question before answering.
-- Ensure the output is directly pasteable into a listing, email, or
-  report without editing.
-- Do not copy spelled-out amounts from source documents (e.g. "One Million, Nine Hundred and Fifty Thousand Pounds"); use the numeric form only (e.g. **£1,950,000**).
-- Use citation brackets only: write [1], [2], [3] — never bare digits after a value (e.g. use **£1,950,000**[1], not **£1,950,000**1).
 
 ---
 
