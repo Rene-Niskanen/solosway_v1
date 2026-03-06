@@ -1,5 +1,6 @@
 import React, { useState, useRef, useCallback, useLayoutEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { Mail, Lock } from 'lucide-react';
 import { backendApi } from '../services/backendApi';
 
 interface AuthFormData {
@@ -13,6 +14,7 @@ interface AuthFormData {
 
 const Auth: React.FC = () => {
   const [isLoginMode, setIsLoginMode] = useState(true);
+  const [loginStep, setLoginStep] = useState<1 | 2>(1); // Step 1: Email + Continue; Step 2: Password + Sign in
   // Use refs for form data to avoid re-renders on every keystroke
   const formDataRef = useRef<AuthFormData>({
     email: '',
@@ -52,6 +54,15 @@ const Auth: React.FC = () => {
   React.useEffect(() => {
     updateErrorRef(error);
   }, [error, updateErrorRef]);
+
+  // Disable document scroll on login page
+  React.useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, []);
 
   // Aggressively pre-initialize all inputs on mount to eliminate first-click delay
   // This runs synchronously in useLayoutEffect (before paint) to beat extension initialization
@@ -113,7 +124,7 @@ const Auth: React.FC = () => {
         }
       });
     };
-  }, [isLoginMode]); // Re-run when mode changes to initialize signup fields
+  }, [isLoginMode, loginStep]); // Re-run when mode or login step changes to initialize fields
 
   // Ref callback for email input - sets up handlers immediately when element is created
   const emailInputRefCallback = React.useCallback((node: HTMLInputElement | null) => {
@@ -375,8 +386,23 @@ const Auth: React.FC = () => {
     }
   }, []);
 
+  const handleContinueToPassword = useCallback(() => {
+    const email = formDataRef.current.email?.trim();
+    if (!email) {
+      setError('Please enter your email.');
+      return;
+    }
+    setError('');
+    setLoginStep(2);
+  }, []);
+
   const handleSubmit = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
+    // Login step 1: Continue advances to password step instead of submitting
+    if (isLoginMode && loginStep === 1) {
+      handleContinueToPassword();
+      return;
+    }
     setError('');
     setLoading(true);
 
@@ -452,7 +478,7 @@ const Auth: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [isLoginMode, navigate]);
+  }, [isLoginMode, loginStep, navigate, handleContinueToPassword]);
 
   const handleGoogleOAuthError = useCallback((error: any) => {
     const currentOrigin = typeof window !== 'undefined' ? window.location.origin : 'unknown';
@@ -654,6 +680,7 @@ const Auth: React.FC = () => {
   const toggleMode = useCallback(() => {
     // Instant mode switch with no delays
     setIsLoginMode(prev => !prev);
+    setLoginStep(1);
     setError('');
     errorRef.current = '';
     // Reset form data when switching modes - use ref for instant update
@@ -670,256 +697,191 @@ const Auth: React.FC = () => {
     setFormData(emptyData);
   }, []);
 
-  return (
-    <div 
-      className="min-h-screen flex items-center justify-center relative overflow-hidden"
-      style={{
-        backgroundColor: '#64788C',
-      }}
-    >
-      {/* Content Container - centered minimal layout */}
-      <div className="relative z-10 w-full max-w-md px-6 sm:px-8">
-        {/* Velora Logo */}
-        <div className="flex justify-center mb-12">
-            <img 
-            src="/veloraboxlogo-fade.png" 
-            alt="Velora Logo"
-            className="w-36 h-36 sm:w-48 sm:h-48 object-contain"
-            style={{ filter: 'brightness(0) invert(1)' }}
-            />
-          </div>
+  const showPasswordStep = isLoginMode && loginStep === 2;
+  const showSignupFields = !isLoginMode;
+  const showEmailStep = isLoginMode && loginStep === 1;
 
-          {/* Form */}
-          <form 
-          onSubmit={handleSubmit} 
-          className="space-y-6" 
-          autoComplete="off" 
-          data-lpignore="true"
-          data-1p-ignore="true"
-          data-bwignore="true"
-          data-form-type="other"
-          onClick={(e) => {
-            // Prevent form clicks from interfering with input focus
-            if ((e.target as HTMLElement).tagName === 'INPUT') {
-              return;
-            }
-          }}
-          style={{ pointerEvents: 'auto' }}
-        >
-          <style>{`
-            input::placeholder {
-              color: rgba(243, 244, 246, 0.85) !important;
-              opacity: 1;
-            }
-            input:-webkit-input-placeholder {
-              color: rgba(243, 244, 246, 0.85) !important;
-            }
-            input:-moz-placeholder {
-              color: rgba(243, 244, 246, 0.85) !important;
-              opacity: 1;
-            }
-            input::-moz-placeholder {
-              color: rgba(243, 244, 246, 0.85) !important;
-              opacity: 1;
-            }
-            input:-ms-input-placeholder {
-              color: rgba(243, 244, 246, 0.85) !important;
-            }
-          `}</style>
-            {/* Error Message */}
+  return (
+    <div className="h-screen min-h-0 flex flex-col md:flex-row md:gap-0 overflow-hidden">
+      {/* Left column: white form panel */}
+      <div className="w-full md:min-w-[380px] md:w-[40%] flex-shrink-0 bg-white flex flex-col min-h-0 flex-1 md:flex-none overflow-hidden">
+        <div className="flex-1 flex flex-col justify-center px-8 py-12 md:px-10 md:py-16 max-w-md mx-auto w-full auth-form">
+          <form
+            onSubmit={handleSubmit}
+            className=""
+            autoComplete="off"
+            data-lpignore="true"
+            data-1p-ignore="true"
+            data-bwignore="true"
+            data-form-type="other"
+            onClick={(e) => {
+              if ((e.target as HTMLElement).tagName === 'INPUT') return;
+            }}
+            style={{ pointerEvents: 'auto' }}
+          >
+            <style>{`
+              .auth-form * { font-family: 'Inter', sans-serif; }
+              .auth-form .auth-form-text { color: #090909; }
+              .auth-form .auth-form-heading-intro { font-weight: 300 !important; }
+              .auth-input { color: #090909 !important; }
+              .auth-input::placeholder { color: #9ca3af; opacity: 1; }
+              .auth-input::-webkit-input-placeholder { color: #9ca3af; }
+              .auth-input::-moz-placeholder { color: #9ca3af; opacity: 1; }
+            `}</style>
+
+            <div 
+              ref={googleButtonRef}
+              id="google-signin-button-hidden"
+              className="absolute opacity-0 pointer-events-none w-0 h-0 overflow-hidden"
+              aria-hidden
+            />
+
+            <h1 className="auth-form-text text-2xl md:text-3xl text-center mb-12 flex flex-wrap items-center justify-center gap-x-2 gap-y-1">
+              <span className="auth-form-heading-intro">Get started with</span>
+              <img
+                src="/VELORA_WRITINGLOGO.png"
+                alt="VELORA"
+                className="h-8 md:h-9 object-contain object-left inline-block"
+                style={{ width: 'auto', maxWidth: '160px' }}
+              />
+            </h1>
+
             {error && (
-            <div className="text-red-300 px-4 py-3 rounded text-sm text-center" style={{ fontFamily: '"Inter", sans-serif' }}>
+              <div className="text-red-600 px-4 py-3 rounded-lg text-sm text-center mb-4 bg-red-50 border border-red-100">
                 {error}
               </div>
             )}
 
-            {/* Google Sign-In Button - Custom UI Only */}
-            {/* Hidden div for Google to render button into (for programmatic click) */}
-            <div 
-              ref={googleButtonRef}
-              id="google-signin-button-hidden"
-              style={{
-                position: 'absolute',
-                opacity: 0,
-                pointerEvents: 'none',
-                width: 0,
-                height: 0,
-                overflow: 'hidden'
-              }}
-            />
+            {/* Spacer above Google button */}
+            <div className="h-12 shrink-0" style={{ minHeight: '3rem' }} aria-hidden="true" />
+
             <button
-                type="button"
-                onClick={triggerGoogleSignIn}
-                disabled={googleLoading}
-                className="w-full py-3 px-4 rounded-none font-medium focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed"
-                style={{ 
-                  transition: 'none',
-                  background: '#FFFFFF',
-                  border: '1px solid rgba(229, 231, 235, 0.5)',
-                  color: '#202124',
-                  fontFamily: '"Inter", sans-serif',
-                  fontSize: '16px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: '12px',
-                  borderRadius: '0',
-                  marginBottom: '24px'
-                }}
-                onMouseEnter={(e) => {
-                  if (!e.currentTarget.disabled) {
-                    e.currentTarget.style.borderColor = 'rgba(229, 231, 235, 0.8)';
-                    e.currentTarget.style.boxShadow = '0 1px 3px rgba(0, 0, 0, 0.1)';
-                  }
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.borderColor = 'rgba(229, 231, 235, 0.5)';
-                  e.currentTarget.style.boxShadow = 'none';
-                }}
-              >
-                <svg width="18" height="18" viewBox="0 0 18 18">
-                  <path fill="#4285F4" d="M17.64 9.2c0-.637-.057-1.22-.163-1.782H9v3.38h4.844c-.209 1.125-.843 2.078-1.796 2.717v2.258h2.908c1.702-1.567 2.684-3.874 2.684-6.575z"/>
-                  <path fill="#34A853" d="M9 18c2.43 0 4.467-.806 5.956-2.18l-2.908-2.258c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332C2.438 15.983 5.482 18 9 18z"/>
-                  <path fill="#FBBC05" d="M3.964 10.712c-.18-.54-.282-1.117-.282-1.712 0-.595.102-1.172.282-1.712V4.956H.957C.348 6.174 0 7.55 0 9c0 1.45.348 2.826.957 4.044l3.007-2.332z"/>
-                  <path fill="#EA4335" d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0 5.482 0 2.438 2.017.957 4.956L3.964 7.288C4.672 5.163 6.656 3.58 9 3.58z"/>
-                </svg>
-                Continue with Google
-              </button>
+              type="button"
+              onClick={triggerGoogleSignIn}
+              disabled={googleLoading}
+              className="auth-form-text w-full py-3 px-4 rounded-lg font-medium focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-3 bg-white border border-gray-200 hover:border-gray-300 hover:bg-gray-50 transition-colors mt-0 mb-0"
+            >
+              <svg width="18" height="18" viewBox="0 0 18 18" className="flex-shrink-0">
+                <path fill="#4285F4" d="M17.64 9.2c0-.637-.057-1.22-.163-1.782H9v3.38h4.844c-.209 1.125-.843 2.078-1.796 2.717v2.258h2.908c1.702-1.567 2.684-3.874 2.684-6.575z"/>
+                <path fill="#34A853" d="M9 18c2.43 0 4.467-.806 5.956-2.18l-2.908-2.258c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332C2.438 15.983 5.482 18 9 18z"/>
+                <path fill="#FBBC05" d="M3.964 10.712c-.18-.54-.282-1.117-.282-1.712 0-.595.102-1.172.282-1.712V4.956H.957C.348 6.174 0 7.55 0 9c0 1.45.348 2.826.957 4.044l3.007-2.332z"/>
+                <path fill="#EA4335" d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0 5.482 0 2.438 2.017.957 4.956L3.964 7.288C4.672 5.163 6.656 3.58 9 3.58z"/>
+              </svg>
+              Continue with Google
+            </button>
 
-            {/* Divider */}
-            <div style={{ 
-              display: 'flex', 
-              alignItems: 'center', 
-              marginBottom: '24px',
-              marginTop: '24px'
-            }}>
-              <div style={{ 
-                flex: 1, 
-                height: '1px', 
-                backgroundColor: 'rgba(229, 231, 235, 0.3)' 
-              }} />
-              <span style={{ 
-                padding: '0 16px', 
-                color: 'rgba(229, 231, 235, 0.7)', 
-                fontSize: '14px',
-                fontFamily: '"Inter", sans-serif'
-              }}>
-                OR
-              </span>
-              <div style={{ 
-                flex: 1, 
-                height: '1px', 
-                backgroundColor: 'rgba(229, 231, 235, 0.3)' 
-              }} />
+            <div className="flex items-center gap-4 mt-5 mb-5">
+              <div className="flex-1 h-px bg-gray-200" />
+              <span className="auth-form-text text-sm">OR</span>
+              <div className="flex-1 h-px bg-gray-200" />
             </div>
 
-            {/* Email Field */}
-          <div style={{ pointerEvents: 'auto' }}>
-                <input
-              ref={emailInputRefCallback}
-                  type="email"
-                  id="email"
-                  name="email"
-                  required
-                  value={formData.email}
-                  onChange={handleChange}
-                  onInput={handleInput}
-              className="w-full py-3 bg-transparent border-0 border-b outline-none focus:outline-none relative z-20"
-              style={{ 
-                transition: 'none !important', 
-                WebkitTapHighlightColor: 'transparent',
-                pointerEvents: 'auto',
-                touchAction: 'manipulation',
-                cursor: 'text',
-                animation: 'none',
-                transform: 'translateZ(0)',
-                backfaceVisibility: 'hidden',
-                borderBottom: '1.5px solid rgba(229, 231, 235, 0.7)',
-                color: '#F3F4F6',
-                fontFamily: '"Inter", sans-serif',
-                fontSize: '16px',
-                paddingLeft: '0',
-                paddingRight: '0',
-                backgroundColor: 'transparent',
-                borderRadius: '0',
-                paddingTop: '12px',
-                paddingBottom: '12px'
-              }}
-                  placeholder="Email"
-                  disabled={loading}
-                  autoComplete="off"
-                  autoCorrect="off"
-                  autoCapitalize="off"
-                  spellCheck="false"
-              tabIndex={0}
-              data-no-delay="true"
-              onFocus={(e) => {
-                e.target.style.borderBottomColor = 'rgba(229, 231, 235, 0.95)';
-              }}
-              onBlur={(e) => {
-                e.target.style.borderBottomColor = 'rgba(229, 231, 235, 0.7)';
-              }}
-            />
-            </div>
+            {/* Email field: step 1 login only - squared outline with icon */}
+            {showEmailStep && (
+              <div>
+                <div className="flex items-center gap-3 w-full border border-gray-200 rounded-none bg-white px-4 py-3.5 focus-within:border-gray-400 focus-within:outline-none">
+                  <Mail className="w-5 h-5 text-gray-400 flex-shrink-0" aria-hidden />
+                  <input
+                    ref={emailInputRefCallback}
+                    type="email"
+                    id="email"
+                    name="email"
+                    required
+                    value={formData.email}
+                    onChange={handleChange}
+                    onInput={handleInput}
+                    className="auth-input flex-1 min-w-0 border-0 bg-transparent outline-none text-base p-0"
+                    placeholder="Email"
+                    disabled={loading}
+                    autoComplete="off"
+                    tabIndex={0}
+                    data-no-delay="true"
+                  />
+                </div>
+              </div>
+            )}
 
-            {/* Password Field */}
-          <div style={{ pointerEvents: 'auto' }}>
-                <input
-              ref={passwordInputRefCallback}
-                  type="password"
-                  id="password"
-                  name="password"
-                  required
-                  value={formData.password}
-                  onChange={handleChange}
-                  onInput={handleInput}
-              className="w-full py-3 bg-transparent border-0 border-b outline-none focus:outline-none relative z-20"
-              style={{ 
-                transition: 'none !important', 
-                WebkitTapHighlightColor: 'transparent',
-                pointerEvents: 'auto',
-                touchAction: 'manipulation',
-                cursor: 'text',
-                animation: 'none',
-                transform: 'translateZ(0)',
-                backfaceVisibility: 'hidden',
-                borderBottom: '1.5px solid rgba(229, 231, 235, 0.7)',
-                color: '#F3F4F6',
-                fontFamily: '"Inter", sans-serif',
-                fontSize: '16px',
-                paddingLeft: '0',
-                paddingRight: '0',
-                backgroundColor: 'transparent',
-                borderRadius: '0',
-                paddingTop: '12px',
-                paddingBottom: '12px'
-              }}
-                  placeholder="Password"
-                  disabled={loading}
-              autoComplete="off"
-                  autoCorrect="off"
-                  autoCapitalize="off"
-                  spellCheck="false"
-                  data-form-type="other"
-                  data-lpignore="true"
-              data-1p-ignore="true"
-              data-bwignore="true"
-              tabIndex={0}
-              data-no-delay="true"
-              onFocus={(e) => {
-                e.target.style.borderBottomColor = 'rgba(229, 231, 235, 0.95)';
-              }}
-              onBlur={(e) => {
-                e.target.style.borderBottomColor = 'rgba(229, 231, 235, 0.7)';
-              }}
-            />
-            </div>
-
-            {/* Sign-up only fields */}
-            {!isLoginMode && (
+            {/* Step 1: Continue button (login only) */}
+            {showEmailStep && (
               <>
-                {/* First Name Field */}
+                <button
+                  type="button"
+                  onClick={handleContinueToPassword}
+                  disabled={loading}
+                  className="w-full py-3 px-4 rounded-lg font-medium text-white focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[#909FF7] disabled:opacity-50 disabled:cursor-not-allowed transition-colors mt-4 mb-0"
+                  style={{ backgroundColor: '#909FF7' }}
+                  onMouseEnter={(e) => { if (!e.currentTarget.disabled) e.currentTarget.style.backgroundColor = '#7b8bf5'; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = '#909FF7'; }}
+                >
+                  Continue
+                </button>
+                {/* Spacer below Continue button, above Sign in with SSO */}
+                <div className="h-14 shrink-0" style={{ minHeight: '3.5rem' }} aria-hidden="true" />
+              </>
+            )}
+
+            {/* Step 2: Password + Sign in (login only) - same box + spacing as step 1 to avoid layout jump */}
+            {showPasswordStep && (
+              <>
                 <div style={{ pointerEvents: 'auto' }}>
+                  <div className="flex items-center gap-3 w-full border border-gray-200 rounded-none bg-white px-4 py-3.5 focus-within:border-gray-400 focus-within:outline-none">
+                    <Lock className="w-5 h-5 text-gray-400 flex-shrink-0" aria-hidden />
+                    <input
+                      ref={passwordInputRefCallback}
+                      type="password"
+                      id="password"
+                      name="password"
+                      required
+                      value={formData.password}
+                      onChange={handleChange}
+                      onInput={handleInput}
+                      className="auth-input flex-1 min-w-0 border-0 bg-transparent outline-none text-base p-0"
+                      placeholder="Password"
+                      disabled={loading}
+                      autoComplete="current-password"
+                      data-form-type="other"
+                      data-lpignore="true"
+                      data-1p-ignore="true"
+                      data-bwignore="true"
+                      tabIndex={0}
+                      data-no-delay="true"
+                    />
+                  </div>
+                </div>
+                <button
+                  type="submit"
+                  disabled={loading}
+                  className="w-full py-3 px-4 rounded-lg font-medium text-white focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[#909FF7] disabled:opacity-50 disabled:cursor-not-allowed transition-colors mt-4 mb-0"
+                  style={{ backgroundColor: '#909FF7' }}
+                  onMouseEnter={(e) => { if (!e.currentTarget.disabled) e.currentTarget.style.backgroundColor = '#7b8bf5'; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = '#909FF7'; }}
+                >
+                  {loading ? 'Signing in...' : 'Sign in'}
+                </button>
+                <div className="h-14 shrink-0" style={{ minHeight: '3.5rem' }} aria-hidden="true" />
+              </>
+            )}
+
+            {/* Signup fields and submit - all simple line inputs like companyName */}
+            {showSignupFields && (
+              <>
+                <div className="mb-8" style={{ pointerEvents: 'auto' }}>
+                  <input
+                    ref={emailInputRefCallback}
+                    type="email"
+                    id="email"
+                    name="email"
+                    required
+                    value={formData.email}
+                    onChange={handleChange}
+                    onInput={handleInput}
+                    className="auth-input w-full border-0 border-b border-gray-200 bg-transparent py-2 outline-none focus:border-gray-400"
+                    placeholder="Email"
+                    disabled={loading}
+                    autoComplete="email"
+                  />
+                </div>
+                <div className="mb-8" style={{ pointerEvents: 'auto' }}>
                   <input
                     ref={firstNameInputRef}
                     type="text"
@@ -929,46 +891,13 @@ const Auth: React.FC = () => {
                     value={formData.firstName || ''}
                     onChange={handleChange}
                     onInput={handleInput}
-                    className="w-full py-3 bg-transparent border-0 border-b outline-none focus:outline-none relative z-20"
-                    style={{ 
-                      transition: 'none !important', 
-                      WebkitTapHighlightColor: 'transparent',
-                      pointerEvents: 'auto',
-                      touchAction: 'manipulation',
-                      cursor: 'text',
-                      animation: 'none',
-                      transform: 'translateZ(0)',
-                      backfaceVisibility: 'hidden',
-                      borderBottom: '1.5px solid rgba(229, 231, 235, 0.7)',
-                      color: '#F3F4F6',
-                      fontFamily: '"Inter", sans-serif',
-                      fontSize: '16px',
-                      paddingLeft: '0',
-                      paddingRight: '0',
-                      backgroundColor: 'transparent',
-                      borderRadius: '0',
-                      paddingTop: '12px',
-                      paddingBottom: '12px'
-                    }}
+                    className="auth-input w-full border-0 border-b border-gray-200 bg-transparent py-2 outline-none focus:border-gray-400"
                     placeholder="First Name"
                     disabled={loading}
                     autoComplete="given-name"
-                    autoCorrect="off"
-                    autoCapitalize="words"
-                    spellCheck="false"
-                    tabIndex={0}
-                    data-no-delay="true"
-                    onFocus={(e) => {
-                      e.target.style.borderBottomColor = 'rgba(229, 231, 235, 0.95)';
-                    }}
-                    onBlur={(e) => {
-                      e.target.style.borderBottomColor = 'rgba(229, 231, 235, 0.7)';
-                    }}
                   />
                 </div>
-
-                {/* Last Name Field */}
-                <div style={{ pointerEvents: 'auto' }}>
+                <div className="mb-8" style={{ pointerEvents: 'auto' }}>
                   <input
                     ref={lastNameInputRef}
                     type="text"
@@ -978,147 +907,99 @@ const Auth: React.FC = () => {
                     value={formData.lastName || ''}
                     onChange={handleChange}
                     onInput={handleInput}
-                    className="w-full py-3 bg-transparent border-0 border-b outline-none focus:outline-none relative z-20"
-                    style={{ 
-                      transition: 'none !important', 
-                      WebkitTapHighlightColor: 'transparent',
-                      pointerEvents: 'auto',
-                      touchAction: 'manipulation',
-                      cursor: 'text',
-                      animation: 'none',
-                      transform: 'translateZ(0)',
-                      backfaceVisibility: 'hidden',
-                      borderBottom: '1.5px solid rgba(229, 231, 235, 0.7)',
-                      color: '#F3F4F6',
-                      fontFamily: '"Inter", sans-serif',
-                      fontSize: '16px',
-                      paddingLeft: '0',
-                      paddingRight: '0',
-                      backgroundColor: 'transparent',
-                      borderRadius: '0',
-                      paddingTop: '12px',
-                      paddingBottom: '12px'
-                    }}
+                    className="auth-input w-full border-0 border-b border-gray-200 bg-transparent py-2 outline-none focus:border-gray-400"
                     placeholder="Last Name"
                     disabled={loading}
                     autoComplete="family-name"
-                    autoCorrect="off"
-                    autoCapitalize="words"
-                    spellCheck="false"
-                    tabIndex={0}
-                    data-no-delay="true"
-                    onFocus={(e) => {
-                      e.target.style.borderBottomColor = 'rgba(229, 231, 235, 0.95)';
-                    }}
-                    onBlur={(e) => {
-                      e.target.style.borderBottomColor = 'rgba(229, 231, 235, 0.7)';
-                    }}
                   />
                 </div>
-
-                {/* Confirm Password Field */}
-                <div style={{ pointerEvents: 'auto' }}>
+                <div className="mb-8" style={{ pointerEvents: 'auto' }}>
+                  <input
+                    ref={companyNameInputRef}
+                    type="text"
+                    id="companyName"
+                    name="companyName"
+                    value={formData.companyName || ''}
+                    onChange={handleChange}
+                    onInput={handleInput}
+                    className="auth-input w-full border-0 border-b border-gray-200 bg-transparent py-2 outline-none focus:border-gray-400"
+                    placeholder="Company Name"
+                    disabled={loading}
+                    autoComplete="organization"
+                  />
+                </div>
+                <div className="mb-8" style={{ pointerEvents: 'auto' }}>
+                  <input
+                    ref={passwordInputRefCallback}
+                    type="password"
+                    id="password"
+                    name="password"
+                    required
+                    value={formData.password}
+                    onChange={handleChange}
+                    onInput={handleInput}
+                    className="auth-input w-full border-0 border-b border-gray-200 bg-transparent py-2 outline-none focus:border-gray-400"
+                    placeholder="Password"
+                    disabled={loading}
+                    autoComplete="new-password"
+                    data-form-type="other"
+                    data-lpignore="true"
+                  />
+                </div>
+                <div className="mb-8" style={{ pointerEvents: 'auto' }}>
                   <input
                     ref={confirmPasswordInputRef}
                     type="password"
                     id="confirmPassword"
                     name="confirmPassword"
-                    required={!isLoginMode}
+                    required
                     value={formData.confirmPassword || ''}
                     onChange={handleChange}
                     onInput={handleInput}
-                    className="w-full py-3 bg-transparent border-0 border-b outline-none focus:outline-none relative z-20"
-                    style={{ 
-                      transition: 'none !important', 
-                      WebkitTapHighlightColor: 'transparent',
-                      pointerEvents: 'auto',
-                      touchAction: 'manipulation',
-                      cursor: 'text',
-                      animation: 'none',
-                      transform: 'translateZ(0)',
-                      backfaceVisibility: 'hidden',
-                      borderBottom: '1.5px solid rgba(229, 231, 235, 0.7)',
-                      color: '#F3F4F6',
-                      fontFamily: '"Inter", sans-serif',
-                      fontSize: '16px',
-                      paddingLeft: '0',
-                      paddingRight: '0',
-                      backgroundColor: 'transparent',
-                      borderRadius: '0',
-                      paddingTop: '12px',
-                      paddingBottom: '12px'
-                    }}
+                    className="auth-input w-full border-0 border-b border-gray-200 bg-transparent py-2 outline-none focus:border-gray-400"
                     placeholder="Confirm Password"
                     disabled={loading}
                     autoComplete="new-password"
-                    autoCorrect="off"
-                    autoCapitalize="off"
-                    spellCheck="false"
-                    data-form-type="other"
                     data-lpignore="true"
-                    data-1p-ignore="true"
-                    data-bwignore="true"
-                    tabIndex={0}
-                    data-no-delay="true"
-                    onFocus={(e) => {
-                      e.target.style.borderBottomColor = 'rgba(229, 231, 235, 0.95)';
-                    }}
-                    onBlur={(e) => {
-                      e.target.style.borderBottomColor = 'rgba(229, 231, 235, 0.7)';
-                    }}
                   />
                 </div>
+                <button
+                  type="submit"
+                  disabled={loading}
+                  className="w-full py-3 px-4 rounded-lg font-medium text-white focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[#909FF7] disabled:opacity-50 disabled:cursor-not-allowed transition-colors mt-8 mb-14"
+                  style={{ backgroundColor: '#909FF7' }}
+                  onMouseEnter={(e) => { if (!e.currentTarget.disabled) e.currentTarget.style.backgroundColor = '#7b8bf5'; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = '#909FF7'; }}
+                >
+                  {loading ? 'Creating Account...' : 'Sign up'}
+                </button>
               </>
             )}
 
-          {/* Login Button */}
-            <button
-              type="submit"
-              disabled={loading}
-            className="w-full py-3 px-4 rounded-none font-medium focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed mt-8"
-            style={{ 
-              transition: 'none',
-              background: 'transparent',
-              border: '1px solid rgba(229, 231, 235, 0.5)',
-              color: '#E5E7EB',
-              fontFamily: '"Inter", sans-serif',
-              fontSize: '16px'
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.borderColor = 'rgba(229, 231, 235, 0.8)';
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.borderColor = 'rgba(229, 231, 235, 0.5)';
-            }}
-          >
-            {loading ? (isLoginMode ? 'Signing in...' : 'Creating Account...') : (isLoginMode ? 'Login' : 'Sign up')}
-                </button>
+            <p className="auth-form-text text-sm text-center mt-4">
+              If you are part of a team, please contact your team&apos;s administrator for an invite link.
+            </p>
 
-            {/* Toggle Link */}
-          <div className="text-center pt-6">
-                <button
-                  type="button"
-                  onClick={toggleMode}
-              style={{ 
-                fontFamily: '"Inter", sans-serif',
-                fontSize: '14px',
-                color: 'rgba(229, 231, 235, 0.7)',
-                background: 'transparent',
-                border: 'none',
-                cursor: 'pointer',
-                transition: 'none'
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.color = 'rgba(229, 231, 235, 0.9)';
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.color = 'rgba(229, 231, 235, 0.7)';
-              }}
-                >
-              {isLoginMode ? "Don't have an account? Sign up" : 'Already have an account? Sign in'}
-                </button>
-          </div>
-        </form>
+            <div className="text-center pt-10">
+              <button
+                type="button"
+                onClick={toggleMode}
+                className="auth-form-text text-sm hover:opacity-80 bg-transparent border-none cursor-pointer"
+              >
+                {isLoginMode ? "Don't have an account? Sign up" : 'Already have an account? Sign in'}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      {/* Right column: image - hidden on small screens, takes most of view on md+ */}
+      <div className="hidden md:flex flex-1 min-w-0 min-h-screen overflow-hidden bg-gray-100 -ml-px">
+        <img
+          src="/Login-image%202.png"
+          alt="Velora"
+          className="w-full h-full object-cover object-left min-h-full"
+        />
       </div>
     </div>
   );

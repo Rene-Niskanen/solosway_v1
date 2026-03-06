@@ -698,10 +698,17 @@ async def handle_citation_query(state: MainWorkflowState) -> MainWorkflowState:
     is_agent_mode = state.get("is_agent_mode", False)
     
     cited_text = citation_context.get("cited_text", "")
-    page_number = citation_context.get("page_number", "unknown")
-    doc_id = citation_context.get("document_id", "")
+    # Use same numeric page as normal responses (frontend expects int; "unknown" breaks citation mapping)
+    _page = citation_context.get("page_number") or citation_context.get("page")
+    try:
+        page_number = int(_page) if _page is not None and str(_page).strip() not in ("", "unknown") else 1
+    except (TypeError, ValueError):
+        page_number = 1
+    doc_id = citation_context.get("document_id", "") or citation_context.get("doc_id", "")
     filename = citation_context.get("original_filename", "the document")
-    bbox = citation_context.get("bbox", {})
+    bbox = citation_context.get("bbox", {}) or {}
+    if isinstance(bbox, dict) and "page" not in bbox:
+        bbox = {**bbox, "page": page_number}
     
     logger.info(f"⚡ [CITATION_QUERY] Processing citation query - doc: {doc_id[:8] if doc_id else 'unknown'}, page: {page_number}, agent_mode: {is_agent_mode}")
     logger.info(f"⚡ [CITATION_QUERY] Cited text length: {len(cited_text)} chars")
@@ -770,15 +777,25 @@ async def handle_citation_query(state: MainWorkflowState) -> MainWorkflowState:
         
         logger.info(f"⚡ [CITATION_QUERY] Generated answer ({len(answer)} chars)")
         
-        # Build a simple citation for the source
+        # Build citation in same shape as responder chunk_citations so frontend citation mapping is identical
+        bbox_normalized = dict(bbox) if isinstance(bbox, dict) else {}
+        if not all(k in bbox_normalized for k in ("left", "top", "width", "height")):
+            bbox_normalized.setdefault("left", 0)
+            bbox_normalized.setdefault("top", 0)
+            bbox_normalized.setdefault("width", bbox_normalized.get("width", 1))
+            bbox_normalized.setdefault("height", bbox_normalized.get("height", 1))
+        bbox_normalized["page"] = bbox_normalized.get("page", page_number)
         citation = {
             "citation_number": 1,
             "doc_id": doc_id,
+            "document_id": doc_id,  # Frontend may use document_id; keep in sync with normal path
             "page_number": page_number,
+            "page": page_number,  # Some frontend paths use .page
             "cited_text": cited_text[:200] + "..." if len(cited_text) > 200 else cited_text,
             "original_filename": filename,
-            "bbox": bbox,
-            "block_id": f"citation_source_{doc_id[:8] if doc_id else 'unknown'}"
+            "bbox": bbox_normalized,
+            "block_id": citation_context.get("block_id") or f"citation_source_{doc_id[:8] if doc_id else 'unknown'}",
+            "method": "citation-query",
         }
         
         # Add citation reference to answer if not already present

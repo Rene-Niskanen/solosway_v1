@@ -419,7 +419,7 @@ class BackendApiService {
     isNewChat?: boolean,
     // WEB SEARCH: Enable Exa web search when true
     webSearch?: boolean
-  ): Promise<void> {
+    ): Promise<void> {
     const baseUrl = this.baseUrl || BACKEND_URL;
     const url = `${baseUrl}/api/llm/query/stream`;
     

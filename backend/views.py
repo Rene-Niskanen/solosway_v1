@@ -937,6 +937,8 @@ def query_documents_stream():
         is_agent_mode = data.get('isAgentMode', True)  # AGENT MODE: Enable LLM tool-based actions (default to True for new architecture)
         # Accept both keys: frontend agent-task stream sends web_search (snake_case)
         web_search_enabled = bool(data.get('web_search', data.get('webSearch', False)))  # WEB SEARCH: Exa integration
+        if web_search_enabled:
+            logger.info("🔵 [STREAM] Web search (Exa) enabled for this request")
 
         # CRITICAL: Log agent mode setting for debugging
         logger.info(f"🔑 [STREAM] isAgentMode from request: {data.get('isAgentMode', 'not provided')}, final is_agent_mode: {is_agent_mode}")
@@ -1014,7 +1016,8 @@ def query_documents_stream():
                     yield f"data: {json.dumps({'type': 'error', 'message': 'User not associated with a business'})}\n\n"
                     return
                 # Yield immediately so client gets feedback before Supabase/state work (reduces perceived hang)
-                yield f"data: {json.dumps({'type': 'status', 'message': 'Searching documents...'})}\n\n"
+                status_msg = 'Searching the web...' if web_search_enabled else 'Searching documents...'
+                yield f"data: {json.dumps({'type': 'status', 'message': status_msg})}\n\n"
             except Exception as early_error:
                 # If error occurs before first yield, yield error immediately
                 logger.error(f"❌ [STREAM] Early error in generate_stream: {early_error}")
@@ -2166,11 +2169,32 @@ def query_documents_stream():
                                             final_result['final_summary'] = final_summary_from_citation
                                             logger.info(f"⚡ [CITATION_QUERY] Captured final_summary ({len(final_summary_from_citation)} chars)")
                                         
-                                        # Capture citations
+                                        # Capture citations in same shape as responder (chunk_citations) so post-loop uses same mapping
                                         citations_from_citation = state_data.get('citations', [])
                                         if citations_from_citation:
                                             final_result['citations'] = citations_from_citation
-                                            logger.info(f"⚡ [CITATION_QUERY] Captured {len(citations_from_citation)} citations")
+                                            final_result['chunk_citations'] = citations_from_citation  # Same mapping path as normal results
+                                            logger.info(f"⚡ [CITATION_QUERY] Captured {len(citations_from_citation)} citations (chunk_citations for consistent mapping)")
+                                            # Stream citation event(s) so frontend gets same real-time mapping as normal path
+                                            try:
+                                                for citation in citations_from_citation:
+                                                    citation_bbox = citation.get('bbox', {})
+                                                    citation_page = citation.get('page_number') or citation.get('page', 1)
+                                                    if isinstance(citation_bbox, dict) and 'page' not in citation_bbox:
+                                                        citation_bbox = {**citation_bbox, 'page': citation_page}
+                                                    citation_data = {
+                                                        'doc_id': citation.get('doc_id', '') or citation.get('document_id', ''),
+                                                        'document_id': citation.get('doc_id', '') or citation.get('document_id', ''),
+                                                        'page': citation_page if isinstance(citation_page, int) else int(citation_page) if str(citation_page).strip() not in ('', 'unknown') else 1,
+                                                        'bbox': citation_bbox,
+                                                        'method': citation.get('method', 'citation-query'),
+                                                        'block_id': citation.get('block_id', ''),
+                                                        'cited_text': citation.get('cited_text', ''),
+                                                        'original_filename': citation.get('original_filename', '')
+                                                    }
+                                                    yield f"data: {json.dumps({'type': 'citation', 'citation_number': citation.get('citation_number'), 'data': citation_data})}\n\n"
+                                            except Exception as cit_err:
+                                                logger.warning(f"🟡 [CITATION_QUERY] Error streaming citation event: {cit_err}")
                                     
                                     # Handle attachment fast completion (raw; format_response will structure it)
                                     elif node_name == "handle_attachment_fast":
@@ -3079,12 +3103,19 @@ def query_documents_stream():
                                     except Exception as e:
                                         logger.warning(f"🟡 [CITATIONS] Failed to batch lookup filenames: {e}")
                                 
-                                # Process citations with filenames
+                                # Process citations with filenames (same key shape as chunk_citations for citation-query/hover follow-up)
                                 for cit in citations_list:
                                     citation_num = str(cit.get('citation_number', 1))
-                                    doc_id = cit.get('doc_id', '')
-                                    page = cit.get('page_number', 0)
-                                    bbox = cit.get('bbox', {})
+                                    doc_id = (cit.get('doc_id') or cit.get('document_id') or '').strip()
+                                    # Normalize page to int (citation_query can send "unknown"; frontend expects number)
+                                    _p = cit.get('page_number') or cit.get('page')
+                                    try:
+                                        page = int(_p) if _p is not None and str(_p).strip() not in ('', 'unknown') else 1
+                                    except (TypeError, ValueError):
+                                        page = 1
+                                    bbox = dict(cit.get('bbox') or {})
+                                    if isinstance(bbox, dict) and 'page' not in bbox:
+                                        bbox['page'] = page
                                     
                                     # Get original_filename from citation, cache, or fallback
                                     original_filename = cit.get('original_filename')

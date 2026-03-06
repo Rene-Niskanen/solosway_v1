@@ -40,6 +40,12 @@ WEB_SEARCH = "web_search"
 
 def _get_agent_loop_system_prompt(web_search_enabled: bool = False) -> str:
     """System prompt instructing the model on when to use tools vs reply directly."""
+    if web_search_enabled:
+        return """You are an assistant with access to web search. The user has chosen "Search the web" for this query.
+
+You have one tool: web_search(query). Use it to answer the user's question with up-to-date information from the internet.
+
+Always call web_search with a clear, specific query (e.g. the user's question or a focused sub-question). Do not finish without calling web_search at least once. After you receive results, you may finish so the system can format the answer with web citations."""
     base = """You are an assistant with access to a document search system. Your job is to decide when to search documents and when to reply from context alone.
 
 You have four tools:
@@ -76,30 +82,32 @@ CITATION FORMATTING (mandatory for add_research_note):
 - chunk_id: Use the exact **chunk_id** from the retrieve_chunks result for the chunk you are noting (the UUID string).
 - cited_text: Use an **exact** substring from that chunk's **chunk_text** — the exact words that support the note. Do NOT paraphrase. Do NOT reword. If the chunk says "Market Value: £1,950,000", then cited_text must be exactly that (or a contiguous substring of it), not "market value of 1.95M". The system uses cited_text to attach the correct source and highlight in the document. If you paraphrase, the citation will not match and the reader will not see the correct highlight."""
 
-    if web_search_enabled:
-        base += """
-
----
-WEB SEARCH (enabled)
----
-You also have a web_search(query) tool. Use it to find real-time information from the internet.
-
-When to use web_search:
-- The user's question requires current/external knowledge not found in uploaded documents (e.g. market trends, news, regulations, comparable data from external sources)
-- After searching documents and finding insufficient information, supplement with web results
-- The user explicitly asks about something external to their documents
-
-Strategy:
-- If the question could be answered by uploaded documents, try retrieve_docs/retrieve_chunks FIRST
-- Use web_search to supplement or when documents don't have the answer
-- You may call both document tools and web_search in the same turn if the question benefits from both internal and external information
-- After web_search returns results, you may finish — the system will generate the final answer citing both document and web sources"""
-
     return base
 
 
 def _build_tool_definitions(web_search_enabled: bool = False) -> List[Dict[str, Any]]:
-    """OpenAI function-calling format for retrieve_docs, retrieve_chunks, and optionally web_search."""
+    """OpenAI function-calling format for retrieve_docs, retrieve_chunks, and optionally web_search.
+    When web_search_enabled is True, only the web_search tool is exposed so the model cannot use document retrieval."""
+    if web_search_enabled:
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": WEB_SEARCH,
+                    "description": "Search the web for real-time information using Exa. Use when the user's question requires current or external knowledge not found in uploaded documents, or to supplement document findings with broader context.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "Search query for the web (e.g. 'size of New York City', 'current UK interest rates')",
+                            },
+                        },
+                        "required": ["query"],
+                    },
+                },
+            },
+        ]
     tools = [
         {
             "type": "function",
@@ -184,26 +192,6 @@ def _build_tool_definitions(web_search_enabled: bool = False) -> List[Dict[str, 
             },
         },
     ]
-
-    if web_search_enabled:
-        tools.append({
-            "type": "function",
-            "function": {
-                "name": WEB_SEARCH,
-                "description": "Search the web for real-time information using Exa. Use when the user's question requires current or external knowledge not found in uploaded documents, or to supplement document findings with broader context.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "query": {
-                            "type": "string",
-                            "description": "Search query — be specific and include relevant keywords for best results",
-                        },
-                    },
-                    "required": ["query"],
-                },
-            },
-        })
-
     return tools
 
 

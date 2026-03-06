@@ -6736,22 +6736,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
 
       setChatMessages(prev => [...prev, agentResultMessage]);
 
-      // Auto-open document preview for the first citation that has valid data
-      const citationsObj = citations || {};
-      const orderedKeys = Object.keys(citationsObj).sort((a, b) => parseInt(a) - parseInt(b));
-      const firstKey = orderedKeys[0];
-      if (firstKey && citationsObj[firstKey]) {
-        const cit = citationsObj[firstKey];
-        const docId = cit.doc_id || cit.document_id;
-        if (docId) {
-          requestAnimationFrame(() => {
-            const openFn = openCitationInDocumentViewRef.current;
-            if (openFn) {
-              openFn(cit, false, { messageId, citationNumber: firstKey });
-            }
-          });
-        }
-      }
+      // Do not auto-open the big document preview when injecting agent result — user wants only the small inline preview in the response.
     };
 
     window.addEventListener('agent-task-result-inject', handleAgentTaskResultInject as EventListener);
@@ -8556,6 +8541,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   }, [openDocumentForChat, legacyOpenExpandedCardView]);
   
   // Wrapper: Close document with per-chat isolation. Save current citation index so "Open" reopens at same position.
+  // Also clear citationViewedInDocument so the small inline callout shows "View in document" again (used when only small preview is shown).
   const closeExpandedCardView = React.useCallback(() => {
     const chatId = currentChatIdRef.current;
     if (chatId) {
@@ -8572,6 +8558,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       closeDocumentForChat(chatId);
     }
     legacyCloseExpandedCardView();
+    setCitationViewedInDocument(null);
   }, [closeDocumentForChat, legacyCloseExpandedCardView, getChatState]);
 
   /** Dismiss citation bar, close document preview, and hide buttons when user sends a new query. Prevents bar/buttons from affecting the previous response. When keepDocumentOpenOnNewChat, preserve document (e.g. projects view). */
@@ -12131,7 +12118,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     if (anchorRect != null) {
       const runLength = getCitationAdjacentRunLength(sourceMessageText ?? '', citationNumber ?? '');
       if (runLength > 2) return; // Don't show preview when 3+ citations in a row
-      setCitationClickPanel({ citationData: data as CitationData, anchorRect, highlightRect, sourceMessageText, messageId, citationNumber });
+      // Use same citation mapping as normal responses (doc_id, document_id, etc.) so hover/ask panel shows correct data
+      const normalizedData = normalizeCitationDocId(data);
+      setCitationClickPanel({ citationData: normalizedData as CitationData, anchorRect, highlightRect, sourceMessageText, messageId, citationNumber });
     }
   }, [openCitationInDocumentView, currentChatId, setDocumentViewedCitation, latestAssistantMessageKey]);
 
@@ -16069,6 +16058,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     return validMessages.map(({ message, idx }) => {
       const finalKey = message.id || `msg-${idx}`;
       const isRestored = message.id && restoredMessageIdsRef.current.has(message.id);
+      const isInjectedAgentResult = !!(message as { isAgentTaskResult?: boolean }).isAgentTaskResult;
       const isLatestAssistantMessage = latestAssistantMessageKey !== null && finalKey === latestAssistantMessageKey;
       
       if (message.type === 'query') {
@@ -16312,7 +16302,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       // Response message
       const hasCurrentStreamFinished = !message.isLoading;
       // Show bar only when: child called onRevealComplete (full reveal sequence done), or restored chat
-      const revealEndedOrRestored = revealEndedForResponseIdRef.current.has(finalKey) || isRestored;
+      const revealEndedOrRestored = revealEndedForResponseIdRef.current.has(finalKey) || isRestored || isInjectedAgentResult;
       const showFeedbackBar = message.text && hasCurrentStreamFinished && revealEndedOrRestored && (isLatestAssistantMessage || showBarForResponseId === finalKey);
       const hasCitationsForBar = !!(message.text && getOrderedCitationNumbersFromMessageText(message.text).length > 0);
       return (
@@ -16446,8 +16436,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 })()}
                 selectedCitationNumber={citationClickPanel?.citationNumber ?? (expandedCardViewDoc ? (() => { const v = (expandedCardViewDoc as DocumentPreview).viewedCitation ?? citationViewedInDocument; return v ? v.citationNumber : undefined; })() : undefined)}
                 selectedCitationMessageId={citationClickPanel?.messageId ?? (expandedCardViewDoc ? (() => { const v = (expandedCardViewDoc as DocumentPreview).viewedCitation ?? citationViewedInDocument; return v ? v.messageId : undefined; })() : undefined)}
-                skipHighlightSwoop={isRestored || (currentChatId !== null && currentChatId === skipSwoopForChatId)}
-                skipRevealAnimation={isRestored}
+                skipHighlightSwoop={isRestored || isInjectedAgentResult || (currentChatId !== null && currentChatId === skipSwoopForChatId)}
+                skipRevealAnimation={isRestored || isInjectedAgentResult}
                 onRevealComplete={(id) => {
                   // Child only calls this when reveal (and stream-done) has finished; always record so feedback bar can show (avoid stale message.isLoading closure)
                   revealEndedForResponseIdRef.current.add(id);
@@ -16491,8 +16481,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               });
                 }}
                 onViewInDocumentFromCallout={(citationData, msgId, citationNumber) => {
+                  // Only update viewed state so the small inline callout shows as "viewed" (blue highlight).
+                  // Do not open the big document preview panel — user wants only the small preview in the response.
                   const viewed = msgId != null && citationNumber != null ? { messageId: msgId, citationNumber } : null;
-                  openCitationInDocumentView(citationData as CitationData, false, viewed ?? undefined);
                   if (viewed) {
                     setCitationViewedInDocument(viewed);
                     if (currentChatId) setDocumentViewedCitation(currentChatId, viewed);
@@ -16914,8 +16905,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       `}</style>
       {/* Dark overlay when citation panel is open - rendered inside panel so chat bar can sit above it (z-index) */}
       {citationClickPanel && (() => {
-        const data = citationClickPanel.citationData as CitationData & { document_id?: string };
-        const docId = data.document_id ?? data.doc_id;
+        // Same citation mapping as normal responses so hover/ask panel uses doc_id, document_id, etc. consistently
+        const normalizedCitation = normalizeCitationDocId(citationClickPanel.citationData);
+        const data = normalizedCitation as CitationData & { document_id?: string };
+        const docId = data.doc_id ?? data.document_id;
         const pageNum = data.page ?? data.bbox?.page ?? data.page_number ?? 1;
         const cacheKey = docId ? `hover-${docId}-${pageNum}` : '';
         const cachedPreview = cacheKey ? (hoverPreviewCache.get(cacheKey) ?? null) : null;
@@ -16929,7 +16922,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         );
         return createPortal(
           <CitationClickPanel
-            citationData={citationClickPanel.citationData}
+            citationData={normalizedCitation}
             anchorRect={citationClickPanel.anchorRect}
             highlightRect={citationClickPanel.highlightRect}
             cachedPageImage={cachedPageImage}
@@ -16938,7 +16931,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             onViewInDocument={() => {
               const { messageId, citationNumber } = citationClickPanel;
               const viewed = messageId != null && citationNumber != null ? { messageId, citationNumber } : null;
-              openCitationInDocumentView(citationClickPanel.citationData, false, viewed ?? undefined);
+              openCitationInDocumentView(normalizedCitation, false, viewed ?? undefined);
               if (viewed) {
                 setCitationViewedInDocument(viewed);
                 if (currentChatId) setDocumentViewedCitation(currentChatId, viewed);
@@ -16946,7 +16939,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               setCitationClickPanel(null);
             }}
             onAskFollowUp={() => {
-              const citationData = citationClickPanel.citationData as CitationData & { document_id?: string; block_id?: string; cited_text?: string; block_content?: string; bbox?: { left: number; top: number; width: number; height: number }; page?: number; page_number?: number };
+              const citationData = normalizedCitation as CitationData & { document_id?: string; block_id?: string; cited_text?: string; block_content?: string; bbox?: { left: number; top: number; width: number; height: number }; page?: number; page_number?: number };
               const docId = citationData.document_id ?? (citationData as any).doc_id;
               const pageNum = citationData.page ?? citationData.page_number ?? (citationData.bbox as any)?.page ?? 1;
               const bbox = citationData.bbox ?? { left: 0, top: 0, width: 0, height: 0 };
@@ -16981,13 +16974,13 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             }}
             onSaveCitation={citationClickPanel.messageId != null && citationClickPanel.citationNumber != null ? async () => {
               if (citationExport?.setCitationExportData) {
-                const ok = await saveCitationForDocx(citationClickPanel.messageId!, citationClickPanel.citationNumber!, citationClickPanel.citationData as CitationData & { document_id?: string; bbox?: { left: number; top: number; width: number; height: number } });
+                const ok = await saveCitationForDocx(citationClickPanel.messageId!, citationClickPanel.citationNumber!, normalizedCitation as CitationData & { document_id?: string; bbox?: { left: number; top: number; width: number; height: number } });
                 setCitationClickPanel(null);
                 if (ok) showCitationSavedFeedbackOnce();
                 else toast({ title: 'Could not save citation', description: 'Try again or open the document view to save from there.', variant: 'destructive' });
               } else {
                 const viewed = citationClickPanel.messageId != null && citationClickPanel.citationNumber != null ? { messageId: citationClickPanel.messageId, citationNumber: citationClickPanel.citationNumber } : null;
-                openCitationInDocumentView(citationClickPanel.citationData, false, viewed ?? undefined);
+                openCitationInDocumentView(normalizedCitation, false, viewed ?? undefined);
                 if (viewed) {
                   setCitationViewedInDocument(viewed);
                   if (currentChatId) setDocumentViewedCitation(currentChatId, viewed);
