@@ -2191,7 +2191,7 @@ export const MainContent = ({
   mainContentContainerRef,
 }: MainContentProps) => {
   const { addActivity } = useSystem();
-  const { isOpen: isFilingSidebarOpen, width: filingSidebarWidth, isResizing: isFilingSidebarResizing, closeSidebar } = useFilingSidebar();
+  const { isOpen: isFilingSidebarOpen, width: filingSidebarWidth, isResizing: isFilingSidebarResizing, closeSidebar, openSidebar: openFilingSidebar } = useFilingSidebar();
   const { isOpen: isChatHistoryPanelOpen, width: chatHistoryPanelWidth, isResizing: isChatHistoryPanelResizing, closePanel: closeChatPanel } = useChatPanel();
   const { getChatById, addChatToHistory, updateChatInHistory } = useChatHistory();
   // Track previous states to detect closing/opening for instant transition disable (no animation bounce)
@@ -2805,16 +2805,16 @@ export const MainContent = ({
     console.log('🔄 MainContent: New agent requested - cleared restoreChatId and triggered newAgentTrigger');
   }, []);
 
-  // File View modal: open document in the 50/50 panel (beside chat) instead of fullscreen
+  // File View modal: "View Document" → open FilingSidebar (file list) then open doc in 50/50 panel so layout is sidebar + document preview
   const handleFileViewDocument = React.useCallback((docId: string, filename: string) => {
-    setFileViewDocument(null); // Close file pop-up
     const label = filename || 'Document';
-    openExpandedCardView(docId, label);
-    // Also set in ChatStateStore when there's an active chat so the UI shows this doc (expandedCardViewDoc = chatStateDocumentPreview || legacy)
+    openFilingSidebar(); // Ensure sidebar is open (file list on left)
+    setFileViewDocument(null); // Close the pop-up modal
+    openExpandedCardView(docId, label); // Open document in the 50/50 panel (document preview on right)
     if (activeChatId) {
       openDocumentForChat(activeChatId, { docId, filename: label });
     }
-  }, [openExpandedCardView, activeChatId, openDocumentForChat]);
+  }, [openFilingSidebar, openExpandedCardView, activeChatId, openDocumentForChat]);
 
   // File View modal: close sidebar + open fullscreen chat with document in preview
   const handleFileViewAnalyseWithAI = React.useCallback((docId: string, filename: string) => {

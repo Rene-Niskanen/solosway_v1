@@ -45,6 +45,30 @@ function DocTypeIcons({ docs }: { docs: AgentTaskDocMeta[] }) {
   );
 }
 
+/** Render text with **bold** and *italic* as React nodes. Handles malformed **text* (single trailing asterisk). */
+function renderTextWithFormatting(text: string): React.ReactNode {
+  if (!text) return null;
+  const parts: React.ReactNode[] = [];
+  let keyIdx = 0;
+  const boldSplit = text.split(/\*\*([^*]*)\*?\*?/g);
+  for (let i = 0; i < boldSplit.length; i++) {
+    if (i % 2 === 1) {
+      parts.push(<strong key={`b-${keyIdx++}`} style={{ fontWeight: 700 }}>{boldSplit[i]}</strong>);
+    } else if (boldSplit[i]) {
+      const bit = String(boldSplit[i]);
+      const italicSplit = bit.split(/\*([^*]*)\*/g);
+      for (let j = 0; j < italicSplit.length; j++) {
+        if (j % 2 === 1) {
+          parts.push(<em key={`e-${keyIdx++}`} style={{ fontStyle: 'italic' }}>{italicSplit[j]}</em>);
+        } else if (italicSplit[j]) {
+          parts.push(<React.Fragment key={`t-${keyIdx++}`}>{italicSplit[j]}</React.Fragment>);
+        }
+      }
+    }
+  }
+  return parts.length > 0 ? <>{parts}</> : text;
+}
+
 function DocCountChip({ count }: { count: number }) {
   return (
     <span style={{
@@ -81,12 +105,12 @@ export const AgentTaskCard: React.FC<AgentTaskCardProps> = ({ task, onInjectResu
         display: 'flex', alignItems: 'center', gap: 8,
         padding: task.status === 'complete' ? '8px 10px' : `6px ${isInFlight ? 32 : 10}px 6px 10px`,
         borderRadius: 10,
-        backgroundColor: task.status === 'error' ? '#FEF2F2' : task.status === 'complete' ? '#F0FDF4' : '#FFFFFF',
-        border: `1px solid ${task.status === 'error' ? '#FECACA' : task.status === 'complete' ? '#BBF7D0' : '#E5E7EB'}`,
+        backgroundColor: task.status === 'error' ? '#FEF2F2' : task.status === 'complete' ? '#EBF1DE' : '#FFFFFF',
+        border: `1px solid ${task.status === 'error' ? '#FECACA' : task.status === 'complete' ? '#e5e7eb' : '#E5E7EB'}`,
         boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
         cursor: task.status === 'complete' ? 'pointer' : 'default',
         transition: 'border-color 0.15s, box-shadow 0.15s, background-color 0.15s',
-        ...(task.status === 'complete' && isHovered ? { borderColor: '#86EFAC', boxShadow: '0 2px 8px rgba(0,0,0,0.06)' } : {}),
+        ...(task.status === 'complete' && isHovered ? { backgroundColor: '#E0E8D4', borderColor: 'rgba(0,0,0,0.08)', boxShadow: '0 2px 8px rgba(0,0,0,0.06)' } : {}),
         overflow: isInFlight ? 'visible' : 'hidden',
         minWidth: 200,
       }}
@@ -171,7 +195,10 @@ export const AgentTaskCard: React.FC<AgentTaskCardProps> = ({ task, onInjectResu
               fontSize: 12.5, fontWeight: 500, color: '#374151',
               overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, minWidth: 0,
             }}>
-              {task.resultText.slice(0, 80).replace(/\[\d+\]/g, '').trim() || 'Answer ready'}
+              {(() => {
+                const t = task.resultText.slice(0, 80).replace(/\[\d+\]/g, '').trim();
+                return t ? renderTextWithFormatting(t) : 'Answer ready';
+              })()}
             </span>
             <ArrowRight style={{ width: 13, height: 13, color: '#9CA3AF', flexShrink: 0 }} />
           </motion.div>

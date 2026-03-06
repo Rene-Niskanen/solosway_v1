@@ -1498,11 +1498,12 @@ const StreamingResponseText: React.FC<{
   }, [citations, isCitationSelectedStable]);
   
   // Helper to render text; parse inline **bold** and *italic* so formatting is preserved when segment is plain string (e.g. from flattening).
+  // Use \*?\*? at end to handle malformed markdown like **text* (single trailing asterisk).
   const renderTextSegment = (text: string): React.ReactNode[] => {
     if (!text) return [];
     const parts: React.ReactNode[] = [];
     let keyIdx = 0;
-    const boldSplit = text.split(/\*\*([^*]*)\*\*/g);
+    const boldSplit = text.split(/\*\*([^*]*)\*?\*?/g);
     for (let i = 0; i < boldSplit.length; i++) {
       if (i % 2 === 1) {
         parts.push(<strong key={`b-${keyIdx++}`} style={{ fontWeight: 700 }}>{boldSplit[i]}</strong>);
@@ -1923,10 +1924,15 @@ const StreamingResponseText: React.FC<{
   };
   // True if bold text looks like a section title (e.g. "Property Details:", "Monthly Rent:", "Commission Fee"),
   // not inline emphasis (e.g. "KSH 100,000:", "annually in advance:") or document titles ("Lease Terms for Dik Dik Lane").
+  // Excludes names with qualifications (MRICS, FRICS) and company names (Ltd) — these are bold for emphasis, not titles.
   const strongLooksLikeTitle = (text: string): boolean => {
     if (!text || text.length > 45) return false;
     const t = text.trim();
     const tNorm = t.replace(/:\s*$/, ''); // strip trailing colon for value checks
+    // Names with professional qualifications (MRICS, FRICS, RICS) = bold emphasis, not section title
+    if (/\b(?:MRICS|FRICS|RICS)\s*$/i.test(tNorm)) return false;
+    // Company names (Ltd, Inc, etc.) = bold emphasis, not section title
+    if (/\b(?:Ltd\.?|Inc\.?|LLC|PLC)\s*$/i.test(tNorm)) return false;
     // Document/main titles (e.g. "Lease Terms for Dik Dik Lane") = bold, not block section title
     if (/\s+for\s+/i.test(t)) return false;
     if (tNorm.split(/\s+/).length > 4) return false; // long phrases = document title, not section label
@@ -2198,16 +2204,19 @@ const StreamingResponseText: React.FC<{
       if (useFirstCitationLayout && firstPartContentToRender != null) {
         return (
           <>
-            <p style={{
-              margin: '0 0 0 0',
-              padding: 0,
-              textAlign: 'left',
-              lineHeight: '1.7',
-              wordWrap: 'break-word',
-              overflowWrap: 'break-word',
-              wordBreak: 'break-word',
-              ...(showBarFirstPartOnly ? citationLineBarBlockStyle : {}),
-            }}><span ref={firstPartTriggerRef} style={{ display: 'block', lineHeight: '1.7' }}>{showBarFirstPartOnly && <span aria-hidden style={citationLineBarInlineStyle} />}{firstPartContentToRender}</span></p>
+            {!isOnlyCitationExcerpt && (
+              <p style={{
+                margin: '0 0 0 0',
+                padding: 0,
+                textAlign: 'left',
+                lineHeight: '1.7',
+                wordWrap: 'break-word',
+                overflowWrap: 'break-word',
+                wordBreak: 'break-word',
+                ...(showBarFirstPartOnly ? citationLineBarBlockStyle : {}),
+              }}><span ref={firstPartTriggerRef} style={{ display: 'block', lineHeight: '1.7' }}>{showBarFirstPartOnly && <span aria-hidden style={citationLineBarInlineStyle} />}{firstPartContentToRender}</span></p>
+            )}
+            {isOnlyCitationExcerpt && <span ref={firstPartTriggerRef} style={{ display: 'block' }} />}
             {showCitationPreviewBar && showInResponseCitationCallouts && (citationBarMode ? currentCitationNum === firstCitationNum : showCalloutForNum(firstCitationNum)) && renderFirstCalloutWithUnveil()}
             {restPartContent != null && restPartContent.length > 0 && (
               <div style={{ ...getPostCalloutStyle(), marginTop: 10 }}>
@@ -2234,7 +2243,7 @@ const StreamingResponseText: React.FC<{
       const pContent = isPostCalloutBlock ? wrapTwoWordChunksInMotion(pInner, `p-puv-${blockIndexRef.current}`) : pInner;
       const content = (
         <>
-          {(!isOnlyCitationExcerpt || shouldShowExcerptThisTime) && (
+          {!isOnlyCitationExcerpt && (
             <p style={{
               margin: '0 0 17.5px 0',
               padding: 0,
@@ -2925,8 +2934,10 @@ const StreamingResponseText: React.FC<{
           -webkit-background-clip: unset;
           background-clip: unset;
         }
-        /* Inline wrapper containing a block (e.g. strong.response-strong-title) creates an empty first line box.
-           Make the wrapper block when it leads with a block so the citation line aligns with the first visible content. */
+        /* Inline wrapper containing a block (e.g. strong section title or bold name) creates an empty first line box.
+           Make the wrapper block when it leads with any bold (.response-strong) so the citation line aligns with the first visible content. */
+        .streaming-response-text p > span > .cited-highlight-formatting:has(> .response-strong:first-child),
+        .streaming-response-text p > span > .cited-highlight-formatting:has(> .cited-highlight-formatting > .response-strong:first-child),
         .streaming-response-text p > span > .cited-highlight-formatting:has(> .response-strong-title:first-child),
         .streaming-response-text p > span > .cited-highlight-formatting:has(> .cited-highlight-formatting > .response-strong-title:first-child) {
           display: block !important;
@@ -3578,12 +3589,13 @@ function sanitizeCitationCalloutText(raw: string): string {
   return out;
 }
 
-/** Render excerpt text with **bold** and *italic* as React nodes (for citation panel/callout). */
+/** Render excerpt text with **bold** and *italic* as React nodes (for citation panel/callout).
+ * Uses \*?\*? at end to handle malformed markdown like **text* (single trailing asterisk). */
 function renderExcerptWithFormatting(text: string): React.ReactNode {
   if (!text) return null;
   const parts: React.ReactNode[] = [];
   let keyIdx = 0;
-  const boldSplit = text.split(/\*\*([^*]*)\*\*/g);
+  const boldSplit = text.split(/\*\*([^*]*)\*?\*?/g);
   for (let i = 0; i < boldSplit.length; i++) {
     if (i % 2 === 1) {
       parts.push(<strong key={`eb-${keyIdx++}`} style={{ fontWeight: 700 }}>{boldSplit[i]}</strong>);
@@ -4225,7 +4237,7 @@ const CitationCallout: React.FC<{
           minWidth: 0,
           boxSizing: 'border-box',
           marginTop: '10px',
-          marginBottom: '14px',
+          marginBottom: '20px',
           borderRadius: 12,
           overflow: 'hidden',
           border: '1px solid rgba(0,0,0,0.06)',
@@ -4234,14 +4246,14 @@ const CitationCallout: React.FC<{
           contain: 'layout',
         }}
       >
-          <style>{`.citation-callout-ask-input::placeholder { color: #a1a1aa; } .citation-callout-ask-input:focus { outline: none; box-shadow: none; }`}</style>
+          <style>{`.citation-callout-ask-input::placeholder { color: #a1a1aa; font-weight: 400; } .citation-callout-ask-input:focus { outline: none; box-shadow: none; }`}</style>
           {/* Hover perimeter: entire callout card — handlers on motion.div to avoid internal boundary leaves */}
           <div
             style={{ display: 'flex', flexDirection: 'column', width: '100%', minWidth: 0 }}
           >
           {/* When preview: bar is overlay with opacity transition (hover-only so it doesn't span below the card) */}
           {canShowPreview ? (
-            <div style={{ position: 'relative', width: '100%', height: 180, minHeight: 180, flexShrink: 0, boxSizing: 'border-box' }}>
+            <div style={{ position: 'relative', width: '100%', height: 280, minHeight: 280, flexShrink: 0, boxSizing: 'border-box' }}>
               {/* Small tick in top-right to close this document preview */}
               {showAccept && (
                 <button
@@ -4294,7 +4306,7 @@ const CitationCallout: React.FC<{
                 style={{
                   width: '100%',
                   height: '100%',
-                  minHeight: 164,
+                  minHeight: 264,
                   position: 'relative',
                   overflow: 'hidden',
                   backgroundColor: '#fafafa',
@@ -4347,7 +4359,7 @@ const CitationCallout: React.FC<{
                   bottom: 0,
                   left: 0,
                   right: 0,
-                  padding: '10px 6px 16px 6px',
+                  padding: '4px 6px 6px 6px',
                   display: 'flex',
                   justifyContent: 'center',
                   opacity: 0,
@@ -4362,8 +4374,8 @@ const CitationCallout: React.FC<{
                     width: '100%',
                     maxWidth: 360,
                     backgroundColor: '#FFFFFF',
-                    borderRadius: 24,
-                    padding: '6px 8px',
+                    borderRadius: 12,
+                    padding: '0 6px',
                     boxShadow: '0 1px 3px rgba(0,0,0,0.08)',
                     border: '1px solid rgba(0,0,0,0.06)',
                   }}
@@ -4376,9 +4388,9 @@ const CitationCallout: React.FC<{
                           position: 'relative',
                           display: 'flex',
                           alignItems: 'center',
-                          height: 44,
+                          height: 40,
                           backgroundColor: '#FFFFFF',
-                          borderRadius: 22,
+                          borderRadius: 12,
                           overflow: 'hidden',
                         }}
                       >
@@ -4398,8 +4410,8 @@ const CitationCallout: React.FC<{
                           style={{
                             flex: 1,
                             height: '100%',
-                            padding: '0 2px 0 6px',
-                            paddingRight: 34,
+                            padding: '0 6px 0 12px',
+                            paddingRight: 36,
                             fontSize: 14,
                             lineHeight: '20px',
                             color: '#0D0D0D',
@@ -4424,7 +4436,7 @@ const CitationCallout: React.FC<{
                             borderRadius: '50%',
                             border: 'none',
                             backgroundColor: askInputValue.trim() ? '#18181b' : '#f4f4f5',
-                            color: askInputValue.trim() ? '#ffffff' : '#71717a',
+                            color: askInputValue.trim() ? '#ffffff' : '#9ca3af',
                             display: 'flex',
                             alignItems: 'center',
                             justifyContent: 'center',
@@ -4432,7 +4444,7 @@ const CitationCallout: React.FC<{
                             flexShrink: 0,
                           }}
                         >
-                          <ArrowUp size={16} strokeWidth={2.5} />
+                          <ArrowUp size={20} strokeWidth={2.5} />
                         </button>
                       </div>
                     </form>
@@ -4447,9 +4459,8 @@ const CitationCallout: React.FC<{
             <div
               ref={previewContainerRef}
               style={{
-                width: '100%',
-                height: 180,
-                minHeight: 180,
+                width: '100%',                height: 280,
+                minHeight: 280,
                 position: 'relative',
                 overflow: 'hidden',
                 backgroundColor: '#fafafa',
@@ -4503,8 +4514,8 @@ const CitationCallout: React.FC<{
             style={{
               flexShrink: 0,
               backgroundColor: '#FFFFFF',
-              padding: 4,
-              borderRadius: 24,
+              padding: 2,
+              borderRadius: 16,
               border: '1px solid rgba(0,0,0,0.06)',
               boxShadow: '0 2px 8px rgba(0,0,0,0.06), 0 8px 24px rgba(0,0,0,0.04)',
               opacity: 0,
@@ -4516,15 +4527,15 @@ const CitationCallout: React.FC<{
             {/* Ask bar + View/Accept row (send button inside input) */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
               {showAskQuestion && (
-                <form onSubmit={handleAskSubmit} style={{ flex: 1, minWidth: 180 }}>
+                    <form onSubmit={handleAskSubmit} style={{ flex: 1, minWidth: 180 }}>
                   <div
                     style={{
                       position: 'relative',
                       display: 'flex',
                       alignItems: 'center',
-                      height: 44,
+                      height: 40,
                       backgroundColor: '#FFFFFF',
-                      borderRadius: 22,
+                      borderRadius: 12,
                       overflow: 'hidden',
                     }}
                   >
@@ -4545,8 +4556,8 @@ const CitationCallout: React.FC<{
                         flex: 1,
                         minWidth: 120,
                         height: '100%',
-                        padding: '0 2px 0 6px',
-                        paddingRight: 34,
+                        padding: '0 6px 0 12px',
+                        paddingRight: 36,
                         fontSize: 14,
                         lineHeight: '20px',
                         color: '#0D0D0D',
@@ -4556,22 +4567,22 @@ const CitationCallout: React.FC<{
                         boxShadow: 'none',
                       }}
                     />
-                    <button
-                      type="button"
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => handleAskSubmit()}
-                      disabled={!askInputValue.trim()}
-                      style={{
-                        position: 'absolute',
-                        right: 6,
-                        width: 28,
-                        height: 28,
-                        minWidth: 28,
-                        minHeight: 28,
+                        <button
+                          type="button"
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={() => handleAskSubmit()}
+                          disabled={!askInputValue.trim()}
+                          style={{
+                            position: 'absolute',
+                            right: 6,
+                            width: 28,
+                            height: 28,
+                            minWidth: 28,
+                            minHeight: 28,
                         borderRadius: '50%',
                         border: 'none',
                         backgroundColor: askInputValue.trim() ? '#18181b' : '#f4f4f5',
-                        color: askInputValue.trim() ? '#ffffff' : '#4B5563',
+                        color: askInputValue.trim() ? '#ffffff' : '#9ca3af',
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'center',
@@ -4579,7 +4590,7 @@ const CitationCallout: React.FC<{
                         flexShrink: 0,
                       }}
                     >
-                      <ArrowUp size={16} strokeWidth={2.5} />
+                      <ArrowUp size={20} strokeWidth={2.5} />
                     </button>
                   </div>
                 </form>
@@ -19138,8 +19149,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                 type="submit" 
                                 onMouseDown={(e) => e.preventDefault()}
                                 onClick={handleSubmit} 
-                                initial={{ opacity: 1, scale: 1 }}
-                                animate={{ opacity: 1, scale: 1, backgroundColor: '#4A4A4A' }}
+                                initial={{ opacity: 1, scale: 1, backgroundColor: '#18181b' }}
+                                animate={{ opacity: 1, scale: 1, backgroundColor: '#18181b' }}
                                 exit={{ opacity: 1, scale: 1 }}
                                 transition={{ duration: 0 }}
                                 className={`flex items-center justify-center relative focus:outline-none outline-none ${!isSubmitted ? '' : 'cursor-not-allowed'}`}
@@ -19168,7 +19179,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                   className="absolute inset-0 flex items-center justify-center"
                                   style={{ pointerEvents: 'none' }}
                                 >
-                                  <ArrowUp className="w-6 h-6" strokeWidth={1.25} style={{ color: '#ffffff' }} />
+                                  <ArrowUp className="w-5 h-5" strokeWidth={2.5} style={{ color: '#ffffff' }} />
                                 </motion.div>
                               </motion.button>
                             )}
@@ -20469,8 +20480,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                   type="submit" 
                                   onMouseDown={(e) => e.preventDefault()}
                                   onClick={handleSubmit} 
-                                  initial={{ opacity: 1, scale: 1, backgroundColor: '#4A4A4A' }}
-                                  animate={{ opacity: 1, scale: 1, backgroundColor: '#4A4A4A' }}
+                                  initial={{ opacity: 1, scale: 1, backgroundColor: '#18181b' }}
+                                  animate={{ opacity: 1, scale: 1, backgroundColor: '#18181b' }}
                                   exit={{ opacity: 1, scale: 1 }}
                                   transition={{ duration: 0 }}
                                   layout={false}
@@ -20504,7 +20515,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                     className="absolute inset-0 flex items-center justify-center"
                                     style={{ pointerEvents: 'none' }}
                                   >
-                                    <ArrowUp className="w-6 h-6" strokeWidth={1.25} style={{ color: '#ffffff' }} />
+                                    <ArrowUp className="w-5 h-5" strokeWidth={2.5} style={{ color: '#ffffff' }} />
                                   </motion.div>
                                 </motion.button>
                               );

@@ -13,6 +13,12 @@ logger = logging.getLogger(__name__)
 _KEY_FACT_VALUE_MAX_LENGTH = 60
 _LLM_KEY_FACTS_TEXT_MAX_LENGTH = 12000
 
+# Document type values that are too generic to show in Key facts (avoid "other document" etc.)
+_GENERIC_DOC_TYPES = frozenset({
+    'other_documents', 'other documents', 'other document',
+    'unknown', 'other', 'unspecified', 'general', 'miscellaneous', 'misc',
+})
+
 # Patterns that indicate sentence/boilerplate fragments (e.g. "REEMENT is made the 28th February 2023 between X")
 _DATE_IN_TEXT = re.compile(
     r'(?:'
@@ -111,10 +117,28 @@ def _sanitise_key_fact_value(value: str) -> str:
     return s
 
 
+def _is_generic_document_type(value: str) -> bool:
+    """True if the value is a generic/uninformative document type (e.g. 'other documents')."""
+    if not value or not isinstance(value, str):
+        return True
+    normalised = value.strip().lower().replace('_', ' ')
+    return normalised in _GENERIC_DOC_TYPES or not normalised
+
+
+def _strip_generic_doc_phrases(s: str) -> str:
+    """Remove phrases like 'other documents document' so text reads like an executive summary."""
+    if not s or not isinstance(s, str):
+        return s
+    # "This other documents document contains" -> "This document contains"; same for "other document"
+    s = re.sub(r'\bother\s+documents?\s+document\b', 'document', s, flags=re.IGNORECASE)
+    s = re.sub(r'\bthis\s+other\s+documents?\s+document\b', 'This document', s, flags=re.IGNORECASE)
+    return s
+
+
 def sanitise_summary_for_display(s: str) -> str:
     """
     Sanitise a summary string for display: strip HTML, markdown, collapse whitespace.
-    No truncation or gibberish checks; keeps full sentences. Use for summary and key_facts_text.
+    Removes generic phrases like 'other documents document'. Use for summary and key_facts_text.
     """
     if not s or not isinstance(s, str):
         return ''
@@ -126,6 +150,7 @@ def sanitise_summary_for_display(s: str) -> str:
     s = re.sub(r'^[\s\-*•]+\s*', '', s)
     s = re.sub(r'\s*\|\s*', ' ', s)
     s = re.sub(r'\s+', ' ', s).strip()
+    s = _strip_generic_doc_phrases(s)
     return s
 
 
@@ -205,12 +230,13 @@ def llm_summarise_document_for_key_facts(doc_text: str) -> Tuple[Optional[str], 
             model=config.openai_model,
             temperature=0,
         )
-        system_msg = SystemMessage(content="""You extract key information from any type of document (reports, letters, forms, contracts, etc.).
+        system_msg = SystemMessage(content="""You produce an executive summary and key facts from document text.
 Respond with valid JSON only, no markdown or extra text, in this exact shape:
-{"summary": "Two to four sentences summarising the document.", "key_facts": [{"label": "Fact label", "value": "Fact value"}, ...]}
-- summary: brief overview in 2-4 clear sentences. Required. Use proper grammar and full words (e.g. "tenancy agreement", not "tenancy_agreement").
-- key_facts: 3-8 items. Each "label" is short (e.g. "Date", "Parties", "Amount", "Location", "Document type"). Each "value" must be a short, self-contained phrase only: a date (e.g. "28 February 2023"), an amount, names, or a single term. Do NOT include sentence fragments or boilerplate (e.g. do not use "is made the", "between X and Y" as the value—extract just the date or just the party names).
-- Labels and values: plain text only, no newlines, no markdown. If the document has no clear facts, set key_facts to [] but always provide a summary.""")
+{"summary": "Executive summary text.", "key_facts": [{"label": "Fact label", "value": "Fact value"}, ...]}
+
+- summary: Write 2-4 sentences as an executive summary. Describe what the document is (e.g. report, note, paper), its title or subject, authors or publisher if visible, and the main points or conclusions. Use the document's actual content—do NOT use generic phrases like "other document" or "this document type". Example: "This IMF Fintech Note discusses trust bridges and cross-border payments. It proposes a digital marketplace to improve money flows. Authors include Tobias Adrian and others; published March 2023."
+- key_facts: 3-8 substantive items only. Prefer: Title, Authors, Date, Publisher, Subject/topic, key figures or amounts. Omit "Document type" when it would be generic (e.g. "other documents"). Each "value" must be a short phrase: a date, amount, names, or single term. No sentence fragments or boilerplate.
+- Labels and values: plain text only, no newlines, no markdown. If there are no clear facts, set key_facts to [] but always provide the summary.""")
         human_msg = HumanMessage(content=f"Document text:\n\n{text}")
         response = llm.invoke([system_msg, human_msg])
         content = (response.content or "").strip()
@@ -262,11 +288,11 @@ def build_key_facts_from_document(
         v = _sanitise_key_fact_value(str(addr).strip())
         if v:
             facts.append({'label': 'Address', 'value': v})
-    # Document type
+    # Document type (skip generic values like "other documents" so Key facts reads like an executive summary)
     doc_type = doc_summary.get('classification_type') or document.get('classification_type')
     if doc_type and str(doc_type).strip():
         v = _sanitise_key_fact_value(str(doc_type).replace('_', ' ').strip())
-        if v:
+        if v and not _is_generic_document_type(v):
             facts.append({'label': 'Document type', 'value': v})
     # Party names
     party_names = doc_summary.get('party_names')
@@ -320,7 +346,11 @@ def build_key_facts_from_document(
             for f in llm_facts:
                 label = (f.get('label') or '').strip()
                 value = _sanitise_key_fact_value((f.get('value') or '').strip())
-                if label and value and label.lower() not in existing_labels:
+                if not label or not value:
+                    continue
+                if label.lower() == 'document type' and _is_generic_document_type(value):
+                    continue
+                if label.lower() not in existing_labels:
                     existing_labels.add(label.lower())
                     facts.append({'label': label, 'value': value})
 
@@ -335,8 +365,8 @@ def format_key_facts_as_paragraph(
     summary: Optional[str],
 ) -> str:
     """
-    Format key facts and optional summary into 1-2 plain-text paragraphs.
-    Generic: iterates over whatever labels/values exist. No markdown. Result is sanitised.
+    Format key facts and optional summary into 1-2 plain-text paragraphs (executive-summary style).
+    Summary leads; only substantive facts are appended. Generic "Document type" (e.g. other documents) is omitted.
     """
     parts = []
     if summary and isinstance(summary, str):
@@ -352,10 +382,13 @@ def format_key_facts_as_paragraph(
             value = (item.get('value') or '').strip()
             if not label or not value:
                 continue
+            # Skip generic document type so the panel reads like an executive summary
+            if label and label.lower() == 'document type' and _is_generic_document_type(value):
+                continue
             value = _sanitise_key_fact_value(value)
             if not value:
                 continue
-            sentences.append(f"{label} is {value}.")
+            sentences.append(f"{label}: {value}.")
         if sentences:
             parts.append(' '.join(sentences))
     if not parts:
@@ -365,7 +398,7 @@ def format_key_facts_as_paragraph(
         text = text[:_KEY_FACTS_TEXT_MAX_LENGTH - 1].rstrip()
         if not text.endswith('.'):
             text += '…'
-    # Ensure no markdown leaks (e.g. from summary or legacy data)
+    # Ensure no markdown or generic phrases leak (e.g. from summary or legacy data)
     text = sanitise_summary_for_display(text) or ''
     return text
 

@@ -580,12 +580,12 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({
                   style={{
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
                     width: 24, height: 24, borderRadius: '50%', border: 'none',
-                    backgroundColor: askQuery.trim() ? '#4A4A4A' : '#F3F4F6',
+                    backgroundColor: askQuery.trim() ? '#18181b' : '#f4f4f5',
                     cursor: askQuery.trim() ? 'pointer' : 'not-allowed', flexShrink: 0,
                     opacity: askQuery.trim() ? 1 : 0.5, transition: 'background-color 0.15s, opacity 0.15s',
                   }}
                 >
-                  <ArrowUp style={{ width: 14, height: 14, color: askQuery.trim() ? '#fff' : '#6B7280' }} strokeWidth={2.5} />
+                  <ArrowUp style={{ width: 14, height: 14, color: askQuery.trim() ? '#fff' : '#9ca3af' }} strokeWidth={2.5} />
                 </button>
               </form>
             </motion.div>
@@ -780,12 +780,12 @@ const StackedDocCardWithAsk: React.FC<{
                 style={{
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   width: 22, height: 22, borderRadius: '50%', border: 'none',
-                  backgroundColor: askQ.trim() ? '#4A4A4A' : '#F3F4F6',
+                  backgroundColor: askQ.trim() ? '#18181b' : '#f4f4f5',
                   cursor: askQ.trim() ? 'pointer' : 'not-allowed', flexShrink: 0,
                   opacity: askQ.trim() ? 1 : 0.5, transition: 'background-color 0.15s, opacity 0.15s',
                 }}
               >
-                <ArrowUp style={{ width: 13, height: 13, color: askQ.trim() ? '#fff' : '#6B7280' }} strokeWidth={2.5} />
+                <ArrowUp style={{ width: 13, height: 13, color: askQ.trim() ? '#fff' : '#9ca3af' }} strokeWidth={2.5} />
               </button>
             </form>
           </motion.div>

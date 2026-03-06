@@ -292,7 +292,7 @@ export const CitationActionMenu: React.FC<CitationActionMenuProps> = ({
                     cursor: queryText.trim() ? 'pointer' : 'not-allowed'
                   }}
                   animate={{
-                    backgroundColor: queryText.trim() ? '#4A4A4A' : '#F3F4F6',
+                    backgroundColor: queryText.trim() ? '#18181b' : '#f4f4f5',
                     opacity: queryText.trim() ? 1 : 0.6
                   }}
                   whileHover={queryText.trim() ? { scale: 1.05 } : {}}
@@ -304,7 +304,7 @@ export const CitationActionMenu: React.FC<CitationActionMenuProps> = ({
                   <ArrowUp 
                     className="w-5 h-5" 
                     strokeWidth={2.5} 
-                    style={{ color: queryText.trim() ? '#ffffff' : '#4B5563' }} 
+                    style={{ color: queryText.trim() ? '#ffffff' : '#9ca3af' }} 
                   />
                 </motion.button>
               </div>

@@ -530,7 +530,7 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
     if (!doc) return;
     const filename = doc.original_filename || (doc as { filename?: string }).filename || 'Document';
     onViewDocument(doc.id, filename);
-    onClose();
+    onClose(); // Parent will open sidebar + 50/50 doc preview
   };
 
   const handleAnalyseWithAI = () => {
@@ -704,7 +704,7 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
             </div>
             <div
               className="flex items-center gap-2 rounded-md px-2 py-1 flex-shrink-0 overflow-visible"
-              style={{ fontFamily: 'system-ui, sans-serif', backgroundColor: 'rgba(52, 199, 89, 0.12)' }}
+              style={{ fontFamily: 'system-ui, sans-serif', backgroundColor: 'white' }}
             >
               <span
                 className="w-1.5 h-1.5 rounded-full flex-shrink-0"

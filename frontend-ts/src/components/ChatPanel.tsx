@@ -428,7 +428,7 @@ export const ChatPanel = ({
                         className={`group relative px-2.5 py-1.5 rounded-md cursor-pointer w-full mb-0.5 transition-[background-color] duration-75 ease-out ${
                           selectedChatId === chat.id 
                             ? '' 
-                            : openMenuId ? '' : 'hover:bg-black/[0.06]'
+                            : openMenuId ? '' : 'hover:bg-black/[0.03]'
                         }`}
                         style={selectedChatId === chat.id ? { backgroundColor: '#E8E8E5' } : undefined}
                       >

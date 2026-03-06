@@ -1,3 +1,10 @@
+---
+name: ""
+overview: ""
+todos: []
+isProject: false
+---
+
 # Formatting Logic Analysis — Agent Loop & Response Quality
 
 ## Summary
@@ -71,7 +78,7 @@ Used by:
 - `normalizeIdCitationsToBracket` — [ID: X](BLOCK_CITE_ID_N) → [X]
 - `stripBlockCiteIdFromDisplay` — removes BLOCK_CITE_ID markers
 - `ensureParagraphBreaksBeforeBoldSections` — adds `\n\n` before **Label:**
-- `stripRedundantColonAfterBoldLabel` — removes redundant `: ` after bold labels
+- `stripRedundantColonAfterBoldLabel` — removes redundant `:`  after bold labels
 - `promoteBoldSectionLabelsFromListItems` — converts `"- **Label:**"` to `"**Label:**"` (removes bullet)
 - `mergeConsecutiveListItemsAsOne` — merges bullets
 - `mergeCitationOnlyLinesWithPrevious` — merges citation-only lines
@@ -96,3 +103,4 @@ The agent_loop → responder path does use `OUTPUT_FORMATTING_RULES`.
 3. **Document preview:** The bbox fallback is in place; confirm citations include `doc_id`, `original_filename`, and fallback bbox.
 4. **Frontend preprocessing:** Review `promoteBoldSectionLabelsFromListItems` and `ensureParagraphBreaksBeforeBoldSections` for edge cases that change intended layout.
 5. **Testing:** Run queries like "summarise the lease terms of [property]" and compare structure, bullets, and preview cards between branches.
+
