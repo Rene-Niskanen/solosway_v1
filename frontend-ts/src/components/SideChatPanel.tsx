@@ -4860,7 +4860,8 @@ const CitationCallout: React.FC<{
                           e.stopPropagation();
                           lastAcceptBtnClickY = (e.currentTarget as HTMLElement).getBoundingClientRect().top;
                           (e.currentTarget as HTMLElement).blur();
-                          handleClose();
+                          setIsClosed(true);
+                          onCloseCallout();
                         }}
                         style={{
                           display: 'flex',
@@ -5146,7 +5147,8 @@ const CitationCallout: React.FC<{
               e.stopPropagation();
               lastAcceptBtnClickY = (e.currentTarget as HTMLElement).getBoundingClientRect().top;
               (e.currentTarget as HTMLElement).blur();
-              handleClose();
+              setIsClosed(true);
+              onCloseCallout();
             }}
             style={{
               display: 'flex',
@@ -9288,8 +9290,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     const ordered = getOrderedCitationNumbersFromMessageText(revMsg.text);
     const total = ordered.length;
     if (effectiveIndex < 0 || effectiveIndex >= total) return;
-    const savedClickY = lastAcceptBtnClickY;
-    lastAcceptBtnClickY = null;
     citationReviewMessageIdRef.current = reviewMsgId;
     setCitationAcceptedByMessageId((prev) => {
       const next = { ...prev };
@@ -9309,22 +9309,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       setCitationReviewShowReviewNextOnly(false);
       setCitationReviewMessageId(reviewMsgId);
       setCitationReviewCurrentIndex(effectiveIndex + 1);
-      if (savedClickY != null) {
-        const scrollContainer = contentAreaRef.current;
-        if (scrollContainer) {
-          const attemptScroll = (retriesLeft: number) => {
-            const newBtn = scrollContainer.querySelector<HTMLElement>('[data-citation-accept-btn]');
-            if (newBtn) {
-              const newBtnY = newBtn.getBoundingClientRect().top;
-              const delta = newBtnY - savedClickY;
-              scrollContainer.scrollTop += delta;
-            } else if (retriesLeft > 0) {
-              requestAnimationFrame(() => attemptScroll(retriesLeft - 1));
-            }
-          };
-          requestAnimationFrame(() => requestAnimationFrame(() => attemptScroll(8)));
-        }
-      }
     }
   }, [chatMessages]);
 
@@ -9339,6 +9323,19 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       setCitationClickPanel(null);
     }
   }, [citationReviewCurrentIndex, citationReviewMessageId, closeExpandedCardView]);
+
+  React.useLayoutEffect(() => {
+    if (lastAcceptBtnClickY == null) return;
+    const scrollContainer = contentAreaRef.current;
+    if (!scrollContainer) return;
+    const targetY = lastAcceptBtnClickY;
+    lastAcceptBtnClickY = null;
+    const newBtn = scrollContainer.querySelector<HTMLElement>('[data-citation-accept-btn]');
+    if (newBtn) {
+      const delta = newBtn.getBoundingClientRect().top - targetY;
+      scrollContainer.scrollTop += delta;
+    }
+  }, [citationReviewCurrentIndex]);
 
   // Citation bar: set review state only for latest (by position) when it has citations; clear when latest has no text/citations or when latest message id changes
   React.useEffect(() => {
@@ -16764,7 +16761,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       })();
       
       startChatBarGlow();
-      keepInputAndSelectAll();
+      clearInputAndChips();
       onQuerySubmit(submitted);
       setAttachedFiles([]);
       if (selectedDocumentIds.size > 0) {
@@ -18977,22 +18974,20 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         toggleChatPanel();
                       }
                     }}
-                    className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1.5' : 'justify-center'} rounded-full border border-black/[0.06] bg-white/88 text-[#4b5563] shadow-[0_1px_2px_rgba(15,23,42,0.05),inset_0_1px_0_rgba(255,255,255,0.9)] backdrop-blur-md transition-all duration-200 hover:border-black/[0.10] hover:bg-white hover:text-[#111827] hover:shadow-[0_10px_30px_rgba(15,23,42,0.08),inset_0_1px_0_rgba(255,255,255,0.95)] active:scale-[0.98] cursor-pointer`}
+                    className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1.5' : 'justify-center'} rounded-xl border border-black/[0.06] bg-white text-[#4b5563] shadow-sm transition-all duration-150 hover:border-black/[0.10] hover:text-[#111827] hover:shadow-md active:scale-[0.99] cursor-pointer`}
                     title={isChatPanelOpen ? "Close Agent Sidebar" : "Agents Sidebar"}
                     type="button"
                     style={{
-                      padding: actualPanelWidth >= 750 ? '7px 12px' : '7px',
-                      height: '36px',
-                      minHeight: '36px',
+                      padding: actualPanelWidth >= 750 ? '6px 10px' : '6px',
+                      height: '34px',
+                      minHeight: '34px',
                       minWidth: undefined,
                       border: 'none',
                       position: 'relative',
                       zIndex: 10001,
                       pointerEvents: 'auto',
                       cursor: 'pointer',
-                      background: isChatPanelOpen
-                        ? 'linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(248,250,252,0.94) 100%)'
-                        : 'linear-gradient(180deg, rgba(255,255,255,0.88) 0%, rgba(249,250,251,0.80) 100%)',
+                      backgroundColor: isChatPanelOpen ? 'rgba(255, 255, 255, 0.98)' : 'rgba(255, 255, 255, 0.92)',
                     }}
                   >
                     {isChatPanelOpen ? (
@@ -19020,17 +19015,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         aria-haspopup="true"
                         aria-expanded={displayOptionsOpen}
                         title="Response – reasoning trace, highlight key points, and citations"
-                        className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1.5' : 'justify-center'} rounded-full border border-black/[0.06] bg-white/88 text-[#4b5563] shadow-[0_1px_2px_rgba(15,23,42,0.05),inset_0_1px_0_rgba(255,255,255,0.9)] backdrop-blur-md transition-all duration-200 hover:border-black/[0.10] hover:bg-white hover:text-[#111827] hover:shadow-[0_10px_30px_rgba(15,23,42,0.08),inset_0_1px_0_rgba(255,255,255,0.95)] active:scale-[0.98] cursor-pointer`}
+                        className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1.5' : 'justify-center'} rounded-xl border border-black/[0.06] bg-white text-[#4b5563] shadow-sm transition-all duration-150 hover:border-black/[0.10] hover:text-[#111827] hover:shadow-md active:scale-[0.99] cursor-pointer`}
                         style={{
-                          padding: actualPanelWidth >= 750 ? '7px 12px' : '7px',
-                          height: '36px',
-                          minHeight: '36px',
+                          padding: actualPanelWidth >= 750 ? '6px 10px' : '6px',
+                          height: '34px',
+                          minHeight: '34px',
                           position: 'relative',
                           zIndex: 10001,
                           pointerEvents: 'auto',
-                          background: displayOptionsOpen
-                            ? 'linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(248,250,252,0.94) 100%)'
-                            : 'linear-gradient(180deg, rgba(255,255,255,0.88) 0%, rgba(249,250,251,0.80) 100%)',
+                          backgroundColor: displayOptionsOpen ? 'rgba(255, 255, 255, 0.98)' : 'rgba(255, 255, 255, 0.92)',
                         }}
                         onMouseEnter={handleDisplayOptionsTriggerEnter}
                         onMouseLeave={handleDisplayOptionsTriggerLeave}
@@ -19057,27 +19050,18 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           e.preventDefault();
                         }
                       }}
-                      className="min-w-[280px] w-auto rounded-[24px] border border-black/[0.08] bg-[linear-gradient(180deg,rgba(255,255,255,0.98)_0%,rgba(248,250,252,0.96)_100%)] p-3 shadow-[0_24px_80px_rgba(15,23,42,0.16),0_8px_24px_rgba(15,23,42,0.08),inset_0_1px_0_rgba(255,255,255,0.9)] backdrop-blur-xl"
+                      className="min-w-[224px] w-auto rounded-2xl border border-black/[0.08] bg-white p-2 shadow-[0_12px_32px_rgba(15,23,42,0.10)]"
                       onOpenAutoFocus={(e) => e.preventDefault()}
                     >
                       <div
-                        className="flex flex-col gap-2"
+                        className="flex flex-col gap-1"
                         onMouseEnter={handleDisplayOptionsContentEnter}
                         onMouseLeave={handleDisplayOptionsContentLeave}
                       >
-                        <div className="px-1 pb-1">
-                          <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#6b7280]">Response controls</div>
-                          <div className="mt-1 text-[13px] text-[#4b5563]">Tune how answers are explained, sourced, and highlighted.</div>
-                        </div>
-                        <div className="flex items-center justify-between gap-3 rounded-2xl border border-black/[0.05] bg-white/78 px-3 py-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.85)] transition-colors hover:bg-white">
-                          <div className="flex items-center gap-3 min-w-0">
-                            <div className="flex h-9 w-9 items-center justify-center rounded-2xl bg-[#111827] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.14)]">
-                              <BrainCircuit className="w-4 h-4 flex-shrink-0" strokeWidth={1.7} />
-                            </div>
-                            <div className="min-w-0">
-                              <div className="text-[13px] font-medium tracking-[-0.01em] text-[#111827]">Reasoning trace</div>
-                              <div className="text-[11px] text-[#6b7280]">Show the thinking path behind each answer.</div>
-                            </div>
+                        <div className="flex items-center justify-between gap-3 rounded-xl px-2.5 py-2 transition-colors hover:bg-[#f7f7f8]">
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <BrainCircuit className="w-4 h-4 text-[#6b7280] flex-shrink-0" strokeWidth={1.6} />
+                            <div className="text-[13px] font-medium tracking-[-0.01em] text-[#111827]">Reasoning trace</div>
                           </div>
                           <Switch
                             checked={showReasoningTrace}
@@ -19085,79 +19069,59 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             onCheckedChange={(checked) => {
                               flushSync(() => setShowReasoningTrace(checked));
                             }}
-                            className="h-6 w-11 border border-black/[0.08] bg-[#e5e7eb] shadow-[inset_0_1px_1px_rgba(15,23,42,0.08)] data-[state=checked]:bg-[#111827] data-[state=unchecked]:bg-[#e5e7eb]"
+                            className="h-5 w-9 border border-black/[0.08] bg-[#e5e7eb] shadow-none data-[state=checked]:bg-[#111827] data-[state=unchecked]:bg-[#e5e7eb] [&>span]:h-4 [&>span]:w-4 [&>span]:data-[state=checked]:translate-x-4"
                             aria-label="Toggle reasoning trace"
                           />
                         </div>
-                        <div className="flex items-center justify-between gap-3 rounded-2xl border border-black/[0.05] bg-white/78 px-3 py-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.85)] transition-colors hover:bg-white">
-                          <div className="flex items-center gap-3 min-w-0">
-                            <div className="flex h-9 w-9 items-center justify-center rounded-2xl bg-[#f5efe2] text-[#7c5a11] shadow-[inset_0_1px_0_rgba(255,255,255,0.85)]">
-                              <Highlighter className="w-4 h-4 flex-shrink-0" strokeWidth={1.7} />
-                            </div>
-                            <div className="min-w-0">
-                              <div className="text-[13px] font-medium tracking-[-0.01em] text-[#111827]">Key Points</div>
-                              <div className="text-[11px] text-[#6b7280]">Emphasize the most important takeaways inline.</div>
-                            </div>
+                        <div className="flex items-center justify-between gap-3 rounded-xl px-2.5 py-2 transition-colors hover:bg-[#f7f7f8]">
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <Highlighter className="w-4 h-4 text-[#6b7280] flex-shrink-0" strokeWidth={1.6} />
+                            <div className="text-[13px] font-medium tracking-[-0.01em] text-[#111827]">Key Points</div>
                           </div>
                           <Switch
                             checked={showHighlight}
                             onClick={(e) => e.stopPropagation()}
                             onCheckedChange={(checked) => setShowHighlight(checked)}
-                            className="h-6 w-11 border border-black/[0.08] bg-[#e5e7eb] shadow-[inset_0_1px_1px_rgba(15,23,42,0.08)] data-[state=checked]:bg-[#111827] data-[state=unchecked]:bg-[#e5e7eb]"
+                            className="h-5 w-9 border border-black/[0.08] bg-[#e5e7eb] shadow-none data-[state=checked]:bg-[#111827] data-[state=unchecked]:bg-[#e5e7eb] [&>span]:h-4 [&>span]:w-4 [&>span]:data-[state=checked]:translate-x-4"
                             aria-label="Toggle key points"
                           />
                         </div>
-                        <div className="flex items-center justify-between gap-3 rounded-2xl border border-black/[0.05] bg-white/78 px-3 py-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.85)] transition-colors hover:bg-white">
-                          <div className="flex items-center gap-3 min-w-0">
-                            <div className="flex h-9 w-9 items-center justify-center rounded-2xl bg-[#eef2ff] text-[#3347b0] shadow-[inset_0_1px_0_rgba(255,255,255,0.85)]">
-                              <Link2 className="w-4 h-4 flex-shrink-0" strokeWidth={1.7} />
-                            </div>
-                            <div className="min-w-0">
-                              <div className="text-[13px] font-medium tracking-[-0.01em] text-[#111827]">Citations</div>
-                              <div className="text-[11px] text-[#6b7280]">Keep source references attached to the response.</div>
-                            </div>
+                        <div className="flex items-center justify-between gap-3 rounded-xl px-2.5 py-2 transition-colors hover:bg-[#f7f7f8]">
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <Link2 className="w-4 h-4 text-[#6b7280] flex-shrink-0" strokeWidth={1.6} />
+                            <div className="text-[13px] font-medium tracking-[-0.01em] text-[#111827]">Citations</div>
                           </div>
                           <Switch
                             checked={showCitations}
                             onClick={(e) => e.stopPropagation()}
                             onCheckedChange={(checked) => setShowCitations(checked)}
-                            className="h-6 w-11 border border-black/[0.08] bg-[#e5e7eb] shadow-[inset_0_1px_1px_rgba(15,23,42,0.08)] data-[state=checked]:bg-[#111827] data-[state=unchecked]:bg-[#e5e7eb]"
+                            className="h-5 w-9 border border-black/[0.08] bg-[#e5e7eb] shadow-none data-[state=checked]:bg-[#111827] data-[state=unchecked]:bg-[#e5e7eb] [&>span]:h-4 [&>span]:w-4 [&>span]:data-[state=checked]:translate-x-4"
                             aria-label="Toggle citations"
                           />
                         </div>
-                        <div className="flex items-center justify-between gap-3 rounded-2xl border border-black/[0.05] bg-white/78 px-3 py-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.85)] transition-colors hover:bg-white">
-                          <div className="flex items-center gap-3 min-w-0">
-                            <div className="flex h-9 w-9 items-center justify-center rounded-2xl bg-[#ecfeff] text-[#0f6b7a] shadow-[inset_0_1px_0_rgba(255,255,255,0.85)]">
-                              <Captions className="w-4 h-4 flex-shrink-0" strokeWidth={1.7} />
-                            </div>
-                            <div className="min-w-0">
-                              <div className="text-[13px] font-medium tracking-[-0.01em] text-[#111827]">Citation Preview</div>
-                              <div className="text-[11px] text-[#6b7280]">Surface the current source preview as you read.</div>
-                            </div>
+                        <div className="flex items-center justify-between gap-3 rounded-xl px-2.5 py-2 transition-colors hover:bg-[#f7f7f8]">
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <Captions className="w-4 h-4 text-[#6b7280] flex-shrink-0" strokeWidth={1.6} />
+                            <div className="text-[13px] font-medium tracking-[-0.01em] text-[#111827]">Citation Preview</div>
                           </div>
                           <Switch
                             checked={showCitationPreviewBar}
                             onClick={(e) => e.stopPropagation()}
                             onCheckedChange={(checked) => setShowCitationPreviewBar(checked)}
-                            className="h-6 w-11 border border-black/[0.08] bg-[#e5e7eb] shadow-[inset_0_1px_1px_rgba(15,23,42,0.08)] data-[state=checked]:bg-[#111827] data-[state=unchecked]:bg-[#e5e7eb]"
+                            className="h-5 w-9 border border-black/[0.08] bg-[#e5e7eb] shadow-none data-[state=checked]:bg-[#111827] data-[state=unchecked]:bg-[#e5e7eb] [&>span]:h-4 [&>span]:w-4 [&>span]:data-[state=checked]:translate-x-4"
                             aria-label="Toggle citation preview"
                           />
                         </div>
-                        <div className="flex items-center justify-between gap-3 rounded-2xl border border-black/[0.05] bg-white/78 px-3 py-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.85)] transition-colors hover:bg-white">
-                          <div className="flex items-center gap-3 min-w-0">
-                            <div className="flex h-9 w-9 items-center justify-center rounded-2xl bg-[#eff6ff] text-[#3155a6] shadow-[inset_0_1px_0_rgba(255,255,255,0.85)]">
-                              <Quote className="w-4 h-4 flex-shrink-0" strokeWidth={1.7} />
-                            </div>
-                            <div className="min-w-0">
-                              <div className="text-[13px] font-medium tracking-[-0.01em] text-[#111827]">Citation highlight</div>
-                              <div className="text-[11px] text-[#6b7280]">Highlight linked evidence directly inside the answer.</div>
-                            </div>
+                        <div className="flex items-center justify-between gap-3 rounded-xl px-2.5 py-2 transition-colors hover:bg-[#f7f7f8]">
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <Quote className="w-4 h-4 text-[#6b7280] flex-shrink-0" strokeWidth={1.6} />
+                            <div className="text-[13px] font-medium tracking-[-0.01em] text-[#111827]">Citation highlight</div>
                           </div>
                           <Switch
                             checked={showBlueCitationHighlight}
                             onClick={(e) => e.stopPropagation()}
                             onCheckedChange={(checked) => setShowBlueCitationHighlight(checked)}
-                            className="h-6 w-11 border border-black/[0.08] bg-[#e5e7eb] shadow-[inset_0_1px_1px_rgba(15,23,42,0.08)] data-[state=checked]:bg-[#111827] data-[state=unchecked]:bg-[#e5e7eb]"
+                            className="h-5 w-9 border border-black/[0.08] bg-[#e5e7eb] shadow-none data-[state=checked]:bg-[#111827] data-[state=unchecked]:bg-[#e5e7eb] [&>span]:h-4 [&>span]:w-4 [&>span]:data-[state=checked]:translate-x-4"
                             aria-label="Toggle citation highlight"
                           />
                         </div>

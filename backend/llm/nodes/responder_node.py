@@ -1325,9 +1325,9 @@ def replace_ids_with_citation_numbers(
 
 def _ensure_paragraph_break_after_first_citation(text: str) -> str:
     """
-    Insert a paragraph break after the first citation so the document preview card
-    can display below it. Ensures follow-up responses use the same presentation
-    as initial responses (one citation above the preview).
+    Insert a paragraph break after the first citation group so the document preview card
+    can display below it. When multiple citations are adjacent (e.g. [1][2] or [1] [2]),
+    the break goes after the last one in the run so no citation is stranded on its own line.
     """
     if not text or not text.strip():
         return text
@@ -1335,20 +1335,26 @@ def _ensure_paragraph_break_after_first_citation(text: str) -> str:
     match = re.search(r'\[1\]', text)
     if not match:
         return text
+    # Walk past any consecutive citations ([1][2], [1] [2], [1], [2] etc.)
     insert_pos = match.end()
-    # If we're at end of string or already followed by double newline, no change
+    while True:
+        rest = text[insert_pos:]
+        adjacent = re.match(r'^[\s,]*\[\d+\]', rest)
+        if adjacent:
+            insert_pos += adjacent.end()
+        else:
+            break
     rest = text[insert_pos:]
     if not rest or rest.startswith('\n\n'):
         return text
-    # Consume optional trailing period and spaces (e.g. "[1]. " or "[1] ")
+    # Consume optional trailing period and spaces (e.g. "[2]. " or "[2] ")
     trail_match = re.match(r'^(\s*\.?\s*)', rest)
     if trail_match:
         insert_pos += trail_match.end()
         rest = rest[trail_match.end():]
     if not rest or rest.startswith('\n\n'):
         return text
-    # Insert double newline so next content starts a new paragraph
-    return text[:insert_pos] + '\n\n' + rest
+    return text[:insert_pos].rstrip() + '\n\n' + rest
 
 
 def format_citations_for_frontend(
@@ -2484,7 +2490,7 @@ Is this the first message in the conversation? {is_first_message}
 {formatted_chunks}
 {metadata_section}
 """
-    instructions = "- Answer based on the content above. Use the block-tagged document content from search as the primary source for the answer. For each fact you use, cite it as [ID: X](BLOCK_CITE_ID_N). Cite every fact, figure, date, or value drawn from the document content. For summaries, cite all key facts — not just the one the user explicitly asked about. Do not cite blocks that only mention a topic without stating a fact. If you use the retrieved document context, ground the fact back to the matching block-tagged document content and cite that block."
+    instructions = "- Answer based on the content above. Use the block-tagged document content from search as the primary source for the answer. For each fact you use, cite it as [ID: X](BLOCK_CITE_ID_N). Cite every fact, figure, date, or value drawn from the document content. For summaries, cite all key facts — not just the one the user explicitly asked about. Do not cite blocks that only mention a topic without stating a fact. If you use the retrieved document context, ground the fact back to the matching block-tagged document content and cite that block.\n- RELEVANCE FILTER: You may receive content from multiple documents. Only use content that is directly relevant to the user's question. If the user asks to summarise a lease, ignore chunks from valuation reports, surveys, or other unrelated documents. If the user asks about a valuation, ignore lease clauses. Never mix content from unrelated documents into a single answer. When in doubt, check whether a chunk's subject matter matches what the user asked about — if it does not, skip it entirely."
     if research_notes_instruction and research_notes_instruction.strip():
         instructions = instructions + research_notes_instruction.strip()
     if paste_section:
