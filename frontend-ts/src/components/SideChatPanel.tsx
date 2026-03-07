@@ -53,6 +53,7 @@ import { AtMentionPopover } from './AtMentionPopover';
 import type { AtMentionItem } from './AtMentionPopover';
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator } from '@/components/ui/dropdown-menu';
+import { Switch } from '@/components/ui/switch';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { getFilteredAtMentionItems, preloadAtMentionCache } from '@/services/atMentionCache';
 import { SegmentInput, type SegmentInputHandle } from './SegmentInput';
@@ -18956,20 +18957,22 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         toggleChatPanel();
                       }
                     }}
-                    className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150 cursor-pointer border-none`}
+                    className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1.5' : 'justify-center'} rounded-full border border-black/[0.06] bg-white/88 text-[#4b5563] shadow-[0_1px_2px_rgba(15,23,42,0.05),inset_0_1px_0_rgba(255,255,255,0.9)] backdrop-blur-md transition-all duration-200 hover:border-black/[0.10] hover:bg-white hover:text-[#111827] hover:shadow-[0_10px_30px_rgba(15,23,42,0.08),inset_0_1px_0_rgba(255,255,255,0.95)] active:scale-[0.98] cursor-pointer`}
                     title={isChatPanelOpen ? "Close Agent Sidebar" : "Agents Sidebar"}
                     type="button"
                     style={{
-                      padding: actualPanelWidth >= 750 ? '6px 8px' : '6px',
-                      height: '32px',
-                      minHeight: '32px',
+                      padding: actualPanelWidth >= 750 ? '7px 12px' : '7px',
+                      height: '36px',
+                      minHeight: '36px',
                       minWidth: undefined,
                       border: 'none',
                       position: 'relative',
                       zIndex: 10001,
                       pointerEvents: 'auto',
                       cursor: 'pointer',
-                      backgroundColor: isChatPanelOpen ? 'rgba(0, 0, 0, 0.04)' : 'rgba(0, 0, 0, 0.02)',
+                      background: isChatPanelOpen
+                        ? 'linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(248,250,252,0.94) 100%)'
+                        : 'linear-gradient(180deg, rgba(255,255,255,0.88) 0%, rgba(249,250,251,0.80) 100%)',
                     }}
                   >
                     {isChatPanelOpen ? (
@@ -18982,7 +18985,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       <img src={agentIcon} alt="Agents" className="h-5 w-5 object-contain flex-shrink-0" aria-hidden />
                     )}
                     {actualPanelWidth >= 750 && (
-                      <span className="text-[13px] font-normal text-[#666] text-left whitespace-nowrap">
+                      <span className="text-[13px] font-medium text-inherit text-left whitespace-nowrap tracking-[-0.01em]">
                         {isChatPanelOpen ? "Close" : "Agents"}
                       </span>
                     )}
@@ -18997,15 +19000,17 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         aria-haspopup="true"
                         aria-expanded={displayOptionsOpen}
                         title="Response – reasoning trace, highlight key points, and citations"
-                        className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150 cursor-pointer border-none`}
+                        className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1.5' : 'justify-center'} rounded-full border border-black/[0.06] bg-white/88 text-[#4b5563] shadow-[0_1px_2px_rgba(15,23,42,0.05),inset_0_1px_0_rgba(255,255,255,0.9)] backdrop-blur-md transition-all duration-200 hover:border-black/[0.10] hover:bg-white hover:text-[#111827] hover:shadow-[0_10px_30px_rgba(15,23,42,0.08),inset_0_1px_0_rgba(255,255,255,0.95)] active:scale-[0.98] cursor-pointer`}
                         style={{
-                          padding: actualPanelWidth >= 750 ? '6px 8px' : '6px',
-                          height: '32px',
-                          minHeight: '32px',
+                          padding: actualPanelWidth >= 750 ? '7px 12px' : '7px',
+                          height: '36px',
+                          minHeight: '36px',
                           position: 'relative',
                           zIndex: 10001,
                           pointerEvents: 'auto',
-                          backgroundColor: displayOptionsOpen ? 'rgba(0, 0, 0, 0.04)' : 'rgba(0, 0, 0, 0.02)',
+                          background: displayOptionsOpen
+                            ? 'linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(248,250,252,0.94) 100%)'
+                            : 'linear-gradient(180deg, rgba(255,255,255,0.88) 0%, rgba(249,250,251,0.80) 100%)',
                         }}
                         onMouseEnter={handleDisplayOptionsTriggerEnter}
                         onMouseLeave={handleDisplayOptionsTriggerLeave}
@@ -19016,7 +19021,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       >
                         <SlidersHorizontal className="w-5 h-5 text-[#666] flex-shrink-0" strokeWidth={1.25} />
                         {actualPanelWidth >= 750 && (
-                          <span className="text-[13px] font-normal text-[#666]">Response</span>
+                          <span className="text-[13px] font-medium text-inherit tracking-[-0.01em]">Response</span>
                         )}
                       </button>
                     </PopoverTrigger>
@@ -19032,113 +19037,109 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           e.preventDefault();
                         }
                       }}
-                      className="min-w-[200px] w-auto rounded-lg border border-gray-200 bg-white p-3 shadow-md"
+                      className="min-w-[280px] w-auto rounded-[24px] border border-black/[0.08] bg-[linear-gradient(180deg,rgba(255,255,255,0.98)_0%,rgba(248,250,252,0.96)_100%)] p-3 shadow-[0_24px_80px_rgba(15,23,42,0.16),0_8px_24px_rgba(15,23,42,0.08),inset_0_1px_0_rgba(255,255,255,0.9)] backdrop-blur-xl"
                       onOpenAutoFocus={(e) => e.preventDefault()}
                     >
                       <div
-                        className="flex flex-col gap-3"
+                        className="flex flex-col gap-2"
                         onMouseEnter={handleDisplayOptionsContentEnter}
                         onMouseLeave={handleDisplayOptionsContentLeave}
                       >
-                        <div className="flex items-center justify-between gap-3">
-                          <div className="flex items-center gap-2 min-w-0">
-                            <BrainCircuit className="w-5 h-5 text-[#666] flex-shrink-0" strokeWidth={1.25} />
-                            <span className="text-[12px] text-[#374151]">Reasoning trace</span>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              flushSync(() => setShowReasoningTrace((prev) => !prev));
-                            }}
-                            className={`relative w-8 h-5 flex-shrink-0 rounded-sm transition-colors ${
-                              showReasoningTrace ? 'bg-[#1f2937]' : 'bg-[#d1d5db]'
-                            }`}
-                          >
-                            <span className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-sm shadow-sm transition-transform ${
-                              showReasoningTrace ? 'translate-x-3' : 'translate-x-0'
-                            }`} />
-                          </button>
+                        <div className="px-1 pb-1">
+                          <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#6b7280]">Response controls</div>
+                          <div className="mt-1 text-[13px] text-[#4b5563]">Tune how answers are explained, sourced, and highlighted.</div>
                         </div>
-                        <div className="flex items-center justify-between gap-3">
-                          <div className="flex items-center gap-2 min-w-0">
-                            <Highlighter className="w-5 h-5 text-[#666] flex-shrink-0" strokeWidth={1.25} />
-                            <span className="text-[12px] text-[#374151]">Key Points</span>
+                        <div className="flex items-center justify-between gap-3 rounded-2xl border border-black/[0.05] bg-white/78 px-3 py-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.85)] transition-colors hover:bg-white">
+                          <div className="flex items-center gap-3 min-w-0">
+                            <div className="flex h-9 w-9 items-center justify-center rounded-2xl bg-[#111827] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.14)]">
+                              <BrainCircuit className="w-4 h-4 flex-shrink-0" strokeWidth={1.7} />
+                            </div>
+                            <div className="min-w-0">
+                              <div className="text-[13px] font-medium tracking-[-0.01em] text-[#111827]">Reasoning trace</div>
+                              <div className="text-[11px] text-[#6b7280]">Show the thinking path behind each answer.</div>
+                            </div>
                           </div>
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setShowHighlight(!showHighlight);
+                          <Switch
+                            checked={showReasoningTrace}
+                            onClick={(e) => e.stopPropagation()}
+                            onCheckedChange={(checked) => {
+                              flushSync(() => setShowReasoningTrace(checked));
                             }}
-                            className={`relative w-8 h-5 flex-shrink-0 rounded-sm transition-colors ${
-                              showHighlight ? 'bg-[#1f2937]' : 'bg-[#d1d5db]'
-                            }`}
-                          >
-                            <span className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-sm shadow-sm transition-transform ${
-                              showHighlight ? 'translate-x-3' : 'translate-x-0'
-                            }`} />
-                          </button>
+                            className="h-6 w-11 border border-black/[0.08] bg-[#e5e7eb] shadow-[inset_0_1px_1px_rgba(15,23,42,0.08)] data-[state=checked]:bg-[#111827] data-[state=unchecked]:bg-[#e5e7eb]"
+                            aria-label="Toggle reasoning trace"
+                          />
                         </div>
-                        <div className="flex items-center justify-between gap-3">
-                          <div className="flex items-center gap-2 min-w-0">
-                            <Link2 className="w-5 h-5 text-[#666] flex-shrink-0" strokeWidth={1.25} />
-                            <span className="text-[12px] text-[#374151]">Citations</span>
+                        <div className="flex items-center justify-between gap-3 rounded-2xl border border-black/[0.05] bg-white/78 px-3 py-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.85)] transition-colors hover:bg-white">
+                          <div className="flex items-center gap-3 min-w-0">
+                            <div className="flex h-9 w-9 items-center justify-center rounded-2xl bg-[#f5efe2] text-[#7c5a11] shadow-[inset_0_1px_0_rgba(255,255,255,0.85)]">
+                              <Highlighter className="w-4 h-4 flex-shrink-0" strokeWidth={1.7} />
+                            </div>
+                            <div className="min-w-0">
+                              <div className="text-[13px] font-medium tracking-[-0.01em] text-[#111827]">Key Points</div>
+                              <div className="text-[11px] text-[#6b7280]">Emphasize the most important takeaways inline.</div>
+                            </div>
                           </div>
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setShowCitations(!showCitations);
-                            }}
-                            className={`relative w-8 h-5 flex-shrink-0 rounded-sm transition-colors ${
-                              showCitations ? 'bg-[#1f2937]' : 'bg-[#d1d5db]'
-                            }`}
-                          >
-                            <span className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-sm shadow-sm transition-transform ${
-                              showCitations ? 'translate-x-3' : 'translate-x-0'
-                            }`} />
-                          </button>
+                          <Switch
+                            checked={showHighlight}
+                            onClick={(e) => e.stopPropagation()}
+                            onCheckedChange={(checked) => setShowHighlight(checked)}
+                            className="h-6 w-11 border border-black/[0.08] bg-[#e5e7eb] shadow-[inset_0_1px_1px_rgba(15,23,42,0.08)] data-[state=checked]:bg-[#111827] data-[state=unchecked]:bg-[#e5e7eb]"
+                            aria-label="Toggle key points"
+                          />
                         </div>
-                        <div className="flex items-center justify-between gap-3">
-                          <div className="flex items-center gap-2 min-w-0">
-                            <Captions className="w-5 h-5 text-[#666] flex-shrink-0" strokeWidth={1.25} />
-                            <span className="text-[12px] text-[#374151]">Citation Preview</span>
+                        <div className="flex items-center justify-between gap-3 rounded-2xl border border-black/[0.05] bg-white/78 px-3 py-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.85)] transition-colors hover:bg-white">
+                          <div className="flex items-center gap-3 min-w-0">
+                            <div className="flex h-9 w-9 items-center justify-center rounded-2xl bg-[#eef2ff] text-[#3347b0] shadow-[inset_0_1px_0_rgba(255,255,255,0.85)]">
+                              <Link2 className="w-4 h-4 flex-shrink-0" strokeWidth={1.7} />
+                            </div>
+                            <div className="min-w-0">
+                              <div className="text-[13px] font-medium tracking-[-0.01em] text-[#111827]">Citations</div>
+                              <div className="text-[11px] text-[#6b7280]">Keep source references attached to the response.</div>
+                            </div>
                           </div>
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setShowCitationPreviewBar(!showCitationPreviewBar);
-                            }}
-                            className={`relative w-8 h-5 flex-shrink-0 rounded-sm transition-colors ${
-                              showCitationPreviewBar ? 'bg-[#1f2937]' : 'bg-[#d1d5db]'
-                            }`}
-                          >
-                            <span className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-sm shadow-sm transition-transform ${
-                              showCitationPreviewBar ? 'translate-x-3' : 'translate-x-0'
-                            }`} />
-                          </button>
+                          <Switch
+                            checked={showCitations}
+                            onClick={(e) => e.stopPropagation()}
+                            onCheckedChange={(checked) => setShowCitations(checked)}
+                            className="h-6 w-11 border border-black/[0.08] bg-[#e5e7eb] shadow-[inset_0_1px_1px_rgba(15,23,42,0.08)] data-[state=checked]:bg-[#111827] data-[state=unchecked]:bg-[#e5e7eb]"
+                            aria-label="Toggle citations"
+                          />
                         </div>
-                        <div className="flex items-center justify-between gap-3">
-                          <div className="flex items-center gap-2 min-w-0">
-                            <Quote className="w-5 h-5 text-[#666] flex-shrink-0" strokeWidth={1.25} />
-                            <span className="text-[12px] text-[#374151]">Citation highlight</span>
+                        <div className="flex items-center justify-between gap-3 rounded-2xl border border-black/[0.05] bg-white/78 px-3 py-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.85)] transition-colors hover:bg-white">
+                          <div className="flex items-center gap-3 min-w-0">
+                            <div className="flex h-9 w-9 items-center justify-center rounded-2xl bg-[#ecfeff] text-[#0f6b7a] shadow-[inset_0_1px_0_rgba(255,255,255,0.85)]">
+                              <Captions className="w-4 h-4 flex-shrink-0" strokeWidth={1.7} />
+                            </div>
+                            <div className="min-w-0">
+                              <div className="text-[13px] font-medium tracking-[-0.01em] text-[#111827]">Citation Preview</div>
+                              <div className="text-[11px] text-[#6b7280]">Surface the current source preview as you read.</div>
+                            </div>
                           </div>
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setShowBlueCitationHighlight(!showBlueCitationHighlight);
-                            }}
-                            className={`relative w-8 h-5 flex-shrink-0 rounded-sm transition-colors ${
-                              showBlueCitationHighlight ? 'bg-[#1f2937]' : 'bg-[#d1d5db]'
-                            }`}
-                          >
-                            <span className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-sm shadow-sm transition-transform ${
-                              showBlueCitationHighlight ? 'translate-x-3' : 'translate-x-0'
-                            }`} />
-                          </button>
+                          <Switch
+                            checked={showCitationPreviewBar}
+                            onClick={(e) => e.stopPropagation()}
+                            onCheckedChange={(checked) => setShowCitationPreviewBar(checked)}
+                            className="h-6 w-11 border border-black/[0.08] bg-[#e5e7eb] shadow-[inset_0_1px_1px_rgba(15,23,42,0.08)] data-[state=checked]:bg-[#111827] data-[state=unchecked]:bg-[#e5e7eb]"
+                            aria-label="Toggle citation preview"
+                          />
+                        </div>
+                        <div className="flex items-center justify-between gap-3 rounded-2xl border border-black/[0.05] bg-white/78 px-3 py-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.85)] transition-colors hover:bg-white">
+                          <div className="flex items-center gap-3 min-w-0">
+                            <div className="flex h-9 w-9 items-center justify-center rounded-2xl bg-[#eff6ff] text-[#3155a6] shadow-[inset_0_1px_0_rgba(255,255,255,0.85)]">
+                              <Quote className="w-4 h-4 flex-shrink-0" strokeWidth={1.7} />
+                            </div>
+                            <div className="min-w-0">
+                              <div className="text-[13px] font-medium tracking-[-0.01em] text-[#111827]">Citation highlight</div>
+                              <div className="text-[11px] text-[#6b7280]">Highlight linked evidence directly inside the answer.</div>
+                            </div>
+                          </div>
+                          <Switch
+                            checked={showBlueCitationHighlight}
+                            onClick={(e) => e.stopPropagation()}
+                            onCheckedChange={(checked) => setShowBlueCitationHighlight(checked)}
+                            className="h-6 w-11 border border-black/[0.08] bg-[#e5e7eb] shadow-[inset_0_1px_1px_rgba(15,23,42,0.08)] data-[state=checked]:bg-[#111827] data-[state=unchecked]:bg-[#e5e7eb]"
+                            aria-label="Toggle citation highlight"
+                          />
                         </div>
                       </div>
                     </PopoverContent>

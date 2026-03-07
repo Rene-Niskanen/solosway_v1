@@ -62,6 +62,12 @@ const getDocumentName = (filename: string): string => {
   return nameWithoutExt.length > 20 ? nameWithoutExt.substring(0, 17) + '...' : nameWithoutExt;
 };
 
+const getDocumentExtension = (filename: string): string => {
+  if (!filename) return 'FILE';
+  const ext = filename.split('.').pop()?.trim();
+  return ext ? ext.toUpperCase().slice(0, 6) : 'FILE';
+};
+
 // Get download URL for a document
 const getDownloadUrl = (doc: DocumentData): string | null => {
   const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5001';
@@ -350,6 +356,14 @@ export const RecentDocumentCard: React.FC<RecentDocumentCardProps> = React.memo(
   };
 
   const documentName = getDocumentName(document.original_filename);
+  const documentExtension = isPdfDocument(document) ? 'PDF' : getDocumentExtension(document.original_filename);
+  const shortDate = new Date(document.created_at).toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+  });
+  const surfaceRadius = compact ? '16px' : '18px';
+  const previewRadius = compact ? '12px' : '14px';
+  const contentPadding = compact ? '10px' : '12px';
 
   return (
     <div
@@ -360,73 +374,132 @@ export const RecentDocumentCard: React.FC<RecentDocumentCardProps> = React.memo(
       style={{ width: `${width}px`, paddingTop: compact ? '2px' : '4px' }}
     >
     <div 
-      className="flex flex-col cursor-pointer"
+      className="group flex flex-col cursor-pointer"
       style={{ 
         width: `${width}px`,
         opacity: isDragging ? 0.5 : 1,
       }}
       onClick={handleClick}
     >
-      {/* Miniature window preview - single motion container for all effects */}
       <motion.div 
-        className="bg-white"
+        className="relative overflow-hidden"
         style={{ 
           width: `${width}px`,
           height: `${height}px`,
-          borderRadius: compact ? '4px' : '6px',
-          border: '1px solid rgba(0, 0, 0, 0.18)',
-          boxShadow: '0 1px 3px rgba(0, 0, 0, 0.05), 0 1px 2px rgba(0, 0, 0, 0.1)',
+          borderRadius: surfaceRadius,
+          border: '1px solid rgba(15, 23, 42, 0.09)',
+          background: '#FFFFFF',
+          boxShadow: '0 8px 24px -18px rgba(15, 23, 42, 0.2)',
           pointerEvents: 'auto',
           zIndex: 0,
         }}
         whileHover={!isDragging ? { 
-          scale: 1.02,
+          scale: 1.01,
           zIndex: 1,
-          boxShadow: '0 12px 24px -8px rgba(0, 0, 0, 0.15), 0 4px 8px -4px rgba(0, 0, 0, 0.1)'
+          y: -1,
+          boxShadow: '0 12px 30px -18px rgba(15, 23, 42, 0.24)'
         } : {}}
         whileTap={{ scale: 0.98 }}
         transition={{ type: 'spring', stiffness: 400, damping: 25 }}
       >
-        <div className="w-full h-full bg-white flex flex-col" style={{ borderRadius: compact ? '4px' : '6px', overflow: 'hidden' }}>
-          {/* Document content area */}
-          <div className="flex-1 overflow-hidden relative bg-gray-50">
+        <div className="relative flex h-full flex-col" style={{ padding: contentPadding }}>
+          <div className="flex items-center justify-between gap-2">
+            <span
+              className="inline-flex items-center rounded-md px-1.5 py-0.5"
+              style={{
+                background: '#F3F4F6',
+                color: '#4B5563',
+                fontSize: compact ? '9px' : '9px',
+                fontWeight: 600,
+                letterSpacing: '0.06em',
+              }}
+            >
+              {documentExtension}
+            </span>
+            <span
+              style={{
+                color: '#64748B',
+                fontSize: compact ? '10px' : '11px',
+                fontWeight: 500,
+              }}
+            >
+              {shortDate}
+            </span>
+          </div>
+          <p
+            title={document.original_filename}
+            style={{
+              marginTop: '8px',
+              marginBottom: '10px',
+              color: '#0F172A',
+              fontSize: compact ? '11px' : '12px',
+              fontWeight: 600,
+              lineHeight: 1.4,
+              letterSpacing: '-0.01em',
+              display: '-webkit-box',
+              WebkitLineClamp: compact ? 2 : 2,
+              WebkitBoxOrient: 'vertical',
+              overflow: 'hidden',
+              minHeight: compact ? '31px' : '34px',
+            }}
+          >
+            {documentName}
+          </p>
+          <div
+            className="relative flex-1 overflow-hidden"
+            style={{
+              borderRadius: previewRadius,
+              background: '#F8FAFC',
+              border: '1px solid rgba(15, 23, 42, 0.07)',
+            }}
+          >
             {isLoading ? (
-              // Loading skeleton
-              <div className="absolute inset-0 p-3 flex flex-col">
-                <div className="h-2 bg-gray-200 rounded w-3/4 mb-2" />
-                <div className="h-1.5 bg-gray-100 rounded w-full mb-1" />
-                <div className="h-1.5 bg-gray-100 rounded w-11/12 mb-1" />
-                <div className="h-1.5 bg-gray-100 rounded w-full mb-1" />
-                <div className="h-1.5 bg-gray-100 rounded w-4/5 mb-1" />
-                <div className="h-1.5 bg-gray-100 rounded w-full mb-1" />
-                <div className="h-1.5 bg-gray-100 rounded w-9/12 mb-1" />
+              <div className="absolute inset-0 animate-pulse p-3">
+                <div className="h-full rounded-[inherit] bg-white p-3">
+                  <div className="mb-3 h-2.5 w-2/3 rounded-full bg-slate-200/90" />
+                  <div className="space-y-1.5">
+                    <div className="h-1.5 w-full rounded-full bg-slate-200/75" />
+                    <div className="h-1.5 w-11/12 rounded-full bg-slate-200/65" />
+                    <div className="h-1.5 w-4/5 rounded-full bg-slate-200/55" />
+                  </div>
+                  <div className="mt-4 rounded-xl border border-slate-200/70 bg-slate-50 px-3 py-4">
+                    <div className="h-16 rounded-lg bg-slate-100/90" />
+                  </div>
+                </div>
               </div>
             ) : thumbnailUrl ? (
-              // Cached thumbnail - async decode; priority hint for first cards
               <img 
                 src={thumbnailUrl}
                 alt={document.original_filename}
-                className="w-full h-full object-cover object-top"
+                className="h-full w-full object-cover object-top transition-transform duration-300 ease-out group-hover:scale-[1.015]"
                 decoding="async"
                 loading={priority ? "eager" : "lazy"}
                 fetchPriority={priority ? "high" : "auto"}
               />
             ) : (
-              // Fallback: Text placeholder
-              <div className="p-3 flex flex-col h-full">
-                <h4 
-                  className="mb-2 leading-tight"
-                  style={{ fontSize: '11px', fontWeight: 600, color: '#1F2937' }}
-                >
-                  {documentName}
-                </h4>
-                <div className="flex-1 flex flex-col" style={{ gap: '4px' }}>
-                  <div className="h-1 bg-gray-100 rounded w-full" />
-                  <div className="h-1 bg-gray-100 rounded" style={{ width: '90%' }} />
-                  <div className="h-1 bg-gray-100 rounded w-full" />
-                  <div className="h-1 bg-gray-100 rounded" style={{ width: '75%' }} />
-                  <div className="h-1 bg-gray-100 rounded w-full" />
-                  <div className="h-1 bg-gray-100 rounded" style={{ width: '85%' }} />
+              <div className="flex h-full flex-col justify-between p-3">
+                <div>
+                  <h4
+                    className="leading-tight"
+                    style={{ fontSize: compact ? '11px' : '12px', fontWeight: 600, color: '#0F172A' }}
+                  >
+                    {documentName}
+                  </h4>
+                  <p
+                    style={{
+                      marginTop: '6px',
+                      color: '#64748B',
+                      fontSize: compact ? '10px' : '11px',
+                      lineHeight: 1.45,
+                    }}
+                  >
+                    Preview unavailable. Open to inspect the full file.
+                  </p>
+                </div>
+                <div className="space-y-1.5">
+                  <div className="h-1.5 w-full rounded-full bg-slate-200/80" />
+                  <div className="h-1.5 w-5/6 rounded-full bg-slate-200/70" />
+                  <div className="h-1.5 w-2/3 rounded-full bg-slate-200/60" />
                 </div>
               </div>
             )}
@@ -434,31 +507,6 @@ export const RecentDocumentCard: React.FC<RecentDocumentCardProps> = React.memo(
         </div>
       </motion.div>
       
-      {/* Name and date below card - visible on light (Projects) and dark backgrounds */}
-      <p 
-        className="truncate"
-        style={{
-          fontSize: compact ? '12px' : '13px',
-          fontWeight: 500,
-          color: '#374151',
-          marginTop: compact ? '8px' : '10px',
-          width: `${width}px`,
-        }}
-        title={document.original_filename}
-      >
-        {documentName}
-      </p>
-      <p 
-        style={{
-          fontSize: compact ? '11px' : '12px',
-          color: '#6B7280',
-          marginTop: '2px',
-          fontWeight: 400,
-          width: `${width}px`,
-        }}
-      >
-        {formatDate(document.created_at)}
-      </p>
     </div>
     </div>
   );

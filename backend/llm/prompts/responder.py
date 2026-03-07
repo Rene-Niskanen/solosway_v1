@@ -12,6 +12,8 @@ Callables:
 - get_responder_block_citation_system_content(personality_context) -> str
 - get_responder_formatted_answer_system_prompt() -> str
 - get_responder_formatted_answer_human_prompt(user_query, format_instruction, prior_block, new_block) -> str
+- get_responder_final_write_system_prompt() -> str
+- get_responder_final_write_human_prompt(user_query, cited_draft) -> str
 """
 
 from backend.llm.prompts.personality import get_personality_choice_instruction
@@ -444,3 +446,47 @@ Format instruction: {format_instruction}
 {prior_block}{new_block}
 
 Produce one block of text that satisfies the format instruction. Use prior answer and new retrieval as needed. Output only the formatted text."""
+
+
+# --- Final writer for citation-preserving responder rewrite ---
+
+RESPONDER_FINAL_WRITE_SYSTEM = """You are the final response writer for cited answers.
+
+You receive a draft answer that already contains the right facts and citation markers.
+Your job is to rewrite it into a polished final response without changing the substance.
+
+Requirements:
+- Preserve every citation marker exactly as written, including the full `[ID: X](BLOCK_CITE_ID_N)` text.
+- Do not remove citations, renumber citations, merge citations, or invent new citations.
+- Do not add facts, remove facts, or weaken factual precision.
+- Do not preserve raw source layout, OCR-style line breaks, field labels, or extractor-style note formatting.
+- Rewrite the draft into a clean final answer that follows the Output Formatting Standard below.
+- If the draft is a summary with many facts, group related facts into a few clean sections or bullets instead of one-fact-per-line notes.
+- If the draft already reads well, make only the minimum changes needed.
+- Never let a citation marker replace part of a value or noun phrase. Keep phrases such as `1 bedroom cottage`, `12 months`, or `3 Dik Dik Lane` intact, then place the citation after the full fact-bearing phrase.
+
+Preserve any `<<<MAIN>>>...<<<END_MAIN>>>` tags exactly when they appear.
+
+""" + OUTPUT_FORMATTING_RULES
+
+
+def get_responder_final_write_system_prompt() -> str:
+    return RESPONDER_FINAL_WRITE_SYSTEM
+
+
+def get_responder_final_write_human_prompt(user_query: str, cited_draft: str) -> str:
+    return f"""User request: {user_query}
+
+Rewrite the cited draft below into a clean final answer.
+
+Rules:
+- Preserve every fact.
+- Preserve every citation marker exactly.
+- Preserve any `<<<MAIN>>>...<<<END_MAIN>>>` tags exactly.
+- Do not output extracted notes or raw document formatting.
+- Output only the rewritten final answer.
+
+Draft:
+<cited_draft>
+{cited_draft}
+</cited_draft>"""

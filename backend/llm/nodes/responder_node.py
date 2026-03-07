@@ -36,6 +36,8 @@ from backend.llm.prompts.responder import (
     get_responder_block_citation_system_content,
     get_responder_formatted_answer_system_prompt,
     get_responder_formatted_answer_human_prompt,
+    get_responder_final_write_system_prompt,
+    get_responder_final_write_human_prompt,
     CITATION_BLOCK_SELECTION_SYSTEM,
     get_citation_block_selection_prompt,
 )
@@ -224,8 +226,52 @@ _AMOUNT_IN_WORDS_PAREN = re.compile(
 )
 
 # Bare citation digits: model sometimes outputs "**£1,950,000**1" or "Pounds)2" instead of [1] [2]
-_BARE_CITATION_AFTER_BOLD = re.compile(r"\*\*(\d)(?=\s|$|,|\s*\()")
+# Lookbehind ensures we only match digits after a CLOSING ** (preceded by text), not opening ** before a value.
+_BARE_CITATION_AFTER_BOLD = re.compile(r"(?<=[^\s*])\*\*(\d)(?=\s|$|,|\s*\()")
 _BARE_CITATION_AFTER_PAREN = re.compile(r"\)(\d)(?=\s|$|,)")
+_BLOCK_CITATION_MARKER = re.compile(r"\[ID:\s*\d+\]\s*\(\s*BLOCK_CITE_ID_\d+\s*\)")
+_ARTICLE_LEADING_CITATION = re.compile(
+    r"\b(a|an|the)\s+"
+    r"(\[ID:\s*\d+\]\s*\(\s*BLOCK_CITE_ID_\d+\s*\))\s+"
+    r"((?:(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+)?"
+    r"(?:bedroom|bathroom|bed|bath|room)"
+    r"(?:\s+(?:cottage|apartment|flat|house|villa|unit|property|home|maisonette|duplex))?)",
+    re.IGNORECASE,
+)
+_COUNT_SPLIT_BY_CITATION = re.compile(
+    r"\b((?:\d+|one|two|three|four|five|six|seven|eight|nine|ten))\s+"
+    r"(\[ID:\s*\d+\]\s*\(\s*BLOCK_CITE_ID_\d+\s*\))\s+"
+    r"((?:bedroom|bathroom|bed|bath|room)"
+    r"(?:\s+(?:cottage|apartment|flat|house|villa|unit|property|home|maisonette|duplex))?)",
+    re.IGNORECASE,
+)
+_BRACKET_ARTICLE_LEADING_CITATION = re.compile(
+    r"\b(a|an|the)\s+"
+    r"(\[\d+\])\s+"
+    r"((?:(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+)?"
+    r"(?:bedroom|bathroom|bed|bath|room)"
+    r"(?:\s+(?:cottage|apartment|flat|house|villa|unit|property|home|maisonette|duplex))?)",
+    re.IGNORECASE,
+)
+_BRACKET_COUNT_SPLIT_BY_CITATION = re.compile(
+    r"\b((?:\d+|one|two|three|four|five|six|seven|eight|nine|ten))\s+"
+    r"(\[\d+\])\s+"
+    r"((?:bedroom|bathroom|bed|bath|room)"
+    r"(?:\s+(?:cottage|apartment|flat|house|villa|unit|property|home|maisonette|duplex))?)",
+    re.IGNORECASE,
+)
+_MONTHS = (
+    r"(?:January|February|March|April|May|June|July|August|September|October|November|December"
+    r"|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Oct|Nov|Dec)"
+)
+_BRACKET_DATE_DAY = re.compile(
+    r"\[(\d{1,2})\](\s*(?:\*\*)?\s*)(" + _MONTHS + r")\b",
+    re.IGNORECASE,
+)
+_RAW_ID_DATE_DAY = re.compile(
+    r"\[ID:\s*(\d{1,2})\]\s*\(\s*BLOCK_CITE_ID_\d+\s*\)(\s*(?:\*\*)?\s*)(" + _MONTHS + r")\b",
+    re.IGNORECASE,
+)
 
 
 def _strip_embedded_closing_fragments(text: str) -> str:
@@ -271,12 +317,71 @@ def _normalize_bare_citation_digits(text: str) -> str:
     return text
 
 
+def _sanitize_document_helper_context(text: str) -> str:
+    """Collapse OCR-style single line breaks in helper context while preserving paragraph breaks."""
+    if not text or not isinstance(text, str):
+        return text or ""
+    normalized = text.replace("\r\n", "\n")
+    paragraphs = re.split(r"\n{2,}", normalized)
+    cleaned_paragraphs = []
+    for paragraph in paragraphs:
+        lines = [line.strip() for line in paragraph.split("\n") if line.strip()]
+        if not lines:
+            continue
+        cleaned_paragraph = re.sub(r"\s{2,}", " ", " ".join(lines)).strip()
+        if cleaned_paragraph:
+            cleaned_paragraphs.append(cleaned_paragraph)
+    return "\n\n".join(cleaned_paragraphs)
+
+
+def _extract_block_citation_markers(text: str) -> List[str]:
+    """Return exact block-ID citation markers so rewrite validation can confirm they survived unchanged."""
+    if not text or not isinstance(text, str):
+        return []
+    return sorted(_BLOCK_CITATION_MARKER.findall(text))
+
+
+def _rewrite_preserves_block_citations(original_text: str, rewritten_text: str) -> bool:
+    """True when the citation-preserving rewrite kept the exact set of block-ID markers."""
+    return _extract_block_citation_markers(original_text) == _extract_block_citation_markers(rewritten_text)
+
+
 def _strip_leaked_heading_before_value(text: str) -> str:
     """Remove leaked 'Market Value ' (or similar) when it appears right before a bold value."""
     if not text:
         return text
     # Only when followed by ** (bold value) so we don't strip legitimate "Market Value" in prose
     return re.sub(r"(^|\s)Market\s+Value\s+(?=\*\*)", r"\1", text, flags=re.IGNORECASE)
+
+
+def _rebalance_inline_citation_placement(text: str) -> str:
+    """
+    Move citations out of split noun phrases like "a [ID: 1] bedroom cottage" or
+    "1 [ID: 1] bedroom cottage" so the answer reads naturally before display.
+    Works on raw [ID: X](BLOCK_CITE_ID_N) markers (before replacement).
+    Also unwraps [ID: N](BLOCK_CITE_ID_M) that replaced a date day ("by [ID: 1]... April").
+    """
+    if not text or not isinstance(text, str):
+        return text or ""
+    result = _RAW_ID_DATE_DAY.sub(r"\1\2\3", text)
+    result = _ARTICLE_LEADING_CITATION.sub(r"\1 \3 \2", result)
+    result = _COUNT_SPLIT_BY_CITATION.sub(r"\1 \3 \2", result)
+    return result
+
+
+def _rebalance_bracket_citation_placement(text: str) -> str:
+    """
+    Same as _rebalance_inline_citation_placement but for bracket citations [1], [2]
+    after replace_ids_with_citation_numbers has run. Safety net for when
+    the model or the rewrite step places a bracket citation inside a noun phrase.
+    Also unwraps [N] that replaced a date day ("by [1] April" → "by 1 April").
+    """
+    if not text or not isinstance(text, str):
+        return text or ""
+    result = _BRACKET_DATE_DAY.sub(r"\1\2\3", text)
+    result = _BRACKET_ARTICLE_LEADING_CITATION.sub(r"\1 \3\2", result)
+    result = _BRACKET_COUNT_SPLIT_BY_CITATION.sub(r"\1 \3\2", result)
+    return result
 
 
 def _strip_standalone_value_label_line(text: str) -> str:
@@ -2286,6 +2391,7 @@ async def generate_conversational_answer_with_citations(
     user_id: Optional[str] = None,
     workspace_section: str = "",
     paste_context: str = "",
+    retrieved_full_doc_context: str = "",
     state: Optional[dict] = None,
     conversation_context: Optional[str] = None,
     research_notes_section: Optional[str] = None,
@@ -2295,8 +2401,11 @@ async def generate_conversational_answer_with_citations(
     Generate conversational answer with citation instructions (jan28th-style).
     The LLM sees content with <BLOCK id="BLOCK_CITE_ID_N"> and must cite as [ID: X](BLOCK_CITE_ID_N).
     Also chooses personality for this turn and returns (personality_id, answer_text).
-    When paste_context is non-empty (paste+other-docs path), the LLM gets pasted/attached content
-    plus retrieved document content; cite only the document content (block IDs).
+    When paste_context is non-empty, the LLM gets non-document supporting context
+    (for example pasted/attached user content or web context) that should not use
+    block-id citations. When retrieved_full_doc_context is non-empty, it contains
+    document-derived helper text that should still be grounded back to the block-tagged
+    search content for citations.
     When state is provided, turn context is prepended to the system prompt.
     When conversation_context is non-empty, it is prepended to the human message as "Previous exchange".
     """
@@ -2358,8 +2467,15 @@ Is this the first message in the conversation? {is_first_message}
     paste_section = ""
     if paste_context and paste_context.strip():
         paste_section = f"""
-**Pasted/attached content (use for context; cite only the document content below with block IDs):**
+**Additional non-document context (use for context only; do not cite this with block IDs):**
 {paste_context.strip()}
+
+"""
+    retrieved_full_doc_section = ""
+    if retrieved_full_doc_context and retrieved_full_doc_context.strip():
+        retrieved_full_doc_section = f"""
+**Retrieved document context (document-derived helper text; if you use facts from this, support them with block-ID citations from the search content below):**
+{retrieved_full_doc_context.strip()}
 
 """
     research_section = (research_notes_section or "").strip()
@@ -2368,16 +2484,30 @@ Is this the first message in the conversation? {is_first_message}
 {formatted_chunks}
 {metadata_section}
 """
-    instructions = "- Answer based on the content above. For each fact you use, cite it as [ID: X](BLOCK_CITE_ID_N). Before citing, ask: 'If the user clicked this citation, would the highlighted block show them the direct answer to their question?' Only cite blocks that contain the specific fact/figure/value the user asked about — never cite a block that merely mentions the topic, discusses implications, or promises to advise."
+    instructions = "- Answer based on the content above. Use the block-tagged document content from search as the primary source for the answer. For each fact you use, cite it as [ID: X](BLOCK_CITE_ID_N). Cite every fact, figure, date, or value drawn from the document content. For summaries, cite all key facts — not just the one the user explicitly asked about. Do not cite blocks that only mention a topic without stating a fact. If you use the retrieved document context, ground the fact back to the matching block-tagged document content and cite that block."
     if research_notes_instruction and research_notes_instruction.strip():
         instructions = instructions + research_notes_instruction.strip()
     if paste_section:
-        instructions = "- Use both the pasted/attached content and the document content from search. For facts from the pasted content, explain in your own words (no citation). For facts from the document content, cite as [ID: X](BLOCK_CITE_ID_N). " + instructions
+        instructions = "- Use both the additional non-document context and the document content from search. For facts that come only from the additional non-document context, explain them in your own words without block-ID citations. For facts from document-derived context, cite as [ID: X](BLOCK_CITE_ID_N). " + instructions
     instructions += """
 - **Place each citation immediately after the fact it supports**, not at the end of the sentence (e.g. "...payment stablecoins are not considered securities [ID: 1](BLOCK_CITE_ID_5), amending various acts..." not "...to reflect this [ID: 1](BLOCK_CITE_ID_5).").
 - **In bullet lists:** put each citation at the end of the bullet it supports (e.g. "- Incredible Location [ID: 1](BLOCK_CITE_ID_1)"), never all citations at the end of the last bullet.
+- **Never let a citation replace part of the fact itself.** Keep values, dates, and noun phrases intact, then cite after the full phrase. Example: write "a 1 bedroom cottage[ID: 1](BLOCK_CITE_ID_7)" not "a [ID: 1](BLOCK_CITE_ID_7) bedroom cottage". For dates, write "by **1 April 2023**[ID: 5](BLOCK_CITE_ID_12)" not "by [ID: 1](BLOCK_CITE_ID_12) April 2023" — the numeral "1" in dates, addresses, and measurements is NOT a citation marker.
 - Put any closing or follow-up only at the very end after a blank line; never at the start or after the first heading.
 - Explain in a clear, conversational way; use Markdown where it helps readability. Be accurate.
+- TITLE FORMAT: If you use a title for a summary, the title MUST be exactly one bold line and MUST be followed by a blank line. The title line must contain only the title and no explanatory text.
+- INFORMATION BLOCKS: Structure the response as short information blocks. Each block should contain one idea, one fact, or one key figure. Prefer multiple short blocks over dense paragraphs, and leave a blank line between blocks and after headings.
+- NO FIELD LABELS OR SOURCE MIRRORING: Never write field-style labels such as "Lease Duration:", "Monthly Rent:", "Property:", "Owner:", or "Tenant:". Never mirror the source document's field labels or layout. Convert document fields into natural sentences or short bold headings without punctuation.
+- NO COLON LABELS IN PROSE OR BULLETS: Do not write label-style bullets or prose such as "- Lease Duration:" or "Property Type:". Use natural sentences or short bold headings only when they improve clarity.
+- BOLD VALUES, NOT LABELS: Bold prices, dates, durations, measurements, company names, and contact names. Bold the value, not the label.
+- SHORT BLOCKS: Keep paragraphs to 1-2 sentences. If a sentence has more than one clause or exceeds roughly 20-25 words, split it into shorter blocks. One fact per block where possible.
+- SUMMARIES MUST CITE KEY FACTS: In summaries, cite key facts such as lease term, dates, rent, deposit, notice period, and parties when they come from the document content.
+- NO RECAP: The response must end immediately after the final factual statement from the document. Do not add a summary sentence after the last fact.
+
+Example:
+**Lease summary — Dik Dik Lane**
+
+The lease runs for **12 months**, from **10 July 2023** to **10 July 2024**[ID: 1](BLOCK_CITE_ID_1).
 """
 
     doc_block = research_section + doc_section if research_section else doc_section
@@ -2388,8 +2518,9 @@ Is this the first message in the conversation? {is_first_message}
             + "\n\n**Current user message:**\n**User Question:**\n"
             + user_query
             + "\n"
-            + paste_section
             + doc_block
+            + retrieved_full_doc_section
+            + paste_section
             + "**Instructions:**\n"
             + instructions
         )
@@ -2397,7 +2528,7 @@ Is this the first message in the conversation? {is_first_message}
         human_content = f"""
 **User Question:**
 {user_query}
-{paste_section}{doc_block}
+{doc_block}{retrieved_full_doc_section}{paste_section}
 **Instructions:**
 {instructions}
 """
@@ -2437,6 +2568,7 @@ async def generate_answer_with_direct_citations(
     user_id: Optional[str] = None,
     workspace_section: str = "",
     paste_context: str = "",
+    retrieved_full_doc_context: str = "",
     state: Optional[dict] = None,
     prior_exchange_summary: str = "",
 ) -> Tuple[str, List[Dict[str, Any]], str]:
@@ -2455,6 +2587,9 @@ async def generate_answer_with_direct_citations(
         execution_results: Execution results from executor node
         previous_personality: Personality from previous turn (or None)
         is_first_message: True if this is the first message in the conversation
+        paste_context: Non-document supporting context (for example pasted/attached content)
+        retrieved_full_doc_context: Document-derived helper text that must still be
+            grounded back to block-tagged evidence for citations
 
     Returns:
         Tuple of (formatted_answer, citations_list, personality_id)
@@ -2532,12 +2667,39 @@ async def generate_answer_with_direct_citations(
             user_id=user_id,
             workspace_section=workspace_section,
             paste_context=paste_context,
+            retrieved_full_doc_context=retrieved_full_doc_context,
             state=state,
             conversation_context=prior_exchange_summary or None,
             research_notes_section=research_notes_section or None,
             research_notes_instruction=research_notes_instruction or None,
         )
         logger.info(f"[DIRECT_CITATIONS] LLM response generated ({len(llm_response)} chars), personality_id={personality_id}")
+
+        # Step 3b: Rewrite the citation-complete draft into polished final prose.
+        draft_response = llm_response
+        try:
+            rewritten_response = await generate_citation_preserving_final_answer(
+                user_query,
+                draft_response,
+            )
+            if rewritten_response and _rewrite_preserves_block_citations(draft_response, rewritten_response):
+                llm_response = _strip_mid_response_generic_closings(rewritten_response)
+                logger.info(
+                    "[DIRECT_CITATIONS] Final writer rewrite accepted (%s chars, %s citation markers)",
+                    len(llm_response),
+                    len(_extract_block_citation_markers(llm_response)),
+                )
+            else:
+                logger.warning(
+                    "[DIRECT_CITATIONS] Final writer rewrite rejected; keeping citation draft "
+                    "(preserved=%s, rewritten_len=%s)",
+                    _rewrite_preserves_block_citations(draft_response, rewritten_response),
+                    len(rewritten_response or ""),
+                )
+        except Exception as rewrite_err:
+            logger.warning("[DIRECT_CITATIONS] Final writer rewrite failed, keeping citation draft: %s", rewrite_err)
+
+        llm_response = _rebalance_inline_citation_placement(llm_response)
 
         # Step 4: Extract citations (prefer block_id lookup when (BLOCK_CITE_ID_N) present)
         citations = await extract_citations_with_positions(
@@ -2578,6 +2740,7 @@ async def generate_answer_with_direct_citations(
         
         # Step 6: Replace [ID: 1] with [1], [ID: 2] with [2], etc. (safe replacement)
         formatted_response = replace_ids_with_citation_numbers(llm_response, citations)
+        formatted_response = _rebalance_bracket_citation_placement(formatted_response)
         formatted_response = _strip_mid_response_generic_closings(formatted_response)
         # Step 6b: Ensure paragraph break after first citation so document preview appears below it
         formatted_response = _ensure_paragraph_break_after_first_citation(formatted_response)
@@ -2599,6 +2762,31 @@ async def generate_answer_with_direct_citations(
             fallback_answer = await generate_conversational_answer(user_query, formatted_chunk_text)
             return fallback_answer, [], DEFAULT_PERSONALITY_ID
         return "I encountered an error while generating the answer. Please try again.", [], DEFAULT_PERSONALITY_ID
+
+
+async def generate_citation_preserving_final_answer(
+    user_query: str,
+    cited_draft: str,
+) -> str:
+    """
+    Rewrite a citation-complete responder draft into a polished final answer.
+
+    The rewrite must preserve every `[ID: X](BLOCK_CITE_ID_N)` marker exactly so the
+    downstream citation extraction pipeline continues to work unchanged.
+    """
+    system_content = get_responder_final_write_system_prompt()
+    human_content = get_responder_final_write_human_prompt(user_query, cited_draft)
+    llm = ChatOpenAI(
+        api_key=config.openai_api_key,
+        model=config.openai_model,
+        temperature=0,
+        max_tokens=4096,
+    )
+    response = await llm.ainvoke([
+        SystemMessage(content=system_content),
+        HumanMessage(content=human_content),
+    ])
+    return (response.content or "").strip() if hasattr(response, "content") else str(response).strip()
 
 
 async def generate_formatted_answer(
@@ -2735,6 +2923,7 @@ async def responder_node(state: MainWorkflowState, runnable_config=None) -> Main
         try:
             workspace_section, derived_document_ids = _build_responder_workspace_section(state, execution_results)
             paste_context_str = ""
+            retrieved_full_doc_context_str = ""
             if state.get("use_paste_plus_docs") and state.get("attachment_context"):
                 paste_context_str = format_attachment_context(state["attachment_context"])
                 if len(paste_context_str) > MAX_PASTE_CONTEXT_CHARS:
@@ -2756,8 +2945,11 @@ async def responder_node(state: MainWorkflowState, runnable_config=None) -> Main
                             max_docs=2,
                         )
                         if full_doc_text:
-                            paste_context_str = "[Full document text from retrieved documents]\n\n" + full_doc_text
-                            logger.info(f"[RESPONDER] Synthetic full-doc context: {len(full_doc_text)} chars from {min(2, len(doc_ids))} doc(s)")
+                            retrieved_full_doc_context_str = _sanitize_document_helper_context(full_doc_text)
+                            logger.info(
+                                f"[RESPONDER] Synthetic full-doc context: {len(retrieved_full_doc_context_str)} chars "
+                                f"from {min(2, len(doc_ids))} doc(s) after sanitizing helper layout"
+                            )
                     except Exception as e:
                         logger.debug("[RESPONDER] Synthetic full-doc context failed: %s", e)
             # Prior context for follow-ups: last N exchanges (LobeHub-style), capped
@@ -2782,6 +2974,7 @@ async def responder_node(state: MainWorkflowState, runnable_config=None) -> Main
                 user_id=state.get("user_id"),
                 workspace_section=workspace_section,
                 paste_context=paste_context_str,
+                retrieved_full_doc_context=retrieved_full_doc_context_str,
                 state=state,
                 prior_exchange_summary=prior_exchange_summary,
             )

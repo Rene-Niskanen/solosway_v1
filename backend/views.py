@@ -204,9 +204,12 @@ def _normalize_citation_text_for_display(text):
         return text or ""
     # Replace [ID: X](BLOCK_CITE_ID_N) or [ID: X] with [X]
     out = re.sub(r"\[ID:\s*(\d+)\](?:\s*\(\s*BLOCK_CITE_ID_\d+\s*\))?", r"[\1]", text)
-    # Strip any remaining (BLOCK_CITE_ID_N) or BLOCK_CITE_ID_N that might appear without [ID: X]
-    out = re.sub(r"\s*[\[\(]?BLOCK_CITE_ID_\d+[\]\)]?\s*", " ", out)
-    out = re.sub(r"\s{2,}", " ", out)
+    # Strip any remaining BLOCK_CITE_ID markers without flattening paragraph breaks.
+    out = re.sub(r"[ \t]*[\[\(]?BLOCK_CITE_ID_\d+[\]\)]?[ \t]*", " ", out)
+    # Clean up horizontal whitespace while preserving newlines produced by the model.
+    out = re.sub(r"[ \t]+\n", "\n", out)
+    out = re.sub(r"\n[ \t]+", "\n", out)
+    out = re.sub(r"[ \t]{2,}", " ", out)
     return out
 
 

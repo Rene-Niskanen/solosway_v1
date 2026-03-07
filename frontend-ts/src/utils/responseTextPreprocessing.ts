@@ -77,7 +77,11 @@ export function removePeriodAfterBracketCitations(text: string): string {
 /** Strip internal BLOCK_CITE_ID markers so they never appear in the UI (e.g. "(BLOCK_CITE_ID_15)", "BLOCK_CITE_ID_99"). */
 export function stripBlockCiteIdFromDisplay(text: string): string {
   if (!text || typeof text !== 'string') return text;
-  return text.replace(/\s*[\[\(]?BLOCK_CITE_ID_\d+[\]\)]?\s*/g, ' ').replace(/\s{2,}/g, ' ');
+  return text
+    .replace(/[ \t]*[\[\(]?BLOCK_CITE_ID_\d+[\]\)]?[ \t]*/g, ' ')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n[ \t]+/g, '\n')
+    .replace(/[ \t]{2,}/g, ' ');
 }
 
 /** Remove orphan lines that are only clause refs (e.g. "C1.1.1") or parsing artifacts that leak from document structure. */
@@ -100,6 +104,29 @@ export function stripOrphanFragmentLines(text: string): string {
 export function normalizeIdCitationsToBracket(text: string): string {
   if (!text || typeof text !== 'string') return text;
   return text.replace(/\[ID:\s*(\d+)\](?:\s*\(\s*BLOCK_CITE_ID_\d+\s*\))?/g, '[$1]');
+}
+
+/**
+ * Move bracket citations out of split noun phrases so "a [1] bedroom cottage"
+ * becomes "a bedroom cottage[1]" and "1 [1] bedroom" becomes "1 bedroom[1]".
+ * Also unwraps bracket citations that replaced a date day: "[1] April" → "1 April".
+ */
+export function rebalanceBracketCitationPlacement(text: string): string {
+  if (!text || typeof text !== 'string') return text;
+
+  const months = '(?:January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Oct|Nov|Dec)';
+  const dateDayRe = new RegExp(`\\[(\\d{1,2})\\](\\s*(?:\\*\\*)?\\s*)(${months})\\b`, 'gi');
+  let result = text.replace(dateDayRe, '$1$2$3');
+
+  const roomWords = '(?:bedroom|bathroom|bed|bath|room)';
+  const dwellingWords = '(?:cottage|apartment|flat|house|villa|unit|property|home|maisonette|duplex)';
+  const nounPhrase = `(?:(?:\\d+|one|two|three|four|five|six|seven|eight|nine|ten)\\s+)?${roomWords}(?:\\s+${dwellingWords})?`;
+  const articleRe = new RegExp(`\\b(a|an|the)\\s+(\\[\\d+\\])\\s+(${nounPhrase})`, 'gi');
+  result = result.replace(articleRe, '$1 $3$2');
+  const countNounPhrase = `${roomWords}(?:\\s+${dwellingWords})?`;
+  const countRe = new RegExp(`\\b((?:\\d+|one|two|three|four|five|six|seven|eight|nine|ten))\\s+(\\[\\d+\\])\\s+(${countNounPhrase})`, 'gi');
+  result = result.replace(countRe, '$1 $3$2');
+  return result;
 }
 
 /**
@@ -344,6 +371,7 @@ export function prepareResponseTextForDisplay(text: string): string {
   // Normalize [ID: X](BLOCK_CITE_ID_N) -> [X] and strip any remaining BLOCK_CITE_ID so they never leak into the UI
   let out = normalizeIdCitationsToBracket(text);
   out = stripBlockCiteIdFromDisplay(out);
+  out = rebalanceBracketCitationPlacement(out);
   out = stripOrphanFragmentLines(out);
   const withBold = ensureBalancedBoldForDisplay(out);
   const withSectionBreaks = ensureParagraphBreaksBeforeBoldSections(withBold);

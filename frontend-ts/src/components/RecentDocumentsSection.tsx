@@ -39,10 +39,10 @@ interface RecentDocumentsSectionProps {
 }
 
 const CARD_WIDTH_COMPACT = 128;
-const CARD_GAP = 14;
-/** Spacing when showing all files grid - enough so cards don’t touch each other or edges */
-const ALL_FILES_GRID_GAP = 28;
-const ALL_FILES_GRID_PADDING = 16;
+const CARD_GAP = 20;
+const REGULAR_CARD_GAP = 28;
+const ALL_FILES_GRID_GAP = 24;
+const ALL_FILES_GRID_PADDING = 6;
 
 export const RecentDocumentsSection: React.FC<RecentDocumentsSectionProps> = ({
   documents = [],
@@ -73,7 +73,7 @@ export const RecentDocumentsSection: React.FC<RecentDocumentsSectionProps> = ({
   }
 
   const cardWidth = compact ? CARD_WIDTH_COMPACT : 180;
-  const gap = compact ? CARD_GAP : 60;
+  const gap = compact ? CARD_GAP : REGULAR_CARD_GAP;
 
   // See All Files: wrapping grid so all files are visible (page scrolls)
   if (showAllMode) {
@@ -83,12 +83,13 @@ export const RecentDocumentsSection: React.FC<RecentDocumentsSectionProps> = ({
         style={{
           gap: ALL_FILES_GRID_GAP,
           padding: ALL_FILES_GRID_PADDING,
-          paddingBottom: ALL_FILES_GRID_PADDING + 8,
+          paddingBottom: ALL_FILES_GRID_PADDING + 18,
           ...(alignLeftWithContainer && { paddingLeft: 0 }),
           width: '100%',
           maxWidth: '100%',
           boxSizing: 'border-box',
           pointerEvents: 'auto',
+          alignItems: 'flex-start',
         }}
       >
         {documents.map((doc, index) => (
@@ -120,12 +121,17 @@ export const RecentDocumentsSection: React.FC<RecentDocumentsSectionProps> = ({
         className={scrollable ? 'recent-docs-scroll flex overflow-x-auto' : 'flex'}
         style={{
           gap,
-          justifyContent: 'space-evenly',
-          paddingBottom: compact ? 4 : 8,
+          alignItems: 'flex-start',
+          justifyContent: 'flex-start',
+          paddingTop: 2,
+          paddingBottom: compact ? 6 : 10,
           paddingLeft: 0,
+          paddingRight: scrollable ? 8 : 0,
           ...(scrollable && {
             scrollbarWidth: 'thin',
             scrollbarColor: 'rgba(255, 255, 255, 0.25) transparent',
+            maskImage: 'linear-gradient(to right, transparent 0, black 16px, black calc(100% - 20px), transparent 100%)',
+            WebkitMaskImage: 'linear-gradient(to right, transparent 0, black 16px, black calc(100% - 20px), transparent 100%)',
           }),
           width: '100%',
           minWidth: '100%',

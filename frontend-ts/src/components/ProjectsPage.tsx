@@ -1011,28 +1011,66 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
             style={{
               paddingBottom: showAllFiles ? 0 : '32px',
               marginLeft: 0,
-              paddingLeft: '38px',
-              paddingRight: '38px',
-              marginTop: showAllFiles ? 8 : 0,
+              paddingLeft: 0,
+              paddingRight: 0,
+              marginTop: showAllFiles ? 16 : 0,
               width: '100%',
               maxWidth: '100%',
               minWidth: 0,
               ...(showAllFiles && { WebkitOverflowScrolling: 'touch' }),
             }}
           >
-            {!showAllFiles && (
-              <div className="flex items-center justify-between gap-2 mb-2" style={{ marginLeft: 0, paddingLeft: 0 }}>
-                <span className="text-[12px] font-normal text-[#666]" style={{ opacity: allDocuments.length ? 1 : 0.6, marginLeft: '6px' }}>Files</span>
+            <div
+              style={{
+                borderRadius: showAllFiles ? '0' : '28px',
+                border: showAllFiles ? 'none' : '1px solid rgba(15, 23, 42, 0.05)',
+                background: '#FFFFFF',
+                boxShadow: showAllFiles ? 'none' : '0 10px 30px -26px rgba(15, 23, 42, 0.18)',
+                padding: showAllFiles ? 0 : '16px 16px 10px',
+                minWidth: 0,
+              }}
+            >
+              <div
+                className="flex items-center justify-between gap-3"
+                style={{
+                  marginBottom: showAllFiles ? 10 : 12,
+                  paddingLeft: showAllFiles ? 0 : '4px',
+                  paddingRight: showAllFiles ? 0 : '4px',
+                }}
+              >
+                <div>
+                  <p
+                    style={{
+                      fontSize: '13px',
+                      fontWeight: 600,
+                      color: '#111827',
+                      letterSpacing: '-0.01em',
+                    }}
+                  >
+                    {showAllFiles ? 'All files' : 'Recent files'}
+                  </p>
+                  <p
+                    style={{
+                      marginTop: '3px',
+                      fontSize: '12px',
+                      color: '#6B7280',
+                    }}
+                  >
+                    {showAllFiles
+                      ? `${allDocuments.length} documents across your projects`
+                      : 'Latest documents, ready to open or file'}
+                  </p>
+                </div>
               </div>
-            )}
-            <RecentDocumentsSection
-              documents={showAllFiles ? allDocuments : allDocuments.slice(0, FILES_BAR_COUNT)}
-              compact
-              scrollable={true}
-              showAllMode={showAllFiles}
-              alignLeftWithContainer={true}
-              onCollapseSidebarToSmall={onCollapseSidebarToSmall}
-            />
+              <RecentDocumentsSection
+                documents={showAllFiles ? allDocuments : allDocuments.slice(0, FILES_BAR_COUNT)}
+                compact
+                scrollable={true}
+                showAllMode={showAllFiles}
+                alignLeftWithContainer={true}
+                onCollapseSidebarToSmall={onCollapseSidebarToSmall}
+              />
+            </div>
           </div>
         )}
 
