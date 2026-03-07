@@ -3772,6 +3772,7 @@ def agent_task_stream():
     document_ids = data.get('document_ids') or []
     session_id = data.get('session_id') or ''
     web_search_enabled = bool(data.get('web_search', False))
+    citation_context = data.get('citation_context') or data.get('citationContext')
 
     if not query:
         return jsonify({'success': False, 'error': 'query is required'}), 400
@@ -3803,6 +3804,8 @@ def agent_task_stream():
                 'execution_results': [],
                 'citations': [],
             }
+            if citation_context and isinstance(citation_context, dict):
+                initial_state['citation_context'] = citation_context
 
             graph = build_focused_task_graph()
             loop = asyncio.new_event_loop()

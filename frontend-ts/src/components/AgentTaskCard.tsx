@@ -103,19 +103,20 @@ export const AgentTaskCard: React.FC<AgentTaskCardProps> = ({ task, onInjectResu
       style={{
         position: 'relative',
         display: 'flex', alignItems: 'center', gap: 8,
-        padding: task.status === 'complete' ? '8px 10px' : `6px ${isInFlight ? 32 : 10}px 6px 10px`,
+        padding: task.status === 'complete' ? '8px 10px' : `6px ${isInFlight ? 40 : 10}px 6px 10px`,
         borderRadius: 10,
-        backgroundColor: task.status === 'error' ? '#FEF2F2' : task.status === 'complete' ? '#EBF1DE' : '#FFFFFF',
-        border: `1px solid ${task.status === 'error' ? '#FECACA' : task.status === 'complete' ? '#e5e7eb' : '#E5E7EB'}`,
+        backgroundColor: task.status === 'error' ? '#FEF2F2' : '#FFFFFF',
+        border: task.status === 'error' ? '1px solid #FECACA' : task.status === 'complete' ? '2px solid #16a34a' : '1px solid #E5E7EB',
         boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
         cursor: task.status === 'complete' ? 'pointer' : 'default',
         transition: 'border-color 0.15s, box-shadow 0.15s, background-color 0.15s',
-        ...(task.status === 'complete' && isHovered ? { backgroundColor: '#E0E8D4', borderColor: 'rgba(0,0,0,0.08)', boxShadow: '0 2px 8px rgba(0,0,0,0.06)' } : {}),
-        overflow: isInFlight ? 'visible' : 'hidden',
+        ...(task.status === 'complete' && isHovered ? { backgroundColor: '#FFFFFF', borderColor: '#86efac', boxShadow: '0 2px 8px rgba(0,0,0,0.06)' } : {}),
+        overflow: 'hidden',
         minWidth: 200,
       }}
       onClick={task.status === 'complete' ? () => onInjectResult(task.id) : undefined}
     >
+      <div style={{ display: 'flex', alignItems: 'center', flex: 1, minWidth: 0, gap: 8 }}>
       <AnimatePresence mode="wait">
         {task.status === 'searching' && (
           <motion.div
@@ -246,7 +247,7 @@ export const AgentTaskCard: React.FC<AgentTaskCardProps> = ({ task, onInjectResu
           exit={{ opacity: 0 }}
           onClick={(e) => { e.stopPropagation(); onCancel(task.id); }}
           style={{
-            position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)',
+            marginLeft: 'auto',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             width: 18, height: 18, borderRadius: '50%',
             backgroundColor: 'rgba(0,0,0,0.06)', border: 'none', cursor: 'pointer',
@@ -257,6 +258,7 @@ export const AgentTaskCard: React.FC<AgentTaskCardProps> = ({ task, onInjectResu
           <X style={{ width: 10, height: 10, color: '#6B7280', flexShrink: 0 }} strokeWidth={2.5} />
         </motion.button>
       )}
+      </div>
 
       <style>{`
         .searching-shimmer-active {

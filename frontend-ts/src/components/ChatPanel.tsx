@@ -290,7 +290,7 @@ export const ChatPanel = ({
                   placeholder="Search"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full h-full pl-2 pr-14 py-0 text-[15px] font-normal bg-transparent border-none focus:outline-none placeholder:text-[15px] placeholder:text-[#9CA3AF] placeholder:font-normal"
+                  className="w-full h-full pl-1.5 pr-14 py-0 text-[15px] font-light bg-transparent border-none focus:outline-none placeholder:text-[15px] placeholder:text-[#9CA3AF] placeholder:font-light"
                   style={{ color: '#374151', caretColor: '#374151', height: 32, minHeight: 32 }}
                 />
                 {/* Options (sliders) + Close - Inline with Search Input */}
@@ -312,7 +312,7 @@ export const ChatPanel = ({
                       align="end"
                       side="bottom"
                       sideOffset={4}
-                      className="z-[10001] min-w-[200px] w-auto rounded-lg border border-gray-200 bg-white p-3 shadow-md"
+                      className="z-[10001] min-w-[200px] w-auto rounded-lg border border-gray-200 bg-white p-2 shadow-md"
                       onOpenAutoFocus={(e) => e.preventDefault()}
                       onClick={(e) => e.stopPropagation()}
                     >

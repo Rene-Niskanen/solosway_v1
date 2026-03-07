@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { ChevronDown, FileSearchCorner, Loader2, MessageCircle, Save } from "lucide-react";
+import { ChevronDown, Loader2 } from "lucide-react";
 
 /** Debug payload from backend: why this bbox was chosen (for citation mapping diagnosis). */
 export interface CitationDebugInfo {
@@ -181,9 +181,9 @@ export const CitationPagePreviewContent: React.FC<{
             top: `${transform.finalBboxTop}px`,
             width: `${Math.min(cachedPageImage.imageWidth, transform.finalBboxWidth)}px`,
             height: `${Math.min(cachedPageImage.imageHeight, transform.finalBboxHeight)}px`,
-            backgroundColor: "rgba(188, 212, 235, 0.4)",
+            backgroundColor: "rgba(210, 213, 220, 0.5)",
             border: "none",
-            borderRadius: "3px",
+            borderRadius: "6px",
             pointerEvents: "none",
             zIndex: 10,
           }}
@@ -195,6 +195,14 @@ export const CitationPagePreviewContent: React.FC<{
 
 const PANEL_WIDTH = 400;
 const PANEL_MAX_HEIGHT_VH = 75;
+
+/** Strip block refs and fragment artifacts from citation excerpt for display. */
+function sanitizeCitedText(raw: string): string {
+  if (!raw || typeof raw !== "string") return "";
+  let out = raw.replace(/\[id:\s*\d+\]\([^)]*\)/g, "").replace(/\[id:\s*\d+\]\([^)]*$/g, "");
+  out = out.replace(/\s+/g, " ").trim();
+  return out;
+}
 const GAP = 12;
 const VIEWPORT_MARGIN = 8;
 const ESTIMATED_PANEL_HEIGHT = 460;
@@ -308,6 +316,9 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
   const [debugExpanded, setDebugExpanded] = React.useState(false);
   const [isPreviewHovered, setIsPreviewHovered] = React.useState(false);
   const debug = citationData.debug;
+
+  const citedTextRaw = (messageCitedExcerptProp ?? citationData.cited_text ?? citationData.block_content ?? "").trim();
+  const displayText = citedTextRaw ? sanitizeCitedText(citedTextRaw) : "";
 
   React.useLayoutEffect(() => {
     const el = previewContainerRef.current;
@@ -536,7 +547,7 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
         </div>
       )}
 
-      {/* Content: scrollable with hidden scrollbar; buttons overlay on top of document; Ask follow up shows on hover */}
+      {/* Content: scrollable with hidden scrollbar; buttons overlay on top of document */}
       <div
         ref={previewContainerRef}
         onMouseEnter={() => setIsPreviewHovered(true)}
@@ -615,6 +626,7 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
             {showFullActions && (
               <button
                 type="button"
+                title="View"
                 onClick={onViewInDocument}
                 style={{
                   display: "flex",
@@ -624,7 +636,7 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
                   padding: "3.3px 6.6px",
                   fontSize: "12px",
                   lineHeight: 1,
-                  fontWeight: 600,
+                  fontWeight: 500,
                   color: "#666666",
                   backgroundColor: "#ffffff",
                   border: "1px solid #d4d4d4",
@@ -646,7 +658,6 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
                 onFocus={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = "0 1px 1px rgba(0,0,0,0.05), 0 0 0 2px #fff"; }}
                 onBlur={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = "0 1px 1px rgba(0,0,0,0.05)"; }}
               >
-                <FileSearchCorner className="w-5 h-5 flex-shrink-0" strokeWidth={1.25} stroke="currentColor" />
                 View
               </button>
             )}
@@ -685,7 +696,6 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
                 onFocus={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = "0 1px 1px rgba(0,0,0,0.05), 0 0 0 2px #fff"; }}
                 onBlur={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = "0 1px 1px rgba(0,0,0,0.05)"; }}
               >
-                <MessageCircle style={{ width: 12, height: 12 }} strokeWidth={1.25} stroke="currentColor" />
                 Ask Follow Up
               </button>
             )}
@@ -724,7 +734,6 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
                 onFocus={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = "0 1px 1px rgba(0,0,0,0.05), 0 0 0 2px #fff"; }}
                 onBlur={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = "0 1px 1px rgba(0,0,0,0.05)"; }}
               >
-                <Save size={12} strokeWidth={1.25} stroke="currentColor" />
                 Save
               </button>
             )}

@@ -12,7 +12,7 @@ export const INPUT_BAR_SPACE_BELOW_MAP = 48;
 /** Alias for map view; same as INPUT_BAR_SPACE_BELOW_MAP. */
 export const INPUT_BAR_SPACE_BELOW_MAP_LARGE = 48;
 /** Space below the input bar when it's in a flex panel (e.g. SideChatPanel fullscreen chat). */
-export const INPUT_BAR_SPACE_BELOW_PANEL = 48;
+export const INPUT_BAR_SPACE_BELOW_PANEL = 36;
 
 /** Shared width constraints for the fixed input bar container. */
 export const INPUT_BAR_CONTAINER_WIDTH = 'clamp(400px, 85vw, 650px)';

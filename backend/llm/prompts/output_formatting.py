@@ -35,12 +35,13 @@ Rules are grouped by priority. **Priority 1** must never be violated (citations,
 
 ## CITATION PUNCTUATION AND PLACEMENT
 
-Citations must appear immediately after the fact they support.
+Citations must appear immediately after the fact they support. Every fact stated must have a citation.
 
 Correct:
 "The value is **£1,950,000**[1]."
 
 Rules:
+- Every stated fact must have a citation.
 - No space before citation.
 - Period goes after the citation (not between fact and citation).
 - Cite each fact where it appears; do not stack all citations at the end of a sentence or list.
@@ -112,6 +113,22 @@ When a figure appears inline (e.g. mid-sentence), still bold the value:
 
 ---
 
+## INFORMATION GROUPING
+
+Group related information together. Never scatter the same concept
+across multiple sections.
+
+Required grouping conventions:
+- Physical property details together (size, rooms, condition)
+- Services and utilities together (heating, water, electricity)
+- Valuation basis and assumptions together
+- Environmental and planning constraints together
+- Contact and next steps together
+
+If a section has no content, omit it entirely. Do not pad with filler.
+
+---
+
 ## LISTS AND BULLETS
 
 Use bullets only when they increase scannability.
@@ -158,22 +175,6 @@ Wrong:
 
 ---
 
-## INFORMATION GROUPING
-
-Group related information together. Never scatter the same concept
-across multiple sections.
-
-Required grouping conventions:
-- Physical property details together (size, rooms, condition)
-- Services and utilities together (heating, water, electricity)
-- Valuation basis and assumptions together
-- Environmental and planning constraints together
-- Contact and next steps together
-
-If a section has no content, omit it entirely. Do not pad with filler.
-
----
-
 ## SENTENCE STYLE
 
 - Use neutral, professional language.
@@ -206,6 +207,18 @@ If a response is becoming long:
 - Move secondary or supplementary details into a **Notes** section
   at the end.
 - Never add filler to fill space.
+
+---
+
+## NATURAL FLOW
+
+Formatting should support the meaning of the content.
+
+Do not apply formatting rules mechanically if doing so harms clarity,
+breaks the sentence flow, or makes the response feel unnatural.
+
+This prevents the model from doing things like: unnecessary headings,
+awkward paragraph splits, or robotic structure.
 
 ---
 

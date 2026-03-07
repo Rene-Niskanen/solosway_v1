@@ -1606,32 +1606,55 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
             {!initialFullscreen && highlight != null && (
               <>
                 <div
-                  className="flex items-center gap-1.5 rounded-md border border-slate-200/70"
                   style={{
-                    padding: '3px 6px',
-                    backgroundColor: '#FFFFFF',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    backgroundColor: '#ffffff',
+                    padding: '4px 6px',
+                    borderRadius: 8,
                   }}
                 >
                   <button
                     type="button"
-                    onClick={handleReviewPrevCitation}
-                    disabled={sortedCitations.length === 0}
-                    className="p-1 rounded text-gray-700 hover:bg-black/5 disabled:opacity-40 disabled:pointer-events-none"
                     aria-label="Previous citation"
+                    disabled={currentCitationIndex <= 0}
+                    onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleReviewPrevCitation(); }}
+                    style={{
+                      display: 'flex',
+                      padding: 4,
+                      border: 'none',
+                      background: 'rgba(255,255,255,0.95)',
+                      backdropFilter: 'blur(6px)',
+                      borderRadius: 6,
+                      cursor: currentCitationIndex <= 0 ? 'default' : 'pointer',
+                      color: currentCitationIndex <= 0 ? '#9ca3af' : '#666666',
+                      boxShadow: 'none',
+                    }}
                   >
-                    <ChevronUp className="w-3.5 h-3.5" strokeWidth={2} />
+                    <ChevronUp size={20} strokeWidth={2} />
                   </button>
                   <span className={`text-xs tabular-nums whitespace-nowrap font-medium ${sortedCitations.length > 0 ? 'text-slate-500' : 'text-slate-400'}`}>
                     {sortedCitations.length > 0 ? `${currentCitationIndex + 1} of ${sortedCitations.length}` : '—'}
                   </span>
                   <button
                     type="button"
-                    onClick={handleReviewNextCitation}
-                    disabled={sortedCitations.length === 0}
-                    className="p-1 rounded text-gray-700 hover:bg-black/5 disabled:opacity-40 disabled:pointer-events-none"
                     aria-label="Next citation"
+                    disabled={currentCitationIndex >= sortedCitations.length - 1}
+                    onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleReviewNextCitation(); }}
+                    style={{
+                      display: 'flex',
+                      padding: 4,
+                      border: 'none',
+                      background: 'rgba(255,255,255,0.95)',
+                      backdropFilter: 'blur(6px)',
+                      borderRadius: 6,
+                      cursor: currentCitationIndex >= sortedCitations.length - 1 ? 'default' : 'pointer',
+                      color: currentCitationIndex >= sortedCitations.length - 1 ? '#9ca3af' : '#666666',
+                      boxShadow: 'none',
+                    }}
                   >
-                    <ChevronDown className="w-3.5 h-3.5" strokeWidth={2} />
+                    <ChevronDown size={20} strokeWidth={2} />
                   </button>
                 </div>
                 <div
@@ -1789,7 +1812,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
                       flexShrink: 0,
                       marginBottom: '12px',
                       backgroundColor: 'white',
-                      boxShadow: '0 2px 8px rgba(0,0,0,0.1)'
+                      boxShadow: 'none'
                     }}
                   >
                     {React.createElement('canvas', {
@@ -1877,19 +1900,19 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
                               top: `${finalBboxTop}px`,
                               width: `${Math.min(dimensions.width, finalBboxWidth)}px`,
                               height: `${Math.min(dimensions.height, finalBboxHeight)}px`,
-                              backgroundColor: 'rgba(188, 212, 235, 0.4)',
+                              backgroundColor: 'rgba(210, 213, 220, 0.5)',
                               border: 'none',
-                              borderRadius: '3px',
+                              borderRadius: '6px',
                               pointerEvents: 'auto',
                               cursor: 'pointer',
                               zIndex: 10,
                               transition: 'none' // No animation when changing between BBOXs
                             }}
                             onMouseEnter={(e) => {
-                              e.currentTarget.style.backgroundColor = 'rgba(188, 212, 235, 0.6)';
+                              e.currentTarget.style.backgroundColor = 'rgba(210, 213, 220, 0.65)';
                             }}
                             onMouseLeave={(e) => {
-                              e.currentTarget.style.backgroundColor = 'rgba(188, 212, 235, 0.4)';
+                              e.currentTarget.style.backgroundColor = 'rgba(210, 213, 220, 0.5)';
                             }}
                             title="Click to interact with this citation"
                           />

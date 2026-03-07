@@ -779,9 +779,10 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
   }
 
   // Show full page with white background - fills parent tightly next to sidebar
+  // When showAllFiles: use flex column so the files area can be the only scroll container
   return (
     <div 
-      className="relative w-full h-full min-h-0 overflow-y-auto"
+      className={`relative w-full h-full min-h-0 ${showAllFiles ? 'flex flex-col' : 'overflow-y-auto'}`}
       style={{
         background: '#FFFFFF',
         pointerEvents: 'auto',
@@ -880,7 +881,7 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
       </div>
 
       <div 
-        className={`w-full flex flex-col box-border ${showAllFiles ? 'min-h-full' : 'min-h-full'}`}
+        className={`w-full flex flex-col box-border ${showAllFiles ? 'flex-1 min-h-0 overflow-hidden' : 'min-h-full'}`}
         style={{ 
           paddingTop: `${CONTENT_PADDING_LEFT_PX}px`,
           paddingRight: `${CONTENT_PADDING_LEFT_PX}px`,
@@ -1003,10 +1004,10 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
         {/* Flexible spacer - no growth when "See All Files" so files take all remaining space */}
         <div className={showAllFiles ? '' : 'flex-1'} style={{ minHeight: showAllFiles ? 0 : '80px', flex: showAllFiles ? 'none' : undefined }} />
 
-        {/* Files area - only show once documents have loaded */}
+        {/* Files area - only show once documents have loaded. When showAllFiles, this is the scroll container. */}
         {documentsLoaded && (
           <div
-            className={showAllFiles ? 'flex-1 flex flex-col min-h-0' : ''}
+            className={showAllFiles ? 'flex-1 flex flex-col min-h-0 overflow-y-auto' : ''}
             style={{
               paddingBottom: showAllFiles ? 0 : '32px',
               marginLeft: 0,
@@ -1016,7 +1017,7 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
               width: '100%',
               maxWidth: '100%',
               minWidth: 0,
-              ...(showAllFiles && { overflow: 'auto' }),
+              ...(showAllFiles && { WebkitOverflowScrolling: 'touch' }),
             }}
           >
             {!showAllFiles && (

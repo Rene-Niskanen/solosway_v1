@@ -909,7 +909,7 @@ const ExpandedCardView: React.FC<{
                                       top: `${finalBboxTop}px`,
                                       width: `${Math.min(pageDimensions.width, finalBboxWidth)}px`,
                                       height: `${Math.min(pageDimensions.height, finalBboxHeight)}px`,
-                                      backgroundColor: 'rgba(188, 212, 235, 0.4)',
+                                      backgroundColor: 'rgba(229, 231, 235, 0.45)',
                                       border: 'none',
                                       borderRadius: '3px',
                                       pointerEvents: 'auto',
@@ -919,10 +919,10 @@ const ExpandedCardView: React.FC<{
                                       transition: 'none'
                                     }}
                                     onMouseEnter={(e) => {
-                                      e.currentTarget.style.backgroundColor = 'rgba(188, 212, 235, 0.6)';
+                                      e.currentTarget.style.backgroundColor = 'rgba(229, 231, 235, 0.6)';
                                     }}
                                     onMouseLeave={(e) => {
-                                      e.currentTarget.style.backgroundColor = 'rgba(188, 212, 235, 0.4)';
+                                      e.currentTarget.style.backgroundColor = 'rgba(229, 231, 235, 0.45)';
                                     }}
                                     title="Click to interact with this citation"
                                   />

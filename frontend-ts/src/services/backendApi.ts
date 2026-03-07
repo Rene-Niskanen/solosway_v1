@@ -726,11 +726,15 @@ class BackendApiService {
     },
     abortSignal?: AbortSignal,
     webSearch?: boolean,
+    citationContext?: { document_id: string; page_number: number; bbox: { left: number; top: number; width: number; height: number }; cited_text?: string; original_filename?: string; block_id?: string } | null,
   ): Promise<void> {
     const baseUrl = this.baseUrl || BACKEND_URL;
     const url = `${baseUrl}/api/llm/agent-task/stream`;
 
-    const requestBody = { query, document_ids: documentIds, session_id: sessionId, web_search: webSearch ?? false };
+    const requestBody: Record<string, unknown> = { query, document_ids: documentIds, session_id: sessionId, web_search: webSearch ?? false };
+    if (citationContext != null) {
+      requestBody.citation_context = citationContext;
+    }
 
     try {
       const response = await fetch(url, {

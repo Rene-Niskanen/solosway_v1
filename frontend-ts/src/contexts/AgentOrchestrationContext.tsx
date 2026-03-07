@@ -94,6 +94,15 @@ function tasksReducer(state: AgentTask[], action: TaskAction): AgentTask[] {
   }
 }
 
+export interface AgentTaskCitationContext {
+  document_id: string;
+  page_number: number;
+  bbox: { left: number; top: number; width: number; height: number };
+  cited_text?: string;
+  original_filename?: string;
+  block_id?: string;
+}
+
 interface AgentOrchestrationContextType {
   tasks: AgentTask[];
   activeTaskCount: number;
@@ -104,6 +113,7 @@ interface AgentOrchestrationContextType {
     sessionId: string;
     parentChatId: string;
     webSearch?: boolean;
+    citationContext?: AgentTaskCitationContext | null;
   }) => string | null;
   cancelTask: (taskId: string) => void;
   retryTask: (taskId: string) => void;
@@ -118,11 +128,11 @@ const AgentOrchestrationContext = createContext<AgentOrchestrationContextType | 
 export const AgentOrchestrationProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [tasks, dispatch] = useReducer(tasksReducer, []);
   const abortControllersRef = useRef<Map<string, AbortController>>(new Map());
-  const taskParamsRef = useRef<Map<string, { query: string; documentIds: string[]; documentMeta: AgentTaskDocMeta[]; sessionId: string; parentChatId: string; webSearch?: boolean }>>(new Map());
+  const taskParamsRef = useRef<Map<string, { query: string; documentIds: string[]; documentMeta: AgentTaskDocMeta[]; sessionId: string; parentChatId: string; webSearch?: boolean; citationContext?: AgentTaskCitationContext | null }>>(new Map());
 
   const activeTaskCount = tasks.filter(t => t.status === 'searching' || t.status === 'analysing').length;
 
-  const startStream = useCallback((taskId: string, query: string, documentIds: string[], sessionId: string, abortController: AbortController, webSearch?: boolean) => {
+  const startStream = useCallback((taskId: string, query: string, documentIds: string[], sessionId: string, abortController: AbortController, webSearch?: boolean, citationContext?: AgentTaskCitationContext | null) => {
     const accumulatedText = { current: '' };
     const accumulatedCitations: Record<string, AgentTaskCitation> = {};
 
@@ -182,6 +192,7 @@ export const AgentOrchestrationProvider: React.FC<{ children: React.ReactNode }>
       },
       abortController.signal,
       webSearch,
+      citationContext ?? undefined,
     ).catch((err) => {
       if (err?.name !== 'AbortError') {
         dispatch({ type: 'FAIL_TASK', taskId, error: err?.message || 'Stream failed' });
@@ -197,6 +208,7 @@ export const AgentOrchestrationProvider: React.FC<{ children: React.ReactNode }>
     sessionId: string;
     parentChatId: string;
     webSearch?: boolean;
+    citationContext?: AgentTaskCitationContext | null;
   }): string | null => {
     if (activeTaskCount >= MAX_CONCURRENT_TASKS) {
       return null;
@@ -223,7 +235,7 @@ export const AgentOrchestrationProvider: React.FC<{ children: React.ReactNode }>
     };
 
     dispatch({ type: 'ADD_TASK', task: newTask });
-    startStream(taskId, params.query, params.documentIds, params.sessionId, abortController, params.webSearch);
+    startStream(taskId, params.query, params.documentIds, params.sessionId, abortController, params.webSearch, params.citationContext);
     return taskId;
   }, [activeTaskCount, startStream]);
 
@@ -266,7 +278,7 @@ export const AgentOrchestrationProvider: React.FC<{ children: React.ReactNode }>
     };
 
     dispatch({ type: 'ADD_TASK', task: newTask });
-    startStream(newTaskId, params.query, params.documentIds, params.sessionId, abortController, params.webSearch);
+    startStream(newTaskId, params.query, params.documentIds, params.sessionId, abortController, params.webSearch, params.citationContext);
   }, [startStream]);
 
   const removeTask = useCallback((taskId: string) => {
