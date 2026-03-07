@@ -2888,10 +2888,12 @@ async def responder_node(state: MainWorkflowState, runnable_config=None) -> Main
         from langchain_core.messages import HumanMessage as _HumanMessage, SystemMessage as _SystemMessage
         try:
             web_llm = _ChatOpenAI(api_key=config.openai_api_key, model=config.openai_model, temperature=0)
+            from backend.llm.prompts.output_formatting import OUTPUT_FORMATTING_RULES as _OFR
             web_system = (
                 "You are a helpful assistant. Answer the user's question using ONLY the web sources provided below. "
                 "Cite sources using [Web N] markers (e.g. [Web 1], [Web 2]) inline. "
                 "Be concise and factual. If the sources don't contain the answer, say so.\n\n"
+                + _OFR + "\n\n"
                 + web_context_block
             )
             web_response = await web_llm.ainvoke([

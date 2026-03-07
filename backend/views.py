@@ -2331,6 +2331,28 @@ def query_documents_stream():
                                                     yield f"data: {json.dumps(citation_event)}\n\n"
                                             except Exception as cit_err:
                                                 logger.warning(f"🟡 [CITATION_STREAM] Error streaming responder citations: {cit_err}")
+                                        
+                                        # Stream responder response text immediately (prevents duplicate from post-loop fallback)
+                                        if final_summary_from_responder and not summary_already_streamed:
+                                            summary_to_stream = _strip_intent_fragment_from_response(final_summary_from_responder or "")
+                                            summary_to_stream = _strip_mid_response_generic_closings(summary_to_stream or "")
+                                            summary_to_stream = _normalize_citation_text_for_display(summary_to_stream or "")
+                                            if final_result is not None:
+                                                final_result['final_summary'] = summary_to_stream
+                                            streamed_summary = summary_to_stream
+                                            doc_count = len(chunk_citations_from_responder) if chunk_citations_from_responder else 1
+                                            yield f"data: {json.dumps({'type': 'documents_found', 'count': doc_count})}\n\n"
+                                            yield f"data: {json.dumps({'type': 'status', 'message': 'Streaming response...'})}\n\n"
+                                            for i in range(0, len(summary_to_stream), STREAM_CHUNK_SIZE):
+                                                if i == 0 and not first_token_sent_marked:
+                                                    timing.mark("first_token_sent")
+                                                    first_token_sent_marked = True
+                                                chunk = summary_to_stream[i:i + STREAM_CHUNK_SIZE]
+                                                yield f"data: {json.dumps({'type': 'token', 'token': chunk})}\n\n"
+                                                if STREAM_CHUNK_DELAY_MS > 0:
+                                                    time.sleep(STREAM_CHUNK_DELAY_MS / 1000.0)
+                                            summary_already_streamed = True
+                                            logger.info(f"🟢 [STREAM] Streamed responder response ({len(summary_to_stream)} chars)")
                                     
                                     # Handle conversation node completion (chat-only path, no doc retrieval)
                                     elif node_name == "conversation":

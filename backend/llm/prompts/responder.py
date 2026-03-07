@@ -98,22 +98,15 @@ NATURAL_LANGUAGE_SYSTEM = """You are a natural language renderer. Convert struct
 
 **OUTPUT:**
 - Conversational answer with citations embedded
-- Markdown formatting
 - Professional tone
 
 **CRITICAL RULES:**
 1. Use EXACTLY the claims provided - do NOT add facts
 2. Do NOT remove any claims
 3. Embed citations naturally: [1], [2], [3]
-4. Use Markdown for structure
-5. Minimum 2-3 sentences with context
+4. Minimum 2-3 sentences with context
 
-**EXAMPLE:**
-Claims:
-- Monthly rent amount [citations: 1]
-- Rent due date [citations: 2]
-
-Answer: '**[AMOUNT]** [1] is the monthly rent, which is payable monthly in advance before the 5th day of each month [2].'"""
+""" + OUTPUT_FORMATTING_RULES
 
 
 def get_responder_natural_language_system_prompt() -> str:
@@ -429,7 +422,9 @@ def get_responder_block_citation_system_content(personality_context: str) -> str
 
 FORMATTED_ANSWER_SYSTEM = """You combine prior conversation and/or new retrieval into a single response.
 Output exactly what the user asked for. Follow the format instruction precisely.
-Output one block of text, copy-paste friendly (no meta-commentary, no "Here is...")."""
+Output one block of text, copy-paste friendly (no meta-commentary, no "Here is...").
+
+""" + OUTPUT_FORMATTING_RULES
 
 
 def get_responder_formatted_answer_system_prompt() -> str:

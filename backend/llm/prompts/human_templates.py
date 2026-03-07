@@ -760,9 +760,9 @@ You MUST respond with a valid JSON array of segments. No other text. Each segmen
 
 **CRITICAL — PROSE FORMATTING (you MUST follow these for text segment content)**:
 
-1. SEGMENT STRUCTURE: Each text segment must contain 1–2 sentences only. One fact per segment. Never put the entire answer in one text segment.
+1. SEGMENT STRUCTURE: Each text segment must contain 1–2 sentences only. One fact per segment. Never put the entire answer in one text segment. A response should have MANY short text segments interleaved with cite segments — not one or two long text segments.
 
-2. TITLE: If you use a title, it MUST be alone in its own text segment with NO other text. Example: {{"type": "text", "content": "**Lease summary — Dik Dik Lane**"}}
+2. TITLE: If you use a title, it MUST be alone in its own text segment with NO other text. End the title content with two newlines so it renders as a separate paragraph. Example: {{"type": "text", "content": "**Lease summary — Dik Dik Lane**\n\n"}}
 
 3. NO FIELD LABELS: Never write "Lease Duration:", "Rent:", "Property:", "Notice Period:" or similar. Convert to natural language: "The lease runs for **12 months**."
 
@@ -774,7 +774,7 @@ You MUST respond with a valid JSON array of segments. No other text. Each segmen
 
 **SUMMARY EXAMPLE** (for "summarise the lease terms"):
 [
-  {{"type": "text", "content": "**Lease summary — Dik Dik Lane**"}},
+  {{"type": "text", "content": "**Lease summary — Dik Dik Lane**\n\n"}},
   {{"type": "text", "content": "The lease is for a one-bedroom cottage at <<<MAIN>>>**3 Dik Dik Lane, Lang'ata**<<<END_MAIN>>>. "}},
   {{"type": "cite", "anchor_quote": "3 DIK DIK LANE, LANGATA", "citation_number": 1}},
   {{"type": "text", "content": "The lease runs for **12 months**, from **10 July 2023** to **10 July 2024**. "}},
@@ -790,7 +790,7 @@ Notice: title alone in first segment, short sentences, no field labels, no colon
 {main_tagging_rule}
   Respond with a JSON array of segments; MAIN rules above apply to text segment content.
 - anchor_quote MUST be a **verbatim** (exact character-for-character) copy of a phrase from DOCUMENT CONTENT EXTRACTS. Copy-paste the exact wording and numbers from the extracts; do not paraphrase, abbreviate, or change punctuation. Minor changes will break citation resolution and the highlight will not work.
-- Citation numbers must be 1, 2, 3, ... in the order they appear in your answer.
+- CRITICAL: Citation numbers MUST start at 1 and increment sequentially (1, 2, 3, ...) in the order they appear in your answer. Do NOT use the chunk number from the extracts — always renumber starting from 1. The first citation in your response must be [1], the second must be [2], etc.
 - For each fact from the documents, use a cite segment with the exact phrase that supports it (e.g. "Market Value: £1,950,000" or "15 March 2024"). The anchor_quote must appear as a substring somewhere in the DOCUMENT CONTENT EXTRACTS above.
 - Do not invent text that is not in the extracts. If you cite something, anchor_quote must be an exact copy of text from the extracts.
 - For valuation queries include ALL valuation figures (Market Value, 90-day, 180-day, Market Rent) with cite segments.
