@@ -3214,7 +3214,7 @@ const StreamingResponseText: React.FC<{
         /* Keep emojis same size as adjacent text (browsers often render emoji larger otherwise) */
         .streaming-response-text p,
         .streaming-response-text li {
-          font-size: 1em !important;
+          font-size: 1.06em !important;
         }
         .streaming-response-text p:last-child {
           margin-bottom: 0 !important;
@@ -3282,8 +3282,8 @@ const StreamingResponseText: React.FC<{
         /* Single size for all bold (inline and section titles); no larger size for first strong */
         .streaming-response-text .response-strong,
         .streaming-response-text strong {
-          font-size: 1.08em !important;
-          font-weight: 600 !important;
+          font-size: 1.12em !important;
+          font-weight: 550 !important;
         }
         /* Only treat bold as a block "title" when it's the sole content of the paragraph (e.g. main title "Lease Terms for Dik Dik Lane Property").
            Inline labels like "Property Type:", "Monthly Rent:" stay inline so they flow with the following text. */
@@ -3295,8 +3295,8 @@ const StreamingResponseText: React.FC<{
         /* Main title: only when the first paragraph is solely a bold title (e.g. "Lease Terms for Dik Dik Lane Property") */
         .streaming-response-text p:first-of-type > .response-strong-title:only-child,
         .streaming-response-text p:first-of-type > span:only-child > .response-strong-title:only-child {
-          font-size: 1.28em !important;
-          font-weight: 700 !important;
+          font-size: 1.32em !important;
+          font-weight: 650 !important;
           margin-bottom: 1em !important;
           color: #111827 !important;
         }
@@ -3305,12 +3305,7 @@ const StreamingResponseText: React.FC<{
         .streaming-response-text p:first-of-type:has(> span:only-child > .response-strong-title:only-child) + p {
           margin-top: 1.25em !important;
         }
-        .streaming-response-text p > .response-strong-title:first-child:not(.response-strong-title-has-colon)::after,
-        .streaming-response-text p > span:first-child + .response-strong-title:not(.response-strong-title-has-colon)::after,
-        .streaming-response-text p > span:first-child + span .response-strong-title:first-child:not(.response-strong-title-has-colon)::after,
-        .streaming-response-text p span > .response-strong-title:not(.response-strong-title-has-colon)::after {
-          content: ':';
-        }
+        /* Do not add a colon after section titles; titles are plain bold lines (e.g. "Lease term" not "Lease term:") */
         /* Paragraph that is only a bold title (no other content) – more space above, minimal below */
         .streaming-response-text p:has(> .response-strong-title:only-child),
         .streaming-response-text p:has(> span:only-child > .response-strong-title:only-child) {
@@ -3357,7 +3352,7 @@ const StreamingResponseText: React.FC<{
         }
         /* Force bold/italic inside citation highlights so parent font-weight does not override */
         .cited-highlight-formatting strong {
-          font-weight: 700 !important;
+          font-weight: 600 !important;
         }
         .cited-highlight-formatting em {
           font-style: italic !important;
@@ -4167,6 +4162,9 @@ const CitationCalloutUnveilWrapper: React.FC<{
 /** Persist "user submitted from this callout" across remounts so bar stays visible after chat updates. */
 const citationCalloutSubmittedKeys = new Set<string>();
 
+/** Viewport Y of the Accept button at the moment the user clicked it. Used to auto-scroll so the next citation's Accept button appears at the same position. */
+let lastAcceptBtnClickY: number | null = null;
+
 /** Inline citation callout: gray box with cited excerpt and optional document preview (same as citation panel). */
 const CitationCallout: React.FC<{
   citationNumber: string;
@@ -4857,8 +4855,10 @@ const CitationCallout: React.FC<{
                     {onCloseCallout && (
                       <button
                         type="button"
+                        data-citation-accept-btn
                         onClick={(e) => {
                           e.stopPropagation();
+                          lastAcceptBtnClickY = (e.currentTarget as HTMLElement).getBoundingClientRect().top;
                           (e.currentTarget as HTMLElement).blur();
                           handleClose();
                         }}
@@ -5141,8 +5141,10 @@ const CitationCallout: React.FC<{
         <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8, flexShrink: 0 }}>
           <button
             type="button"
+            data-citation-accept-btn
             onClick={(e) => {
               e.stopPropagation();
+              lastAcceptBtnClickY = (e.currentTarget as HTMLElement).getBoundingClientRect().top;
               (e.currentTarget as HTMLElement).blur();
               handleClose();
             }}
@@ -9286,6 +9288,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     const ordered = getOrderedCitationNumbersFromMessageText(revMsg.text);
     const total = ordered.length;
     if (effectiveIndex < 0 || effectiveIndex >= total) return;
+    const savedClickY = lastAcceptBtnClickY;
+    lastAcceptBtnClickY = null;
     citationReviewMessageIdRef.current = reviewMsgId;
     setCitationAcceptedByMessageId((prev) => {
       const next = { ...prev };
@@ -9305,6 +9309,22 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       setCitationReviewShowReviewNextOnly(false);
       setCitationReviewMessageId(reviewMsgId);
       setCitationReviewCurrentIndex(effectiveIndex + 1);
+      if (savedClickY != null) {
+        const scrollContainer = contentAreaRef.current;
+        if (scrollContainer) {
+          const attemptScroll = (retriesLeft: number) => {
+            const newBtn = scrollContainer.querySelector<HTMLElement>('[data-citation-accept-btn]');
+            if (newBtn) {
+              const newBtnY = newBtn.getBoundingClientRect().top;
+              const delta = newBtnY - savedClickY;
+              scrollContainer.scrollTop += delta;
+            } else if (retriesLeft > 0) {
+              requestAnimationFrame(() => attemptScroll(retriesLeft - 1));
+            }
+          };
+          requestAnimationFrame(() => requestAnimationFrame(() => attemptScroll(8)));
+        }
+      }
     }
   }, [chatMessages]);
 
