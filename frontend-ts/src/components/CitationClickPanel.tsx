@@ -96,13 +96,9 @@ export function computeCitationPreviewTransform(
   const rawZoom = Math.min(zoomForWidth, zoomForHeight);
   const zoom = Math.min(1.2, rawZoom);
 
-  // Horizontal: center bbox in viewport
+  // Center bbox in viewport (both axes)
   const idealTranslateX = previewWidth / 2 - centerX * zoom;
-  // Vertical: when bbox is in the upper part of the page, align to top to avoid excessive blank space above the title
-  const preferTopAlign = bbox.top < 0.35;
-  const idealTranslateY = preferTopAlign
-    ? previewPadding - originalBboxTop * zoom
-    : previewHeight / 2 - centerY * zoom;
+  const idealTranslateY = previewHeight / 2 - centerY * zoom;
   // Clamp so we don't show area outside the image
   const minTranslateX = previewWidth - imageWidth * zoom;
   const maxTranslateX = 0;
@@ -131,7 +127,9 @@ export const CitationPagePreviewContent: React.FC<{
   style?: React.CSSProperties;
   /** When true, prevents scroll/pan so the preview is fixed (e.g. in citation callouts). */
   disableScroll?: boolean;
-}> = ({ cachedPageImage, transform, showBbox, className, style, disableScroll }) => (
+  /** When true, pointer-events: none so the parent receives all clicks (e.g. callout click-to-focus). */
+  passThroughClicks?: boolean;
+}> = ({ cachedPageImage, transform, showBbox, className, style, disableScroll, passThroughClicks }) => (
   <div
     className={className ?? "citation-panel-preview-scroll"}
     style={{
@@ -147,6 +145,7 @@ export const CitationPagePreviewContent: React.FC<{
       ...(disableScroll
         ? { touchAction: "none", overscrollBehavior: "none" as const }
         : {}),
+      ...(passThroughClicks ? { pointerEvents: "none" as const } : {}),
       ...style,
     }}
   >

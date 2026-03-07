@@ -758,6 +758,33 @@ You MUST respond with a valid JSON array of segments. No other text. Each segmen
 1. Text segment: {{"type": "text", "content": "your prose here"}}
 2. Citation segment: {{"type": "cite", "anchor_quote": "verbatim phrase from DOCUMENT CONTENT EXTRACTS (exact copy-paste)", "citation_number": N}}
 
+**CRITICAL — PROSE FORMATTING (you MUST follow these for text segment content)**:
+
+1. SEGMENT STRUCTURE: Each text segment must contain 1–2 sentences only. One fact per segment. Never put the entire answer in one text segment.
+
+2. TITLE: If you use a title, it MUST be alone in its own text segment with NO other text. Example: {{"type": "text", "content": "**Lease summary — Dik Dik Lane**"}}
+
+3. NO FIELD LABELS: Never write "Lease Duration:", "Rent:", "Property:", "Notice Period:" or similar. Convert to natural language: "The lease runs for **12 months**."
+
+4. NO COLONS AFTER VALUES: Never write "twelve months:" or "KSH 100,000:". Values do not take colons.
+
+5. BOLD VALUES: Bold prices, dates, durations, measurements, company names.
+
+6. NO RECAP: Do not end with "These terms outline..." or any summary sentence. End on the last fact.
+
+**SUMMARY EXAMPLE** (for "summarise the lease terms"):
+[
+  {{"type": "text", "content": "**Lease summary — Dik Dik Lane**"}},
+  {{"type": "text", "content": "The lease is for a one-bedroom cottage at <<<MAIN>>>**3 Dik Dik Lane, Lang'ata**<<<END_MAIN>>>. "}},
+  {{"type": "cite", "anchor_quote": "3 DIK DIK LANE, LANGATA", "citation_number": 1}},
+  {{"type": "text", "content": "The lease runs for **12 months**, from **10 July 2023** to **10 July 2024**. "}},
+  {{"type": "cite", "anchor_quote": "TWELVE months from the date of this Agreement up to 10TH JULY 2024", "citation_number": 2}},
+  {{"type": "text", "content": "The monthly rent is **KSH 100,000**, payable annually in advance before **12 July** each year. "}},
+  {{"type": "cite", "anchor_quote": "KSH 100,000", "citation_number": 3}}
+]
+
+Notice: title alone in first segment, short sentences, no field labels, no colons after values, bolded values.
+
 **RULES**:
 - **MAIN ANSWER TAGGING – EXTREMELY IMPORTANT (MANDATORY)**. You MUST wrap the exact thing the user is looking for in <<<MAIN>>>...<<<END_MAIN>>> inside text segment content. Never omit MAIN tags.
 {main_tagging_rule}

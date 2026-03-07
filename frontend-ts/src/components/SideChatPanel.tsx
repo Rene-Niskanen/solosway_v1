@@ -5,7 +5,7 @@ import { useMemo } from "react";
 import { createPortal, flushSync } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { generateAnimatePresenceKey, generateConditionalKey, generateUniqueKey } from '../utils/keyGenerator';
-import { ChevronLeft, ChevronRight, ChevronDown, ChevronUp, ArrowUp, Mic, Map, Globe, X, SquareDashedMousePointer, Scan, Fullscreen, PanelLeftOpen, PanelRightClose, PictureInPicture2, Trash2, CreditCard, MoveDiagonal, Square, Files, Image as ImageIcon, File as FileIcon, FileText, FileCheck, Minimize, Minimize2, Workflow, Home, Brain, BrainCircuit, AudioLines, MessageCircle, MessageCircleDashed, MessageCirclePlus, MessageCircleOff, Copy, Search, MessageSquare, Pencil, Check, Highlighter, SlidersHorizontal, Book, BookOpen, Download, ThumbsUp, ThumbsDown, Link2, Quote, Star, FolderPlus, FolderOpen, Undo2, CloudUpload, Plus, Captions, CaptionsOff, CloudDownload } from "lucide-react";
+import { ChevronLeft, ChevronRight, ChevronDown, ChevronUp, ArrowUp, Mic, Map, Globe, X, SquareDashedMousePointer, Scan, Fullscreen, PanelLeftOpen, PanelRightClose, PictureInPicture2, Trash2, CreditCard, MoveDiagonal, Square, Files, Image as ImageIcon, File as FileIcon, FileText, FileCheck, Minimize, Minimize2, Workflow, Home, Brain, BrainCircuit, AudioLines, MessageCircle, MessageCircleDashed, Copy, Search, MessageSquare, Pencil, Check, Highlighter, SlidersHorizontal, Book, BookOpen, Download, ThumbsUp, ThumbsDown, Link2, Quote, Star, FolderPlus, FolderOpen, Undo2, CloudUpload, Plus, Captions, CaptionsOff, CloudDownload } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { FileAttachment, FileAttachmentData } from './FileAttachment';
 import { PropertyPillChip } from './PropertyPillChip';
@@ -3354,15 +3354,6 @@ const StreamingResponseText: React.FC<{
         .streaming-response-text .cited-highlight-formatting:has(> .citation-link-btn) > span:first-child {
           pointer-events: none;
         }
-        /* Ensure selected/saved states still apply when citation is inside a nowrap span (same as index.css) */
-        .streaming-response-text .citation-link-btn.citation-link-btn--selected {
-          color: #374151 !important;
-          background-color: #e5e7eb !important;
-        }
-        .streaming-response-text .citation-link-btn.citation-link-btn--saved {
-          color: #3A3A3A !important;
-          background-color: #E8E8E8 !important;
-        }
         /* Force bold/italic inside citation highlights so parent font-weight does not override */
         .cited-highlight-formatting strong {
           font-weight: 700 !important;
@@ -3909,15 +3900,14 @@ const CitationLink: React.FC<{
     <>
       <button
         ref={buttonRef}
+        type="button"
         className={`citation-link-btn${isSaved ? ' citation-link-btn--saved' : ''}${isSelected ? ' citation-link-btn--selected' : ''}`}
         onClick={(e) => {
           e.preventDefault();
           e.stopPropagation();
-          // Hide preview on click
           setShowPreview(false);
           if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
           let blockRect = e.currentTarget.getBoundingClientRect();
-          // Use anchor rect from the full highlighted response text block (not just the citation marker) so the panel appears above/below the text and never overlaps it
           let anchorRect: DOMRect = blockRect;
           let highlightRectForPanel: DOMRect | undefined;
           const citedBlock = e.currentTarget.closest('[data-cited-text-block]');
@@ -3958,50 +3948,8 @@ const CitationLink: React.FC<{
           }
           onClick(citationData, anchorRect, citationNumber, highlightRectForPanel);
         }}
-        style={{
-          display: 'inline-flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          marginLeft: '0.35em',
-          marginRight: '1px',
-          minWidth: '18.9px',
-          height: '18.9px',
-          padding: '0 5.5px',
-          fontSize: '11px',
-          fontWeight: 500,
-          fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-          borderRadius: 6,
-          border: '1px solid #E5E7EB',
-          cursor: 'pointer',
-          verticalAlign: 'middle',
-          position: 'relative',
-          top: '-1px',
-          lineHeight: 1,
-          transition: 'all 0.06s ease-out',
-          userSelect: 'none',
-          // Selected: blue on container only, font stays neutral
-          ...(isSelected && { color: '#374151', backgroundColor: '#DBEAFE' }),
-        }}
-        onMouseEnter={(e) => {
-          if (!isSelected) {
-            e.currentTarget.style.backgroundColor = isSaved ? '#DEDEDE' : '#F3F4F6';
-            e.currentTarget.style.color = '#374151';
-            e.currentTarget.style.transform = 'scale(1.05)';
-          }
-          handleMouseEnter(e);
-        }}
-        onMouseLeave={(e) => {
-          if (!isSelected) {
-            e.currentTarget.style.backgroundColor = '';
-            e.currentTarget.style.color = '';
-            e.currentTarget.style.transform = 'scale(1)';
-          } else {
-            // Keep selected state: blue container, grey font
-            e.currentTarget.style.backgroundColor = '#DBEAFE';
-            e.currentTarget.style.color = '#374151';
-          }
-          handleMouseLeave(e);
-        }}
+        onMouseEnter={handleMouseEnter}
+        onMouseLeave={handleMouseLeave}
         aria-label={`Citation ${citationNumber} - ${displayName}`}
       >
         {citationNumber}
@@ -4299,6 +4247,8 @@ const CitationCallout: React.FC<{
   const askOverlayRef = React.useRef<HTMLDivElement | null>(null);
   const askBarNoPreviewRef = React.useRef<HTMLDivElement | null>(null);
   const userHasSubmittedFromCalloutRef = React.useRef<boolean>(false);
+  /** After submit, keep reclaiming focus to the ask input until it has focus or window expires. */
+  const pendingFocusAfterSubmitRef = React.useRef<boolean>(false);
   /** Inline ask input value for the hover popup chat bar. */
   const [askInputValue, setAskInputValue] = React.useState('');
   const askInputRef = React.useRef<HTMLInputElement | HTMLTextAreaElement | null>(null);
@@ -4354,10 +4304,11 @@ const CitationCallout: React.FC<{
       payload.citationContext = citationContext;
     }
     window.dispatchEvent(new CustomEvent('citation-agent-task-dispatch', { detail: payload }));
-    setAskInputValue('');
-    // Refocus input so user can immediately type another query — multiple retries in case AgentTaskPanel mount steals focus
+    flushSync(() => setAskInputValue(''));
+    pendingFocusAfterSubmitRef.current = true;
+    // Re-focus the callout input so user can type another query — immediate + interval reclaim in case AgentTaskPanel steals focus
     const focusInput = () => askInputRef.current?.focus({ preventScroll: true });
-    // Defer first focus so React can process setAskInputValue before we focus
+    focusInput();
     queueMicrotask(focusInput);
     requestAnimationFrame(() => requestAnimationFrame(focusInput));
     const t1 = setTimeout(focusInput, 50);
@@ -4365,14 +4316,44 @@ const CitationCallout: React.FC<{
     const t3 = setTimeout(focusInput, 350);
     const t4 = setTimeout(focusInput, 550);
     const t5 = setTimeout(focusInput, 750);
+    const t6 = setTimeout(focusInput, 1100);
+    const t7 = setTimeout(focusInput, 1500);
     setTimeout(() => {
       clearTimeout(t1);
       clearTimeout(t2);
       clearTimeout(t3);
       clearTimeout(t4);
       clearTimeout(t5);
-    }, 800);
+      clearTimeout(t6);
+      clearTimeout(t7);
+    }, 1600);
   }, [askInputValue, docId, citation, filename, citationContext, pageNum, bbox]);
+
+  // After submit, keep reclaiming focus to the ask input until it has focus or 2s expires
+  React.useEffect(() => {
+    if (!pendingFocusAfterSubmitRef.current) return;
+    const input = askInputRef.current;
+    if (!input) return;
+    const reclaim = () => {
+      if (!pendingFocusAfterSubmitRef.current) return;
+      const el = askInputRef.current;
+      if (!el) return;
+      el.focus({ preventScroll: true });
+      if (el.ownerDocument?.activeElement === el) {
+        pendingFocusAfterSubmitRef.current = false;
+      }
+    };
+    const id = setInterval(reclaim, 120);
+    const stop = () => {
+      clearInterval(id);
+      pendingFocusAfterSubmitRef.current = false;
+    };
+    const t = setTimeout(stop, 2000);
+    return () => {
+      clearInterval(id);
+      clearTimeout(t);
+    };
+  }, [askInputValue]);
 
   // Keep local closed state in sync with parent (so close persists across parent re-renders)
   React.useEffect(() => {
@@ -4516,10 +4497,8 @@ const CitationCallout: React.FC<{
 
   /** Show the "Ask about this..." bar when user clicks the Ask button. */
   const handleShowAskBar = React.useCallback(() => {
-    setShowAskBar(true);
-    requestAnimationFrame(() => {
-      askInputRef.current?.focus({ preventScroll: true });
-    });
+    flushSync(() => setShowAskBar(true));
+    askInputRef.current?.focus({ preventScroll: true });
   }, []);
 
   const effectivelyClosed = isCalloutClosed || isClosed;
@@ -4609,10 +4588,16 @@ const CitationCallout: React.FC<{
           {/* When preview: excerpt + document preview (no collapse toggle). */}
           {canShowPreview ? (
             <>
-              {/* Document preview */}
+              {/* Document preview — click to focus chat input */}
               <div style={{ position: 'relative', width: '100%', height: 316, minHeight: 316, flexShrink: 0, boxSizing: 'border-box' }}>
               <div
                 ref={previewContainerRef}
+                role="button"
+                tabIndex={0}
+                aria-label="Click to ask about this source"
+                onClick={() => onAskFollowUp && handleShowAskBar()}
+                onPointerDown={(e) => { if (e.button === 0) { onAskFollowUp && handleShowAskBar(); } }}
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onAskFollowUp && handleShowAskBar(); } }}
                 style={{
                   width: '100%',
                   height: '100%',
@@ -4623,6 +4608,7 @@ const CitationCallout: React.FC<{
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
+                  cursor: onAskFollowUp ? 'text' : 'default',
                 }}
               >
                 {showPreviewImage ? (
@@ -4632,6 +4618,7 @@ const CitationCallout: React.FC<{
                     showBbox={true}
                     className="citation-callout-preview-scroll"
                     disableScroll
+                    passThroughClicks
                   />
                 ) : (
                   <div
@@ -4833,37 +4820,6 @@ const CitationCallout: React.FC<{
                         </button>
                       </>
                     ) : null}
-                    {onAskFollowUp && (
-                      <button
-                        type="button"
-                        title={showAskBar ? 'Close ask' : 'Ask about this source'}
-                        aria-label={showAskBar ? 'Close ask' : 'Ask about this source'}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          (e.currentTarget as HTMLElement).blur();
-                          if (showAskBar) setShowAskBar(false);
-                          else handleShowAskBar();
-                        }}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          padding: 4,
-                          border: 'none',
-                          background: 'rgba(255,255,255,0.95)',
-                          borderRadius: 6,
-                          cursor: 'pointer',
-                          color: '#666666',
-                          boxShadow: 'none',
-                          outline: 'none',
-                          minHeight: 26,
-                        }}
-                        onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#f0f0f0'; }}
-                        onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = 'rgba(255,255,255,0.95)'; }}
-                      >
-                        {showAskBar ? <MessageCircleOff size={18} strokeWidth={2} /> : <MessageCirclePlus size={18} strokeWidth={2} />}
-                      </button>
-                    )}
                     {(onViewInDocument || (isViewedInDocument && onCloseDocument)) && (
                       <button
                         type="button"
@@ -19095,11 +19051,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               e.stopPropagation();
                               flushSync(() => setShowReasoningTrace((prev) => !prev));
                             }}
-                            className={`relative w-6 h-4 flex-shrink-0 rounded-sm transition-colors ${
+                            className={`relative w-8 h-5 flex-shrink-0 rounded-sm transition-colors ${
                               showReasoningTrace ? 'bg-[#1f2937]' : 'bg-[#d1d5db]'
                             }`}
                           >
-                            <span className={`absolute top-1 left-0.5 w-2 h-2 bg-white rounded-sm shadow-sm transition-transform ${
+                            <span className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-sm shadow-sm transition-transform ${
                               showReasoningTrace ? 'translate-x-3' : 'translate-x-0'
                             }`} />
                           </button>
@@ -19115,11 +19071,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               e.stopPropagation();
                               setShowHighlight(!showHighlight);
                             }}
-                            className={`relative w-6 h-4 flex-shrink-0 rounded-sm transition-colors ${
+                            className={`relative w-8 h-5 flex-shrink-0 rounded-sm transition-colors ${
                               showHighlight ? 'bg-[#1f2937]' : 'bg-[#d1d5db]'
                             }`}
                           >
-                            <span className={`absolute top-1 left-0.5 w-2 h-2 bg-white rounded-sm shadow-sm transition-transform ${
+                            <span className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-sm shadow-sm transition-transform ${
                               showHighlight ? 'translate-x-3' : 'translate-x-0'
                             }`} />
                           </button>
@@ -19135,11 +19091,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               e.stopPropagation();
                               setShowCitations(!showCitations);
                             }}
-                            className={`relative w-6 h-4 flex-shrink-0 rounded-sm transition-colors ${
+                            className={`relative w-8 h-5 flex-shrink-0 rounded-sm transition-colors ${
                               showCitations ? 'bg-[#1f2937]' : 'bg-[#d1d5db]'
                             }`}
                           >
-                            <span className={`absolute top-1 left-0.5 w-2 h-2 bg-white rounded-sm shadow-sm transition-transform ${
+                            <span className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-sm shadow-sm transition-transform ${
                               showCitations ? 'translate-x-3' : 'translate-x-0'
                             }`} />
                           </button>
@@ -19155,11 +19111,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               e.stopPropagation();
                               setShowCitationPreviewBar(!showCitationPreviewBar);
                             }}
-                            className={`relative w-6 h-4 flex-shrink-0 rounded-sm transition-colors ${
+                            className={`relative w-8 h-5 flex-shrink-0 rounded-sm transition-colors ${
                               showCitationPreviewBar ? 'bg-[#1f2937]' : 'bg-[#d1d5db]'
                             }`}
                           >
-                            <span className={`absolute top-1 left-0.5 w-2 h-2 bg-white rounded-sm shadow-sm transition-transform ${
+                            <span className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-sm shadow-sm transition-transform ${
                               showCitationPreviewBar ? 'translate-x-3' : 'translate-x-0'
                             }`} />
                           </button>
@@ -19175,11 +19131,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               e.stopPropagation();
                               setShowBlueCitationHighlight(!showBlueCitationHighlight);
                             }}
-                            className={`relative w-6 h-4 flex-shrink-0 rounded-sm transition-colors ${
+                            className={`relative w-8 h-5 flex-shrink-0 rounded-sm transition-colors ${
                               showBlueCitationHighlight ? 'bg-[#1f2937]' : 'bg-[#d1d5db]'
                             }`}
                           >
-                            <span className={`absolute top-1 left-0.5 w-2 h-2 bg-white rounded-sm shadow-sm transition-transform ${
+                            <span className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-sm shadow-sm transition-transform ${
                               showBlueCitationHighlight ? 'translate-x-3' : 'translate-x-0'
                             }`} />
                           </button>

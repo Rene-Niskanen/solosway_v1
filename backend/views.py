@@ -1412,8 +1412,15 @@ def query_documents_stream():
                                         if names:
                                             details_reading["filename"] = names[0].strip() or None
                                             details_reading["document_names"] = names
+                                    # Include first doc_id so frontend can resolve name from sidebar when DB has no filename
+                                    if ids_list and not details_reading.get("filename"):
+                                        details_reading["doc_metadata"] = {"doc_id": ids_list[0], "original_filename": None}
                             except Exception as name_err:
                                 logger.debug("Reading step filename lookup skipped: %s", name_err)
+                            # When we have document ids but no filename/doc_metadata yet, pass first doc_id so frontend can resolve from sidebar
+                            ids_list = list(effective_document_ids)[:1] if effective_document_ids else []
+                            if ids_list and not details_reading.get("doc_metadata"):
+                                details_reading["doc_metadata"] = {"doc_id": ids_list[0], "original_filename": None}
                             first_name = (details_reading.get("filename") or (details_reading.get("document_names") or [None])[0]) if details_reading else None
                             message_reading = f"Read {first_name}" if first_name else "Reading selected documents..."
                             yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'reading_documents', 'action_type': 'reading', 'message': message_reading, 'details': details_reading, 'timestamp': time.time()})}\n\n"
@@ -1779,7 +1786,9 @@ def query_documents_stream():
                                         # Research-note flow (Cursor-style): Reading -> Read -> Thinking -> Making a note
                                         elif label_stripped == 'Reading':
                                             detail = (payload.get('metadata') or {}).get('detail', '') or ''
-                                            yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'reading_doc_note', 'action_type': 'reading', 'message': detail or 'Reading...', 'timestamp': time.time(), 'details': {}})}\n\n"
+                                            # Include detail in details so frontend can show document name instead of "Document"
+                                            reading_details = {'filename': detail, 'document_names': [detail]} if detail else {}
+                                            yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'reading_doc_note', 'action_type': 'reading', 'message': detail or 'Reading...', 'timestamp': time.time(), 'details': reading_details})}\n\n"
                                         elif label_stripped == 'Read':
                                             yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'read_done', 'action_type': 'reading', 'message': 'Read', 'timestamp': time.time(), 'details': {'status': 'read'}})}\n\n"
                                         elif label_stripped == 'Thinking':

@@ -468,125 +468,14 @@ const ReadingStepWithTransition: React.FC<{
       style={{ marginBottom: '0' }}
     >
       <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
-        {/* No icon before label - show "Analysing" then document bubble only */}
-        {phase === 'reading' ? (
+        {/* No icon before label - show "Accessing files" then document bubble */}
+            {phase === 'reading' ? (
           <span className="reading-reveal-text" style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
             {keepAnimating && !hasResponseText ? (
-              <span className="planning-shimmer-full">Analysing</span>
+              <span className="planning-shimmer-full">Accessing files</span>
             ) : (
-              <span style={actionStyle}>Analysing</span>
+              <span style={actionStyle}>Accessing files</span>
             )}
-            <span
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '6px',
-                cursor: docMetadata && onDocumentClick ? 'pointer' : 'default',
-                borderRadius: 6,
-                padding: '2px 2px 2px 0',
-                margin: '-2px 0',
-              }}
-              onClick={() => docMetadata && onDocumentClick?.(docMetadata)}
-              role={docMetadata && onDocumentClick ? 'button' : undefined}
-            >
-              {phase === 'reading' && !hasResponseText ? (
-                <span
-                  className="reading-filename-border-glow"
-                  style={{
-                    position: 'relative',
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '6px',
-                    fontSize: '12px',
-                    fontWeight: 500,
-                    letterSpacing: '-0.01em',
-                    lineHeight: 1.4,
-                    padding: '5px 9px',
-                    borderRadius: 6,
-                    border: '1px solid rgba(0, 0, 0, 0.08)',
-                    backgroundColor: '#ffffff',
-                    zIndex: 1,
-                    isolation: 'isolate',
-                  }}
-                >
-                  {/* Inset moving line – inside the container border (Option A) */}
-                  <span
-                    className="reading-border-ring"
-                    style={{
-                      position: 'absolute',
-                      inset: 1,
-                      width: 'calc(100% - 2px)',
-                      height: 'calc(100% - 2px)',
-                      borderRadius: 5,
-                      overflow: 'hidden',
-                      pointerEvents: 'none',
-                      zIndex: 0,
-                    }}
-                    aria-hidden
-                  >
-                    <span
-                      className="reading-border-segment"
-                      style={{
-                        position: 'absolute',
-                        left: '50%',
-                        top: '50%',
-                        width: '200%',
-                        height: '200%',
-                        marginLeft: '-100%',
-                        marginTop: '-100%',
-                        transformOrigin: 'center center',
-                        background: `conic-gradient(from 0deg, rgba(34, 197, 94, 0.85) 0deg, rgba(34, 197, 94, 0.85) 28deg, transparent 28deg)`,
-                      }}
-                    />
-                    <span
-                      className="reading-border-ring-inner"
-                      style={{
-                        position: 'absolute',
-                        inset: 2.5,
-                        borderRadius: 2.5,
-                        background: 'var(--reading-border-inner-bg, #ffffff)',
-                      }}
-                    />
-                  </span>
-                  <span
-                    style={{
-                      position: 'relative',
-                      zIndex: 1,
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: '6px',
-                    }}
-                  >
-                    <img
-                      src="/pdfnew.png"
-                      alt="PDF"
-                      style={{ width: '14px', height: '14px', flexShrink: 0, display: 'block', verticalAlign: 'middle' }}
-                    />
-                    {filename}
-                  </span>
-                </span>
-              ) : (
-                <span
-                  style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '6px',
-                    fontSize: '12px',
-                    fontWeight: 500,
-                    letterSpacing: '-0.01em',
-                    lineHeight: 1.4,
-                    padding: '5px 9px',
-                    borderRadius: 6,
-                    border: '1px solid rgba(0, 0, 0, 0.08)',
-                    backgroundColor: '#ffffff',
-                    ...detailStyle,
-                  }}
-                >
-                  <img src="/pdfnew.png" alt="PDF" style={{ width: '14px', height: '14px', flexShrink: 0 }} />
-                  {filename}
-                </span>
-              )}
-            </span>
           </span>
         ) : (
           // Cursor-style: "Read [filename] L1-[totalLines]" — icon + action label light, filename dark
@@ -766,15 +655,17 @@ const StepRenderer: React.FC<{
   // Component for "Analysing X documents:" or legacy "Found X documents:" (no animation). Use single ":" (avoid "::" if prefix already has colon).
   const FoundDocumentsText: React.FC<{ prefix: string; actionStyle: React.CSSProperties; detailColor?: string }> = ({ prefix, actionStyle, detailColor: detailColorProp }) => {
     const color = detailColorProp ?? detailColor;
-    const analysingMatch = prefix.match(/^(Analysing)\s+(.+)$/);
+    // Match "Analysing" + optional space + rest (handles "Analysing 1 document:" or "AnalysingHighlands_..." when backend concatenates without space)
+    const analysingMatch = prefix.match(/^(Analysing)\s*(.+)$/i);
     const foundMatch = prefix.match(/^(Found)\s+(.+)$/);
     const ensureSingleColon = (s: string) => (s.trimEnd().endsWith(':') ? s.trimEnd() : `${s.trimEnd()}:`);
 
     if (analysingMatch) {
+      const rest = analysingMatch[2].trim();
       return (
-        <span>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
           <span style={actionStyle}>{analysingMatch[1]}</span>
-          <span style={{ color, fontWeight: 500 }}> {ensureSingleColon(analysingMatch[2])}</span>
+          <span style={{ color, fontWeight: 500 }}>{rest ? ensureSingleColon(rest) : ''}</span>
         </span>
       );
     }
@@ -837,9 +728,9 @@ const StepRenderer: React.FC<{
           ?? 'Document';
         const displayName = docName.length > 35 ? docName.substring(0, 32) + '...' : docName;
         return (
-          <span style={{ display: 'inline-flex', alignItems: 'flex-start' }}>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
             <span style={foundActionStyle}>Analysing</span>
-            <span style={{ color: foundDetailColor, fontWeight: 500 }}> {displayName}:</span>
+            <span style={{ color: foundDetailColor, fontWeight: 500 }}>{displayName}:</span>
           </span>
         );
       }
@@ -1063,7 +954,12 @@ const StepRenderer: React.FC<{
       // When backend sends empty details (e.g. "Reading selected documents...") or doc_metadata without filename, use sidebar list
       const fromMessage = (step.message || '').replace(/^Read\s+/i, '').trim();
       const isGenericSentence = /^(Reading|Searching|Analysing|Using|selected documents)/i.test(fromMessage);
-      const nameFromMessage = fromMessage && fromMessage !== 'Document' && !isGenericSentence ? fromMessage : '';
+      // Use message as name when it's not generic; also parse "Page N, filename" from research-note flow
+      let nameFromMessage = fromMessage && fromMessage !== 'Document' && !isGenericSentence ? fromMessage : '';
+      if (!nameFromMessage && fromMessage && /^Page\s+\d+,\s*.+/.test(fromMessage)) {
+        const afterComma = fromMessage.replace(/^Page\s+\d+,\s*/, '').trim();
+        if (afterComma) nameFromMessage = afterComma;
+      }
       const sidebarDocByName = docId && sidebarDocuments?.length ? sidebarDocuments.find((d) => d.id === docId)?.original_filename : undefined;
       const sidebarFirstDocName = sidebarDocuments?.length === 1 ? sidebarDocuments[0].original_filename : sidebarDocuments?.[0]?.original_filename;
       const rawFilename = step.details?.filename

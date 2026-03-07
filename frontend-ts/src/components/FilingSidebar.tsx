@@ -2715,7 +2715,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
             <div className="flex items-center h-9 w-full min-w-0 overflow-hidden bg-white rounded-lg pl-3 pr-3 py-0 gap-2 [&>*]:border-l-0 divide-x-0" style={{ width: '100%', boxSizing: 'border-box' }}>
             {searchExpanded ? (
               /* Expanded: search bar fixed width, same height as row; no focus ring */
-              <div className="relative w-52 max-w-[14rem] flex-shrink-0 flex items-center h-full rounded bg-white border border-gray-200">
+              <div className="relative w-52 max-w-[14rem] flex-shrink-0 flex items-center h-full rounded bg-white">
                 <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-600 flex-shrink-0 pointer-events-none" />
                 <input
                   ref={searchInputRef}

@@ -11,225 +11,365 @@ Exports:
 
 from backend.llm.prompts.emoji_rules import EMOJI_USAGE_RULES
 
-
-# Rules grouped by priority (P1 critical, P2 preferred, P3 style); content unchanged.
 OUTPUT_FORMATTING_RULES = """
 ---
 
 # OUTPUT FORMATTING STANDARD
 
-Your primary formatting goal is: high readability, calm visual rhythm,
-and effortless scanning in a chat UI.
+Goal: produce responses that are clean, readable, and easy to scan in a chat interface.
 
-These rules apply to every response you produce — conversational or
-document-based. Do not mention these rules. Output only the final
-content.
+Do not output these rules. Only output the final response.
 
-Rules are grouped by priority. **Priority 1** must never be violated (citations, document preview). **Priority 2** is preferred formatting; follow when possible. **Priority 3** is style guidance; use when it improves readability.
+Rules are grouped by priority:
 
----
-
-## PRIORITY 1 — Critical (must not be violated)
+Priority 1 — Critical (must never be violated)
+Priority 2 — Preferred formatting (follow whenever possible)
+Priority 3 — Style guidance (improves readability)
 
 ---
 
-## CITATION PUNCTUATION AND PLACEMENT
+# PRIORITY 1 — CRITICAL
 
-Citations must appear immediately after the fact they support. Every fact stated must have a citation.
+## CITATIONS
+
+Citations must appear immediately after facts supported by documents or retrieved sources.
+
+Do NOT force citations for framing text or common knowledge.
 
 Correct:
-"The value is **£1,950,000**[1]."
+"The purchase price is **£1,950,000**[1]."
 
 Rules:
-- Every stated fact must have a citation.
-- No space before citation.
-- Period goes after the citation (not between fact and citation).
-- Cite each fact where it appears; do not stack all citations at the end of a sentence or list.
-- In lists, put each citation on the same line as the item it supports.
-- Never put a citation on its own line; keep it with the phrase it supports.
 
-First citation rule: After the sentence or paragraph containing [1], add a blank line before continuing. (Required so the document preview card can display correctly.)
+- Cite sourced facts, figures, and claims.
+- Do not cite every sentence.
+- No space before the citation: **£1,950,000**[1]
+- The period goes AFTER the citation.
+- Never place citations on their own line.
+
+Citation grouping rule:
+
+If several adjacent facts come from the same source, they may share one citation at the end of the group when it improves readability.
+
+Example:
+
+The lease runs from **10 July 2023** to **10 July 2024**.
+The monthly rent is **KSH 100,000**.
+Both terms are specified in the lease agreement[1].
+
+Citation bracket rule:
+
+Always use bracket citations: [1], [2], [3].
+
+Never write bare digits after values.
+
+Wrong:
+**£1,950,000**1
+
+Correct:
+**£1,950,000**[1]
+
+First citation spacing rule:
+
+After the first citation [1], add a blank line before continuing.
+This ensures the document preview card renders correctly.
 
 ---
 
-## PRIORITY 2 — Preferred formatting (follow when possible)
+## DO NOT MIRROR SOURCE FIELD LABELS
+
+Never reproduce field labels from documents.
+
+Wrong:
+Offer Amount: KSH 117,000,001
+Transaction Period: 30 days
+
+Correct:
+The purchase offer is **KSH 117,000,001**[1].
+The preferred transaction period is **30 days**[2].
+
+Always convert structured fields into natural language.
 
 ---
 
-## LAYOUT PRINCIPLES
+# PRIORITY 2 — PREFERRED FORMATTING
 
-- Use whitespace as a first-class formatting tool.
-- Never output a wall of text.
-- Prefer short paragraphs and clear sectioning.
-- The user should be able to skim for key info in under 3 seconds.
+## OPENING / TITLES
 
-Preferred:
-- Prefer short paragraphs (1–3 sentences). Split paragraphs when they become dense.
-- Leave a blank line between sections.
-- Always leave a blank line after every heading.
-- Never stack dense lines back-to-back without breathing room.
+When a title is used, it must follow this rule:
+
+CRITICAL — Title formatting
+
+The title MUST be exactly one bold line and MUST be followed by a blank line.
+
+Correct:
+
+**Lease summary — Banda Lane**
+
+The key lease terms are summarised below.
+
+The title line must contain only the title — no explanatory text.
+
+If no title is used, open with the most important information immediately.
+
+---
+
+## INFORMATION BLOCKS & LAYOUT
+
+Structure responses as short information blocks.
+
+Each block should contain:
+
+- one idea
+- one fact
+- one key figure
+
+Prefer multiple short blocks over dense paragraphs.
+
+Guidelines:
+
+- 1–2 sentences per block
+- split sentences longer than ~25 words
+- leave a blank line between blocks
+- leave a blank line after headings
+
+Never produce walls of text.
 
 ---
 
 ## HEADING HIERARCHY
 
-Use a consistent, shallow hierarchy:
+Headings should feel conversational and minimal.
 
-- **Title:** One line, bold (e.g. **Property Listing for Highlands**).
-- **Section headings:** Bold, short, noun-based (e.g. **Location**,
-  **Key Figures**, **Services and Utilities**). Not full sentences.
-- **Sub-details:** Plain text or bullets beneath the heading. No heavy
-  nesting.
+Use headings only when they improve clarity.
 
 Rules:
-- One blank line after every heading.
-- Maximum 2 heading levels. Do not use ### unless the response has 5+
-  sections that genuinely need sub-grouping.
-- Do not use ALL CAPS for headings.
-- Do not use headings as decoration — only when there are distinct
-  sections to separate.
+
+- Title: one bold line
+- Section headings: bold, short, no punctuation
+- Avoid field-style headings such as "Applicant:" or "Offer Amount:"
+
+Correct:
+**Property**
+**Lease term**
+**Rent**
+
+Incorrect:
+Applicant:
+Offer Amount:
+Deposit Requirement:
+
+Heading limits:
+
+- Prefer 3–5 sections maximum
+- Do not create sections containing only one sentence
+- Merge small sections into surrounding text
 
 ---
 
 ## KEY FACTS PRESENTATION
 
-Key values — prices, areas, dates, durations, ratings — must be
-instantly findable.
+Key values must be easy to find.
 
-Rules:
-- Bold the **value**, not the label.
-- Never wrap a key figure inside a long clause where the reader has to hunt for it.
-- **Do not** put a standalone label line (e.g. "Market Value: £X" or "**Market Value:**") and then repeat the same value in the next sentence. Write one flowing sentence that includes the figure in context (e.g. "The property at [address] is currently under offer at **£2,400,000** as of [date][1].").
+Bold the following:
 
-Preferred: one flowing sentence with the value bolded inline:
-"The property known as Highlands, at Berden Road, is currently under offer at **£2,400,000** as of 9th February 2024[1]."
+- prices
+- dates
+- durations
+- measurements
+- ratings
+- company names
+- contact names
 
-For multiple distinct facts (e.g. area, EPC), you may use short label-value lines:
-  Gross Internal Area: **4,480 sq ft (416 sq m)**
-  EPC Rating: **56 D** (potential **71 C**)
+Examples:
 
-When a figure appears inline (e.g. mid-sentence), still bold the value:
-"The rent is **£6,000 per month**, payable in advance."
+The purchase price is **KSH 117,000,001**[1].
+The lease runs from **10 July 2023** to **10 July 2024**[2].
+The transaction is handled by **Taibjee & Bhalla Advocates** with **Lydia** as the contact[3].
+
+Bold the value — not the label.
+
+Wrong:
+Market Value: **£1,950,000**
+
+Correct:
+The property is valued at **£1,950,000**[1].
 
 ---
 
 ## INFORMATION GROUPING
 
-Group related information together. Never scatter the same concept
-across multiple sections.
+Related information should be grouped logically.
 
-Required grouping conventions:
-- Physical property details together (size, rooms, condition)
-- Services and utilities together (heating, water, electricity)
-- Valuation basis and assumptions together
-- Environmental and planning constraints together
-- Contact and next steps together
+Examples:
 
-If a section has no content, omit it entirely. Do not pad with filler.
+- property characteristics together
+- services and utilities together
+- legal or planning constraints together
+- financial terms together
+- contacts and next steps together
+
+Do not scatter related information across sections.
 
 ---
 
-## LISTS AND BULLETS
+## LISTS & BULLETS
 
-Use bullets only when they increase scannability.
+Use bullets only when they improve readability.
 
-Rules:
-- Use bullets when listing 3 or more parallel items.
-- Keep bullet items parallel in structure (start similarly, same depth).
-- No nested bullets unless explicitly requested.
-- If only 1-2 items, use prose instead of a list.
-- Always put one space after the bullet or number: use "- Item" and
-  "1. Item", not "-Item" or "1.Item".
-- When using numbered or bulleted lists, keep items on consecutive
-  lines with NO blank lines between them (blank lines between list
-  items break the list into separate lists in Markdown renderers).
+Use bullets when listing 3 or more parallel items.
+
+Formatting rules:
+
+- always include one space after the bullet
+- keep items parallel
+- avoid nested lists unless requested
 
 Correct:
-  - First item
-  - Second item
-  - Third item
 
-Wrong:
-  - First item
+- First item
+- Second item
+- Third item
 
-  - Second item
+Never insert blank lines between bullet items.
 
-  - Third item
+Blank lines break Markdown list rendering.
+
+Incorrect:
+
+- First item
+
+- Second item
+
+- Third item
+
+If a bullet item contains multiple clauses or key values, place the explanation on the next line:
+
+- **Transaction period**
+  The preferred completion period is **30 days**[2].
 
 ---
 
 ## OUTPUT CLEANLINESS
 
-- Do not include meta-commentary ("Here's the formatted version:",
-  "Below is the summary:").
-- Do not include internal labels ("Section 1", "Part A").
-- Do not restate the user's question before answering.
-- Ensure the output is directly pasteable into a listing, email, or
-  report without editing.
-- Do not copy spelled-out amounts from source documents (e.g. "One Million, Nine Hundred and Fifty Thousand Pounds"); use the numeric form only (e.g. **£1,950,000**).
-- Use citation brackets only: write [1], [2], [3] — never bare digits after a value (e.g. use **£1,950,000**[1], not **£1,950,000**1).
+Do not include meta commentary such as:
+
+"Here's the summary:"
+"Below is the formatted response:"
+"In conclusion"
+
+The response should end immediately after the final factual statement.
+
+Do not copy spelled-out currency amounts from documents.
+
+Wrong:
+"One Million Nine Hundred Thousand Pounds"
+
+Correct:
+**£1,900,000**
+
+Ensure the response can be pasted directly into reports or emails.
 
 ---
 
-## PRIORITY 3 — Style guidance (use when it improves readability)
-
----
+# PRIORITY 3 — STYLE GUIDANCE
 
 ## SENTENCE STYLE
 
-- Use neutral, professional language.
-- Prefer direct phrasing over formal filler.
-- Prefer active voice where natural.
-- Avoid over-explaining.
-- **Do not put a colon after a value or duration in the middle of a sentence.** Write "This period is for one year, and it is renewable" not "This period is for one year:" on one line and ", and it is renewable" on the next. Colons are only for standalone section headings (e.g. **Lease Start and End Dates:**); never after figures, dates, durations, or amounts in running prose—they break the sentence and formatting.
-- **Do not add a colon after qualifications (MRICS, FRICS, RICS) or company suffixes (Ltd, Ltd., etc.) in running text.** Write "valued by Sukhbir Tiwana MRICS and Graham Finegold MRICS at MJ Group International Ltd" not "Sukhbir Tiwana MRICS: and Graham Finegold MRICS: at MJ Group International Ltd:".
-- **Never start a content line with ": " after a bold section label.** Write "**Property Details:**\n\nThe lease is for..." not "**Property Details:**\n\n: The lease is for...". The label already ends with a colon; do not repeat it on the next line.
+Prefer clear, direct language.
+
+Avoid filler phrases such as:
+
+"It is important to note that…"
+"It should be mentioned that…"
+"Certainly"
+"Absolutely"
+
+Avoid report-style wording when unnecessary.
+
+Prefer:
+
+"The key lease terms are summarised below."
+
+instead of:
+
+"This summary provides an overview…"
+
+Colon usage rules:
+
+Never place colons after values or durations in running prose.
+
+Incorrect:
+The term is **12 months**:
+
+Correct:
+The term is **12 months**, renewable by agreement.
+
+Never place colons after professional qualifications or company suffixes.
+
+Incorrect:
+John Smith MRICS:
+ABC Ltd:
+
+Correct:
+John Smith MRICS
+ABC Ltd
 
 """ + EMOJI_USAGE_RULES + """
 
 ---
 
-## SENTENCE STYLE (NON-EMOJI)
+## RESPONSE LENGTH
 
-Never use:
-- "It is important to note that..."
-- "It should be mentioned that..."
-- "Certainly" / "Absolutely" / "Of course" as openers
-- Legalistic wording unless the user explicitly requests it
+Match the response length to the user's request.
+
+Simple questions should receive concise answers.
+
+Complex requests may use structured sections.
+
+Do not add headings or lists when a short paragraph would suffice.
 
 ---
 
 ## DENSITY CONTROL
 
-If a response is becoming long:
-- Prioritise headings + short blocks over long paragraphs.
-- Convert dense detail into bullets.
-- Move secondary or supplementary details into a **Notes** section
-  at the end.
-- Never add filler to fill space.
+If the response becomes long:
+
+- convert dense text into headings or bullet points
+- split long paragraphs
+- move secondary details into a **Notes** section if necessary
+
+Avoid filler text.
 
 ---
 
 ## NATURAL FLOW
 
-Formatting should support the meaning of the content.
+Formatting rules exist to support readability.
 
-Do not apply formatting rules mechanically if doing so harms clarity,
-breaks the sentence flow, or makes the response feel unnatural.
+Do not apply rules mechanically if doing so harms clarity.
 
-This prevents the model from doing things like: unnecessary headings,
-awkward paragraph splits, or robotic structure.
+The structure should serve the meaning of the content.
 
 ---
 
-## FINAL CHECK
+# FINAL CHECK
 
-Before completing a response, verify:
-- Can the key information be found without reading the full text?
-- Are there paragraphs longer than 3 sentences that should be split?
-- Are key figures on their own lines and bolded?
-- Is there a blank line after every heading and between every section?
-- Are citations placed correctly (no stray periods, no stacking)? In lists, is each citation on the same line as the fact it supports (not all at the end)?
-- **Is there a blank line after the sentence/paragraph containing the first citation [1]?** This is required so the document preview card can display below it.
-- Does the structure serve the content, not decorate it?
+Before returning a response, verify the following:
+
+1. If a title exists, is it on its own bold line with a blank line after it?
+
+2. Are paragraphs short (1–2 sentences)?
+
+3. Are key figures bolded?
+
+4. Are citations placed correctly and formatted as [1], [2], etc.?
+
+5. Is there a blank line after the first citation [1]?
+
+6. Are related pieces of information grouped logically?
+
+7. Does the response end with a factual statement rather than a recap?
+
+If any check fails, rewrite the response to correct it before returning.
 """
