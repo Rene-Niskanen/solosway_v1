@@ -346,6 +346,46 @@ def _rewrite_preserves_block_citations(original_text: str, rewritten_text: str) 
     return _extract_block_citation_markers(original_text) == _extract_block_citation_markers(rewritten_text)
 
 
+def _should_skip_polish_pass(
+    user_query: str,
+    draft_response: str,
+    research_notes: Optional[List] = None,
+) -> bool:
+    """
+    Heuristic: skip the polish LLM call for simple Q&A when the draft is already well-formatted.
+    Run polish for curated/long-form requests (brief, report, summary from multiple findings).
+    Saves ~2-3s and one LLM call for most queries.
+    """
+    q = (user_query or "").strip().lower()
+    draft = (draft_response or "").strip()
+
+    # Curated/long-form: run polish (user asked for a crafted piece)
+    curated_phrases = (
+        "brief", "report", "one-page", "curated", "pull together",
+        "summarise the key findings", "draft a summary", "create a curated",
+        "write a ", "into a report", "curated summary", "curated piece",
+    )
+    if any(p in q for p in curated_phrases):
+        return False
+
+    # Research-then-write flow: run polish (multi-finding synthesis)
+    if research_notes and len(research_notes) > 1:
+        return False
+
+    # Simple Q&A: skip if draft looks good
+    has_citations = bool(_extract_block_citation_markers(draft))
+    reasonable_length = 50 <= len(draft) <= 8000
+    if has_citations and reasonable_length:
+        logger.info(
+            "[RESPONDER] Skipping polish pass (simple Q&A, draft has %s citation markers, %d chars)",
+            len(_extract_block_citation_markers(draft)),
+            len(draft),
+        )
+        return True
+
+    return False
+
+
 def _strip_leaked_heading_before_value(text: str) -> str:
     """Remove leaked 'Market Value ' (or similar) when it appears right before a bold value."""
     if not text:
@@ -2681,29 +2721,32 @@ async def generate_answer_with_direct_citations(
         )
         logger.info(f"[DIRECT_CITATIONS] LLM response generated ({len(llm_response)} chars), personality_id={personality_id}")
 
-        # Step 3b: Rewrite the citation-complete draft into polished final prose.
+        # Step 3b: Rewrite the citation-complete draft into polished final prose (optional for simple Q&A).
         draft_response = llm_response
-        try:
-            rewritten_response = await generate_citation_preserving_final_answer(
-                user_query,
-                draft_response,
-            )
-            if rewritten_response and _rewrite_preserves_block_citations(draft_response, rewritten_response):
-                llm_response = _strip_mid_response_generic_closings(rewritten_response)
-                logger.info(
-                    "[DIRECT_CITATIONS] Final writer rewrite accepted (%s chars, %s citation markers)",
-                    len(llm_response),
-                    len(_extract_block_citation_markers(llm_response)),
+        if _should_skip_polish_pass(user_query, draft_response, research_notes):
+            pass  # Keep draft as-is; skip polish LLM call
+        else:
+            try:
+                rewritten_response = await generate_citation_preserving_final_answer(
+                    user_query,
+                    draft_response,
                 )
-            else:
-                logger.warning(
-                    "[DIRECT_CITATIONS] Final writer rewrite rejected; keeping citation draft "
-                    "(preserved=%s, rewritten_len=%s)",
-                    _rewrite_preserves_block_citations(draft_response, rewritten_response),
-                    len(rewritten_response or ""),
-                )
-        except Exception as rewrite_err:
-            logger.warning("[DIRECT_CITATIONS] Final writer rewrite failed, keeping citation draft: %s", rewrite_err)
+                if rewritten_response and _rewrite_preserves_block_citations(draft_response, rewritten_response):
+                    llm_response = _strip_mid_response_generic_closings(rewritten_response)
+                    logger.info(
+                        "[DIRECT_CITATIONS] Final writer rewrite accepted (%s chars, %s citation markers)",
+                        len(llm_response),
+                        len(_extract_block_citation_markers(llm_response)),
+                    )
+                else:
+                    logger.warning(
+                        "[DIRECT_CITATIONS] Final writer rewrite rejected; keeping citation draft "
+                        "(preserved=%s, rewritten_len=%s)",
+                        _rewrite_preserves_block_citations(draft_response, rewritten_response),
+                        len(rewritten_response or ""),
+                    )
+            except Exception as rewrite_err:
+                logger.warning("[DIRECT_CITATIONS] Final writer rewrite failed, keeping citation draft: %s", rewrite_err)
 
         llm_response = _rebalance_inline_citation_placement(llm_response)
 

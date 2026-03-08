@@ -67,7 +67,7 @@ When to finish (no tools):
 
 If the user's message is ambiguous, prefer using tools (search) over finishing. Better to search and find nothing than miss relevant documents.
 
-After calling retrieve_chunks and receiving results, you may finish - the system will generate the final answer with citations from those chunks.
+After calling retrieve_chunks and receiving results, you may finish. When you finish after retrieve_chunks: do NOT write a full prose answer. Output only a short placeholder such as "I have the relevant passages. The system will generate the answer with citations." The system generates the final answer from the chunks you retrieved; your draft would be discarded. This saves time and tokens.
 
 ---
 RESEARCH-THEN-WRITE (curated piece)
@@ -399,15 +399,20 @@ def _build_messages_for_llm(state: MainWorkflowState) -> List:
         workspace_parts = []
         if document_ids:
             doc_list = "\n".join(f"  - {d}" for d in document_ids[:20])
-            workspace_parts.append(f"Documents in scope (document_ids):\n{doc_list}")
+            workspace_parts.append(
+                f"Documents in scope (document_ids):\n{doc_list}\n\n"
+                "Call retrieve_chunks directly with these document_ids; do NOT call retrieve_docs."
+            )
         if property_id:
             workspace_parts.append(f"Property selected: {property_id}")
         if workspace_parts:
             messages.append(SystemMessage(content="Context:\n" + "\n".join(workspace_parts)))
     
-    # Add conversation history
+    # Add conversation history (capped to last 3 exchanges to reduce tokens and latency)
     conv_messages = state.get("messages") or []
-    for msg in conv_messages:
+    max_messages = 6  # ~3 Q&A exchanges (human+ai each)
+    recent_messages = conv_messages[-max_messages:] if len(conv_messages) > max_messages else conv_messages
+    for msg in recent_messages:
         if hasattr(msg, "content") and msg.content:
             messages.append(msg)
     

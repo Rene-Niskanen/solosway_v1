@@ -53,6 +53,20 @@ _FILENAME_BOOST_TOPIC_STOP = frozenset({
 })
 
 
+def _entity_phrases_in_query(query: str) -> List[str]:
+    """
+    Extract known entity/location phrases from the query (e.g. "dik dik lane", "banda lane").
+    Used for filename boost when _distinctive_name_tokens_from_query misses short tokens like "dik".
+    Returns phrases that appear in the query, longest first (for better filename matching).
+    """
+    if not query or not query.strip():
+        return []
+    q = query.lower().strip()
+    patterns = _get_conflicting_location_patterns()
+    found = [p for p in patterns if p and p in q]
+    return sorted(found, key=len, reverse=True)  # Longest first
+
+
 def _distinctive_name_tokens_from_query(query: str) -> List[str]:
     """
     Extract tokens from the query that may be document or property names (e.g. "highlands")
@@ -66,6 +80,17 @@ def _distinctive_name_tokens_from_query(query: str) -> List[str]:
     return list(dict.fromkeys(words))  # dedupe, preserve order
 
 
+def _name_tokens_and_phrases_for_boost(query: str) -> List[str]:
+    """
+    Combined extraction for filename/summary boost: distinctive tokens + entity phrases.
+    Ensures "dik dik lane" queries boost docs with "dik dik" or "dik dik lane" in filename.
+    """
+    tokens = _distinctive_name_tokens_from_query(query)
+    phrases = _entity_phrases_in_query(query)
+    combined = list(dict.fromkeys(phrases + tokens))
+    return combined
+
+
 def resolve_single_document_from_query(query: str, business_id: Optional[str] = None) -> Optional[List[str]]:
     """
     When the query names a document or property (e.g. "flood risk of highlands"), try to
@@ -74,19 +99,21 @@ def resolve_single_document_from_query(query: str, business_id: Optional[str] = 
     scope to that doc (align retrieval with attachment path).
     """
     tokens = _distinctive_name_tokens_from_query(query)
-    if not tokens or not business_id:
+    phrases = _entity_phrases_in_query(query) if not tokens else []
+    match_tokens = tokens or phrases
+    if not match_tokens or not business_id:
         return None
     try:
         supabase = get_supabase_client()
         sel = supabase.table("documents").select("id").eq("business_uuid", business_id)
-        # Match first distinctive token in filename (e.g. "highlands")
-        sel = sel.ilike("original_filename", f"%{tokens[0]}%")
+        # Match first token/phrase in filename (e.g. "highlands" or "dik dik")
+        sel = sel.ilike("original_filename", f"%{match_tokens[0]}%")
         result = sel.limit(2).execute()
         rows = result.data or []
         if len(rows) == 1:
             doc_id = rows[0].get("id")
             if doc_id:
-                logger.info("[RETRIEVER] Resolved single doc from query name: %s -> %s", tokens[0], str(doc_id)[:8])
+                logger.info("[RETRIEVER] Resolved single doc from query name: %s -> %s", match_tokens[0], str(doc_id)[:8])
                 return [str(doc_id)]
     except Exception as e:
         logger.debug("resolve_single_document_from_query failed: %s", e)
@@ -586,7 +613,7 @@ def retrieve_documents(
         
         # 6a. Filename/summary boost: when the query names a document or property (e.g. "highlands"),
         # strongly prefer docs whose filename or summary contains that name (align retrieval with attachment path).
-        name_tokens = _distinctive_name_tokens_from_query(entity_query or query)
+        name_tokens = _name_tokens_and_phrases_for_boost(entity_query or query)
         if name_tokens:
             FILENAME_SUMMARY_BOOST = 0.25
             for r in results:

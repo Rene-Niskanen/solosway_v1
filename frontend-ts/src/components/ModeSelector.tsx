@@ -63,15 +63,8 @@ export function ModeSelector({ className, compact = false, small = false, large 
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [setMode]);
 
-  const showText = large || !compact; // Always show text when large, otherwise show unless compact (icon only)
-  const textSize = small ? '10px' : '12px'; // Default text size (12px when large, 10px when small)
-  const iconSize = compact ? "w-4 h-4" : "w-3.5 h-3.5"; // Default icon size
-  const buttonHeight = '22px'; // Default button height
-  const gapClass = showText ? 'gap-2.5' : ''; // Gap between icon and label text
-  const paddingClass = compact ? 'px-2 py-0.5' : 'px-2.5 py-0.5'; // Padding - reduced py from 1 to 0.5
-
-  // White and grey scheme for all modes
-  const backgroundColor = mode === 'agent' ? '#F3F3F3' : mode === 'plan' ? '#E8E8E8' : '#EDEDED';
+  const showText = large || !compact;
+  const iconSize = compact ? "w-4 h-4" : "w-3.5 h-3.5";
   const textColor = '#525252';
   const iconColor = '#525252';
 
@@ -90,21 +83,21 @@ export function ModeSelector({ className, compact = false, small = false, large 
     >
       <DropdownMenuTrigger asChild>
         <button
-          className={`flex items-center ${gapClass} ${paddingClass} rounded-full focus:outline-none outline-none ${className || ''}`}
+          className={`flex items-center gap-1.5 focus:outline-none outline-none hover:bg-black/[0.05] ${className || ''}`}
           style={{
-            backgroundColor: backgroundColor,
+            backgroundColor: 'rgba(0, 0, 0, 0.03)',
             color: textColor,
-            border: '1px solid #E5E5E5',
-            fontSize: textSize,
-            fontWeight: 500,
+            border: 'none',
+            fontSize: '13px',
+            fontWeight: 400,
             cursor: 'pointer',
-            height: buttonHeight,
-            minHeight: buttonHeight,
+            padding: compact ? '6px 8px' : '6px 10px',
+            borderRadius: '8px',
             transition: 'none',
           }}
         >
           <CurrentIcon className={iconSize} strokeWidth={2} style={{ color: iconColor }} />
-          {showText && <span className="text-xs font-medium">{currentMode.label}</span>}
+          {showText && <span>{currentMode.label}</span>}
           {showText && <ChevronDown className="w-3 h-3" strokeWidth={2} style={{ color: iconColor }} />}
         </button>
       </DropdownMenuTrigger>

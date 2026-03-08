@@ -55,17 +55,12 @@ export function ModelSelector({ className, compact = false }: ModelSelectorProps
   const didSelectRef = React.useRef(false);
 
   const displayLabel = compact ? currentModel.shortLabel : currentModel.label;
-  const textSize = '13px';
-  const buttonHeight = compact ? '32px' : '28px';
   const miniModelId: LLMModel = 'gpt-4o-mini';
   const miniTriggerColor = '#7F7F7F';
   const miniMenuColor = '#0F0F0F';
   
-  // Icon-only mode styling
   const showText = !compact;
-  const iconSize = compact ? "w-[18px] h-[18px]" : "w-3 h-3";
-  const gapClass = showText ? 'gap-1' : compact ? 'gap-0.5' : '';
-  const paddingClass = compact ? 'p-0 justify-center' : 'px-2.5 py-1';
+  const iconSize = compact ? "w-4 h-4" : "w-3.5 h-3.5";
 
   return (
     <DropdownMenu
@@ -82,23 +77,24 @@ export function ModelSelector({ className, compact = false }: ModelSelectorProps
     >
       <DropdownMenuTrigger asChild>
         <button
-          className={`flex items-center ${gapClass} ${paddingClass} rounded-full focus:outline-none outline-none ${className || ''}`}
+          className={`flex items-center gap-1.5 focus:outline-none outline-none hover:bg-black/[0.05] ${className || ''}`}
           style={{
-            backgroundColor: 'transparent',
-            color: '#9D9D9D',
+            backgroundColor: 'rgba(0, 0, 0, 0.03)',
+            color: '#525252',
             border: 'none',
-            fontSize: textSize,
+            fontSize: '13px',
             fontWeight: 400,
             cursor: 'pointer',
-            height: buttonHeight,
-            minHeight: buttonHeight,
+            padding: compact ? '6px 8px' : '6px 10px',
+            borderRadius: '8px',
             whiteSpace: 'nowrap',
             flexShrink: 1,
-            minWidth: compact ? '36px' : '60px',
+            minWidth: 0,
             overflow: 'hidden',
+            transition: 'none',
           }}
         >
-          {compact && <Cpu className={`${iconSize} text-gray-900`} strokeWidth={1.5} />}
+          {compact && <Cpu className={`${iconSize} text-gray-600`} strokeWidth={1.5} />}
           {showText && (
             <span style={{
               ...(currentModel.id === miniModelId ? { color: miniTriggerColor } : {}),
@@ -110,7 +106,7 @@ export function ModelSelector({ className, compact = false }: ModelSelectorProps
               {displayLabel}
             </span>
           )}
-          <ChevronDown className="w-3 h-3 text-gray-900" strokeWidth={2} />
+          <ChevronDown className="w-3 h-3" strokeWidth={2} />
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent

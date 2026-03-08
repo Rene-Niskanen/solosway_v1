@@ -39,14 +39,14 @@ export function ChatBarAttachDropdown({
             minHeight: "26px",
             paddingLeft: compact ? "4px" : "6px",
             paddingRight: compact ? "4px" : "6px",
-            marginRight: "4px",
             marginLeft: 0,
+            marginRight: "4px",
             borderRadius: "6px",
             fontWeight: 400,
             fontSize: "14px",
           }}
         >
-          <Plus className="w-4 h-4 flex-shrink-0" strokeWidth={1.25} />
+          <Plus className="w-4 h-4 flex-shrink-0" strokeWidth={1.5} />
           {!compact && <span className="whitespace-nowrap">Files and sources</span>}
         </button>
       </DropdownMenuTrigger>

@@ -998,7 +998,7 @@ const BlueCitedTextHighlight: React.FC<{
     padding: '3.45px 5px',
     boxDecorationBreak: 'clone',
     WebkitBoxDecorationBreak: 'clone',
-    backgroundColor: 'rgba(209, 213, 219, 0.45)',
+    backgroundColor: '#F2F2EF',
     border: 'none',
     lineHeight: 1.5,
     overflow: 'visible',
@@ -4030,13 +4030,13 @@ const CitationMessageVisibility: React.FC<{
   return <div ref={ref} style={{ minHeight: 1 }}>{children}</div>;
 };
 
-const UNVEIL_DELAY_MS = 400;
+const UNVEIL_DELAY_MS = 40;
 
 const CitationCalloutUnveilWrapper: React.FC<{
   children: React.ReactNode;
   onUnveilComplete: () => void;
   skipAnimation?: boolean;
-  /** When provided, the 400ms delay only starts when this element becomes visible (watches first citation button), unless isStreaming. */
+  /** When provided, the delay only starts when this element becomes visible (watches first citation button), unless isStreaming. */
   triggerRef?: React.RefObject<HTMLElement | null>;
   /** When true, start delay immediately on mount (don't wait for trigger in viewport – during streaming the trigger may be below fold). */
   isStreaming?: boolean;
@@ -4089,7 +4089,7 @@ const CitationCalloutUnveilWrapper: React.FC<{
 
   React.useEffect(() => {
     if (skipAnimation || measuredHeight !== null) return;
-    const t = setTimeout(() => setMeasuredHeight(0), 150);
+    const t = setTimeout(() => setMeasuredHeight(0), 15);
     return () => clearTimeout(t);
   }, [skipAnimation, measuredHeight]);
 
@@ -4149,7 +4149,7 @@ const CitationCalloutUnveilWrapper: React.FC<{
         style={{ width: '100%', minWidth: 0 }}
         initial={{ clipPath: 'inset(0 0 100% 0)' }}
         animate={{ clipPath: 'inset(0 0 0 0)' }}
-        transition={{ duration: 0.45, ease: [0.22, 0.61, 0.36, 1] }}
+        transition={{ duration: 0.045, ease: [0.22, 0.61, 0.36, 1] }}
         onAnimationComplete={handleAnimationComplete}
       >
         {frozenChildrenRef.current}
@@ -4584,8 +4584,8 @@ const CitationCallout: React.FC<{
           <div
             style={{ display: 'flex', flexDirection: 'column', width: '100%', minWidth: 0 }}
           >
-          {/* When preview: excerpt + document preview (no collapse toggle). */}
-          {canShowPreview ? (
+          {/* When preview: excerpt + document preview (no collapse toggle). Only show when we have the actual image. */}
+          {showPreviewImage ? (
             <>
               {/* Document preview — click to focus chat input */}
               <div style={{ position: 'relative', width: '100%', height: 316, minHeight: 316, flexShrink: 0, boxSizing: 'border-box' }}>
@@ -4610,31 +4610,14 @@ const CitationCallout: React.FC<{
                   cursor: onAskFollowUp ? 'text' : 'default',
                 }}
               >
-                {showPreviewImage ? (
-                  <CitationPagePreviewContent
-                    cachedPageImage={cachedPageImage!}
-                    transform={transform}
-                    showBbox={true}
-                    className="citation-callout-preview-scroll"
-                    disableScroll
-                    passThroughClicks
-                  />
-                ) : (
-                  <div
-                    style={{
-                      width: '100%',
-                      height: '100%',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      color: '#9ca3af',
-                      fontSize: '12px',
-                      backgroundColor: '#e0e0e0',
-                    }}
-                  >
-                    Loading preview…
-                  </div>
-                )}
+                <CitationPagePreviewContent
+                  cachedPageImage={cachedPageImage!}
+                  transform={transform}
+                  showBbox={true}
+                  className="citation-callout-preview-scroll"
+                  disableScroll
+                  passThroughClicks
+                />
                 <div
                   aria-hidden
                   style={{
@@ -4768,7 +4751,7 @@ const CitationCallout: React.FC<{
                       alignItems: 'center',
                       gap: 6,
                       backgroundColor: '#ffffff',
-                      padding: '4px 14px 14px 8px',
+                      padding: '18px 14px 14px 8px',
                       marginRight: -2,
                       marginBottom: -2,
                       borderTopLeftRadius: 8,
@@ -4894,12 +4877,13 @@ const CitationCallout: React.FC<{
           </>
         ) : (
             <>
-          {/* Preview area: show placeholder until image is ready so bar renders immediately */}
-          {canShowPreview && (
+          {/* Preview area: only show when we have the actual image (no placeholder while loading). */}
+          {showPreviewImage && (
             <div
               ref={previewContainerRef}
               style={{
-                width: '100%',                height: 280,
+                width: '100%',
+                height: 280,
                 minHeight: 280,
                 position: 'relative',
                 overflow: 'hidden',
@@ -4909,29 +4893,13 @@ const CitationCallout: React.FC<{
                 justifyContent: 'center',
               }}
             >
-              {showPreviewImage ? (
-                <CitationPagePreviewContent
-                  cachedPageImage={cachedPageImage!}
-                  transform={transform}
-                  showBbox={true}
-                  className="citation-callout-preview-scroll"
-                  disableScroll
-                />
-              ) : (
-                <div
-                  style={{
-                    width: '100%',
-                    height: '100%',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    color: '#9ca3af',
-                    fontSize: '12px',
-                  }}
-                >
-                  Loading preview…
-                </div>
-              )}
+              <CitationPagePreviewContent
+                cachedPageImage={cachedPageImage!}
+                transform={transform}
+                showBbox={true}
+                className="citation-callout-preview-scroll"
+                disableScroll
+              />
               {/* Gradient fade from preview into document bar */}
               <div
                 aria-hidden
@@ -6320,7 +6288,7 @@ const CitationHoverPreview: React.FC<CitationHoverPreviewProps> = ({
                 top: `${finalBboxTop}px`,
                 width: `${Math.min(imageWidth, finalBboxWidth)}px`,
                 height: `${Math.min(imageHeight, finalBboxHeight)}px`,
-                backgroundColor: 'rgba(229, 231, 235, 0.45)',
+                backgroundColor: 'rgba(219, 234, 254, 0.55)',
                 border: 'none',
                 borderRadius: '3px',
                 pointerEvents: 'none',
@@ -17587,8 +17555,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           {/* Feedback bar slot: reserve space as soon as stream ends so layout never jumps; bar fades in when reveal completes */}
           {message.text && hasCurrentStreamFinished && (
             <motion.div
-              initial={{ opacity: 0, height: 24, marginTop: 6 }}
-              animate={revealEndedOrRestored && showFeedbackBar ? { opacity: 1, height: 24, marginTop: 6 } : { opacity: 0, height: 24, marginTop: 6 }}
+              initial={{ opacity: 0, height: 24, marginTop: 28 }}
+              animate={revealEndedOrRestored && showFeedbackBar ? { opacity: 1, height: 24, marginTop: 28 } : { opacity: 0, height: 24, marginTop: 28 }}
               transition={{ duration: 0.38, ease: [0.22, 0.61, 0.36, 1] }}
               style={{ overflow: 'hidden', pointerEvents: revealEndedOrRestored ? 'auto' : 'none' }}
             >
@@ -18059,7 +18027,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           )}
           {hasHoveredSelection && (
             <AskVeloraFloatingButton
-              position={{ x: highlightSelection.rect.left, y: highlightSelection.rect.top - 44 }}
+              position={{ x: highlightSelection.rect.left, y: highlightSelection.rect.top - 56 }}
               selectedText={highlightSelection.text}
               onAsk={() => onAskVeloraFromHighlight(highlightSelection.text)}
             />
@@ -19657,25 +19625,22 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
 
                             {/* Right: Mode, Model, Voice, WebSearchPill, Send */}
                             <div className={`flex items-center gap-1.5 ${isVeryNarrowEmpty ? 'flex-wrap justify-end' : ''}`} style={{ flexShrink: 0 }}>
-                              <ModeSelector compact={true} className="mr-2" />
+                              <ModeSelector compact={true} />
                               {!isVeryNarrowEmpty && <ModelSelector compact={true} />}
                               {!hideVoice && (
                                 <button
                                   type="button"
                                   onClick={() => {}}
-                                  className="flex items-center justify-center text-gray-900 transition-colors focus:outline-none outline-none"
+                                  className="flex items-center gap-1.5 text-gray-600 transition-colors focus:outline-none outline-none hover:bg-black/[0.05]"
                                   style={{
-                                    backgroundColor: 'transparent',
-                                    width: '32px',
-                                    height: '32px',
-                                    minWidth: '32px',
-                                    minHeight: '32px',
-                                    padding: '6px',
-                                    marginLeft: '-4px'
+                                    backgroundColor: 'rgba(0, 0, 0, 0.03)',
+                                    padding: '6px 8px',
+                                    borderRadius: '8px',
+                                    border: 'none',
                                   }}
                                   title="Voice input"
                                 >
-                                  <AudioLines className="w-6 h-6 text-gray-900" strokeWidth={1.25} />
+                                  <AudioLines className="w-4 h-4" strokeWidth={1.5} />
                                 </button>
                               )}
                               
@@ -20634,28 +20599,28 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                 },
                               ] : []}
                             />
-                            {buttonCollapseLevel < 3 && (
-                              <button
-                                type="button"
-                                onClick={() => window.dispatchEvent(new CustomEvent('openChooseProjectModal'))}
-                                className="flex items-center justify-center gap-1.5 text-gray-700 transition-colors focus:outline-none outline-none rounded-md bg-black/[0.01] hover:bg-black/[0.05]"
-                                style={{
-                                  border: 'none',
-                                  height: '26px',
-                                  minHeight: '26px',
-                                  paddingLeft: showAttachIconOnly ? '4px' : '6px',
-                                  paddingRight: showAttachIconOnly ? '4px' : '6px',
-                                  marginLeft: 0,
-                                  marginRight: '4px',
-                                  borderRadius: '6px',
-                                  fontWeight: 400,
-                                  fontSize: '14px',
-                                }}
-                              >
-                                <FolderOpen className="w-4 h-4 flex-shrink-0" strokeWidth={1.25} />
-                                {!showAttachIconOnly && <span className="whitespace-nowrap">Choose project</span>}
-                              </button>
-                            )}
+                              {buttonCollapseLevel < 3 && (
+                                <button
+                                  type="button"
+                                  onClick={() => window.dispatchEvent(new CustomEvent('openChooseProjectModal'))}
+                                  className="flex items-center justify-center gap-1.5 text-gray-700 transition-colors focus:outline-none outline-none rounded-md bg-black/[0.01] hover:bg-black/[0.05]"
+                                  style={{
+                                    border: 'none',
+                                    height: '26px',
+                                    minHeight: '26px',
+                                    paddingLeft: showAttachIconOnly ? '4px' : '6px',
+                                    paddingRight: showAttachIconOnly ? '4px' : '6px',
+                                    marginLeft: 0,
+                                    marginRight: '4px',
+                                    borderRadius: '6px',
+                                    fontWeight: 400,
+                                    fontSize: '14px',
+                                  }}
+                                >
+                                  <FolderOpen className="w-4 h-4 flex-shrink-0" strokeWidth={1.25} />
+                                  {!showAttachIconOnly && <span className="whitespace-nowrap">Choose project</span>}
+                                </button>
+                              )}
                           </div>
 
                           {/* Right: Mode, Model, Voice, Document Selection, WebSearchPill, Send */}
@@ -20672,25 +20637,22 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           className="hidden"
                           accept="image/*,.pdf,.doc,.docx,.xlsx,.xls,.pptx,.ppt"
                         />
-                        <ModeSelector compact={true} className="mr-2" />
+                        <ModeSelector compact={true} />
                         {!isVeryNarrow && <ModelSelector compact={true} />}
                         {!hideVoice && (
                           <button
                             type="button"
                             onClick={() => {}}
-                            className="flex items-center justify-center text-gray-900 transition-colors focus:outline-none outline-none"
+                            className="flex items-center gap-1.5 text-gray-600 transition-colors focus:outline-none outline-none hover:bg-black/[0.05]"
                             style={{
-                              backgroundColor: 'transparent',
-                              width: '32px',
-                              height: '32px',
-                              minWidth: '32px',
-                              minHeight: '32px',
-                              padding: '6px',
-                              marginLeft: '-4px'
+                              backgroundColor: 'rgba(0, 0, 0, 0.03)',
+                              padding: '6px 8px',
+                              borderRadius: '8px',
+                              border: 'none',
                             }}
                             title="Voice input"
                           >
-                            <AudioLines className="w-6 h-6 text-gray-900" strokeWidth={1.25} />
+                            <AudioLines className="w-4 h-4" strokeWidth={1.5} />
                           </button>
                         )}
                         

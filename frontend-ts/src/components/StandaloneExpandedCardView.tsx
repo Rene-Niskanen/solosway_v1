@@ -1900,7 +1900,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
                               top: `${finalBboxTop}px`,
                               width: `${Math.min(dimensions.width, finalBboxWidth)}px`,
                               height: `${Math.min(dimensions.height, finalBboxHeight)}px`,
-                              backgroundColor: 'rgba(210, 213, 220, 0.5)',
+                              backgroundColor: 'rgba(219, 234, 254, 0.55)',
                               border: 'none',
                               borderRadius: '6px',
                               pointerEvents: 'auto',
@@ -1909,10 +1909,10 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
                               transition: 'none' // No animation when changing between BBOXs
                             }}
                             onMouseEnter={(e) => {
-                              e.currentTarget.style.backgroundColor = 'rgba(210, 213, 220, 0.65)';
+                              e.currentTarget.style.backgroundColor = 'rgba(219, 234, 254, 0.7)';
                             }}
                             onMouseLeave={(e) => {
-                              e.currentTarget.style.backgroundColor = 'rgba(210, 213, 220, 0.5)';
+                              e.currentTarget.style.backgroundColor = 'rgba(219, 234, 254, 0.55)';
                             }}
                             title="Click to interact with this citation"
                           />
