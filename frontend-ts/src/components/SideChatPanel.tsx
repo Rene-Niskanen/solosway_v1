@@ -999,7 +999,7 @@ const BlueCitedTextHighlight: React.FC<{
     boxDecorationBreak: 'clone',
     WebkitBoxDecorationBreak: 'clone',
     backgroundColor: '#F2F2EF',
-    border: 'none',
+    border: '1px solid rgba(0,0,0,0.06)',
     lineHeight: 1.5,
     overflow: 'visible',
     pointerEvents: 'none',
@@ -1908,8 +1908,9 @@ const StreamingResponseText: React.FC<{
 
   // Sentinel so citation highlight only wraps text in the same block (paragraph/heading) as the citation, not previous blocks like titles.
   const BLOCK_BOUNDARY = Symbol('BLOCK_BOUNDARY');
+  // li excluded: list items in same ul/ol stay together so citation at end of list highlights entire list (bbox covers all points)
   const isBlockTag = (tag: unknown): boolean =>
-    tag === 'p' || tag === 'div' || tag === 'h1' || tag === 'h2' || tag === 'h3' || tag === 'h4' || tag === 'h5' || tag === 'h6' || tag === 'li' || tag === 'blockquote';
+    tag === 'p' || tag === 'div' || tag === 'h1' || tag === 'h2' || tag === 'h3' || tag === 'h4' || tag === 'h5' || tag === 'h6' || tag === 'ul' || tag === 'ol' || tag === 'blockquote';
 
   // Citations to highlight in blue: "viewed in document", the one selected in the citation panel, and the one selected in the citation bar (line + document preview below). Empty when showBlueCitationHighlight is false.
   const blueCitationNumbers = React.useMemo(() => {
@@ -2540,6 +2541,7 @@ const StreamingResponseText: React.FC<{
       return idx === -1 || !acceptedCitationIndices.has(idx);
     };
     const renderSingleCalloutIfHere = (citationNumbers: string[], blockKey: string) => {
+      if (citationBarMode) return null; // Citation bar mode: render callout at bottom-right instead of inline
       if (!showCurrentCallout || !currentCitationNum || citationNumbers.indexOf(currentCitationNum) === -1) return null;
       if (rejectedCitationNumbers?.has(currentCitationNum)) return null;
       if (calloutRenderedForCurrentRef.current) return null;
@@ -2892,6 +2894,7 @@ const StreamingResponseText: React.FC<{
       return idx === -1 || !acceptedCitationIndices.has(idx);
     };
     const renderSingleCalloutIfHere = (citationNumbers: string[], blockKey: string) => {
+      if (citationBarMode) return null; // Citation bar mode: render callout at bottom-right instead of inline
       if (!showCurrentCallout || !currentCitationNum || citationNumbers.indexOf(currentCitationNum) === -1) return null;
       if (rejectedCitationNumbers?.has(currentCitationNum)) return null;
       if (calloutRenderedForCurrentRef.current) return null;
@@ -3415,6 +3418,30 @@ const StreamingResponseText: React.FC<{
             {textForMarkdown}
           </ReactMarkdown>
         </div>
+        {citationBarMode && showCurrentCallout && currentCitationNum && !rejectedCitationNumbers?.has(currentCitationNum) && (
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 12, width: '100%' }}>
+            <CitationCallout
+              messageId={messageId ?? ''}
+              citationNumber={currentCitationNum}
+              citation={citations?.[currentCitationNum]}
+              onAskFollowUp={onAskFollowUpFromCallout ? () => onAskFollowUpFromCallout(messageId ?? '', currentCitationNum, citations?.[currentCitationNum]) : undefined}
+              onViewInDocument={onViewInDocumentFromCallout ? () => onViewInDocumentFromCallout(citations?.[currentCitationNum], messageId ?? '', currentCitationNum) : undefined}
+              isViewedInDocument={citationViewedInDocument?.messageId === (messageId ?? '') && citationViewedInDocument?.citationNumber === currentCitationNum}
+              onCloseDocument={onCloseDocumentFromCallout}
+              onCloseCallout={onAcceptCurrentCitation}
+              hideBarActions={true}
+              messageCitedExcerpt={citedExcerptByNumberRef.current[currentCitationNum]}
+              skipEntranceAnimation={citationEntranceDoneRef.current.has(currentCitationNum)}
+              onEntranceComplete={() => citationEntranceDoneRef.current.add(currentCitationNum)}
+              onClosePreviewBar={onCloseCitationPreviewBar ? () => onCloseCitationPreviewBar(messageId ?? '') : undefined}
+              onPrevCitation={onPrevCitation}
+              onNextCitation={onNextCitation}
+              totalCitations={orderedCitationNumbersForMessage?.length ?? 0}
+              currentCitationIndex={currentCitationIndex}
+              onCloseCitationBar={onCloseCitationBar ? () => onCloseCitationBar(messageId ?? '') : undefined}
+            />
+          </div>
+        )}
         {!skipRevealAnimation && !usePerplexityStyle && showOverlay && lines.length > 0 && (
           <div style={{ position: 'absolute', left: 0, top: 0, right: 0, bottom: 0, pointerEvents: 'none' }}>
             {lines.map((line, i) => {
@@ -4526,8 +4553,9 @@ const CitationCallout: React.FC<{
           marginBottom: '12px',
           borderRadius: 6,
           overflow: 'hidden',
-          border: '1px solid #e5e7eb',
-          boxShadow: '0 0 6px rgba(0,0,0,0.06)',
+          border: 'none',
+          boxShadow: '0 0 20px rgba(247,246,243,0.9)',
+          backgroundColor: '#FAFAF9',
           contain: 'layout',
         }}
       >
@@ -4574,9 +4602,9 @@ const CitationCallout: React.FC<{
           marginBottom: '20px',
           borderRadius: 12,
           overflow: 'hidden',
-          border: '1px solid rgba(0,0,0,0.06)',
-          boxShadow: '0 1px 2px rgba(0,0,0,0.04), 0 4px 12px rgba(0,0,0,0.03)',
-          backgroundColor: '#ffffff',
+          border: 'none',
+          boxShadow: '0 0 20px rgba(247,246,243,0.9)',
+          backgroundColor: '#FAFAF9',
           contain: 'layout',
         }}
       >
@@ -4652,12 +4680,12 @@ const CitationCallout: React.FC<{
                     alignItems: 'flex-end',
                     justifyContent: showAskBar ? 'space-between' : 'flex-end',
                     gap: 6,
-                    padding: showAskBar ? '14px 0 0 12px' : '8px 0 0 0',
+                    padding: showAskBar ? '14px 12px 0 12px' : '8px 12px 0 12px',
                     backgroundColor: showAskBar ? '#ffffff' : 'transparent',
                     pointerEvents: 'auto',
                     borderBottomLeftRadius: showAskBar ? 12 : 0,
                     borderBottomRightRadius: showAskBar ? 14 : 0,
-                    border: 'none',
+                    border: showAskBar ? '1px solid #e5e7eb' : 'none',
                     boxSizing: 'border-box',
                     transition: 'none',
                   }}
@@ -4678,14 +4706,14 @@ const CitationCallout: React.FC<{
                         alignItems: 'center',
                         opacity: showAskBar ? 1 : 0,
                         pointerEvents: showAskBar ? 'auto' : 'none',
-                        border: 'none',
+                        border: '1px solid #e5e7eb',
                         outline: 'none',
                         boxShadow: 'none',
                       }}
                     >
                       {showAskQuestion && (
                         <form onSubmit={handleAskSubmit} style={{ display: 'block', width: '100%' }}>
-                          <div style={{ position: 'relative', display: 'flex', alignItems: 'center', height: 40, width: '100%', minWidth: 0, backgroundColor: '#FFFFFF', borderRadius: 10, overflow: 'hidden', border: 'none', outline: 'none', boxShadow: 'none' }}>
+                          <div style={{ position: 'relative', display: 'flex', alignItems: 'center', height: 40, width: '100%', minWidth: 0, backgroundColor: '#FFFFFF', borderRadius: 10, overflow: 'hidden', border: '1px solid #e5e7eb', outline: 'none', boxShadow: 'none' }}>
                             <input
                               id="citation-callout-ask-input"
                               ref={askInputRef as React.RefObject<HTMLInputElement>}
@@ -4708,7 +4736,7 @@ const CitationCallout: React.FC<{
                                 lineHeight: '20px',
                                 color: '#0D0D0D',
                                 backgroundColor: 'transparent',
-                                border: 'none',
+                                border: '1px solid #e5e7eb',
                                 outline: 'none',
                                 boxShadow: 'none',
                               }}
@@ -4749,10 +4777,12 @@ const CitationCallout: React.FC<{
                     style={{
                       display: 'flex',
                       alignItems: 'center',
+                      justifyContent: 'flex-end',
                       gap: 6,
                       backgroundColor: '#ffffff',
-                      padding: '18px 14px 14px 8px',
-                      marginRight: -2,
+                      padding: '18px 12px 14px 12px',
+                      marginLeft: 'auto',
+                      marginRight: 0,
                       marginBottom: -2,
                       borderTopLeftRadius: 8,
                       borderBottomLeftRadius: 8,
@@ -4761,7 +4791,17 @@ const CitationCallout: React.FC<{
                     }}
                   >
                     {totalCitations > 1 && (onPrevCitation != null || onNextCitation != null) ? (
-                      <>
+                      <div
+                        style={{
+                          display: 'flex',
+                          borderRadius: 6,
+                          overflow: 'hidden',
+                          border: 'none',
+                          background: 'rgba(255,255,255,0.95)',
+                          backdropFilter: 'blur(6px)',
+                          boxShadow: 'none',
+                        }}
+                      >
                         <button
                           type="button"
                           aria-label="Previous citation"
@@ -4771,9 +4811,9 @@ const CitationCallout: React.FC<{
                             display: 'flex',
                             padding: 4,
                             border: 'none',
-                            background: 'rgba(255,255,255,0.95)',
-                            backdropFilter: 'blur(6px)',
-                            borderRadius: 6,
+                            borderRight: '1px solid rgba(0,0,0,0.06)',
+                            background: 'transparent',
+                            borderRadius: 0,
                             cursor: currentCitationIndex <= 0 ? 'default' : 'pointer',
                             color: currentCitationIndex <= 0 ? '#9ca3af' : '#666666',
                             boxShadow: 'none',
@@ -4790,9 +4830,8 @@ const CitationCallout: React.FC<{
                             display: 'flex',
                             padding: 4,
                             border: 'none',
-                            background: 'rgba(255,255,255,0.95)',
-                            backdropFilter: 'blur(6px)',
-                            borderRadius: 6,
+                            background: 'transparent',
+                            borderRadius: 0,
                             cursor: currentCitationIndex >= totalCitations - 1 ? 'default' : 'pointer',
                             color: currentCitationIndex >= totalCitations - 1 ? '#9ca3af' : '#666666',
                             boxShadow: 'none',
@@ -4800,7 +4839,7 @@ const CitationCallout: React.FC<{
                         >
                           <ChevronDown size={20} strokeWidth={2} />
                         </button>
-                      </>
+                      </div>
                     ) : null}
                     {(onViewInDocument || (isViewedInDocument && onCloseDocument)) && (
                       <button
@@ -4821,7 +4860,7 @@ const CitationCallout: React.FC<{
                           lineHeight: 1,
                           fontWeight: 500,
                           color: '#666666',
-                          backgroundColor: '#ffffff',
+                          backgroundColor: '#FAFAF9',
                           border: '1px solid #d4d4d4',
                           borderRadius: 5.5,
                           cursor: 'pointer',
@@ -4928,7 +4967,7 @@ const CitationCallout: React.FC<{
               padding: '8px 10px 10px 10px',
               borderBottomLeftRadius: 12,
               borderBottomRightRadius: 12,
-              border: 'none',
+              border: showAskBar ? '1px solid #e5e7eb' : 'none',
               boxSizing: 'border-box',
               outline: 'none',
               boxShadow: 'none',
@@ -4951,6 +4990,7 @@ const CitationCallout: React.FC<{
                       backgroundColor: '#FFFFFF',
                       borderRadius: 12,
                       overflow: 'hidden',
+                      border: '1px solid #e5e7eb',
                     }}
                   >
                     <input
@@ -4976,14 +5016,14 @@ const CitationCallout: React.FC<{
                         paddingRight: askInputValue.trim() ? 36 : 12,
                         fontSize: 15,
                         lineHeight: '22px',
-                        color: '#0D0D0D',
-                        backgroundColor: 'transparent',
-                        border: 'none',
-                        outline: 'none',
-                        boxShadow: 'none',
-                      }}
-                    />
-                        {askInputValue.trim() && (
+                                color: '#0D0D0D',
+                                backgroundColor: 'transparent',
+                                border: '1px solid #e5e7eb',
+                                outline: 'none',
+                                boxShadow: 'none',
+                              }}
+                            />
+                            {askInputValue.trim() && (
                         <button
                           type="button"
                           onMouseDown={(e) => e.preventDefault()}
@@ -5050,7 +5090,7 @@ const CitationCallout: React.FC<{
                 borderRadius: '0 12px 0 6px',
                 cursor: 'pointer',
                 color: '#666666',
-                backgroundColor: '#ffffff',
+                backgroundColor: '#FAFAF9',
                 boxShadow: 'none',
                 outline: 'none',
               }}
@@ -20132,7 +20172,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           height: '28px',
                           padding: 0,
                           borderRadius: '50%',
-                          border: '1px solid rgba(0,0,0,0.06)',
+                          border: 'none',
                           backgroundColor: 'rgba(248, 250, 252, 0.92)',
                           boxShadow: '0 2px 4px rgba(0,0,0,0.06)',
                           cursor: 'pointer',

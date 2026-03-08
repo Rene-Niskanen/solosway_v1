@@ -239,7 +239,7 @@ Rules:
 
 ## SECTION DIVIDERS (MANDATORY)
 
-Every section after the first must be separated by a horizontal divider.
+Every section after the first must be separated by a horizontal divider — but ONLY when the response has 3 or more distinct sections with headings. For short summaries (a few sentences, one paragraph, or 1–2 sections), do NOT use `---` at all.
 
 Structure must follow this pattern:
 
@@ -267,7 +267,9 @@ The lease runs for **12 months**, from **10 July 2023** to **10 July 2024**[2]
 
 Rules:
 
-- Insert `---` before every section except the first.
+- Insert `---` before every section except the first — only when there are 3+ sections with headings.
+- For short responses (e.g. "summarise in a few sentences"), do NOT use `---`. Use plain paragraphs only.
+- CRITICAL: `---` must NEVER appear on the same line as text. It must be the only content on its line, with a blank line before and after. If you output `---` immediately before a sentence on the same line, it will appear as literal "---" and look broken. Never write "---The application was signed..." — always use a new line.
 - Leave a blank line before and after the divider.
 - Leave a blank line after every heading.
 

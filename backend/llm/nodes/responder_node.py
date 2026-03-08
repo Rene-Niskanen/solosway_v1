@@ -394,6 +394,16 @@ def _strip_leaked_heading_before_value(text: str) -> str:
     return re.sub(r"(^|\s)Market\s+Value\s+(?=\*\*)", r"\1", text, flags=re.IGNORECASE)
 
 
+def _strip_inline_horizontal_rule_leakage(text: str) -> str:
+    """Remove '---' when it appears inline before text (leakage from section-divider or chunk-separator rules).
+    Legitimate horizontal rules are on their own line with blank lines around them; inline '---The...' renders
+    as literal text and looks broken. Only strip when '---' is immediately followed by a word (letter)."""
+    if not text or not isinstance(text, str):
+        return text or ""
+    # Match --- (with optional trailing spaces) when followed by a letter - inline leakage
+    return re.sub(r"---\s*(?=[A-Za-z])", " ", text)
+
+
 def _rebalance_inline_citation_placement(text: str) -> str:
     """
     Move citations out of split noun phrases like "a [ID: 1] bedroom cottage" or
@@ -492,6 +502,7 @@ def _strip_mid_response_generic_closings(text: str) -> str:
     result = _normalize_bare_citation_digits(result)
     result = _strip_amount_in_words_parentheticals(result)
     result = _strip_leaked_heading_before_value(result)
+    result = _strip_inline_horizontal_rule_leakage(result)
     result = _strip_standalone_value_label_line(result)
     result = re.sub(r"  +", " ", result).strip() if result else result
     # Remove any "strip entirely" closings that were moved to the end (so they never appear)
