@@ -18521,15 +18521,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         aria-haspopup="true"
                         aria-expanded={viewOptionsOpen}
                         title={viewOptionsOpen ? 'Close' : 'View – sidebar, files, new chat, fullscreen'}
-                        className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150 cursor-pointer border-none`}
+                        className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1.5' : 'justify-center'} rounded-xl border border-black/[0.06] bg-white text-[#4b5563] shadow-[0_1px_1px_rgba(0,0,0,0.02)] transition-all duration-150 hover:border-black/[0.10] hover:text-[#111827] hover:shadow-[0_1px_2px_rgba(0,0,0,0.03)] active:scale-[0.99] cursor-pointer`}
                         style={{
-                          padding: actualPanelWidth >= 750 ? '6px 8px' : '6px',
-                          height: '32px',
-                          minHeight: '32px',
+                          padding: actualPanelWidth >= 750 ? '6px 10px' : '6px',
+                          height: '34px',
+                          minHeight: '34px',
                           position: 'relative',
                           zIndex: 10001,
                           pointerEvents: 'auto',
-                          backgroundColor: viewOptionsOpen ? 'rgba(0, 0, 0, 0.04)' : 'rgba(0, 0, 0, 0.02)',
+                          backgroundColor: viewOptionsOpen ? 'rgba(255, 255, 255, 0.98)' : 'rgba(255, 255, 255, 0.92)',
                         }}
                         onMouseEnter={handleViewOptionsTriggerEnter}
                         onMouseLeave={handleViewOptionsTriggerLeave}
@@ -18540,7 +18540,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       >
                         <PictureInPicture2 className="w-5 h-5 text-[#666] flex-shrink-0" strokeWidth={1.25} />
                         {actualPanelWidth >= 750 && (
-                          <span className="text-[13px] font-normal text-[#666]">{viewOptionsOpen ? 'Close' : 'View'}</span>
+                          <span className="text-[13px] font-medium text-inherit text-left whitespace-nowrap tracking-[-0.01em]">{viewOptionsOpen ? 'Close' : 'View'}</span>
                         )}
                       </button>
                     </PopoverTrigger>
@@ -18845,15 +18845,14 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     const showOpen = !citationBarVisible && (hasCitationBarClosedInChat || hasCompletedReviewInChat);
                     if (!citationBarVisible && !showOpen) return null;
                     const buttonStyle = {
-                      padding: actualPanelWidth >= 750 ? '6px 8px' : '6px',
-                      height: '32px',
-                      minHeight: '32px',
-                      border: 'none',
+                      padding: actualPanelWidth >= 750 ? '6px 10px' : '6px',
+                      height: '34px',
+                      minHeight: '34px',
                       position: 'relative' as const,
                       zIndex: 10001,
                       pointerEvents: 'auto' as const,
                       cursor: 'pointer' as const,
-                      backgroundColor: citationBarVisible ? 'rgba(0, 0, 0, 0.04)' : 'rgba(0, 0, 0, 0.02)',
+                      backgroundColor: citationBarVisible ? 'rgba(255, 255, 255, 0.98)' : 'rgba(255, 255, 255, 0.92)',
                     };
                     if (citationBarVisible) {
                       return (
@@ -18875,12 +18874,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           }}
                           title="Close citations bar"
                           aria-label="Close citations bar"
-                          className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150 cursor-pointer border-none`}
+                          className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1.5' : 'justify-center'} rounded-xl border border-black/[0.06] bg-white text-[#4b5563] shadow-[0_1px_1px_rgba(0,0,0,0.02)] transition-all duration-150 hover:border-black/[0.10] hover:text-[#111827] hover:shadow-[0_1px_2px_rgba(0,0,0,0.03)] active:scale-[0.99] cursor-pointer`}
                           style={buttonStyle}
                         >
                           <CaptionsOff className="w-5 h-5 text-[#666] flex-shrink-0" strokeWidth={1.25} />
                           {actualPanelWidth >= 750 && (
-                            <span className="text-[13px] font-normal text-[#666]">Close</span>
+                            <span className="text-[13px] font-medium text-inherit text-left whitespace-nowrap tracking-[-0.01em]">Close</span>
                           )}
                         </button>
                       );
@@ -18919,12 +18918,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           }
                         }}
                         title="Show citations bar"
-                        className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150 cursor-pointer border-none`}
+                        className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1.5' : 'justify-center'} rounded-xl border border-black/[0.06] bg-white text-[#4b5563] shadow-[0_1px_1px_rgba(0,0,0,0.02)] transition-all duration-150 hover:border-black/[0.10] hover:text-[#111827] hover:shadow-[0_1px_2px_rgba(0,0,0,0.03)] active:scale-[0.99] cursor-pointer`}
                         style={buttonStyle}
                       >
                         <Captions className="w-5 h-5 text-[#666] flex-shrink-0" strokeWidth={1.25} />
                           {actualPanelWidth >= 750 && (
-                            <span className="text-[13px] font-normal text-[#666]">Open</span>
+                            <span className="text-[13px] font-medium text-inherit text-left whitespace-nowrap tracking-[-0.01em]">Open</span>
                         )}
                       </button>
                     );
@@ -18942,19 +18941,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         toggleChatPanel();
                       }
                     }}
-                    className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1.5' : 'justify-center'} rounded-xl border border-black/[0.06] bg-white text-[#4b5563] shadow-sm transition-all duration-150 hover:border-black/[0.10] hover:text-[#111827] hover:shadow-md active:scale-[0.99] cursor-pointer`}
+                    className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1.5' : 'justify-center'} rounded-xl border border-black/[0.06] bg-white text-[#4b5563] shadow-[0_1px_1px_rgba(0,0,0,0.02)] transition-all duration-150 hover:border-black/[0.10] hover:text-[#111827] hover:shadow-[0_1px_2px_rgba(0,0,0,0.03)] active:scale-[0.99] cursor-pointer`}
                     title={isChatPanelOpen ? "Close Agent Sidebar" : "Agents Sidebar"}
                     type="button"
                     style={{
                       padding: actualPanelWidth >= 750 ? '6px 10px' : '6px',
                       height: '34px',
                       minHeight: '34px',
-                      minWidth: undefined,
-                      border: 'none',
                       position: 'relative',
                       zIndex: 10001,
                       pointerEvents: 'auto',
-                      cursor: 'pointer',
                       backgroundColor: isChatPanelOpen ? 'rgba(255, 255, 255, 0.98)' : 'rgba(255, 255, 255, 0.92)',
                     }}
                   >
@@ -18983,7 +18979,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         aria-haspopup="true"
                         aria-expanded={displayOptionsOpen}
                         title="Response – reasoning trace, highlight key points, and citations"
-                        className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1.5' : 'justify-center'} rounded-xl border border-black/[0.06] bg-white text-[#4b5563] shadow-sm transition-all duration-150 hover:border-black/[0.10] hover:text-[#111827] hover:shadow-md active:scale-[0.99] cursor-pointer`}
+                        className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1.5' : 'justify-center'} rounded-xl border border-black/[0.06] bg-white text-[#4b5563] shadow-[0_1px_1px_rgba(0,0,0,0.02)] transition-all duration-150 hover:border-black/[0.10] hover:text-[#111827] hover:shadow-[0_1px_2px_rgba(0,0,0,0.03)] active:scale-[0.99] cursor-pointer`}
                         style={{
                           padding: actualPanelWidth >= 750 ? '6px 10px' : '6px',
                           height: '34px',
