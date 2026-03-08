@@ -1509,7 +1509,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
           margin: 0, // Explicitly remove any margins
           padding: 0, // Explicitly remove any padding
           borderRadius: '16px', // All corners rounded like Prism
-          boxShadow: '0 8px 32px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.08)',
+          boxShadow: '0 4px 16px rgba(0, 0, 0, 0.06), 0 1px 4px rgba(0, 0, 0, 0.04)',
           border: '1px solid rgba(226, 232, 240, 0.6)',
           display: 'flex',
           flexDirection: 'column',
@@ -1909,7 +1909,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
                               transition: 'none' // No animation when changing between BBOXs
                             }}
                             onMouseEnter={(e) => {
-                              e.currentTarget.style.backgroundColor = 'rgba(200, 198, 255, 0.6)';
+                              e.currentTarget.style.backgroundColor = 'rgba(212, 210, 255, 0.52)';
                             }}
                             onMouseLeave={(e) => {
                               e.currentTarget.style.backgroundColor = 'rgba(212, 210, 255, 0.45)';

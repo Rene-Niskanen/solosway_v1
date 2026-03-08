@@ -207,12 +207,18 @@ async def retrieve_and_rerank_node(state: FocusedTaskState) -> FocusedTaskState:
 async def focused_responder_node(state: FocusedTaskState) -> FocusedTaskState:
     """
     Generate a cited answer from the retrieved chunks.
-    Reuses the responder node's core logic but in a simplified form.
+    Uses the same citation logic as normal responses: match_citation_to_chunk tool.
+    LLM calls the tool with chunk_id and cited_text; we extract citations from tool calls.
     """
+    import re
+
     from langchain_openai import ChatOpenAI
     from langchain_core.messages import HumanMessage, SystemMessage
+    from langgraph.prebuilt import ToolNode
     from backend.llm.config import config
     from backend.llm.utils.execution_events import ExecutionEventEmitter
+    from backend.llm.tools.citation_mapping import create_chunk_citation_tool
+    from backend.llm.nodes.agent_node import extract_chunk_citations_from_messages
 
     emitter: Optional[ExecutionEventEmitter] = state.get("execution_events")
     user_query = state.get("user_query", "")
@@ -237,23 +243,26 @@ async def focused_responder_node(state: FocusedTaskState) -> FocusedTaskState:
             }],
         }
 
+    # Format chunks with [CHUNK_ID: xxx] so LLM can pass chunk_id to match_citation_to_chunk (same as normal responses)
     chunk_context_parts = []
-    for i, chunk in enumerate(all_chunks[:15]):
+    for chunk in all_chunks[:15]:
+        chunk_id = str(chunk.get("chunk_id") or chunk.get("id") or "")
         text = (chunk.get("chunk_text") or chunk.get("chunk_text_clean") or "").strip()
-        if not text:
+        if not text or not chunk_id:
             continue
-        doc_id = chunk.get("document_id") or chunk.get("doc_id") or ""
-        page = chunk.get("page_number", "?")
         filename = chunk.get("document_filename") or chunk.get("original_filename") or "document"
+        page = chunk.get("page_number", "?")
         chunk_context_parts.append(
-            f"[{i+1}] (doc: {filename}, page {page}, doc_id: {doc_id})\n{text}"
+            f"[CHUNK_ID: {chunk_id}]\n({filename}, page {page})\n{text}"
         )
-
     chunk_context = "\n\n---\n\n".join(chunk_context_parts)
 
     system_prompt = (
         "You are a document analysis assistant. Answer the user's question based ONLY on the provided document chunks. "
-        "Cite your sources using [N] notation where N corresponds to the chunk number. "
+        "**CITATION WORKFLOW (MANDATORY)**: For ANY information you use from chunks, you MUST call match_citation_to_chunk with:\n"
+        "  - chunk_id: The CHUNK_ID from the [CHUNK_ID: ...] block you're citing\n"
+        "  - cited_text: The EXACT text from that chunk (not a paraphrase)\n"
+        "Call the tool for EVERY fact you cite. Then include citation numbers [1], [2], [3] in your answer, numbered by tool call order.\n"
         "Be concise and factual. If the answer is not in the provided chunks, say so.\n\n"
         + OUTPUT_FORMATTING_RULES
     )
@@ -261,30 +270,130 @@ async def focused_responder_node(state: FocusedTaskState) -> FocusedTaskState:
     human_prompt = (
         f"Question: {user_query}\n\n"
         f"Document chunks:\n\n{chunk_context}\n\n"
-        "Answer the question using the document chunks above. Use [N] citations."
+        "Answer using the chunks above. For each fact you cite, call match_citation_to_chunk with chunk_id and cited_text, "
+        "then include [1], [2], [3] in your answer."
     )
 
+    citation_tool = create_chunk_citation_tool()
     llm = ChatOpenAI(
         api_key=config.openai_api_key,
         model=config.openai_model,
         temperature=0,
-        streaming=True,
-    )
+    ).bind_tools([citation_tool], tool_choice="auto")
 
     if emitter:
         emitter.emit_reasoning("Generating answer")
 
+    messages = [
+        SystemMessage(content=system_prompt),
+        HumanMessage(content=human_prompt),
+    ]
+
     try:
-        answer = ""
-        async for chunk in llm.astream([
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=human_prompt),
-        ]):
-            token = chunk.content if hasattr(chunk, "content") else str(chunk)
-            if token:
-                answer += token
-                if emitter:
+        response = await llm.ainvoke(messages)
+        messages.append(response)
+        answer_parts = []
+        if hasattr(response, "content") and response.content:
+            answer_parts.append(response.content)
+
+        # Handle tool calls (same as normal responder)
+        while hasattr(response, "tool_calls") and response.tool_calls:
+            tool_node = ToolNode([citation_tool])
+            tool_result = await tool_node.ainvoke({"messages": messages})
+            messages.extend(tool_result.get("messages", []))
+            response = await llm.ainvoke(messages)
+            messages.append(response)
+            if hasattr(response, "content") and response.content:
+                answer_parts.append(response.content)
+
+        answer = "".join(answer_parts).strip() if answer_parts else ""
+
+        # Extract citations from tool calls (identical to normal responses)
+        raw_citations = extract_chunk_citations_from_messages(messages)
+
+        # Convert to output format expected by frontend/views
+        citations = []
+        if raw_citations:
+            for i, cit in enumerate(raw_citations, 1):
+                chunk_id = cit.get("chunk_id") or ""
+                block_idx = cit.get("block_index")
+                block_id = f"chunk_{chunk_id}_block_{block_idx}" if block_idx is not None else chunk_id
+                bbox = cit.get("bbox") or {}
+                if isinstance(bbox, dict) and bbox and "page" not in bbox:
+                    bbox = {**bbox, "page": cit.get("page_number", 0)}
+                citations.append({
+                    "citation_number": i,
+                    "doc_id": cit.get("doc_id") or "",
+                    "page_number": cit.get("page_number", 0),
+                    "bbox": bbox,
+                    "block_id": block_id,
+                    "original_filename": cit.get("original_filename"),
+                    "cited_text": cit.get("cited_text", ""),
+                    "method": "focused-task",
+                })
+        else:
+            # Fallback: LLM cited but didn't call tool - map [N] to chunk N by order of appearance
+            appearance: List[int] = []
+            seen: set[int] = set()
+            for m in re.finditer(r"\[(\d+)\]", answer):
+                n = int(m.group(1))
+                idx = n - 1
+                if 0 <= idx < len(all_chunks) and n not in seen:
+                    appearance.append(n)
+                    seen.add(n)
+            old_to_new: Dict[int, int] = {old: i + 1 for i, old in enumerate(appearance)}
+            for i, num in enumerate(appearance, 1):
+                idx = num - 1
+                ch = all_chunks[idx]
+                doc_id = ch.get("document_id") or ch.get("doc_id") or ""
+                page_num = ch.get("page_number", 0)
+                bbox = ch.get("bbox") or {}
+                if isinstance(bbox, str):
+                    try:
+                        bbox = json.loads(bbox) if bbox else {}
+                    except Exception:
+                        bbox = {}
+                if isinstance(bbox, dict) and bbox and "page" not in bbox:
+                    bbox = {**bbox, "page": page_num}
+                chunk_id = str(ch.get("chunk_id") or ch.get("id") or "")
+                citations.append({
+                    "citation_number": i,
+                    "doc_id": doc_id,
+                    "page_number": page_num,
+                    "bbox": bbox,
+                    "block_id": chunk_id,
+                    "original_filename": ch.get("document_filename") or ch.get("original_filename"),
+                    "cited_text": (ch.get("chunk_text") or "")[:200],
+                    "method": "focused-task-fallback",
+                })
+
+            def _repl(m: re.Match) -> str:
+                return f"[{old_to_new.get(int(m.group(1)), m.group(1))}]"
+
+            answer = re.sub(r"\[(\d+)\]", _repl, answer)
+
+        # Normalize [Chunk N] → [N] in case LLM echoed old format
+        answer = re.sub(r"\[Chunk\s+(\d+)\]", r"[\1]", answer, flags=re.IGNORECASE)
+
+        # Stream the final answer so frontend still gets typing effect
+        if emitter and answer:
+            chunk_size = 8
+            for i in range(0, len(answer), chunk_size):
+                token = answer[i : i + chunk_size]
+                if token:
                     emitter.emit_stream_token(token)
+
+        return {
+            "final_summary": answer,
+            "citations": citations,
+            "conversation_history": [{
+                "query": user_query,
+                "summary": answer,
+                "timestamp": datetime.now().isoformat(),
+                "document_ids": state.get("document_ids", []),
+                "query_category": "focused_task",
+            }],
+        }
     except Exception as e:
         logger.error("[FOCUSED_TASK] LLM error: %s", e, exc_info=True)
         return {
@@ -297,53 +406,6 @@ async def focused_responder_node(state: FocusedTaskState) -> FocusedTaskState:
                 "query_category": "focused_task",
             }],
         }
-
-    citations = []
-    import re
-
-    # Normalize [Chunk N] → [N] in case the LLM echoed the old chunk label format
-    answer = re.sub(r'\[Chunk\s+(\d+)\]', r'[\1]', answer, flags=re.IGNORECASE)
-
-    citation_nums = set(re.findall(r'\[(\d+)\]', answer))
-    for num_str in citation_nums:
-        idx = int(num_str) - 1
-        if 0 <= idx < len(all_chunks):
-            chunk = all_chunks[idx]
-            doc_id = chunk.get("document_id") or chunk.get("doc_id") or ""
-            page_number = chunk.get("page_number", 0)
-            bbox = chunk.get("bbox") or {}
-            if isinstance(bbox, str):
-                try:
-                    bbox = json.loads(bbox)
-                except Exception:
-                    bbox = {}
-
-            # Ensure bbox has page field for frontend document preview
-            if isinstance(bbox, dict) and bbox and "page" not in bbox and page_number:
-                bbox = {**bbox, "page": page_number}
-
-            citations.append({
-                "citation_number": int(num_str),
-                "doc_id": doc_id,
-                "page_number": page_number,
-                "cited_text": (chunk.get("chunk_text") or "")[:200],
-                "original_filename": chunk.get("document_filename") or chunk.get("original_filename"),
-                "bbox": bbox,
-                "block_id": chunk.get("block_id") or chunk.get("chunk_id") or f"focused_{doc_id[:8]}_{num_str}",
-                "method": "focused-task",
-            })
-
-    return {
-        "final_summary": answer,
-        "citations": citations,
-        "conversation_history": [{
-            "query": user_query,
-            "summary": answer,
-            "timestamp": datetime.now().isoformat(),
-            "document_ids": state.get("document_ids", []),
-            "query_category": "focused_task",
-        }],
-    }
 
 
 def build_focused_task_graph():

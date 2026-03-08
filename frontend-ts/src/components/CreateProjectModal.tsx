@@ -7,12 +7,24 @@
 
 import * as React from "react";
 import { useState, useCallback, useRef } from "react";
-import { Upload, X, FileText, Image as ImageIcon, File, Loader2 } from "lucide-react";
+import { X, File, Loader2, ImagePlus } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { backendApi } from "@/services/backendApi";
 
 // Default UK coordinates (London) - backend requires lat/lng for property creation
 const DEFAULT_COORDS = { lat: 51.5074, lng: -0.1278 };
+
+/** Renders image file as thumbnail; revokes object URL on unmount */
+const ImageThumbnail: React.FC<{ file: File; className?: string }> = ({ file, className }) => {
+  const [url, setUrl] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    const objUrl = URL.createObjectURL(file);
+    setUrl(objUrl);
+    return () => URL.revokeObjectURL(objUrl);
+  }, [file]);
+  if (!url) return <File className="w-6 h-6 text-gray-500 flex-shrink-0" />; // fallback while loading
+  return <img src={url} alt="" className={className} />;
+};
 
 interface UploadedFile {
   id: string;
@@ -25,6 +37,7 @@ interface UploadedFile {
 interface CreateProjectModalProps {
   isOpen: boolean;
   onClose: () => void;
+  /** Called with the new property ID when project is created. Use to refresh list and optionally open the project. */
   onProjectCreated?: (propertyId: string) => void;
 }
 
@@ -168,19 +181,59 @@ export const CreateProjectModal: React.FC<CreateProjectModalProps> = ({
     }
   }, [projectName, uploadedFiles, onProjectCreated, handleClose]);
 
+  const iconClass = "w-6 h-6 object-contain flex-shrink-0";
+
   const getFileIcon = (file: File) => {
-    if (file.type.startsWith("image/")) return <ImageIcon className="w-4 h-4 text-blue-500" />;
-    if (file.type.includes("pdf")) return <FileText className="w-4 h-4 text-red-500" />;
-    return <File className="w-4 h-4 text-gray-500" />;
+    const name = (file.name || "").toLowerCase();
+    const type = (file.type || "").toLowerCase();
+
+    // Images: show thumbnail
+    if (type.startsWith("image/") || /\.(jpg|jpeg|png|gif|webp|bmp|svg)$/i.test(name)) {
+      return (
+        <ImageThumbnail file={file} className="w-8 h-8 object-cover rounded flex-shrink-0" />
+      );
+    }
+    // PDF
+    if (type.includes("pdf") || name.endsWith(".pdf")) {
+      return <img src="/pdfnew.png" alt="PDF" className={iconClass} />;
+    }
+    // PowerPoint — check before Word (both contain "document" in MIME)
+    if (
+      type.includes("presentation") ||
+      type.includes("powerpoint") ||
+      name.endsWith(".pptx") ||
+      name.endsWith(".ppt")
+    ) {
+      return <img src="/powerpoint.png" alt="PowerPoint" className={iconClass} />;
+    }
+    // Excel / spreadsheet (xlsx, xls, csv)
+    if (
+      type.includes("sheet") ||
+      type.includes("excel") ||
+      type.includes("csv") ||
+      /\.(xlsx|xls|csv)$/i.test(name)
+    ) {
+      return <img src="/excel.png" alt="Excel" className={iconClass} />;
+    }
+    // Word (doc, docx)
+    if (
+      type.includes("word") ||
+      type.includes("wordprocessing") ||
+      name.endsWith(".doc") ||
+      name.endsWith(".docx")
+    ) {
+      return <img src="/word.png" alt="Word" className={iconClass} />;
+    }
+    return <File className="w-6 h-6 text-gray-500 flex-shrink-0" />;
   };
 
   return (
     <Dialog open={isOpen} onOpenChange={(open) => !open && handleClose()}>
-      <DialogContent className="max-w-md p-0 overflow-hidden" hideClose={false}>
+      <DialogContent className="max-w-md p-0 overflow-hidden" hideClose={false} overlayClassName="bg-transparent">
         <div className="flex flex-col">
           <div className="px-6 py-5 border-b border-gray-200 bg-white">
             <DialogHeader>
-              <DialogTitle className="text-lg font-semibold text-gray-900">
+              <DialogTitle className="text-lg font-medium text-gray-900">
                 Create Project
               </DialogTitle>
             </DialogHeader>
@@ -200,16 +253,13 @@ export const CreateProjectModal: React.FC<CreateProjectModalProps> = ({
                 value={projectName}
                 onChange={(e) => setProjectName(e.target.value)}
                 placeholder="e.g. Riverside Development"
-                className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-gray-900/20 focus:border-gray-400"
+                className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-0 focus:border-gray-200"
                 disabled={isCreating}
               />
             </div>
 
             {/* File drop zone */}
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                Documents
-              </label>
               <div
                 onDragOver={(e) => {
                   e.preventDefault();
@@ -223,23 +273,14 @@ export const CreateProjectModal: React.FC<CreateProjectModalProps> = ({
                 }}
                 onDrop={handleDrop}
                 onClick={() => fileInputRef.current?.click()}
-                className={`
-                  flex flex-col items-center justify-center min-h-[140px] rounded-xl border-2 border-dashed cursor-pointer transition-colors
-                  ${isDragOver ? "border-blue-400 bg-blue-50/50" : "border-gray-200 hover:border-gray-300 hover:bg-gray-50/50"}
-                `}
+                className={`relative cursor-pointer select-none transition-all duration-150 ease-out w-full overflow-hidden rounded-lg max-w-[360px] mx-auto
+                  hover:bg-gray-50/40 active:scale-[0.99] active:opacity-95 active:bg-gray-100/50
+                  ${isDragOver ? "opacity-90" : ""}`}
+                style={{ borderRadius: "8px" }}
               >
-                <Upload
-                  className={`w-8 h-8 mb-2 ${isDragOver ? "text-blue-500" : "text-gray-400"}`}
-                  strokeWidth={1.5}
-                />
-                <span
-                  className={`text-sm font-medium ${isDragOver ? "text-blue-600" : "text-gray-500"}`}
-                >
-                  Drop files here or click to upload
-                </span>
-                <span className="text-xs text-gray-400 mt-0.5">
-                  PDFs, images, and more
-                </span>
+                <div className="flex items-center justify-center w-full py-10 pointer-events-none rounded-lg bg-gray-50/30">
+                  <ImagePlus className="w-20 h-20 text-gray-400" strokeWidth={1.5} />
+                </div>
                 <input
                   ref={fileInputRef}
                   type="file"
@@ -278,7 +319,7 @@ export const CreateProjectModal: React.FC<CreateProjectModalProps> = ({
                         e.stopPropagation();
                         handleFileRemove(uf.id);
                       }}
-                      className="p-1 rounded hover:bg-gray-200 text-gray-500 hover:text-gray-700"
+                      className="p-1 rounded text-gray-500"
                     >
                       <X className="w-4 h-4" />
                     </button>

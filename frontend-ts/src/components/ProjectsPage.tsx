@@ -263,7 +263,14 @@ interface ProjectsPageProps {
   onCollapseSidebarToSmall?: () => void;
 }
 
-export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sidebarWidth = 0, onPropertySelect, onCollapseSidebarToSmall }) => {
+/** Clear preloaded documents cache for a property so PropertyDetailsPanel fetches fresh data */
+const clearPropertyDocumentsCache = (propertyId: string) => {
+  if (typeof window !== 'undefined' && (window as any).__preloadedPropertyFiles) {
+    delete (window as any).__preloadedPropertyFiles[propertyId];
+  }
+};
+
+export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject: _onCreateProject, sidebarWidth = 0, onPropertySelect, onCollapseSidebarToSmall }) => {
   // Initialize with cached data immediately for instant display
   const cachedData = React.useMemo(() => getCachedData(), []);
   
@@ -420,7 +427,7 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
     fetchProperties();
   }, []); // Only run on mount - documents state updated via effect when allDocuments changes
 
-  const refreshProperties = async () => {
+  const refreshProperties = async (): Promise<PropertyData[]> => {
     try {
       const [propertyHubsResponse, allDocumentsResponse] = await Promise.all([
         backendApi.getAllPropertyHubs(),
@@ -465,10 +472,12 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
         setProperties(props);
         setDocuments(docsToShow);
         setCachedData(props, docsToShow);
+        return props;
       }
     } catch (err) {
       console.error('Failed to refresh properties:', err);
     }
+    return [];
   };
 
   // Toggle selection of a project (by id)
@@ -637,7 +646,16 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
         <CreateProjectModal
           isOpen={showCreateModal}
           onClose={() => setShowCreateModal(false)}
-          onProjectCreated={() => refreshProperties()}
+          onProjectCreated={async (newPropertyId) => {
+            clearPropertyDocumentsCache(newPropertyId);
+            const props = await refreshProperties();
+            const newProp = props.find((p) => p.id === newPropertyId);
+            if (newProp && onPropertySelect) {
+              // Brief delay so backend can persist document–property links before we fetch
+              await new Promise((r) => setTimeout(r, 300));
+              onPropertySelect(newProp);
+            }
+          }}
         />
       </div>
     );
@@ -745,7 +763,15 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
       <CreateProjectModal
         isOpen={showCreateModal}
         onClose={() => setShowCreateModal(false)}
-        onProjectCreated={() => refreshProperties()}
+        onProjectCreated={async (newPropertyId) => {
+          clearPropertyDocumentsCache(newPropertyId);
+          const props = await refreshProperties();
+          const newProp = props.find((p) => p.id === newPropertyId);
+          if (newProp && onPropertySelect) {
+            await new Promise((r) => setTimeout(r, 300));
+            onPropertySelect(newProp);
+          }
+        }}
       />
 
       <div 

@@ -11,6 +11,7 @@ improved recall, especially for exact matches like parcel numbers, plot IDs, etc
 from typing import List, Dict, Optional, Literal
 import logging
 import os
+import re
 import json
 from pydantic import BaseModel, Field
 from langchain_core.tools import StructuredTool
@@ -91,17 +92,68 @@ def _name_tokens_and_phrases_for_boost(query: str) -> List[str]:
     return combined
 
 
+def _filename_like_token_from_query(query: str) -> Optional[str]:
+    """
+    Extract a token from the query that looks like a literal filename (e.g. "High_Street_X.pdf").
+    When the user says "what is the value of High_Street_Dorchester.pdf", we want to match on
+    the filename, not generic words like "this" or "value".
+    """
+    if not query or not query.strip():
+        return None
+    # Match: word that ends with .pdf, .docx, .doc, etc., optionally with punctuation before it
+    # Also match tokens with underscores that look like filenames (e.g. "High_Street_Dorchester-on-Thames_...")
+    for word in re.findall(r'[\w\-\.]+', query):
+        word_clean = word.strip()
+        if len(word_clean) < 8:
+            continue
+        # Explicit filename extension
+        if word_clean.lower().endswith(('.pdf', '.docx', '.doc', '.txt', '.xlsx', '.pptx')):
+            return word_clean
+        # Filename-like: has underscores and reasonable length (e.g. "High_Street_Dorchester-on-Thames")
+        if '_' in word_clean and len(word_clean) >= 12:
+            return word_clean
+    return None
+
+
 def resolve_single_document_from_query(query: str, business_id: Optional[str] = None) -> Optional[List[str]]:
     """
     When the query names a document or property (e.g. "flood risk of highlands"), try to
     resolve to a single document whose filename contains that name. Returns [document_id]
     if exactly one match, else None. Used to pre-populate document_ids so the agent can
     scope to that doc (align retrieval with attachment path).
+
+    When the user literally provides a filename (e.g. "High_Street_X.pdf"), we match on that
+    first so "what is the value of High_Street_X.pdf" resolves correctly.
     """
+    if not business_id:
+        return None
+
+    # Prioritize explicit filename in query (e.g. "value of High_Street_X.pdf")
+    filename_token = _filename_like_token_from_query(query)
+    if filename_token:
+        try:
+            supabase = get_supabase_client()
+            # ilike treats % and _ as wildcards. Use longest segment (split by _) without them for unique match.
+            # e.g. "High_Street_Dorchester-on-Thames_Wallingford_OX10_7HH.pdf" -> "Dorchester-on-Thames"
+            safe_parts = [p for p in filename_token.split("_") if len(p) >= 8]
+            safe_pattern = max(safe_parts, key=len) if safe_parts else None
+            if safe_pattern:
+                sel = supabase.table("documents").select("id").eq("business_uuid", business_id)
+                sel = sel.ilike("original_filename", f"%{safe_pattern}%")
+                result = sel.limit(2).execute()
+                rows = result.data or []
+                if len(rows) == 1:
+                    doc_id = rows[0].get("id")
+                    if doc_id:
+                        logger.info("[RETRIEVER] Resolved single doc from filename in query: %s -> %s", filename_token[:40], str(doc_id)[:8])
+                        return [str(doc_id)]
+        except Exception as e:
+            logger.debug("resolve_single_document_from_query (filename path) failed: %s", e)
+
     tokens = _distinctive_name_tokens_from_query(query)
     phrases = _entity_phrases_in_query(query) if not tokens else []
     match_tokens = tokens or phrases
-    if not match_tokens or not business_id:
+    if not match_tokens:
         return None
     try:
         supabase = get_supabase_client()

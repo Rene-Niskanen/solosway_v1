@@ -270,7 +270,7 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
       ? `${backendUrl}/api/files/download?s3_path=${encodeURIComponent(doc.s3_path)}`
       : `${backendUrl}/api/files/download?document_id=${doc.id}`;
 
-    fetch(downloadUrl, { credentials: 'include' })
+    fetch(downloadUrl, { credentials: 'include', priority: 'high' } as RequestInit)
       .then((res) => {
         if (!res.ok) throw new Error('Download failed');
         return res.blob();
@@ -303,7 +303,7 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
     };
   }, [isOpen, doc?.id, doc?.s3_path]);
 
-  // Load PDF and render single page (defer one frame so modal shell paints first)
+  // Load PDF and render single page (start immediately – blob URL is fast)
   useEffect(() => {
     if (!previewUrl || !doc || loading) return;
 
@@ -315,29 +315,25 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
     }
 
     let cancelled = false;
-    const frameId = requestAnimationFrame(() => {
-      if (cancelled) return;
-      const loadPdf = async () => {
-        try {
-          const loadingTask = pdfjs.getDocument({ url: previewUrl });
-          const pdf = await loadingTask.promise;
-          if (cancelled) {
-            pdf.destroy();
-            return;
-          }
-          setPdfDocument(pdf);
-          setTotalPages(pdf.numPages);
-          setCurrentPage(1);
-        } catch (e) {
-          console.error('Failed to load PDF:', e);
-          if (!cancelled) setError('Failed to load PDF');
+    const loadPdf = async () => {
+      try {
+        const loadingTask = pdfjs.getDocument({ url: previewUrl });
+        const pdf = await loadingTask.promise;
+        if (cancelled) {
+          pdf.destroy();
+          return;
         }
-      };
-      loadPdf();
-    });
+        setPdfDocument(pdf);
+        setTotalPages(pdf.numPages);
+        setCurrentPage(1);
+      } catch (e) {
+        console.error('Failed to load PDF:', e);
+        if (!cancelled) setError('Failed to load PDF');
+      }
+    };
+    loadPdf();
     return () => {
       cancelled = true;
-      cancelAnimationFrame(frameId);
     };
   }, [previewUrl, doc?.id, doc?.file_type, loading]);
 
@@ -651,12 +647,15 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
         style={{
           zIndex: 10001,
           pointerEvents: 'auto',
-          x: '-50%',
-          y: '-50%',
           willChange: 'transform, opacity',
         }}
-        initial={{ opacity: 0, scale: 0.96 }}
-        animate={{ opacity: isExiting ? 0 : 1, scale: isExiting ? 0.96 : 1 }}
+        initial={{ opacity: 0, scale: 0.96, x: '-50%', y: '-50%' }}
+        animate={{
+          opacity: isExiting ? 0 : 1,
+          scale: isExiting ? 0.96 : 1,
+          x: '-50%',
+          y: '-50%',
+        }}
         transition={{ duration: ANIM_DURATION, ease: 'easeOut' }}
         onAnimationComplete={handleAnimationComplete}
         onClick={(e) => e.stopPropagation()}

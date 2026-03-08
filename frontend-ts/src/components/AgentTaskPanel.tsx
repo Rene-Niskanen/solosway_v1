@@ -3,7 +3,7 @@
 import React from 'react';
 import { AnimatePresence } from 'framer-motion';
 import { AgentTaskCard } from './AgentTaskCard';
-import type { AgentTask } from '../contexts/AgentOrchestrationContext';
+import type { AgentTask, AgentTaskCitation } from '../contexts/AgentOrchestrationContext';
 
 interface AgentTaskPanelProps {
   tasks: AgentTask[];
@@ -12,6 +12,8 @@ interface AgentTaskPanelProps {
   onRetry: (taskId: string) => void;
   /** When true, lay out task cards in a row (e.g. beside the Sources button in the feedback bar). */
   inline?: boolean;
+  /** Same citation mapping as normal responses: renders CitationLink pills for [1], [2] etc. */
+  renderCitation?: (citationNumber: string, citationData: AgentTaskCitation, key: string) => React.ReactNode;
 }
 
 export const AgentTaskPanel: React.FC<AgentTaskPanelProps> = ({
@@ -20,6 +22,7 @@ export const AgentTaskPanel: React.FC<AgentTaskPanelProps> = ({
   onCancel,
   onRetry,
   inline = false,
+  renderCitation,
 }) => {
   if (tasks.length === 0) return null;
 
@@ -42,6 +45,7 @@ export const AgentTaskPanel: React.FC<AgentTaskPanelProps> = ({
             onCancel={onCancel}
             onRetry={onRetry}
             index={i}
+            renderCitation={renderCitation}
           />
         ))}
       </AnimatePresence>

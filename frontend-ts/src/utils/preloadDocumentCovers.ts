@@ -2,17 +2,19 @@
  * Shared preload for document thumbnails (images, PDFs, DOCX).
  * Populates window.__preloadedDocumentCovers so PropertyDetailsPanel (and others) render instantly.
  * For PDFs, pre-renders first page to a data URL so cards can show <img> without loading iframes.
+ * Uses documentBlobCache when available (e.g. FilingSidebar preload) to skip network fetch.
  * Call on project card hover to warm cache before user clicks.
  */
 
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+import { getDocumentBlobUrl } from '../services/documentBlobCache';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
-// Match RecentDocumentCard thumbnail size for faster render and smaller payload
-const TARGET_THUMB_WIDTH = 200;
-const PDF_THUMB_JPEG_QUALITY = 0.82;
+// Smaller thumbnails = faster render; quality 0.7 balances speed and clarity
+const TARGET_THUMB_WIDTH = 160;
+const PDF_THUMB_JPEG_QUALITY = 0.7;
 
 async function renderPdfBlobToDataUrl(blob: Blob): Promise<string | null> {
   try {
@@ -133,12 +135,20 @@ export function preloadDocumentCovers(
   const preloadPdfWithThumbnail = async (doc: DocForPreload, priority: 'high' | 'auto' = 'auto', triggerRender = false) => {
     if (cache[doc.id]) return;
     try {
-      const downloadUrl = getDownloadUrl(doc, backendUrl);
-      if (!downloadUrl) return;
-      const response = await fetch(downloadUrl, { credentials: 'include', priority } as RequestInit);
-      if (!response.ok) return;
-      const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
+      let blob: Blob;
+      const cachedBlobUrl = getDocumentBlobUrl(doc.id);
+      if (cachedBlobUrl) {
+        const res = await fetch(cachedBlobUrl);
+        if (!res.ok) return;
+        blob = await res.blob();
+      } else {
+        const downloadUrl = getDownloadUrl(doc, backendUrl);
+        if (!downloadUrl) return;
+        const response = await fetch(downloadUrl, { credentials: 'include', priority } as RequestInit);
+        if (!response.ok) return;
+        blob = await response.blob();
+      }
+      const url = cachedBlobUrl || URL.createObjectURL(blob);
       const thumbnailUrl = await renderPdfBlobToDataUrl(blob);
       cache[doc.id] = { url, type: blob.type, thumbnailUrl: thumbnailUrl ?? undefined, timestamp: Date.now() };
       if (thumbnailUrl && typeof window !== 'undefined') {

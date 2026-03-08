@@ -487,7 +487,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
     hoverPreloadTimeoutRef.current = setTimeout(() => {
       hoverPreloadTimeoutRef.current = null;
       preloadDocumentBlobs([{ id: doc.id, s3_path: doc.s3_path }]);
-    }, 200);
+    }, 60); // Shorter delay for snappier FileViewModal open
   }, []);
   const cancelHoverPreload = useCallback(() => {
     if (hoverPreloadTimeoutRef.current) {
@@ -1071,7 +1071,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
     if (filename.endsWith('.doc') || filename.endsWith('.docx')) {
       return <img src="/word.png" alt="Word" className={iconClass} />;
     }
-    if (filename.endsWith('.xlsx') || filename.endsWith('.xls')) {
+    if (filename.endsWith('.xlsx') || filename.endsWith('.xls') || filename.endsWith('.csv')) {
       return <img src="/excel.png" alt="Excel" className={iconClass} />;
     }
     if (filename.endsWith('.pptx') || filename.endsWith('.ppt')) {
@@ -1088,7 +1088,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
     const lower = filename.toLowerCase();
     if (lower.endsWith('.pdf')) return 'PDF';
     if (lower.endsWith('.doc') || lower.endsWith('.docx')) return 'DOC';
-    if (lower.endsWith('.xlsx') || lower.endsWith('.xls')) return 'XLS';
+    if (lower.endsWith('.xlsx') || lower.endsWith('.xls') || lower.endsWith('.csv')) return 'XLS';
     if (lower.endsWith('.pptx') || lower.endsWith('.ppt')) return 'PPT';
     if (lower.match(/\.(jpg|jpeg|png|gif|webp)$/)) return 'IMG';
     return 'FILE';
@@ -3109,19 +3109,31 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                 {uploadingPlaceholders.length > 0 && (
                   <div className="px-0 mb-0.5">
                     <div className="py-0.5 w-full space-y-px" style={{ boxSizing: 'border-box' }}>
-                      {uploadingPlaceholders.map((p) => (
-                        <div
-                          key={p.id}
-                          className="flex items-center gap-2.5 pl-3 pr-3 py-1.5 ml-4 mr-8 bg-white rounded-md"
-                        >
-                          <div className="flex-shrink-0 w-3.5 h-3.5 flex items-center justify-center">
-                            <OrbitProgress color="#22c55e" size="small" dense text="" textColor="" speedPlus={1} style={{ fontSize: '2px' }} />
+                      {uploadingPlaceholders.map((p) => {
+                        const mockDoc: Document = { id: '', original_filename: p.name, file_type: '' };
+                        return (
+                          <div
+                            key={p.id}
+                            className="flex items-center gap-2 px-2 py-1.5 ml-4 mr-8 bg-white rounded-lg"
+                          >
+                            <div className="flex-shrink-0 flex items-center justify-center">{getFileIcon(mockDoc)}</div>
+                            <div className="flex-1 min-w-0 flex flex-col">
+                              <span className="text-xs font-medium text-slate-600 truncate" style={{ fontFamily: "'DM Sans', system-ui, -apple-system, sans-serif" }}>
+                                {p.name}
+                              </span>
+                              <div className="flex items-center gap-1">
+                                <span className="text-[10px] text-gray-500 font-normal">
+                                  {getFileTypeLabelFromFilename(p.name)}
+                                </span>
+                                <div className="flex items-center justify-center w-3 h-3 flex-shrink-0">
+                                  <OrbitProgress color="#22c55e" size="small" dense text="" textColor="" speedPlus={1} style={{ fontSize: '2px' }} />
+                                </div>
+                              </div>
+                            </div>
+                            <div className="w-6 h-6 flex-shrink-0" aria-hidden />
                           </div>
-                          <div className="flex-1 min-w-0 font-normal text-gray-700 truncate" style={{ fontFamily: "'DM Sans', system-ui, -apple-system, sans-serif", letterSpacing: '-0.01em', fontSize: `${12 * FILING_SIDEBAR_FILE_SCALE}px` }}>
-                            {p.name}
-                          </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </div>
                 )}
@@ -3304,19 +3316,31 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
               ) : (
                 // Flat list for global view or when inside a folder - uploading placeholders at top so they appear instantly
                 <div className="py-0.5 w-full space-y-px" style={{ boxSizing: 'border-box' }}>
-                  {uploadingPlaceholders.length > 0 && uploadingPlaceholders.map((p) => (
-                    <div
-                      key={p.id}
-                      className="flex items-center gap-2.5 pl-3 pr-3 py-1.5 mx-4 bg-white rounded-md"
-                    >
-                      <div className="flex-shrink-0 w-3.5 h-3.5 flex items-center justify-center">
-                        <OrbitProgress color="#22c55e" size="small" dense text="" textColor="" speedPlus={1} style={{ fontSize: '2px' }} />
+                  {uploadingPlaceholders.length > 0 && uploadingPlaceholders.map((p) => {
+                    const mockDoc: Document = { id: '', original_filename: p.name, file_type: '' };
+                    return (
+                      <div
+                        key={p.id}
+                        className="flex items-center gap-2 px-2 py-1.5 mx-4 bg-white rounded-lg"
+                      >
+                        <div className="flex-shrink-0 flex items-center justify-center">{getFileIcon(mockDoc)}</div>
+                        <div className="flex-1 min-w-0 flex flex-col">
+                          <span className="text-xs font-medium text-slate-600 truncate" style={{ fontFamily: "'DM Sans', system-ui, -apple-system, sans-serif" }}>
+                            {p.name}
+                          </span>
+                          <div className="flex items-center gap-1">
+                            <span className="text-[10px] text-gray-500 font-normal">
+                              {getFileTypeLabelFromFilename(p.name)}
+                            </span>
+                            <div className="flex items-center justify-center w-3 h-3 flex-shrink-0">
+                              <OrbitProgress color="#22c55e" size="small" dense text="" textColor="" speedPlus={1} style={{ fontSize: '2px' }} />
+                            </div>
+                          </div>
+                        </div>
+                        <div className="w-6 h-6 flex-shrink-0" aria-hidden />
                       </div>
-                      <div className="flex-1 min-w-0 font-normal text-gray-700 truncate" style={{ fontFamily: "'DM Sans', system-ui, -apple-system, sans-serif", letterSpacing: '-0.01em', fontSize: `${12 * FILING_SIDEBAR_FILE_SCALE}px` }}>
-                        {p.name}
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                   {filteredItems.documents.map((doc) => {
                   const isLinked = isDocumentLinked(doc);
                   const isSelected = selectedItems.has(doc.id);
@@ -3673,7 +3697,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                 transition={{ duration: 0.12 }}
                 className="fixed bg-white rounded-md py-0.5 border border-slate-200 min-w-[116px] max-w-[150px]"
                 style={{
-                  left: `${deleteConfirmDialog.position.x + 30}px`,
+                  left: `${deleteConfirmDialog.position.x}px`,
                   top: `${deleteConfirmDialog.position.y}px`,
                   boxShadow: '0 4px 12px rgba(0, 0, 0, 0.12)',
                   zIndex: 100004,

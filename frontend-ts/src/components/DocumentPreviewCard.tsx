@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { FileText, File, FileSpreadsheet, Image, ChevronRight, ArrowUp } from 'lucide-react';
+import { FileText, File, Image, ChevronRight, ArrowUp } from 'lucide-react';
 import * as pdfjs from 'pdfjs-dist';
+import { getDocumentBlobUrl } from '../services/documentBlobCache';
 
 // Vite handles this import and returns the correct URL for the worker
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
@@ -70,7 +71,15 @@ const getFileIcon = (filename: string | null | undefined, size: number = 14, cla
     );
   }
   if (['xls', 'xlsx', 'csv'].includes(ext)) {
-    return <FileSpreadsheet size={size} style={style} />;
+    return (
+      <img
+        src="/excel.png"
+        alt="Excel"
+        width={size}
+        height={size}
+        style={{ objectFit: 'contain', display: 'block' }}
+      />
+    );
   }
   if (['jpg', 'jpeg', 'png', 'gif', 'webp'].includes(ext)) {
     return <Image size={size} style={style} />;
@@ -79,8 +88,12 @@ const getFileIcon = (filename: string | null | undefined, size: number = 14, cla
   return <File size={size} style={style} />;
 };
 
+/** Lower scale = faster render and smaller payload; JPEG 0.65 = quicker encode */
+const THUMB_SCALE = 0.35;
+const THUMB_JPEG_QUALITY = 0.65;
+
 /**
- * Render PDF first page as thumbnail image
+ * Render PDF first page as thumbnail image (optimized for speed)
  */
 const renderPdfThumbnail = async (arrayBuffer: ArrayBuffer): Promise<string | null> => {
   try {
@@ -91,18 +104,17 @@ const renderPdfThumbnail = async (arrayBuffer: ArrayBuffer): Promise<string | nu
     const context = canvas.getContext('2d');
     if (!context) return null;
     
-    const viewport = page.getViewport({ scale: 0.5 });
+    const viewport = page.getViewport({ scale: THUMB_SCALE });
     canvas.width = viewport.width;
     canvas.height = viewport.height;
     
-    // PDF.js v5 requires both canvas and canvasContext
     await page.render({
       canvasContext: context,
       viewport: viewport,
       canvas: canvas
     } as any).promise;
     
-    return canvas.toDataURL('image/jpeg', 0.8);
+    return canvas.toDataURL('image/jpeg', THUMB_JPEG_QUALITY);
   } catch (error) {
     console.warn('Failed to render PDF thumbnail:', error);
     return null;
@@ -216,121 +228,123 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({
     return () => window.removeEventListener('documentCoverReady', onCoverReady as EventListener);
   }, [doc_id, isImage]);
   
-  // Fetch document and generate preview - use cache if present, otherwise fetch
+  // Defer loading until card is in viewport (or expanded) – avoids loading off-screen cards
+  const [isInView, setIsInView] = useState(defaultExpanded);
   useEffect(() => {
-    if (!doc_id) {
+    if (defaultExpanded) {
+      setIsInView(true);
+      return;
+    }
+    const el = cardContainerRef.current;
+    if (!el) return;
+    const io = new IntersectionObserver(
+      ([e]) => {
+        if (e?.isIntersecting) setIsInView(true);
+      },
+      { rootMargin: '100px', threshold: 0 }
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [defaultExpanded]);
+
+  // Fetch document and generate preview - use documentBlobCache / __preloadedDocumentCovers, defer until in view
+  useEffect(() => {
+    if (!doc_id || !isInView) {
+      if (!doc_id) setLoading(false);
+      return;
+    }
+    
+    const cache = (window as any).__preloadedDocumentCovers;
+    const cached = cache?.[doc_id];
+    
+    // 1. Check documentBlobCache first (FilingSidebar preload) – instant local fetch, no network
+    const blobCacheUrl = getDocumentBlobUrl(doc_id);
+    if (blobCacheUrl && isPDF) {
+      fetch(blobCacheUrl)
+        .then(res => res.blob())
+        .then(blob => blob.arrayBuffer())
+        .then(renderPdfThumbnail)
+        .then(thumbnailUrl => {
+          if (thumbnailUrl) {
+            setPdfThumbnail(thumbnailUrl);
+            if (!cache) (window as any).__preloadedDocumentCovers = {};
+            (window as any).__preloadedDocumentCovers[doc_id] = {
+              url: blobCacheUrl,
+              thumbnailUrl,
+              type: 'application/pdf',
+              timestamp: Date.now()
+            };
+          }
+          setLoading(false);
+        })
+        .catch(() => setLoading(false));
+      return;
+    }
+    if (blobCacheUrl && isImage) {
+      setPreviewUrl(blobCacheUrl);
       setLoading(false);
       return;
     }
     
-    // Re-check cache (may have been populated after our initial render, e.g. by another card's preload)
-    const cached = (window as any).__preloadedDocumentCovers?.[doc_id];
-    if (cached) {
-      // PDF with pre-generated thumbnail - already shown via initial state, ensure sync
-      if (cached.thumbnailUrl) {
-        setPdfThumbnail(cached.thumbnailUrl);
-        setLoading(false);
-        return;
-      }
-      // Image with cached blob URL - already shown via initial state
-      if (cached.url && isImage) {
-        setPreviewUrl(cached.url);
-        setLoading(false);
-        return;
-      }
-      // PDF without thumbnail but with blob URL - generate thumbnail from cache
-      if (cached.url && isPDF) {
-        fetch(cached.url)
-          .then(res => res.blob())
-          .then(blob => blob.arrayBuffer())
-          .then(arrayBuffer => renderPdfThumbnail(arrayBuffer))
-          .then(thumbnailUrl => {
-            if (thumbnailUrl) {
-              setPdfThumbnail(thumbnailUrl);
-              (window as any).__preloadedDocumentCovers[doc_id].thumbnailUrl = thumbnailUrl;
-            }
-            setLoading(false);
-          })
-          .catch(err => {
-            console.warn('Failed to generate thumbnail from cached blob:', err);
-            setLoading(false);
-          });
-        return;
-      }
+    // 2. __preloadedDocumentCovers (preloadDocumentCovers or another card)
+    if (cached?.thumbnailUrl) {
+      setPdfThumbnail(cached.thumbnailUrl);
+      setLoading(false);
+      return;
+    }
+    if (cached?.url && isImage) {
+      setPreviewUrl(cached.url);
+      setLoading(false);
+      return;
+    }
+    if (cached?.url && isPDF) {
+      fetch(cached.url)
+        .then(res => res.blob())
+        .then(blob => blob.arrayBuffer())
+        .then(renderPdfThumbnail)
+        .then(thumbnailUrl => {
+          if (thumbnailUrl) {
+            setPdfThumbnail(thumbnailUrl);
+            (window as any).__preloadedDocumentCovers[doc_id].thumbnailUrl = thumbnailUrl;
+          }
+          setLoading(false);
+        })
+        .catch(() => setLoading(false));
+      return;
     }
     
-    // No cache - fetch the document
-    const fetchPreview = async () => {
-      try {
-        const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
-        let fetchUrl: string;
-        
-        if (download_url) {
-          fetchUrl = download_url.startsWith('http') ? download_url : `${backendUrl}${download_url}`;
-        } else if (s3_path) {
-          fetchUrl = `${backendUrl}/api/files/download?s3_path=${encodeURIComponent(s3_path)}`;
-        } else {
-          fetchUrl = `${backendUrl}/api/files/download?document_id=${doc_id}`;
-        }
-        
-        const response = await fetch(fetchUrl, {
-          credentials: 'include'
-        });
-        
-        if (!response.ok) {
-          console.warn('❌ Failed to fetch document:', response.status, response.statusText);
-          setLoading(false);
-          return;
-        }
-        
-        const blob = await response.blob();
+    // 3. No cache – fetch from backend (use high priority for visible cards)
+    const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
+    const fetchUrl = download_url?.startsWith('http')
+      ? download_url
+      : download_url
+        ? `${backendUrl}${download_url}`
+        : s3_path
+          ? `${backendUrl}/api/files/download?s3_path=${encodeURIComponent(s3_path)}`
+          : `${backendUrl}/api/files/download?document_id=${doc_id}`;
+    
+    fetch(fetchUrl, { credentials: 'include', priority: 'high' } as RequestInit)
+      .then(res => {
+        if (!res.ok) throw new Error(`${res.status}`);
+        return res.blob();
+      })
+      .then(async (blob) => {
         const url = URL.createObjectURL(blob);
-        
-        // Cache for future use
-        if (!(window as any).__preloadedDocumentCovers) {
-          (window as any).__preloadedDocumentCovers = {};
-        }
-        
+        if (!(window as any).__preloadedDocumentCovers) (window as any).__preloadedDocumentCovers = {};
         if (isPDF) {
-          // Render PDF first page as thumbnail
-          try {
-            const arrayBuffer = await blob.arrayBuffer();
-            const thumbnailUrl = await renderPdfThumbnail(arrayBuffer);
-            
-            if (thumbnailUrl) {
-              setPdfThumbnail(thumbnailUrl);
-              
-              // Cache the thumbnail
-              (window as any).__preloadedDocumentCovers[doc_id] = {
-                url: url,
-                thumbnailUrl: thumbnailUrl,
-                type: blob.type,
-                timestamp: Date.now()
-              };
-            } else {
-              console.warn('⚠️ PDF thumbnail generation returned null for:', original_filename);
-            }
-          } catch (pdfError) {
-            console.error('❌ Failed to generate PDF thumbnail:', pdfError);
+          const thumbnailUrl = await renderPdfThumbnail(await blob.arrayBuffer());
+          if (thumbnailUrl) {
+            setPdfThumbnail(thumbnailUrl);
+            (window as any).__preloadedDocumentCovers[doc_id] = { url, thumbnailUrl, type: blob.type, timestamp: Date.now() };
           }
         } else if (isImage) {
           setPreviewUrl(url);
-          (window as any).__preloadedDocumentCovers[doc_id] = {
-            url: url,
-            type: blob.type,
-            timestamp: Date.now()
-          };
+          (window as any).__preloadedDocumentCovers[doc_id] = { url, type: blob.type, timestamp: Date.now() };
         }
-        
         setLoading(false);
-      } catch (err) {
-        console.error('❌ Failed to fetch document preview:', err);
-        setLoading(false);
-      }
-    };
-    
-    fetchPreview();
-  }, [doc_id, s3_path, download_url, isPDF, isImage, original_filename]);
+      })
+      .catch(() => setLoading(false));
+  }, [doc_id, s3_path, download_url, isPDF, isImage, isInView]);
   
   // Determine what to show in the thumbnail
   const thumbnailSrc = pdfThumbnail || (isImage && previewUrl ? previewUrl : null);
@@ -365,12 +379,12 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({
           marginTop: '6px',
           width: '100%',
           maxWidth: '320px',
-          borderRadius: '6px',
-          border: '1px solid rgba(0, 0, 0, 0.08)',
-          backgroundColor: 'transparent',
+          borderRadius: 6,
+          border: '1px solid #e5e7eb',
+          backgroundColor: '#ffffff',
           transition: 'border-color 0.1s ease, box-shadow 0.1s ease',
           overflow: 'hidden',
-          boxShadow: 'none',
+          boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
           boxSizing: 'border-box',
           position: 'relative',
         }}
@@ -464,7 +478,7 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({
                 style={{
                   width: '100%',
                   padding: 0,
-                  borderRadius: '4px',
+                  borderRadius: 4,
                   overflow: 'auto',
                   backgroundColor: '#FAFAFA',
                   cursor: onClick ? 'pointer' : 'default',
@@ -599,8 +613,8 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({
         }
         .document-preview-card:hover,
         .document-preview-card--expanded {
-          border-color: rgba(0, 0, 0, 0.12);
-          box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+          border-color: #d1d5db;
+          box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
         }
         .document-preview-card__header {
           transition: background-color 0.1s ease;
@@ -734,11 +748,12 @@ const StackedDocCardWithAsk: React.FC<{
       onMouseEnter={() => { if (onAskQuestion) hoverRef.current = setTimeout(() => setShowAsk(true), 300); }}
       onMouseLeave={() => { if (hoverRef.current) { clearTimeout(hoverRef.current); hoverRef.current = null; } if (!askQ.trim()) setShowAsk(false); }}
       style={{
-        display: 'flex', flexDirection: 'column', backgroundColor: 'transparent',
-        borderRadius: '8px', border: '1px solid rgba(0,0,0,0.08)',
+        display: 'flex', flexDirection: 'column', backgroundColor: '#ffffff',
+        borderRadius: 6, border: '1px solid #e5e7eb',
+        boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
         cursor: onDocumentClick ? 'pointer' : 'default', transition: 'all 0.1s ease', overflow: 'hidden',
       }}
-      whileHover={onDocumentClick ? { backgroundColor: 'rgba(0,0,0,0.02)', borderColor: 'rgba(0,0,0,0.12)' } : undefined}
+      whileHover={onDocumentClick ? { backgroundColor: '#fafafa', borderColor: '#d1d5db', boxShadow: '0 1px 3px rgba(0,0,0,0.06)' } : undefined}
     >
       <div
         onClick={() => onDocumentClick?.(doc)}

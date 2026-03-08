@@ -22,7 +22,6 @@ import {
   LogOut,
   MessageCircle,
   MessagesSquare,
-  Map,
   Search,
   HelpCircle,
   Info,
@@ -269,7 +268,6 @@ export const Sidebar = ({
     { id: 'home', label: 'Dashboard', icon: LibraryBig, action: 'navigate' },
     { id: 'projects', label: 'Projects', icon: FolderClosed, action: 'navigate' },
     { id: 'database', label: 'Files', icon: Files, action: 'toggleFiling' },
-    { id: 'map', label: 'Map', icon: Map, action: 'openMap' },
     { id: 'chat', label: 'Chats', icon: MessagesSquare, action: 'openChat' },
   ];
 

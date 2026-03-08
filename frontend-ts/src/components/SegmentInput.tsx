@@ -260,8 +260,9 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
     restoreSelectionToCursor();
   }, [segments, cursor, restoreSelectionToCursor, isInputEmpty]);
 
-  // Keep the caret in view when typing: scroll the scroll wrapper so the cursor stays visible.
-  // Skip when input is empty (single empty segment) so we don't scroll the placeholder on unrelated re-renders.
+  // Keep the caret in view when typing: scroll only the input's scroll wrapper so the cursor stays visible.
+  // We avoid scrollIntoView() because it scrolls ALL ancestor containers (including chat panel/main content),
+  // which causes the input to jump and "type at the bottom" when you have lots of text.
   const hasContent = segments.length > 1 || (segments.length === 1 && isTextSegment(segments[0]) && segments[0].value.length > 0);
   React.useLayoutEffect(() => {
     if (!hasContent || !scrollWrapperRef.current || !internalRef.current) return;
@@ -269,11 +270,19 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
       const sel = window.getSelection();
       if (!sel || sel.rangeCount === 0) return;
       const range = sel.getRangeAt(0);
-      const node = range.startContainer.nodeType === Node.TEXT_NODE
-        ? range.startContainer.parentElement
-        : range.startContainer as Element;
-      if (node && internalRef.current?.contains(node)) {
-        node.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "auto" });
+      if (!internalRef.current?.contains(range.startContainer)) return;
+      const wrapper = scrollWrapperRef.current!;
+      const cursorRect = range.getBoundingClientRect();
+      const wrapperRect = wrapper.getBoundingClientRect();
+      const padding = 4;
+      let delta = 0;
+      if (cursorRect.top < wrapperRect.top + padding) {
+        delta = cursorRect.top - (wrapperRect.top + padding);
+      } else if (cursorRect.bottom > wrapperRect.bottom - padding) {
+        delta = cursorRect.bottom - (wrapperRect.bottom - padding);
+      }
+      if (delta !== 0) {
+        wrapper.scrollTop += delta;
       }
     });
     return () => cancelAnimationFrame(raf);
@@ -451,11 +460,13 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
     overflowY: style.overflowY ?? "auto",
     overflowX: style.overflowX ?? "hidden",
     width: style.width ?? "100%",
+    minWidth: 0,
     position: "relative" as const,
     WebkitOverflowScrolling: "touch" as const,
     scrollbarWidth: "thin" as const,
     scrollbarColor: "rgba(0,0,0,0.08) transparent",
     scrollbarGutter: "stable" as const,
+    paddingRight: "6px",
     ...(scrollWrapperPaddingBottom != null && { paddingBottom: scrollWrapperPaddingBottom }),
   } : undefined;
   const editableStyle: React.CSSProperties | undefined = scrollWrapperStyle
@@ -532,8 +543,8 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
 
   const rootStyle: React.CSSProperties =
     style?.height != null && scrollWrapperStyle != null
-      ? { position: "relative", height: style.height, minHeight: style.height, flexShrink: 0, ...(style?.width != null ? { width: style.width } : {}) }
-      : { position: "relative", ...(style?.width != null ? { width: style.width } : {}) };
+      ? { position: "relative", height: style.height, minHeight: style.height, flexShrink: 0, minWidth: 0, ...(style?.width != null ? { width: style.width } : {}) }
+      : { position: "relative", minWidth: 0, ...(style?.width != null ? { width: style.width } : {}) };
 
   return (
     <div style={rootStyle}>
@@ -560,8 +571,11 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
               position: "relative",
               outline: "none",
               minHeight: "22px",
+              minWidth: 0,
               wordWrap: "break-word",
+              wordBreak: "break-all",
               whiteSpace: "pre-wrap",
+              overflowX: "hidden",
               WebkitTapHighlightColor: "transparent",
               ...editableStyle,
               fontSize: effectiveFontSize,
@@ -644,7 +658,8 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
                       }
                     : {}),
                 // Use inline-block + paddingLeft so wrapped lines align with first line (padding applies to whole block)
-                ...(i === 0 ? { display: "inline-block", paddingLeft: "8px", verticalAlign: "top" } : {}),
+                // maxWidth + wordBreak force long strings to wrap before the clear button
+                ...(i === 0 ? { display: "inline-block", paddingLeft: "8px", verticalAlign: "top", maxWidth: "100%", overflowWrap: "break-word", wordBreak: "break-all" } : {}),
               }}
             >
               {(isOnlyEmpty && showPlaceholderOverlay) || showPlaceholderHere ? placeholder : seg.value}
@@ -733,8 +748,11 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
           position: "relative",
           outline: "none",
           minHeight: "22px",
+          minWidth: 0,
           wordWrap: "break-word",
+          wordBreak: "break-all",
           whiteSpace: "pre-wrap",
+          overflowX: "hidden",
           WebkitTapHighlightColor: "transparent",
           ...style,
           fontSize: effectiveFontSize,
@@ -817,7 +835,8 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
                       }
                     : {}),
                 // Use inline-block + paddingLeft so wrapped lines align with first line (padding applies to whole block)
-                ...(i === 0 ? { display: "inline-block", paddingLeft: "8px", verticalAlign: "top" } : {}),
+                // maxWidth + wordBreak force long strings to wrap before the clear button
+                ...(i === 0 ? { display: "inline-block", paddingLeft: "8px", verticalAlign: "top", maxWidth: "100%", overflowWrap: "break-word", wordBreak: "break-all" } : {}),
               }}
             >
               {(isOnlyEmpty && showPlaceholderOverlay) || showPlaceholderHere ? placeholder : seg.value}

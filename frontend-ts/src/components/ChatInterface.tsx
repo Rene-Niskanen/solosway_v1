@@ -1196,7 +1196,7 @@ const ChatInterface = forwardRef<{ handleFileDrop: (file: File) => void }, ChatI
               
               {/* Input row */}
               <div className={`relative flex ${isMultiLine ? 'items-start' : 'items-end'}`}>
-                <div className={`flex-1 relative flex ${isMultiLine ? 'items-start' : 'items-end'} min-h-[24px]`} style={{ marginBottom: '0px' }}>
+                <div className={`flex-1 relative flex ${isMultiLine ? 'items-start' : 'items-end'} min-h-[24px]`} style={{ marginBottom: '0px', paddingRight: inputValue.trim() !== '' ? '56px' : 0 }}>
                   {inputValue.trim() !== '' && (
                     <button
                       type="button"
@@ -1261,8 +1261,9 @@ const ChatInterface = forwardRef<{ handleFileDrop: (file: File) => void }, ChatI
                       lineHeight: '22px',
                       paddingTop: '0px',
                       paddingBottom: '10px',
-                      paddingRight: inputValue.trim() !== '' ? '30px' : '12px',
+                      paddingRight: inputValue.trim() !== '' ? '16px' : '12px',
                       scrollbarWidth: 'thin',
+
                       scrollbarColor: '#D1D5DB transparent',
                       verticalAlign: 'baseline'
                     }}

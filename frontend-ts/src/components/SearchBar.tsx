@@ -1607,7 +1607,7 @@ export const SearchBar = forwardRef<{
                 <div
                   ref={atMentionAnchorRef}
                   className="flex-1 relative flex items-start w-full"
-                  style={{ overflow: 'visible', height: 'auto', minHeight: '100px', width: '100%', minWidth: '0', flexShrink: 0 }}
+                  style={{ overflow: 'visible', height: 'auto', minHeight: '100px', width: '100%', minWidth: '0', flexShrink: 0, paddingRight: segmentInput.getPlainText().trim() !== '' ? '56px' : 0 }}
                   onFocus={() => setIsFocused(true)}
                   onBlur={() => setIsFocused(false)}
                   onClick={(e) => e.stopPropagation()}
@@ -1666,7 +1666,7 @@ export const SearchBar = forwardRef<{
                       lineHeight: '20px',
                       paddingTop: '12px',
                       paddingBottom: '4px',
-                      paddingRight: '30px',
+                      paddingRight: '16px',
                       paddingLeft: '14px',
                       color: segmentInput.getPlainText() ? '#333333' : undefined,
                       boxSizing: 'border-box',

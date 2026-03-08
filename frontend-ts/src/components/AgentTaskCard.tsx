@@ -3,7 +3,7 @@
 import React from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ScanText, Check, AlertCircle, X, RotateCcw, ArrowRight } from 'lucide-react';
-import type { AgentTask, AgentTaskDocMeta } from '../contexts/AgentOrchestrationContext';
+import type { AgentTask, AgentTaskDocMeta, AgentTaskCitation } from '../contexts/AgentOrchestrationContext';
 
 interface AgentTaskCardProps {
   task: AgentTask;
@@ -11,6 +11,8 @@ interface AgentTaskCardProps {
   onCancel: (taskId: string) => void;
   onRetry: (taskId: string) => void;
   index: number;
+  /** Same citation mapping as normal responses: renders CitationLink pills for [1], [2] etc. When provided, citation clicks open the panel/view doc. */
+  renderCitation?: (citationNumber: string, citationData: AgentTaskCitation, key: string) => React.ReactNode;
 }
 
 function DocTypeIcon({ type }: { type: string }) {
@@ -43,6 +45,62 @@ function DocTypeIcons({ docs }: { docs: AgentTaskDocMeta[] }) {
       ))}
     </span>
   );
+}
+
+/** Process resultText to %%CITATION_*%% placeholders (same logic as normal responses in SideChatPanel). */
+function processAgentTaskCitations(text: string, citations: Record<string, AgentTaskCitation>): string {
+  if (!text) return '';
+  const superscriptMap: Record<string, string> = {
+    '¹': '1', '²': '2', '³': '3', '⁴': '4', '⁵': '5', '⁶': '6', '⁷': '7', '⁸': '8', '⁹': '9',
+  };
+  let processed = text;
+  // Superscript
+  processed = processed.replace(/[¹²³⁴⁵⁶⁷⁸⁹]+(?:\d+)?/g, (match) => {
+    let numStr = '';
+    for (const char of match) numStr += superscriptMap[char] || (/\d/.test(char) ? char : '');
+    return citations?.[numStr] ? `%%CITATION_SUPERSCRIPT_${numStr}%%` : `%%CITATION_PENDING_${numStr}%%`;
+  });
+  // Period cleanup before brackets
+  processed = processed.replace(/\[(\d+)\]\s*\.(?=\s|$)/g, '[$1]');
+  processed = processed.replace(/([¹²³⁴⁵⁶⁷⁸⁹]+(?:\d+)?)\s*\.(?=\s|$)/g, '$1');
+  // Brackets
+  processed = processed.replace(/\[(\d+)\]/g, (_, num) =>
+    citations?.[num] ? `%%CITATION_BRACKET_${num}%%` : `%%CITATION_PENDING_${num}%%`
+  );
+  processed = processed.replace(/((?:%%CITATION_(?:SUPERSCRIPT|BRACKET|PENDING)_\d+%%\s*)+)\.(?=\s|$)/g, '$1');
+  return processed;
+}
+
+const CITATION_PLACEHOLDER_RE = /(%%CITATION_(?:SUPERSCRIPT|BRACKET|PENDING)_\d+%%)/g;
+
+/** Render result text with citation placeholders → CitationLink or plain text (same as normal responses). */
+function renderCompleteText(
+  resultText: string,
+  citations: Record<string, AgentTaskCitation>,
+  renderCitation?: (citationNumber: string, citationData: AgentTaskCitation, key: string) => React.ReactNode
+): React.ReactNode {
+  if (!renderCitation) {
+    const t = resultText.slice(0, 80).replace(/\[\d+\]/g, '').trim();
+    return t ? renderTextWithFormatting(t) : 'Answer ready';
+  }
+  const truncated = resultText.slice(0, 80);
+  const processed = processAgentTaskCitations(truncated, citations);
+  const parts = processed.split(CITATION_PLACEHOLDER_RE);
+  const nodes: React.ReactNode[] = [];
+  let keyIdx = 0;
+  for (const part of parts) {
+    const m = part.match(/^%%CITATION_(?:SUPERSCRIPT|BRACKET|PENDING)_(\d+)%%$/);
+    if (m) {
+      const num = m[1]!;
+      const citData = citations?.[num];
+      if (citData) {
+        nodes.push(renderCitation(num, citData, `cit-${keyIdx++}`));
+      }
+    } else if (part) {
+      nodes.push(renderTextWithFormatting(part));
+    }
+  }
+  return nodes.length > 0 ? <>{nodes}</> : 'Answer ready';
 }
 
 /** Render text with **bold** and *italic* as React nodes. Handles malformed **text* (single trailing asterisk). */
@@ -83,7 +141,7 @@ function DocCountChip({ count }: { count: number }) {
   );
 }
 
-export const AgentTaskCard: React.FC<AgentTaskCardProps> = ({ task, onInjectResult, onCancel, onRetry, index }) => {
+export const AgentTaskCard: React.FC<AgentTaskCardProps> = ({ task, onInjectResult, onCancel, onRetry, index, renderCitation }) => {
   const [isHovered, setIsHovered] = React.useState(false);
 
   const isInFlight = task.status === 'searching' || task.status === 'analysing';
@@ -103,10 +161,10 @@ export const AgentTaskCard: React.FC<AgentTaskCardProps> = ({ task, onInjectResu
       style={{
         position: 'relative',
         display: 'flex', alignItems: 'center', gap: 8,
-        padding: task.status === 'complete' ? '8px 10px' : `6px ${isInFlight ? 40 : 10}px 6px 10px`,
+        padding: task.status === 'complete' ? '8px 10px' : '6px 10px',
         borderRadius: task.status === 'complete' ? 6 : 10,
         backgroundColor: task.status === 'error' ? '#FEF2F2' : '#FFFFFF',
-        border: task.status === 'error' ? '1px solid #FECACA' : task.status === 'complete' ? '1px solid transparent' : '1px solid #E5E7EB',
+        border: task.status === 'error' ? '1px solid #FECACA' : '1px solid #E5E7EB',
         boxShadow: task.status === 'complete' ? 'none' : '0 1px 3px rgba(0,0,0,0.04)',
         cursor: task.status === 'complete' ? 'pointer' : 'default',
         transition: 'border-color 0.06s ease-out, box-shadow 0.06s ease-out, background-color 0.06s ease-out',
@@ -196,10 +254,7 @@ export const AgentTaskCard: React.FC<AgentTaskCardProps> = ({ task, onInjectResu
               fontSize: 12.5, fontWeight: 500, color: '#374151',
               overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, minWidth: 0,
             }}>
-              {(() => {
-                const t = task.resultText.slice(0, 80).replace(/\[\d+\]/g, '').trim();
-                return t ? renderTextWithFormatting(t) : 'Answer ready';
-              })()}
+              {renderCompleteText(task.resultText, task.citations ?? {}, renderCitation)}
             </span>
             <ArrowRight style={{ width: 13, height: 13, color: '#9CA3AF', flexShrink: 0 }} />
           </motion.div>
@@ -242,14 +297,15 @@ export const AgentTaskCard: React.FC<AgentTaskCardProps> = ({ task, onInjectResu
           type="button"
           tabIndex={-1}
           onMouseDown={(e) => e.preventDefault()}
-          initial={{ opacity: 0, scale: 0.9 }}
-          animate={{ opacity: 1, scale: 1 }}
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
+          transition={{ duration: 0.12 }}
           onClick={(e) => { e.stopPropagation(); onCancel(task.id); }}
           style={{
             marginLeft: 'auto',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-            width: 18, height: 18, borderRadius: '50%',
+            width: 18, height: 18, minWidth: 18, minHeight: 18, borderRadius: '50%',
             backgroundColor: 'rgba(0,0,0,0.06)', border: 'none', cursor: 'pointer',
             padding: 0, flexShrink: 0,
           }}

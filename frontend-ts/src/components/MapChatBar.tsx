@@ -396,7 +396,7 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
             >
               <div
                 className="flex-1 relative flex items-start w-full"
-                style={{ overflow: 'visible', height: '36px', minHeight: '36px', width: '100%', minWidth: '0', flexShrink: 0 }}
+                style={{ overflow: 'visible', height: '36px', minHeight: '36px', width: '100%', minWidth: '0', flexShrink: 0, paddingRight: (segmentInput.getPlainText().trim() !== '' || propertyAttachments.length > 0 || atMentionDocumentChips.length > 0) ? '56px' : 0 }}
                 onFocus={() => setIsFocused(true)}
                 onBlur={() => setIsFocused(false)}
               >
@@ -454,7 +454,7 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
                     lineHeight: '20px',
                     paddingTop: '12px',
                     paddingBottom: '4px',
-                    paddingRight: (segmentInput.getPlainText().trim() !== '' || propertyAttachments.length > 0 || atMentionDocumentChips.length > 0) ? '30px' : '12px',
+                    paddingRight: (segmentInput.getPlainText().trim() !== '' || propertyAttachments.length > 0 || atMentionDocumentChips.length > 0) ? '16px' : '12px',
                     paddingLeft: '14px',
                     color: segmentInput.getPlainText() ? '#0D0D0D' : undefined,
                     boxSizing: 'border-box',

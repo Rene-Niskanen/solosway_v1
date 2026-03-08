@@ -69,6 +69,9 @@ import { Slider } from '@/components/ui/slider';
 
 export const DEFAULT_MAP_LOCATION_KEY = 'defaultMapLocation';
 
+// Map feature disabled - when false, map never shows and layout always uses dashboard view
+const MAP_ENABLED = false;
+
 // Helper function to calculate dynamic zoom based on area size
 const calculateZoomFromBbox = (bbox: number[] | undefined, placeType: string[] | undefined): number => {
   if (!bbox || bbox.length !== 4) {
@@ -2809,15 +2812,22 @@ export const MainContent = ({
   }, []);
 
   // File View modal: "View Document" → open FilingSidebar (file list) then open doc in 50/50 panel so layout is sidebar + document preview
+  // Must navigate to search + set visibility flags so chat panel appears and document preview renders (same as search modal's open file)
   const handleFileViewDocument = React.useCallback((docId: string, filename: string) => {
     const label = filename || 'Document';
     openFilingSidebar(); // Ensure sidebar is open (file list on left)
     setFileViewDocument(null); // Close the pop-up modal
+    // Navigate to search and show chat so 50/50 layout works (without this, document doesn't open when on dashboard)
+    onNavigate?.('search');
+    setHasPerformedSearch(true);
+    setIsMapVisibleFromSearchBar(true);
+    setIsMapVisible(true);
+    setResetWidthForDocPreviewTrigger((t) => t + 1); // Force 50% split
     openExpandedCardView(docId, label); // Open document in the 50/50 panel (document preview on right)
     if (activeChatId) {
       openDocumentForChat(activeChatId, { docId, filename: label });
     }
-  }, [openFilingSidebar, openExpandedCardView, activeChatId, openDocumentForChat]);
+  }, [openFilingSidebar, openExpandedCardView, activeChatId, openDocumentForChat, onNavigate]);
 
   // File View modal: close sidebar + open fullscreen chat with document in preview
   const handleFileViewAnalyseWithAI = React.useCallback((docId: string, filename: string) => {
@@ -4394,10 +4404,11 @@ export const MainContent = ({
                 {/* Use ref value during transitions for synchronous check, otherwise use state */}
                 {(() => {
                   // During transitions, use ref for immediate value; otherwise use state
-                  const mapVisible = isTransitioning ? isMapVisibleRef.current : isMapVisible;
+                  const mapVisible = MAP_ENABLED && (isTransitioning ? isMapVisibleRef.current : isMapVisible);
+                  const externalMapVisible = MAP_ENABLED && externalIsMapVisible;
                   // CRITICAL: Hide dashboard when map is visible OR when externalIsMapVisible is true (Map button clicked)
                   // Show dashboard when map is NOT visible AND externalIsMapVisible is false
-                  const shouldHideDashboard = mapVisible || externalIsMapVisible;
+                  const shouldHideDashboard = mapVisible || externalMapVisible;
                   return !shouldHideDashboard;
                 })() ? (() => {
                   // Use frozen layout state during transitions to prevent recalculation
@@ -4405,7 +4416,7 @@ export const MainContent = ({
                   const useFrozen = isTransitioning && frozenState !== null;
                   
                   // During transitions, use ref for immediate value; otherwise use state
-                  const mapVisible = isTransitioning ? isMapVisibleRef.current : isMapVisible;
+                  const mapVisible = MAP_ENABLED && (isTransitioning ? isMapVisibleRef.current : isMapVisible);
                   
                   // Check if search bar should be at bottom (same logic as below)
                   const VERY_SMALL_WIDTH_THRESHOLD = 600;
@@ -4513,6 +4524,7 @@ export const MainContent = ({
                               width: 'auto',
                               objectFit: 'contain',
                               flexShrink: 0,
+                              transform: 'translateY(-2px)',
                             }}
                           />
                           <h2
@@ -4548,6 +4560,9 @@ export const MainContent = ({
                         const effectiveViewportSizeForSearch = useFrozen ? frozenState.viewportSize : viewportSize;
                         const effectiveSidebarCollapsed = useFrozen ? frozenState.isSidebarCollapsed : isSidebarCollapsed;
                         
+                        // Map disabled: always use dashboard layout for search bar
+                        const effectiveMapVisible = MAP_ENABLED && (isTransitioning ? isMapVisibleRef.current : isMapVisible);
+                        
                         const isVerySmallViewport = effectiveViewportSizeForSearch.width < VERY_SMALL_WIDTH_THRESHOLD || 
                                                    effectiveViewportSizeForSearch.height < VERY_SMALL_HEIGHT_THRESHOLD;
                         
@@ -4561,7 +4576,7 @@ export const MainContent = ({
                         const actualSidebarWidth = effectiveSidebarWidthWithRail;
                         
                         // Calculate available width (account for sidebar) - SAME AS DASHBOARD
-                        const availableWidth = isMapVisible 
+                        const availableWidth = effectiveMapVisible 
                           ? effectiveViewportSizeForSearch.width - (isSidebarCollapsed ? 0 : actualSidebarWidth)
                           : effectiveViewportSizeForSearch.width - (effectiveSidebarCollapsed ? 0 : SIDEBAR_WIDTH);
                         
@@ -4589,7 +4604,7 @@ export const MainContent = ({
                         const actualSearchBarWidth = availableWidth - (finalPadding * 2);
                         
                         // When very small, position at bottom like ChatGPT
-                        const shouldPositionAtBottom = isVerySmallViewport && !isMapVisible;
+                        const shouldPositionAtBottom = isVerySmallViewport && !effectiveMapVisible;
                         
                         // For map view: Calculate center point of available space (same logic as dashboard padding)
                         // Center = sidebar right edge + (available width / 2)
@@ -4599,17 +4614,17 @@ export const MainContent = ({
                         // = viewportWidth/2 + actualSidebarWidth/2
                         // = 50vw + actualSidebarWidth/2
                         const sidebarHalfWidth = actualSidebarWidth / 2;
-                        const mapViewLeft = isMapVisible 
+                        const mapViewLeft = effectiveMapVisible 
                           ? (isSidebarCollapsed 
                               ? '50%' 
                               : `calc(50vw + ${sidebarHalfWidth}px)`)
                           : (shouldPositionAtBottom ? '0' : 'auto');
                         
                         // Transform: translateX(-50%) centers the search bar at the left position
-                        const mapViewTransform = isMapVisible ? 'translateX(-50%)' : 'none';
+                        const mapViewTransform = effectiveMapVisible ? 'translateX(-50%)' : 'none';
                         
                         // Debug logging to verify calculation
-                        if (isMapVisible) {
+                        if (effectiveMapVisible) {
                           console.log('🔍 Search bar positioning:', {
                             isSidebarCollapsed,
                             isSidebarExpanded,
@@ -4628,7 +4643,7 @@ export const MainContent = ({
                         // Component will automatically re-render when isSidebarCollapsed prop changes
                         const shouldEnableTransition = !(isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked || isTransitioningToChatRef.current);
                         const transitionValue = shouldEnableTransition
-                          ? (isMapVisible ? 'left 0.3s ease-out' : 'all 0.3s ease-out')
+                          ? (effectiveMapVisible ? 'left 0.3s ease-out' : 'all 0.3s ease-out')
                           : 'none';
                         
                         // Cap dashboard wrapper so SearchBar matches SideChatPanel bar (same total width + same 16px padding each side)
@@ -4636,25 +4651,25 @@ export const MainContent = ({
                         const dashboardBarWrapperMaxPx = CHAT_BAR_MAX_WIDTH_PX + 2 * DASHBOARD_BAR_PADDING_PX;
                         return (
                           <div 
-                            className={isMapVisible ? "" : "w-full flex justify-center items-center"} 
+                            className={effectiveMapVisible ? "" : "w-full flex justify-center items-center"} 
                             style={{ 
                               // Explicit display to override any className interference
-                              display: (isMapVisible || showNewPropertyWorkflow) ? 'block' : 'flex',
-                              alignItems: isMapVisible ? 'center' : 'center', // Center content vertically
+                              display: (effectiveMapVisible || showNewPropertyWorkflow) ? 'block' : 'flex',
+                              alignItems: effectiveMapVisible ? 'center' : 'center', // Center content vertically
                               marginTop: shouldPositionAtBottom ? 'auto' : (isVerySmall ? 'auto' : '0'),
                               marginBottom: shouldPositionAtBottom ? '0' : (isVerySmall ? 'auto' : '0'),
-                              paddingLeft: isMapVisible ? `${EXTRA_HORIZONTAL_PADDING}px` : `${DASHBOARD_BAR_PADDING_PX}px`,
-                              paddingRight: isMapVisible ? `${EXTRA_HORIZONTAL_PADDING}px` : `${DASHBOARD_BAR_PADDING_PX}px`,
+                              paddingLeft: effectiveMapVisible ? `${EXTRA_HORIZONTAL_PADDING}px` : `${DASHBOARD_BAR_PADDING_PX}px`,
+                              paddingRight: effectiveMapVisible ? `${EXTRA_HORIZONTAL_PADDING}px` : `${DASHBOARD_BAR_PADDING_PX}px`,
                               paddingBottom: shouldPositionAtBottom ? '0' : '0', // No extra padding so bar bottom = INPUT_BAR_SPACE_BELOW_DASHBOARD (matches panel, no jump)
                               paddingTop: shouldPositionAtBottom ? '16px' : '0', // Top padding when fixed at bottom (ChatGPT-style)
                               overflow: 'visible', // Ensure content is never clipped
-                              position: isMapVisible ? 'fixed' : (shouldPositionAtBottom ? 'fixed' : 'relative'),
-                              bottom: isMapVisible ? `${INPUT_BAR_SPACE_BELOW_MAP}px` : (shouldPositionAtBottom ? `${INPUT_BAR_SPACE_BELOW_DASHBOARD}px` : 'auto'),
+                              position: effectiveMapVisible ? 'fixed' : (shouldPositionAtBottom ? 'fixed' : 'relative'),
+                              bottom: effectiveMapVisible ? `${INPUT_BAR_SPACE_BELOW_MAP}px` : (shouldPositionAtBottom ? `${INPUT_BAR_SPACE_BELOW_DASHBOARD}px` : 'auto'),
                               left: mapViewLeft,
                               transform: mapViewTransform,
-                              zIndex: Math.max(100002, isMapVisible ? 50 : (shouldPositionAtBottom ? 100 : 10)), // Above FilingSidebar (100001) so bar receives drag when hovering with file
-                              width: isMapVisible ? 'clamp(400px, 85vw, 650px)' : '100%', // Full width in dashboard, constrained in map view
-                              maxWidth: isMapVisible ? 'clamp(400px, 85vw, 650px)' : (shouldPositionAtBottom ? 'none' : `${dashboardBarWrapperMaxPx}px`), // Cap dashboard so bar width matches SideChatPanel
+                              zIndex: Math.max(100002, effectiveMapVisible ? 50 : (shouldPositionAtBottom ? 100 : 10)), // Above FilingSidebar (100001) so bar receives drag when hovering with file
+                              width: effectiveMapVisible ? 'clamp(400px, 85vw, 650px)' : '100%', // Full width in dashboard, constrained in map view
+                              maxWidth: effectiveMapVisible ? 'clamp(400px, 85vw, 650px)' : (shouldPositionAtBottom ? 'none' : `${dashboardBarWrapperMaxPx}px`), // Cap dashboard so bar width matches SideChatPanel
                               boxSizing: 'border-box', // Include padding in width calculation
                               backgroundColor: 'transparent', // Fully transparent - background shows through
                               background: 'transparent', // Fully transparent - background shows through
@@ -4670,10 +4685,10 @@ export const MainContent = ({
                   ref={searchBarRefCallback}
                   onSearch={handleSearch} 
                   onQueryStart={handleQueryStart} 
-                  onMapToggle={handleMapToggle}
+                  onMapToggle={MAP_ENABLED ? handleMapToggle : undefined}
                   onDashboardClick={onNavigateToDashboard}
                   resetTrigger={resetTrigger}
-                  isMapVisible={isMapVisible}
+                  isMapVisible={effectiveMapVisible}
                   isInChatMode={isInChatMode}
                   currentView={currentView}
                   hasPerformedSearch={hasPerformedSearch}
@@ -4682,12 +4697,12 @@ export const MainContent = ({
                     // This will be handled by SearchBar's handleFileUpload
                     // The prop is just for notification - SearchBar handles the file internally
                   }}
-                  onAttachmentsChange={!isMapVisible ? (attachments) => {
+                  onAttachmentsChange={!effectiveMapVisible ? (attachments) => {
                     // Proactively store dashboard attachments when they change
                     pendingDashboardAttachmentsRef.current = attachments;
                     setPendingDashboardAttachments(attachments);
                   } : undefined}
-                  onPanelToggle={isMapVisible && !hasPerformedSearch ? () => {
+                  onPanelToggle={effectiveMapVisible && !hasPerformedSearch ? () => {
                     if (previousSessionQuery) {
                       setMapSearchQuery(previousSessionQuery);
                       setHasPerformedSearch(true);
@@ -4696,17 +4711,17 @@ export const MainContent = ({
                       // This will show SideChatPanel (isVisible = isMapVisible && hasPerformedSearch)
                     }
                   } : undefined}
-                  hasPreviousSession={isMapVisible && !hasPerformedSearch ? !!previousSessionQuery : false}
+                  hasPreviousSession={effectiveMapVisible && !hasPerformedSearch ? !!previousSessionQuery : false}
                   onQuickStartToggle={() => setIsQuickStartBarVisible(!isQuickStartBarVisible)}
                   isQuickStartBarVisible={isQuickStartBarVisible}
                   // REMOVED initialValue - using simple local state like SideChatPanel
                   // This prevents the typing reset issue completely
                   initialAttachedFiles={(() => {
-                    // When in dashboard view (!isMapVisible), use dashboard attachments
+                    // When in dashboard view (!effectiveMapVisible), use dashboard attachments
                     // When in map view but not performed search, use map attachments
-                    const attachments = !isMapVisible 
+                    const attachments = !effectiveMapVisible 
                       ? (pendingDashboardAttachmentsRef.current.length > 0 ? pendingDashboardAttachmentsRef.current : (pendingDashboardAttachments.length > 0 ? pendingDashboardAttachments : undefined))
-                      : (isMapVisible && !hasPerformedSearch ? (pendingMapAttachmentsRef.current.length > 0 ? pendingMapAttachmentsRef.current : (pendingMapAttachments.length > 0 ? pendingMapAttachments : undefined)) : undefined);
+                      : (effectiveMapVisible && !hasPerformedSearch ? (pendingMapAttachmentsRef.current.length > 0 ? pendingMapAttachmentsRef.current : (pendingMapAttachments.length > 0 ? pendingMapAttachments : undefined)) : undefined);
                     return attachments;
                   })()}
                 />}
@@ -5562,8 +5577,8 @@ export const MainContent = ({
             bottom: 0,
             width: effectiveAgentSidebarTotalWidth > 0 ? undefined : '100vw', // When agent sidebar open, width from left/right; else full viewport
             height: '100vh',
-            zIndex: (isMapVisible || externalIsMapVisible) ? 2 : -1, // Above content container when visible, below when hidden
-            opacity: (isMapVisible || externalIsMapVisible) ? 1 : 0, // Hide visually when not in map view
+            zIndex: -1, // Map removed - always hidden
+            opacity: 0, // Map removed - always hidden
             pointerEvents: 'none', // Disable pointer events on wrapper - let SquareMap handle it
             overflow: 'hidden', // Clip any overflow
             transition: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked || isTransitioningToChatRef.current) ? 'none' : 'opacity 0.2s ease-out', // Disable transition when transitioning to/from chat
@@ -5574,9 +5589,9 @@ export const MainContent = ({
         >
           <SquareMap
             ref={mapRef}
-            isVisible={isMapVisible || externalIsMapVisible}
+            isVisible={false}
             skipEntranceAnimation={isTransitioningToChat || isTransitioningToChatRef.current}
-            isInteractive={isMapVisible || externalIsMapVisible}
+            isInteractive={false}
             searchQuery={mapSearchQuery}
             hasPerformedSearch={hasPerformedSearch}
             isInChatMode={isInChatMode}
@@ -5600,8 +5615,8 @@ export const MainContent = ({
               left: 0, // Always at left edge - map stays full width
               width: '100vw', // Always full width - never resizes, no animations
               height: '100vh',
-              zIndex: (isMapVisible || externalIsMapVisible) ? 2 : -1, // Above content container when visible, below when hidden
-              pointerEvents: (isMapVisible || externalIsMapVisible) ? 'auto' : 'none', // Enable clicks when map is visible
+              zIndex: -1, // Map removed - always hidden
+              pointerEvents: 'none', // Map removed - always hidden
               backgroundColor: '#f5f5f5', // Match map background
               background: '#f5f5f5' // Ensure background is set
             }}
@@ -6058,13 +6073,13 @@ export const MainContent = ({
       } ${isInChatMode ? 'p-0' : currentView === 'upload' ? 'p-8' : currentView === 'analytics' ? 'p-4' : currentView === 'profile' ? 'p-0' : currentView === 'notifications' ? 'p-0 m-0' : currentView === 'projects' ? 'p-0' : 'p-8 lg:p-16'}`} style={{ 
         backgroundColor: (currentView === 'search' || currentView === 'home') ? 'transparent' : currentView === 'settings' ? '#FAF9F6' : '#ffffff', 
         background: (currentView === 'search' || currentView === 'home') ? 'transparent' : undefined,
-        pointerEvents: currentView === 'settings' ? 'auto' : (isMapVisible || externalIsMapVisible) ? 'none' : 'auto', // Settings always receives clicks; otherwise block when map visible
-        zIndex: currentView === 'settings' ? 1 : (isMapVisible || externalIsMapVisible) ? 0 : 1, // Settings always on top; below map when map visible otherwise
+        pointerEvents: currentView === 'settings' ? 'auto' : (MAP_ENABLED && (isMapVisible || externalIsMapVisible)) ? 'none' : 'auto', // Settings always receives clicks; otherwise block when map visible
+        zIndex: currentView === 'settings' ? 1 : (MAP_ENABLED && (isMapVisible || externalIsMapVisible)) ? 0 : 1, // Settings always on top; below map when map visible otherwise
         transition: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked || isTransitioningToChat || isTransitioningToChatRef.current) ? 'none' : undefined, // Disable all transitions when transitioning to/from chat
         willChange: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked || isTransitioningToChat || isTransitioningToChatRef.current) ? 'auto' : undefined // Prevent layout shifts during transitions
       }}>
         {/* Dashboard upgrade CTA - top-center, only when dashboard (home/search) is visible */}
-        {(currentView === 'search' || currentView === 'home') && !shouldRestoreActiveChat && !(isInChatMode && hasPerformedSearch) && !isMapVisible && !externalIsMapVisible && (
+        {(currentView === 'search' || currentView === 'home') && !shouldRestoreActiveChat && !(isInChatMode && hasPerformedSearch) && !(MAP_ENABLED && (isMapVisible || externalIsMapVisible)) && (
           <DashboardUpgradeCta />
         )}
         <div className={`relative w-full ${

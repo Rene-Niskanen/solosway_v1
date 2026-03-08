@@ -383,19 +383,19 @@ button:focus-visible:not(:focus-within) {
   display: inline-flex !important;
   align-items: center !important;
   justify-content: center !important;
-  margin-left: 0.25em !important;
-  margin-right: 0.15em !important;
-  min-width: 1.125rem !important;
-  height: 1.125rem !important;
-  padding: 0 0.3125rem !important;
-  font-size: 0.625rem !important;   /* 10px */
+  margin-left: 0.40em !important;
+  margin-right: 0.40em !important;
+  min-width: 1rem !important;
+  height: 1rem !important;
+  padding: 0 0.25rem !important;
+  font-size: 0.5625rem !important;   /* 9px */
   font-weight: 500 !important;
   font-family: inherit !important;
   line-height: 1 !important;
-  color: #374151 !important;
-  background-color: rgba(0, 0, 0, 0.06) !important;
+  color: #6b7280 !important;
+  background-color: rgba(0, 0, 0, 0.04) !important;
   border: none !important;
-  border-radius: 0.25rem !important; /* 4px – subtle pill */
+  border-radius: 0.1875rem !important; /* 3px – subtle pill */
   cursor: pointer !important;
   vertical-align: middle !important;
   position: relative !important;
@@ -405,45 +405,45 @@ button:focus-visible:not(:focus-within) {
   -webkit-tap-highlight-color: transparent !important;
 }
 .citation-link-btn:hover {
-  background-color: rgba(0, 0, 0, 0.1) !important;
-  color: #111827 !important;
-}
-.citation-link-btn.citation-link-btn--saved {
-  color: #6b7280 !important;
-  background-color: rgba(0, 0, 0, 0.05) !important;
-}
-.citation-link-btn.citation-link-btn--saved:hover {
-  background-color: rgba(0, 0, 0, 0.09) !important;
+  background-color: rgba(0, 0, 0, 0.06) !important;
   color: #4b5563 !important;
 }
+.citation-link-btn.citation-link-btn--saved {
+  color: #9ca3af !important;
+  background-color: rgba(0, 0, 0, 0.03) !important;
+}
+.citation-link-btn.citation-link-btn--saved:hover {
+  background-color: rgba(0, 0, 0, 0.06) !important;
+  color: #6b7280 !important;
+}
 .citation-link-btn.citation-link-btn--selected {
-  color: #1f2937 !important;
-  background-color: #e5e7eb !important;
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.12) !important;
+  color: #4b5563 !important;
+  background-color: #f3f4f6 !important;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.08) !important;
 }
 .citation-link-btn.citation-link-btn--selected:hover {
-  background-color: #d1d5db !important;
-  color: #111827 !important;
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.18) !important;
+  background-color: #e5e7eb !important;
+  color: #374151 !important;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.12) !important;
 }
 
 /* Citation in document preview / response: same design, white context */
 [data-cited-text-block] .citation-link-btn {
-  background-color: rgba(0, 0, 0, 0.06) !important;
-  color: #374151 !important;
+  background-color: rgba(0, 0, 0, 0.04) !important;
+  color: #6b7280 !important;
   box-shadow: none !important;
 }
 [data-cited-text-block] .citation-link-btn:hover {
-  background-color: rgba(0, 0, 0, 0.1) !important;
+  background-color: rgba(0, 0, 0, 0.06) !important;
 }
 [data-cited-text-block] .citation-link-btn.citation-link-btn--saved {
-  background-color: rgba(0, 0, 0, 0.05) !important;
-  color: #6b7280 !important;
+  background-color: rgba(0, 0, 0, 0.03) !important;
+  color: #9ca3af !important;
 }
 [data-cited-text-block] .citation-link-btn.citation-link-btn--selected {
-  background-color: #e5e7eb !important;
-  color: #1f2937 !important;
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.12) !important;
+  background-color: #f3f4f6 !important;
+  color: #4b5563 !important;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.08) !important;
 }
 
 /* Completely hidden scrollbar for tabs container - still scrollable */

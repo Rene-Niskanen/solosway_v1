@@ -135,16 +135,23 @@ export const CitationActionMenu: React.FC<CitationActionMenuProps> = ({
     // Mark as submitted so cleanup doesn't clear the context
     querySubmittedRef.current = true;
 
-    // Dispatch event to submit query (context already pre-built)
-    const event = new CustomEvent('citation-query-submit', {
-      detail: {
-        query: trimmedQuery, // User's typed query (visible)
-        citationContext, // Structured citation metadata (already prepared)
-        propertyId,
-        documentIds: citation.doc_id ? [citation.doc_id] : undefined
-      }
-    });
-    window.dispatchEvent(event);
+    const documentId = citation.doc_id || citation.fileId;
+    const filename = (citation.original_filename || '').toLowerCase();
+
+    // Use same event as CitationCallout so SideChatPanel dispatches agent task directly
+    const payload: { query: string; documentId: string; documentMeta: object; citationContext?: object } = {
+      query: trimmedQuery,
+      documentId,
+      documentMeta: {
+        filename: citation.original_filename || 'Document',
+        type: filename.endsWith('.docx') || filename.endsWith('.doc') ? 'docx' : 'pdf',
+        doc_id: documentId,
+      },
+    };
+    if (documentId && citation.bbox) {
+      payload.citationContext = citationContext;
+    }
+    window.dispatchEvent(new CustomEvent('citation-agent-task-dispatch', { detail: payload }));
 
     // Close menu after submitting
     onClose();
@@ -177,7 +184,7 @@ export const CitationActionMenu: React.FC<CitationActionMenuProps> = ({
           background: 'white',
           border: showChatInput ? '1px solid rgba(82, 101, 128, 0.25)' : '1px solid #e5e7eb',
           boxShadow: showChatInput 
-            ? '0 4px 24px rgba(0, 0, 0, 0.12), 0 1px 2px rgba(0, 0, 0, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.6)'
+            ? '0 2px 8px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04), inset 0 1px 0 rgba(255, 255, 255, 0.6)'
             : '0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06)',
           borderRadius: showChatInput ? '12px' : '8px',
           overflow: 'hidden'
@@ -201,16 +208,6 @@ export const CitationActionMenu: React.FC<CitationActionMenuProps> = ({
               >
                 <FileText className="w-3.5 h-3.5 text-green-600" />
                 <span className="flex-1 text-left">Save citation</span>
-              </button>
-            </div>
-            
-            <div className="border-t border-gray-100">
-              <button
-                onClick={onClose}
-                className="w-full flex items-center gap-2 px-2.5 py-1.5 text-[13px] text-gray-500 hover:bg-gray-50 transition-colors"
-              >
-                <X className="w-3.5 h-3.5" />
-                <span>Close</span>
               </button>
             </div>
           </>
@@ -243,7 +240,7 @@ export const CitationActionMenu: React.FC<CitationActionMenuProps> = ({
                     lineHeight: '1.5',
                     minHeight: '40px',
                     maxHeight: '120px',
-                    padding: '0',
+                    padding: '0 0 0 8px',
                     fontFamily: 'inherit'
                   }}
                 />
@@ -279,12 +276,12 @@ export const CitationActionMenu: React.FC<CitationActionMenuProps> = ({
                   disabled={!queryText.trim()}
                   className="flex items-center justify-center relative focus:outline-none outline-none"
                   style={{
-                    width: '36px',
-                    height: '36px',
-                    minWidth: '36px',
-                    minHeight: '36px',
-                    maxWidth: '36px',
-                    maxHeight: '36px',
+                    width: '28px',
+                    height: '28px',
+                    minWidth: '28px',
+                    minHeight: '28px',
+                    maxWidth: '28px',
+                    maxHeight: '28px',
                     borderRadius: '50%',
                     border: 'none',
                     flexShrink: 0,
@@ -302,7 +299,7 @@ export const CitationActionMenu: React.FC<CitationActionMenuProps> = ({
                   tabIndex={0}
                 >
                   <ArrowUp 
-                    className="w-5 h-5" 
+                    className="w-4 h-4" 
                     strokeWidth={2.5} 
                     style={{ color: queryText.trim() ? '#ffffff' : '#9ca3af' }} 
                   />
