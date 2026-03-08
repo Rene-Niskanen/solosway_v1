@@ -398,7 +398,7 @@ export const PropertyTitleCard: React.FC<PropertyTitleCardProps> = ({
         boxShadow: "0 4px 16px rgba(0,0,0,0.25)",
         background: "#1E1E1E",
         border: "5px solid #000000",
-        fontFamily: "'SF Pro Display', 'SF Pro Text', -apple-system, BlinkMacSystemFont, sans-serif",
+        fontFamily: "'DM Sans', 'SF Pro Display', 'SF Pro Text', -apple-system, BlinkMacSystemFont, sans-serif",
         userSelect: "text",
         WebkitUserSelect: "text",
       }}
@@ -614,7 +614,7 @@ export const PropertyTitleCard: React.FC<PropertyTitleCardProps> = ({
                   margin: 0,
                   marginBottom: "4px",
                   lineHeight: 1.2,
-                  fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', sans-serif",
+                  fontFamily: "'DM Sans', -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', sans-serif",
                   background: "transparent",
                 border: "1px solid rgba(255, 255, 255, 0.3)",
                   borderRadius: "4px",
@@ -639,7 +639,7 @@ export const PropertyTitleCard: React.FC<PropertyTitleCardProps> = ({
                   margin: 0,
                   marginBottom: "4px",
                   lineHeight: 1.2,
-                  fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', sans-serif",
+                  fontFamily: "'DM Sans', -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', sans-serif",
                   cursor: "pointer",
                 }}
               >
@@ -655,7 +655,7 @@ export const PropertyTitleCard: React.FC<PropertyTitleCardProps> = ({
             margin: 0,
             lineHeight: 1.4,
               fontWeight: 400,
-            fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', sans-serif",
+            fontFamily: "'DM Sans', -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', sans-serif",
           }}
         >
           {displayAddress}
@@ -688,7 +688,7 @@ export const PropertyTitleCard: React.FC<PropertyTitleCardProps> = ({
                 fontWeight: 600,
                 color: "#FFFFFF",
                 lineHeight: 1,
-                fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', sans-serif",
+                fontFamily: "'DM Sans', -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', sans-serif",
               }}
             >
               {docCount.toString().padStart(2, '0')}
@@ -698,7 +698,7 @@ export const PropertyTitleCard: React.FC<PropertyTitleCardProps> = ({
                 fontSize: "10px",
                 color: "#9CA3AF",
                 fontWeight: 400,
-                fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', sans-serif",
+                fontFamily: "'DM Sans', -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', sans-serif",
                 marginLeft: "3px",
               }}
             >
@@ -722,7 +722,7 @@ export const PropertyTitleCard: React.FC<PropertyTitleCardProps> = ({
                     fontSize: "10px",
                     color: "#FFFFFF",
                     fontWeight: 400,
-                    fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', sans-serif",
+                    fontFamily: "'DM Sans', -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', sans-serif",
                     whiteSpace: "nowrap",
                   }}
                 >
@@ -738,7 +738,7 @@ export const PropertyTitleCard: React.FC<PropertyTitleCardProps> = ({
                     fontSize: "10px",
                     color: "#FFFFFF",
                     fontWeight: 400,
-                    fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', sans-serif",
+                    fontFamily: "'DM Sans', -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', sans-serif",
                     whiteSpace: "nowrap",
                   }}
                 >
@@ -754,7 +754,7 @@ export const PropertyTitleCard: React.FC<PropertyTitleCardProps> = ({
                     fontSize: "10px",
                     color: "#FFFFFF",
                     fontWeight: 400,
-                    fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', sans-serif",
+                    fontFamily: "'DM Sans', -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', sans-serif",
                     whiteSpace: "nowrap",
                   }}
                 >

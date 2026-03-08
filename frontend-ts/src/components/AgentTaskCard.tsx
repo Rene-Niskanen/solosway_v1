@@ -20,7 +20,7 @@ function DocTypeIcon({ type }: { type: string }) {
     );
   }
   return (
-    <span style={{ fontSize: 9, fontWeight: 700, color: '#2563EB', lineHeight: 1, fontFamily: 'system-ui, sans-serif' }} aria-hidden>
+    <span style={{ fontSize: 9, fontWeight: 700, color: '#2563EB', lineHeight: 1, fontFamily: "'DM Sans', system-ui, sans-serif" }} aria-hidden>
       W
     </span>
   );

@@ -16,21 +16,13 @@
  */
 
 import * as React from "react";
-import { marked } from "marked";
-import TurndownService from "turndown";
-import { FolderClosed, ChevronDown, ChevronUp, Trash2, Plus, Bold, Italic, AlignLeft, AlignCenter, AlignRight } from "lucide-react";
+import { FolderClosed, ChevronDown, ChevronUp, Trash2, Plus } from "lucide-react";
 import { backendApi } from "@/services/backendApi";
 import { ProjectGlassCard } from "./ProjectGlassCard";
 import { RecentDocumentsSection } from "./RecentDocumentsSection";
 import { preloadDocumentThumbnails, PRELOAD_THUMBNAIL_LIMIT } from "./RecentDocumentCard";
 import { preloadDocumentCovers as preloadDocumentCoversUtil } from "@/utils/preloadDocumentCovers";
-import {
-  Dialog,
-  DialogClose,
-  DialogContent,
-  DialogTitle,
-} from "./ui/dialog";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
+import { CreateProjectModal } from "./CreateProjectModal";
 
 // Properties = Projects (same concept, different naming)
 // Backend uses "Property", UI displays as "Project"
@@ -291,146 +283,12 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
   const [documentsLoaded, setDocumentsLoaded] = React.useState(!!cachedData);
   const [error, setError] = React.useState<string | null>(null);
   const [, setCoversLoaded] = React.useState(0); // Trigger re-render when covers load
-  const [userContextEditorOpen, setUserContextEditorOpen] = React.useState(false);
-  const [userContextContent, setUserContextContent] = React.useState("");
-  const [userContextLoadError, setUserContextLoadError] = React.useState<string | null>(null);
-  const [userContextSaveError, setUserContextSaveError] = React.useState<string | null>(null);
-  const [userContextSaving, setUserContextSaving] = React.useState(false);
-  const [userContextAlignment, setUserContextAlignment] = React.useState<'left' | 'center' | 'right'>('left');
-  const [userContextBlockType, setUserContextBlockType] = React.useState<string>('paragraph');
-  const userContextEditorRef = React.useRef<HTMLDivElement>(null);
-  const userContextLastSyncedRef = React.useRef<string>("");
-
-  const turndownRef = React.useRef<TurndownService | null>(null);
-  if (!turndownRef.current) turndownRef.current = new TurndownService({ headingStyle: "atx", bulletListMarker: "-" });
+  const [showCreateModal, setShowCreateModal] = React.useState(false);
 
   // Preload document covers (images + PDF thumbnails) via shared util so cards render instantly
   const preloadDocumentCovers = React.useCallback((docs: DocumentData[]) => {
     preloadDocumentCoversUtil(docs as any, () => setCoversLoaded(v => v + 1));
   }, []);
-
-  // Preload USER.md on mount so the editor opens with content ready (no loading state)
-  React.useEffect(() => {
-    setUserContextLoadError(null);
-    backendApi.getBootstrapUserContext().then((res) => {
-      if (res.success) {
-        setUserContextContent(res.content ?? "");
-      } else {
-        setUserContextLoadError(res.error ?? "Failed to load");
-      }
-    });
-  }, []);
-
-  // When editor opens, refresh content in background (silent; no loading state)
-  React.useEffect(() => {
-    if (!userContextEditorOpen) return;
-    backendApi.getBootstrapUserContext().then((res) => {
-      if (res.success) {
-        setUserContextContent(res.content ?? "");
-        setUserContextLoadError(null);
-      }
-    });
-  }, [userContextEditorOpen]);
-
-  // Move caret to the start of the contenteditable so cursor appears before placeholder text
-  const setUserContextCaretToStart = React.useCallback(() => {
-    const el = userContextEditorRef.current;
-    if (!el) return;
-    const sel = window.getSelection();
-    if (!sel) return;
-    const range = document.createRange();
-    range.selectNodeContents(el);
-    range.collapse(true);
-    sel.removeAllRanges();
-    sel.addRange(range);
-  }, []);
-
-  // Sync external markdown (e.g. from API when dialog opens) into the WYSIWYG contenteditable
-  React.useEffect(() => {
-    if (!userContextEditorOpen || !userContextEditorRef.current) return;
-    if (userContextContent === userContextLastSyncedRef.current) return;
-    const el = userContextEditorRef.current;
-    const content = userContextContent;
-    Promise.resolve(marked(content || "")).then((html: string) => {
-      if (el && userContextLastSyncedRef.current !== content) {
-        el.innerHTML = typeof html === "string" ? html : "";
-        el.toggleAttribute("data-empty", !(content || "").trim());
-        userContextLastSyncedRef.current = content;
-        setUserContextCaretToStart();
-      }
-    }).catch(() => {
-      if (el) {
-        el.textContent = content;
-        userContextLastSyncedRef.current = content;
-        setUserContextCaretToStart();
-      }
-    });
-  }, [userContextEditorOpen, userContextContent, setUserContextCaretToStart]);
-
-  // Focus editor when dialog opens and place caret at start (before placeholder)
-  React.useEffect(() => {
-    if (!userContextEditorOpen) return;
-    const t = setTimeout(() => {
-      const el = userContextEditorRef.current;
-      if (el) {
-        el.focus();
-        setUserContextCaretToStart();
-      }
-    }, 0);
-    return () => clearTimeout(t);
-  }, [userContextEditorOpen, setUserContextCaretToStart]);
-
-  const handleSaveUserContext = React.useCallback((closeAfterSave: boolean) => {
-    setUserContextSaveError(null);
-    setUserContextSaving(true);
-    backendApi.putBootstrapUserContext(userContextContent).then((res) => {
-      setUserContextSaving(false);
-      if (res.success && closeAfterSave) {
-        setUserContextEditorOpen(false);
-      } else if (!res.success) {
-        setUserContextSaveError(res.error ?? "Failed to save");
-      }
-    }).catch((err) => {
-      setUserContextSaving(false);
-      setUserContextSaveError(err instanceof Error ? err.message : "Failed to save");
-    });
-  }, [userContextContent]);
-
-  // Toolbar helpers for USER.md WYSIWYG editor (contenteditable; sync to markdown on input)
-  const syncEditorToMarkdown = React.useCallback(() => {
-    const el = userContextEditorRef.current;
-    if (!el || !turndownRef.current) return;
-    const isEmpty = !el.innerText || el.innerText.trim() === "";
-    el.toggleAttribute("data-empty", isEmpty);
-    try {
-      const md = turndownRef.current.turndown(el.innerHTML) || "";
-      userContextLastSyncedRef.current = md;
-      setUserContextContent(md);
-    } catch {
-      userContextLastSyncedRef.current = el.innerText || "";
-      setUserContextContent(userContextLastSyncedRef.current);
-    }
-  }, []);
-
-  const applyFormat = React.useCallback((command: string, value?: string) => {
-    const el = userContextEditorRef.current;
-    if (!el) return;
-    el.focus();
-    document.execCommand(command, false, value ?? "");
-    syncEditorToMarkdown();
-  }, [syncEditorToMarkdown]);
-
-  const handleParagraphSelect = React.useCallback((value: string) => {
-    const el = userContextEditorRef.current;
-    if (!el) return;
-    el.focus();
-    if (value === "heading1") document.execCommand("formatBlock", false, "h1");
-    else if (value === "heading2") document.execCommand("formatBlock", false, "h2");
-    else if (value === "bullet") document.execCommand("insertUnorderedList", false, "");
-    else document.execCommand("formatBlock", false, "p");
-    setUserContextBlockType("paragraph");
-    syncEditorToMarkdown();
-  }, [syncEditorToMarkdown]);
 
   // Files bar shows first FILES_BAR_COUNT; cache for initial load
   React.useEffect(() => {
@@ -712,16 +570,18 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
       </p>
       <button
         type="button"
-        onClick={onCreateProject}
-        className="px-3 py-1.5 bg-white text-gray-800 text-sm font-medium rounded-none transition-all duration-150 hover:bg-gray-100 hover:shadow-md active:bg-gray-200 active:shadow-sm"
+        onClick={() => setShowCreateModal(true)}
+        className="flex items-center gap-1.5 rounded-xl border border-black/[0.06] bg-white text-[#4b5563] shadow-[0_1px_1px_rgba(0,0,0,0.02)] transition-all duration-150 hover:border-black/[0.10] hover:text-[#111827] hover:shadow-[0_1px_2px_rgba(0,0,0,0.03)] active:scale-[0.99] cursor-pointer"
         style={{
-          border: '1px solid rgba(0, 0, 0, 0.15)',
-          boxShadow: '0 1px 2px rgba(0, 0, 0, 0.04)',
-          cursor: 'pointer',
+          padding: '6px 10px',
+          height: '34px',
+          minHeight: '34px',
+          backgroundColor: 'rgba(255, 255, 255, 0.92)',
           pointerEvents: 'auto',
         }}
       >
-        Create Project
+        <Plus className="w-3.5 h-3.5 text-[#666]" strokeWidth={1.75} />
+        <span className="text-[13px] font-medium text-inherit tracking-[-0.01em]">Create Project</span>
       </button>
     </div>
   );
@@ -774,6 +634,11 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
     return (
       <div className="relative w-full h-full min-h-full">
         <InitialEmptyState />
+        <CreateProjectModal
+          isOpen={showCreateModal}
+          onClose={() => setShowCreateModal(false)}
+          onProjectCreated={() => refreshProperties()}
+        />
       </div>
     );
   }
@@ -803,41 +668,41 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
             setIsSelectionMode((prev) => !prev);
             if (isSelectionMode) setSelectedProjectIds(new Set());
           }}
-          className="flex items-center gap-1 rounded-sm border border-transparent bg-black/[0.04] transition-all duration-150 hover:bg-[#d4d4d4] hover:shadow-md hover:border-gray-300 active:bg-[#cacaca] active:shadow-none"
+          className="flex items-center gap-1.5 rounded-xl border border-black/[0.06] bg-white text-[#4b5563] shadow-[0_1px_1px_rgba(0,0,0,0.02)] transition-all duration-150 hover:border-black/[0.10] hover:text-[#111827] hover:shadow-[0_1px_2px_rgba(0,0,0,0.03)] active:scale-[0.99] cursor-pointer"
           title={isSelectionMode ? 'Cancel selection' : 'Select projects to delete'}
           style={{
-            padding: '5px 8px',
-            height: '26px',
-            minHeight: '26px',
-            cursor: 'pointer',
+            padding: '6px 10px',
+            height: '34px',
+            minHeight: '34px',
+            backgroundColor: 'rgba(255, 255, 255, 0.92)',
             pointerEvents: 'auto',
           }}
         >
-          <span className="text-[12px] font-normal text-[#666]">Select</span>
+          <span className="text-[13px] font-medium text-inherit tracking-[-0.01em]">Select</span>
         </button>
         {allDocuments.length > 0 && (
           <button
             type="button"
             onClick={() => setShowAllFiles((prev) => !prev)}
-            className="flex items-center gap-1 rounded-sm border border-transparent bg-black/[0.04] transition-all duration-150 hover:bg-[#d4d4d4] hover:shadow-md hover:border-gray-300 active:bg-[#cacaca] active:shadow-none"
+            className="flex items-center gap-1.5 rounded-xl border border-black/[0.06] bg-white text-[#4b5563] shadow-[0_1px_1px_rgba(0,0,0,0.02)] transition-all duration-150 hover:border-black/[0.10] hover:text-[#111827] hover:shadow-[0_1px_2px_rgba(0,0,0,0.03)] active:scale-[0.99] cursor-pointer"
             title={showAllFiles ? 'View less' : 'See all files'}
             style={{
-              padding: '5px 8px',
-              height: '26px',
-              minHeight: '26px',
-              cursor: 'pointer',
+              padding: '6px 10px',
+              height: '34px',
+              minHeight: '34px',
+              backgroundColor: 'rgba(255, 255, 255, 0.92)',
               pointerEvents: 'auto',
             }}
           >
             {showAllFiles ? (
               <>
                 <ChevronUp className="w-3.5 h-3.5 text-[#666]" strokeWidth={1.75} />
-                <span className="text-[12px] font-normal text-[#666]">View less</span>
+                <span className="text-[13px] font-medium text-inherit tracking-[-0.01em]">View less</span>
               </>
             ) : (
               <>
                 <ChevronDown className="w-3.5 h-3.5 text-[#666]" strokeWidth={1.75} />
-                <span className="text-[12px] font-normal text-[#666]">See All Files</span>
+                <span className="text-[13px] font-medium text-inherit tracking-[-0.01em]">See All Files</span>
               </>
             )}
           </button>
@@ -847,38 +712,41 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
             type="button"
             onClick={handleDeleteSelected}
             disabled={isDeleting}
-            className="flex items-center gap-1 rounded-sm hover:bg-[#fef2f2] active:bg-[#fee2e2] transition-all duration-150 disabled:opacity-50"
+            className="flex items-center gap-1.5 rounded-xl border border-red-200 bg-red-50 text-red-600 shadow-[0_1px_1px_rgba(0,0,0,0.02)] transition-all duration-150 hover:border-red-300 hover:shadow-[0_1px_2px_rgba(0,0,0,0.03)] active:scale-[0.99] disabled:opacity-50 cursor-pointer"
             title="Delete selected projects"
             style={{
-              padding: '5px 8px',
-              height: '26px',
-              minHeight: '26px',
-              border: 'none',
-              cursor: 'pointer',
-              backgroundColor: 'rgba(239, 68, 68, 0.08)',
+              padding: '6px 10px',
+              height: '34px',
+              minHeight: '34px',
               pointerEvents: 'auto',
             }}
           >
             <Trash2 className="w-3.5 h-3.5 text-red-600" strokeWidth={1.75} />
-            <span className="text-[12px] font-normal text-red-600">Delete ({selectedProjectIds.size})</span>
+            <span className="text-[13px] font-medium text-inherit tracking-[-0.01em]">Delete ({selectedProjectIds.size})</span>
           </button>
         )}
         <button
           type="button"
-          onClick={onCreateProject}
-          className="flex items-center gap-1 rounded-sm border border-transparent bg-black/[0.04] transition-all duration-150 hover:bg-[#d4d4d4] hover:shadow-md hover:border-gray-300 active:bg-[#cacaca] active:shadow-none"
+          onClick={() => setShowCreateModal(true)}
+          className="flex items-center gap-1.5 rounded-xl border border-black/[0.06] bg-white text-[#4b5563] shadow-[0_1px_1px_rgba(0,0,0,0.02)] transition-all duration-150 hover:border-black/[0.10] hover:text-[#111827] hover:shadow-[0_1px_2px_rgba(0,0,0,0.03)] active:scale-[0.99] cursor-pointer"
           style={{
-            padding: '5px 8px',
-            height: '26px',
-            minHeight: '26px',
-            cursor: 'pointer',
+            padding: '6px 10px',
+            height: '34px',
+            minHeight: '34px',
+            backgroundColor: 'rgba(255, 255, 255, 0.92)',
             pointerEvents: 'auto',
           }}
         >
           <Plus className="w-3.5 h-3.5 text-[#666]" strokeWidth={1.75} />
-          <span className="text-[12px] font-normal text-[#666]">Create Project</span>
+          <span className="text-[13px] font-medium text-inherit tracking-[-0.01em]">Create Project</span>
         </button>
       </div>
+
+      <CreateProjectModal
+        isOpen={showCreateModal}
+        onClose={() => setShowCreateModal(false)}
+        onProjectCreated={() => refreshProperties()}
+      />
 
       <div 
         className={`w-full flex flex-col box-border ${showAllFiles ? 'flex-1 min-h-0 overflow-hidden' : 'min-h-full'}`}
@@ -906,51 +774,6 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
                 pointerEvents: 'auto',
               }}
             >
-              {/* USER.md card - same layout as project cards */}
-              <div
-                role="button"
-                tabIndex={0}
-                onClick={() => setUserContextEditorOpen(true)}
-                onKeyDown={(e) => e.key === "Enter" && setUserContextEditorOpen(true)}
-                className="cursor-pointer flex flex-col items-center w-full h-full min-w-0"
-                style={{
-                  borderRadius: "12px",
-                  border: "2px solid transparent",
-                  padding: "12px",
-                  boxSizing: "border-box",
-                  position: "relative",
-                  height: "100%",
-                }}
-              >
-                <div
-                  className="relative overflow-hidden flex items-center justify-center flex-shrink-0"
-                  style={{ width: "140px", height: "122px" }}
-                >
-                  <img
-                    src="/user.md.png"
-                    alt="USER.md"
-                    className="pointer-events-none"
-                    style={{ display: "block", width: "80%", height: "80%", objectFit: "contain" }}
-                    draggable={false}
-                  />
-                </div>
-                <p
-                  className="text-center w-full mt-2 px-1 min-w-0"
-                  style={{
-                    fontSize: "13px",
-                    fontWeight: 500,
-                    color: "#1F2937",
-                    lineHeight: 1.3,
-                    minWidth: 0,
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                  }}
-                  title="USER.md"
-                >
-                  USER.md
-                </p>
-              </div>
               {properties.map(property => (
                 <ProjectGlassCard 
                   key={property.id} 
@@ -973,14 +796,12 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
               <button
                 type="button"
                 onClick={() => setShowAllProjects(prev => !prev)}
-                className="mt-4 flex items-center gap-1 rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150"
+                className="mt-4 flex items-center gap-1.5 rounded-xl border border-black/[0.06] bg-white text-[#4b5563] shadow-[0_1px_1px_rgba(0,0,0,0.02)] transition-all duration-150 hover:border-black/[0.10] hover:text-[#111827] hover:shadow-[0_1px_2px_rgba(0,0,0,0.03)] active:scale-[0.99] cursor-pointer"
                 style={{
-                  padding: '5px 8px',
-                  height: '26px',
-                  minHeight: '26px',
-                  border: 'none',
-                  cursor: 'pointer',
-                  backgroundColor: 'rgba(0, 0, 0, 0.04)',
+                  padding: '6px 10px',
+                  height: '34px',
+                  minHeight: '34px',
+                  backgroundColor: 'rgba(255, 255, 255, 0.92)',
                   marginLeft: 0,
                   pointerEvents: 'auto',
                 }}
@@ -988,12 +809,12 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
                 {showAllProjects ? (
                   <>
                     <ChevronUp className="w-3.5 h-3.5 text-[#666]" strokeWidth={1.75} />
-                    <span className="text-[12px] font-normal text-[#666]">Show less</span>
+                    <span className="text-[13px] font-medium text-inherit tracking-[-0.01em]">Show less</span>
                   </>
                 ) : (
                   <>
                     <ChevronDown className="w-3.5 h-3.5 text-[#666]" strokeWidth={1.75} />
-                    <span className="text-[12px] font-normal text-[#666]">See All Projects</span>
+                    <span className="text-[13px] font-medium text-inherit tracking-[-0.01em]">See All Projects</span>
                   </>
                 )}
               </button>
@@ -1073,104 +894,6 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sid
             </div>
           </div>
         )}
-
-        {/* USER.md editor modal — same UI/spacing as SearchOrStartChatModal */}
-        <Dialog open={userContextEditorOpen} onOpenChange={(open) => !open && setUserContextEditorOpen(false)}>
-          <DialogContent
-            className="p-0 gap-0 overflow-hidden border-0 bg-white shadow-xl max-h-[92vh] min-w-0 max-w-4xl w-[min(900px,calc(100vw-32px))] rounded-xl flex flex-col duration-0 data-[state=open]:animate-none data-[state=closed]:animate-none"
-            style={{ boxShadow: "0 4px 24px rgba(0,0,0,0.08)" }}
-            overlayClassName="bg-black/10 data-[state=open]:animate-none data-[state=closed]:animate-none"
-            hideClose
-          >
-            <DialogTitle className="sr-only">User context (USER.md)</DialogTitle>
-            {/* Toolbar row — notepad-style: format controls + Save as draft / Save + Close */}
-            <div className="flex shrink-0 items-center gap-3 pl-6 pr-4 py-3 border-b border-gray-100 rounded-t-xl bg-white">
-              <div className="flex items-center gap-3 flex-1 min-w-0">
-                <span className="text-[15px] font-medium text-gray-700 truncate">USER.md</span>
-              </div>
-              <div className="flex items-center gap-0.5 flex-shrink-0">
-                <Select value={userContextBlockType} onValueChange={handleParagraphSelect}>
-                  <SelectTrigger className="w-[120px] h-8 border-0 bg-transparent shadow-none gap-1 text-[13px] font-normal text-gray-700 hover:bg-gray-100 rounded-md" hideIcon>
-                    <SelectValue placeholder="Paragraph" />
-                  </SelectTrigger>
-                  <SelectContent className="min-w-[7rem] p-0.5">
-                    <SelectItem value="paragraph" className="py-1 pl-7 pr-1.5 text-xs focus:bg-gray-100 focus:text-gray-900 data-[highlighted]:bg-gray-100 data-[highlighted]:text-gray-900">Paragraph</SelectItem>
-                    <SelectItem value="heading1" className="py-1 pl-7 pr-1.5 text-xs focus:bg-gray-100 focus:text-gray-900 data-[highlighted]:bg-gray-100 data-[highlighted]:text-gray-900">Heading 1</SelectItem>
-                    <SelectItem value="heading2" className="py-1 pl-7 pr-1.5 text-xs focus:bg-gray-100 focus:text-gray-900 data-[highlighted]:bg-gray-100 data-[highlighted]:text-gray-900">Heading 2</SelectItem>
-                    <SelectItem value="bullet" className="py-1 pl-7 pr-1.5 text-xs focus:bg-gray-100 focus:text-gray-900 data-[highlighted]:bg-gray-100 data-[highlighted]:text-gray-900">Bullet list</SelectItem>
-                  </SelectContent>
-                </Select>
-                <button type="button" className="p-1.5 rounded-md hover:bg-gray-100 text-neutral-600" aria-label="Bold" onClick={() => applyFormat('bold')}>
-                  <Bold className="h-4 w-4" />
-                </button>
-                <button type="button" className="p-1.5 rounded-md hover:bg-gray-100 text-neutral-600" aria-label="Italic" onClick={() => applyFormat('italic')}>
-                  <Italic className="h-4 w-4" />
-                </button>
-                <button type="button" className={`p-1.5 rounded-md ${userContextAlignment === 'left' ? 'bg-gray-100 text-gray-800' : 'hover:bg-gray-100 text-neutral-600'}`} aria-label="Align left" onClick={() => setUserContextAlignment('left')}>
-                  <AlignLeft className="h-4 w-4" />
-                </button>
-                <button type="button" className={`p-1.5 rounded-md ${userContextAlignment === 'center' ? 'bg-gray-100 text-gray-800' : 'hover:bg-gray-100 text-neutral-600'}`} aria-label="Align center" onClick={() => setUserContextAlignment('center')}>
-                  <AlignCenter className="h-4 w-4" />
-                </button>
-                <button type="button" className={`p-1.5 rounded-md ${userContextAlignment === 'right' ? 'bg-gray-100 text-gray-800' : 'hover:bg-gray-100 text-neutral-600'}`} aria-label="Align right" onClick={() => setUserContextAlignment('right')}>
-                  <AlignRight className="h-4 w-4" />
-                </button>
-              </div>
-              <div className="flex items-center gap-2 flex-shrink-0 pl-2">
-                <button
-                  type="button"
-                  className="px-3 py-1.5 rounded-lg text-[13px] font-normal text-gray-600 bg-white border border-gray-200 hover:bg-gray-50 disabled:opacity-50 disabled:pointer-events-none transition-colors"
-                  onClick={() => handleSaveUserContext(false)}
-                  disabled={userContextSaving}
-                >
-                  {userContextSaving ? "Saving…" : "Save as draft"}
-                </button>
-                <button
-                  type="button"
-                  className="px-3 py-1.5 rounded-lg text-[13px] font-medium text-white bg-gray-800 hover:bg-gray-900 disabled:opacity-50 disabled:pointer-events-none transition-colors"
-                  onClick={() => handleSaveUserContext(true)}
-                  disabled={userContextSaving}
-                >
-                  Save
-                </button>
-                <DialogClose
-                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-gray-500 opacity-70 hover:opacity-100 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none"
-                  aria-label="Close"
-                >
-                  <span className="inline-flex items-center justify-center text-2xl font-extralight leading-[0]" aria-hidden>×</span>
-                </DialogClose>
-              </div>
-            </div>
-            {/* Notepad content area — document-like, no input box styling */}
-            <div className="flex-1 min-h-0 overflow-y-auto flex flex-col">
-              <p className="text-[14px] text-gray-400 px-6 pt-3 pb-1 shrink-0">
-                Shown to Velora to personalize responses. You can also ask Velora to update it in chat.
-              </p>
-              {userContextLoadError && (
-                <p className="text-[13px] text-destructive px-6 py-2" role="alert">{userContextLoadError}</p>
-              )}
-              <div className="flex-1 min-h-0 px-6 pb-6 pt-1">
-                <div
-                  ref={userContextEditorRef}
-                  contentEditable
-                  data-placeholder="e.g. I'm a commercial property solicitor. Focus on lease reviews and rent schedules."
-                  className={`min-h-[320px] w-full py-4 px-0 bg-transparent text-[15px] font-normal text-gray-900 outline-none border-0 focus:ring-0 focus:border-0 leading-relaxed [&[data-empty]]:before:content-[attr(data-placeholder)] [&[data-empty]]:before:text-gray-400 ${userContextAlignment === 'center' ? 'text-center' : userContextAlignment === 'right' ? 'text-right' : 'text-left'}`}
-                  style={{ boxShadow: 'none' }}
-                  onInput={() => syncEditorToMarkdown()}
-                  onPaste={(e) => {
-                    e.preventDefault();
-                    const text = e.clipboardData.getData('text/plain');
-                    document.execCommand('insertText', false, text);
-                    syncEditorToMarkdown();
-                  }}
-                />
-              </div>
-              {userContextSaveError && (
-                <p className="text-[13px] text-destructive px-6 pb-3" role="alert">{userContextSaveError}</p>
-              )}
-            </div>
-          </DialogContent>
-        </Dialog>
       </div>
     </div>
   );

@@ -180,9 +180,9 @@ export const CitationPagePreviewContent: React.FC<{
             top: `${transform.finalBboxTop}px`,
             width: `${Math.min(cachedPageImage.imageWidth, transform.finalBboxWidth)}px`,
             height: `${Math.min(cachedPageImage.imageHeight, transform.finalBboxHeight)}px`,
-            backgroundColor: "rgba(219, 234, 254, 0.55)",
+            backgroundColor: "rgba(212, 210, 255, 0.45)",
             border: "none",
-            borderRadius: "6px",
+            borderRadius: "2px",
             pointerEvents: "none",
             zIndex: 10,
           }}
@@ -460,7 +460,7 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
             lineHeight: 1,
             cursor: "pointer",
             marginRight: -4,
-            fontFamily: "system-ui, -apple-system, sans-serif",
+            fontFamily: "'DM Sans', system-ui, -apple-system, sans-serif",
             letterSpacing: "-0.01em",
           }}
           onMouseEnter={(e) => {
@@ -495,7 +495,7 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
               display: "flex",
               alignItems: "center",
               justifyContent: "space-between",
-              fontFamily: "system-ui, -apple-system, sans-serif",
+              fontFamily: "'DM Sans', system-ui, -apple-system, sans-serif",
               letterSpacing: "-0.01em",
             }}
           >
@@ -645,7 +645,7 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
                   boxShadow: "0 1px 1px rgba(0,0,0,0.05)",
                   outline: "none",
                   minHeight: 26,
-                  fontFamily: "system-ui, -apple-system, sans-serif",
+                  fontFamily: "'DM Sans', system-ui, -apple-system, sans-serif",
                   letterSpacing: "-0.01em",
                 }}
                 onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = "#f5f5f5"; }}
@@ -683,7 +683,7 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
                   boxShadow: "0 1px 1px rgba(0,0,0,0.05)",
                   outline: "none",
                   minHeight: 26,
-                  fontFamily: "system-ui, -apple-system, sans-serif",
+                  fontFamily: "'DM Sans', system-ui, -apple-system, sans-serif",
                   letterSpacing: "-0.01em",
                 }}
                 onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = "#f5f5f5"; }}
@@ -721,7 +721,7 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
                   boxShadow: "0 1px 1px rgba(0,0,0,0.05)",
                   outline: "none",
                   minHeight: 26,
-                  fontFamily: "system-ui, -apple-system, sans-serif",
+                  fontFamily: "'DM Sans', system-ui, -apple-system, sans-serif",
                   letterSpacing: "-0.01em",
                 }}
                 onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = "#f5f5f5"; }}

@@ -560,13 +560,13 @@ export const Sidebar = ({
           <div className="flex flex-col h-full min-h-0 pb-3 pt-12">
             {/* VELORA logo - smaller, inline with sidebar buttons; invert for light sidebar (logo is dark-on-black); hidden when icons-only */}
             {!isIconsOnly && (
-              <div className="relative flex-shrink-0" style={{ height: 36 }}>
-                <div className="absolute left-0 right-0 flex items-center px-3" style={{ top: -21, marginLeft: 14 }}>
+              <div className="relative flex-shrink-0" style={{ height: 52 }}>
+                <div className="absolute left-0 right-0 flex items-center px-3" style={{ top: -26, marginLeft: 14 }}>
                   <img
-                    src="/VELORA_WRITINGLOGO.png"
-                    alt="Velora"
-                    className="h-4 object-contain object-left"
-                    style={{ width: 'auto', maxWidth: '120px', filter: 'invert(1) brightness(0.2)', opacity: 0.8 }}
+                    src="/OpenFind(1).png"
+                    alt="OpenFind"
+                    className="h-6 object-contain object-left"
+                    style={{ width: 'auto', maxWidth: '240px', filter: 'invert(1) brightness(0.2)', opacity: 0.8 }}
                   />
                 </div>
               </div>

@@ -427,7 +427,7 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({
               letterSpacing: '-0.01em',
               lineHeight: 1.4,
               flex: 1,
-              fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
+              fontFamily: "'DM Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
             }}
           >
             {truncateFilename(displayFilename)}
@@ -750,7 +750,7 @@ const StackedDocCardWithAsk: React.FC<{
         <span style={{
           fontSize: 13, fontWeight: 500, color: '#374151', whiteSpace: 'nowrap',
           overflow: 'hidden', textOverflow: 'ellipsis', letterSpacing: '-0.01em', lineHeight: 1.4, flex: 1,
-          fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+          fontFamily: "'DM Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
         }}>
           {truncated}
         </span>

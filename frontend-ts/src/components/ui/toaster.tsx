@@ -29,10 +29,10 @@ export function Toaster() {
               </>
             ) : isSuccess ? (
               <>
-                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-emerald-100/80">{displayIcon}</span>
+                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-emerald-100">{displayIcon}</span>
                 <div className="grid gap-0.5 min-w-0 flex-1">
                   {title && <ToastTitle className="text-[13px] font-semibold text-[#141413]">{title}</ToastTitle>}
-                  {description && <ToastDescription className="text-xs text-emerald-700/70">{description}</ToastDescription>}
+                  {description && <ToastDescription className="text-xs text-emerald-700">{description}</ToastDescription>}
                 </div>
                 {action}
               </>

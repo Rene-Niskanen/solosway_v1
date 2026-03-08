@@ -88,7 +88,7 @@ const CitationLink: React.FC<{
         padding: '0 3px',
         fontSize: '9px',
         fontWeight: 500,
-        fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
+        fontFamily: "'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
         color: '#6B7280',
         backgroundColor: '#F3F4F6',
         borderRadius: '2px',
@@ -680,7 +680,7 @@ export const FloatingChatBubble: React.FC<FloatingChatBubbleProps> = ({
                                     margin: 0,
                                     padding: 0,
                                     textAlign: 'left',
-                                    fontFamily: 'system-ui, -apple-system, sans-serif',
+                                    fontFamily: "'DM Sans', system-ui, -apple-system, sans-serif",
                                     flex: '1 1 auto',
                                     minWidth: 0,
                                     wordWrap: 'break-word',
@@ -747,7 +747,7 @@ export const FloatingChatBubble: React.FC<FloatingChatBubbleProps> = ({
                                     lineHeight: '14.1px',
                                     margin: 0,
                                     padding: 0,
-                                    fontFamily: 'system-ui, -apple-system, sans-serif'
+                                    fontFamily: "'DM Sans', system-ui, -apple-system, sans-serif"
                                   }}
                                 >
                                   {seg.snippet}
@@ -785,7 +785,7 @@ export const FloatingChatBubble: React.FC<FloatingChatBubbleProps> = ({
                                 margin: 0,
                                 padding: 0,
                                 textAlign: 'left',
-                                fontFamily: 'system-ui, -apple-system, sans-serif',
+                                fontFamily: "'DM Sans', system-ui, -apple-system, sans-serif",
                                 width: '100%',
                                 boxSizing: 'border-box',
                                 display: 'block',
@@ -909,7 +909,7 @@ export const FloatingChatBubble: React.FC<FloatingChatBubbleProps> = ({
                         margin: 0,
                         padding: '2.2px 11px',
                         textAlign: 'left',
-                        fontFamily: 'system-ui, -apple-system, sans-serif',
+                        fontFamily: "'DM Sans', system-ui, -apple-system, sans-serif",
                         fontWeight: 400
                       }}>
                         <ReactMarkdown

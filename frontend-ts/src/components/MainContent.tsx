@@ -37,6 +37,7 @@ import { SideChatPanel, SideChatPanelRef } from './SideChatPanel';
 import { CHAT_PANEL_WIDTH } from './chatPanelConstants';
 import { FloatingChatBubble } from './FloatingChatBubble';
 import { QuickStartBar } from './QuickStartBar';
+import { DashboardUpgradeCta } from './DashboardUpgradeCta';
 import { FilingSidebarProvider, useFilingSidebar } from '../contexts/FilingSidebarContext';
 import { useChatPanel } from '../contexts/ChatPanelContext';
 import { FilingSidebar } from './FilingSidebar';
@@ -55,7 +56,6 @@ import { useChatHistory } from './ChatHistoryContext';
 import { useBrowserFullscreen } from '../contexts/BrowserFullscreenContext';
 import { usePropertySelection } from '../contexts/PropertySelectionContext';
 import { ChooseProjectModal } from './ChooseProjectModal';
-import { DashboardUpgradeCta } from './DashboardUpgradeCta';
 import type { QueryContentSegment } from '@/types/segmentInput';
 import {
   Select,
@@ -1113,7 +1113,7 @@ const LocationPickerModal: React.FC<{
           Choose where the map opens when you first view it.
         </p>
         {savedLocation && (
-          <div className="flex items-center gap-2 mb-6">
+          <div className="flex items-center gap-2 mb-6 mt-1.5">
             <Locate className="w-3.5 h-3.5 flex-shrink-0 text-gray-500" strokeWidth={2} />
             <span className="text-[13px] font-normal text-gray-700">{savedLocation}</span>
           </div>
@@ -1666,7 +1666,7 @@ const NotificationsSettingsContent: React.FC = () => {
 
         {/* Volume: Spotify-style — speaker icon + horizontal slider */}
         <div className="flex items-center gap-3 mb-5">
-          <Volume2 className="h-4 w-4 shrink-0 text-gray-500" aria-hidden />
+          <Volume2 className="h-3.5 w-3.5 shrink-0 text-gray-500" aria-hidden />
           <Slider
             value={[volume]}
             onValueChange={([v]) => setVolume(v)}
@@ -1924,17 +1924,20 @@ const SettingsView: React.FC<{
               <div className="border-t border-gray-200 my-4" />
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-[13px] text-gray-600">
-                  Privacy Mode is enabled. Background Agent and some features not available.
+                  {privacyMode === 'privacy'
+                    ? 'Privacy Mode is enabled. Background Agent and some features not available.'
+                    : 'Share Data is enabled. Your data helps improve Velora for everyone.'}
                 </span>
                 <button
                   type="button"
                   className="text-[13px] text-blue-600 underline hover:text-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500/20 rounded"
                   onClick={async () => {
-                    setPrivacyMode('privacy');
-                    try { await updateProfile({ privacy_mode: 'privacy' }); setPrefetchedUser(prev => prev ? { ...prev, privacy_mode: 'privacy' as const } : null); } catch (err) { console.error('Failed to save privacy mode:', err); }
+                    const targetMode = privacyMode === 'privacy' ? 'share' : 'privacy';
+                    setPrivacyMode(targetMode);
+                    try { await updateProfile({ privacy_mode: targetMode }); setPrefetchedUser(prev => prev ? { ...prev, privacy_mode: targetMode } : null); } catch (err) { console.error('Failed to save privacy mode:', err); }
                   }}
                 >
-                  Switch to Privacy Mode
+                  {privacyMode === 'privacy' ? 'Switch to Standard Mode' : 'Switch to Privacy Mode'}
                 </button>
               </div>
             </div>
@@ -4501,8 +4504,8 @@ export const MainContent = ({
                           }}
                         >
                           <img
-                            src="/VELORA_DASHLOGO.png"
-                            alt="Velora"
+                            src="/O.png"
+                            alt="OpenFind"
                             // @ts-expect-error - use lowercase fetchpriority per React DOM warning; types still use fetchPriority
                             fetchpriority="high"
                             style={{
@@ -6060,7 +6063,7 @@ export const MainContent = ({
         transition: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked || isTransitioningToChat || isTransitioningToChatRef.current) ? 'none' : undefined, // Disable all transitions when transitioning to/from chat
         willChange: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked || isTransitioningToChat || isTransitioningToChatRef.current) ? 'auto' : undefined // Prevent layout shifts during transitions
       }}>
-        {/* Dashboard upgrade CTA - absolute top-right within this content container, only when dashboard is visible */}
+        {/* Dashboard upgrade CTA - top-center, only when dashboard (home/search) is visible */}
         {(currentView === 'search' || currentView === 'home') && !shouldRestoreActiveChat && !(isInChatMode && hasPerformedSearch) && !isMapVisible && !externalIsMapVisible && (
           <DashboardUpgradeCta />
         )}

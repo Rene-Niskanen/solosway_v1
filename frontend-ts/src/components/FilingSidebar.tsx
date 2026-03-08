@@ -157,7 +157,7 @@ const PendingFileItem: React.FC<{
         )}
       </div>
       <div className="flex-1 min-w-0 flex flex-col">
-        <span className="text-xs font-medium text-slate-600 truncate" style={{ fontFamily: 'system-ui, -apple-system, sans-serif' }}>
+        <span className="text-xs font-medium text-slate-600 truncate" style={{ fontFamily: "'DM Sans', system-ui, -apple-system, sans-serif" }}>
           {file.name}
         </span>
         <div className="flex items-center gap-1">
@@ -1207,6 +1207,20 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
       return () => document.removeEventListener('mousedown', handleClickOutside);
     }
   }, [openContextMenuId, deleteConfirmDialog.isOpen]);
+
+  // Close sidebar when clicking outside (click-off to close)
+  useEffect(() => {
+    if (!isOpen || duplicateDialog.isOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (panelElementRef.current?.contains(target)) return;
+      if (contextMenuRef.current?.contains(target)) return;
+      if (deleteConfirmRef.current?.contains(target)) return;
+      closeSidebar();
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [isOpen, duplicateDialog.isOpen, closeSidebar]);
 
   // Handle rename
   const handleRename = (itemId: string, currentName: string, isFolder: boolean) => {
@@ -2531,7 +2545,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                                       />
                                     </span>
                                       <div className="flex-1 min-w-0">
-                                        <div className="text-sm font-normal text-gray-900 truncate" style={{ fontFamily: 'system-ui, -apple-system, sans-serif', letterSpacing: '-0.01em' }}>
+                                        <div className="text-sm font-normal text-gray-900 truncate" style={{ fontFamily: "'DM Sans', system-ui, -apple-system, sans-serif", letterSpacing: '-0.01em' }}>
                                           {address}
                                         </div>
                                       </div>
@@ -2562,7 +2576,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                                 >
                                   <div className="flex items-center gap-2.5">
                                     <Folder className="w-3.5 h-3.5 text-gray-500 flex-shrink-0" />
-                                    <span className="text-xs font-normal text-gray-900 truncate" style={{ fontFamily: 'system-ui, -apple-system, sans-serif', letterSpacing: '-0.01em' }}>
+                                    <span className="text-xs font-normal text-gray-900 truncate" style={{ fontFamily: "'DM Sans', system-ui, -apple-system, sans-serif", letterSpacing: '-0.01em' }}>
                                       {folder.name}
                                     </span>
                                   </div>
@@ -2712,10 +2726,10 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
             </div>
 
             {/* Actions Row - One white container; fixed height so expand doesn't change size; no vertical dividers between buttons */}
-            <div className="flex items-center h-9 w-full min-w-0 overflow-hidden bg-white rounded-lg pl-3 pr-3 py-0 gap-2 [&>*]:border-l-0 divide-x-0" style={{ width: '100%', boxSizing: 'border-box' }}>
+            <div className="flex items-center h-9 w-full min-w-0 overflow-hidden bg-white rounded-lg pl-2 pr-3 py-0 gap-2 [&>*]:border-l-0 divide-x-0" style={{ width: '100%', boxSizing: 'border-box' }}>
             {searchExpanded ? (
               /* Expanded: search bar fixed width, same height as row; no focus ring */
-              <div className="relative w-52 max-w-[14rem] flex-shrink-0 flex items-center h-full rounded bg-white">
+              <div className="relative w-64 max-w-[18rem] flex-shrink-0 flex items-center h-full rounded bg-white">
                 <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-600 flex-shrink-0 pointer-events-none" />
                 <input
                   ref={searchInputRef}
@@ -2732,7 +2746,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                 <button
                   type="button"
                   onClick={() => { setSearchExpanded(false); if (!searchQuery.trim()) setSearchQuery(''); }}
-                  className="absolute right-1 top-1/2 -translate-y-1/2 flex items-center justify-center rounded flex-shrink-0"
+                  className="absolute right-0.5 top-1/2 -translate-y-1/2 flex items-center justify-center rounded flex-shrink-0"
                   style={{ width: '24px', height: '24px', minWidth: '24px', minHeight: '24px' }}
                   title="Close search"
                 >
@@ -2779,7 +2793,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
               <>
                 <button
                   onClick={() => setViewMode('global')}
-                  className={`text-[11px] font-medium py-1.5 px-2 rounded flex-shrink-0 text-slate-600 ml-3 ${
+                  className={`text-[12px] font-medium py-1 px-2 rounded flex-shrink-0 text-slate-600 ml-2 ${
                     viewMode === 'global' ? 'bg-gray-100' : ''
                   }`}
                 >
@@ -2787,7 +2801,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                 </button>
                 <button
                   onClick={() => setViewMode('property')}
-                  className={`text-[11px] font-medium py-1.5 px-2 rounded flex-shrink-0 text-slate-600 ${
+                  className={`text-[12px] font-medium py-1 px-2 rounded flex-shrink-0 text-slate-600 ${
                     viewMode === 'property' ? 'bg-gray-100' : ''
                   }`}
                 >
@@ -2985,7 +2999,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                             />
                           </span>
                           <div className="flex-1 min-w-0">
-                            <div className="text-xs font-medium text-slate-600 truncate" style={{ fontFamily: 'system-ui, -apple-system, sans-serif', letterSpacing: '-0.01em' }}>
+                            <div className="text-xs font-medium text-slate-600 truncate" style={{ fontFamily: "'DM Sans', system-ui, -apple-system, sans-serif", letterSpacing: '-0.01em' }}>
                               {address}
                             </div>
                           </div>
@@ -3063,7 +3077,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                         onClick={(e) => e.stopPropagation()}
                       />
                     ) : (
-                      <div className="font-normal text-gray-900 truncate" style={{ fontFamily: 'system-ui, -apple-system, sans-serif', letterSpacing: '-0.01em', fontSize: `${12 * FILING_SIDEBAR_FILE_SCALE}px` }}>
+                      <div className="font-normal text-gray-900 truncate" style={{ fontFamily: "'DM Sans', system-ui, -apple-system, sans-serif", letterSpacing: '-0.01em', fontSize: `${12 * FILING_SIDEBAR_FILE_SCALE}px` }}>
                         {folder.name}
                       </div>
                     )}
@@ -3103,7 +3117,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                           <div className="flex-shrink-0 w-3.5 h-3.5 flex items-center justify-center">
                             <OrbitProgress color="#22c55e" size="small" dense text="" textColor="" speedPlus={1} style={{ fontSize: '2px' }} />
                           </div>
-                          <div className="flex-1 min-w-0 font-normal text-gray-700 truncate" style={{ fontFamily: 'system-ui, -apple-system, sans-serif', letterSpacing: '-0.01em', fontSize: `${12 * FILING_SIDEBAR_FILE_SCALE}px` }}>
+                          <div className="flex-1 min-w-0 font-normal text-gray-700 truncate" style={{ fontFamily: "'DM Sans', system-ui, -apple-system, sans-serif", letterSpacing: '-0.01em', fontSize: `${12 * FILING_SIDEBAR_FILE_SCALE}px` }}>
                             {p.name}
                           </div>
                         </div>
@@ -3151,7 +3165,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                           {propertyAddress && 
                            !propertyAddress.startsWith('Property ') && 
                            propertyAddress !== 'Unknown Property' && (
-                            <div className="text-xs font-medium text-slate-600 truncate" style={{ fontFamily: 'system-ui, -apple-system, sans-serif', letterSpacing: '-0.01em' }}>
+                            <div className="text-xs font-medium text-slate-600 truncate" style={{ fontFamily: "'DM Sans', system-ui, -apple-system, sans-serif", letterSpacing: '-0.01em' }}>
                               {propertyAddress}
                             </div>
                           )}
@@ -3234,7 +3248,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                                     />
                                   ) : (
                                     <>
-                                      <span className="text-xs font-medium text-slate-600 truncate" style={{ fontFamily: 'system-ui, -apple-system, sans-serif' }}>
+                                      <span className="text-xs font-medium text-slate-600 truncate" style={{ fontFamily: "'DM Sans', system-ui, -apple-system, sans-serif" }}>
                                         {doc.original_filename}
                                       </span>
                                       <div className="flex items-center gap-1">
@@ -3298,7 +3312,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                       <div className="flex-shrink-0 w-3.5 h-3.5 flex items-center justify-center">
                         <OrbitProgress color="#22c55e" size="small" dense text="" textColor="" speedPlus={1} style={{ fontSize: '2px' }} />
                       </div>
-                      <div className="flex-1 min-w-0 font-normal text-gray-700 truncate" style={{ fontFamily: 'system-ui, -apple-system, sans-serif', letterSpacing: '-0.01em', fontSize: `${12 * FILING_SIDEBAR_FILE_SCALE}px` }}>
+                      <div className="flex-1 min-w-0 font-normal text-gray-700 truncate" style={{ fontFamily: "'DM Sans', system-ui, -apple-system, sans-serif", letterSpacing: '-0.01em', fontSize: `${12 * FILING_SIDEBAR_FILE_SCALE}px` }}>
                         {p.name}
                       </div>
                     </div>
@@ -3377,7 +3391,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                           />
                         ) : (
                           <>
-                            <span className="text-xs font-medium text-slate-600 truncate" style={{ fontFamily: 'system-ui, -apple-system, sans-serif' }}>
+                            <span className="text-xs font-medium text-slate-600 truncate" style={{ fontFamily: "'DM Sans', system-ui, -apple-system, sans-serif" }}>
                               {doc.original_filename}
                             </span>
                             <div className="flex items-center gap-1">

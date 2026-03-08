@@ -44,7 +44,7 @@ export const PLAN_STYLES = {
   
   fonts: {
     mono: "'SF Mono', 'Monaco', 'Menlo', 'Consolas', monospace",
-    ui: "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif",
+    ui: "'DM Sans', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif",
   },
   
   sizes: {

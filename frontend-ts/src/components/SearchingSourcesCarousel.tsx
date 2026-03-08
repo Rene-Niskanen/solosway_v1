@@ -48,7 +48,7 @@ function CircleIcon({ type }: { type: string }) {
           fontWeight: 700,
           color: '#2563EB',
           lineHeight: 1,
-          fontFamily: 'system-ui, sans-serif',
+          fontFamily: "'DM Sans', system-ui, sans-serif",
         }}
         aria-hidden
       >

@@ -720,7 +720,7 @@ const Auth: React.FC = () => {
             style={{ pointerEvents: 'auto' }}
           >
             <style>{`
-              .auth-form * { font-family: 'Inter', sans-serif; }
+              .auth-form * { font-family: 'DM Sans', system-ui, sans-serif; }
               .auth-form .auth-form-text { color: #090909; }
               .auth-form .auth-form-heading-intro { font-weight: 300 !important; }
               .auth-input { color: #090909 !important; }

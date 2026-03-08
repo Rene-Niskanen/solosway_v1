@@ -7,6 +7,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { useModel, LLMModel } from '../contexts/ModelContext';
+import { useUsageOptional } from '../contexts/UsageContext';
 
 interface ModelSelectorProps {
   className?: string;
@@ -50,6 +51,12 @@ const models: ModelOption[] = [
 
 export function ModelSelector({ className, compact = false }: ModelSelectorProps) {
   const { model, setModel } = useModel();
+  const usageContext = useUsageOptional();
+  const plan = usageContext?.usage?.plan?.toLowerCase?.() ?? '';
+  const isStarter = plan === 'personal' || plan === 'starter';
+
+  if (isStarter) return null;
+
   const currentModel = models.find((m) => m.id === model) || models[0];
   const [hoveredModel, setHoveredModel] = React.useState<LLMModel | null>(null);
   const didSelectRef = React.useRef(false);
@@ -160,7 +167,7 @@ export function ModelSelector({ className, compact = false }: ModelSelectorProps
               >
                 {modelOption.label}
               </span>
-              {isSelected && <Check className="w-6 h-6 flex-shrink-0" strokeWidth={2.5} style={{ opacity: 0.7 }} />}
+              {isSelected && <Check className="w-3 h-3 flex-shrink-0" strokeWidth={2.5} style={{ opacity: 0.7 }} />}
             </DropdownMenuItem>
           );
         })}

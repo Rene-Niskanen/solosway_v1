@@ -118,6 +118,45 @@ export function getUpgradeButtonLabel(current: TierKey | string | null | undefin
   return `Upgrade to Velora AI ${name}`;
 }
 
+/** Normalize API/context plan string to TierKey. */
+function normalizePlanToTier(plan: TierKey | string | null | undefined): TierKey {
+  if (!plan || typeof plan !== 'string') return 'professional';
+  const p = plan.toLowerCase().trim();
+  if (p === 'pro' || p === 'professional') return 'professional';
+  if (p === 'starter' || p === 'personal') return 'personal';
+  if (p === 'business' || p === 'ultra') return 'business';
+  return TIER_ORDER.includes(p as TierKey) ? (p as TierKey) : 'professional';
+}
+
+/**
+ * CTA info for dashboard upgrade button — copy, badge text, and badge color.
+ * Returns null when current is business (no upgrade to show).
+ */
+export function getUpgradeCtaInfo(current: TierKey | string | null | undefined): {
+  copy: string;
+  badgeText: string;
+  badgeColor: string;
+} | null {
+  const key = normalizePlanToTier(current);
+  const next = getNextTier(key);
+  if (!next) return null;
+  if (next === 'professional') {
+    return { copy: 'Upgrade for 4× more pages and top AI models', badgeText: 'Pro', badgeColor: '#388E8C' };
+  }
+  if (next === 'business') {
+    return { copy: 'Upgrade for 5,000 pages and faster responses', badgeText: 'Plus', badgeColor: '#24808C' };
+  }
+  return null;
+}
+
+/**
+ * CTA copy for dashboard upgrade button — benefit-led, Velora-specific.
+ * Returns null when current is business (no upgrade to show).
+ */
+export function getUpgradeCtaCopy(current: TierKey | string | null | undefined): string | null {
+  return getUpgradeCtaInfo(current)?.copy ?? null;
+}
+
 const BUSINESS_PAGE_LIMIT = TIERS.business.pageLimit;
 
 /**

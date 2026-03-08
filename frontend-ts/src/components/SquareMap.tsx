@@ -2903,7 +2903,7 @@ export const SquareMap = React.forwardRef<SquareMapRef, SquareMapProps>(({
               display: flex;
               align-items: center;
               gap: 8px;
-              font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+              font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
               position: relative;
             ">
               <!-- Map Pin Icon -->

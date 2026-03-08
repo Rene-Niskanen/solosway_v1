@@ -128,15 +128,13 @@ export function ModeSelector({ className, compact = false, small = false, large 
                 didSelectRef.current = true;
                 setMode(modeOption.id);
               }}
-              className="flex items-center gap-1.5 pl-2 pr-2.5 cursor-pointer"
+              className="flex items-center gap-1.5 pl-2 pr-2.5 cursor-pointer min-h-0 py-1"
               style={{
                 backgroundColor: showSelectionColor ? '#F5F5F5' : 'transparent',
                 color: '#404040',
                 fontSize: '11px',
                 fontWeight: 400,
                 borderRadius: '2px',
-                paddingTop: '4px',
-                paddingBottom: '4px',
                 transition: 'none',
               }}
               onMouseEnter={() => {
@@ -150,7 +148,7 @@ export function ModeSelector({ className, compact = false, small = false, large 
                 style={{ 
                   fontSize: '10px', 
                   opacity: 0.5,
-                  fontFamily: 'system-ui, -apple-system, sans-serif',
+                  fontFamily: "'DM Sans', system-ui, -apple-system, sans-serif",
                     display: 'inline-block',
                     textAlign: 'right',
                 }}

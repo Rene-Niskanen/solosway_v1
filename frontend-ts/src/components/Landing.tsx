@@ -21,7 +21,7 @@ export const Landing: React.FC = () => {
   <div
     className="bg-white group/design-root min-h-screen border-l border-r border-t border-b border-[#e9edf1]"
     style={{ 
-      fontFamily: "Inter, 'Noto Sans', sans-serif",
+      fontFamily: "'DM Sans', system-ui, sans-serif",
       backgroundColor: '#ffffff',
       position: 'relative',
       zIndex: 1,

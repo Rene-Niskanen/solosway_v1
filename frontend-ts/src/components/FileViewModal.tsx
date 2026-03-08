@@ -690,21 +690,21 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
               </AvatarFallback>
             </Avatar>
             <div className="min-w-0">
-              <div className="text-gray-900 font-medium text-sm truncate" style={{ fontFamily: 'system-ui, sans-serif' }}>
+              <div className="text-gray-900 font-medium text-sm truncate" style={{ fontFamily: "'DM Sans', system-ui, sans-serif" }}>
                 {uploaderName}
               </div>
-              <div className="text-gray-600 text-xs truncate" style={{ fontFamily: 'system-ui, sans-serif' }}>
+              <div className="text-gray-600 text-xs truncate" style={{ fontFamily: "'DM Sans', system-ui, sans-serif" }}>
                 Last updated on {formatDate(lastUpdated)}
               </div>
             </div>
           </div>
           <div className="flex flex-row items-center gap-2 flex-shrink-0 min-w-0 max-w-[60%] overflow-visible">
-            <div className="text-gray-700 text-xs font-medium truncate text-right" style={{ fontFamily: 'system-ui, sans-serif' }}>
+            <div className="text-gray-700 text-xs font-medium truncate text-right" style={{ fontFamily: "'DM Sans', system-ui, sans-serif" }}>
               {displayFileType}{displayFileSize !== '—' ? ` · ${displayFileSize}` : ''}
             </div>
             <div
               className="flex items-center gap-2 rounded-md px-2 py-1 flex-shrink-0 overflow-visible"
-              style={{ fontFamily: 'system-ui, sans-serif', backgroundColor: 'white' }}
+              style={{ fontFamily: "'DM Sans', system-ui, sans-serif", backgroundColor: 'white' }}
             >
               <span
                 className="w-1.5 h-1.5 rounded-full flex-shrink-0"
@@ -783,7 +783,7 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
               <div className="flex items-center gap-2 ml-3">
                 <span
                   className="text-gray-700 text-xs tabular-nums min-w-[5.25rem] inline-block text-left"
-                  style={{ fontFamily: 'system-ui, sans-serif' }}
+                  style={{ fontFamily: "'DM Sans', system-ui, sans-serif" }}
                 >
                   {currentPage}/{totalPages} pages
                 </span>
@@ -824,7 +824,7 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
           >
             <div className="flex-1 min-h-0 overflow-y-auto py-2 pl-2 pr-2">
               <div className="flex items-center justify-between gap-2 px-1 pb-2 border-b border-gray-200/80">
-                <span className="text-gray-900 text-xs font-semibold tracking-tight" style={{ fontFamily: 'system-ui, sans-serif' }}>
+                <span className="text-gray-900 text-xs font-semibold tracking-tight" style={{ fontFamily: "'DM Sans', system-ui, sans-serif" }}>
                   Key facts
                 </span>
                 <button
@@ -832,14 +832,14 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
                   onClick={() => fetchKeyFacts()}
                   disabled={keyFactsLoading || !doc}
                   className="text-[11px] text-gray-500 hover:text-gray-800 hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed rounded px-2 py-1 -mr-1 transition-colors focus:outline-none focus:ring-1 focus:ring-gray-300"
-                  style={{ fontFamily: 'system-ui, sans-serif' }}
+                  style={{ fontFamily: "'DM Sans', system-ui, sans-serif" }}
                   title="Regenerate summary and key facts"
                 >
                   {keyFactsLoading ? '…' : 'Refresh'}
                 </button>
               </div>
               {keyFactsLoading && (
-                <div className="text-gray-600 text-xs px-2 py-1" style={{ fontFamily: 'system-ui, sans-serif' }}>
+                <div className="text-gray-600 text-xs px-2 py-1" style={{ fontFamily: "'DM Sans', system-ui, sans-serif" }}>
                   Loading…
                 </div>
               )}
@@ -850,7 +850,7 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
                     <div className="px-2 py-1">
                       <div
                         className="text-gray-700 text-xs leading-relaxed break-words whitespace-pre-wrap"
-                        style={{ fontFamily: 'system-ui, sans-serif' }}
+                        style={{ fontFamily: "'DM Sans', system-ui, sans-serif" }}
                       >
                         {keyFactsText.trim()}
                       </div>
@@ -863,7 +863,7 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
                 const hasFacts = displayFacts.length > 0;
                 if (!hasSummary && !hasFacts) {
                   return (
-                    <div className="text-gray-500 text-xs px-2 py-1" style={{ fontFamily: 'system-ui, sans-serif' }}>
+                    <div className="text-gray-500 text-xs px-2 py-1" style={{ fontFamily: "'DM Sans', system-ui, sans-serif" }}>
                       No key facts or summary for this document.
                     </div>
                   );
@@ -874,7 +874,7 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
                       <div className="rounded-md border border-gray-200/80 bg-white/60 px-2.5 py-2">
                         <p
                           className="text-gray-700 text-xs leading-relaxed break-words m-0"
-                          style={{ fontFamily: 'system-ui, sans-serif' }}
+                          style={{ fontFamily: "'DM Sans', system-ui, sans-serif" }}
                         >
                           {displaySummary}
                         </p>
@@ -884,7 +884,7 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
                       <div className="rounded-md border border-gray-200/80 bg-white/60 px-2.5 py-2">
                         <p
                           className="text-gray-800 text-xs leading-relaxed break-words m-0"
-                          style={{ fontFamily: 'system-ui, sans-serif' }}
+                          style={{ fontFamily: "'DM Sans', system-ui, sans-serif" }}
                         >
                           {displayFacts
                             .map((fact) => `${fact.label}: ${fact.value}`)
@@ -914,7 +914,7 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
           type="button"
           onClick={handleViewDocument}
           className="px-3 py-1.5 rounded-lg text-gray-800 text-xs font-medium hover:bg-black/10 transition-colors"
-          style={{ fontFamily: 'system-ui, sans-serif' }}
+          style={{ fontFamily: "'DM Sans', system-ui, sans-serif" }}
         >
           View Document
         </button>
@@ -922,7 +922,7 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
           type="button"
           onClick={handleAnalyseWithAI}
           className="px-3 py-1.5 rounded-lg text-gray-800 text-xs font-medium hover:bg-black/10 transition-colors flex items-center gap-1.5"
-          style={{ fontFamily: 'system-ui, sans-serif' }}
+          style={{ fontFamily: "'DM Sans', system-ui, sans-serif" }}
         >
           <img src="/analysewithai.png?v=2" alt="" className="w-4 h-4 flex-shrink-0 object-contain" />
           Analyse with AI
@@ -931,7 +931,7 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
           type="button"
           onClick={handleViewDetails}
           className="px-3 py-1.5 rounded-lg text-gray-800 text-xs font-medium hover:bg-black/10 transition-colors"
-          style={{ fontFamily: 'system-ui, sans-serif' }}
+          style={{ fontFamily: "'DM Sans', system-ui, sans-serif" }}
         >
           View details
         </button>

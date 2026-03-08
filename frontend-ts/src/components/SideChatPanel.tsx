@@ -727,7 +727,7 @@ const OrangeCitationSwoopHighlight: React.FC<{
   const [lineEndOffsets, setLineEndOffsets] = React.useState<number[] | null>(null);
   const [measuredText, setMeasuredText] = React.useState<string | null>(null);
   const [resizeKey, setResizeKey] = React.useState(0);
-  const r = 3;
+  const r = 4;
   const measureLines = React.useCallback(() => {
     const el = ref.current;
     if (!el) return;
@@ -784,7 +784,7 @@ const OrangeCitationSwoopHighlight: React.FC<{
           .orange-citation-swoop {
             display: inline;
             margin: 0;
-            padding: 3px 4px;
+            padding: 5px 4px;
             box-decoration-break: clone;
             -webkit-box-decoration-break: clone;
             font-weight: inherit;
@@ -792,7 +792,7 @@ const OrangeCitationSwoopHighlight: React.FC<{
             line-height: inherit;
             overflow: visible;
             pointer-events: none;
-            background: linear-gradient(90deg, rgba(254, 243, 199, 0.85) 0%, rgba(254, 243, 199, 0.85) 100%);
+            background: #F7F7F7;
             background-repeat: no-repeat;
             background-size: 0% 100%;
             animation: orange-citation-swoop 0.22s cubic-bezier(0.22, 1, 0.36, 1) 0.04s forwards;
@@ -842,7 +842,7 @@ const OrangeCitationSwoopHighlight: React.FC<{
       .orange-citation-swoop {
         display: inline;
         margin: 0;
-        padding: 3px 4px;
+        padding: 5px 4px;
         box-decoration-break: clone;
         -webkit-box-decoration-break: clone;
         font-weight: inherit;
@@ -850,7 +850,7 @@ const OrangeCitationSwoopHighlight: React.FC<{
         line-height: inherit;
         overflow: visible;
         pointer-events: none;
-        background: linear-gradient(90deg, rgba(254, 243, 199, 0.85) 0%, rgba(254, 243, 199, 0.85) 100%);
+        background: #F7F7F7;
         background-repeat: no-repeat;
         background-size: 0% 100%;
         animation: orange-citation-swoop 0.22s cubic-bezier(0.22, 1, 0.36, 1) 0.04s forwards;
@@ -991,14 +991,14 @@ const BlueCitedTextHighlight: React.FC<{
       return () => clearTimeout(t);
     }
   }, [skipAnimation, citationNumber, onBlueMounted]);
-  const r = 3;
+  const r = 4;
   const baseStyle: React.CSSProperties = {
     display: 'inline',
     margin: 0,
-    padding: '3.45px 5px',
+    padding: '5px 5px',
     boxDecorationBreak: 'clone',
     WebkitBoxDecorationBreak: 'clone',
-    backgroundColor: '#F2F2EF',
+    backgroundColor: '#F7F7F7',
     border: 'none',
     lineHeight: 1.5,
     overflow: 'visible',
@@ -3394,7 +3394,7 @@ const StreamingResponseText: React.FC<{
             margin: 0,
             padding: '4.4px 0',
             textAlign: 'left',
-            fontFamily: 'Inter, system-ui, sans-serif',
+            fontFamily: "'DM Sans', system-ui, sans-serif",
             fontWeight: 400,
             position: 'relative',
             zIndex: 1,
@@ -4645,14 +4645,14 @@ const CitationCallout: React.FC<{
                     bottom: 0,
                     left: 0,
                     right: 0,
-                    minHeight: showAskBar ? 64 : 0,
+                    minHeight: showAskBar ? 48 : 0,
                     zIndex: 11,
                     display: 'flex',
                     flexDirection: 'row',
                     alignItems: 'flex-end',
                     justifyContent: showAskBar ? 'space-between' : 'flex-end',
                     gap: 6,
-                    padding: showAskBar ? '14px 0 0 12px' : '8px 0 0 0',
+                    padding: showAskBar ? '8px 0 0 10px' : '6px 0 0 0',
                     backgroundColor: showAskBar ? '#ffffff' : 'transparent',
                     pointerEvents: 'auto',
                     borderBottomLeftRadius: showAskBar ? 12 : 0,
@@ -4666,13 +4666,13 @@ const CitationCallout: React.FC<{
                   <div style={{ flex: showAskBar ? 1 : 0, minWidth: 0, display: 'flex', justifyContent: 'flex-start', alignItems: 'flex-end', marginBottom: -2 }}>
                     <label
                       htmlFor="citation-callout-ask-input"
-                      style={{
+                        style={{
                         width: '100%',
                         minWidth: 200,
                         maxWidth: '100%',
                         backgroundColor: '#FFFFFF',
                         borderRadius: 10,
-                        padding: '6px 10px 10px 10px',
+                        padding: '4px 10px 8px 10px',
                         cursor: 'text',
                         display: 'flex',
                         alignItems: 'center',
@@ -4685,7 +4685,7 @@ const CitationCallout: React.FC<{
                     >
                       {showAskQuestion && (
                         <form onSubmit={handleAskSubmit} style={{ display: 'block', width: '100%' }}>
-                          <div style={{ position: 'relative', display: 'flex', alignItems: 'center', height: 40, width: '100%', minWidth: 0, backgroundColor: '#FFFFFF', borderRadius: 10, overflow: 'hidden', border: 'none', outline: 'none', boxShadow: 'none' }}>
+                          <div style={{ position: 'relative', display: 'flex', alignItems: 'center', height: 36, width: '100%', minWidth: 0, backgroundColor: '#FFFFFF', borderRadius: 10, overflow: 'hidden', border: 'none', outline: 'none', boxShadow: 'none' }}>
                             <input
                               id="citation-callout-ask-input"
                               ref={askInputRef as React.RefObject<HTMLInputElement>}
@@ -4751,7 +4751,7 @@ const CitationCallout: React.FC<{
                       alignItems: 'center',
                       gap: 6,
                       backgroundColor: '#ffffff',
-                      padding: '18px 14px 14px 8px',
+                      padding: '10px 10px 10px 6px',
                       marginRight: -2,
                       marginBottom: -2,
                       borderTopLeftRadius: 8,
@@ -4925,7 +4925,7 @@ const CitationCallout: React.FC<{
             style={{
               flexShrink: 0,
               backgroundColor: '#FFFFFF',
-              padding: '8px 10px 10px 10px',
+              padding: '6px 10px 8px 10px',
               borderBottomLeftRadius: 12,
               borderBottomRightRadius: 12,
               border: 'none',
@@ -4947,7 +4947,7 @@ const CitationCallout: React.FC<{
                       position: 'relative',
                       display: 'flex',
                       alignItems: 'center',
-                      height: 40,
+                      height: 36,
                       backgroundColor: '#FFFFFF',
                       borderRadius: 12,
                       overflow: 'hidden',
@@ -5093,7 +5093,7 @@ const CitationCallout: React.FC<{
         fontSize: '15.2px',
         lineHeight: '1.7',
         color: text ? '#374151' : '#6b7280',
-        fontFamily: 'Inter, system-ui, sans-serif',
+        fontFamily: "'DM Sans', system-ui, sans-serif",
         wordWrap: 'break-word',
         overflowWrap: 'break-word',
         whiteSpace: 'pre-wrap',
@@ -5166,7 +5166,7 @@ const truncateQueryText = (
     : `${maxWidthPercent}%`;
   measureElement.style.fontSize = '14px';
   measureElement.style.lineHeight = '19px';
-  measureElement.style.fontFamily = 'system-ui, -apple-system, sans-serif';
+  measureElement.style.fontFamily = "'DM Sans', system-ui, -apple-system, sans-serif";
   measureElement.style.whiteSpace = 'pre-wrap';
   measureElement.style.wordWrap = 'break-word';
   document.body.appendChild(measureElement);
@@ -6049,9 +6049,9 @@ const CitationBboxPreview: React.FC<CitationBboxPreviewProps> = ({ citationBboxD
           top: `${topPct}%`,
           width: `${widthPct}%`,
           height: `${heightPct}%`,
-          backgroundColor: 'rgba(229, 231, 235, 0.45)',
+          backgroundColor: 'rgba(212, 210, 255, 0.45)',
           border: 'none',
-          borderRadius: '3px',
+          borderRadius: '2px',
           pointerEvents: 'none',
           zIndex: 10
         }}
@@ -6288,9 +6288,9 @@ const CitationHoverPreview: React.FC<CitationHoverPreviewProps> = ({
                 top: `${finalBboxTop}px`,
                 width: `${Math.min(imageWidth, finalBboxWidth)}px`,
                 height: `${Math.min(imageHeight, finalBboxHeight)}px`,
-                backgroundColor: 'rgba(219, 234, 254, 0.55)',
+                backgroundColor: 'rgba(212, 210, 255, 0.45)',
                 border: 'none',
-                borderRadius: '3px',
+                borderRadius: '2px',
                 pointerEvents: 'none',
                 zIndex: 10
               }}
@@ -17133,7 +17133,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               padding: 0,
                               marginRight: '6.6px',
                               textAlign: 'left',
-                              fontFamily: 'Inter, system-ui, sans-serif',
+                              fontFamily: "'DM Sans', system-ui, sans-serif",
                               display: 'inline',
                               cursor: segTruncated ? 'pointer' : 'default',
                               wordWrap: 'break-word',
@@ -17229,7 +17229,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             padding: 0,
                             marginRight: '6.6px',
                             textAlign: 'left',
-                            fontFamily: 'system-ui, -apple-system, sans-serif',
+                            fontFamily: "'DM Sans', system-ui, -apple-system, sans-serif",
                             display: 'inline',
                             cursor: isTruncated ? 'pointer' : 'default',
                             wordWrap: 'break-word',
@@ -18436,22 +18436,22 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         setViewOptionsOpen(false);
                         if (onSidebarToggle) onSidebarToggle();
                       }}
-                      className={`flex items-center ${isPropertyDetailsOpen ? 'justify-center' : actualPanelWidth >= 750 ? 'gap-1' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150 cursor-pointer border-none`}
+                      className={`flex items-center ${isPropertyDetailsOpen ? 'justify-center' : actualPanelWidth >= 750 ? 'gap-1.5' : 'justify-center'} rounded-xl border border-black/[0.06] bg-white text-[#4b5563] shadow-[0_1px_1px_rgba(0,0,0,0.02)] transition-all duration-150 hover:border-black/[0.10] hover:text-[#111827] hover:shadow-[0_1px_2px_rgba(0,0,0,0.03)] active:scale-[0.99] cursor-pointer`}
                       title="Close sidebar"
                       type="button"
                       style={{
-                        padding: actualPanelWidth >= 750 ? '6px 8px' : '6px',
-                        height: '32px',
-                        minHeight: '32px',
+                        padding: actualPanelWidth >= 750 ? '6px 10px' : '6px',
+                        height: '34px',
+                        minHeight: '34px',
                         position: 'relative',
                         zIndex: 10001,
                         pointerEvents: 'auto',
-                        backgroundColor: 'rgba(0, 0, 0, 0.02)'
+                        backgroundColor: 'rgba(255, 255, 255, 0.92)'
                       }}
                     >
                       <PanelRightClose className="w-5 h-5 text-[#666] scale-x-[-1] flex-shrink-0" strokeWidth={1.25} />
                       {!isPropertyDetailsOpen && actualPanelWidth >= 750 && (
-                        <span className="text-[13px] font-normal text-[#666] whitespace-nowrap">Close</span>
+                        <span className="text-[13px] font-medium text-inherit text-left whitespace-nowrap tracking-[-0.01em]">Close</span>
                       )}
                     </button>
                   )}
@@ -19143,20 +19143,19 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         onMapToggle();
                       }
                     }}
-                    className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150`}
+                    className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1.5' : 'justify-center'} rounded-xl border border-black/[0.06] bg-white text-[#4b5563] shadow-[0_1px_1px_rgba(0,0,0,0.02)] transition-all duration-150 hover:border-black/[0.10] hover:text-[#111827] hover:shadow-[0_1px_2px_rgba(0,0,0,0.03)] active:scale-[0.99] cursor-pointer`}
                     title="Close chat"
+                    type="button"
                     style={{
-                      padding: actualPanelWidth >= 750 ? '6px 8px' : '6px',
-                      height: '32px',
-                      minHeight: '32px',
+                      padding: actualPanelWidth >= 750 ? '6px 10px' : '6px',
+                      height: '34px',
+                      minHeight: '34px',
                       marginLeft: '8px',
                       ...(isPropertyDetailsOpen ? { marginRight: '8px' } : {}),
                       position: 'relative',
                       zIndex: 10001,
                       pointerEvents: 'auto',
-                      border: 'none',
-                      cursor: 'pointer',
-                      backgroundColor: 'rgba(0, 0, 0, 0.02)'
+                      backgroundColor: 'rgba(255, 255, 255, 0.92)'
                     }}
                   >
                     <X className="w-5 h-5 text-[#666]" strokeWidth={1.25} />
@@ -19192,7 +19191,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               key="chat-content-area"
               style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', position: 'relative', width: '100%' }}
             >
-            {/* Agents button in top right – same UI as existing Agents button; only on new chat (centered empty) screen when agent sidebar is closed */}
+            {/* Agents button in top right – same UI as existing Agents Sidebar button; only on new chat (centered empty) screen when agent sidebar is closed */}
             {isVisible && !isChatPanelOpen && useCenteredEmptyState && (
               <button
                 type="button"
@@ -19201,22 +19200,22 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   openChatPanel();
                 }}
                 aria-label="Open agents"
-                title="Agents"
-                className="flex items-center gap-1.5 rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150 cursor-pointer border-none"
+                title="Agents Sidebar"
+                className="flex items-center gap-1.5 rounded-xl border border-black/[0.06] bg-white text-[#4b5563] shadow-[0_1px_1px_rgba(0,0,0,0.02)] transition-all duration-150 hover:border-black/[0.10] hover:text-[#111827] hover:shadow-[0_1px_2px_rgba(0,0,0,0.03)] active:scale-[0.99] cursor-pointer"
                 style={{
                   position: 'absolute',
                   top: 20,
                   right: 20,
                   zIndex: 20,
                   pointerEvents: 'auto',
-                  padding: '6px 8px',
-                  height: '32px',
-                  minHeight: '32px',
-                  backgroundColor: 'rgba(0, 0, 0, 0.02)',
+                  padding: '6px 10px',
+                  height: '34px',
+                  minHeight: '34px',
+                  backgroundColor: 'rgba(255, 255, 255, 0.92)',
                 }}
               >
                 <img src={agentIcon} alt="" className="h-5 w-5 object-contain flex-shrink-0" aria-hidden />
-                <span className="text-[13px] font-normal text-[#666] whitespace-nowrap">Agents</span>
+                <span className="text-[13px] font-medium text-inherit text-left whitespace-nowrap tracking-[-0.01em]">Agents</span>
               </button>
             )}
             {useCenteredEmptyState ? (
@@ -19254,8 +19253,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       style={{ marginBottom: DASHBOARD_CHAT_LAYOUT.WELCOME_TO_BAR_GAP }}
                     >
                       <img
-                        src="/VELORA_DASHLOGO.png"
-                        alt="Velora"
+                        src="/O.png"
+                        alt="OpenFind"
                         style={{
                           height: 'clamp(1.5rem, 4vw, 2rem)',
                           width: 'auto',

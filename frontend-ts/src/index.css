@@ -6,6 +6,9 @@
 
 @layer base {
   :root {
+    /* Perplexity-style typography (DM Sans) */
+    --font-sans: 'DM Sans', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+
     /* Core Brand Colors - Real Estate Professional Palette */
     --background: 248 250 252;
     --foreground: 221 39% 11%;
@@ -170,11 +173,13 @@
   body {
     @apply bg-gradient-to-br from-slate-50 via-blue-50/30 to-purple-50/20 text-foreground min-h-screen;
     background-attachment: fixed;
+    font-family: var(--font-sans);
   }
 
-  /* Smooth scrolling */
+  /* Smooth scrolling + slightly larger default font */
   html {
     scroll-behavior: smooth;
+    font-size: 17px; /* Slightly larger than 16px default */
   }
 
   /* Custom scrollbar */

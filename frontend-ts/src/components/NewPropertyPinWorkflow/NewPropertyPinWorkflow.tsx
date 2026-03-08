@@ -1831,7 +1831,7 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
                                       {getFileIcon()}
                                     </div>
                                     <div className="flex-1 min-w-0">
-                                      <div className="text-xs font-normal text-gray-900 truncate" style={{ fontFamily: 'system-ui, -apple-system, sans-serif', letterSpacing: '-0.01em' }}>
+                                      <div className="text-xs font-normal text-gray-900 truncate" style={{ fontFamily: "'DM Sans', system-ui, -apple-system, sans-serif", letterSpacing: '-0.01em' }}>
                                         {uploadedFile.file.name}
                                       </div>
                                     </div>

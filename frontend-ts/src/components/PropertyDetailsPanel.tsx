@@ -909,9 +909,9 @@ const ExpandedCardView: React.FC<{
                                       top: `${finalBboxTop}px`,
                                       width: `${Math.min(pageDimensions.width, finalBboxWidth)}px`,
                                       height: `${Math.min(pageDimensions.height, finalBboxHeight)}px`,
-                                      backgroundColor: 'rgba(229, 231, 235, 0.45)',
+                                      backgroundColor: 'rgba(212, 210, 255, 0.45)',
                                       border: 'none',
-                                      borderRadius: '3px',
+                                      borderRadius: '2px',
                                       pointerEvents: 'auto',
                                       cursor: 'pointer',
                                       zIndex: 10,
@@ -919,10 +919,10 @@ const ExpandedCardView: React.FC<{
                                       transition: 'none'
                                     }}
                                     onMouseEnter={(e) => {
-                                      e.currentTarget.style.backgroundColor = 'rgba(229, 231, 235, 0.6)';
+                                      e.currentTarget.style.backgroundColor = 'rgba(200, 198, 255, 0.6)';
                                     }}
                                     onMouseLeave={(e) => {
-                                      e.currentTarget.style.backgroundColor = 'rgba(229, 231, 235, 0.45)';
+                                      e.currentTarget.style.backgroundColor = 'rgba(212, 210, 255, 0.45)';
                                     }}
                                     title="Click to interact with this citation"
                                   />
@@ -2550,18 +2550,18 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                     e.stopPropagation();
                     onClose();
                   }}
-                  className="flex items-center gap-1 rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150 flex-shrink-0 border-none cursor-pointer"
+                  className="flex items-center gap-1.5 rounded-xl border border-black/[0.06] bg-white text-[#4b5563] shadow-[0_1px_1px_rgba(0,0,0,0.02)] transition-all duration-150 hover:border-black/[0.10] hover:text-[#111827] hover:shadow-[0_1px_2px_rgba(0,0,0,0.03)] active:scale-[0.99] cursor-pointer flex-shrink-0"
                   title="Back to Projects"
                   type="button"
                   style={{
-                    padding: '6px 8px',
-                    height: '32px',
-                    minHeight: '32px',
-                    backgroundColor: 'rgba(0, 0, 0, 0.02)',
+                    padding: '6px 10px',
+                    height: '34px',
+                    minHeight: '34px',
+                    backgroundColor: 'rgba(255, 255, 255, 0.92)',
                   }}
                 >
                   <ChevronLeft className="w-3.5 h-3.5 text-[#666]" strokeWidth={1.75} />
-                  <span className="text-[13px] font-normal text-[#666]">Back</span>
+                  <span className="text-[13px] font-medium text-inherit tracking-[-0.01em]">Back</span>
                 </button>
               )}
               {filesSearchExpanded ? (
@@ -2594,14 +2594,14 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                   <button
                     type="button"
                     onClick={() => { setFilesSearchExpanded(true); setTimeout(() => filesSearchInputRef.current?.focus(), 0); }}
-                    className="flex items-center justify-center rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150 flex-shrink-0 border-none cursor-pointer"
+                    className="flex items-center justify-center rounded-xl border border-black/[0.06] bg-white text-[#4b5563] shadow-[0_1px_1px_rgba(0,0,0,0.02)] transition-all duration-150 hover:border-black/[0.10] hover:text-[#111827] hover:shadow-[0_1px_2px_rgba(0,0,0,0.03)] active:scale-[0.99] cursor-pointer flex-shrink-0"
                     title="Search documents"
                     style={{
-                      padding: '6px 8px',
-                      height: '32px',
-                      minHeight: '32px',
-                      minWidth: '32px',
-                      backgroundColor: 'rgba(0, 0, 0, 0.02)',
+                      padding: '6px 10px',
+                      height: '34px',
+                      minHeight: '34px',
+                      minWidth: '34px',
+                      backgroundColor: 'rgba(255, 255, 255, 0.92)',
                     }}
                   >
                     <Search className="w-3.5 h-3.5 text-[#666]" strokeWidth={1.5} />
@@ -2614,17 +2614,17 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                           setLocalSelectedDocumentIds(new Set());
                         }
                       }}
-                      className="flex items-center justify-center gap-1 rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150 cursor-pointer border-none"
+                      className="flex items-center justify-center gap-1.5 rounded-xl border border-black/[0.06] bg-white text-[#4b5563] shadow-[0_1px_1px_rgba(0,0,0,0.02)] transition-all duration-150 hover:border-black/[0.10] hover:text-[#111827] hover:shadow-[0_1px_2px_rgba(0,0,0,0.03)] active:scale-[0.99] cursor-pointer"
                       title="Select documents to delete"
                       type="button"
                       style={{
-                        padding: '6px 8px',
-                        height: '32px',
-                        minHeight: '32px',
-                        backgroundColor: isLocalSelectionMode ? 'rgba(0, 0, 0, 0.04)' : 'rgba(0, 0, 0, 0.02)',
+                        padding: '6px 10px',
+                        height: '34px',
+                        minHeight: '34px',
+                        backgroundColor: isLocalSelectionMode ? 'rgba(0, 0, 0, 0.04)' : 'rgba(255, 255, 255, 0.92)',
                       }}
                     >
-                      <span className="text-[13px] font-normal text-[#666]">Select</span>
+                      <span className="text-[13px] font-medium text-inherit tracking-[-0.01em]">Select</span>
                     </button>
                   </div>
                 </>
@@ -2635,14 +2635,14 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                     e.stopPropagation();
                     setIsFullscreen(!isFullscreen);
                   }}
-                  className="flex items-center justify-center rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150 flex-shrink-0 border-none cursor-pointer text-gray-500 hover:text-gray-700"
+                  className="flex items-center justify-center rounded-xl border border-black/[0.06] bg-white text-[#4b5563] shadow-[0_1px_1px_rgba(0,0,0,0.02)] transition-all duration-150 hover:border-black/[0.10] hover:text-[#111827] hover:shadow-[0_1px_2px_rgba(0,0,0,0.03)] active:scale-[0.99] cursor-pointer flex-shrink-0"
                   title={isFullscreen ? "Exit Fullscreen" : "Enter Fullscreen"}
                   style={{
-                    padding: '6px 8px',
-                    height: '32px',
-                    minHeight: '32px',
-                    minWidth: '32px',
-                    backgroundColor: 'rgba(0, 0, 0, 0.02)',
+                    padding: '6px 10px',
+                    height: '34px',
+                    minHeight: '34px',
+                    minWidth: '34px',
+                    backgroundColor: 'rgba(255, 255, 255, 0.92)',
                   }}
                 >
                   {isFullscreen ? (
@@ -2654,15 +2654,15 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
               )}
               <button
                 onClick={onClose}
-                className="flex items-center justify-center rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150 flex-shrink-0 border-none cursor-pointer text-gray-500 hover:text-gray-700"
+                className="flex items-center justify-center rounded-xl border border-black/[0.06] bg-white text-[#4b5563] shadow-[0_1px_1px_rgba(0,0,0,0.02)] transition-all duration-150 hover:border-black/[0.10] hover:text-[#111827] hover:shadow-[0_1px_2px_rgba(0,0,0,0.03)] active:scale-[0.99] cursor-pointer flex-shrink-0"
                 title="Close Panel"
                 style={{
                   zIndex: 10,
-                  padding: '6px 8px',
-                  height: '32px',
-                  minHeight: '32px',
-                  minWidth: '32px',
-                  backgroundColor: 'rgba(0, 0, 0, 0.02)',
+                  padding: '6px 10px',
+                  height: '34px',
+                  minHeight: '34px',
+                  minWidth: '34px',
+                  backgroundColor: 'rgba(255, 255, 255, 0.92)',
                 }}
               >
                 <X size={16} />
