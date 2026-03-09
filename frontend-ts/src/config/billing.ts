@@ -129,6 +129,30 @@ function normalizePlanToTier(plan: TierKey | string | null | undefined): TierKey
 }
 
 /**
+ * Badge info for the current plan (sidebar, profile, etc.) — pill label and color.
+ */
+export function getPlanBadgeInfo(plan: TierKey | string | null | undefined): {
+  badgeText: string;
+  badgeColor: string;
+} {
+  if (!plan || (typeof plan === 'string' && plan.toLowerCase() === 'free')) {
+    return { badgeText: 'Free', badgeColor: '#6B7280' };
+  }
+  const key = normalizePlanToTier(plan);
+  const tier = TIERS[key];
+  const name = tier?.name ?? (plan ? String(plan).charAt(0).toUpperCase() + String(plan).slice(1) : 'Free');
+  const colors: Record<TierKey, string> = {
+    personal: '#5B9A8B',
+    professional: '#388E8C',
+    business: '#24808C',
+  };
+  return {
+    badgeText: name,
+    badgeColor: colors[key] ?? '#6B7280',
+  };
+}
+
+/**
  * CTA info for dashboard upgrade button — copy, badge text, and badge color.
  * Returns null when current is business (no upgrade to show).
  */

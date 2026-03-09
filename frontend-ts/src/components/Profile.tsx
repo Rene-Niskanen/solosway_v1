@@ -9,7 +9,7 @@ import { loadRecentProperties, RecentProperty } from "@/utils/recentProjects";
 import { EnhancedEditableField } from "./EnhancedEditableField";
 import { validateEmail, validatePhone, validateName, validateTitle, validateAddress, validateOrganization } from "@/utils/profileValidation";
 import { useProfileUpdate } from "@/hooks/useProfileUpdate";
-import { ProfileImageUpload } from "./ProfileImageUpload";
+import { validateImageFile, validateImageDimensions } from "@/utils/profileValidation";
 import { CompanyLogoUpload } from "./CompanyLogoUpload";
 import { Button } from "@/components/ui/button";
 
@@ -62,8 +62,35 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate, embeddedInSettings, initi
   const { projects } = useProjects();
   const currentYear = new Date().getFullYear();
   const { updateProfile, uploadProfilePicture, uploadCompanyLogo, removeProfilePicture, removeCompanyLogo, isUpdating: isProfileUpdating } = useProfileUpdate();
-  const [isProfileImageModalOpen, setIsProfileImageModalOpen] = React.useState(false);
   const [isCompanyLogoModalOpen, setIsCompanyLogoModalOpen] = React.useState(false);
+  const profileFileInputRef = React.useRef<HTMLInputElement>(null);
+  const [profileImageError, setProfileImageError] = React.useState<string | null>(null);
+
+  const handleProfileImageSelect = React.useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setProfileImageError(null);
+    const validation = validateImageFile(file);
+    if (!validation.isValid) {
+      setProfileImageError(validation.error || 'Invalid image file');
+      return;
+    }
+    try {
+      const dimValidation = await validateImageDimensions(file, 200, 200);
+      if (!dimValidation.isValid) {
+        setProfileImageError(dimValidation.error || 'Image dimensions too small');
+        return;
+      }
+      const imageUrl = await uploadProfilePicture(file);
+      const cacheBust = Date.now();
+      setUserData(prev => prev ? { ...prev, profile_image: imageUrl, avatar_url: imageUrl } : null);
+      setProfilePicCacheBust(cacheBust);
+      window.dispatchEvent(new CustomEvent('profilePictureUpdated', { detail: { profileImageUrl: imageUrl, avatarUrl: imageUrl, removed: false, cacheBust } }));
+    } catch (err) {
+      setProfileImageError(err instanceof Error ? err.message : 'Failed to upload');
+    }
+  }, [uploadProfilePicture]);
 
   const space = { xs: 4, sm: 8, md: 12, lg: 16, xl: 24, xxl: 32 };
 
@@ -423,23 +450,42 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate, embeddedInSettings, initi
                   <div className="space-y-1.5">
                     <label className="block text-sm font-normal text-gray-900">Full name</label>
                     <div className="flex items-center gap-3">
-                      <div
-                        className="relative shrink-0 rounded-full overflow-hidden w-10 h-10 cursor-pointer ring-2 ring-transparent hover:ring-gray-300 transition-all"
-                        onClick={() => setIsProfileImageModalOpen(true)}
-                      >
-                        <Avatar className="w-10 h-10 rounded-full border border-gray-200">
-                          <AvatarImage
-                            src={(() => {
-                              const base = userData?.profile_image || userData?.avatar_url || userData?.profile_picture_url || "/default profile icon.png";
-                              return base.startsWith('http') && profilePicCacheBust ? `${base}?t=${profilePicCacheBust}` : base;
-                            })()}
-                            alt={getUserName()}
-                            className="object-cover w-full h-full"
-                          />
-                          <AvatarFallback className="bg-gray-900 text-white text-sm font-medium rounded-full w-full h-full flex items-center justify-center">
-                            {getUserInitials()}
-                          </AvatarFallback>
-                        </Avatar>
+                      <div className="flex flex-col items-start gap-1">
+                        <div
+                          className="relative shrink-0 rounded-full overflow-hidden w-10 h-10 cursor-pointer ring-2 ring-transparent hover:ring-gray-300 transition-all"
+                          onClick={() => profileFileInputRef.current?.click()}
+                        >
+                          <Avatar className="w-10 h-10 rounded-full border border-gray-200">
+                            <AvatarImage
+                              src={(() => {
+                                const base = userData?.profile_image || userData?.avatar_url || userData?.profile_picture_url || "/default profile icon.png";
+                                return base.startsWith('http') && profilePicCacheBust ? `${base}?t=${profilePicCacheBust}` : base;
+                              })()}
+                              alt={getUserName()}
+                              className="object-cover w-full h-full"
+                            />
+                            <AvatarFallback className="bg-gray-900 text-white text-sm font-medium rounded-full w-full h-full flex items-center justify-center">
+                              {getUserInitials()}
+                            </AvatarFallback>
+                          </Avatar>
+                        </div>
+                        {(userData?.profile_image || userData?.avatar_url || userData?.profile_picture_url) && (
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              if (window.confirm('Remove profile picture?')) {
+                                await removeProfilePicture();
+                                const cacheBust = Date.now();
+                                setUserData(prev => prev ? { ...prev, profile_image: undefined, avatar_url: undefined } : null);
+                                setProfilePicCacheBust(cacheBust);
+                                window.dispatchEvent(new CustomEvent('profilePictureUpdated', { detail: { removed: true, cacheBust } }));
+                              }
+                            }}
+                            className="text-xs text-red-600 hover:underline"
+                          >
+                            Remove photo
+                          </button>
+                        )}
                       </div>
                       <div className="flex-1 min-w-[200px]">
                         <EnhancedEditableField
@@ -587,10 +633,28 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate, embeddedInSettings, initi
                           <AvatarFallback style={{ backgroundColor: '#f3f4f6', color: '#6b7280', fontSize: '28px', fontWeight: 600, borderRadius: '50%' }}>{getUserInitials()}</AvatarFallback>
                         </Avatar>
                       </div>
-                      <div style={{ position: 'absolute', top: '3px', left: '3px', right: '3px', bottom: '3px', backgroundColor: 'rgba(0, 0, 0, 0.5)', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: 0, transition: 'opacity 200ms', cursor: 'pointer' }} onMouseEnter={(e) => { e.currentTarget.style.opacity = '1'; }} onMouseLeave={(e) => { e.currentTarget.style.opacity = '0'; }} onClick={() => setIsProfileImageModalOpen(true)}>
+                      <div style={{ position: 'absolute', top: '3px', left: '3px', right: '3px', bottom: '3px', backgroundColor: 'rgba(0, 0, 0, 0.5)', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: 0, transition: 'opacity 200ms', cursor: 'pointer' }} onMouseEnter={(e) => { e.currentTarget.style.opacity = '1'; }} onMouseLeave={(e) => { e.currentTarget.style.opacity = '0'; }} onClick={() => profileFileInputRef.current?.click()}>
                         <span style={{ color: '#ffffff', fontSize: '12px', fontWeight: 500 }}>Edit</span>
                       </div>
                     </div>
+                    {(userData?.profile_image || userData?.avatar_url || userData?.profile_picture_url) && (
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          if (window.confirm('Remove profile picture?')) {
+                            await removeProfilePicture();
+                            const cacheBust = Date.now();
+                            setUserData(prev => prev ? { ...prev, profile_image: undefined, avatar_url: undefined } : null);
+                            setProfilePicCacheBust(cacheBust);
+                            window.dispatchEvent(new CustomEvent('profilePictureUpdated', { detail: { removed: true, cacheBust } }));
+                          }
+                        }}
+                        style={{ fontSize: '11px', color: '#ef4444', marginTop: '4px', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
+                        className="hover:underline"
+                      >
+                        Remove photo
+                      </button>
+                    )}
                     <div style={{ marginBottom: space.sm }}>
                       <EnhancedEditableField value={userData?.first_name || userData?.last_name ? `${userData.first_name || ''} ${userData.last_name || ''}`.trim() : ''} onSave={async (value) => { try { const parts = value.trim().split(/\s+/); const firstName = parts[0] || ''; const lastName = parts.slice(1).join(' ') || ''; if (!firstName) throw new Error('First name is required'); await updateProfile({ first_name: firstName, last_name: lastName }); setUserData(prev => prev ? { ...prev, first_name: firstName, last_name: lastName } : null); } catch (err) { console.error('Failed to save name:', err); throw err; } }} validate={(v) => { const t = v.trim(); if (!t) return { isValid: false, error: 'Name is required' }; const p = t.split(/\s+/); if (!p[0]) return { isValid: false, error: 'Please enter at least a first name' }; const r = validateName(p[0], 'First name'); if (!r.isValid) return r; if (p.length > 1 && p[1]) { const r2 = validateName(p.slice(1).join(' '), 'Last name'); if (!r2.isValid) return r2; } return { isValid: true }; }} placeholder="Enter your name" required />
                     </div>
@@ -1141,26 +1205,20 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate, embeddedInSettings, initi
           </div>
         </div>
 
-      {/* Profile Image Upload Modal */}
-      <ProfileImageUpload
-        isOpen={isProfileImageModalOpen}
-        onClose={() => setIsProfileImageModalOpen(false)}
-        onSave={async (file) => {
-          const imageUrl = await uploadProfilePicture(file);
-          const cacheBust = Date.now();
-          setUserData(prev => prev ? { ...prev, profile_image: imageUrl, avatar_url: imageUrl } : null);
-          setProfilePicCacheBust(cacheBust);
-          window.dispatchEvent(new CustomEvent('profilePictureUpdated', { detail: { profileImageUrl: imageUrl, avatarUrl: imageUrl, removed: false, cacheBust } }));
-        }}
-        onRemove={async () => {
-          await removeProfilePicture();
-          const cacheBust = Date.now();
-          setUserData(prev => prev ? { ...prev, profile_image: undefined, avatar_url: undefined } : null);
-          setProfilePicCacheBust(cacheBust);
-          window.dispatchEvent(new CustomEvent('profilePictureUpdated', { detail: { removed: true, cacheBust } }));
-        }}
-        currentImageUrl={userData?.profile_image || userData?.avatar_url || userData?.profile_picture_url}
+      <input
+        ref={profileFileInputRef}
+        type="file"
+        accept="image/jpeg,image/jpg,image/png,image/webp"
+        onChange={handleProfileImageSelect}
+        className="hidden"
+        aria-label="Choose profile picture"
       />
+      {profileImageError && (
+        <div className="fixed top-16 left-6 right-6 sm:left-auto sm:right-8 sm:max-w-sm z-[10000] bg-red-50 border border-red-200 text-red-700 text-sm py-2 px-3 rounded-lg shadow-lg flex flex-wrap items-start gap-x-2">
+          <span className="break-words flex-1 min-w-0">{profileImageError}</span>
+          <button type="button" onClick={() => setProfileImageError(null)} className="shrink-0 underline">Dismiss</button>
+        </div>
+      )}
 
       {/* Company Logo Upload Modal */}
       <CompanyLogoUpload

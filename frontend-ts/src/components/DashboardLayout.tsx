@@ -937,6 +937,9 @@ const DashboardLayoutContent = ({
           closeFilingSidebar();
           setSearchModalOpen(true);
         }}
+        onUploadFile={() => {
+          setTimeout(() => uploadFileInputRef.current?.click(), 0);
+        }}
         isSearchOpen={searchModalOpen}
         onSignOut={async () => {
           try {

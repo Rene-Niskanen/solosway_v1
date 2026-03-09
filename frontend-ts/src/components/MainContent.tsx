@@ -1961,7 +1961,7 @@ const SettingsView: React.FC<{
   };
 
   return (
-    <div className="w-full h-full flex gap-24 bg-[#FAF9F6] -ml-16 lg:-ml-24">
+    <div className="w-full h-full flex gap-24 bg-[#FAF9F6] -ml-16 lg:-ml-24 pt-12">
       {/* Settings Sidebar - Sleek Design */}
       <div className="w-64 shrink-0 bg-[#FAF9F6]">
         <div className="p-6">
@@ -2196,6 +2196,7 @@ export const MainContent = ({
   onProjectDetailOpen,
   mainContentContainerRef,
 }: MainContentProps) => {
+  const authUser = useAuthUser();
   const { addActivity } = useSystem();
   const { isOpen: isFilingSidebarOpen, width: filingSidebarWidth, isResizing: isFilingSidebarResizing, closeSidebar, openSidebar: openFilingSidebar } = useFilingSidebar();
   const { isOpen: isChatHistoryPanelOpen, width: chatHistoryPanelWidth, isResizing: isChatHistoryPanelResizing, closePanel: closeChatPanel } = useChatPanel();
@@ -4537,9 +4538,10 @@ export const MainContent = ({
                               whiteSpace: 'nowrap',
                             }}
                           >
-                            {userData?.first_name?.trim()
-                              ? `Hey ${userData.first_name.trim()}, What can I help you with today?`
-                              : 'What can I help you with today?'}
+                            {(() => {
+                              const name = (authUser?.first_name ?? userData?.first_name)?.trim();
+                              return name ? `Hey ${name}, What can I help you with today?` : 'What can I help you with today?';
+                            })()}
                           </h2>
                         </div>
                 </div>
@@ -5845,7 +5847,7 @@ export const MainContent = ({
         ref={sideChatPanelRef}
         isVisible={((currentView === 'search' || currentView === 'home') && hasPerformedSearch && (isMapVisible || isInChatMode) && !showNewPropertyWorkflow) || (currentView === 'projects' && (!!expandedCardViewDoc || projectsChatActive))}
         query={mapSearchQuery}
-        userFirstName={userData == null ? undefined : (userData.first_name?.trim() || 'there')}
+        userFirstName={(authUser?.first_name ?? userData?.first_name)?.trim() || undefined}
         initialContentSegments={mapSearchContentSegments.length > 0 ? mapSearchContentSegments : undefined}
         pendingSearchContentSegmentsRef={pendingSearchContentSegmentsRef}
         initialDocumentChip={initialDocumentChipForChat}
@@ -6277,7 +6279,7 @@ export const MainContent = ({
         onSidebarToggle={onSidebarToggle}
         onActiveChatChange={handleActiveChatChange}
         onOpenChatHistory={onOpenChatHistory}
-        userFirstName={userData == null ? undefined : (userData.first_name?.trim() || 'there')}
+        userFirstName={(authUser?.first_name ?? userData?.first_name)?.trim() || undefined}
       />
 
       <ChooseProjectModal

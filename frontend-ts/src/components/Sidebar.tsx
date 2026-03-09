@@ -23,6 +23,7 @@ import {
   MessageCircle,
   MessagesSquare,
   Search,
+  Upload,
   HelpCircle,
   Info,
   CircleArrowUp
@@ -35,7 +36,7 @@ import { usePlanModal } from "../contexts/PlanModalContext";
 import { useUsage } from "../contexts/UsageContext";
 import { useAuthUser } from "../contexts/AuthContext";
 import { backendApi } from "@/services/backendApi";
-import { TIERS, type TierKey } from "@/config/billing";
+import { getPlanBadgeInfo } from "@/config/billing";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 
 export interface SidebarProps {
@@ -60,6 +61,7 @@ export interface SidebarProps {
   isChatVisible?: boolean; // Whether the chat panel is currently visible
   onMapToggle?: () => void; // Callback to toggle/open map view
   onOpenSearch?: () => void; // Callback to open Search modal (command palette)
+  onUploadFile?: () => void; // Callback to trigger file selection for extraction pipeline
   isSearchOpen?: boolean; // When true, hide the toggle rail so it never appears while searching
   isIconsOnly?: boolean; // When true, sidebar shows only icons (narrow width)
   onIconsOnlyToggle?: () => void; // Toggle between full sidebar and icons-only
@@ -97,6 +99,7 @@ export const Sidebar = ({
   isChatVisible = false,
   onMapToggle,
   onOpenSearch,
+  onUploadFile,
   isSearchOpen = false,
   isIconsOnly = false,
   onIconsOnlyToggle
@@ -256,18 +259,16 @@ export const Sidebar = ({
     return base.startsWith("http") && profilePicCacheBust != null ? `${base}?t=${profilePicCacheBust}` : base;
   }, [userData?.profile_image, userData?.avatar_url, userData?.profile_picture_url, profilePicCacheBust]);
 
-  const planLabel = React.useMemo(() => {
-    const plan = usageData?.plan as TierKey | undefined;
-    const tier = plan && plan in TIERS ? TIERS[plan] : null;
-    const name = tier?.name ?? (plan ? plan.charAt(0).toUpperCase() + plan.slice(1) : 'Free');
-    return `${name} plan`;
-  }, [usageData?.plan]);
+  const planBadgeInfo = React.useMemo(
+    () => getPlanBadgeInfo(usageData?.plan),
+    [usageData?.plan]
+  );
 
   // Primary navigation items
   const primaryNav: NavItem[] = [
     { id: 'home', label: 'Dashboard', icon: LibraryBig, action: 'navigate' },
-    { id: 'projects', label: 'Projects', icon: FolderClosed, action: 'navigate' },
     { id: 'database', label: 'Files', icon: Files, action: 'toggleFiling' },
+    { id: 'projects', label: 'Projects', icon: FolderClosed, action: 'navigate' },
     { id: 'chat', label: 'Chats', icon: MessagesSquare, action: 'openChat' },
   ];
 
@@ -614,6 +615,16 @@ export const Sidebar = ({
                   {!isIconsOnly && <span className="text-[14px] font-normal text-left text-[#141413]">Search</span>}
                 </button>
               )}
+              {onUploadFile && (
+                <button
+                  onClick={onUploadFile}
+                  className={`flex items-center rounded border border-transparent text-[#141413] hover:bg-white/60 hover:text-[#141413] active:bg-white active:text-[#141413] transition-colors ${isIconsOnly ? 'justify-center p-2 w-10' : 'w-full gap-3 px-3 py-1.5'}`}
+                  aria-label="Upload files"
+                >
+                  <Upload className="h-5 w-5 flex-shrink-0 text-[#141413]" strokeWidth={1.5} />
+                  {!isIconsOnly && <span className="text-[14px] font-normal text-left text-[#141413]">Upload</span>}
+                </button>
+              )}
             </div>
 
             {/* Primary Navigation; icons-only: narrow column shifted right to center in sidebar+rail */}
@@ -627,7 +638,7 @@ export const Sidebar = ({
             </div>
 
             {/* Profile strip at bottom — line on top only */}
-            <div className={`relative flex-shrink-0 min-h-[54px] border-0 border-t border-gray-200 pl-5 pr-3 pt-4 pb-2 ${isIconsOnly ? 'flex justify-center' : ''}`}>
+            <div className={`relative flex-shrink-0 min-h-[64px] border-0 border-t border-gray-200 pl-5 pr-3 pt-4 pb-2 ${isIconsOnly ? 'flex justify-center' : ''}`}>
               {/* Icons-only: render dropdown in portal so it isn't clipped by sidebar transform/overflow */}
               {isIconsOnly && isBrandDropdownOpen && iconsOnlyDropdownPosition && typeof document !== 'undefined' &&
                 createPortal(
@@ -636,7 +647,7 @@ export const Sidebar = ({
                     initial={{ opacity: 0, y: 4 }}
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ duration: 0.15, ease: [0.4, 0, 0.2, 1] }}
-                    className="rounded-2xl bg-white pt-3 pb-1.5"
+                    className="rounded-lg bg-white pt-3 pb-1.5"
                     style={{
                       position: 'fixed',
                       left: iconsOnlyDropdownPosition.left,
@@ -714,7 +725,7 @@ export const Sidebar = ({
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, y: 4 }}
                     transition={{ duration: 0.15, ease: [0.4, 0, 0.2, 1] }}
-                    className={`rounded-2xl bg-white z-[10002] pt-3 pb-1.5 absolute bottom-full mb-3 ${isIconsOnly ? 'left-2 right-2' : 'left-3 right-3'}`}
+                    className={`rounded-lg bg-white z-[10002] pt-3 pb-1.5 absolute bottom-full mb-3 ${isIconsOnly ? 'left-2 right-2' : 'left-3 right-3'}`}
                     style={{ boxShadow: '0 4px 16px rgba(0,0,0,0.08), 0 0 0 1px rgba(0,0,0,0.03)' }}
                   >
                     <div className="px-3 pb-2">
@@ -790,16 +801,21 @@ export const Sidebar = ({
                   }`}
                   aria-label="Account menu"
                 >
-                  <Avatar className="h-[26px] w-[26px] flex-shrink-0">
+                  <Avatar className="h-9 w-9 flex-shrink-0">
                     <AvatarImage src={avatarImageSrc} alt={userName} className="object-cover" />
                     <AvatarFallback className="bg-gray-700 text-white text-xs font-medium">
                       {userInitials}
                     </AvatarFallback>
                   </Avatar>
                   {!isIconsOnly && (
-                    <div className="min-w-0 flex-1 text-left">
+                    <div className="min-w-0 flex-1 text-left flex flex-col gap-1 pl-1">
                       <p className="text-[13px] font-semibold text-gray-600 truncate leading-tight">{userName}</p>
-                      <p className="text-[11px] text-muted-foreground truncate leading-tight">{planLabel}</p>
+                      <span
+                        className="rounded-full px-2 py-0.5 text-[10px] font-semibold leading-none bg-white w-fit -ml-1"
+                        style={{ color: planBadgeInfo.badgeColor }}
+                      >
+                        {planBadgeInfo.badgeText} plan
+                      </span>
                     </div>
                   )}
                 </button>
@@ -865,6 +881,16 @@ export const Sidebar = ({
                   >
                     <Search className="h-5 w-5 flex-shrink-0 text-[#141413]" strokeWidth={1.5} />
                     <span className="text-[14px] font-normal text-left text-[#141413]">Search</span>
+                  </button>
+                )}
+                {onUploadFile && (
+                  <button
+                    onClick={onUploadFile}
+                    className="w-full flex items-center gap-3 px-3 py-1.5 rounded border border-transparent text-[#141413] hover:bg-white/60 hover:text-[#141413] active:bg-white active:text-[#141413] transition-colors"
+                    aria-label="Upload files"
+                  >
+                    <Upload className="h-5 w-5 flex-shrink-0 text-[#141413]" strokeWidth={1.5} />
+                    <span className="text-[14px] font-normal text-left text-[#141413]">Upload</span>
                   </button>
                 )}
               </div>
@@ -983,7 +1009,7 @@ export const Sidebar = ({
             </div>
 
             {/* Profile strip at bottom — line on top only */}
-            <div className="relative flex-shrink-0 min-h-[54px] border-0 border-t border-gray-200 pl-5 pr-3 pt-4 pb-2">
+            <div className="relative flex-shrink-0 min-h-[64px] border-0 border-t border-gray-200 pl-5 pr-3 pt-4 pb-2">
               <AnimatePresence>
                 {isExpanded && isBrandDropdownOpen && (
                   <motion.div
@@ -992,7 +1018,7 @@ export const Sidebar = ({
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, y: 4 }}
                     transition={{ duration: 0.15, ease: [0.4, 0, 0.2, 1] }}
-                    className="absolute bottom-full left-3 right-3 mb-3 rounded-2xl bg-white z-[10002] pt-3 pb-1.5"
+                    className="absolute bottom-full left-3 right-3 mb-3 rounded-lg bg-white z-[10002] pt-3 pb-1.5"
                     style={{ boxShadow: '0 4px 16px rgba(0,0,0,0.08), 0 0 0 1px rgba(0,0,0,0.03)' }}
                   >
                     <div className="px-3 pb-2">
@@ -1058,15 +1084,20 @@ export const Sidebar = ({
                   className="flex items-center gap-3 flex-1 min-w-0 py-0.5 rounded transition-colors duration-75 text-left"
                   aria-label="Account menu"
                 >
-                  <Avatar className="h-[26px] w-[26px] flex-shrink-0">
+                  <Avatar className="h-9 w-9 flex-shrink-0">
                     <AvatarImage src={avatarImageSrc} alt={userName} className="object-cover" />
                     <AvatarFallback className="bg-gray-700 text-white text-xs font-medium">
                       {userInitials}
                     </AvatarFallback>
                   </Avatar>
-                  <div className="min-w-0 flex-1 text-left">
+                  <div className="min-w-0 flex-1 text-left flex flex-col gap-1 pl-1">
                     <p className="text-[13px] font-semibold text-gray-600 truncate leading-tight">{userName}</p>
-                    <p className="text-[11px] text-muted-foreground truncate leading-tight">{planLabel}</p>
+                    <span
+                      className="rounded-full px-2 py-0.5 text-[10px] font-semibold leading-none bg-white w-fit -ml-1"
+                      style={{ color: planBadgeInfo.badgeColor }}
+                    >
+                      {planBadgeInfo.badgeText} plan
+                    </span>
                   </div>
                 </button>
                 <button

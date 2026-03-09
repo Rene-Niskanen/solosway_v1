@@ -154,11 +154,12 @@ export const EnhancedEditableField: React.FC<EnhancedEditableFieldProps> = ({
     const inputStyle: React.CSSProperties = {
       flex: 1,
       minWidth: 0,
-      padding: '8px 10px',
+      padding: '10px 12px',
       border: error ? '1px solid #e57373' : '1px solid #e0e0e0',
-      borderRadius: '6px',
+      borderRadius: '8px',
       backgroundColor: '#fff',
       fontSize: '13px',
+      lineHeight: '1.5',
       color: '#1a1a1a',
       outline: 'none',
       fontFamily: 'inherit',
@@ -177,7 +178,7 @@ export const EnhancedEditableField: React.FC<EnhancedEditableFieldProps> = ({
         onPointerDownCapture={(e) => e.stopPropagation()}
         onKeyDown={(e) => e.stopPropagation()}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', width: '100%' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', width: '100%' }}>
           {icon && (
             <div style={{ display: 'flex', alignItems: 'center', flexShrink: 0, color: '#6b7280' }}>
               {icon}

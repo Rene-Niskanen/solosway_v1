@@ -167,8 +167,8 @@ export const AgentTaskCard: React.FC<AgentTaskCardProps> = ({ task, onInjectResu
         border: task.status === 'error' ? '1px solid #FECACA' : '1px solid #E5E7EB',
         boxShadow: task.status === 'complete' ? 'none' : '0 1px 3px rgba(0,0,0,0.04)',
         cursor: task.status === 'complete' ? 'pointer' : 'default',
-        transition: 'border-color 0.06s ease-out, box-shadow 0.06s ease-out, background-color 0.06s ease-out',
-        ...(task.status === 'complete' && isHovered ? { backgroundColor: 'rgba(22, 163, 74, 0.12)', borderColor: 'transparent', boxShadow: 'none' } : {}),
+        transition: 'border-color 0.15s ease-out, box-shadow 0.15s ease-out, background-color 0.15s ease-out',
+        ...(task.status === 'complete' && isHovered ? { backgroundColor: 'rgba(22, 163, 74, 0.08)', borderColor: 'rgba(22, 163, 74, 0.25)', boxShadow: '0 1px 2px rgba(0,0,0,0.04)' } : {}),
         overflow: 'hidden',
         minWidth: 200,
       }}
@@ -292,15 +292,13 @@ export const AgentTaskCard: React.FC<AgentTaskCardProps> = ({ task, onInjectResu
         )}
       </AnimatePresence>
 
-      {isInFlight && isHovered && (
+      {isInFlight && (
         <motion.button
           type="button"
           tabIndex={-1}
           onMouseDown={(e) => e.preventDefault()}
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          transition={{ duration: 0.12 }}
+          animate={{ opacity: isHovered ? 1 : 0 }}
+          transition={{ duration: 0.15, ease: 'easeOut' }}
           onClick={(e) => { e.stopPropagation(); onCancel(task.id); }}
           style={{
             marginLeft: 'auto',
@@ -308,6 +306,7 @@ export const AgentTaskCard: React.FC<AgentTaskCardProps> = ({ task, onInjectResu
             width: 18, height: 18, minWidth: 18, minHeight: 18, borderRadius: '50%',
             backgroundColor: 'rgba(0,0,0,0.06)', border: 'none', cursor: 'pointer',
             padding: 0, flexShrink: 0,
+            pointerEvents: isHovered ? 'auto' : 'none',
           }}
           title="Cancel"
         >

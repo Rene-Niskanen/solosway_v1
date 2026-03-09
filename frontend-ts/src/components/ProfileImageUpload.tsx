@@ -121,54 +121,29 @@ export const ProfileImageUpload: React.FC<ProfileImageUploadProps> = ({
   const imageToShow = previewUrl || currentImageUrl;
 
   return (
-    <Dialog open={isOpen} onOpenChange={handleCancel}>
+    <Dialog open={isOpen} onOpenChange={(open) => !open && handleCancel()}>
       <DialogContent
-        className="rounded-none"
-        style={{
-          borderRadius: 0,
-          border: '1px solid #E9E9EB',
-          padding: '16px',
-          backgroundColor: '#FFFFFF',
-          maxWidth: '500px',
-          boxShadow: '0 4px 20px rgba(0, 0, 0, 0.08)',
-        }}
+        className="rounded-xl border border-[#E9E9EB] p-4 bg-white max-w-[500px] shadow-xl"
         aria-describedby={undefined}
       >
         <DialogTitle className="sr-only">{title}</DialogTitle>
         {/* Header */}
-        <div style={{
-          borderBottom: '1px solid #E9E9EB',
-          paddingBottom: '12px',
-          marginBottom: '16px',
-        }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <h2 style={{
-              fontSize: '14px',
-              fontWeight: 600,
-              color: '#415C85',
-              margin: 0,
-            }}>
+        <div className="border-b border-[#E9E9EB] pb-3 mb-4">
+          <div className="flex justify-between items-center">
+            <h2 className="text-sm font-semibold text-[#415C85] m-0">
               {title}
             </h2>
           </div>
         </div>
 
         {/* Content */}
-        <div style={{ marginBottom: '16px' }}>
+        <div className="mb-4">
           {/* Image Preview */}
           {imageToShow && (
-            <div style={{
-              width: '100%',
-              aspectRatio: aspectRatio.toString(),
-              border: '1px solid #E9E9EB',
-              borderRadius: 0,
-              marginBottom: '16px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              backgroundColor: '#F9F9F9',
-              overflow: 'hidden',
-            }}>
+            <div
+              className="w-full border border-[#E9E9EB] rounded-lg mb-4 flex items-center justify-center bg-[#F9F9F9] overflow-hidden"
+              style={{ aspectRatio }}
+            >
               <img
                 src={imageToShow}
                 alt="Preview"
@@ -194,28 +169,7 @@ export const ProfileImageUpload: React.FC<ProfileImageUploadProps> = ({
           {!selectedFile && (
             <button
               onClick={() => fileInputRef.current?.click()}
-              style={{
-                width: '100%',
-                padding: '10px 16px',
-                border: '1px solid #E9E9EB',
-                borderRadius: 0,
-                backgroundColor: '#F3F4F6',
-                color: '#415C85',
-                fontSize: '12px',
-                fontWeight: 500,
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: '8px',
-                transition: 'background-color 100ms',
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.backgroundColor = '#F0F6FF';
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.backgroundColor = '#F3F4F6';
-              }}
+              className="w-full py-2.5 px-4 border border-[#E9E9EB] rounded-lg bg-[#F3F4F6] text-[#415C85] text-xs font-medium flex items-center justify-center gap-2 cursor-pointer transition-colors hover:bg-[#E5E7EB] active:bg-[#D1D5DB]"
             >
               <Upload className="w-4 h-4" />
               <span>Choose image</span>
@@ -224,47 +178,19 @@ export const ProfileImageUpload: React.FC<ProfileImageUploadProps> = ({
 
           {/* Error Message */}
           {error && (
-            <div style={{
-              fontSize: '10px',
-              color: '#DC2626',
-              marginTop: '8px',
-              padding: '8px 12px',
-              backgroundColor: '#FEF2F2',
-              border: '1px solid #FECACA',
-              borderRadius: 0,
-            }}>
+            <div className="text-[10px] text-red-600 mt-2 py-2 px-3 bg-red-50 border border-red-200 rounded-lg">
               {error}
             </div>
           )}
         </div>
 
         {/* Footer */}
-        <div style={{
-          borderTop: '1px solid #E9E9EB',
-          paddingTop: '12px',
-          display: 'flex',
-          justifyContent: 'flex-end',
-          gap: '8px',
-        }}>
+        <div className="border-t border-[#E9E9EB] pt-3 flex justify-end gap-2">
           {onRemove && currentImageUrl && !selectedFile && (
             <button
               onClick={handleRemove}
               disabled={isUploading}
-              style={{
-                padding: '8px 16px',
-                height: '32px',
-                backgroundColor: 'transparent',
-                color: '#DC2626',
-                border: '1px solid #E9E9EB',
-                borderRadius: '2px',
-                fontSize: '11px',
-                fontWeight: 500,
-                cursor: isUploading ? 'not-allowed' : 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '6px',
-                opacity: isUploading ? 0.5 : 1,
-              }}
+              className="h-8 px-4 bg-transparent text-red-600 border border-[#E9E9EB] rounded-lg text-[11px] font-medium flex items-center gap-1.5 cursor-pointer transition-colors hover:bg-red-50 active:bg-red-100 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <Trash2 className="w-3.5 h-3.5" />
               <span>Remove</span>
@@ -273,18 +199,7 @@ export const ProfileImageUpload: React.FC<ProfileImageUploadProps> = ({
           <button
             onClick={handleCancel}
             disabled={isUploading}
-            style={{
-              padding: '8px 16px',
-              height: '32px',
-              backgroundColor: 'transparent',
-              color: '#63748A',
-              border: '1px solid #E9E9EB',
-              borderRadius: '2px',
-              fontSize: '11px',
-              fontWeight: 500,
-              cursor: isUploading ? 'not-allowed' : 'pointer',
-              opacity: isUploading ? 0.5 : 1,
-            }}
+            className="h-8 px-4 bg-transparent text-[#63748A] border border-[#E9E9EB] rounded-lg text-[11px] font-medium cursor-pointer transition-colors hover:bg-gray-100 active:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             Cancel
           </button>
@@ -292,21 +207,9 @@ export const ProfileImageUpload: React.FC<ProfileImageUploadProps> = ({
             <button
               onClick={handleSave}
               disabled={isUploading}
-              style={{
-                padding: '8px 16px',
-                height: '32px',
-                backgroundColor: isUploading ? '#F3F4F6' : '#415C85',
-                color: '#FFFFFF',
-                border: 'none',
-                borderRadius: '2px',
-                fontSize: '11px',
-                fontWeight: 500,
-                cursor: isUploading ? 'not-allowed' : 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '6px',
-                opacity: isUploading ? 0.5 : 1,
-              }}
+              className={`h-8 px-4 text-white border-none rounded-lg text-[11px] font-medium flex items-center gap-1.5 cursor-pointer transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                isUploading ? 'bg-[#F3F4F6]' : 'bg-[#415C85] hover:bg-[#354d6b] active:bg-[#2a3d55]'
+              }`}
             >
               {isUploading ? (
                 <>

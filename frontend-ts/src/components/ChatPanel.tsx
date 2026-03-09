@@ -300,12 +300,12 @@ export const ChatPanel = ({
                       <button
                         type="button"
                         onClick={(e) => e.stopPropagation()}
-                        className="p-1 rounded-full hover:bg-black/8 active:bg-black/12 transition-colors duration-75 ease-out flex items-center justify-center"
+                        className="p-0.5 rounded-full hover:bg-black/8 active:bg-black/12 transition-colors duration-75 ease-out flex items-center justify-center"
                         title="Options"
                         aria-haspopup="true"
                         aria-expanded={optionsMenuOpen}
                       >
-                        <SlidersHorizontal className="w-5 h-5 text-[#6B7280] hover:text-[#374151]" strokeWidth={1.75} />
+                        <SlidersHorizontal className="w-5 h-5 text-[#6B7280] hover:text-[#374151]" strokeWidth={1.25} />
                       </button>
                     </PopoverTrigger>
                     <PopoverContent
@@ -327,7 +327,7 @@ export const ChatPanel = ({
                             }}
                             className="flex items-center gap-1.5 w-full rounded-sm px-1.5 py-1 text-left hover:bg-[#f5f5f5] text-[12px] text-[#374151] transition-colors duration-75 ease-out"
                           >
-                            <Trash2 className="w-3.5 h-3.5 text-[#666] flex-shrink-0" strokeWidth={1.5} />
+                            <Trash2 className="w-5 h-5 text-[#666] flex-shrink-0" strokeWidth={1.25} />
                             Clear all chats
                           </button>
                         ) : (
@@ -367,8 +367,8 @@ export const ChatPanel = ({
                 className="w-full flex items-center justify-center gap-1.5 px-2.5 py-1.5 border border-gray-300/80 hover:border-gray-400 rounded transition-[border-color,background-color] duration-75 ease-out group"
                 style={{ backgroundColor: '#FFFFFF', opacity: 1, backdropFilter: 'none' }}
               >
-                <Plus className="w-3 h-3 text-[#141413]" />
-                <span className="text-[11px] font-medium text-[#141413]">
+                <Plus className="w-3.5 h-3.5 text-slate-500" />
+                <span className="text-[13px] font-medium text-slate-500">
                   New Agent
                 </span>
               </motion.button>
@@ -430,7 +430,7 @@ export const ChatPanel = ({
                             ? '' 
                             : openMenuId ? '' : 'hover:bg-black/[0.03]'
                         }`}
-                        style={selectedChatId === chat.id ? { backgroundColor: '#E8E8E5' } : undefined}
+                        style={selectedChatId === chat.id ? { backgroundColor: '#F2F2EF' } : undefined}
                       >
                         {isEditing ? (
                           <div className="flex items-center space-x-2" onClick={(e) => e.stopPropagation()}>
