@@ -200,6 +200,10 @@ export interface PlanSelectionModalProps {
   isChangingPlan?: boolean;
   /** When set, only this tier's button shows "Updating plan…"; others show normal label */
   changingToTierId?: TierKey | null;
+  /** When set, skip tier selection and open directly to the confirm dialog for this tier (used by DashboardUpgradeCta) */
+  openDirectlyToTier?: TierKey | null;
+  /** Called when openDirectlyToTier has been consumed */
+  onConsumedDirectTier?: () => void;
 }
 
 function PlanModalContent({
@@ -313,16 +317,17 @@ function PlanModalContent({
 
       <div className="flex flex-col items-center gap-2 mt-8 text-center text-sm text-gray-500">
         <img
-          src="/veloraAA.png"
-          alt="Velora"
-          className="h-7 w-auto"
+          src="/OpenFind(1).png"
+          alt="OpenFind"
+          className="h-6 object-contain object-left"
+          style={{ width: 'auto', maxWidth: '240px' }}
         />
         <span>Need more capabilities for your business?</span>
         <a
           href="/enterprise"
           className="text-gray-700 underline hover:opacity-80"
         >
-          See Velora Enterprise
+          See OpenFind Enterprise
         </a>
       </div>
     </>
@@ -339,11 +344,22 @@ export const PlanSelectionModal: React.FC<PlanSelectionModalProps> = ({
   billingCycleEnd,
   isChangingPlan = false,
   changingToTierId = null,
+  openDirectlyToTier = null,
+  onConsumedDirectTier,
 }) => {
   const [confirmOpen, setConfirmOpen] = React.useState(false);
   const [confirmPendingTierId, setConfirmPendingTierId] = React.useState<TierKey | null>(null);
 
   const normalizedPlan = React.useMemo(() => normalizePlan(currentPlan), [currentPlan]);
+
+  // When openDirectlyToTier is set, skip tier selection and open directly to the confirm step
+  React.useEffect(() => {
+    if (open && openDirectlyToTier && openDirectlyToTier !== normalizedPlan) {
+      setConfirmPendingTierId(openDirectlyToTier);
+      setConfirmOpen(true);
+      onConsumedDirectTier?.();
+    }
+  }, [open, openDirectlyToTier, normalizedPlan, onConsumedDirectTier]);
   const currencyContext = useCurrencyOptional();
   const currency = currencyContext?.currency ?? getLocaleCurrency();
 

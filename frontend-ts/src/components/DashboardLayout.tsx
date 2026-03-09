@@ -25,6 +25,7 @@ import { AgentOrchestrationProvider } from '../contexts/AgentOrchestrationContex
 import { UsageProvider, useUsage } from '../contexts/UsageContext';
 import { PlanSelectionModal } from './PlanSelectionModal';
 import { useToast } from '@/hooks/use-toast';
+import { Check } from 'lucide-react';
 import { TIERS, type TierKey } from '@/config/billing';
 
 export interface DashboardLayoutProps {
@@ -46,7 +47,7 @@ const DashboardLayoutContent = ({
   const { togglePanel: toggleChatPanel, closePanel: closeChatPanel, openPanel: openChatPanel, isOpen: isChatPanelOpen } = useChatPanel();
   const chatsOpenedOnceThisSessionRef = React.useRef(false);
   const { isOpen: isFeedbackModalOpen, setIsOpen: setFeedbackModalOpen, messageId: feedbackMessageId, conversationSnippet: feedbackConversationSnippet } = useFeedbackModal();
-  const { isOpen: planModalOpen, currentPlan: planModalCurrentPlan, billingCycleEnd: planModalBillingCycleEnd, closePlanModal } = usePlanModal();
+  const { isOpen: planModalOpen, currentPlan: planModalCurrentPlan, billingCycleEnd: planModalBillingCycleEnd, targetTier: planModalTargetTier, closePlanModal, clearTargetTier } = usePlanModal();
   const { setUsageOptimistic, refetch: refetchUsage } = useUsage();
   const { toast: showToast } = useToast();
   const [selectedBackground, setSelectedBackground] = React.useState<string>('default-background');
@@ -115,6 +116,7 @@ const DashboardLayoutContent = ({
       }, { replace: true });
       refetchUsage();
       window.dispatchEvent(new CustomEvent('usageShouldRefresh'));
+      window.dispatchEvent(new CustomEvent('planChangeCompleted'));
       showToast({
         title: "Subscription updated",
         description: "Your plan has been updated successfully.",
@@ -143,7 +145,7 @@ const DashboardLayoutContent = ({
       'background4': '/Background4.png',
       'background5': '/Background5.png',
       'background6': '/Background6.png',
-      'velora-grass': '/VeloraGrassBackground.png',
+      'openfind-grass': '/VeloraGrassBackground.png',
     };
     return backgroundMap[selectedBackground] || null;
   };
@@ -593,9 +595,13 @@ const DashboardLayoutContent = ({
     setIsChatVisible(isVisible);
   }, []);
 
-  // Callback from MainContent when map visibility changes (e.g., when Dashboard button is clicked)
+  // Callback from MainContent when map visibility changes (e.g., when Dashboard button is clicked, or View Document)
   const handleMapVisibilityChange = React.useCallback((isVisible: boolean) => {
-    if (!isVisible) {
+    if (isVisible) {
+      // View Document / open file - show map so 50/50 layout renders (same pattern as Map button)
+      setIsMapVisibleFromSidebar(true);
+      setIsMapVisibleFromChat(false);
+    } else {
       // User clicked Dashboard button - clear both map visibility sources
       setIsMapVisibleFromSidebar(false);
       setIsMapVisibleFromChat(false);
@@ -797,6 +803,8 @@ const DashboardLayoutContent = ({
           billingCycleEnd={planModalBillingCycleEnd ?? undefined}
           isChangingPlan={planChangeInProgress}
           changingToTierId={planChangeTierId}
+          openDirectlyToTier={planModalTargetTier}
+          onConsumedDirectTier={clearTargetTier}
           onOpenChange={(open) => {
             if (!open) closePlanModal();
           }}
@@ -835,11 +843,18 @@ const DashboardLayoutContent = ({
                   setUsageOptimistic(tierId);
                   refetchUsage();
                   window.dispatchEvent(new CustomEvent('usageShouldRefresh', { detail: { plan: tierId } }));
+                  window.dispatchEvent(new CustomEvent('planChangeCompleted'));
                   const name = TIERS[tierId]?.name ?? tierId;
                   showToast({
-                    title: "You're all set",
-                    description: `You're now on the ${name} plan.`,
-                    variant: "success",
+                    variant: "planSuccess",
+                    description: (
+                      <>
+                        <span className="rounded-full p-0.5 flex items-center justify-center flex-shrink-0 mr-1 bg-emerald-500 text-white">
+                          <Check className="h-3 w-3" strokeWidth={3} aria-hidden />
+                        </span>
+                        <span className="text-[13px] font-medium">You&apos;re now on the {name} plan</span>
+                      </>
+                    ),
                   });
                 } else {
                   closePlanModal();
@@ -889,11 +904,18 @@ const DashboardLayoutContent = ({
                   setUsageOptimistic(tierId);
                   refetchUsage();
                   window.dispatchEvent(new CustomEvent('usageShouldRefresh', { detail: { plan: tierId } }));
+                  window.dispatchEvent(new CustomEvent('planChangeCompleted'));
                   const name = TIERS[tierId]?.name ?? tierId;
                   showToast({
-                    title: "You're all set",
-                    description: `You're now on the ${name} plan.`,
-                    variant: "success",
+                    variant: "planSuccess",
+                    description: (
+                      <>
+                        <span className="rounded-full p-0.5 flex items-center justify-center flex-shrink-0 mr-1 bg-emerald-500 text-white">
+                          <Check className="h-3 w-3" strokeWidth={3} aria-hidden />
+                        </span>
+                        <span className="text-[13px] font-medium">You&apos;re now on the {name} plan</span>
+                      </>
+                    ),
                   });
                 } else {
                   closePlanModal();

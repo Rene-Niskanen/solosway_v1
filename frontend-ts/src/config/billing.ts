@@ -106,7 +106,7 @@ export function getNextTier(current: TierKey): TierKey | null {
 }
 
 /**
- * CTA label for dashboard upgrade button, e.g. "Upgrade to Velora AI Pro".
+ * CTA label for dashboard upgrade button, e.g. "Upgrade to OpenFind AI Pro".
  * Returns null when current is business (no upgrade to show).
  */
 export function getUpgradeButtonLabel(current: TierKey | string | null | undefined): string | null {
@@ -115,7 +115,7 @@ export function getUpgradeButtonLabel(current: TierKey | string | null | undefin
   const next = getNextTier(key as TierKey);
   if (!next) return null;
   const name = TIERS[next].name;
-  return `Upgrade to Velora AI ${name}`;
+  return `Upgrade to OpenFind AI ${name}`;
 }
 
 /** Normalize API/context plan string to TierKey. */
@@ -174,7 +174,7 @@ export function getUpgradeCtaInfo(current: TierKey | string | null | undefined):
 }
 
 /**
- * CTA copy for dashboard upgrade button — benefit-led, Velora-specific.
+ * CTA copy for dashboard upgrade button — benefit-led, OpenFind-specific.
  * Returns null when current is business (no upgrade to show).
  */
 export function getUpgradeCtaCopy(current: TierKey | string | null | undefined): string | null {

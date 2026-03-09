@@ -261,17 +261,19 @@ async def focused_responder_node(state: FocusedTaskState) -> FocusedTaskState:
         "You are a document analysis assistant. Answer the user's question based ONLY on the provided document chunks. "
         "**CITATION WORKFLOW (MANDATORY)**: For ANY information you use from chunks, you MUST call match_citation_to_chunk with:\n"
         "  - chunk_id: The CHUNK_ID from the [CHUNK_ID: ...] block you're citing\n"
-        "  - cited_text: The EXACT text from that chunk (not a paraphrase)\n"
-        "Call the tool for EVERY fact you cite. Then include citation numbers [1], [2], [3] in your answer, numbered by tool call order.\n"
-        "Be concise and factual. If the answer is not in the provided chunks, say so.\n\n"
+        "  - cited_text: A SHORT, VERBATIM excerpt from that chunk - copy the exact phrase that supports your claim. "
+        "Use 5-25 words maximum. Example: for flood risk, use 'Zone 2 Medium Probability' or '1 in 100 to 1 in 1,000 annual probability of river flooding' - NOT addresses, headers, or unrelated text.\n"
+        "  - citation_number: The number you will use in your answer (1 for [1], 2 for [2], etc.). MUST match the number you write.\n"
+        "CRITICAL: cited_text must appear VERBATIM in the chunk. The wrong excerpt (e.g. an address when citing flood risk) will show the wrong highlight.\n"
+        "Call the tool for EVERY fact you cite. Be concise and factual. If the answer is not in the provided chunks, say so.\n\n"
         + OUTPUT_FORMATTING_RULES
     )
 
     human_prompt = (
         f"Question: {user_query}\n\n"
         f"Document chunks:\n\n{chunk_context}\n\n"
-        "Answer using the chunks above. For each fact you cite, call match_citation_to_chunk with chunk_id and cited_text, "
-        "then include [1], [2], [3] in your answer."
+        "Answer using the chunks above. For each fact you cite, call match_citation_to_chunk with chunk_id, cited_text (a short verbatim excerpt from the chunk that supports that fact - NOT an address or unrelated text), "
+        "and citation_number matching [1], [2], [3] in your answer."
     )
 
     citation_tool = create_chunk_citation_tool()
@@ -311,66 +313,28 @@ async def focused_responder_node(state: FocusedTaskState) -> FocusedTaskState:
         # Extract citations from tool calls (identical to normal responses)
         raw_citations = extract_chunk_citations_from_messages(messages)
 
+        # Sort by citation_number so output order matches [1], [2], [3] in the answer
+        raw_citations = sorted(raw_citations, key=lambda c: c.get("citation_number", 0))
+
         # Convert to output format expected by frontend/views
         citations = []
-        if raw_citations:
-            for i, cit in enumerate(raw_citations, 1):
-                chunk_id = cit.get("chunk_id") or ""
-                block_idx = cit.get("block_index")
-                block_id = f"chunk_{chunk_id}_block_{block_idx}" if block_idx is not None else chunk_id
-                bbox = cit.get("bbox") or {}
-                if isinstance(bbox, dict) and bbox and "page" not in bbox:
-                    bbox = {**bbox, "page": cit.get("page_number", 0)}
-                citations.append({
-                    "citation_number": i,
-                    "doc_id": cit.get("doc_id") or "",
-                    "page_number": cit.get("page_number", 0),
-                    "bbox": bbox,
-                    "block_id": block_id,
-                    "original_filename": cit.get("original_filename"),
-                    "cited_text": cit.get("cited_text", ""),
-                    "method": "focused-task",
-                })
-        else:
-            # Fallback: LLM cited but didn't call tool - map [N] to chunk N by order of appearance
-            appearance: List[int] = []
-            seen: set[int] = set()
-            for m in re.finditer(r"\[(\d+)\]", answer):
-                n = int(m.group(1))
-                idx = n - 1
-                if 0 <= idx < len(all_chunks) and n not in seen:
-                    appearance.append(n)
-                    seen.add(n)
-            old_to_new: Dict[int, int] = {old: i + 1 for i, old in enumerate(appearance)}
-            for i, num in enumerate(appearance, 1):
-                idx = num - 1
-                ch = all_chunks[idx]
-                doc_id = ch.get("document_id") or ch.get("doc_id") or ""
-                page_num = ch.get("page_number", 0)
-                bbox = ch.get("bbox") or {}
-                if isinstance(bbox, str):
-                    try:
-                        bbox = json.loads(bbox) if bbox else {}
-                    except Exception:
-                        bbox = {}
-                if isinstance(bbox, dict) and bbox and "page" not in bbox:
-                    bbox = {**bbox, "page": page_num}
-                chunk_id = str(ch.get("chunk_id") or ch.get("id") or "")
-                citations.append({
-                    "citation_number": i,
-                    "doc_id": doc_id,
-                    "page_number": page_num,
-                    "bbox": bbox,
-                    "block_id": chunk_id,
-                    "original_filename": ch.get("document_filename") or ch.get("original_filename"),
-                    "cited_text": (ch.get("chunk_text") or "")[:200],
-                    "method": "focused-task-fallback",
-                })
-
-            def _repl(m: re.Match) -> str:
-                return f"[{old_to_new.get(int(m.group(1)), m.group(1))}]"
-
-            answer = re.sub(r"\[(\d+)\]", _repl, answer)
+        for cit in raw_citations:
+            chunk_id = cit.get("chunk_id") or ""
+            block_idx = cit.get("block_index")
+            block_id = f"chunk_{chunk_id}_block_{block_idx}" if block_idx is not None else chunk_id
+            bbox = cit.get("bbox") or {}
+            if isinstance(bbox, dict) and bbox and "page" not in bbox:
+                bbox = {**bbox, "page": cit.get("page_number", 0)}
+            citations.append({
+                "citation_number": cit.get("citation_number", len(citations) + 1),
+                "doc_id": cit.get("doc_id") or "",
+                "page_number": cit.get("page_number", 0),
+                "bbox": bbox,
+                "block_id": block_id,
+                "original_filename": cit.get("original_filename"),
+                "cited_text": cit.get("cited_text", ""),
+                "method": "focused-task",
+            })
 
         # Normalize [Chunk N] → [N] in case LLM echoed old format
         answer = re.sub(r"\[Chunk\s+(\d+)\]", r"[\1]", answer, flags=re.IGNORECASE)

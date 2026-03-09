@@ -1,11 +1,11 @@
 /**
- * Plays a short, subtle sound when Velora finishes a response.
+ * Plays a short, subtle sound when OpenFind finishes a response.
  * Uses Web Audio API so no asset is required and it works in all environments.
  * Respects the user preference stored in localStorage (see NOTIFICATION_SOUND_STORAGE_KEY).
  */
 
-export const NOTIFICATION_SOUND_STORAGE_KEY = 'velora_completion_sound_enabled';
-export const NOTIFICATION_SOUND_VOLUME_KEY = 'velora_completion_sound_volume';
+export const NOTIFICATION_SOUND_STORAGE_KEY = 'openfind_completion_sound_enabled';
+export const NOTIFICATION_SOUND_VOLUME_KEY = 'openfind_completion_sound_volume';
 
 export type CompletionSoundOption = 'off' | 'chime' | 'soft' | 'bright' | 'bell' | 'blip' | 'ding' | 'ascending';
 

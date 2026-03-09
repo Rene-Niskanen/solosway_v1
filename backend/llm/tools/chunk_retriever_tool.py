@@ -10,6 +10,7 @@ Implements global reranking to prevent context explosion (selects top 8-15 chunk
 
 from typing import List, Dict, Optional, Literal
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pydantic import BaseModel, Field
 from langchain_core.tools import StructuredTool
@@ -58,6 +59,7 @@ def retrieve_chunks(
     Returns:
         List of chunks with metadata (see docstring for structure)
     """
+    _t0 = time.perf_counter()
     try:
         # 1. Validate input
         if not document_ids:
@@ -643,9 +645,13 @@ def retrieve_chunks(
             # Retry with lower threshold (would need to re-run search, but for now just log)
             logger.warning("[RETRIEVER] Fallback widening not yet implemented - returning empty")
         
+        elapsed_ms = max(0, int(round((time.perf_counter() - _t0) * 1000)))
+        logger.info("[PERF] phase=retrieve_chunks elapsed_ms=%d chunks=%d", elapsed_ms, len(final_chunks))
         return final_chunks
         
     except Exception as e:
+        elapsed_ms = max(0, int(round((time.perf_counter() - _t0) * 1000)))
+        logger.info("[PERF] phase=retrieve_chunks elapsed_ms=%d error=True", elapsed_ms)
         logger.error(f"Chunk retrieval failed: {e}")
         import traceback
         logger.debug(traceback.format_exc())

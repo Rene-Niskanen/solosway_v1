@@ -37,6 +37,7 @@ import { useUsage } from "../contexts/UsageContext";
 import { useAuthUser } from "../contexts/AuthContext";
 import { backendApi } from "@/services/backendApi";
 import { getPlanBadgeInfo } from "@/config/billing";
+import { getProfilePictureSrc } from "@/utils/profilePicture";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 
 export interface SidebarProps {
@@ -255,8 +256,8 @@ export const Sidebar = ({
   }, [userName]);
 
   const avatarImageSrc = React.useMemo(() => {
-    const base = userData?.profile_image || userData?.avatar_url || userData?.profile_picture_url || "/default profile icon.png";
-    return base.startsWith("http") && profilePicCacheBust != null ? `${base}?t=${profilePicCacheBust}` : base;
+    const base = userData?.profile_image || userData?.avatar_url || userData?.profile_picture_url;
+    return getProfilePictureSrc(base, profilePicCacheBust);
   }, [userData?.profile_image, userData?.avatar_url, userData?.profile_picture_url, profilePicCacheBust]);
 
   const planBadgeInfo = React.useMemo(
@@ -637,8 +638,8 @@ export const Sidebar = ({
               <div className="flex-1 min-h-0" />
             </div>
 
-            {/* Profile strip at bottom — line on top only */}
-            <div className={`relative flex-shrink-0 min-h-[64px] border-0 border-t border-gray-200 pl-5 pr-3 pt-4 pb-2 ${isIconsOnly ? 'flex justify-center' : ''}`}>
+            {/* Profile strip at bottom — line on top only; icons-only: symmetric padding so 36px avatar fits in 56px sidebar */}
+            <div className={`relative flex-shrink-0 min-h-[64px] border-0 border-t border-gray-200 pt-4 pb-2 ${isIconsOnly ? 'flex justify-center pl-[10px] pr-[10px]' : 'pl-5 pr-3'}`}>
               {/* Icons-only: render dropdown in portal so it isn't clipped by sidebar transform/overflow */}
               {isIconsOnly && isBrandDropdownOpen && iconsOnlyDropdownPosition && typeof document !== 'undefined' &&
                 createPortal(
@@ -647,7 +648,7 @@ export const Sidebar = ({
                     initial={{ opacity: 0, y: 4 }}
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ duration: 0.15, ease: [0.4, 0, 0.2, 1] }}
-                    className="rounded-lg bg-white pt-3 pb-1.5"
+                    className="rounded-md bg-white pt-3 pb-1.5"
                     style={{
                       position: 'fixed',
                       left: iconsOnlyDropdownPosition.left,
@@ -725,7 +726,7 @@ export const Sidebar = ({
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, y: 4 }}
                     transition={{ duration: 0.15, ease: [0.4, 0, 0.2, 1] }}
-                    className={`rounded-lg bg-white z-[10002] pt-3 pb-1.5 absolute bottom-full mb-3 ${isIconsOnly ? 'left-2 right-2' : 'left-3 right-3'}`}
+                    className={`rounded-md bg-white z-[10002] pt-3 pb-1.5 absolute bottom-full mb-3 ${isIconsOnly ? 'left-2 right-2' : 'left-3 right-3'}`}
                     style={{ boxShadow: '0 4px 16px rgba(0,0,0,0.08), 0 0 0 1px rgba(0,0,0,0.03)' }}
                   >
                     <div className="px-3 pb-2">
@@ -1018,7 +1019,7 @@ export const Sidebar = ({
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, y: 4 }}
                     transition={{ duration: 0.15, ease: [0.4, 0, 0.2, 1] }}
-                    className="absolute bottom-full left-3 right-3 mb-3 rounded-lg bg-white z-[10002] pt-3 pb-1.5"
+                    className="absolute bottom-full left-3 right-3 mb-3 rounded-md bg-white z-[10002] pt-3 pb-1.5"
                     style={{ boxShadow: '0 4px 16px rgba(0,0,0,0.08), 0 0 0 1px rgba(0,0,0,0.03)' }}
                   >
                     <div className="px-3 pb-2">

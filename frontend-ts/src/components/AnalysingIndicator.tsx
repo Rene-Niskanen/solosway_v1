@@ -140,7 +140,7 @@ export const AnalysingIndicator: React.FC<AnalysingIndicatorProps> = ({
           fontSize: '11px',
           fontStyle: 'italic'
         }}>
-          Planning next moves...
+          Thinking
         </div>
       )}
       

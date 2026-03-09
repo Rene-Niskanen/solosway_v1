@@ -3,7 +3,7 @@
 /**
  * RecentDocumentsSection - Displays recent documents across all projects
  * 
- * NOTE: Documents are linked to Properties (which = Projects in Velora).
+ * NOTE: Documents are linked to Properties (which = Projects in OpenFind).
  * Accepts documents as a prop from ProjectsPage (extracted from property hubs).
  */
 

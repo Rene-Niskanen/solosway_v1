@@ -13,7 +13,7 @@ interface ModeContextValue {
 
 const ModeContext = createContext<ModeContextValue | undefined>(undefined);
 
-const MODE_STORAGE_KEY = 'velora-agent-mode';
+const MODE_STORAGE_KEY = 'openfind-agent-mode';
 
 export function ModeProvider({ children }: { children: React.ReactNode }) {
   // Initialize from localStorage, default to 'agent'

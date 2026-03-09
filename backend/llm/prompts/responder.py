@@ -147,7 +147,8 @@ When you use information from chunks in your answer:
 1. Use the EXACT text from the chunk (shown in [CHUNK_ID: ...] blocks)
 2. For ANY information you use from a chunk, call match_citation_to_chunk with:
    - chunk_id: The CHUNK_ID from the chunk you're citing
-   - cited_text: The EXACT text from that chunk (not a paraphrase)
+   - cited_text: The EXACT text from that chunk (not a paraphrase). Use the SHORTEST phrase that uniquely identifies the fact (e.g. "MJ Group International Ltd", "01865 339 702").
+   - citation_number: The number you will use in your answer (1 for [1], 2 for [2], etc.)
 3. Call this tool for EVERY piece of information you mention that comes from chunks
 4. **CRITICAL**: After calling match_citation_to_chunk, include citation numbers in your answer text using [1], [2], [3] format only (with brackets)
    - Example: "<<<MAIN>>>[AMOUNT]<<<END_MAIN>>> is the offer value [1]. This represents the purchase price [1]. <<<MAIN>>>[AMOUNT]<<<END_MAIN>>> is the deposit [2]."

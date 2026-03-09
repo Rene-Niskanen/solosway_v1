@@ -736,13 +736,13 @@ const Auth: React.FC = () => {
               aria-hidden
             />
 
-            <h1 className="auth-form-text text-2xl md:text-3xl text-center mb-12 flex flex-wrap items-center justify-center gap-x-2 gap-y-1">
+            <h1 className="auth-form-text text-xl md:text-2xl text-center mb-12 flex flex-wrap items-center justify-center gap-x-2 gap-y-1">
               <span className="auth-form-heading-intro">Get started with</span>
               <img
-                src="/VELORA_WRITINGLOGO.png"
-                alt="VELORA"
+                src="/OpenFind(1).png"
+                alt="OpenFind"
                 className="h-8 md:h-9 object-contain object-left inline-block"
-                style={{ width: 'auto', maxWidth: '160px' }}
+                style={{ width: 'auto', maxWidth: '140px' }}
               />
             </h1>
 
@@ -808,10 +808,7 @@ const Auth: React.FC = () => {
                   type="button"
                   onClick={handleContinueToPassword}
                   disabled={loading}
-                  className="w-full py-3 px-4 rounded-lg font-medium text-white focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[#909FF7] disabled:opacity-50 disabled:cursor-not-allowed transition-colors mt-4 mb-0"
-                  style={{ backgroundColor: '#909FF7' }}
-                  onMouseEnter={(e) => { if (!e.currentTarget.disabled) e.currentTarget.style.backgroundColor = '#7b8bf5'; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = '#909FF7'; }}
+                  className="w-full py-2 px-4 rounded-lg font-medium text-gray-900 bg-white border border-gray-200 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-300 disabled:opacity-50 disabled:cursor-not-allowed transition-colors mt-4 mb-0"
                 >
                   Continue
                 </button>
@@ -851,10 +848,7 @@ const Auth: React.FC = () => {
                 <button
                   type="submit"
                   disabled={loading}
-                  className="w-full py-3 px-4 rounded-lg font-medium text-white focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[#909FF7] disabled:opacity-50 disabled:cursor-not-allowed transition-colors mt-4 mb-0"
-                  style={{ backgroundColor: '#909FF7' }}
-                  onMouseEnter={(e) => { if (!e.currentTarget.disabled) e.currentTarget.style.backgroundColor = '#7b8bf5'; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = '#909FF7'; }}
+                  className="w-full py-2 px-4 rounded-lg font-medium text-gray-900 bg-white border border-gray-200 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-300 disabled:opacity-50 disabled:cursor-not-allowed transition-colors mt-4 mb-0"
                 >
                   {loading ? 'Signing in...' : 'Sign in'}
                 </button>
@@ -997,7 +991,7 @@ const Auth: React.FC = () => {
       <div className="hidden md:flex flex-1 min-w-0 min-h-screen overflow-hidden bg-gray-100 -ml-px">
         <img
           src="/Login-image%202.png"
-          alt="Velora"
+          alt="OpenFind"
           className="w-full h-full object-cover object-left min-h-full"
         />
       </div>

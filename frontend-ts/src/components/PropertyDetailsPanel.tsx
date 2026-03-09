@@ -2542,28 +2542,26 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                 />
               </div>
             )}
-            {/* Single header row: Back | Search (icon expands to bar) | Select | Fullscreen? | Close (X) */}
+            {/* Single header row: Back | Search (icon expands to bar) | Select | Fullscreen? */}
             <div className="px-6 pb-3 bg-white relative flex items-center gap-3" style={{ zIndex: 1, borderBottom: 'none', paddingTop: 17 }}>
-              {isInChatMode && (
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onClose();
-                  }}
-                  className="flex items-center gap-1.5 rounded-xl border border-black/[0.06] bg-white text-[#4b5563] shadow-[0_1px_1px_rgba(0,0,0,0.02)] transition-all duration-150 hover:border-black/[0.10] hover:text-[#111827] hover:shadow-[0_1px_2px_rgba(0,0,0,0.03)] active:scale-[0.99] cursor-pointer flex-shrink-0"
-                  title="Back to Projects"
-                  type="button"
-                  style={{
-                    padding: '6px 10px',
-                    height: '34px',
-                    minHeight: '34px',
-                    backgroundColor: 'rgba(255, 255, 255, 0.92)',
-                  }}
-                >
-                  <ChevronLeft className="w-3.5 h-3.5 text-[#666]" strokeWidth={1.75} />
-                  <span className="text-[13px] font-medium text-inherit tracking-[-0.01em]">Back</span>
-                </button>
-              )}
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onClose();
+                }}
+                className="flex items-center gap-1.5 rounded-xl border border-black/[0.06] bg-white text-[#4b5563] shadow-[0_1px_1px_rgba(0,0,0,0.02)] transition-all duration-150 hover:border-black/[0.10] hover:text-[#111827] hover:shadow-[0_1px_2px_rgba(0,0,0,0.03)] active:scale-[0.99] cursor-pointer flex-shrink-0"
+                title="Back to Projects"
+                type="button"
+                style={{
+                  padding: '6px 10px',
+                  height: '34px',
+                  minHeight: '34px',
+                  backgroundColor: 'rgba(255, 255, 255, 0.92)',
+                }}
+              >
+                <ChevronLeft className="w-3.5 h-3.5 text-[#666]" strokeWidth={1.75} />
+                <span className="text-[13px] font-medium text-inherit tracking-[-0.01em]">Back</span>
+              </button>
               {filesSearchExpanded ? (
                 <div className="relative flex-1 min-w-0 max-w-[240px] flex items-center h-8 rounded">
                   <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400 pointer-events-none" />
@@ -2652,21 +2650,6 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                   )}
                 </button>
               )}
-              <button
-                onClick={onClose}
-                className="flex items-center justify-center rounded-xl border border-black/[0.06] bg-white text-[#4b5563] shadow-[0_1px_1px_rgba(0,0,0,0.02)] transition-all duration-150 hover:border-black/[0.10] hover:text-[#111827] hover:shadow-[0_1px_2px_rgba(0,0,0,0.03)] active:scale-[0.99] cursor-pointer flex-shrink-0"
-                title="Close Panel"
-                style={{
-                  zIndex: 10,
-                  padding: '6px 10px',
-                  height: '34px',
-                  minHeight: '34px',
-                  minWidth: '34px',
-                  backgroundColor: 'rgba(255, 255, 255, 0.92)',
-                }}
-              >
-                <X size={16} />
-              </button>
             </div>
                   
             {/* Content Area - Both sections rendered, inactive one hidden to preserve state */}

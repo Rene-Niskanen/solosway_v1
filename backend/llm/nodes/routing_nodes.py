@@ -932,7 +932,7 @@ async def handle_navigation_action(state: MainWorkflowState) -> MainWorkflowStat
 # Only pure chat (greetings, small talk, personal info, opinions) goes to
 # conversation. Everything else — including anything even slightly ambiguous
 # — goes to the document/retrieval path. This preserves the retrieval
-# behaviour from the branch while still giving Velora a chat mode.
+# behaviour from the branch while still giving OpenFind a chat mode.
 #
 # Decision order:
 #   1. document_ids present            → document (hard rule)
@@ -954,7 +954,7 @@ _GREETING_EXACT = frozenset({
     "bye", "goodbye", "see you", "see ya",
 })
 
-# Short personal / about-velora patterns (only match when NO property is selected)
+# Short personal / about-openfind patterns (only match when NO property is selected)
 _PERSONAL_STARTS = (
     "who are you", "what are you", "what's your name", "what is your name",
     "how are you", "how do you work", "what can you do",
@@ -964,24 +964,28 @@ _PERSONAL_STARTS = (
     "do you remember",
 )
 
-def _strip_velora_greeting(query: str) -> str:
+def _strip_openfind_greeting(query: str) -> str:
     """
-    Strip greeting prefix + 'velora' so 'hey velora, how are you?' becomes 'how are you'.
-    This lets the classifier match personal/greeting patterns even when the user addresses Velora by name.
+    Strip greeting prefix + 'openfind' so 'hey openfind, how are you?' becomes 'how are you'.
+    This lets the classifier match personal/greeting patterns even when the user addresses OpenFind by name.
     """
     import re
-    # Remove leading greeting + optional 'velora' + optional punctuation/comma
-    # e.g. "hey velora, how are you" -> "how are you"
-    # e.g. "hi velora" -> ""
-    # e.g. "hello there velora, what can you do" -> "what can you do"
+    # Remove leading greeting + optional 'openfind' + optional punctuation/comma
+    # e.g. "hey openfind, how are you" -> "how are you"
+    # e.g. "hi openfind" -> ""
+    # e.g. "hello there openfind, what can you do" -> "what can you do"
     cleaned = re.sub(
         r"^(hey|hi|hello|yo|hiya|howdy|good morning|good afternoon|good evening|morning|afternoon|evening)"
         r"(\s+there)?"
-        r"(\s+velora)?"
+        r"(\s+openfind)?"
         r"[,!.\s]*",
         "", query, flags=re.IGNORECASE,
     ).strip()
     return cleaned
+
+
+# Alias for backwards compatibility (main_graph still imports this name)
+_strip_velora_greeting = _strip_openfind_greeting
 
 # USER.md / user context / profile: route to agent (has read/write_workspace_file tools)
 _USER_CONTEXT_PHRASES = ("user.md", "user md", "user context", "my profile")
@@ -1070,15 +1074,15 @@ async def classify_intent(state: MainWorkflowState) -> str:
     if query_lower in _GREETING_EXACT:
         logger.info("[CLASSIFY] greeting -> conversation (query: '%s')", user_query[:60])
         return "conversation"
-    stripped = _strip_velora_greeting(query_lower)
-    if not stripped and "velora" in query_lower:
-        logger.info("[CLASSIFY] greeting to Velora -> conversation (query: '%s')", user_query[:60])
+    stripped = _strip_openfind_greeting(query_lower)
+    if not stripped and "openfind" in query_lower:
+        logger.info("[CLASSIFY] greeting to OpenFind -> conversation (query: '%s')", user_query[:60])
         return "conversation"
     if any(query_lower.startswith(p) for p in _PERSONAL_STARTS):
-        logger.info("[CLASSIFY] personal/about-velora -> conversation (query: '%s')", user_query[:60])
+        logger.info("[CLASSIFY] personal/about-openfind -> conversation (query: '%s')", user_query[:60])
         return "conversation"
     if stripped and any(stripped.startswith(p) for p in _PERSONAL_STARTS):
-        logger.info("[CLASSIFY] personal/about-velora (after stripping) -> conversation (query: '%s')", user_query[:60])
+        logger.info("[CLASSIFY] personal/about-openfind (after stripping) -> conversation (query: '%s')", user_query[:60])
         return "conversation"
     word_count = len(user_query.split())
 

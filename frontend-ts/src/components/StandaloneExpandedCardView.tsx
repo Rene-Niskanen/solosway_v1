@@ -1455,7 +1455,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
     };
   })();
   
-  // Calculate if there's enough space for the Velora logo without overlapping buttons
+  // Calculate if there's enough space for the OpenFind logo without overlapping buttons
   // Left buttons: Close (~60px) + Fullscreen (~100px) + gap (8px) + padding (24px) = ~192px
   // Right buttons (fullscreen): Zoom controls (~180px) + padding (16px) = ~196px
   // Right buttons (normal): Spacer (96px) + padding (16px) = ~112px
@@ -1463,7 +1463,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
   // Minimum space needed: max(left + right + logo, 550px) to ensure no overlap
   const leftButtonsWidth = 192; // Approximate width of left buttons + padding
   const rightButtonsWidth = isFullscreen ? 196 : 112; // Zoom controls in fullscreen, spacer otherwise
-  const referenceAgentTextWidth = 80; // Approximate width of Velora logo
+  const referenceAgentTextWidth = 80; // Approximate width of OpenFind logo
   const minSpacing = 16; // Minimum spacing on each side to prevent touching
   const minRequiredWidth = leftButtonsWidth + rightButtonsWidth + referenceAgentTextWidth + (minSpacing * 2);
   const shouldHideReferenceAgent = panelWidth < minRequiredWidth;

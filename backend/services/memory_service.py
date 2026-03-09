@@ -1,17 +1,17 @@
 """
-Velora memory service — wraps Mem0 AsyncMemory for persistent user memory.
+OpenFind memory service — wraps Mem0 AsyncMemory for persistent user memory.
 
 Uses Mem0's native AsyncMemory (not sync Memory + to_thread).
 See: https://docs.mem0.ai/open-source/features/async-memory
 
 Usage:
-    from backend.services.memory_service import velora_memory
+    from backend.services.memory_service import openfind_memory
 
     # Search (before building prompt)
-    memories = await velora_memory.search("hello", user_id="user_123")
+    memories = await openfind_memory.search("hello", user_id="user_123")
 
     # Add (after each turn, fire-and-forget)
-    await velora_memory.add(
+    await openfind_memory.add(
         [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}],
         user_id="user_123",
     )
@@ -35,7 +35,7 @@ _memory_instance = None
 # personal info, and behavioral patterns.
 # See: https://docs.mem0.ai/open-source/features/custom-fact-extraction-prompt
 
-VELORA_FACT_EXTRACTION_PROMPT = """
+OPENFIND_FACT_EXTRACTION_PROMPT = """
 Please only extract facts about the USER as a person — their preferences,
 personal information, goals, communication style, and behavioral patterns.
 
@@ -109,34 +109,79 @@ def _get_mem0_config() -> dict:
                 "model": "text-embedding-3-small",
             },
         },
-        "custom_fact_extraction_prompt": VELORA_FACT_EXTRACTION_PROMPT,
+        "custom_fact_extraction_prompt": OPENFIND_FACT_EXTRACTION_PROMPT,
         "version": "v1.1",
     }
 
 
 def _get_memory():
-    """Lazy-initialize Mem0 AsyncMemory singleton."""
+    """Return Mem0 AsyncMemory singleton. Must call init_memory_async() at startup."""
     global _memory_instance
     if _memory_instance is None:
-        from mem0 import AsyncMemory
-
-        config = _get_mem0_config()
-        # Try from_config first; fall back to direct constructor
-        if hasattr(AsyncMemory, "from_config"):
-            _memory_instance = AsyncMemory.from_config(config)
-        else:
-            _memory_instance = AsyncMemory(config=config)
-        logger.info("[MEMORY] Mem0 AsyncMemory initialized (native async)")
+        # AsyncMemory.from_config is async; calling it without await stores a coroutine,
+        # causing "'coroutine' object has no attribute 'search'". Use sync init fallback.
+        _init_memory_sync()
     return _memory_instance
 
 
+async def init_memory_async() -> bool:
+    """
+    Initialize Mem0 AsyncMemory asynchronously. Call from app startup (e.g. main.py).
+    Returns True if initialized, False if skipped or failed.
+    """
+    global _memory_instance
+    if _memory_instance is not None:
+        return True
+    try:
+        from mem0 import AsyncMemory
+
+        config = _get_mem0_config()
+        if hasattr(AsyncMemory, "from_config"):
+            maybe_coro = AsyncMemory.from_config(config)
+            _memory_instance = await maybe_coro if asyncio.iscoroutine(maybe_coro) else maybe_coro
+        else:
+            _memory_instance = AsyncMemory(config=config)
+        logger.info("[MEMORY] Mem0 AsyncMemory initialized (async)")
+        return True
+    except Exception as e:
+        logger.warning("[MEMORY] Async init failed: %s, will use sync fallback on first use", e)
+        return False
+
+
+def _init_memory_sync() -> None:
+    """Fallback: initialize in sync context via asyncio.run (for first-use before async init)."""
+    global _memory_instance
+    if _memory_instance is not None:
+        return
+    try:
+        import asyncio
+        from mem0 import AsyncMemory
+
+        config = _get_mem0_config()
+        # from_config is async; must await it
+        async def _do_init():
+            if hasattr(AsyncMemory, "from_config"):
+                return await AsyncMemory.from_config(config)
+            return AsyncMemory(config=config)
+
+        loop = asyncio.new_event_loop()
+        try:
+            _memory_instance = loop.run_until_complete(_do_init())
+            logger.info("[MEMORY] Mem0 AsyncMemory initialized (sync fallback)")
+        finally:
+            loop.close()
+    except Exception as e:
+        logger.warning("[MEMORY] Sync init failed: %s", e)
+        raise
+
+
 # ============================================================================
-# VELORA MEMORY CLASS
+# OPENFIND MEMORY CLASS
 # ============================================================================
 
-class VeloraMemory:
+class OpenFindMemory:
     """
-    Async wrapper around Mem0 AsyncMemory for Velora.
+    Async wrapper around Mem0 AsyncMemory for OpenFind.
 
     Uses Mem0's native async API — no thread wrappers needed.
 
@@ -186,7 +231,12 @@ class VeloraMemory:
             )
             return []
         except Exception as e:
-            logger.warning(f"[MEMORY] Search failed: {e}")
+            logger.warning(
+                "[MEMORY] Search failed: %s (%s)",
+                e,
+                type(e).__name__,
+                exc_info=False,
+            )
             return []
 
     async def add(
@@ -213,7 +263,12 @@ class VeloraMemory:
                 f"user={user_id[:8]}..."
             )
         except Exception as e:
-            logger.warning(f"[MEMORY] Add failed: {e}")
+            logger.warning(
+                "[MEMORY] Add failed: %s (%s)",
+                e,
+                type(e).__name__,
+                exc_info=False,
+            )
 
     async def forget(
         self,
@@ -244,4 +299,4 @@ class VeloraMemory:
 
 
 # Singleton — import and use directly
-velora_memory = VeloraMemory()
+openfind_memory = OpenFindMemory()

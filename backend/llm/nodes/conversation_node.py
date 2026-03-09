@@ -47,9 +47,9 @@ async def conversation_node(state: MainWorkflowState) -> MainWorkflowState:
     memories_section = ""
     if getattr(config, "mem0_enabled", False):
         try:
-            from backend.services.memory_service import velora_memory
+            from backend.services.memory_service import openfind_memory
 
-            memories = await velora_memory.search(
+            memories = await openfind_memory.search(
                 query=user_query,
                 user_id=state.get("user_id", "anonymous"),
                 limit=getattr(config, "mem0_search_limit", 5),

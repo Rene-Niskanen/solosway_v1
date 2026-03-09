@@ -285,10 +285,6 @@ export const PipelineStagesDetail: React.FC<PipelineStagesDetailProps> = ({
   const currentStepLabel =
     currentStageIndex != null ? PIPELINE_STAGE_LABELS[currentStageIndex] : null;
 
-  /** Percentage to show next to spinner/title: upload progress when isLoading, else pipeline stages (0–100) */
-  const progressPercent =
-    typeof uploadProgress === 'number' ? uploadProgress : Math.round((completedStages / 5) * 100);
-
   const rootStyle: React.CSSProperties = {
     backgroundColor: 'white',
     border: '1px solid #D1D5DB',
@@ -318,7 +314,7 @@ export const PipelineStagesDetail: React.FC<PipelineStagesDetailProps> = ({
         onMouseLeave={onMouseLeave}
         role="status"
         aria-live="polite"
-        aria-label={isLoading ? `Upload in progress: ${progressPercent}%` : `Pipeline status: ${shortTitle}. Step ${completedStages} of 5 complete. ${progressPercent}%`}
+        aria-label={isLoading ? `Upload in progress` : `Pipeline status: ${shortTitle}. Step ${completedStages} of 5 complete.`}
       >
         {/* Header: when loading show spinner + %; else title + progress (hover = two rows, modal = single row) */}
         <div
@@ -345,7 +341,7 @@ export const PipelineStagesDetail: React.FC<PipelineStagesDetailProps> = ({
                 }}
               />
               <span style={{ fontSize: 11, fontWeight: 600, color: '#4A4A4A' }}>
-                {progressPercent}%
+                Processing...
               </span>
             </div>
           ) : variant === 'hover' ? (
@@ -353,9 +349,6 @@ export const PipelineStagesDetail: React.FC<PipelineStagesDetailProps> = ({
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
                 <span style={{ fontSize: 11, fontWeight: 600, color: '#4A4A4A', letterSpacing: '-0.01em' }}>
                   {shortTitle}
-                </span>
-                <span style={{ fontSize: 11, fontWeight: 600, color: '#4A4A4A', flexShrink: 0 }}>
-                  {progressPercent}%
                 </span>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 4, minWidth: 0, width: '100%' }}>
@@ -368,23 +361,24 @@ export const PipelineStagesDetail: React.FC<PipelineStagesDetailProps> = ({
                   style={{ display: 'flex', alignItems: 'center', gap: 5, flex: 1, minWidth: 0 }}
                 >
                   <div style={{ display: 'flex', gap: 2, flex: 1, minWidth: 0, height: 6 }}>
-                    {[0, 1, 2, 3, 4].map((i) => (
-                      <div
-                        key={i}
-                        style={{
-                          flex: 1,
-                          height: '100%',
-                          borderRadius: 2,
-                          backgroundColor: i < completedStages ? '#4CAF50' : '#E0E0E0',
-                          transition: 'background-color 0.2s ease',
-                        }}
-                      />
-                    ))}
+                    {[0, 1, 2, 3, 4].map((i) => {
+                      const isCompleted = i < completedStages;
+                      const isCurrent = i === currentStageIndex;
+                      const fillColor = isCompleted ? '#4CAF50' : isCurrent ? '#9CA3AF' : '#E0E0E0';
+                      return (
+                        <div
+                          key={i}
+                          style={{
+                            flex: 1,
+                            height: '100%',
+                            borderRadius: 2,
+                            backgroundColor: fillColor,
+                            transition: 'background-color 0.2s ease',
+                          }}
+                        />
+                      );
+                    })}
                   </div>
-                  <span style={{ fontSize: 10, fontWeight: 500, minWidth: 18, flexShrink: 0 }}>
-                    <span style={{ color: '#4CAF50' }}>{completedStages}</span>
-                    <span style={{ color: '#A0A0A0' }}>/5</span>
-                  </span>
                 </div>
                 <button
                   type="button"
@@ -410,7 +404,7 @@ export const PipelineStagesDetail: React.FC<PipelineStagesDetailProps> = ({
               </div>
             </>
           ) : (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 }}>
               <span
                 style={{
                   fontSize: 11,
@@ -426,33 +420,32 @@ export const PipelineStagesDetail: React.FC<PipelineStagesDetailProps> = ({
                 {title.length > 45 ? shortTitle : title}
               </span>
               {!isLoading && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 5, flex: 1, minWidth: 0 }}>
-                  <div
-                    role="progressbar"
-                    aria-valuenow={completedStages}
-                    aria-valuemin={0}
-                    aria-valuemax={5}
-                    aria-label={`Step ${completedStages} of 5 complete`}
-                    style={{ display: 'flex', alignItems: 'center', gap: 5, flex: 1, minWidth: 0 }}
-                  >
-                    <div style={{ display: 'flex', gap: 2, flex: 1, minWidth: 0, height: 6 }}>
-                      {[0, 1, 2, 3, 4].map((i) => (
+                <div
+                  role="progressbar"
+                  aria-valuenow={completedStages}
+                  aria-valuemin={0}
+                  aria-valuemax={5}
+                  aria-label={`Step ${completedStages} of 5 complete`}
+                  style={{ display: 'flex', alignItems: 'center', gap: 5, flex: 1, minWidth: 0 }}
+                >
+                  <div style={{ display: 'flex', gap: 2, flex: 1, minWidth: 0, height: 6 }}>
+                    {[0, 1, 2, 3, 4].map((i) => {
+                      const isCompleted = i < completedStages;
+                      const isCurrent = i === currentStageIndex;
+                      const fillColor = isCompleted ? '#4CAF50' : isCurrent ? '#9CA3AF' : '#E0E0E0';
+                      return (
                         <div
                           key={i}
                           style={{
                             flex: 1,
                             height: '100%',
                             borderRadius: 2,
-                            backgroundColor: i < completedStages ? '#4CAF50' : '#E0E0E0',
+                            backgroundColor: fillColor,
                             transition: 'background-color 0.2s ease',
                           }}
                         />
-                      ))}
-                    </div>
-                    <span style={{ fontSize: 10, fontWeight: 500, minWidth: 18, flexShrink: 0 }}>
-                      <span style={{ color: '#4CAF50' }}>{completedStages}</span>
-                      <span style={{ color: '#A0A0A0' }}>/5</span>
-                    </span>
+                      );
+                    })}
                   </div>
                 </div>
               )}

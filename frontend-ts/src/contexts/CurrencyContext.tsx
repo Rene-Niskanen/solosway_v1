@@ -3,7 +3,7 @@
 import * as React from "react";
 import { getLocaleCurrency } from "@/config/billing";
 
-const STORAGE_KEY = "velora_currency";
+const STORAGE_KEY = "openfind_currency";
 
 export const CURRENCY_OPTIONS = [
   { value: "USD", label: "USD" },

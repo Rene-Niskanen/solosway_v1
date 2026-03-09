@@ -765,7 +765,175 @@ class SupabasePropertyHubService:
         except Exception as e:
             logger.error(f"Error getting property history: {e}")
             return []
-    
+
+    def _get_property_documents_batch(self, property_ids: List[str]) -> Dict[str, List[Dict[str, Any]]]:
+        """Get documents for multiple properties in batch. Returns dict property_id -> list of documents."""
+        if not property_ids:
+            return {}
+        try:
+            rels_result = (
+                self.supabase.table('document_relationships')
+                .select('*')
+                .in_('property_id', property_ids)
+                .execute()
+            )
+            if not rels_result.data:
+                return {pid: [] for pid in property_ids}
+            doc_ids = list({r['document_id'] for r in rels_result.data})
+            docs_result = self.supabase.table('documents').select('*').in_('id', doc_ids).execute()
+            docs_by_id = {d['id']: d for d in (docs_result.data or [])}
+            out: Dict[str, List[Dict[str, Any]]] = {pid: [] for pid in property_ids}
+            for rel in rels_result.data:
+                doc = docs_by_id.get(rel['document_id'])
+                if doc:
+                    doc = dict(doc)
+                    doc['relationship'] = rel
+                    out[rel['property_id']].append(doc)
+            return out
+        except Exception as e:
+            logger.error(f"Error getting property documents batch: {e}")
+            return {pid: [] for pid in property_ids}
+
+    def _get_property_details_batch(self, property_ids: List[str]) -> Tuple[Dict[str, Optional[Dict[str, Any]]], Dict[str, List[Dict[str, Any]]]]:
+        """Get property details and comparable data in one query. Returns (details_by_property, comparable_by_property)."""
+        if not property_ids:
+            return {}, {}
+        try:
+            result = (
+                self.supabase.table('property_details')
+                .select('*')
+                .in_('property_id', property_ids)
+                .execute()
+            )
+            details_by_property: Dict[str, Optional[Dict[str, Any]]] = {pid: None for pid in property_ids}
+            comparable_by_property: Dict[str, List[Dict[str, Any]]] = {pid: [] for pid in property_ids}
+            for row in (result.data or []):
+                pid = row.get('property_id')
+                if pid and pid in details_by_property:
+                    if details_by_property[pid] is None:
+                        details_by_property[pid] = row
+                    comparable_by_property[pid].append(row)
+            return details_by_property, comparable_by_property
+        except Exception as e:
+            logger.error(f"Error getting property details batch: {e}")
+            return {pid: None for pid in property_ids}, {pid: [] for pid in property_ids}
+
+    def _get_document_vectors_count_batch(self, property_ids: List[str]) -> Dict[str, int]:
+        """Get document vector counts for multiple properties. Returns dict property_id -> count."""
+        if not property_ids:
+            return {}
+        try:
+            result = (
+                self.supabase.table('document_vectors')
+                .select('property_id')
+                .in_('property_id', property_ids)
+                .execute()
+            )
+            from collections import Counter
+            counts = Counter(r['property_id'] for r in (result.data or []) if r.get('property_id'))
+            return {pid: counts.get(pid, 0) for pid in property_ids}
+        except Exception as e:
+            logger.error(f"Error getting document vectors count batch: {e}")
+            return {pid: 0 for pid in property_ids}
+
+    def _get_property_vectors_count_batch(self, property_ids: List[str]) -> Dict[str, int]:
+        """Get property vector counts for multiple properties. Returns dict property_id -> count."""
+        if not property_ids:
+            return {}
+        try:
+            result = (
+                self.supabase.table('property_vectors')
+                .select('property_id')
+                .in_('property_id', property_ids)
+                .execute()
+            )
+            from collections import Counter
+            counts = Counter(r['property_id'] for r in (result.data or []) if r.get('property_id'))
+            return {pid: counts.get(pid, 0) for pid in property_ids}
+        except Exception as e:
+            logger.error(f"Error getting property vectors count batch: {e}")
+            return {pid: 0 for pid in property_ids}
+
+    def get_property_hubs_batch(self, property_ids: List[str], business_id: str) -> List[Dict[str, Any]]:
+        """
+        Get property hubs for multiple properties in batch (avoids N+1 queries).
+
+        Args:
+            property_ids: List of property UUIDs
+            business_id: Business identifier for multi-tenancy
+
+        Returns:
+            List of property hub dicts (same structure as get_property_hub)
+        """
+        if not property_ids:
+            return []
+        try:
+            business_uuid = self._normalize_business_uuid(business_id)
+            if not business_uuid:
+                return []
+
+            # 1. Fetch all properties in one query
+            props_result = (
+                self.supabase.table('properties')
+                .select('*')
+                .in_('id', property_ids)
+                .eq('business_uuid', business_uuid)
+                .execute()
+            )
+            if not props_result.data:
+                return []
+            properties_by_id = {p['id']: p for p in props_result.data}
+
+            # 2–6. Batch fetch related data
+            documents_by_property = self._get_property_documents_batch(property_ids)
+            details_by_property, comparable_by_property = self._get_property_details_batch(property_ids)
+            doc_vec_counts = self._get_document_vectors_count_batch(property_ids)
+            prop_vec_counts = self._get_property_vectors_count_batch(property_ids)
+
+            # 7. Assemble hub for each property
+            hubs = []
+            for pid in property_ids:
+                prop_data = properties_by_id.get(pid)
+                if not prop_data:
+                    continue
+                documents = documents_by_property.get(pid, [])
+                property_details = details_by_property.get(pid)
+                comparable_data = comparable_by_property.get(pid, [])
+                document_vectors_count = doc_vec_counts.get(pid, 0)
+                property_vectors_count = prop_vec_counts.get(pid, 0)
+                completeness_score = self._calculate_completeness_score(
+                    prop_data,
+                    property_details,
+                    documents,
+                    doc_vectors_count=document_vectors_count,
+                    prop_vectors_count=property_vectors_count,
+                )
+                hub_data = {
+                    'property': prop_data,
+                    'documents': documents,
+                    'property_details': property_details,
+                    'comparable_data': comparable_data,
+                    'property_history': [],
+                    'vectors': {
+                        'document_vectors_count': document_vectors_count,
+                        'property_vectors_count': property_vectors_count,
+                    },
+                    'summary': {
+                        'document_count': len(documents),
+                        'has_details': bool(property_details),
+                        'has_comparable_data': bool(comparable_data),
+                        'has_vectors': document_vectors_count > 0 or property_vectors_count > 0,
+                        'completeness_score': completeness_score,
+                        'total_records': len(documents) + len(comparable_data),
+                    },
+                }
+                hubs.append(hub_data)
+            logger.info(f"✅ Batch retrieved {len(hubs)} property hubs")
+            return hubs
+        except Exception as e:
+            logger.error(f"❌ Error in get_property_hubs_batch: {e}")
+            return []
+
     def _get_document_vectors_count(self, property_id: str) -> int:
         """Get count of document vectors for this property"""
         try:
@@ -784,8 +952,15 @@ class SupabasePropertyHubService:
             logger.error(f"Error getting property vectors count: {e}")
             return 0
     
-    def _calculate_completeness_score(self, property_data: Dict, property_details: Optional[Dict], documents: List[Dict]) -> float:
-        """Calculate property completeness score (0.0 to 1.0)"""
+    def _calculate_completeness_score(
+        self,
+        property_data: Dict,
+        property_details: Optional[Dict],
+        documents: List[Dict],
+        doc_vectors_count: Optional[int] = None,
+        prop_vectors_count: Optional[int] = None,
+    ) -> float:
+        """Calculate property completeness score (0.0 to 1.0). Pass doc/prop_vectors_count when available to avoid N+1."""
         try:
             score = 0.0
             max_score = 10.0
@@ -795,7 +970,7 @@ class SupabasePropertyHubService:
                 score += 1.0
             if property_data.get('latitude') and property_data.get('longitude'):
                 score += 1.0
-            if property_data.get('geocoding_confidence', 0) > 0.5:
+            if (property_data.get('geocoding_confidence') or 0) > 0.5:
                 score += 1.0
             
             # Property details (4 points)
@@ -821,10 +996,12 @@ class SupabasePropertyHubService:
             if len(documents) > 1:
                 score += 1.0
             
-            # Vectors (1 point)
-            doc_vectors = self._get_document_vectors_count(property_data['id'])
-            prop_vectors = self._get_property_vectors_count(property_data['id'])
-            if doc_vectors > 0 or prop_vectors > 0:
+            # Vectors (1 point) - use passed counts when in batch mode
+            if doc_vectors_count is None:
+                doc_vectors_count = self._get_document_vectors_count(property_data['id'])
+            if prop_vectors_count is None:
+                prop_vectors_count = self._get_property_vectors_count(property_data['id'])
+            if doc_vectors_count > 0 or prop_vectors_count > 0:
                 score += 1.0
             
             return min(score / max_score, 1.0)
@@ -1082,15 +1259,10 @@ class SupabasePropertyHubService:
                 logger.info(f"   No properties found matching search criteria")
                 return []
             
-            # Get property hubs for each property
-            property_hubs = []
-            for property_data in result.data:
-                property_id = property_data['id']
-                hub = self.get_property_hub(property_id, normalized_uuid)
-                if hub:
-                    # Apply additional filters on the hub data
-                    if self._matches_filters(hub, filters):
-                        property_hubs.append(hub)
+            # Batch fetch property hubs (avoids N+1)
+            property_ids = [p['id'] for p in result.data]
+            hubs = self.get_property_hubs_batch(property_ids, normalized_uuid)
+            property_hubs = [hub for hub in hubs if self._matches_filters(hub, filters)]
             
             logger.info(f"✅ Found {len(property_hubs)} matching property hubs")
             return property_hubs

@@ -2,28 +2,55 @@
 
 import * as React from "react";
 import { ChevronRight } from "lucide-react";
-import { getUpgradeCtaInfo } from "@/config/billing";
+import { getUpgradeCtaInfo, getNextTier } from "@/config/billing";
 import { usePlanModal } from "@/contexts/PlanModalContext";
 import { useUsage } from "@/contexts/UsageContext";
+import type { TierKey } from "@/config/billing";
+
+/** Toast shows ~3s; CTA appears 1 min after toast hides. Total hide = 63s so they never overlap. */
+const HIDE_AFTER_PLAN_CHANGE_MS = 63000;
 
 /**
  * Dashboard upgrade CTA: pill at top-center of dashboard, opens plan modal.
  * Shown only when current plan is not business.
  * Pro badge (teal) when on Starter; Plus badge (green) when on Pro.
+ * Hides temporarily after a plan change, then reappears.
  */
 export const DashboardUpgradeCta: React.FC = () => {
   const { openPlanModal } = usePlanModal();
   const { usage, loading } = useUsage();
+  const [hideUntil, setHideUntil] = React.useState<number | null>(null);
+
+  const timeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  React.useEffect(() => {
+    const handlePlanChange = () => {
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+      setHideUntil(Date.now() + HIDE_AFTER_PLAN_CHANGE_MS);
+      timeoutRef.current = setTimeout(() => {
+        setHideUntil(null);
+        timeoutRef.current = null;
+      }, HIDE_AFTER_PLAN_CHANGE_MS);
+    };
+    window.addEventListener("planChangeCompleted", handlePlanChange);
+    return () => {
+      window.removeEventListener("planChangeCompleted", handlePlanChange);
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    };
+  }, []);
 
   const ctaInfo = React.useMemo(
     () => getUpgradeCtaInfo(usage?.plan ?? null),
     [usage?.plan]
   );
 
-  if (loading || !ctaInfo || !usage) return null;
+  const isHidden = hideUntil !== null;
+  if (loading || !ctaInfo || !usage || isHidden) return null;
 
   const handleClick = () => {
-    openPlanModal(usage.plan ?? "professional", usage.billing_cycle_end);
+    const currentTier = (usage.plan ?? "professional") as TierKey;
+    const nextTier = getNextTier(currentTier);
+    openPlanModal(usage.plan ?? "professional", usage.billing_cycle_end, nextTier ?? undefined);
   };
 
   return (

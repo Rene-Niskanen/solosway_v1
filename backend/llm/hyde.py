@@ -99,6 +99,7 @@ def get_query_embedding_for_retrieval(query: str) -> Optional[List[float]]:
     reuses one HyDE for both document and chunk retrieval.
     Returns None on embedding failure.
     """
+    _t0 = time.perf_counter()
     global _CACHE_TTL
     _CACHE_TTL = getattr(config, "hyde_cache_ttl_seconds", 60)
 
@@ -119,6 +120,7 @@ def get_query_embedding_for_retrieval(query: str) -> Optional[List[float]]:
     _clean_expired_cache()
     if key in _embedding_cache:
         emb, _ = _embedding_cache[key]
+        logger.info("[PERF] phase=hyde_embedding elapsed_ms=%d cache_hit=True", max(0, int(round((time.perf_counter() - _t0) * 1000))))
         return emb
 
     texts_to_embed: List[str] = []
@@ -177,4 +179,6 @@ def get_query_embedding_for_retrieval(query: str) -> Optional[List[float]]:
         ]
 
     _embedding_cache[key] = (query_embedding, time.time())
+    elapsed_ms = max(0, int(round((time.perf_counter() - _t0) * 1000)))
+    logger.info("[PERF] phase=hyde_embedding elapsed_ms=%d cache_hit=False", elapsed_ms)
     return query_embedding

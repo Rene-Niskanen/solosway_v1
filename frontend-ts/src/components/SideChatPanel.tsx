@@ -60,7 +60,7 @@ import { SegmentInput, type SegmentInputHandle } from './SegmentInput';
 import { useSegmentInput, buildInitialSegments } from '@/hooks/useSegmentInput';
 import { isTextSegment, isChipSegment, contentSegmentsToLinkedQuery, segmentsToLinkedQuery, type QueryContentSegment, type ChipSegment, type TextSegment } from '@/types/segmentInput';
 import { CitationClickPanel, computeCitationPreviewTransform, CitationPagePreviewContent, type CachedPageImage } from './CitationClickPanel';
-import { AskVeloraFloatingButton } from './AskVeloraFloatingButton';
+import { AskOpenFindFloatingButton } from './AskOpenFindFloatingButton';
 import { useFeedbackModal } from '../contexts/FeedbackModalContext';
 import { useCitationExportOptional } from '../contexts/CitationExportContext';
 import { buildDocxMarkdownWithCitationImages, cropPageImageToBbox } from '../utils/citationExport';
@@ -3637,6 +3637,16 @@ function normalizeCitationDocId(cit: any): CitationDataType {
   return { ...cit, doc_id: cit.doc_id ?? cit.document_id };
 }
 
+/** Ordered citation numbers for a message: from text (first-appearance order) or from message.citations keys (agent tasks). */
+function getOrderedCitationNumbersForMessage(message: { text?: string; citations?: Record<string, any> }): string[] {
+  const fromText = getOrderedCitationNumbersFromMessageText(message.text ?? '');
+  if (fromText.length > 0) return fromText;
+  const citations = message.citations;
+  if (!citations || typeof citations !== 'object') return [];
+  const keys = Object.keys(citations).filter((k) => /^\d+$/.test(k));
+  return keys.sort((a, b) => parseInt(a, 10) - parseInt(b, 10));
+}
+
 /** Return citation numbers in first-appearance order from message text (for citation bar "X of N").
  * Backend may send [1], [2] or superscript ¹ ² ³; frontend may convert to %%CITATION_...%% later. Detect all. */
 function getOrderedCitationNumbersFromMessageText(text: string): string[] {
@@ -4667,7 +4677,7 @@ const CitationCallout: React.FC<{
                   {/* Left: Ask about this... input (when shown); collapses when chat not shown. In line with button group (same baseline). */}
                   <div style={{ flex: showAskBar ? 1 : 0, minWidth: 0, display: 'flex', justifyContent: 'flex-start', alignItems: 'flex-end', marginBottom: -2 }}>
                     <label
-                      htmlFor="citation-callout-ask-input"
+                      htmlFor={`citation-callout-ask-${messageIdProp ?? ''}-${citationNumber}`}
                         style={{
                         width: '100%',
                         minWidth: 200,
@@ -4689,7 +4699,8 @@ const CitationCallout: React.FC<{
                         <form onSubmit={handleAskSubmit} style={{ display: 'block', width: '100%' }}>
                           <div style={{ position: 'relative', display: 'flex', alignItems: 'center', height: 36, width: '100%', minWidth: 0, backgroundColor: '#FFFFFF', borderRadius: 10, overflow: 'hidden', border: 'none', outline: 'none', boxShadow: 'none' }}>
                             <input
-                              id="citation-callout-ask-input"
+                              id={`citation-callout-ask-${messageIdProp ?? ''}-${citationNumber}`}
+                              data-citation-callout-input
                               ref={askInputRef as React.RefObject<HTMLInputElement>}
                               type="text"
                               value={askInputValue}
@@ -4944,7 +4955,7 @@ const CitationCallout: React.FC<{
             {/* Ask bar + View/Accept row (send button inside input) */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
               {showAskQuestion && (
-                    <label htmlFor="citation-callout-ask-input-no-preview" style={{ flex: 1, minWidth: 180, display: 'block', cursor: 'text' }}>
+                    <label htmlFor={`citation-callout-ask-no-preview-${messageIdProp ?? ''}-${citationNumber}`} style={{ flex: 1, minWidth: 180, display: 'block', cursor: 'text' }}>
                     <form onSubmit={handleAskSubmit} style={{ display: 'block' }}>
                   <div
                     style={{
@@ -4958,7 +4969,8 @@ const CitationCallout: React.FC<{
                     }}
                   >
                     <input
-                      id="citation-callout-ask-input-no-preview"
+                      id={`citation-callout-ask-no-preview-${messageIdProp ?? ''}-${citationNumber}`}
+                      data-citation-callout-input
                       ref={askInputRef as React.RefObject<HTMLInputElement>}
                       type="text"
                       value={askInputValue}
@@ -6586,6 +6598,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     setActiveChatId: setStoreActiveChatId,
     getChatState,
     initializeChatState,
+    updateChatState,
     openDocumentForChat,
     setDocumentViewedCitation,
     closeDocumentForChat,
@@ -6620,7 +6633,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     messageId?: string;
     citationNumber?: string;
   } | null>(null);
-  // Ask Velora: highlight selection in response text → floating "Ask Velora" button → insert chip
+  // Ask OpenFind: highlight selection in response text → floating "Ask OpenFind" button → insert chip
   const [highlightSelection, setHighlightSelection] = React.useState<{
     text: string;
     rect: DOMRect;
@@ -6683,7 +6696,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   const perplexityFinalizeRef = React.useRef<(() => void) | null>(null);
   /** When document preview (first citation callout) unveils, we resume revealing post-callout text. Until then, we pause. */
   const firstCalloutUnveiledForStreamingRef = React.useRef(false);
-  const PERPLEXITY_CHUNK_MS = 48;
+  const PERPLEXITY_CHUNK_MS = 65;
   /** Reveal first N words but preserve original newlines/spacing (no join(' ') so paragraphs stay). */
   const getPrefixUpToWordCount = (text: string, wordCount: number): string => {
     if (wordCount <= 0 || !text) return '';
@@ -6727,8 +6740,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     const firstCitationWordCount = getWordCountUpToFirstCitation(raw);
     const effectiveMax =
       firstCitationWordCount != null && !firstCalloutUnveiledForStreamingRef.current
-        ? Math.min(perplexityRevealedCountRef.current + 3, firstCitationWordCount)
-        : Math.min(perplexityRevealedCountRef.current + 3, total);
+        ? Math.min(perplexityRevealedCountRef.current + 2, firstCitationWordCount)
+        : Math.min(perplexityRevealedCountRef.current + 2, total);
     perplexityRevealedCountRef.current = effectiveMax;
     const prefix = getPrefixUpToWordCount(raw, perplexityRevealedCountRef.current);
     setChatMessages(prev => prev.map(msg => msg.id === lid ? { ...msg, text: prefix } : msg));
@@ -7360,6 +7373,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       const { taskId, query, resultText, citations, parentChatId } = event.detail || {};
       if (!resultText) return;
 
+      // Only inject into this panel if it's showing the chat the agent task belongs to
+      const activeChatId = storeActiveChatIdRef.current;
+      if (parentChatId && activeChatId !== parentChatId) return;
+
       const messageId = `agent-result-${taskId || Date.now()}`;
       const citationsMap = citations || {};
       const agentResultMessage = {
@@ -7373,7 +7390,26 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         timestamp: Date.now(),
       };
 
+      // CRITICAL: Close citation bars for ALL previous messages before adding agent result.
+      // Agent task is treated as part of "the response" in UI - prevent previous responses' bars from reopening.
+      const prevMessages = chatMessagesRef.current;
+      const closedSet = new Set(citationPreviewClosedForMessageIdsRef.current);
+      prevMessages.forEach((msg, idx) => {
+        closedSet.add(msg.id ?? `msg-${idx}`);
+      });
+      setCitationPreviewClosedForMessageIds(prev => {
+        const next = new Set(prev);
+        prevMessages.forEach((msg, idx) => next.add(msg.id ?? `msg-${idx}`));
+        return next;
+      });
+      if (parentChatId) {
+        updateChatState(parentChatId, { citationPreviewClosedForMessageIds: Array.from(closedSet) });
+      }
+
       setChatMessages(prev => [...prev, agentResultMessage]);
+
+      // Ensure document previews stay closed (user may have closed them on previous responses)
+      if (parentChatId) closeDocumentForChat(parentChatId);
 
       // Preload document previews for all citations immediately so inline callouts render instantly when the green response is shown
       Object.entries(citationsMap).forEach(([, cit]) => {
@@ -7398,7 +7434,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
 
     window.addEventListener('agent-task-result-inject', handleAgentTaskResultInject as EventListener);
     return () => window.removeEventListener('agent-task-result-inject', handleAgentTaskResultInject as EventListener);
-  }, []);
+  }, [closeDocumentForChat, updateChatState]);
 
   // Handle property selection - will be defined after usePropertySelection hook
   
@@ -7588,6 +7624,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
 
   // Per-message: which responses have document preview cards/bar closed (show "Open" button instead)
   const [citationPreviewClosedForMessageIds, setCitationPreviewClosedForMessageIds] = React.useState<Set<string>>(() => new Set());
+  const citationPreviewClosedForMessageIdsRef = React.useRef<Set<string>>(citationPreviewClosedForMessageIds);
+  React.useEffect(() => {
+    citationPreviewClosedForMessageIdsRef.current = citationPreviewClosedForMessageIds;
+  }, [citationPreviewClosedForMessageIds]);
 
   // Top fade overlay when content is scrolled (show when scrollTop > 1)
   const [showTopBlur, setShowTopBlur] = React.useState(false);
@@ -8633,12 +8673,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       return;
     }
     const revMsg = chatMessages.find((m) => ((m as { id?: string }).id ?? `msg-${chatMessages.indexOf(m)}`) === citationReviewMessageId);
-    if (!revMsg?.text) {
+    const ordered = revMsg ? getOrderedCitationNumbersForMessage(revMsg) : [];
+    if (ordered.length === 0) {
       citationReviewForWheelRef.current.active = false;
       citationReviewForWheelRef.current.total = 0;
       return;
     }
-    const ordered = getOrderedCitationNumbersFromMessageText(revMsg.text);
     citationReviewForWheelRef.current.active = true;
     citationReviewForWheelRef.current.total = ordered.length;
   }, [citationReviewMessageId, chatMessages, setCitationReviewCurrentIndex]);
@@ -8683,12 +8723,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   /** Skip refocusing main input when user is typing in the citation callout — avoids stealing focus when cursor moves. */
   const isCitationCalloutInputFocused = () => {
     const el = document.activeElement as HTMLElement | null;
-    return !!(el && (el.id === 'citation-callout-ask-input' || el.id === 'citation-callout-ask-input-no-preview' || el.closest?.('[data-citation-callout-bar]')));
+    return !!(el && (el.hasAttribute?.('data-citation-callout-input') || el.closest?.('[data-citation-callout-bar]')));
   };
   /** True if the given element is the citation callout input or inside the citation callout bar (used to avoid redirecting focus when focus left the citation bar). */
   const isCitationCalloutElement = (el: EventTarget | null) => {
     const node = el as HTMLElement | null;
-    return !!(node && (node.id === 'citation-callout-ask-input' || node.id === 'citation-callout-ask-input-no-preview' || node.closest?.('[data-citation-callout-bar]')));
+    return !!(node && (node.hasAttribute?.('data-citation-callout-input') || node.closest?.('[data-citation-callout-bar]')));
   };
   // Listen for citation-agent-task-dispatch events from CitationCallout "Ask about this..." input
   React.useEffect(() => {
@@ -9144,6 +9184,23 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     currentChatIdForDocRef.current = currentChatId;
   }, [currentChatId]);
 
+  // Restore citation closed state from store when switching to a chat (persists across agent-task inject/remount)
+  React.useEffect(() => {
+    if (currentChatId) {
+      const stored = getChatState(currentChatId).citationPreviewClosedForMessageIds;
+      setCitationPreviewClosedForMessageIds(stored && stored.length > 0 ? new Set(stored) : new Set());
+    }
+  }, [currentChatId, getChatState]);
+
+  // Wrapper that persists citation closed state to store when user closes a bar (prevents reopen on agent-task inject)
+  const setCitationPreviewClosedWithPersist = React.useCallback((updater: (prev: Set<string>) => Set<string>) => {
+    setCitationPreviewClosedForMessageIds(prev => {
+      const next = updater(prev);
+      if (currentChatId) updateChatState(currentChatId, { citationPreviewClosedForMessageIds: Array.from(next) });
+      return next;
+    });
+  }, [currentChatId, updateChatState]);
+
   // When switching to a chat, disable response highlight swoop for a brief period so opening feels instant
   React.useEffect(() => {
     if (!currentChatId) return;
@@ -9169,7 +9226,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       const list = Array.isArray(chatMessages) ? chatMessages : [];
       const lastAssistant = [...list].reverse().find((m: { type?: string }) => m.type !== 'query');
       const latestId = lastAssistant ? ((lastAssistant as { id?: string }).id ?? `msg-${list.indexOf(lastAssistant)}`) : null;
-      const latestHasCitations = latestId && lastAssistant?.text && getOrderedCitationNumbersFromMessageText(lastAssistant.text).length > 0;
+      const latestHasCitations = latestId && lastAssistant && getOrderedCitationNumbersForMessage(lastAssistant).length > 0;
       if (latestId && latestHasCitations && citationReviewMessageIdRef.current === latestId) {
         return; // Keep showing document preview for latest until we get explicit visibility
       }
@@ -9231,7 +9288,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       if (viewed) {
         const messages = chatMessagesRef.current;
         const msg = messages.find((m) => (m.id ?? `msg-${messages.indexOf(m)}`) === viewed.messageId);
-        const ordered = getOrderedCitationNumbersFromMessageText((msg as { text?: string })?.text ?? '');
+        const ordered = getOrderedCitationNumbersForMessage(msg as { text?: string; citations?: Record<string, any> });
         const idx = ordered.indexOf(viewed.citationNumber);
         if (idx >= 0) {
           setLastClosedCitationIndexByMessageId((prev) => ({ ...prev, [viewed.messageId]: idx }));
@@ -9260,8 +9317,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   /** Shared logic for Accept in citation bar and in document preview callout. Same behaviour in both places. */
   const handleAcceptCitationInBar = React.useCallback((reviewMsgId: string, effectiveIndex: number) => {
     const revMsg = chatMessages.find((m) => ((m as { id?: string }).id ?? `msg-${chatMessages.indexOf(m)}`) === reviewMsgId);
-    if (!revMsg?.text) return;
-    const ordered = getOrderedCitationNumbersFromMessageText(revMsg.text);
+    if (!revMsg) return;
+    const ordered = getOrderedCitationNumbersForMessage(revMsg);
     const total = ordered.length;
     if (effectiveIndex < 0 || effectiveIndex >= total) return;
     citationReviewMessageIdRef.current = reviewMsgId;
@@ -9272,7 +9329,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       return next;
     });
     if (effectiveIndex >= total - 1) {
-      setCitationPreviewClosedForMessageIds((prev) => new Set(prev).add(reviewMsgId));
+      setCitationPreviewClosedWithPersist((prev) => new Set(prev).add(reviewMsgId));
       setCitationReviewCompletedForMessageIds((prev) => { const next = new globalThis.Set(prev); next.add(reviewMsgId); return next; });
       setCitationReviewMessageId(null);
       setCitationReviewCurrentIndex(0);
@@ -9359,7 +9416,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       setCitationReviewShowReviewNextOnly(false);
       setCitationReviewJustRejected(false);
     }
-    const ordered = getOrderedCitationNumbersFromMessageText(lastAssistantByPosition.text);
+    const ordered = getOrderedCitationNumbersForMessage(lastAssistantByPosition);
     if (ordered.length === 0) {
       setCitationReviewMessageId(null);
       citationReviewMessageIdRef.current = null;
@@ -10363,12 +10420,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     
     if (alreadyProcessedForThisChat) {
       // Silently skip - this is expected behavior when returning to a chat
-      // Only log in dev mode to reduce console noise
+      // Use debug to avoid console spam (hidden unless user enables verbose logs)
       if (import.meta.env.DEV) {
-        console.log('⏭️ SideChatPanel: Skipping query - already processed for this chat:', {
-          query: query?.substring(0, 50),
-          chatId: chatIdForQuery
-        });
+        console.debug('⏭️ SideChatPanel: Skipping query - already processed for this chat:', chatIdForQuery);
       }
     }
     
@@ -12869,8 +12923,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     return <CitationLink key={key} citationNumber={citationNumber} citationData={normalized} onClick={onClick} />;
   }, [handleUserCitationClick]);
 
-  // Ask Velora: insert highlighted text as citation_snippet chip (no document/bbox context)
-  const onAskVeloraFromHighlight = React.useCallback((highlightedText: string) => {
+  // Ask OpenFind: insert highlighted text as citation_snippet chip (no document/bbox context)
+  const onAskOpenFindFromHighlight = React.useCallback((highlightedText: string) => {
     const snippet = highlightedText.trim().replace(/\s+/g, ' ').slice(0, 300);
     if (!snippet) return;
     const label = snippet.length > 80 ? `${snippet.slice(0, 77)}…` : snippet;
@@ -12894,7 +12948,31 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     });
   }, [segmentInput]);
 
-  // Ask Velora: detect text selection in assistant response messages
+  // Ask OpenFind: open first citation's document preview when user clicks "Check Source" on highlighted text
+  const onCheckSourceFromHighlight = React.useCallback((messageId: string) => {
+    const msg = chatMessages.find((m, idx) => (m.id ?? `msg-${idx}`) === messageId);
+    if (!msg) {
+      toast({ title: 'Source not available', description: 'Could not find the message.', variant: 'destructive' });
+      return;
+    }
+    const ordered = getOrderedCitationNumbersForMessage(msg);
+    if (ordered.length === 0) {
+      toast({ title: 'No source available', description: 'This text has no cited source.', variant: 'default' });
+      return;
+    }
+    const firstNum = ordered[0]!;
+    const citationData = msg.citations?.[firstNum] as CitationData & { document_id?: string } | undefined;
+    if (!citationData) {
+      toast({ title: 'Source not available', description: 'Could not load citation data.', variant: 'destructive' });
+      return;
+    }
+    const normalized = { ...citationData, doc_id: citationData.doc_id ?? citationData.document_id } as CitationData;
+    openCitationInDocumentView(normalized, false, { messageId, citationNumber: firstNum });
+    setHighlightSelection(null);
+    setHasHoveredSelection(false);
+  }, [chatMessages, openCitationInDocumentView]);
+
+  // Ask OpenFind: detect text selection in assistant response messages
   React.useEffect(() => {
     const checkSelection = () => {
       const sel = window.getSelection();
@@ -12910,8 +12988,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       const anchorEl = anchor.nodeType === Node.ELEMENT_NODE ? anchor as Element : anchor.parentElement;
       if (anchorEl?.closest?.('input, textarea, button, [contenteditable="true"]')) return;
       const container = (anchor as Node).nodeType === Node.TEXT_NODE
-        ? (anchor as Text).parentElement?.closest?.('[data-ask-velora-content]')
-        : (anchor as Element).closest?.('[data-ask-velora-content]');
+        ? (anchor as Text).parentElement?.closest?.('[data-ask-openfind-content]')
+        : (anchor as Element).closest?.('[data-ask-openfind-content]');
       if (!container || !(container instanceof HTMLElement)) {
         setHighlightSelection(null);
         return;
@@ -12944,7 +13022,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     };
   }, []);
 
-  // Close citation panel and Ask Velora highlight on scroll (messages area), window resize, or Escape
+  // Close citation panel and Ask OpenFind highlight on scroll (messages area), window resize, or Escape
   React.useEffect(() => {
     if (!citationClickPanel && !highlightSelection) return;
     const contentArea = contentAreaRef.current;
@@ -17289,7 +17367,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       // Show bar only when: child called onRevealComplete (full reveal sequence done), or restored chat
       const revealEndedOrRestored = revealEndedForResponseIdRef.current.has(finalKey) || isRestored || isInjectedAgentResult;
       const showFeedbackBar = message.text && hasCurrentStreamFinished && revealEndedOrRestored && (isLatestAssistantMessage || showBarForResponseId === finalKey);
-      const hasCitationsForBar = !!(message.text && getOrderedCitationNumbersFromMessageText(message.text).length > 0);
+      const hasCitationsForBar = getOrderedCitationNumbersForMessage(message).length > 0;
       return (
         <CitationMessageVisibility
           key={finalKey}
@@ -17396,7 +17474,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           {/* Show text as soon as it exists - allow streaming to display immediately */}
           {message.text && (
             <div
-              data-ask-velora-content
+              data-ask-openfind-content
               data-message-id={finalKey}
               data-message-loading={message.isLoading ? 'true' : 'false'}
               style={{
@@ -17417,7 +17495,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 orangeCitationNumbers={orangeCitationNumbersByMessage.get(message.id ?? finalKey)}
                 greenCitationNumbers={(() => {
                   if (citationReviewShowReviewNextOnly) return undefined;
-                  const orderedForReview = citationReviewMessageId === finalKey ? getOrderedCitationNumbersFromMessageText(message.text ?? '') : [];
+                  const orderedForReview = citationReviewMessageId === finalKey ? getOrderedCitationNumbersForMessage(message) : [];
                   const currentReviewCitationNum = citationReviewMessageId === finalKey && orderedForReview.length > 0 && citationReviewCurrentIndex >= 0 && citationReviewCurrentIndex < orderedForReview.length ? orderedForReview[citationReviewCurrentIndex] : null;
                   if (currentReviewCitationNum == null) return undefined;
                   const set = new Set<string>();
@@ -17485,18 +17563,18 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 }}
                 citationViewedInDocument={citationViewedInDocument}
                 onCloseDocumentFromCallout={closeExpandedCardView}
-                orderedCitationNumbersForMessage={(() => { const o = getOrderedCitationNumbersFromMessageText(message.text ?? ''); return o.length > 0 ? o : undefined; })()}
+                orderedCitationNumbersForMessage={(() => { const o = getOrderedCitationNumbersForMessage(message); return o.length > 0 ? o : undefined; })()}
                 isCitationBarActive={isLatestAssistantMessage && !shouldHideCitationCallouts}
                 currentCitationIndex={citationReviewMessageId === finalKey ? citationReviewCurrentIndex : 0}
                 acceptedCitationIndices={citationReviewMessageId === finalKey ? citationReviewAcceptedIndices : (citationAcceptedByMessageId[finalKey] ?? undefined)}
                 showReviewNextOnly={citationReviewMessageId === finalKey ? citationReviewShowReviewNextOnly : false}
-                showInResponseCitationCallouts={!shouldHideCitationCallouts && !!(message.text && getOrderedCitationNumbersFromMessageText(message.text ?? '').length > 0)}
+                showInResponseCitationCallouts={!shouldHideCitationCallouts && getOrderedCitationNumbersForMessage(message).length > 0}
                 showCitationPreviewBar={showCitationPreviewBar && !citationPreviewClosedForMessageIds.has(finalKey)}
-                onCloseCitationPreviewBar={(id) => setCitationPreviewClosedForMessageIds((prev) => new Set(prev).add(id))}
+                onCloseCitationPreviewBar={(id) => setCitationPreviewClosedWithPersist((prev) => new Set(prev).add(id))}
                 rejectedCitationNumbers={rejectedCitationNumbersByMessage.get(String(message.id ?? finalKey))}
                 showBlueCitationHighlight={showBlueCitationHighlight && !citationPreviewClosedForMessageIds.has(finalKey) && !(citationReviewMessageId === finalKey && citationReviewShowReviewNextOnly)}
                 onPrevCitation={(() => {
-                  const ordered = getOrderedCitationNumbersFromMessageText(message.text ?? '');
+                  const ordered = getOrderedCitationNumbersForMessage(message);
                   if (ordered.length <= 1) return undefined;
                   return () => {
                     setCitationReviewMessageId(finalKey);
@@ -17504,20 +17582,20 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   };
                 })()}
                 onNextCitation={(() => {
-                  const ordered = getOrderedCitationNumbersFromMessageText(message.text ?? '');
+                  const ordered = getOrderedCitationNumbersForMessage(message);
                   if (ordered.length <= 1) return undefined;
                   return () => {
                     setCitationReviewMessageId(finalKey);
                     setCitationReviewCurrentIndex((i) => Math.min(ordered.length - 1, i + 1));
                   };
                 })()}
-                onAcceptCurrentCitation={(citationReviewMessageId === finalKey || (isLatestAssistantMessage && !shouldHideCitationCallouts && getOrderedCitationNumbersFromMessageText(message.text ?? '').length > 0)) ? () => {
+                onAcceptCurrentCitation={(citationReviewMessageId === finalKey || (isLatestAssistantMessage && !shouldHideCitationCallouts && getOrderedCitationNumbersForMessage(message).length > 0)) ? () => {
                   const effectiveIndex = citationReviewMessageId === finalKey ? citationReviewCurrentIndex : 0;
                   handleAcceptCitationInBar(finalKey, effectiveIndex);
                 } : undefined}
                 onAcceptCitation={handleAcceptCitationInBar}
                 onCloseCitationBar={citationReviewMessageId === finalKey ? () => {
-                  setCitationPreviewClosedForMessageIds((prev) => new Set(prev).add(finalKey));
+                  setCitationPreviewClosedWithPersist((prev) => new Set(prev).add(finalKey));
                   setCitationReviewMessageId(null);
                   setCitationReviewCurrentIndex(0);
                   setCitationReviewShowReviewNextOnly(false);
@@ -17809,26 +17887,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               {sources.count > 0 && (() => {
                 const keysInChat = new Set(chatMessages.map((m, i) => m.id ?? `msg-${i}`));
                 const citationBarVisible = citationReviewMessageId != null && keysInChat.has(citationReviewMessageId);
-                const hasCitationBarClosedInChat = chatMessages.some((msg, idx) =>
-                  citationPreviewClosedForMessageIds.has(msg.id ?? `msg-${idx}`)
-                );
-                const hasCompletedReviewInChat = chatMessages.some((msg, idx) => {
-                  const key = msg.id ?? `msg-${idx}`;
-                  if (!citationReviewCompletedForMessageIds.has(key)) return false;
-                  const text = (msg as { text?: string }).text;
-                  return !!(text && getOrderedCitationNumbersFromMessageText(text).length > 0);
-                });
-                const showOpenGlobal = !citationBarVisible && (hasCitationBarClosedInChat || hasCompletedReviewInChat);
-                const firstWithClosedOrCompleted = chatMessages.find((msg, idx) => {
-                  if ((msg as { type?: string }).type === 'query') return false;
-                  const key = msg.id ?? `msg-${idx}`;
-                  const hasCitations = !!((msg as { text?: string }).text && getOrderedCitationNumbersFromMessageText((msg as { text?: string }).text ?? '').length > 0);
-                  const closed = citationPreviewClosedForMessageIds.has(key);
-                  const completed = citationReviewCompletedForMessageIds.has(key);
-                  return hasCitations && (closed || completed);
-                });
-                const firstKey = firstWithClosedOrCompleted ? (firstWithClosedOrCompleted as { id?: string }).id ?? `msg-${chatMessages.indexOf(firstWithClosedOrCompleted)}` : null;
-                const showOpen = showOpenGlobal && firstKey !== null && finalKey === firstKey;
+                // Show Open for this message when its citation bar is closed (including agent task responses)
+                const thisMessageBarClosed = citationPreviewClosedForMessageIds.has(finalKey);
+                const thisMessageCompleted = citationReviewCompletedForMessageIds.has(finalKey);
+                const showOpen = !citationBarVisible && (thisMessageBarClosed || thisMessageCompleted);
                 const sourcesButtonStyle = {
                   display: 'flex' as const, alignItems: 'center' as const, gap: '5px',
                   padding: '2px 8px', border: '1px solid rgba(0,0,0,0.08)', cursor: 'pointer' as const,
@@ -17846,7 +17908,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     const msgId = citationReviewMessageId;
                     if (msgId) {
                       setLastClosedCitationIndexByMessageId((prev) => ({ ...prev, [msgId]: citationReviewCurrentIndex }));
-                      setCitationPreviewClosedForMessageIds((prev) => new Set(prev).add(msgId));
+                      setCitationPreviewClosedWithPersist((prev) => new Set(prev).add(msgId));
                     }
                     setCitationReviewMessageId(null);
                     citationReviewMessageIdRef.current = null;
@@ -17867,7 +17929,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   onClick={(e) => {
                     e.stopPropagation();
                     // Open citations for this specific message (finalKey), not the latest
-                    setCitationPreviewClosedForMessageIds((prev) => {
+                    setCitationPreviewClosedWithPersist((prev) => {
                       const next = new Set(prev);
                       next.delete(finalKey);
                       return next;
@@ -17877,8 +17939,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       next.delete(finalKey);
                       return next;
                     });
-                    if (message.text && getOrderedCitationNumbersFromMessageText(message.text).length > 0) {
-                      const ordered = getOrderedCitationNumbersFromMessageText(message.text);
+                    const ordered = getOrderedCitationNumbersForMessage(message);
+                    if (ordered.length > 0) {
                       const savedIdx = lastClosedCitationIndexByMessageId[finalKey];
                       const restoreIndex = typeof savedIdx === 'number' && savedIdx >= 0 && savedIdx < ordered.length ? savedIdx : 0;
                       setCitationReviewMessageId(finalKey);
@@ -18108,11 +18170,26 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           document.body
         );
       })()}
-      {/* Ask Velora floating button - appears above text selection in assistant responses */}
+      {/* Ask OpenFind floating button - appears above text selection in assistant responses */}
       {highlightSelection && createPortal(
         <>
-          {/* Invisible overlay over selection — hover reveals the button */}
-          {!hasHoveredSelection && (
+          {/* Invisible overlay over selection — hover reveals the button; always present to keep highlight zone active */}
+          <div
+            role="presentation"
+            aria-hidden
+            onMouseEnter={() => setHasHoveredSelection(true)}
+            style={{
+              position: 'fixed',
+              left: highlightSelection.rect.left,
+              top: highlightSelection.rect.top,
+              width: Math.max(highlightSelection.rect.width, 1),
+              height: Math.max(highlightSelection.rect.height, 1),
+              zIndex: 10049,
+              pointerEvents: 'auto',
+            }}
+          />
+          {/* Bridge overlay: fills gap between selection and buttons so cursor path keeps highlight visible */}
+          {hasHoveredSelection && (
             <div
               role="presentation"
               aria-hidden
@@ -18120,19 +18197,24 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               style={{
                 position: 'fixed',
                 left: highlightSelection.rect.left,
-                top: highlightSelection.rect.top,
+                top: highlightSelection.rect.top - 14,
                 width: Math.max(highlightSelection.rect.width, 1),
-                height: Math.max(highlightSelection.rect.height, 1),
+                height: 14,
                 zIndex: 10049,
                 pointerEvents: 'auto',
               }}
             />
           )}
           {hasHoveredSelection && (
-            <AskVeloraFloatingButton
-              position={{ x: highlightSelection.rect.left, y: highlightSelection.rect.top - 56 }}
+            <AskOpenFindFloatingButton
+              position={{ x: highlightSelection.rect.left, y: highlightSelection.rect.top - 38 }}
               selectedText={highlightSelection.text}
-              onAsk={() => onAskVeloraFromHighlight(highlightSelection.text)}
+              onAsk={() => onAskOpenFindFromHighlight(highlightSelection.text)}
+              onCheckSource={() => onCheckSourceFromHighlight(highlightSelection.messageId)}
+              hasSource={(() => {
+                const msg = chatMessages.find((m, idx) => (m.id ?? `msg-${idx}`) === highlightSelection.messageId);
+                return !!(msg && getOrderedCitationNumbersForMessage(msg).length > 0);
+              })()}
             />
           )}
         </>,
@@ -18984,7 +19066,14 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         strokeWidth={1.25}
                       />
                     ) : (
-                      <img src={openFindIcon} alt="OpenFind" fetchPriority="high" style={{ height: 'clamp(0.625rem, 1.2vw, 0.875rem)', opacity: 0.82 }} aria-hidden />
+                      <img
+                        src={openFindIcon}
+                        alt="OpenFind"
+                        // @ts-expect-error - use lowercase fetchpriority per React DOM warning; types use fetchPriority
+                        fetchpriority="high"
+                        style={{ height: 'clamp(0.625rem, 1.2vw, 0.875rem)', opacity: 0.82 }}
+                        aria-hidden
+                      />
                     )}
                     {actualPanelWidth >= 750 && (
                       <span className="text-[13px] font-medium text-inherit text-left whitespace-nowrap tracking-[-0.01em]">
@@ -19056,7 +19145,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             onCheckedChange={(checked) => {
                               flushSync(() => setShowReasoningTrace(checked));
                             }}
-                            className="h-4 w-7 border border-black/[0.08] bg-[#e5e7eb] shadow-none data-[state=checked]:bg-[#111827] data-[state=unchecked]:bg-[#e5e7eb] [&>span]:h-3 [&>span]:w-3 [&>span]:data-[state=checked]:translate-x-3"
+                            className="h-4 w-7 border border-black/[0.08] bg-[#e5e7eb] shadow-none data-[state=checked]:bg-[#6b7280] data-[state=unchecked]:bg-[#e5e7eb] [&>span]:h-3 [&>span]:w-3 [&>span]:data-[state=checked]:translate-x-3"
                             aria-label="Toggle reasoning trace"
                           />
                         </div>
@@ -19069,7 +19158,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             checked={showHighlight}
                             onClick={(e) => e.stopPropagation()}
                             onCheckedChange={(checked) => setShowHighlight(checked)}
-                            className="h-4 w-7 border border-black/[0.08] bg-[#e5e7eb] shadow-none data-[state=checked]:bg-[#111827] data-[state=unchecked]:bg-[#e5e7eb] [&>span]:h-3 [&>span]:w-3 [&>span]:data-[state=checked]:translate-x-3"
+                            className="h-4 w-7 border border-black/[0.08] bg-[#e5e7eb] shadow-none data-[state=checked]:bg-[#6b7280] data-[state=unchecked]:bg-[#e5e7eb] [&>span]:h-3 [&>span]:w-3 [&>span]:data-[state=checked]:translate-x-3"
                             aria-label="Toggle key points"
                           />
                         </div>
@@ -19082,7 +19171,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             checked={showCitations}
                             onClick={(e) => e.stopPropagation()}
                             onCheckedChange={(checked) => setShowCitations(checked)}
-                            className="h-4 w-7 border border-black/[0.08] bg-[#e5e7eb] shadow-none data-[state=checked]:bg-[#111827] data-[state=unchecked]:bg-[#e5e7eb] [&>span]:h-3 [&>span]:w-3 [&>span]:data-[state=checked]:translate-x-3"
+                            className="h-4 w-7 border border-black/[0.08] bg-[#e5e7eb] shadow-none data-[state=checked]:bg-[#6b7280] data-[state=unchecked]:bg-[#e5e7eb] [&>span]:h-3 [&>span]:w-3 [&>span]:data-[state=checked]:translate-x-3"
                             aria-label="Toggle citations"
                           />
                         </div>
@@ -19095,7 +19184,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             checked={showCitationPreviewBar}
                             onClick={(e) => e.stopPropagation()}
                             onCheckedChange={(checked) => setShowCitationPreviewBar(checked)}
-                            className="h-4 w-7 border border-black/[0.08] bg-[#e5e7eb] shadow-none data-[state=checked]:bg-[#111827] data-[state=unchecked]:bg-[#e5e7eb] [&>span]:h-3 [&>span]:w-3 [&>span]:data-[state=checked]:translate-x-3"
+                            className="h-4 w-7 border border-black/[0.08] bg-[#e5e7eb] shadow-none data-[state=checked]:bg-[#6b7280] data-[state=unchecked]:bg-[#e5e7eb] [&>span]:h-3 [&>span]:w-3 [&>span]:data-[state=checked]:translate-x-3"
                             aria-label="Toggle citation preview"
                           />
                         </div>
@@ -19108,7 +19197,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             checked={showBlueCitationHighlight}
                             onClick={(e) => e.stopPropagation()}
                             onCheckedChange={(checked) => setShowBlueCitationHighlight(checked)}
-                            className="h-4 w-7 border border-black/[0.08] bg-[#e5e7eb] shadow-none data-[state=checked]:bg-[#111827] data-[state=unchecked]:bg-[#e5e7eb] [&>span]:h-3 [&>span]:w-3 [&>span]:data-[state=checked]:translate-x-3"
+                            className="h-4 w-7 border border-black/[0.08] bg-[#e5e7eb] shadow-none data-[state=checked]:bg-[#6b7280] data-[state=unchecked]:bg-[#e5e7eb] [&>span]:h-3 [&>span]:w-3 [&>span]:data-[state=checked]:translate-x-3"
                             aria-label="Toggle citation highlight"
                           />
                         </div>
@@ -19237,7 +19326,14 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   backgroundColor: 'rgba(255, 255, 255, 0.92)',
                 }}
               >
-                <img src={openFindIcon} alt="OpenFind" fetchPriority="high" style={{ height: 'clamp(0.625rem, 1.2vw, 0.875rem)', opacity: 0.82 }} aria-hidden />
+                <img
+                  src={openFindIcon}
+                  alt="OpenFind"
+                  // @ts-expect-error - use lowercase fetchpriority per React DOM warning; types use fetchPriority
+                  fetchpriority="high"
+                  style={{ height: 'clamp(0.625rem, 1.2vw, 0.875rem)', opacity: 0.82 }}
+                  aria-hidden
+                />
                 <span className="text-[13px] font-medium text-inherit text-left whitespace-nowrap tracking-[-0.01em]">Agents</span>
               </button>
             )}
@@ -19770,9 +19866,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             // If focus is moving FROM the citation callout bar to the task panel, put focus back on the citation input so typing isn't disrupted
                             if (isCitationCalloutElement(e.relatedTarget)) {
                               const prev = e.relatedTarget as HTMLElement;
-                              const input = prev.id === 'citation-callout-ask-input' || prev.id === 'citation-callout-ask-input-no-preview'
+                              const input = prev.hasAttribute?.('data-citation-callout-input')
                                 ? (prev as HTMLInputElement)
-                                : prev.closest?.('[data-citation-callout-bar]')?.querySelector?.<HTMLInputElement>('#citation-callout-ask-input, #citation-callout-ask-input-no-preview');
+                                : prev.closest?.('[data-citation-callout-bar]')?.querySelector?.<HTMLInputElement>('[data-citation-callout-input]');
                               if (input) {
                                 requestAnimationFrame(() => input.focus({ preventScroll: true }));
                               }
@@ -19781,7 +19877,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             // Redirect focus back to main chat input — agent tasks must not steal typing focus
                             inputRef.current?.focus?.({ preventScroll: true });
                           }}
-                          style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginTop: 4, outline: 'none' }}
+                          style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginTop: 4, outline: 'none', width: '100%' }}
                         >
                           <AgentTaskPanel tasks={agentTasks} onInjectResult={injectResultToChat} onCancel={cancelAgentTask} onRetry={retryAgentTask} renderCitation={renderAgentTaskCitation} />
                         </div>

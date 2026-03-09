@@ -474,7 +474,8 @@ export const RecentDocumentCard: React.FC<RecentDocumentCardProps> = React.memo(
                 className="h-full w-full object-cover object-top transition-transform duration-300 ease-out group-hover:scale-[1.015]"
                 decoding="async"
                 loading={priority ? "eager" : "lazy"}
-                fetchPriority={priority ? "high" : "auto"}
+                // @ts-expect-error - use lowercase fetchpriority per React DOM warning; types use fetchPriority
+                fetchpriority={priority ? "high" : "auto"}
               />
             ) : (
               <div className="flex h-full flex-col justify-between p-3">

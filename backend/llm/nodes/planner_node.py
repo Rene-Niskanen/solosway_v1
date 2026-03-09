@@ -254,7 +254,7 @@ def _rephrase_query_to_finding(user_query: str) -> str:
     """Rephrase user query as 'Finding the [X] of [Y]' for the planning step (e.g. 'Find me the EPC of highlands' -> 'Finding the EPC rating of highlands')."""
     q = (user_query or "").strip()
     if not q:
-        return "Planning next moves"
+        return "Thinking"
     q_lower = q.lower()
     # Strip common lead-in phrases to get the thing they're asking for
     for lead in ("find me the ", "get me the ", "what is the ", "what's the ", "show me the ", "tell me the ", "give me the "):
@@ -280,7 +280,7 @@ def _rephrase_query_to_finding(user_query: str) -> str:
         part = part.strip().capitalize() if part else "information"
         name = name.strip().title() if name else ""
         return f"Finding the {part} for {name}" if name else f"Finding the {part}"
-    return f"Finding the {display_rest.strip().capitalize()}" if display_rest else "Planning next moves"
+    return f"Finding the {display_rest.strip().capitalize()}" if display_rest else "Thinking"
 
 
 def _log_rewrite_if_applied(execution_plan: dict, user_query: str) -> None:

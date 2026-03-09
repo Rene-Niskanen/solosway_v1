@@ -23,7 +23,9 @@ from .tasks import process_document_task, process_document_fast_task, process_do
 from sqlalchemy import text, cast, String
 from sqlalchemy.exc import OperationalError, ProgrammingError, DatabaseError
 import json
+import tempfile
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 from uuid import UUID
 # Citations are now stored directly in graph state with bbox coordinates - no processing needed
 # SessionManager for LangGraph checkpointer thread_id management
@@ -272,6 +274,25 @@ STREAM_CHUNK_SIZE = int(os.environ.get("STREAM_CHUNK_SIZE", "36"))
 def _perf_ms(start: float, end: float) -> int:
     """Return elapsed milliseconds as int (clamped >= 0)."""
     return max(0, int(round((end - start) * 1000)))
+
+
+def _log_perf_phase(timing: "_Timing", phase: str, request_id: str = "", session_id: str = "") -> None:
+    """Log [PERF] phase with elapsed_ms from t0 for grep-able diagnosis."""
+    try:
+        from flask import g
+        req_id = request_id or getattr(g, "request_id", "") if g else ""
+    except Exception:
+        req_id = request_id or ""
+    t0 = timing.marks.get("t0", timing._t0) if hasattr(timing, "marks") else timing._t0
+    elapsed = _perf_ms(t0, time.perf_counter())
+    logger.info(
+        "[PERF] request_id=%s phase=%s elapsed_ms=%d%s",
+        req_id or "-",
+        phase,
+        elapsed,
+        f" session_id={session_id}" if session_id else "",
+    )
+
 
 class _Timing:
     """Tiny timing utility for per-request performance logs."""
@@ -1032,12 +1053,12 @@ def query_documents_stream():
             
             try:
                 logger.info("🟢 [STREAM] Building initial state...")
+                supabase = get_supabase_client()
                 # Get document_id from property_id if provided
                 document_id = None
                 if property_id:
                     try:
                         logger.info(f"🟢 [STREAM] Looking for document for property {property_id}")
-                        supabase = get_supabase_client()
                         result = supabase.table('document_relationships')\
                             .select('document_id')\
                             .eq('property_id', property_id)\
@@ -1281,7 +1302,7 @@ def query_documents_stream():
                         return f"Finding the {target_str} of {name_str}"
                     if target_str:
                         return f"Finding the {target_str}"
-                    return "Planning next moves"
+                    return "Thinking"
                 
                 def detect_action_intent(q: str) -> dict:
                     """
@@ -1377,16 +1398,31 @@ def query_documents_stream():
                     
                     timing.mark("intent_extracted")
                 
-                # Step (1): Planning next moves (all queries including citation - immediate feedback)
+                # Step (1): Thinking (all queries including citation - immediate feedback)
                 initial_reasoning = {
                     'type': 'reasoning_step',
                     'step': 'planning_next_moves',
                     'action_type': 'planning',
-                    'message': 'Planning next moves',
+                    'message': 'Thinking',
                     'details': {}
                 }
                 yield f"data: {json.dumps(initial_reasoning)}\n\n"
-                logger.debug("🟡 [REASONING] Emitted step (1): Planning next moves")
+                logger.debug("🟡 [REASONING] Emitted step (1): Thinking")
+                
+                # Step (2): Intent-based step for real-time feedback (e.g. "Finding the EPC rating of Highlands")
+                # Shown immediately while checkpointer/graph/classifier load - no I/O, pure heuristic
+                intent_msg = extract_query_intent(query)
+                if intent_msg and intent_msg != "Thinking":
+                    intent_step = {
+                        'type': 'reasoning_step',
+                        'step': 'preparing_search',
+                        'action_type': 'exploring',
+                        'message': intent_msg,
+                        'details': {},
+                        'timestamp': time.time()
+                    }
+                    yield f"data: {json.dumps(intent_step)}\n\n"
+                    logger.debug("🟡 [REASONING] Emitted step (2): %s", intent_msg)
                 
                 # Detect if user wants agent to perform UI actions (show me, save, navigate)
                 action_intent = detect_action_intent(query)
@@ -1428,7 +1464,9 @@ def query_documents_stream():
                             message_reading = f"Read {first_name}" if first_name else "Reading selected documents..."
                             yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'reading_documents', 'action_type': 'reading', 'message': message_reading, 'details': details_reading, 'timestamp': time.time()})}\n\n"
                         else:
-                            yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'preparing', 'action_type': 'planning', 'message': 'Preparing...', 'details': {}, 'timestamp': time.time()})}\n\n"
+                            # Non-citation: intent step already emitted from sync; emit fallback only when intent was generic
+                            if not intent_msg or intent_msg == "Thinking":
+                                yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'preparing', 'action_type': 'exploring', 'message': 'Preparing search', 'details': {}, 'timestamp': time.time()})}\n\n"
                         
                         # Use runner's graph/checkpointer when provided; otherwise create for current event loop.
                         if runner_graph is not None and runner_checkpointer is not None:
@@ -1437,6 +1475,8 @@ def query_documents_stream():
                             timing.mark("graph_built")
                             logger.info("🟡 [STREAM] Using GraphRunner graph and checkpointer (reuse)")
                         else:
+                            # About to create checkpointer/graph - can take 5-15s; give user feedback
+                            yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'loading_session', 'action_type': 'exploring', 'message': 'Loading session', 'details': {}, 'timestamp': time.time()})}\n\n"
                             # Create a new checkpointer and graph for current event loop.
                             # This avoids "Lock bound to different event loop" errors.
                             # All checkpointers use the same database, so conversation_history is still shared.
@@ -1480,9 +1520,11 @@ def query_documents_stream():
                                 graph, _ = await build_main_graph(use_checkpointer=True, checkpointer_instance=checkpointer)
                             else:
                                 graph, _ = await build_main_graph(use_checkpointer=False)
-                            timing.mark("graph_built")
-                            logger.info("🟡 [STREAM] Using per-request graph and checkpointer")
+                                timing.mark("graph_built")
+                            logger.info("🟡 [STREAM] Using per-request graph (GraphRunner busy or unavailable)")
                         
+                        timing.mark("graph_ready")
+                        _log_perf_phase(timing, "graph_ready", session_id=session_id)
                         # Build config with metadata for LangSmith tracing
                         # Use user_id from initial_state (already captured before async context)
                         user_id_from_state = initial_state.get("user_id", "anonymous")
@@ -1511,6 +1553,8 @@ def query_documents_stream():
                             if not is_new_chat and checkpointer:
                                 try:
                                     existing_state = await asyncio.wait_for(graph.aget_state(config_dict), timeout=8)
+                                    timing.mark("checkpoint_loaded")
+                                    _log_perf_phase(timing, "checkpoint_loaded", session_id=session_id)
                                 except asyncio.TimeoutError:
                                     logger.warning("🟡 [STREAM] aget_state timed out (8s), treating as new session")
                                     existing_state = None
@@ -1559,7 +1603,7 @@ def query_documents_stream():
                                             execution_results=cached_results,
                                             has_attachment=bool(attachment_context and isinstance(attachment_context, dict) and attachment_context.get("texts")),
                                         ),
-                                        timeout=15.0,
+                                        timeout=2.5,
                                     )
                                     logger.warning("🟡 [FOLLOW_UP_ROUTING] classification=%s for query='%s'", classification, query[:80])
                                     if classification == "same_doc_follow_up":
@@ -1795,7 +1839,7 @@ def query_documents_stream():
                                         elif label_stripped == 'Read':
                                             yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'read_done', 'action_type': 'reading', 'message': 'Read', 'timestamp': time.time(), 'details': {'status': 'read'}})}\n\n"
                                         elif label_stripped == 'Thinking':
-                                            yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'thinking_note', 'action_type': 'thinking', 'message': 'Thinking', 'timestamp': time.time(), 'details': {}})}\n\n"
+                                            yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'thinking_note', 'action_type': 'thinking', 'message': 'Planning next moves', 'timestamp': time.time(), 'details': {}})}\n\n"
                                         elif label_stripped == 'Making a note for the curated piece':
                                             detail = (payload.get('metadata') or {}).get('detail', '') or ''
                                             yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'making_note', 'action_type': 'making_note', 'message': 'Making a note', 'timestamp': time.time(), 'details': {'note_content': detail}})}\n\n"
@@ -1814,6 +1858,9 @@ def query_documents_stream():
                                 if event_type == "on_chain_start":
                                     node_timings[node_name] = time.perf_counter()
                                     timing.mark(f"node_{node_name}_start")
+                                    if node_name == "responder":
+                                        timing.mark("responder_started")
+                                        _log_perf_phase(timing, "responder_started", session_id=session_id)
                                 
                                 # Capture node start events for reasoning steps - EMIT IMMEDIATELY
                                 # Only emit steps for phases that are actually happening (searching, reading, etc.)
@@ -1891,6 +1938,12 @@ def query_documents_stream():
                                     if node_name in node_timings:
                                         node_duration = time.perf_counter() - node_timings[node_name]
                                         timing.mark(f"node_{node_name}_end")
+                                        if node_name == "agent_loop":
+                                            timing.mark("retrieval_done")
+                                            _log_perf_phase(timing, "retrieval_done", session_id=session_id)
+                                        elif node_name == "responder":
+                                            timing.mark("responder_done")
+                                            _log_perf_phase(timing, "responder_done", session_id=session_id)
                                         # Log slow nodes (>1s) for performance analysis
                                         if node_duration > 1.0:
                                             logger.info(f"⏱️ [PERF] Node '{node_name}' took {node_duration:.2f}s")
@@ -2050,12 +2103,12 @@ def query_documents_stream():
                                                     }
                                                     yield f"data: {json.dumps(reading_data)}\n\n"
                                                 logger.debug(f"🟡 [REASONING] Emitted executor found_documents + {len(doc_previews)} reading steps ({doc_count} docs we read)")
-                                                # After chunk retrieval: emit "Thinking" step that replaces the Analysing + documents block in the UI
+                                                # After chunk retrieval: emit "Planning next moves" step that replaces the Analysing + documents block in the UI
                                                 thinking_after_chunks_data = {
                                                     'type': 'reasoning_step',
                                                     'step': 'thinking_after_chunks',
                                                     'action_type': 'analysing',
-                                                    'message': 'Thinking',
+                                                    'message': 'Planning next moves',
                                                     'timestamp': time.time(),
                                                     'details': {'replaces_analysing': True}
                                                 }
@@ -2812,10 +2865,10 @@ def query_documents_stream():
                             try:
                                 from backend.llm.config import config as llm_config
                                 if getattr(llm_config, "mem0_enabled", False):
-                                    from backend.services.memory_service import velora_memory
+                                    from backend.services.memory_service import openfind_memory
                                     user_id_for_mem = initial_state.get("user_id", "anonymous")
                                     asyncio.create_task(
-                                        velora_memory.add(
+                                        openfind_memory.add(
                                             messages=[
                                                 {"role": "user", "content": query},
                                                 {"role": "assistant", "content": full_summary},
@@ -3587,6 +3640,9 @@ def query_documents_stream():
                     use_runner = False
                     logger.debug("🟠 [STREAM] Not using GraphRunner: %s", e)
                 
+                if not use_runner:
+                    logger.info("🟠 [STREAM] Using per-request graph (GraphRunner busy or unavailable)")
+                
                 def run_async_gen():
                     """Run the async generator in a separate thread with its own event loop"""
                     try:
@@ -3901,13 +3957,32 @@ def agent_task_stream():
             final_summary = final_state.get('final_summary', '')
             citations_raw = final_state.get('citations', [])
 
+            # Use same citation data shape as normal document retrieval stream (responder path)
             citations_for_sse = {}
             for cit in citations_raw:
                 if isinstance(cit, dict):
                     num = str(cit.get('citation_number', ''))
                     if num:
-                        citations_for_sse[num] = cit
-                        yield f"data: {json.dumps({'type': 'citation', 'citation_number': num, 'data': cit})}\n\n"
+                        citation_bbox = cit.get('bbox')
+                        citation_page = cit.get('page_number', 0)
+                        if citation_bbox and isinstance(citation_bbox, dict):
+                            citation_bbox = citation_bbox.copy()
+                            citation_bbox['page'] = citation_bbox.get('page', citation_page)
+                        citation_data = {
+                            'doc_id': cit.get('doc_id', ''),
+                            'document_id': cit.get('doc_id', ''),
+                            'page': citation_page,
+                            'bbox': citation_bbox,
+                            'method': cit.get('method', 'chunk-id-lookup'),
+                            'block_id': cit.get('block_id'),
+                            'cited_text': cit.get('cited_text', ''),
+                            'original_filename': cit.get('original_filename', '')
+                        }
+                        citations_for_sse[num] = citation_data
+                        yield f"data: {json.dumps({'type': 'citation', 'citation_number': num, 'data': citation_data})}\n\n"
+
+            # Apply same text normalization as normal stream (e.g. [ID: X] → [X])
+            final_summary = _normalize_citation_text_for_display(final_summary or "")
 
             yield f"data: {json.dumps({'type': 'complete', 'data': {'summary': final_summary, 'citations': citations_for_sse}})}\n\n"
 
@@ -4629,11 +4704,11 @@ def query_documents():
             try:
                 from backend.llm.config import config as llm_config
                 if getattr(llm_config, "mem0_enabled", False):
-                    from backend.services.memory_service import velora_memory
+                    from backend.services.memory_service import openfind_memory
                     _ns_user_id = str(current_user.id) if current_user.is_authenticated else "anonymous"
                     import asyncio as _aio
                     _aio.run(
-                        velora_memory.add(
+                        openfind_memory.add(
                             messages=[
                                 {"role": "user", "content": query},
                                 {"role": "assistant", "content": final_summary},
@@ -5259,6 +5334,44 @@ def get_presigned_url():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+
+def _build_document_summary_from_parse(parse_result):
+    """
+    Build document_summary dict from Reducto parse result for pre-parse at upload time.
+    Chunks are normalized to the format expected by classification/extraction tasks.
+    """
+    if not parse_result or not parse_result.get('chunks'):
+        return None
+    chunks = parse_result.get('chunks', [])
+    chunks_data = []
+    for ch in chunks:
+        if isinstance(ch, dict):
+            chunks_data.append({
+                'content': ch.get('content', ''),
+                'embed': ch.get('embed', ''),
+                'enriched': ch.get('enriched'),
+                'bbox': ch.get('bbox'),
+                'blocks': ch.get('blocks', [])
+            })
+        else:
+            chunks_data.append({
+                'content': getattr(ch, 'content', '') or '',
+                'embed': getattr(ch, 'embed', '') or '',
+                'enriched': getattr(ch, 'enriched', None),
+                'bbox': getattr(ch, 'bbox', None),
+                'blocks': getattr(ch, 'blocks', []) or []
+            })
+    return {
+        'reducto_job_id': parse_result.get('job_id'),
+        'reducto_parsed_text': parse_result.get('document_text', ''),
+        'reducto_chunks': chunks_data,
+        'reducto_chunk_count': len(chunks_data),
+        'reducto_image_urls': parse_result.get('image_urls', []),
+        'reducto_image_blocks_metadata': parse_result.get('image_blocks_metadata', []),
+        'reducto_parse_timestamp': datetime.utcnow().isoformat(),
+    }
+
+
 @views.route('/api/documents/proxy-upload', methods=['POST', 'OPTIONS'])
 @login_required
 def proxy_upload():
@@ -5334,74 +5447,139 @@ def proxy_upload():
         
         s3_key = f"{current_user.company_name}/{uuid.uuid4()}/{filename}"
         
-        # Upload to S3 FIRST (before creating database record)
+        # Get property_id and extraction_mode early
+        property_id_raw = request.form.get('property_id')
+        extraction_mode = (request.form.get('extraction_mode') or 'standard').strip().lower()
+        if extraction_mode not in ('standard', 'deep'):
+            extraction_mode = 'standard'
+        logger.info(f"📤 [PROXY-UPLOAD] Raw property_id from form: {property_id_raw} (type: {type(property_id_raw).__name__})")
+        property_id = None
+        if property_id_raw:
+            property_id_raw = property_id_raw.strip()
+            if property_id_raw.lower() not in ['null', 'none', '']:
+                try:
+                    UUID(property_id_raw)
+                    property_id = property_id_raw
+                except (ValueError, TypeError):
+                    logger.warning(f"Invalid property_id format: {property_id_raw}, treating as None")
+                    property_id = None
+
+        # Read file content once
+        file.seek(0)
+        file_content = file.read()
+
+        s3_client = boto3.client(
+            's3',
+            aws_access_key_id=os.environ['AWS_ACCESS_KEY_ID'],
+            aws_secret_access_key=os.environ['AWS_SECRET_ACCESS_KEY'],
+            region_name=os.environ.get('AWS_DEFAULT_REGION', 'us-east-1')
+        )
+
+        document_summary = None
+        temp_file_path = None
+
         try:
-            s3_client = boto3.client(
-                's3',
-                aws_access_key_id=os.environ['AWS_ACCESS_KEY_ID'],
-                aws_secret_access_key=os.environ['AWS_SECRET_ACCESS_KEY'],
-                region_name=os.environ.get('AWS_DEFAULT_REGION', 'us-east-1')
-            )
-            
-            # Read file content once (will be reused for fast processing task)
-            file.seek(0)  # Reset file pointer
-            file_content = file.read()
-            
-            # Upload file to S3
-            s3_client.put_object(
-                Bucket=os.environ['S3_UPLOAD_BUCKET'],
-                Key=s3_key,
-                Body=file_content,
-                ContentType=file.content_type
-            )
-            
-            
-        except Exception as e:
-            logger.error(f"Failed to upload to S3: {e}")
-            return jsonify({'error': f'Failed to upload to S3: {str(e)}'}), 500
-        
+            if property_id:
+                # Parallel: S3 upload + Reducto parse (fast pipeline)
+                logger.info(f"📤 [PROXY-UPLOAD] Running S3 upload and Reducto parse in parallel...")
+                file_ext = os.path.splitext(filename)[1] or '.pdf'
+                temp_file = tempfile.NamedTemporaryFile(suffix=file_ext, delete=False)
+                temp_file.write(file_content)
+                temp_file.close()
+                temp_file_path = temp_file.name
+
+                s3_error = None
+                parse_result = None
+                parse_error = None
+
+                def do_s3_upload():
+                    try:
+                        s3_client.put_object(
+                            Bucket=os.environ['S3_UPLOAD_BUCKET'],
+                            Key=s3_key,
+                            Body=file_content,
+                            ContentType=file.content_type
+                        )
+                        return None
+                    except Exception as e:
+                        return e
+
+                def do_reducto_parse():
+                    try:
+                        from .services.reducto_service import ReductoService
+                        reducto = ReductoService()
+                        if extraction_mode == 'deep':
+                            return reducto.parse_document(
+                                file_path=temp_file_path,
+                                return_images=["figure", "table"],
+                                use_async=True,
+                                use_agentic=False
+                            )
+                        return reducto.parse_document_fast(temp_file_path)
+                    except Exception as e:
+                        return e
+
+                PARSE_TIMEOUT_SEC = 60  # Avoid blocking upload; worker fallback if parse is slow
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    future_s3 = executor.submit(do_s3_upload)
+                    future_parse = executor.submit(do_reducto_parse)
+                    s3_error = future_s3.result()
+                    try:
+                        parse_result = future_parse.result(timeout=PARSE_TIMEOUT_SEC)
+                    except Exception as to_err:
+                        parse_result = to_err
+                        logger.warning(f"📤 [PROXY-UPLOAD] Pre-parse timed out or failed (worker will fallback): {to_err}")
+
+                if s3_error:
+                    logger.error(f"Failed to upload to S3: {s3_error}")
+                    return jsonify({'error': f'Failed to upload to S3: {str(s3_error)}'}), 500
+
+                if isinstance(parse_result, dict) and parse_result.get('chunks'):
+                    document_summary = _build_document_summary_from_parse(parse_result)
+                    document_summary['extraction_mode'] = extraction_mode
+                    logger.info(f"📤 [PROXY-UPLOAD] Pre-parse succeeded: {document_summary['reducto_chunk_count']} chunks (extraction_mode={extraction_mode})")
+                else:
+                    parse_error = parse_result if isinstance(parse_result, Exception) else None
+                    logger.warning(f"📤 [PROXY-UPLOAD] Pre-parse failed (worker will fallback): {parse_error}")
+            else:
+                # No property_id: just S3 upload (no processing triggered)
+                s3_client.put_object(
+                    Bucket=os.environ['S3_UPLOAD_BUCKET'],
+                    Key=s3_key,
+                    Body=file_content,
+                    ContentType=file.content_type
+                )
+        finally:
+            if temp_file_path and os.path.exists(temp_file_path):
+                try:
+                    os.unlink(temp_file_path)
+                except Exception:
+                    pass
+
         # Create document record in Supabase ONLY (skip local PostgreSQL to avoid enum issues)
         try:
             from .services.document_storage_service import DocumentStorageService
             
-            # Get property_id from form data if provided
-            property_id_raw = request.form.get('property_id')
-            logger.info(f"📤 [PROXY-UPLOAD] Raw property_id from form: {property_id_raw} (type: {type(property_id_raw).__name__})")
-            property_id = None
-            
-            # Normalize property_id: handle "null", "", None, or invalid UUIDs
-            if property_id_raw:
-                property_id_raw = property_id_raw.strip()
-                # Check if it's the string "null", "none", or empty
-                if property_id_raw.lower() in ['null', 'none', '']:
-                    property_id = None
-                else:
-                    # Try to validate it's a valid UUID
-                    try:
-                        UUID(property_id_raw)  # Validate UUID format
-                        property_id = property_id_raw
-                    except (ValueError, TypeError):
-                        # Invalid UUID format - treat as None
-                        logger.warning(f"Invalid property_id format: {property_id_raw}, treating as None")
-                        property_id = None
-            
-            # Generate document ID (uuid already imported at top of file)
             document_id = str(uuid.uuid4())
-            
-            # Create document directly in Supabase
-            doc_storage = DocumentStorageService()
-            success, doc_id, error = doc_storage.create_document({
+            create_payload = {
                 'id': document_id,
                 'original_filename': filename,
                 's3_path': s3_key,
                 'file_type': file.content_type,
                 'file_size': file.content_length or 0,
                 'uploaded_by_user_id': str(current_user.id),
-                'business_id': current_user.company_name,  # Supabase documents.business_id is varchar
-                'business_uuid': business_uuid_str,  # Also store as UUID type
+                'business_id': current_user.company_name,
+                'business_uuid': business_uuid_str,
                 'status': 'uploaded',
-                'property_id': property_id  # Already normalized to None or valid UUID string
-            })
+                'property_id': property_id
+            }
+            if document_summary:
+                create_payload['document_summary'] = document_summary
+            else:
+                create_payload['document_summary'] = {'extraction_mode': extraction_mode}
+            
+            doc_storage = DocumentStorageService()
+            success, doc_id, error = doc_storage.create_document(create_payload)
             
             if not success:
                 logger.error(f"Failed to create document in Supabase: {error}")
@@ -5885,52 +6063,111 @@ def upload_document():
         
         s3_key = f"{current_user.company_name}/{uuid.uuid4()}/{filename}"
         
-        # Upload to S3 FIRST (before creating database record)
+        extraction_mode = (request.form.get('extraction_mode') or 'standard').strip().lower()
+        if extraction_mode not in ('standard', 'deep'):
+            extraction_mode = 'standard'
+        
+        file.seek(0)
+        file_content = file.read()
+
+        s3_client = boto3.client(
+            's3',
+            aws_access_key_id=os.environ['AWS_ACCESS_KEY_ID'],
+            aws_secret_access_key=os.environ['AWS_SECRET_ACCESS_KEY'],
+            region_name=os.environ.get('AWS_DEFAULT_REGION', 'us-east-1')
+        )
+
+        # Parallel: S3 upload + Reducto parse (full pipeline)
+        logger.info(f"📤 [UPLOAD] Running S3 upload and Reducto parse in parallel...")
+        document_summary = None
+        temp_file_path = None
+
         try:
-            s3_client = boto3.client(
-                's3',
-                aws_access_key_id=os.environ['AWS_ACCESS_KEY_ID'],
-                aws_secret_access_key=os.environ['AWS_SECRET_ACCESS_KEY'],
-                region_name=os.environ.get('AWS_DEFAULT_REGION', 'us-east-1')
-            )
-            
-            # Read file content once (will be reused for full processing task)
-            file.seek(0)  # Reset file pointer
-            file_content = file.read()
-            
-            # Upload file to S3
-            s3_client.put_object(
-                Bucket=os.environ['S3_UPLOAD_BUCKET'],
-                Key=s3_key,
-                Body=file_content,
-                ContentType=file.content_type
-            )
-            
-        except Exception as e:
-            logger.error(f"Failed to upload to S3: {e}")
-            return jsonify({'error': f'Failed to upload to S3: {str(e)}'}), 500
+            file_ext = os.path.splitext(filename)[1] or '.pdf'
+            temp_file = tempfile.NamedTemporaryFile(suffix=file_ext, delete=False)
+            temp_file.write(file_content)
+            temp_file.close()
+            temp_file_path = temp_file.name
+
+            def do_s3_upload():
+                try:
+                    s3_client.put_object(
+                        Bucket=os.environ['S3_UPLOAD_BUCKET'],
+                        Key=s3_key,
+                        Body=file_content,
+                        ContentType=file.content_type
+                    )
+                    return None
+                except Exception as e:
+                    return e
+
+            def do_reducto_parse():
+                try:
+                    from .services.reducto_service import ReductoService
+                    reducto = ReductoService()
+                    if extraction_mode == 'deep':
+                        return reducto.parse_document(
+                            file_path=temp_file_path,
+                            return_images=["figure", "table"],
+                            use_async=True,
+                            use_agentic=False
+                        )
+                    return reducto.parse_document_fast(temp_file_path)
+                except Exception as e:
+                    return e
+
+            PARSE_TIMEOUT_SEC = 60  # Avoid blocking upload; worker fallback if parse is slow
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                future_s3 = executor.submit(do_s3_upload)
+                future_parse = executor.submit(do_reducto_parse)
+                s3_error = future_s3.result()
+                try:
+                    parse_result = future_parse.result(timeout=PARSE_TIMEOUT_SEC)
+                except Exception as to_err:
+                    parse_result = to_err
+                    logger.warning(f"📤 [UPLOAD] Pre-parse timed out or failed (worker will fallback): {to_err}")
+
+            if s3_error:
+                logger.error(f"Failed to upload to S3: {s3_error}")
+                return jsonify({'error': f'Failed to upload to S3: {str(s3_error)}'}), 500
+
+            if isinstance(parse_result, dict) and parse_result.get('chunks'):
+                document_summary = _build_document_summary_from_parse(parse_result)
+                document_summary['extraction_mode'] = extraction_mode
+                logger.info(f"📤 [UPLOAD] Pre-parse succeeded: {document_summary['reducto_chunk_count']} chunks (extraction_mode={extraction_mode})")
+            else:
+                document_summary = {'extraction_mode': extraction_mode}
+                logger.warning(f"📤 [UPLOAD] Pre-parse failed (worker will fallback)")
+        finally:
+            if temp_file_path and os.path.exists(temp_file_path):
+                try:
+                    os.unlink(temp_file_path)
+                except Exception:
+                    pass
         
         # Create document record in Supabase
         try:
             from .services.document_storage_service import DocumentStorageService
             
-            # Generate document ID
             document_id = str(uuid.uuid4())
-            
-            # Create document directly in Supabase (NO property_id for general uploads)
-            doc_storage = DocumentStorageService()
-            success, doc_id, error = doc_storage.create_document({
+            create_payload = {
                 'id': document_id,
                 'original_filename': filename,
                 's3_path': s3_key,
                 'file_type': file.content_type,
                 'file_size': file.content_length or 0,
                 'uploaded_by_user_id': str(current_user.id),
-                'business_id': current_user.company_name,  # Supabase documents.business_id is varchar
-                'business_uuid': business_uuid_str,  # Also store as UUID type
+                'business_id': current_user.company_name,
+                'business_uuid': business_uuid_str,
                 'status': 'uploaded',
-                'property_id': None  # General uploads are not linked to properties initially
-            })
+                'property_id': None
+            }
+            if document_summary:
+                create_payload['document_summary'] = document_summary
+                create_payload['parsed_text'] = document_summary.get('reducto_parsed_text', '')
+            
+            doc_storage = DocumentStorageService()
+            success, doc_id, error = doc_storage.create_document(create_payload)
             
             if not success:
                 logger.error(f"Failed to create document in Supabase: {error}")

@@ -1621,7 +1621,8 @@ class BackendApiService {
    */
   async uploadDocument(
     file: File,
-    onProgress?: (percent: number) => void
+    onProgress?: (percent: number) => void,
+    options?: { extractionMode?: 'standard' | 'deep'; signal?: AbortSignal }
   ) {
     return new Promise<{ success: boolean; data?: any; error?: string }>((resolve) => {
     try {
@@ -1630,6 +1631,9 @@ class BackendApiService {
       
       const formData = new FormData();
       formData.append('file', file);
+      if (options?.extractionMode) {
+        formData.append('extraction_mode', options.extractionMode);
+      }
       // NO metadata - general uploads don't have property_id
 
         const xhr = new XMLHttpRequest();
@@ -1746,6 +1750,18 @@ class BackendApiService {
             error: 'Upload was aborted'
           });
         };
+
+        // Listen for abort signal
+        const signal = options?.signal;
+        if (signal) {
+          if (signal.aborted) {
+            xhr.abort();
+            return;
+          }
+          signal.addEventListener('abort', () => {
+            xhr.abort();
+          }, { once: true });
+        }
 
         // Set up request to include credentials (matching fetchApi behavior)
         xhr.withCredentials = true;
@@ -1874,10 +1890,11 @@ class BackendApiService {
    */
   async uploadPropertyDocumentViaProxy(
     file: File, 
-    metadata?: any,
+    metadata?: any & { signal?: AbortSignal },
     onProgress?: (percent: number) => void
   ) {
     const isSilent = metadata?.silent === true;
+    const signal = metadata?.signal;
     
     return new Promise<{ success: boolean; data?: any; error?: string }>((resolve) => {
     try {
@@ -1895,8 +1912,8 @@ class BackendApiService {
       
       if (metadata) {
         Object.keys(metadata).forEach(key => {
-          // Don't pass 'silent' to the backend - it's frontend-only
-          if (key !== 'silent') {
+          // Don't pass 'silent' or 'signal' to the backend - frontend-only
+          if (key !== 'silent' && key !== 'signal') {
             formData.append(key, metadata[key]);
           }
         });
@@ -2068,6 +2085,17 @@ class BackendApiService {
             error: 'Upload was aborted'
           });
         };
+
+        // Listen for abort signal
+        if (signal) {
+          if (signal.aborted) {
+            xhr.abort();
+            return;
+          }
+          signal.addEventListener('abort', () => {
+            xhr.abort();
+          }, { once: true });
+        }
 
         // Set up request to include credentials (matching fetchApi behavior)
         xhr.withCredentials = true;

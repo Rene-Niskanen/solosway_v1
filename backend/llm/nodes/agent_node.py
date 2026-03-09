@@ -147,9 +147,20 @@ def extract_chunk_citations_from_messages(messages: list) -> list:
                         # Fetch original_filename from database
                         original_filename = get_document_filename(doc_id)
                         
+                        # Use LLM-provided citation_number when present; otherwise sequential (backward compat)
+                        raw_num = content.get('citation_number')
+                        if raw_num is not None:
+                            citation_num = int(raw_num)
+                            # Handle duplicates: if number already used, assign next sequential
+                            used = {c.get('citation_number') for c in citations}
+                            if citation_num in used:
+                                citation_num = len(citations) + 1
+                        else:
+                            citation_num = len(citations) + 1
+                        
                         # Convert tool result to Citation format
                         citation: Citation = {
-                            'citation_number': len(citations) + 1,  # Sequential numbering
+                            'citation_number': citation_num,
                             'block_id': None,  # Not used for chunk-id-lookup
                             'chunk_id': content.get('chunk_id'),
                             'block_index': content.get('block_id'),  # Index in blocks array

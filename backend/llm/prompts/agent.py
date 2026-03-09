@@ -124,6 +124,7 @@ You: "The document related to the offer from Chandni is titled 'Letter_of_Offer_
    - For each relevant fact, IMMEDIATELY call match_citation_to_chunk:
      * chunk_id: The chunk's ID from the retrieve_chunks result
      * cited_text: The EXACT text from chunk_text (not a paraphrase)
+     * citation_number: The number you will use in your answer (1 for [1], 2 for [2], etc.)
    - Collect all citation results
    - This ensures accurate citation mapping before generating your answer
 4. Provide answer based ONLY on chunk content

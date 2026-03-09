@@ -12,13 +12,13 @@ NO_RESULTS_MESSAGE_NO_SCOPE = (
     "We couldn't find a matching result.\n\n"
     "Your current search didn't return any relevant information from the connected sources. "
     "To refine the results, please select a specific source below and try again.\n\n"
-    "Choosing a source helps Velora narrow the context and deliver more accurate answers."
+    "Choosing a source helps OpenFind narrow the context and deliver more accurate answers."
 )
 NO_RESULTS_MESSAGE_HAD_SCOPE = (
     "Nothing matched your search.\n\n"
-    "Velora couldn't find relevant information across the currently selected data. "
+    "OpenFind couldn't find relevant information across the currently selected data. "
     "To improve accuracy, choose a specific source below and run your search again.\n\n"
-    "Targeting a source helps Velora focus and return sharper results."
+    "Targeting a source helps OpenFind focus and return sharper results."
 )
 NO_RESULTS_MESSAGE_MINIMAL = (
     "No results found.\n\n"

@@ -171,6 +171,7 @@ export const AgentTaskCard: React.FC<AgentTaskCardProps> = ({ task, onInjectResu
         ...(task.status === 'complete' && isHovered ? { backgroundColor: 'rgba(22, 163, 74, 0.08)', borderColor: 'rgba(22, 163, 74, 0.25)', boxShadow: '0 1px 2px rgba(0,0,0,0.04)' } : {}),
         overflow: 'hidden',
         minWidth: 200,
+        width: '100%',
       }}
       onClick={task.status === 'complete' ? () => onInjectResult(task.id) : undefined}
     >
@@ -252,7 +253,8 @@ export const AgentTaskCard: React.FC<AgentTaskCardProps> = ({ task, onInjectResu
             <Check style={{ width: 14, height: 14, color: '#16A34A', flexShrink: 0 }} strokeWidth={2.5} />
             <span style={{
               fontSize: 12.5, fontWeight: 500, color: '#374151',
-              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, minWidth: 0,
+              flex: 1, minWidth: 0,
+              overflowWrap: 'break-word', wordBreak: 'break-word',
             }}>
               {renderCompleteText(task.resultText, task.citations ?? {}, renderCitation)}
             </span>

@@ -30,11 +30,12 @@ export const AgentTaskPanel: React.FC<AgentTaskPanelProps> = ({
     <div style={{
       display: 'flex',
       flexDirection: inline ? 'row' : 'column',
-      alignItems: inline ? 'center' : undefined,
+      alignItems: inline ? 'center' : 'stretch',
       gap: inline ? 8 : 6,
       padding: inline ? '0' : '4px 0',
       marginTop: inline ? 0 : 4,
       flexShrink: inline ? 0 : undefined,
+      width: inline ? undefined : '100%',
     }}>
       <AnimatePresence>
         {tasks.map((task, i) => (

@@ -12,6 +12,7 @@ export function Toaster() {
       {toasts.map(function ({ id, title, description, action, duration, variant, icon, ...props }) {
         const isDestructive = variant === "destructive";
         const isSuccess = variant === "success";
+        const isPlanSuccess = variant === "planSuccess";
         const isCompact = variant === "compact";
         const chipLabel =
           (typeof description === "string" ? description : null) ||
@@ -27,6 +28,11 @@ export function Toaster() {
                 {action}
                 <ToastClose />
               </>
+            ) : isPlanSuccess ? (
+              <div className="flex items-center gap-1 rounded-full border border-[#E0E0E0] bg-white px-2 py-0.5 pr-8 relative" style={{ color: "#333333" }}>
+                {description}
+                <ToastClose className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-1 text-gray-500 opacity-70 hover:opacity-100 hover:bg-gray-100 transition-opacity" />
+              </div>
             ) : isSuccess ? (
               <>
                 <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-emerald-100">{displayIcon}</span>

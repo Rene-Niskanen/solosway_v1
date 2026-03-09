@@ -2,12 +2,18 @@
 
 import * as React from "react";
 
+export type PlanModalTargetTier = "personal" | "professional" | "business";
+
 type PlanModalContextValue = {
   isOpen: boolean;
   currentPlan: string | null;
   billingCycleEnd: string | null;
-  openPlanModal: (currentPlan: string, billingCycleEnd?: string) => void;
+  /** When set, modal opens directly to the confirm step for this tier (used by DashboardUpgradeCta) */
+  targetTier: PlanModalTargetTier | null;
+  openPlanModal: (currentPlan: string, billingCycleEnd?: string, targetTier?: PlanModalTargetTier) => void;
   closePlanModal: () => void;
+  /** Called when targetTier has been consumed (modal opened to confirm) */
+  clearTargetTier: () => void;
 };
 
 const PlanModalContext = React.createContext<PlanModalContextValue | null>(null);
@@ -28,10 +34,12 @@ export const PlanModalProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const [isOpen, setIsOpen] = React.useState(false);
   const [currentPlan, setCurrentPlan] = React.useState<string | null>(null);
   const [billingCycleEnd, setBillingCycleEnd] = React.useState<string | null>(null);
+  const [targetTier, setTargetTier] = React.useState<PlanModalTargetTier | null>(null);
 
-  const openPlanModal = React.useCallback((plan: string, cycleEnd?: string) => {
+  const openPlanModal = React.useCallback((plan: string, cycleEnd?: string, tier?: PlanModalTargetTier) => {
     setCurrentPlan(plan);
     setBillingCycleEnd(cycleEnd ?? null);
+    setTargetTier(tier ?? null);
     setIsOpen(true);
   }, []);
 
@@ -39,11 +47,14 @@ export const PlanModalProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setIsOpen(false);
     setCurrentPlan(null);
     setBillingCycleEnd(null);
+    setTargetTier(null);
   }, []);
 
+  const clearTargetTier = React.useCallback(() => setTargetTier(null), []);
+
   const value: PlanModalContextValue = React.useMemo(
-    () => ({ isOpen, currentPlan, billingCycleEnd, openPlanModal, closePlanModal }),
-    [isOpen, currentPlan, billingCycleEnd, openPlanModal, closePlanModal]
+    () => ({ isOpen, currentPlan, billingCycleEnd, targetTier, openPlanModal, closePlanModal, clearTargetTier }),
+    [isOpen, currentPlan, billingCycleEnd, targetTier, openPlanModal, closePlanModal, clearTargetTier]
   );
 
   return (

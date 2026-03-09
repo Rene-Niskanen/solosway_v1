@@ -10,6 +10,7 @@ import { EnhancedEditableField } from "./EnhancedEditableField";
 import { validateEmail, validatePhone, validateName, validateTitle, validateAddress, validateOrganization } from "@/utils/profileValidation";
 import { useProfileUpdate } from "@/hooks/useProfileUpdate";
 import { validateImageFile, validateImageDimensions } from "@/utils/profileValidation";
+import { getProfilePictureSrc } from "@/utils/profilePicture";
 import { CompanyLogoUpload } from "./CompanyLogoUpload";
 import { Button } from "@/components/ui/button";
 
@@ -61,7 +62,7 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate, embeddedInSettings, initi
 
   const { projects } = useProjects();
   const currentYear = new Date().getFullYear();
-  const { updateProfile, uploadProfilePicture, uploadCompanyLogo, removeProfilePicture, removeCompanyLogo, isUpdating: isProfileUpdating } = useProfileUpdate();
+  const { updateProfile, uploadProfilePicture, uploadCompanyLogo, removeCompanyLogo, isUpdating: isProfileUpdating } = useProfileUpdate();
   const [isCompanyLogoModalOpen, setIsCompanyLogoModalOpen] = React.useState(false);
   const profileFileInputRef = React.useRef<HTMLInputElement>(null);
   const [profileImageError, setProfileImageError] = React.useState<string | null>(null);
@@ -457,10 +458,10 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate, embeddedInSettings, initi
                         >
                           <Avatar className="w-10 h-10 rounded-full border border-gray-200">
                             <AvatarImage
-                              src={(() => {
-                                const base = userData?.profile_image || userData?.avatar_url || userData?.profile_picture_url || "/default profile icon.png";
-                                return base.startsWith('http') && profilePicCacheBust ? `${base}?t=${profilePicCacheBust}` : base;
-                              })()}
+                              src={getProfilePictureSrc(
+                                userData?.profile_image || userData?.avatar_url || userData?.profile_picture_url,
+                                profilePicCacheBust
+                              )}
                               alt={getUserName()}
                               className="object-cover w-full h-full"
                             />
@@ -469,23 +470,6 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate, embeddedInSettings, initi
                             </AvatarFallback>
                           </Avatar>
                         </div>
-                        {(userData?.profile_image || userData?.avatar_url || userData?.profile_picture_url) && (
-                          <button
-                            type="button"
-                            onClick={async () => {
-                              if (window.confirm('Remove profile picture?')) {
-                                await removeProfilePicture();
-                                const cacheBust = Date.now();
-                                setUserData(prev => prev ? { ...prev, profile_image: undefined, avatar_url: undefined } : null);
-                                setProfilePicCacheBust(cacheBust);
-                                window.dispatchEvent(new CustomEvent('profilePictureUpdated', { detail: { removed: true, cacheBust } }));
-                              }
-                            }}
-                            className="text-xs text-red-600 hover:underline"
-                          >
-                            Remove photo
-                          </button>
-                        )}
                       </div>
                       <div className="flex-1 min-w-[200px]">
                         <EnhancedEditableField
@@ -629,7 +613,7 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate, embeddedInSettings, initi
                     <div style={{ position: 'relative', display: 'inline-block', marginBottom: space.xl }} className="group">
                       <div className="transition-all duration-200" style={{ boxSizing: 'border-box', display: 'inline-block', borderRadius: '50%', boxShadow: '0 2px 8px rgba(0, 0, 0, 0.08)', padding: '3px', backgroundColor: '#ffffff', border: '1px solid #e5e7eb' }} onMouseEnter={(e) => { e.currentTarget.style.boxShadow = '0 4px 16px rgba(0, 0, 0, 0.12)'; e.currentTarget.style.borderColor = '#3b82f6'; }} onMouseLeave={(e) => { e.currentTarget.style.boxShadow = '0 2px 8px rgba(0, 0, 0, 0.08)'; e.currentTarget.style.borderColor = '#e5e7eb'; }}>
                         <Avatar style={{ width: '96px', height: '96px', margin: '0 auto', borderRadius: '50%', cursor: 'pointer' }}>
-                          <AvatarImage src={(() => { const base = userData?.profile_image || userData?.avatar_url || userData?.profile_picture_url || "/default profile icon.png"; return base.startsWith('http') && profilePicCacheBust ? `${base}?t=${profilePicCacheBust}` : base; })()} alt={getUserName()} style={{ objectFit: 'cover', borderRadius: '50%' }} />
+                          <AvatarImage src={getProfilePictureSrc(userData?.profile_image || userData?.avatar_url || userData?.profile_picture_url, profilePicCacheBust)} alt={getUserName()} style={{ objectFit: 'cover', borderRadius: '50%' }} />
                           <AvatarFallback style={{ backgroundColor: '#f3f4f6', color: '#6b7280', fontSize: '28px', fontWeight: 600, borderRadius: '50%' }}>{getUserInitials()}</AvatarFallback>
                         </Avatar>
                       </div>
@@ -637,24 +621,6 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate, embeddedInSettings, initi
                         <span style={{ color: '#ffffff', fontSize: '12px', fontWeight: 500 }}>Edit</span>
                       </div>
                     </div>
-                    {(userData?.profile_image || userData?.avatar_url || userData?.profile_picture_url) && (
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          if (window.confirm('Remove profile picture?')) {
-                            await removeProfilePicture();
-                            const cacheBust = Date.now();
-                            setUserData(prev => prev ? { ...prev, profile_image: undefined, avatar_url: undefined } : null);
-                            setProfilePicCacheBust(cacheBust);
-                            window.dispatchEvent(new CustomEvent('profilePictureUpdated', { detail: { removed: true, cacheBust } }));
-                          }
-                        }}
-                        style={{ fontSize: '11px', color: '#ef4444', marginTop: '4px', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
-                        className="hover:underline"
-                      >
-                        Remove photo
-                      </button>
-                    )}
                     <div style={{ marginBottom: space.sm }}>
                       <EnhancedEditableField value={userData?.first_name || userData?.last_name ? `${userData.first_name || ''} ${userData.last_name || ''}`.trim() : ''} onSave={async (value) => { try { const parts = value.trim().split(/\s+/); const firstName = parts[0] || ''; const lastName = parts.slice(1).join(' ') || ''; if (!firstName) throw new Error('First name is required'); await updateProfile({ first_name: firstName, last_name: lastName }); setUserData(prev => prev ? { ...prev, first_name: firstName, last_name: lastName } : null); } catch (err) { console.error('Failed to save name:', err); throw err; } }} validate={(v) => { const t = v.trim(); if (!t) return { isValid: false, error: 'Name is required' }; const p = t.split(/\s+/); if (!p[0]) return { isValid: false, error: 'Please enter at least a first name' }; const r = validateName(p[0], 'First name'); if (!r.isValid) return r; if (p.length > 1 && p[1]) { const r2 = validateName(p.slice(1).join(' '), 'Last name'); if (!r2.isValid) return r2; } return { isValid: true }; }} placeholder="Enter your name" required />
                     </div>

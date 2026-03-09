@@ -11,7 +11,7 @@ interface ModelContextValue {
 
 const ModelContext = createContext<ModelContextValue | undefined>(undefined);
 
-const MODEL_STORAGE_KEY = 'velora-llm-model';
+const MODEL_STORAGE_KEY = 'openfind-llm-model';
 
 const MODEL_DISPLAY_NAMES: Record<LLMModel, string> = {
   'gpt-4o-mini': 'GPT-4o mini',

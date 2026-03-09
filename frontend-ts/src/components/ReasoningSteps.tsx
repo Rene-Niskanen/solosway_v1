@@ -529,11 +529,11 @@ const ReadingStepWithTransition: React.FC<{
   );
 };
 
-// Planning indicator - text only. Shimmer only when actively loading (no response text yet).
-const PlanningIndicator: React.FC<{ shimmer?: boolean }> = ({ shimmer = true }) => (
+// Initial step indicator - text only. Shimmer only when actively loading (no response text yet).
+const ThinkingIndicator: React.FC<{ shimmer?: boolean }> = ({ shimmer = true }) => (
   <div
     style={{
-      fontSize: '12px',
+      fontSize: '13px',
       padding: '2px 0',
       display: 'inline-flex',
       alignItems: 'flex-start',
@@ -541,9 +541,9 @@ const PlanningIndicator: React.FC<{ shimmer?: boolean }> = ({ shimmer = true }) 
     }}
   >
     {shimmer ? (
-      <span className="planning-shimmer-full">Planning next moves</span>
+      <span className="planning-shimmer-full">Thinking</span>
     ) : (
-      <span style={{ color: ACTION_COLOR, fontWeight: 500 }}>Planning next moves</span>
+      <span style={{ color: ACTION_COLOR, fontWeight: 500 }}>Thinking</span>
     )}
   </div>
 );
@@ -573,7 +573,7 @@ const StepRenderer: React.FC<{
   const actionStyle: React.CSSProperties = {
     color: actionColor,
     fontWeight: 500,
-    fontSize: '13.1px'
+    fontSize: '14px'
   };
 
   const targetStyle: React.CSSProperties = {
@@ -677,6 +677,15 @@ const StepRenderer: React.FC<{
         </span>
       );
     }
+    const findingMatch = prefix.match(/^(Finding)\s+(.+)$/i);
+    if (findingMatch) {
+      return (
+        <span>
+          <span style={actionStyle}>{findingMatch[1]}</span>
+          <span style={{ color, fontWeight: 500 }}> {findingMatch[2]}</span>
+        </span>
+      );
+    }
     return (
       <span style={actionStyle}>{ensureSingleColon(prefix)}</span>
     );
@@ -684,7 +693,7 @@ const StepRenderer: React.FC<{
 
   switch (step.action_type) {
     case 'planning':
-      // Only "Planning next moves" (planning_next_moves) is allowed through the filter for normal queries
+      // Only "Thinking" (planning_next_moves) is allowed through the filter for normal queries
       if (step.step === 'planning_next_moves') {
         // Stop shimmering when the next reasoning step has been inserted
         const hasStepAfterPlanning = stepIndex < allSteps.length - 1;
@@ -692,9 +701,9 @@ const StepRenderer: React.FC<{
         return (
           <span style={{ display: 'inline-flex', alignItems: 'flex-start' }}>
             {isPlanningActive ? (
-              <span className="ranking-shimmer-active">Planning next moves</span>
+              <span className="ranking-shimmer-active">Thinking</span>
             ) : (
-              <span style={actionStyle}>Planning next moves</span>
+              <span style={actionStyle}>Thinking</span>
             )}
           </span>
         );
@@ -758,6 +767,7 @@ const StepRenderer: React.FC<{
         !hasResponseText &&
         (!nextStepExploring || nextStepExploring.action_type === 'exploring' || nextStepExploring.action_type === 'reading');
       const isAnalysingPrefix = /^Analysing\s+/i.test(prefix);
+      const isFindingPrefix = /^Finding\s+/i.test(prefix);
       const ensureColon = (s: string) => (s.trimEnd().endsWith(':') ? s.trimEnd() : `${s.trimEnd()}:`);
       const showDocsInline = documentsDropdown && documentsDropdown.readingSteps.length > 0;
       // Use unique doc count from reading steps (documents we're actually using) so we never show "searched" count
@@ -785,16 +795,16 @@ const StepRenderer: React.FC<{
 
       return (
         <div>
-          <div className="found-reveal-text" style={{ display: 'flex', alignItems: 'center', gap: '6px', position: 'relative', zIndex: 1, flexWrap: 'wrap' }}>
-            {isAnalysingPrefix && isExploringActive ? (
-              <span className="ranking-shimmer-active">{showDocsInline ? 'Analysing' : ensureColon(headingText)}</span>
+          <div className="found-reveal-text" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', position: 'relative', zIndex: 1, width: 'fit-content' }}>
+            {((isAnalysingPrefix || isFindingPrefix) && isExploringActive) ? (
+              <span className="ranking-shimmer-active">{showDocsInline ? 'Analysing' : (isFindingPrefix ? headingText : ensureColon(headingText))}</span>
             ) : showDocsInline && headingText === 'Analysing' ? (
               <span style={foundActionStyle}>Analysing</span>
             ) : (
               <FoundDocumentsText prefix={headingText} actionStyle={foundActionStyle} detailColor={foundDetailColor} />
             )}
             {showDocsInline && (
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
               {showBubbleGlow ? (
                 <span
                   className="reading-filename-border-glow"
@@ -802,12 +812,12 @@ const StepRenderer: React.FC<{
                     position: 'relative',
                     display: 'inline-flex',
                     alignItems: 'center',
-                    gap: '6px',
+                    gap: '4px',
                     fontSize: '12px',
                     fontWeight: 500,
                     letterSpacing: '-0.01em',
-                    lineHeight: 1.4,
-                    padding: '5px 9px',
+                    lineHeight: 1.2,
+                    padding: '3px 7px',
                     borderRadius: 6,
                     border: '1px solid rgba(0, 0, 0, 0.08)',
                     backgroundColor: '#ffffff',
@@ -856,7 +866,7 @@ const StepRenderer: React.FC<{
                       }}
                     />
                   </span>
-                  <span style={{ position: 'relative', zIndex: 1, display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                  <span style={{ position: 'relative', zIndex: 1, display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
                     <img src="/pdfnew.png" alt="PDF" style={{ width: '14px', height: '14px', flexShrink: 0, display: 'block', verticalAlign: 'middle' }} />
                     {bubbleLabel}
                   </span>
@@ -866,12 +876,12 @@ const StepRenderer: React.FC<{
                   style={{
                     display: 'inline-flex',
                     alignItems: 'center',
-                    gap: '6px',
+                    gap: '4px',
                     fontSize: '12px',
                     fontWeight: 500,
                     letterSpacing: '-0.01em',
-                    lineHeight: 1.4,
-                    padding: '5px 9px',
+                    lineHeight: 1.2,
+                    padding: '3px 7px',
                     borderRadius: 6,
                     border: '1px solid rgba(0, 0, 0, 0.08)',
                     backgroundColor: '#ffffff',
@@ -1058,12 +1068,14 @@ const StepRenderer: React.FC<{
         !hasResponseText &&
         (!nextStepAfterAnalyzing || nextStepAfterAnalyzing.action_type === 'analysing');
       
-      // Transform message: show "Analysing" for the analysing step; keep "Summarising content" / "Thinking" / "Generating response" etc. as-is
+      // Transform message: show "Analysing" for the analysing step; keep "Summarising content" / "Thinking" / "Planning next moves" / "Generating response" etc. as-is
       let fixedMessage = step.message || 'Analysing';
       if (/^(Summarising content|Formulating answer|Preparing answer|Preparing response|Generating response)$/i.test((fixedMessage || '').trim())) {
         fixedMessage = (fixedMessage || '').trim() === 'Generating response' ? 'Generating response' : 'Summarising content';
       } else if ((fixedMessage || '').trim() === 'Thinking') {
         fixedMessage = 'Thinking';
+      } else if ((fixedMessage || '').trim() === 'Planning next moves') {
+        fixedMessage = 'Planning next moves';
       } else if (!/^(Summarising content|Formulating answer|Preparing answer|Preparing response)/i.test(fixedMessage.trim())) {
         fixedMessage = 'Analysing';
       }
@@ -1087,7 +1099,7 @@ const StepRenderer: React.FC<{
       return (
         <span style={{ display: 'inline-flex', alignItems: 'flex-start' }}>
           {isSummarizingActive ? (
-            <span className="ranking-shimmer-active">Planning next moves</span>
+            <span className="ranking-shimmer-active">Thinking</span>
           ) : (
             <span style={actionStyle}>Summarised content</span>
           )}
@@ -1113,6 +1125,7 @@ const StepRenderer: React.FC<{
           startTime={step.timestamp}
           model={model}
           searchTerm={extractedSearchTerm}
+          label={step.message || 'Planning next moves'}
         />
       );
 
@@ -1480,7 +1493,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
     // Searching steps always appear before exploring (Found documents)
     // Steps WITHOUT timestamps come first; steps WITH timestamps sorted ascending
     const isPlanningPlaceholder = (s: ReasoningStep) =>
-      s.step === 'planning_next_moves' || (s.action_type === 'summarising' && s.message === 'Planning next moves');
+      s.step === 'planning_next_moves' || (s.action_type === 'summarising' && (s.message === 'Planning next moves' || s.message === 'Thinking'));
     result.sort((a, b) => {
       const aIsPlanning = isPlanningPlaceholder(a);
       const bIsPlanning = isPlanningPlaceholder(b);
@@ -1512,7 +1525,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
   }, [steps]);
 
   const isPlanningPlaceholder = (s: ReasoningStep) =>
-    s.step === 'planning_next_moves' || (s.action_type === 'summarising' && s.message === 'Planning next moves');
+    s.step === 'planning_next_moves' || (s.action_type === 'summarising' && (s.message === 'Planning next moves' || s.message === 'Thinking'));
 
   // During loading, show the full trace (Searching, Found N relevant sections, Thinking, etc.) so it matches the dropdown.
   const effectiveShowAllStepsInTrace = showAllStepsInTrace || isLoading;
@@ -1595,7 +1608,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
         if (s.action_type !== 'analysing') return true;
         const msg = (s.message || '').trim();
         if (isPreparingResponseMessage(msg)) return true;
-        if (msg === 'Thinking') return true; // Keep "Thinking" step (shown after Analysing + reading)
+        if (msg === 'Thinking' || msg === 'Planning next moves') return true; // Keep thinking/planning step (shown after Analysing + reading)
         return false; // hide all other analysing steps (Analysing, Analysing N documents, etc.)
       });
     }
@@ -1614,7 +1627,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
         (s) =>
           s.step !== 'thinking_after_chunks' &&
           (s.details as any)?.replaces_analysing !== true &&
-          ((s.message || '').trim() !== 'Thinking' || s.action_type !== 'analysing')
+          ((s.message || '').trim() !== 'Thinking' && (s.message || '').trim() !== 'Planning next moves') || s.action_type !== 'analysing'
       );
     }
 
@@ -1624,6 +1637,18 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
       list = list.filter(
         (s) => s.step !== 'generating_response' && (s.message || '').trim() !== 'Generating response'
       );
+    }
+
+    // Hide transient "Loading session" / generic "Preparing search" once real search/explore steps appear (keep intent-based "Finding the X")
+    const hasRealSearchOrExplore = list.some(
+      (s) => s.action_type === 'searching' || (s.action_type === 'exploring' && (/Found\s+\d+|Analysing\s+\d+|Retrieved\s+\d+/i.test(s.message || '')))
+    );
+    if (hasRealSearchOrExplore && !effectiveShowAllStepsInTrace) {
+      list = list.filter((s) => {
+        if (s.step === 'loading_session') return false;
+        if (s.step === 'preparing' && (s.message || '').trim() === 'Preparing search') return false;
+        return true;
+      });
     }
 
     return list;
@@ -1831,7 +1856,8 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
       (s) =>
         s.action_type === 'thinking' ||
         s.step === 'thinking_after_chunks' ||
-        ((s.message || '').trim() === 'Thinking' && s.action_type === 'analysing')
+        ((s.message || '').trim() === 'Thinking' && s.action_type === 'analysing') ||
+        ((s.message || '').trim() === 'Planning next moves' && s.action_type === 'analysing')
     );
     const hasAnalysing =
       stepsForDisplay.some(
@@ -1861,7 +1887,8 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
     const isThinkingStep = (s: ReasoningStep) =>
       s.action_type === 'thinking' ||
       s.step === 'thinking_after_chunks' ||
-      ((s.message || '').trim() === 'Thinking' && s.action_type === 'analysing');
+      ((s.message || '').trim() === 'Thinking' && s.action_type === 'analysing') ||
+      ((s.message || '').trim() === 'Planning next moves' && s.action_type === 'analysing');
     const isAnalysingExploring = (s: ReasoningStep) =>
       s.action_type === 'exploring' &&
       /^Analysing\s+\d+\s+documents?\s*:?/i.test((s.message || '').trim());
@@ -1901,12 +1928,12 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
 
   const [documentsDropdownStepKey, setDocumentsDropdownStepKey] = useState<string | null>(null);
   
-  // Single planning step: use same layout as "no steps" so "Planning next moves" doesn't jump when backend sends the step
+  // Single planning step: use same layout as "no steps" so initial step doesn't jump when backend sends the step
   const onlyPlanningStep =
     isLoading &&
     animatedSteps.length === 1 &&
     (animatedSteps[0].step.step === 'planning_next_moves' ||
-      (animatedSteps[0].step.action_type === 'summarising' && animatedSteps[0].step.message === 'Planning next moves'));
+      (animatedSteps[0].step.action_type === 'summarising' && (animatedSteps[0].step.message === 'Planning next moves' || animatedSteps[0].step.message === 'Thinking')));
   
   // Don't render if no steps (or when only step is planning - keep same layout to avoid jump)
   if (!filteredSteps || filteredSteps.length === 0 || onlyPlanningStep) {
@@ -1931,7 +1958,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
             minHeight: '20px'
           }}
         >
-          <PlanningIndicator shimmer={!hasResponseText} />
+          <ThinkingIndicator shimmer={!hasResponseText} />
           
           {/* CSS for shimmer animations */}
           <style>{`
@@ -2146,7 +2173,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
   //    — avoids duplicate appearing at bottom then at top
   const hasSteps = animatedSteps.length > 0;
   const hasPlanningInList = filteredSteps.some(
-    s => s.step === 'planning_next_moves' || (s.action_type === 'summarising' && s.message === 'Planning next moves')
+    s => s.step === 'planning_next_moves' || (s.action_type === 'summarising' && (s.message === 'Planning next moves' || s.message === 'Thinking'))
   );
   const shouldShowPlanningAfterReading = isLoading && hasSteps && allReadingComplete && totalReadingSteps > 0 && !hasPlanningInList;
   
@@ -2176,7 +2203,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
               exit={{ opacity: 0, transition: { duration: 0.05 } }}
               transition={{ duration: 0.15, ease: [0.16, 1, 0.3, 1] }}
               style={{
-                fontSize: '13.1px',
+                fontSize: '14px',
                 color: DETAIL_COLOR,
                 padding: '0',
                 lineHeight: 1.35,
@@ -2185,7 +2212,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
                 contain: 'layout style',
               }}
             >
-              <PlanningIndicator shimmer={!hasResponseText} />
+              <ThinkingIndicator shimmer={!hasResponseText} />
             </motion.div>
           ) : currentPhaseAndItem.displayItem ? (() => {
             const displayItem = currentPhaseAndItem.displayItem;
@@ -2204,7 +2231,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
                   exit={{ opacity: 0, transition: { duration: 0.05 } }}
                   transition={(hasResponseText || skipAnimations) ? { duration: 0 } : { duration: 0.06, delay: isPhase5Or6 ? 0 : anim.delay, ease: [0.16, 1, 0.3, 1] }}
                   style={{
-                    fontSize: '13.1px',
+                    fontSize: '14px',
                     color: DETAIL_COLOR,
                     padding: '0',
                     lineHeight: 1.35,
@@ -2248,7 +2275,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
                 exit={{ opacity: 0, transition: { duration: 0.05 } }}
                 transition={(hasResponseText || skipAnimations) ? { duration: 0 } : { duration: 0.06, delay: isPhase5Or6 ? 0 : stepDelay, ease: [0.16, 1, 0.3, 1] }}
                 style={{
-                  fontSize: '13.1px',
+                  fontSize: '14px',
                   color: DETAIL_COLOR,
                   padding: '0',
                   lineHeight: 1.35,
@@ -2287,17 +2314,17 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
               return (
                 <div
                   key={groupKey}
-                  style={{
-                    fontSize: '13.1px',
-                    color: DETAIL_COLOR,
-                    padding: '0',
-                    lineHeight: 1.35,
-                    position: 'relative',
-                    marginBottom,
-                  }}
-                >
-                  <StepRenderer
-                    step={displayItem.exploringStep}
+                style={{
+                  fontSize: '14px',
+                  color: DETAIL_COLOR,
+                  padding: '0',
+                  lineHeight: 1.35,
+                  position: 'relative',
+                  marginBottom,
+                }}
+              >
+                <StepRenderer
+                  step={displayItem.exploringStep}
                     allSteps={stepsForDisplay}
                     stepIndex={displayItem.exploringStepIndex}
                     isLoading={isLoading}
@@ -2334,7 +2361,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
               <div
                 key={finalStepKey}
                 style={{
-                  fontSize: '13.1px',
+                  fontSize: '14px',
                   color: DETAIL_COLOR,
                   padding: '0',
                   lineHeight: 1.35,
@@ -2375,10 +2402,10 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
             style={{ marginTop: '8px' }}
           >
             {isPlanningActive ? (
-              <PlanningIndicator />
+              <ThinkingIndicator />
             ) : (
-              <div style={{ fontSize: '13.1px', color: ACTION_COLOR, fontWeight: 500 }}>
-                Planning next moves
+              <div style={{ fontSize: '14px', color: ACTION_COLOR, fontWeight: 500 }}>
+                Thinking
               </div>
             )}
           </motion.div>

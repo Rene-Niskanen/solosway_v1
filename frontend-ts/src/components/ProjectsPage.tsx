@@ -4,7 +4,7 @@
  * ProjectsPage - Displays user's projects
  * 
  * IMPORTANT BUSINESS LOGIC:
- * In Velora, "Projects" and "Properties" (property pins on the map) are the SAME concept.
+ * In OpenFind, "Projects" and "Properties" (property pins on the map) are the SAME concept.
  * A property pin represents a project. The terms are used interchangeably:
  * - UI/User-facing: "Projects" 
  * - Backend/Data model: "Properties" (from /api/properties)

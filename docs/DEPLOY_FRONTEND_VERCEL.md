@@ -1,4 +1,4 @@
-# Deploy the Velora frontend to Vercel
+# Deploy the OpenFind frontend to Vercel
 
 Step-by-step guide to host the **frontend** (React/Vite app) on Vercel. The **backend** (Flask API) must be hosted elsewhere (Render, Railway, Fly.io, or a VPS)—see [SETUP_VELORAVIEW_DOMAIN.md](./SETUP_VELORAVIEW_DOMAIN.md) for backend options.
 

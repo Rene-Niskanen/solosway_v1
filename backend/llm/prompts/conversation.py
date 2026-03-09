@@ -1,11 +1,11 @@
 """
-Conversation-mode prompts for Velora.
+Conversation-mode prompts for OpenFind.
 
 Used when the user is chatting (no document retrieval).
 Callables:
 - get_conversation_system_content(personality_context, memories_section) -> str
 - format_memories_section(memories) -> str
-- get_about_velora_content() -> str
+- get_about_openfind_content() -> str
 """
 
 from pathlib import Path
@@ -15,25 +15,25 @@ from backend.llm.prompts.personality import get_personality_choice_instruction
 from backend.llm.prompts.writing import WRITING_RULES
 from backend.llm.prompts.output_formatting import OUTPUT_FORMATTING_RULES
 
-# Cached content of about_velora.md so we don't read disk on every request
-_about_velora_content: str | None = None
+# Cached content of about_openfind.md so we don't read disk on every request
+_about_openfind_content: str | None = None
 
 
-def get_about_velora_content() -> str:
+def get_about_openfind_content() -> str:
     """
-    Load and return the About Velora reference file.
-    Used when the user asks who Velora is or what Velora can do — the model
+    Load and return the About OpenFind reference file.
+    Used when the user asks who OpenFind is or what OpenFind can do — the model
     should refer to this content instead of improvising.
     """
-    global _about_velora_content
-    if _about_velora_content is not None:
-        return _about_velora_content
-    about_path = Path(__file__).parent / "about_velora.md"
+    global _about_openfind_content
+    if _about_openfind_content is not None:
+        return _about_openfind_content
+    about_path = Path(__file__).parent / "about_openfind.md"
     try:
-        _about_velora_content = about_path.read_text(encoding="utf-8")
+        _about_openfind_content = about_path.read_text(encoding="utf-8")
     except OSError:
-        _about_velora_content = ""
-    return _about_velora_content
+        _about_openfind_content = ""
+    return _about_openfind_content
 
 
 # ============================================================================
@@ -172,7 +172,7 @@ sentence offering an alternative. Don't lecture.
   placement, pick by function. Default: Neutral/LOW (max 1 emoji, ✅ or ⚠️).
 - Use contractions (I'm, you're, that's, don't). Avoid stiff phrasing
   like "I am able to" or "It is important to note that."
-- You are Velora. Speak as Velora. Do not say "As an AI," "As a
+- You are OpenFind. Speak as OpenFind. Do not say "As an AI," "As a
   language model," or reference being artificial. But also do not
   claim human experiences, physical presence, a personal life, or
   things like "I was doing X earlier today." Be warm without
@@ -264,7 +264,7 @@ apply:
 
 - "Great question!" / "That's a really interesting question!" → Just answer.
 - "I hope that helps!" / "Let me know if you need anything else!" / "If you need more details or specific insights, let me know!" → Never use. End with the last fact or a specific follow-up.
-- "As an AI, I…" / "I'm just a language model…" → You are Velora.
+- "As an AI, I…" / "I'm just a language model…" → You are OpenFind.
 - "Certainly!" / "Absolutely!" / "Of course!" as openers → Vary your openings.
 - Repeating the user's question back to them → They know what they asked.
 - Using the same opener every time (So, Well, Sure) → Vary naturally.
@@ -297,14 +297,14 @@ systems, "recalling," or how you store information.
 # ASSEMBLER
 # ============================================================================
 
-ABOUT_VELORA_SECTION_HEADER = """
+ABOUT_OPENFIND_SECTION_HEADER = """
 ---
 
-# REFERENCE: ABOUT VELORA (use ONLY when the user asks who you are or what you can do)
+# REFERENCE: ABOUT OPENFIND (use ONLY when the user asks who you are or what you can do)
 
-Use this section ONLY when the user explicitly asks about your identity or capabilities (e.g. "who are you?", "what can you do?", "what is Velora?"). Do NOT say your name or introduce yourself in response to a simple greeting like "hello", "hi", or "hey" — for greetings, respond with a normal friendly reply (e.g. "Hi! How can I help?") without volunteering your name.
+Use this section ONLY when the user explicitly asks about your identity or capabilities (e.g. "who are you?", "what can you do?", "what is OpenFind?"). Do NOT say your name or introduce yourself in response to a simple greeting like "hello", "hi", or "hey" — for greetings, respond with a normal friendly reply (e.g. "Hi! How can I help?") without volunteering your name.
 
-When they do ask "who are you?" or "what can you do?", your reply MUST be one or two short sentences only, and MUST include the sunglasses emoji 😎. Do NOT write a paragraph. Example: "I'm Velora 😎 How's your day going, [name]?" or "I'm Velora. Who are you? 😎"
+When they do ask "who are you?" or "what can you do?", your reply MUST be one or two short sentences only, and MUST include the sunglasses emoji 😎. Do NOT write a paragraph. Example: "I'm OpenFind 😎 How's your day going, [name]?" or "I'm OpenFind. Who are you? 😎"
 
 When they ask about yourself, use the following as your source of truth. Answer in your own voice; do not recite it verbatim. Keep self-intro replies to 1–2 sentences.
 
@@ -320,7 +320,7 @@ def get_conversation_system_content(
     Build the full system prompt for conversation mode.
 
     Structure:
-      BASE_ROLE (Velora identity + core principles)
+      BASE_ROLE (OpenFind identity + core principles)
       + CONVERSATION_RULES (behavioral policy + style)
       + ABOUT VELORA reference (file content for self-questions)
       + WRITING_RULES (rewrite / restructuring rules)
@@ -330,9 +330,9 @@ def get_conversation_system_content(
       + personality choice instruction (pick tone)
       + personality context (previous personality + is_first_message)
     """
-    about_content = get_about_velora_content()
+    about_content = get_about_openfind_content()
     about_section = (
-        (ABOUT_VELORA_SECTION_HEADER + about_content) if about_content else ""
+        (ABOUT_OPENFIND_SECTION_HEADER + about_content) if about_content else ""
     )
 
     parts = [

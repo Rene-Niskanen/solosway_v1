@@ -16,7 +16,7 @@ const injectStyles = () => {
       cursor: pointer;
       user-select: none;
       color: #9CA3AF;
-      font-size: 12px;
+      font-size: 13px;
       font-weight: 500;
       padding: 2px 0;
     }
@@ -30,12 +30,12 @@ const injectStyles = () => {
     .thinking-chevron.expanded { transform: rotate(90deg); }
     .thinking-label-streaming {
       font-weight: 500;
-      background: linear-gradient(90deg, #9CA3AF 0%, #D1D5DB 50%, #9CA3AF 100%);
-      background-size: 200% 100%;
+      background: linear-gradient(90deg, #6B7280 0%, #9CA3AF 25%, #D1D5DB 50%, #9CA3AF 75%, #6B7280 100%);
+      background-size: 300% 100%;
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
       background-clip: text;
-      animation: thinking-shimmer 1.5s ease-in-out infinite;
+      animation: thinking-shimmer 0.8s ease-in-out infinite;
     }
     .thinking-content-wrapper {
       overflow: hidden;
@@ -102,6 +102,7 @@ interface ThinkingBlockProps {
   startTime?: number;
   model?: 'gpt-4o-mini' | 'gpt-4o' | 'claude-sonnet' | 'claude-opus';
   searchTerm?: string; // User's search term to prioritize relevant key facts
+  label?: string; // Optional label override (e.g. "Planning next moves")
 }
 
 export const ThinkingBlock: React.FC<ThinkingBlockProps> = ({
@@ -109,7 +110,8 @@ export const ThinkingBlock: React.FC<ThinkingBlockProps> = ({
   isStreaming,
   startTime,
   model = 'gpt-4o-mini',
-  searchTerm
+  searchTerm,
+  label = 'Thinking'
 }) => {
   // Inject styles once
   useEffect(() => { injectStyles(); }, []);
@@ -390,7 +392,7 @@ export const ThinkingBlock: React.FC<ThinkingBlockProps> = ({
           <ChevronRight className={`thinking-chevron ${isExpanded ? 'expanded' : ''}`} />
         )}
         {isStreaming ? (
-          <span className="thinking-label-streaming">Thinking...</span>
+          <span className="thinking-label-streaming">{label}</span>
         ) : (
           <span>Thought {elapsedSeconds}s</span>
         )}

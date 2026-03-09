@@ -705,7 +705,7 @@ class CitationTool:
         return f"✅ Citation {citation_number} recorded for {block_id}"
 
 
-def match_citation_to_chunk(chunk_id: str, cited_text: str) -> Dict[str, Any]:
+def match_citation_to_chunk(chunk_id: str, cited_text: str, citation_number: int) -> Dict[str, Any]:
     """
     Match cited text to a specific block within a chunk and return bbox coordinates.
     
@@ -718,6 +718,7 @@ def match_citation_to_chunk(chunk_id: str, cited_text: str) -> Dict[str, Any]:
     Args:
         chunk_id: The UUID of the chunk from retrieve_chunks tool
         cited_text: The exact text from the chunk that should be cited (use original chunk_text, not a paraphrase)
+        citation_number: The citation number to use in the answer (e.g. 1 for [1], 2 for [2])
     
     Returns:
         Dict with citation data including bbox coordinates:
@@ -789,7 +790,8 @@ def match_citation_to_chunk(chunk_id: str, cited_text: str) -> Dict[str, Any]:
                 'cited_text': cited_text,
                 'matched_block_content': None,
                 'confidence': 'low',
-                'method': 'chunk-id-lookup-fallback'
+                'method': 'chunk-id-lookup-fallback',
+                'citation_number': citation_number,
             }
         
         # Match cited_text to best block within chunk
@@ -797,6 +799,7 @@ def match_citation_to_chunk(chunk_id: str, cited_text: str) -> Dict[str, Any]:
         best_score = -1
         best_confidence = 'low'
         
+        cited_normalized = cited_text.strip().lower() if cited_text else ""
         for block_index, block in enumerate(blocks):
             block_content = block.get('content', '')
             if not block_content:
@@ -804,12 +807,22 @@ def match_citation_to_chunk(chunk_id: str, cited_text: str) -> Dict[str, Any]:
             
             # Use existing verify_citation_match function
             verification = verify_citation_match(cited_text, block_content)
+            conf = verification['confidence']
             
+            # CRITICAL: Reject low-confidence blocks unless cited_text is a substring of block.
+            # This prevents e.g. citing "flood risk Zone 2" but highlighting "15 Alfred Place"
+            # when both blocks are in the same chunk (address block might get accidental numeric overlap).
+            block_lower = block_content.lower()
+            cited_is_substring = cited_normalized and len(cited_normalized) >= 5 and cited_normalized in block_lower
+            cited_starts_match = cited_normalized and len(cited_normalized) >= 15 and cited_normalized[:50] in block_lower
+            if conf == 'low' and not cited_is_substring and not cited_starts_match:
+                continue  # Skip this block - cannot confidently match
+        
             # Calculate match score
             score = 0
-            if verification['confidence'] == 'high':
+            if conf == 'high':
                 score += 100
-            elif verification['confidence'] == 'medium':
+            elif conf == 'medium':
                 score += 50
             else:
                 score += 10
@@ -823,6 +836,21 @@ def match_citation_to_chunk(chunk_id: str, cited_text: str) -> Dict[str, Any]:
             if numeric_matches:
                 score += len(numeric_matches) * 30
             
+            # STRONG bonus: cited_text is substring of block (prefer precise matches)
+            if cited_is_substring:
+                score += 80
+            elif cited_normalized and len(cited_normalized) > 10:
+                # Partial: first 30 chars of cited text appear in block
+                if cited_normalized[:30] in block_lower:
+                    score += 40
+            
+            # Prefer shorter blocks when scores are similar (more precise citation)
+            # Only apply when block contains cited text - otherwise short irrelevant blocks win
+            length_penalty = 0
+            if cited_is_substring or cited_starts_match or conf in ('high', 'medium'):
+                length_penalty = max(0, (len(block_content) - 100) // 50)
+            score -= length_penalty
+            
             # Update best match if this score is higher
             if score > best_score:
                 best_score = score
@@ -831,7 +859,7 @@ def match_citation_to_chunk(chunk_id: str, cited_text: str) -> Dict[str, Any]:
                     'block': block,
                     'verification': verification
                 }
-                best_confidence = verification['confidence']
+                best_confidence = conf
         
         if not best_match:
             logger.warning(
@@ -858,29 +886,46 @@ def match_citation_to_chunk(chunk_id: str, cited_text: str) -> Dict[str, Any]:
                 'cited_text': cited_text,
                 'matched_block_content': None,
                 'confidence': 'low',
-                'method': 'chunk-id-lookup-no-match'
+                'method': 'chunk-id-lookup-no-match',
+                'citation_number': citation_number,
             }
         
         # Extract bbox from best matching block
         block_bbox = best_match['block'].get('bbox', {})
         page = block_bbox.get('page', chunk_data.get('page_number', 0))
         
+        bbox_dict = {
+            'left': round(float(block_bbox.get('left', 0.0)), 4),
+            'top': round(float(block_bbox.get('top', 0.0)), 4),
+            'width': round(float(block_bbox.get('width', 0.0)), 4),
+            'height': round(float(block_bbox.get('height', 0.0)), 4),
+            'page': int(page) if page is not None else 0,
+        }
+        
+        # Narrow bbox to the line containing cited_text when block has multiple lines
+        matched_content = best_match['block'].get('content', '')
+        if matched_content and cited_text and '\n' in matched_content:
+            narrowed = _narrow_bbox_to_cited_line(matched_content, block_bbox, cited_text)
+            if narrowed:
+                bbox_dict = {
+                    'left': narrowed.get('left', bbox_dict['left']),
+                    'top': narrowed.get('top', bbox_dict['top']),
+                    'width': narrowed.get('width', bbox_dict['width']),
+                    'height': narrowed.get('height', bbox_dict['height']),
+                    'page': narrowed.get('page', bbox_dict['page']),
+                }
+        
         result = {
             'chunk_id': chunk_id,
             'document_id': document_id,
             'block_id': best_match['block_index'],
-            'bbox': {
-                'left': round(float(block_bbox.get('left', 0.0)), 4),
-                'top': round(float(block_bbox.get('top', 0.0)), 4),
-                'width': round(float(block_bbox.get('width', 0.0)), 4),
-                'height': round(float(block_bbox.get('height', 0.0)), 4),
-                'page': int(page) if page is not None else 0,
-            },
+            'bbox': bbox_dict,
             'page': int(page) if page is not None else 0,
             'cited_text': cited_text,
-            'matched_block_content': best_match['block'].get('content', ''),
+            'matched_block_content': matched_content,
             'confidence': best_confidence,
-            'method': 'chunk-id-lookup'
+            'method': 'chunk-id-lookup',
+            'citation_number': citation_number,
         }
         
         # Add original_page if available
@@ -1054,6 +1099,10 @@ class ChunkCitationInput(BaseModel):
         ...,
         description="The exact text from the chunk that you want to cite. Use the original text from chunk_text, not a paraphrase. Example: 'Market Value: £1,950,000'"
     )
+    citation_number: int = Field(
+        ...,
+        description="The citation number you will use in your answer, e.g. 1 for [1], 2 for [2]. Must match the number you write in the response."
+    )
 
 
 def create_chunk_citation_tool() -> StructuredTool:
@@ -1097,9 +1146,16 @@ This tool fetches the chunk's blocks from the database and finds the specific bl
 ### cited_text (REQUIRED)
 - The exact text from the chunk that you want to cite
 - **CRITICAL: Use the original text from chunk_text, not a paraphrase**
+- **Use the SHORTEST phrase that uniquely identifies the fact** - e.g. "MJ Group International Ltd", "01865 339 702", "Market Value: £1,950,000". Avoid citing long paragraphs.
 - Example: "Market Value: £1,950,000"
 - Example: "Valuation date: 15 March 2024"
-- Example: "Valuer: John Smith MRICS"
+- Example: "MJ Group International Ltd"
+
+### citation_number (REQUIRED)
+- The citation number you will use in your answer
+- MUST match the number you write in the response: 1 for [1], 2 for [2], etc.
+- Example: For "Phone: 01865 339 702 [1]", pass citation_number=1
+- Example: For "Email: cewickens@savills.com [2]", pass citation_number=2
 
 ## RETURN VALUE
 {
@@ -1128,9 +1184,10 @@ This tool fetches the chunk's blocks from the database and finds the specific bl
 
 2. **IMMEDIATELY** call match_citation_to_chunk(
        chunk_id="chunk1",
-       cited_text="Market Value: £1,950,000"
+       cited_text="Market Value: £1,950,000",
+       citation_number=1
    )
-   → Returns: {bbox: {...}, page: 1, confidence: 'high', ...}
+   → Returns: {bbox: {...}, page: 1, confidence: 'high', citation_number: 1, ...}
 
 3. Then generate your answer with the citation
 
@@ -1138,10 +1195,10 @@ This tool fetches the chunk's blocks from the database and finds the specific bl
 1. Receive chunk from retrieve_chunks:
    {"chunk_id": "chunk1", "chunk_text": "Market Value: £1,950,000\\n90-day value: £1,800,000\\nValuation date: 15 March 2024", ...}
 
-2. For each relevant fact, call match_citation_to_chunk:
-   - match_citation_to_chunk(chunk_id="chunk1", cited_text="Market Value: £1,950,000")
-   - match_citation_to_chunk(chunk_id="chunk1", cited_text="90-day value: £1,800,000")
-   - match_citation_to_chunk(chunk_id="chunk1", cited_text="Valuation date: 15 March 2024")
+2. For each relevant fact, call match_citation_to_chunk with citation_number matching [N] in your answer:
+   - match_citation_to_chunk(chunk_id="chunk1", cited_text="Market Value: £1,950,000", citation_number=1)
+   - match_citation_to_chunk(chunk_id="chunk1", cited_text="90-day value: £1,800,000", citation_number=2)
+   - match_citation_to_chunk(chunk_id="chunk1", cited_text="Valuation date: 15 March 2024", citation_number=3)
 
 3. Collect all citation results
 4. Generate answer with citations

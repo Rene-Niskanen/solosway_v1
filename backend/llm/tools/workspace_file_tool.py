@@ -1,5 +1,5 @@
 """
-Workspace file tools - read/write USER.md (and future project files) from velora_bootstrap_files.
+Workspace file tools - read/write USER.md (and future project files) from velora_bootstrap_files (legacy table name).
 
 The agent can read or update USER.md when the user asks. user_id and business_id are
 injected by ExecutionAwareToolNode from state; the LLM only passes file_name (and content for write).
@@ -125,7 +125,7 @@ def create_read_workspace_file_tool() -> StructuredTool:
         name="read_workspace_file",
         description=(
             "Read the content of a workspace file. Currently only USER.md is supported. "
-            "USER.md is the user's profile/context that Velora uses to personalize responses. "
+            "USER.md is the user's profile/context that OpenFind uses to personalize responses. "
             "Use when the user asks what's in their USER.md, profile, or user context."
         ),
         args_schema=ReadWorkspaceFileInput,

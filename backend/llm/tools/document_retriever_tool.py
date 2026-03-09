@@ -9,10 +9,11 @@ improved recall, especially for exact matches like parcel numbers, plot IDs, etc
 """
 
 from typing import List, Dict, Optional, Literal
+import json
 import logging
 import os
 import re
-import json
+import time
 from pydantic import BaseModel, Field
 from langchain_core.tools import StructuredTool
 from backend.services.supabase_client_factory import get_supabase_client
@@ -344,6 +345,7 @@ def retrieve_documents(
         
         Returns empty list if no documents meet the score threshold (triggers retry).
     """
+    _t0 = time.perf_counter()
     try:
         # Handle None defaults
         if top_k is None:
@@ -851,9 +853,13 @@ def retrieve_documents(
                 f"type={doc.get('document_type', 'unknown')}"
             )
         
+        elapsed_ms = max(0, int(round((time.perf_counter() - _t0) * 1000)))
+        logger.info("[PERF] phase=retrieve_documents elapsed_ms=%d docs=%d", elapsed_ms, len(final_results))
         return final_results
         
     except Exception as e:
+        elapsed_ms = max(0, int(round((time.perf_counter() - _t0) * 1000)))
+        logger.info("[PERF] phase=retrieve_documents elapsed_ms=%d error=True", elapsed_ms)
         logger.error(f"Document retrieval failed: {e}")
         import traceback
         logger.debug(traceback.format_exc())

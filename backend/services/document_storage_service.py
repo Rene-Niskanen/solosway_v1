@@ -115,13 +115,13 @@ class DocumentStorageService:
                 logger.debug(f"Querying document by business_id: {business_id}")
             
             # If not found, try the other business field (resilience: doc may have been created with different identifier)
+            # Only retry with business_uuid when business_id is a valid UUID - otherwise we'd pass a company name
+            # to a UUID column and get "invalid input syntax for type uuid"
             if not result.data or len(result.data) == 0:
                 if _is_uuid(business_id):
                     result = self.supabase.table(self.documents_table).select('*').eq('id', document_id).eq('business_id', business_id).execute()
                     logger.debug(f"Retry: querying document by business_id: {business_id}")
-                else:
-                    result = self.supabase.table(self.documents_table).select('*').eq('id', document_id).eq('business_uuid', business_id).execute()
-                    logger.debug(f"Retry: querying document by business_uuid: {business_id}")
+                # When business_id is company name (not UUID), do not retry with business_uuid - that column expects UUID
             
             if result.data and len(result.data) > 0:
                 document_data = result.data[0]

@@ -1,5 +1,5 @@
 """
-Personality overlay content for Velora.
+Personality overlay content for OpenFind.
 
 Each module (e.g. candid.py) defines an OVERLAY_<ID> constant used by
 backend.llm.prompts.personality to build PERSONALITY_OVERLAYS.

@@ -2495,8 +2495,8 @@ Is this the first message in the conversation? {is_first_message}
     # --- Mem0 memory injection (Phase 2) ---
     if getattr(config, "mem0_enabled", False):
         try:
-            from backend.services.memory_service import velora_memory
-            _mem_results = await velora_memory.search(
+            from backend.services.memory_service import openfind_memory
+            _mem_results = await openfind_memory.search(
                 query=user_query,
                 user_id=user_id or "anonymous",
                 limit=getattr(config, "mem0_search_limit", 5),
@@ -2682,7 +2682,7 @@ async def generate_answer_with_direct_citations(
                     note_lines.append(f"- Note {i}: {content} (citation not resolved: missing chunk_id or cited_text)")
                     continue
                 try:
-                    match_result = match_citation_to_chunk(chunk_id, cited_text)
+                    match_result = match_citation_to_chunk(chunk_id, cited_text, citation_number=i)
                     block_index = match_result.get("block_id")
                     if block_index is not None and (chunk_id, block_index) in chunk_block_to_cite:
                         short_id, block_cite_id = chunk_block_to_cite[(chunk_id, block_index)]

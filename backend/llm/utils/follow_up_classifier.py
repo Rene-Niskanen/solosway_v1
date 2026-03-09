@@ -6,6 +6,7 @@ returns "same_doc_follow_up". For "new_question" or on error we run the full pla
 """
 
 import logging
+import re
 from typing import Any, Dict, List, Literal, Optional
 
 from langchain_openai import ChatOpenAI
@@ -49,8 +50,8 @@ Reply with exactly one word: SAME_DOC or NEW_QUESTION or PASTE_AND_DOCS. No othe
 
 
 # Truncate so we stay within a small token budget
-MAX_PREV_ANSWER_CHARS = 400
-MAX_PREV_QUERY_CHARS = 200
+MAX_PREV_ANSWER_CHARS = 250
+MAX_PREV_QUERY_CHARS = 120
 MAX_DOC_NAMES = 5
 MAX_PREV_EXCHANGES_FOR_CLASSIFIER = 2  # Last N exchanges for same_doc vs new_question
 
@@ -244,6 +245,22 @@ def extract_document_ids_from_results(execution_results: List[Dict[str, Any]]) -
     return doc_ids
 
 
+_classifier_llm = None
+
+
+def _get_classifier_llm() -> ChatOpenAI:
+    """Singleton LLM for connection reuse (avoids cold-start latency)."""
+    global _classifier_llm
+    if _classifier_llm is None:
+        _classifier_llm = ChatOpenAI(
+            api_key=config.openai_api_key,
+            model=config.openai_followup_classifier_model,
+            temperature=0,
+            max_tokens=8,
+        )
+    return _classifier_llm
+
+
 def _parse_response(content: str) -> Result:
     if not content:
         return "new_question"
@@ -256,6 +273,20 @@ def _parse_response(content: str) -> Result:
         return "same_doc_follow_up"
     # Default: don't cache
     return "new_question"
+
+
+def _has_definitive_parse(buffer: str) -> Optional[Result]:
+    """Return parsed result if buffer contains a definitive label; else None."""
+    if not buffer or not buffer.strip():
+        return None
+    text = buffer.strip().upper()
+    if "NEW_QUESTION" in text or "NEW QUESTION" in text:
+        return "new_question"
+    if "PASTE_AND_DOCS" in text or "PASTE AND DOCS" in text:
+        return "paste_and_docs"
+    if "SAME_DOC" in text or "SAME DOC" in text:
+        return "same_doc_follow_up"
+    return None
 
 
 async def classify_follow_up(
@@ -278,20 +309,37 @@ async def classify_follow_up(
         return "new_question"
 
     doc_names = _extract_doc_names(execution_results)
+
+    # Fast path: query explicitly mentions different document/entity → NEW_QUESTION (no LLM)
+    if current_query_mentions_different_document(query, doc_names):
+        logger.info("[FOLLOW_UP_CLASSIFIER] Heuristic: different doc mentioned → new_question")
+        return "new_question"
+
+    # Obvious same-doc: reformat, expand, clarify, "the property" (anaphoric reference)
+    _SAME_DOC_PATTERNS = (
+        r"^(format|reformat|list|expand|clarify|summarize|summarise|explain more)\b",
+        r"^(what about|and|also|more)\s+(the|that|this)\b",
+        r"\b(the|this|that)\s+(property|document|valuation|lease|report)\b",
+    )
+    q_lower = query.lower().strip()
+    if doc_names and any(re.search(p, q_lower) for p in _SAME_DOC_PATTERNS):
+        logger.info("[FOLLOW_UP_CLASSIFIER] Heuristic: obvious same-doc pattern → same_doc_follow_up")
+        return "same_doc_follow_up"
+
     user_content = _build_user_prompt(query, conversation_history or [], doc_names, has_attachment=has_attachment)
 
     try:
-        llm = ChatOpenAI(
-            api_key=config.openai_api_key,
-            model=config.openai_followup_classifier_model,
-            temperature=0,
-            max_tokens=15,
-        )
-        response = await llm.ainvoke([
-            SystemMessage(content=SYSTEM_PROMPT),
-            HumanMessage(content=user_content),
-        ])
-        content = (response.content or "").strip()
+        llm = _get_classifier_llm()
+        messages = [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=user_content)]
+        buffer = ""
+        async for chunk in llm.astream(messages):
+            if hasattr(chunk, "content") and chunk.content:
+                buffer += chunk.content
+                result = _has_definitive_parse(buffer)
+                if result is not None:
+                    logger.info("[FOLLOW_UP_CLASSIFIER] result=%s (raw=%s)", result, buffer[:80])
+                    return result
+        content = buffer.strip()
         result = _parse_response(content)
         logger.info("[FOLLOW_UP_CLASSIFIER] result=%s (raw=%s)", result, content[:80])
         return result

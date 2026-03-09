@@ -4,7 +4,7 @@ import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import { flushSync } from 'react-dom';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Search, Plus, Folder, FolderOpen, Files, FileText, File as FileIcon, ChevronRight, MoreVertical, CloudUpload, Trash2, ChevronDown, MapPin, RefreshCw, FolderInput } from 'lucide-react';
+import { X, Search, Plus, Folder, FolderOpen, Files, FileText, File as FileIcon, ChevronRight, MoreVertical, CloudUpload, Trash2, ChevronDown, MapPin, RefreshCw, FolderInput, Check, Square } from 'lucide-react';
 import OrbitProgress from 'react-loading-indicators/OrbitProgress';
 import { useFilingSidebar } from '../contexts/FilingSidebarContext';
 import { useUsage } from '../contexts/UsageContext';
@@ -101,7 +101,8 @@ const getPendingFileTypeLabel = (filename: string): string => {
 };
 
 // Component for displaying pending file with image preview (same row size as document list items)
-const PendingFileItem: React.FC<{
+// Wrapped in forwardRef for framer-motion AnimatePresence/PopChild compatibility
+const PendingFileItem = React.forwardRef<HTMLDivElement, {
   file: File;
   index: number;
   isSelected?: boolean;
@@ -110,7 +111,7 @@ const PendingFileItem: React.FC<{
   onSelect?: (index: number) => void;
   onRemove: (index: number) => void;
   getFileIcon: (doc: Document) => React.ReactNode;
-}> = ({ file, index, isSelected = false, showOutline = false, isUploading = false, onSelect, onRemove, getFileIcon }) => {
+}>(({ file, index, isSelected = false, showOutline = false, isUploading = false, onSelect, onRemove, getFileIcon }, ref) => {
   const isImage = file.type.startsWith('image/');
   const [imageUrl, setImageUrl] = React.useState<string | null>(null);
   
@@ -134,6 +135,7 @@ const PendingFileItem: React.FC<{
   
   return (
     <motion.div
+      ref={ref}
       initial={{ opacity: 1 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0, transition: { duration: 0 } }}
@@ -186,7 +188,9 @@ const PendingFileItem: React.FC<{
       )}
     </motion.div>
   );
-};
+});
+
+PendingFileItem.displayName = 'PendingFileItem';
 
 export const FilingSidebar: React.FC<FilingSidebarProps> = ({ 
   sidebarWidth,
@@ -269,6 +273,8 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
   });
   /** Placeholders shown at top of file list while uploads are in progress (used when not using pending list) */
   const [uploadingPlaceholders, setUploadingPlaceholders] = useState<Array<{ id: string; name: string }>>([]);
+  /** Real-time upload progress 0–100 by filename (for placeholder rows) */
+  const [uploadProgressByFileName, setUploadProgressByFileName] = useState<Record<string, number>>({});
   /** Keys of pending files currently uploading (same list stays visible with spinner) */
   const [uploadingFileKeys, setUploadingFileKeys] = useState<Set<string>>(new Set());
   const [showMoveDropdown, setShowMoveDropdown] = useState(false);
@@ -277,8 +283,14 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
   const [processingDocumentIds, setProcessingDocumentIds] = useState<Set<string>>(new Set());
   /** Timestamps when each document ID was added to processingDocumentIds (for timeout) */
   const processingDocumentTimestamps = useRef<Map<string, number>>(new Map());
+  /** AbortControllers for in-flight uploads - keyed by placeholderId for batch, or fileName for single */
+  const uploadAbortControllersRef = useRef<Map<string, AbortController>>(new Map());
   /** Document/page stats (completed docs only). Fetched with document list. */
   const [docStats, setDocStats] = useState<{ document_count: number; total_pages: number } | null>(null);
+  /** Extraction mode: 'standard' (fast) or 'deep' (agentic). Only applies to new uploads. */
+  const [extractionMode, setExtractionMode] = useState<'standard' | 'deep'>('standard');
+  /** Hover state for unselected extraction cards (collapsed → expand on hover). */
+  const [hoveredExtractionCard, setHoveredExtractionCard] = useState<'standard' | 'deep' | null>(null);
 
   // Usage (billing) — bar + popup in place of doc stats (from UsageContext)
   const { usage: usageData, loading: usageLoading, error: usageError } = useUsage();
@@ -357,7 +369,11 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
     }
 
     const uploadCacheKey =
-      viewMode === 'property' && selectedPropertyId ? `property_${selectedPropertyId}` : 'global';
+      viewMode === 'property' && selectedPropertyId
+        ? `property_${selectedPropertyId}`
+        : viewMode === 'property'
+          ? 'projects'
+          : 'global';
     const interval = setInterval(async () => {
       // Force timeout cleanup even if documents haven't changed
       const pollNow = Date.now();
@@ -384,14 +400,24 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
       cacheTimestampRef.current.delete(uploadCacheKey);
       if (viewMode === 'property' && selectedPropertyId) {
         const response = await backendApi.getPropertyHubDocuments(selectedPropertyId);
+        let docs: Document[] = [];
         if (response.success && response.data) {
-          let docs: Document[] = [];
-          const data = response.data;
-          if (Array.isArray(data)) docs = data;
-          else if (data?.data?.documents && Array.isArray(data.data.documents)) docs = data.data.documents;
-          else if (data?.data && Array.isArray(data.data)) docs = data.data;
-          else if (Array.isArray(data?.documents)) docs = data.documents;
-          else if (data?.documents && Array.isArray(data.documents)) docs = data.documents;
+          const d = response.data;
+          if (Array.isArray(d)) docs = d;
+          else if (d?.data?.documents) docs = d.data.documents;
+          else if (d?.documents) docs = d.documents;
+        }
+        setDocuments(docs);
+      } else if (viewMode === 'property') {
+        const response = await backendApi.getAllPropertyHubs();
+        if (response.success && response.data) {
+          const hubs = Array.isArray(response.data) ? response.data : (response.data as any)?.properties || [];
+          const docs: Document[] = [];
+          hubs.forEach((hub: any) => {
+            (hub?.documents || []).forEach((d: any) => {
+              if (d?.id) docs.push(d);
+            });
+          });
           setDocuments(docs);
         }
       } else {
@@ -454,6 +480,8 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
   // Pipeline stages hover pop-up: which doc is hovered, progress from API, show popup after delay
   const [hoveredPipelineDoc, setHoveredPipelineDoc] = useState<{ documentId: string; doc: Document } | null>(null);
   const [pipelineProgress, setPipelineProgress] = useState<PipelineProgressData | null>(null);
+  /** Pipeline progress per doc (background poll) so inline % is real-time without hovering */
+  const [pipelineProgressByDocId, setPipelineProgressByDocId] = useState<Record<string, PipelineProgressData>>({});
   const [showPipelinePreview, setShowPipelinePreview] = useState(false);
   const [pipelinePreviewPosition, setPipelinePreviewPosition] = useState({ x: 0, y: 0 });
   const [pipelinePreviewBounds, setPipelinePreviewBounds] = useState<{ left: number; right: number } | undefined>(undefined);
@@ -570,10 +598,12 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
       // Initialize folders as empty - will be loaded after documents
       setFolders([]);
       
-      // Generate cache key based on view mode and property ID
+      // Generate cache key: property-specific, projects (hub docs only), or global (all docs)
       const cacheKey = viewMode === 'property' && selectedPropertyId
         ? `property_${selectedPropertyId}`
-        : 'global';
+        : viewMode === 'property'
+          ? 'projects'
+          : 'global';
       
       // Check cache first (stale-while-revalidate: show any cached data immediately)
       const cachedDocs = documentCacheRef.current.get(cacheKey);
@@ -650,8 +680,46 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
             setFolders([]);
             setIsLoading(false);
           }
+        } else if (viewMode === 'property' && !selectedPropertyId) {
+          // Projects view (no property selected): only show documents linked to property hubs (document_relationships).
+          // Unlinked uploads do NOT appear here—they only show in the Files tab.
+          try {
+            const response = await backendApi.getAllPropertyHubs();
+            if (response.success && response.data) {
+              const hubs = Array.isArray(response.data) ? response.data : (response.data as any)?.properties || [];
+              const docs: Document[] = [];
+              hubs.forEach((hub: any) => {
+                (hub?.documents || []).forEach((d: any) => {
+                  if (d?.id) docs.push(d);
+                });
+              });
+              documentCacheRef.current.set(cacheKey, docs);
+              cacheTimestampRef.current.set(cacheKey, Date.now());
+              if (!isCacheValid) {
+                setDocuments(docs);
+                loadFolders();
+                setIsLoading(false);
+              }
+              try {
+                const statsRes = await backendApi.getDocumentStats();
+                if (statsRes.success && statsRes.data) setDocStats(statsRes.data);
+              } catch (_) {}
+            } else if (!isCacheValid) {
+              setError(response.error || 'Failed to load projects');
+              setDocuments([]);
+              setFolders([]);
+              setIsLoading(false);
+            }
+          } catch (err) {
+            if (!isCacheValid) {
+              setError('Failed to load projects');
+              setDocuments([]);
+              setFolders([]);
+              setIsLoading(false);
+            }
+          }
         } else {
-          // Fetch all documents globally
+          // Files view (global): fetch all documents including unlinked uploads
           try {
             const response = await backendApi.getAllDocuments();
             const docs = parseAllDocumentsResponse(response);
@@ -1764,6 +1832,44 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
     };
   }, [hoveredPipelineDoc?.documentId, hoveredPipelineDoc?.doc?.status, reprocessingDocs]);
 
+  // Background poll pipeline progress for all processing docs so inline % updates without hovering
+  const processingDocIds = useMemo(
+    () =>
+      documents
+        .filter((d) => d.status === 'processing' || reprocessingDocs.has(d.id))
+        .map((d) => d.id),
+    [documents, reprocessingDocs]
+  );
+  useEffect(() => {
+    if (processingDocIds.length === 0) return;
+    const poll = async () => {
+      const results = await Promise.all(
+        processingDocIds.map((id) =>
+          backendApi.getDocumentStatus(id).then((r) => ({
+            id,
+            success: r.success,
+            data: r.data as { status?: string; pipeline_progress?: PipelineProgressData } | undefined,
+          }))
+        )
+      );
+      setPipelineProgressByDocId((prev) => {
+        const next = { ...prev };
+        for (const { id, success, data } of results) {
+          if (success && data?.pipeline_progress) {
+            next[id] = data.pipeline_progress;
+          }
+          if (data?.status === 'completed' || data?.status === 'failed') {
+            delete next[id];
+          }
+        }
+        return next;
+      });
+    };
+    poll();
+    const iv = setInterval(poll, 2500);
+    return () => clearInterval(iv);
+  }, [processingDocIds.join(',')]);
+
   // Cleanup pipeline hover timeouts on unmount
   useEffect(() => {
     return () => {
@@ -1824,9 +1930,71 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
     fileInputRef.current?.click();
   };
 
+  const handleStopUploads = useCallback(() => {
+    const controllers = uploadAbortControllersRef.current;
+    controllers.forEach((c) => {
+      try { c.abort(); } catch (_) {}
+    });
+    controllers.clear();
+    setUploadingPlaceholders([]);
+    setUploadingFileKeys(new Set());
+    setUploadProgressByFileName({});
+    toast({ description: 'Uploads stopped', duration: 2000 });
+  }, []);
+
+  const handleStopSingleUpload = useCallback((placeholderId: string, fileName?: string) => {
+    const controller = uploadAbortControllersRef.current.get(placeholderId);
+    if (controller) {
+      try { controller.abort(); } catch (_) {}
+      uploadAbortControllersRef.current.delete(placeholderId);
+    }
+    setUploadingPlaceholders((prev) => prev.filter((x) => x.id !== placeholderId));
+    if (fileName) {
+      setUploadProgressByFileName((prev) => {
+        const p = { ...prev };
+        delete p[fileName];
+        return p;
+      });
+    }
+  }, []);
+
   // Remove a single uploading placeholder (e.g. when one upload completes or hits duplicate)
   const removeUploadingPlaceholder = useCallback((placeholderId: string) => {
     setUploadingPlaceholders((prev) => prev.filter((p) => p.id !== placeholderId));
+  }, []);
+
+  // Subscribe to upload events so placeholder rows show real-time progress
+  useEffect(() => {
+    const onStart = (e: CustomEvent<{ fileName: string }>) => {
+      setUploadProgressByFileName((prev) => ({ ...prev, [e.detail.fileName]: 0 }));
+    };
+    const onProgress = (e: CustomEvent<{ progress: number; fileName: string }>) => {
+      setUploadProgressByFileName((prev) => ({ ...prev, [e.detail.fileName]: e.detail.progress }));
+    };
+    const onComplete = (e: CustomEvent<{ fileName: string }>) => {
+      setUploadProgressByFileName((prev) => {
+        const next = { ...prev };
+        delete next[e.detail.fileName];
+        return next;
+      });
+    };
+    const onError = (e: CustomEvent<{ fileName: string }>) => {
+      setUploadProgressByFileName((prev) => {
+        const next = { ...prev };
+        delete next[e.detail.fileName];
+        return next;
+      });
+    };
+    window.addEventListener('upload-start', onStart as EventListener);
+    window.addEventListener('upload-progress', onProgress as EventListener);
+    window.addEventListener('upload-complete', onComplete as EventListener);
+    window.addEventListener('upload-error', onError as EventListener);
+    return () => {
+      window.removeEventListener('upload-start', onStart as EventListener);
+      window.removeEventListener('upload-progress', onProgress as EventListener);
+      window.removeEventListener('upload-complete', onComplete as EventListener);
+      window.removeEventListener('upload-error', onError as EventListener);
+    };
   }, []);
 
   // Register upload-from-chat handler so Add to database routes through sidebar and shows processing
@@ -1862,12 +2030,36 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
       }
       if (uploadedIds.length > 0) {
         setProcessingDocumentIds((prev) => { const next = new Set(prev); uploadedIds.forEach((id) => next.add(id)); return next; });
-        const uploadCacheKey = 'global';
+        const uploadCacheKey = viewMode === 'property' && selectedPropertyId ? `property_${selectedPropertyId}` : viewMode === 'property' ? 'projects' : 'global';
         documentCacheRef.current.delete(uploadCacheKey);
         cacheTimestampRef.current.delete(uploadCacheKey);
-        const response = await backendApi.getAllDocuments();
-        const docs = parseAllDocumentsResponse(response);
-        if (response.success) { setDocuments(docs); documentCacheRef.current.set(uploadCacheKey, docs); cacheTimestampRef.current.set(uploadCacheKey, Date.now()); }
+        if (viewMode === 'property' && selectedPropertyId) {
+          const res = await backendApi.getPropertyHubDocuments(selectedPropertyId);
+          let docs: Document[] = [];
+          if (res.success && res.data) {
+            const d = res.data;
+            if (Array.isArray(d)) docs = d;
+            else if (d?.data?.documents) docs = d.data.documents;
+            else if (d?.documents) docs = d.documents;
+          }
+          setDocuments(docs);
+          documentCacheRef.current.set(uploadCacheKey, docs);
+          cacheTimestampRef.current.set(uploadCacheKey, Date.now());
+        } else if (viewMode === 'property') {
+          const res = await backendApi.getAllPropertyHubs();
+          if (res.success && res.data) {
+            const hubs = Array.isArray(res.data) ? res.data : (res.data as any)?.properties || [];
+            const docs: Document[] = [];
+            hubs.forEach((hub: any) => { (hub?.documents || []).forEach((d: any) => { if (d?.id) docs.push(d); }); });
+            setDocuments(docs);
+            documentCacheRef.current.set(uploadCacheKey, docs);
+            cacheTimestampRef.current.set(uploadCacheKey, Date.now());
+          }
+        } else {
+          const response = await backendApi.getAllDocuments();
+          const docs = parseAllDocumentsResponse(response);
+          if (response.success) { setDocuments(docs); documentCacheRef.current.set(uploadCacheKey, docs); cacheTimestampRef.current.set(uploadCacheKey, Date.now()); }
+        }
         try { const statsRes = await backendApi.getDocumentStats(); if (statsRes.success && statsRes.data) setDocStats(statsRes.data); } catch (_) {}
       }
       if (failed === 0 && completed > 0) {
@@ -1881,7 +2073,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
     };
     registerUploadFromChat(uploadFromChat);
     return () => registerUploadFromChat(null);
-  }, [openFilingSidebar, removeUploadingPlaceholder, registerUploadFromChat]);
+  }, [openFilingSidebar, removeUploadingPlaceholder, registerUploadFromChat, viewMode, selectedPropertyId]);
 
   // Handle uploading all pending files: clear drop zone immediately and show uploading state only in file list (at top so visible instantly)
   const handleUploadPendingFiles = async () => {
@@ -1916,7 +2108,11 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
 
     // (3) Refresh document list first, then clear pending/uploading; keep spinner until docs finish processing
     const uploadCacheKey =
-      viewMode === 'property' && selectedPropertyId ? `property_${selectedPropertyId}` : 'global';
+      viewMode === 'property' && selectedPropertyId
+        ? `property_${selectedPropertyId}`
+        : viewMode === 'property'
+          ? 'projects'
+          : 'global';
     documentCacheRef.current.delete(uploadCacheKey);
     cacheTimestampRef.current.delete(uploadCacheKey);
     if (viewMode === 'property' && selectedPropertyId) {
@@ -1929,6 +2125,20 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
         else if (data?.data && Array.isArray(data.data)) docs = data.data;
         else if (Array.isArray(data?.documents)) docs = data.documents;
         else if (data?.documents && Array.isArray(data.documents)) docs = data.documents;
+        setDocuments(docs);
+        documentCacheRef.current.set(uploadCacheKey, docs);
+        cacheTimestampRef.current.set(uploadCacheKey, Date.now());
+      }
+    } else if (viewMode === 'property') {
+      const response = await backendApi.getAllPropertyHubs();
+      if (response.success && response.data) {
+        const hubs = Array.isArray(response.data) ? response.data : (response.data as any)?.properties || [];
+        const docs: Document[] = [];
+        hubs.forEach((hub: any) => {
+          (hub?.documents || []).forEach((d: any) => {
+            if (d?.id) docs.push(d);
+          });
+        });
         setDocuments(docs);
         documentCacheRef.current.set(uploadCacheKey, docs);
         cacheTimestampRef.current.set(uploadCacheKey, Date.now());
@@ -2017,12 +2227,17 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
   // Proceed with actual upload. placeholderId: when in batch upload, remove from uploading list when done.
   // Returns document_id on success so caller can track processing.
   const proceedWithUpload = async (file: File, placeholderId?: string): Promise<string | undefined> => {
+    const uploadKey = placeholderId ?? `${file.name}-${file.size}`;
+    const controller = new AbortController();
+    uploadAbortControllersRef.current.set(uploadKey, controller);
+
     try {
       setError(null);
 
       // Check access level if uploading to a property
       if (selectedPropertyForUpload?.type === 'property' && !canUploadToProperty()) {
         setError('You do not have permission to upload files. Only editors and owners can upload files to this property.');
+        uploadAbortControllersRef.current.delete(uploadKey);
         if (placeholderId) removeUploadingPlaceholder(placeholderId);
         return undefined;
       }
@@ -2030,12 +2245,14 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
       // Dispatch upload start event for global progress bar
       uploadEvents.start(file.name);
 
+      const signal = controller.signal;
+
       let result: { success: boolean; data?: { document_id?: string }; error?: string };
       if (selectedPropertyForUpload) {
         if (selectedPropertyForUpload.type === 'property') {
           result = await backendApi.uploadPropertyDocumentViaProxy(
             file,
-            { property_id: selectedPropertyForUpload.id },
+            { property_id: selectedPropertyForUpload.id, extraction_mode: extractionMode, signal },
             (progress) => {
               uploadEvents.progress(progress, file.name);
             }
@@ -2043,7 +2260,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
         } else if (selectedPropertyForUpload.type === 'folder') {
           result = await backendApi.uploadDocument(file, (progress) => {
             uploadEvents.progress(progress, file.name);
-          });
+          }, { extractionMode, signal });
           if (result.success && result.data?.document_id) {
             try {
               await backendApi.moveDocument(result.data.document_id, selectedPropertyForUpload.id);
@@ -2057,8 +2274,10 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
       } else {
         result = await backendApi.uploadDocument(file, (progress) => {
           uploadEvents.progress(progress, file.name);
-        });
+        }, { extractionMode, signal });
       }
+
+      uploadAbortControllersRef.current.delete(uploadKey);
 
       if (result.success) {
         const documentId = result.data?.document_id;
@@ -2067,7 +2286,11 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
         // Batch upload refreshes list in handleUploadPendingFiles; single-file upload refreshes here
         if (!placeholderId) {
           const uploadCacheKey =
-            viewMode === 'property' && selectedPropertyId ? `property_${selectedPropertyId}` : 'global';
+            viewMode === 'property' && selectedPropertyId
+              ? `property_${selectedPropertyId}`
+              : viewMode === 'property'
+                ? 'projects'
+                : 'global';
           documentCacheRef.current.delete(uploadCacheKey);
           cacheTimestampRef.current.delete(uploadCacheKey);
           if (viewMode === 'property' && selectedPropertyId) {
@@ -2080,6 +2303,20 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
               else if (data?.data && Array.isArray(data.data)) docs = data.data;
               else if (Array.isArray(data?.documents)) docs = data.documents;
               else if (data?.documents && Array.isArray(data.documents)) docs = data.documents;
+              setDocuments(docs);
+              documentCacheRef.current.set(uploadCacheKey, docs);
+              cacheTimestampRef.current.set(uploadCacheKey, Date.now());
+            }
+          } else if (viewMode === 'property') {
+            const response = await backendApi.getAllPropertyHubs();
+            if (response.success && response.data) {
+              const hubs = Array.isArray(response.data) ? response.data : (response.data as any)?.properties || [];
+              const docs: Document[] = [];
+              hubs.forEach((hub: any) => {
+                (hub?.documents || []).forEach((d: any) => {
+                  if (d?.id) docs.push(d);
+                });
+              });
               setDocuments(docs);
               documentCacheRef.current.set(uploadCacheKey, docs);
               cacheTimestampRef.current.set(uploadCacheKey, Date.now());
@@ -2098,7 +2335,10 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
         return documentId;
       } else {
         if (placeholderId) removeUploadingPlaceholder(placeholderId);
-        if (result.error && (result.error.includes('already exists') || result.error.includes('duplicate'))) {
+        if (result.error === 'Upload was aborted') {
+          uploadEvents.error(file.name, 'Upload stopped');
+          // Don't setError - handleStopUploads already showed toast
+        } else if (result.error && (result.error.includes('already exists') || result.error.includes('duplicate'))) {
           uploadEvents.error(file.name, 'Document already exists');
           setDuplicateDialog({
             isOpen: true,
@@ -2115,6 +2355,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
         return undefined;
       }
     } catch (error) {
+      uploadAbortControllersRef.current.delete(uploadKey);
       console.error('Upload error:', error);
       const errorMessage = error instanceof Error ? error.message : 'Upload failed';
       uploadEvents.error(file.name, errorMessage);
@@ -2619,13 +2860,124 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                     <X className="w-3.5 h-3.5" />
                   </button>
                 </div>
+                {/* Extraction mode toggles - Standard (fast) vs Deep (agentic); each is one white card with label + image. Unselected collapses; expands on hover. Selected always at top. */}
+                <div className="mt-3 flex flex-col gap-4">
+                  {/* Standard Extraction */}
+                  <button
+                    type="button"
+                    onClick={() => setExtractionMode('standard')}
+                    onMouseEnter={() => setHoveredExtractionCard('standard')}
+                    onMouseLeave={() => setHoveredExtractionCard(null)}
+                    className={`w-full flex flex-col items-center rounded-lg transition-all duration-200 text-left overflow-hidden ${extractionMode === 'standard' ? 'order-first' : 'order-last'} ${
+                      extractionMode === 'standard'
+                        ? 'p-3 bg-white border-4 border-[#F3F3E7] ring-2 ring-[#F3F3E7] ring-offset-2 ring-offset-white shadow-sm'
+                        : `bg-white border border-gray-200 hover:bg-[#FAFAFA] shadow-[0_0_20px_4px_rgba(255,255,255,0.7),0_1px_3px_rgba(0,0,0,0.08)] ${
+                            hoveredExtractionCard === 'standard' ? 'p-3' : 'py-2 px-3'
+                          }`
+                    }`}
+                  >
+                    <div
+                      className={`flex items-center justify-center gap-2 w-full min-h-[20px] ${
+                        extractionMode === 'standard' || hoveredExtractionCard === 'standard' ? 'mb-2' : 'mb-0'
+                      }`}
+                    >
+                      <span className={`text-xs font-medium ${extractionMode === 'standard' ? 'text-slate-700' : 'text-slate-600'}`}>
+                        Standard Extraction
+                      </span>
+                      {extractionMode === 'standard' && (
+                        <span className="flex items-center justify-center w-4 h-4 rounded-full bg-[#F3F3E7] text-slate-600 flex-shrink-0">
+                          <Check className="w-2.5 h-2.5" strokeWidth={2.5} />
+                        </span>
+                      )}
+                    </div>
+                    {(extractionMode === 'standard' || hoveredExtractionCard === 'standard') && (
+                      <ul className="text-[10px] text-slate-500 space-y-0.5 mb-2 list-disc list-inside text-left w-full">
+                        <li>Answers in seconds</li>
+                        <li>Optimised for digital documents and typed text</li>
+                        <li>Quick, reliable extraction</li>
+                        <li>Great for most PDFs and reports</li>
+                      </ul>
+                    )}
+                    <div
+                      className={`grid transition-all duration-200 ease-out ${
+                        extractionMode === 'standard' || hoveredExtractionCard === 'standard'
+                          ? 'grid-rows-[1fr] opacity-100'
+                          : 'grid-rows-[0fr] opacity-0'
+                      }`}
+                    >
+                      <div className="min-h-0 overflow-hidden">
+                        <img
+                          src="/Standard.png"
+                          alt="Standard extraction preview"
+                          className="w-full max-w-[85%] h-auto object-contain rounded"
+                        />
+                      </div>
+                    </div>
+                  </button>
+                  {/* Deep Extract */}
+                  <button
+                    type="button"
+                    onClick={() => setExtractionMode('deep')}
+                    onMouseEnter={() => setHoveredExtractionCard('deep')}
+                    onMouseLeave={() => setHoveredExtractionCard(null)}
+                    className={`w-full flex flex-col items-center rounded-lg transition-all duration-200 text-left overflow-hidden ${extractionMode === 'deep' ? 'order-first' : 'order-last'} ${
+                      extractionMode === 'deep'
+                        ? 'p-3 bg-white border-4 border-[#F3F3E7] ring-2 ring-[#F3F3E7] ring-offset-2 ring-offset-white shadow-sm'
+                        : `bg-white border border-gray-200 hover:bg-[#FAFAFA] shadow-[0_0_20px_4px_rgba(255,255,255,0.7),0_1px_3px_rgba(0,0,0,0.08)] ${
+                            hoveredExtractionCard === 'deep' ? 'p-3' : 'py-2 px-3'
+                          }`
+                    }`}
+                  >
+                    <div
+                      className={`flex items-center justify-center gap-2 w-full min-h-[20px] ${
+                        extractionMode === 'deep' || hoveredExtractionCard === 'deep' ? 'mb-2' : 'mb-0'
+                      }`}
+                    >
+                      <span className={`text-xs font-medium ${extractionMode === 'deep' ? 'text-slate-700' : 'text-slate-600'}`}>
+                        Deep Extract (Agentic Mode)
+                      </span>
+                      {extractionMode === 'deep' && (
+                        <span className="flex items-center justify-center w-4 h-4 rounded-full bg-[#F3F3E7] text-slate-600 flex-shrink-0">
+                          <Check className="w-2.5 h-2.5" strokeWidth={2.5} />
+                        </span>
+                      )}
+                    </div>
+                    {(extractionMode === 'deep' || hoveredExtractionCard === 'deep') && (
+                      <ul className="text-[10px] text-slate-500 space-y-0.5 mb-2 list-disc list-inside text-left w-full">
+                        <li>Goes deeper with AI-powered reasoning</li>
+                        <li>Handles handwritten notes and tricky scans</li>
+                        <li>Automatically steps up when documents need extra attention</li>
+                        <li>Use when Standard misses something</li>
+                      </ul>
+                    )}
+                    <div
+                      className={`grid transition-all duration-200 ease-out ${
+                        extractionMode === 'deep' || hoveredExtractionCard === 'deep'
+                          ? 'grid-rows-[1fr] opacity-100'
+                          : 'grid-rows-[0fr] opacity-0'
+                      }`}
+                    >
+                      <div className="min-h-0 overflow-hidden">
+                        <img
+                          src="/Deep.png"
+                          alt="Deep extraction preview"
+                          className="w-full max-w-[85%] h-auto object-contain rounded"
+                        />
+                      </div>
+                    </div>
+                  </button>
+                </div>
               </div>
             </motion.div>
           )}
           </AnimatePresence>
 
-          {/* Search and Actions Row Container - z-[60] so Add dropdown appears above content (z-50); ref for pipeline popup minTop */}
-          <div ref={uploadZoneBottomRef} className="w-full px-4 pt-3 pb-3 relative z-[60]" style={{ boxSizing: 'border-box' }}>
+          {/* Search and Actions Row Container - hidden when pending files (upload focus mode) - z-[60] so Add dropdown appears above content (z-50); ref for pipeline popup minTop */}
+          <div
+            ref={uploadZoneBottomRef}
+            className="w-full px-4 pt-3 pb-3 relative z-[60]"
+            style={{ boxSizing: 'border-box', display: pendingFiles.length > 0 ? 'none' : undefined }}
+          >
             {/* Page usage this month — thin bar + hover popup (replaces doc count) */}
             <div
               className="relative mb-3"
@@ -2919,7 +3271,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
 
         {/* Breadcrumb Navigation */}
         {breadcrumbs.length > 0 && (
-          <div className="px-4 py-2 flex items-center gap-2">
+          <div className="px-4 py-2 flex items-center gap-2" style={{ display: pendingFiles.length > 0 ? 'none' : undefined }}>
             <button
               onClick={handleBack}
               className="flex items-center gap-1 px-2 py-1 text-gray-500 hover:text-gray-700 hover:bg-white/60 rounded-md transition-colors"
@@ -2939,10 +3291,10 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
           </div>
         )}
 
-        {/* Content Area - Clean Background - relative z-50 so it stacks above the chat panel; min-h-0 so flex child can shrink and scroll; pb-12 on container so initial view shows 17 files (one row hidden until scroll) */}
+        {/* Content Area - hidden when pending files (upload focus mode); Clean Background - relative z-50 so it stacks above the chat panel; min-h-0 so flex child can shrink and scroll; pb-12 on container so initial view shows 17 files (one row hidden until scroll) */}
         <div
           className="flex-1 min-h-0 overflow-y-auto w-full px-4 pb-12 relative z-50 filing-sidebar-main-scroll"
-          style={{ boxSizing: 'border-box', WebkitOverflowScrolling: 'touch' }}
+          style={{ boxSizing: 'border-box', WebkitOverflowScrolling: 'touch', display: pendingFiles.length > 0 ? 'none' : undefined }}
         >
           {showMoveDropdown ? (
             <div className="w-full py-0.5 pb-80 space-y-px" style={{ boxSizing: 'border-box' }}>
@@ -3121,19 +3473,37 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                               <span className="text-xs font-medium text-slate-600 truncate" style={{ fontFamily: "'DM Sans', system-ui, -apple-system, sans-serif" }}>
                                 {p.name}
                               </span>
-                              <div className="flex items-center gap-1">
-                                <span className="text-[10px] text-gray-500 font-normal">
-                                  {getFileTypeLabelFromFilename(p.name)}
-                                </span>
+                            <div className="flex items-center gap-1">
+                              <span className="text-[10px] text-gray-500 font-normal">
+                                {getFileTypeLabelFromFilename(p.name)}
+                              </span>
+                              <div className="flex items-center gap-1 flex-shrink-0">
                                 <div className="flex items-center justify-center w-3 h-3 flex-shrink-0">
                                   <OrbitProgress color="#22c55e" size="small" dense text="" textColor="" speedPlus={1} style={{ fontSize: '2px' }} />
                                 </div>
                               </div>
                             </div>
-                            <div className="w-6 h-6 flex-shrink-0" aria-hidden />
                           </div>
-                        );
-                      })}
+                            <button
+                              type="button"
+                              onClick={() => handleStopSingleUpload(p.id, p.name)}
+                              className="flex items-center justify-center flex-shrink-0 focus:outline-none outline-none hover:opacity-90 transition-opacity"
+                              style={{
+                                width: 30,
+                                height: 30,
+                                minWidth: 30,
+                                minHeight: 30,
+                                borderRadius: '50%',
+                                border: 'none',
+                                backgroundColor: '#6E6E6E'
+                              }}
+                              title="Stop upload"
+                            >
+                              <Square className="w-4 h-4 fill-white stroke-white stroke-[0]" />
+                            </button>
+                        </div>
+                      );
+                    })}
                     </div>
                   </div>
                 )}
@@ -3191,7 +3561,8 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                             const isSelected = selectedItems.has(doc.id);
                             const isOpenInFileView = openFileViewDocumentId === doc.id;
                             const isHoveredDoc = hoveredPipelineDoc?.doc?.id === doc.id;
-                            const progressForThisDoc = isHoveredDoc ? pipelineProgress : null;
+                            const progressForThisDoc =
+                              isHoveredDoc ? pipelineProgress : (pipelineProgressByDocId[doc.id] ?? null);
                             const { completedStages: completedStagesForDoc } = mapPipelineProgressToStages(progressForThisDoc, doc.status);
                             const isRecentlyCreated = doc.created_at && (Date.now() - new Date(doc.created_at).getTime() <= 60000);
                             const showAsComplete = (doc.status === 'completed' && !isRecentlyCreated) || reprocessedDocs.has(doc.id);
@@ -3272,10 +3643,12 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                                           <div
                                             onMouseEnter={(e) => handlePipelineTriggerMouseEnter(doc, e)}
                                             onMouseLeave={handlePipelineTriggerMouseLeave}
-                                            className="flex items-center justify-center w-3 h-3 flex-shrink-0 cursor-default relative z-10 overflow-visible"
+                                            className="flex items-center gap-1 flex-shrink-0 cursor-default relative z-10 overflow-visible"
                                           >
                                             {!showAsComplete && (reprocessingDocs.has(doc.id) || showLoadingIndicator) ? (
-                                              <OrbitProgress color="#22c55e" size="small" dense text="" textColor="" speedPlus={1} style={{ fontSize: '2px' }} />
+                                              <div className="flex items-center justify-center w-3 h-3 flex-shrink-0">
+                                                <OrbitProgress color="#22c55e" size="small" dense text="" textColor="" speedPlus={1} style={{ fontSize: '2px' }} />
+                                              </div>
                                             ) : (
                                               <span
                                                 className="w-[5px] h-[5px] rounded-full bg-green-500/45 flex-shrink-0 block relative z-10"
@@ -3332,12 +3705,30 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                             <span className="text-[10px] text-gray-500 font-normal">
                               {getFileTypeLabelFromFilename(p.name)}
                             </span>
-                            <div className="flex items-center justify-center w-3 h-3 flex-shrink-0">
-                              <OrbitProgress color="#22c55e" size="small" dense text="" textColor="" speedPlus={1} style={{ fontSize: '2px' }} />
+                            <div className="flex items-center gap-1 flex-shrink-0">
+                              <div className="flex items-center justify-center w-3 h-3 flex-shrink-0">
+                                <OrbitProgress color="#22c55e" size="small" dense text="" textColor="" speedPlus={1} style={{ fontSize: '2px' }} />
+                              </div>
                             </div>
                           </div>
                         </div>
-                        <div className="w-6 h-6 flex-shrink-0" aria-hidden />
+                        <button
+                          type="button"
+                          onClick={() => handleStopSingleUpload(p.id, p.name)}
+                          className="flex items-center justify-center flex-shrink-0 focus:outline-none outline-none hover:opacity-90 transition-opacity"
+                          style={{
+                            width: 30,
+                            height: 30,
+                            minWidth: 30,
+                            minHeight: 30,
+                            borderRadius: '50%',
+                            border: 'none',
+                            backgroundColor: '#6E6E6E'
+                          }}
+                          title="Stop upload"
+                        >
+                          <Square className="w-4 h-4 fill-white stroke-white stroke-[0]" />
+                        </button>
                       </div>
                     );
                   })}
@@ -3346,7 +3737,8 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                   const isSelected = selectedItems.has(doc.id);
                   const isOpenInFileView = openFileViewDocumentId === doc.id;
                   const isHoveredDocFlat = hoveredPipelineDoc?.doc?.id === doc.id;
-                  const progressForThisDocFlat = isHoveredDocFlat ? pipelineProgress : null;
+                  const progressForThisDocFlat =
+                    isHoveredDocFlat ? pipelineProgress : (pipelineProgressByDocId[doc.id] ?? null);
                   const { completedStages: completedStagesForDocFlat } = mapPipelineProgressToStages(progressForThisDocFlat, doc.status);
                   const isRecentlyCreatedFlat = doc.created_at && (Date.now() - new Date(doc.created_at).getTime() <= 60000);
                   const showAsCompleteFlat = (doc.status === 'completed' && !isRecentlyCreatedFlat) || reprocessedDocs.has(doc.id);
@@ -3427,10 +3819,12 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                                 <div
                                   onMouseEnter={(e) => handlePipelineTriggerMouseEnter(doc, e)}
                                   onMouseLeave={handlePipelineTriggerMouseLeave}
-                                  className="flex items-center justify-center w-3 h-3 flex-shrink-0 cursor-default relative z-10 overflow-visible"
+                                  className="flex items-center gap-1 flex-shrink-0 cursor-default relative z-10 overflow-visible"
                                 >
                                   {!showAsCompleteFlat && (reprocessingDocs.has(doc.id) || showLoadingIndicatorFlat) ? (
-                                    <OrbitProgress color="#22c55e" size="small" dense text="" textColor="" speedPlus={1} style={{ fontSize: '2px' }} />
+                                    <div className="flex items-center justify-center w-3 h-3 flex-shrink-0">
+                                      <OrbitProgress color="#22c55e" size="small" dense text="" textColor="" speedPlus={1} style={{ fontSize: '2px' }} />
+                                    </div>
                                   ) : (
                                     <span
                                       className="w-[5px] h-[5px] rounded-full bg-green-500/45 flex-shrink-0 block relative z-10"
@@ -3625,6 +4019,32 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                         >
                           Move to folder
                         </button>
+                      )}
+                      {!isFolder && (item as Document) && (
+                        (() => {
+                          const doc = item as Document;
+                          const ageMs = doc.created_at ? Date.now() - new Date(doc.created_at).getTime() : 0;
+                          const showRetry =
+                            doc.status === 'failed' ||
+                            (doc.status === 'uploaded' && ageMs > 60000) ||
+                            (doc.status === 'processing' && ageMs > 300000);
+                          if (!showRetry) return null;
+                          return (
+                            <button
+                              onClick={() => {
+                                if (openContextMenuId && item) {
+                                  handleReprocessDocument(item as Document, { stopPropagation: () => {} } as React.MouseEvent);
+                                  setOpenContextMenuId(null);
+                                  setContextMenuPosition(null);
+                                }
+                              }}
+                              disabled={reprocessingDocs.has((item as Document).id)}
+                              className="w-full px-2 py-1 text-left text-xs text-slate-700 hover:bg-slate-100 transition-colors truncate disabled:opacity-50"
+                            >
+                              {reprocessingDocs.has((item as Document).id) ? 'Retrying...' : 'Retry processing'}
+                            </button>
+                          );
+                        })()
                       )}
                       <button
                         onClick={() => {

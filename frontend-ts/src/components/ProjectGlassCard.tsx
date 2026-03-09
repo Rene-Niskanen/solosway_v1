@@ -3,7 +3,7 @@
 /**
  * ProjectGlassCard - Displays a project card with glassmorphism styling
  * 
- * IMPORTANT: In Velora, Properties (property pins) = Projects
+ * IMPORTANT: In OpenFind, Properties (property pins) = Projects
  * This component accepts property data and displays it as a project card.
  * 
  * Supports drag-and-drop: Documents can be dropped onto this card to link them.
@@ -37,7 +37,7 @@ interface PropertyData {
 }
 
 interface ProjectGlassCardProps {
-  /** Property data (which represents a Project in Velora) */
+  /** Property data (which represents a Project in OpenFind) */
   property: PropertyData;
   onClick?: () => void;
   /** Callback when a document is dropped onto this card */

@@ -121,7 +121,7 @@ export const AuthGuard: React.FC<AuthGuardProps> = ({ children }) => {
     </div>
   );
 
-  // Show loading state - Velora logo
+  // Show loading state - OpenFind logo
   if (isLoading) {
     return loadingScreen;
   }

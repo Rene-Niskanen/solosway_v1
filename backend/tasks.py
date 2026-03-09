@@ -778,23 +778,37 @@ def process_document_classification(self, document_id, original_filename, busine
         
         logger.info(f"✅ Retrieved document {document_id} from Supabase")
         
-        # Download file from S3 (avoids passing large payload through Celery from upload request)
-        try:
-            file_content, _ = _download_document_bytes_from_s3(str(document_id), business_id)
-        except Exception as e:
-            logger.error(f"Failed to download document from S3: {e}")
-            try:
-                doc_storage.update_document_status(
-                    document_id=str(document_id),
-                    status='failed',
-                    business_id=business_id
-                )
-            except Exception as status_err:
-                pass
-            return {"error": f"Failed to download from S3: {str(e)}"}
-        
-        # Store document_dict for later use (will replace document.attribute with document_dict['attribute'] in Phase 2)
         document = document_dict
+        document_summary = get_document_summary_safe(document)
+        use_preparsed = bool(document_summary.get('reducto_chunks'))
+        
+        if use_preparsed:
+            # Pre-parsed at upload - skip download and parse
+            logger.info(f"✅ Using pre-parsed data from upload ({len(document_summary['reducto_chunks'])} chunks)")
+            document_text = document_summary.get('reducto_parsed_text') or '\n\n'.join(
+                ch.get('content', '') for ch in document_summary['reducto_chunks'] if isinstance(ch, dict)
+            )
+            chunks = document_summary['reducto_chunks']
+            job_id = document_summary.get('reducto_job_id')
+            image_urls = document_summary.get('reducto_image_urls', [])
+            image_blocks_metadata = document_summary.get('reducto_image_blocks_metadata', [])
+            file_content = b''
+            temp_file_path = None
+        else:
+            # Download file from S3 (avoids passing large payload through Celery from upload request)
+            try:
+                file_content, _ = _download_document_bytes_from_s3(str(document_id), business_id)
+            except Exception as e:
+                logger.error(f"Failed to download document from S3: {e}")
+                try:
+                    doc_storage.update_document_status(
+                        document_id=str(document_id),
+                        status='failed',
+                        business_id=business_id
+                    )
+                except Exception as status_err:
+                    pass
+                return {"error": f"Failed to download from S3: {str(e)}"}
         
         # Initialize processing history service
         history_service = ProcessingHistoryService()
@@ -812,31 +826,30 @@ def process_document_classification(self, document_id, original_filename, busine
                 logger.info(f"📍 Extracted address from filename: '{filename_address}' (confidence: {filename_confidence:.2f})")
                 
                 # Store filename address in document metadata (Supabase document_summary JSONB)
-                # Use helper function to safely parse document_summary
-                document_summary = get_document_summary_safe(document)
-                
-                document_summary['filename_address'] = filename_address
-                document_summary['filename_address_confidence'] = filename_confidence
-                document_summary['address_source'] = 'filename'
+                document_summary_inner = get_document_summary_safe(document)
+                document_summary_inner['filename_address'] = filename_address
+                document_summary_inner['filename_address_confidence'] = filename_confidence
+                document_summary_inner['address_source'] = 'filename'
                 
                 # Update document in Supabase
                 doc_storage.update_document_status(
                     document_id=str(document_id),
-                    status=document.get('status', 'uploaded'),  # Keep current status
+                    status=document.get('status', 'uploaded'),
                     business_id=business_id,
-                    additional_data={'document_summary': document_summary}
+                    additional_data={'document_summary': document_summary_inner}
                 )
                 logger.info(f"✅ Saved filename address to document metadata in Supabase")
             else:
                 logger.info(f"ℹ️  No address found in filename, will rely on document content extraction")
             
             # Log step start
+            file_size_for_log = len(file_content) if file_content else document.get('file_size', 0)
             history_id = history_service.log_step_start(
                 document_id=str(document_id),
                 step_name='classification',
                 step_metadata={
                     'filename': original_filename,
-                    'file_size': len(file_content),
+                    'file_size': file_size_for_log,
                     'business_id': business_id
                 }
             )
@@ -849,408 +862,438 @@ def process_document_classification(self, document_id, original_filename, busine
             )
             logger.info(f"✅ Updated document status to 'processing' in Supabase")
             
-            # Save file temporarily for parsing (preserve original extension)
-            file_ext = os.path.splitext(original_filename)[1] or '.pdf'
-            with tempfile.NamedTemporaryFile(suffix=file_ext, delete=False) as temp_file:
-                temp_file.write(file_content)
-                temp_file_path = temp_file.name
+            if not use_preparsed:
+                # Save file temporarily for parsing (preserve original extension)
+                file_ext = os.path.splitext(original_filename)[1] or '.pdf'
+                with tempfile.NamedTemporaryFile(suffix=file_ext, delete=False) as temp_file:
+                    temp_file.write(file_content)
+                    temp_file_path = temp_file.name
             
             # Initialize classification_result to None to handle error cases
             classification_result = None
             
-            try:
-                # REDUCTO PATH: Parse and classify using Reducto (section-based chunking)
-                logger.info(f"Using Reducto for parsing and classification (section-based chunking): {original_filename}")
-                from .services.reducto_service import ReductoService
-                
-                reducto = ReductoService()
-                
-                # Parse document - always use async for concurrent file processing
-                # Now uses section-based chunking to maintain document structure
-                file_size_mb = len(file_content) / (1024 * 1024)
-                logger.info(f"📦 Processing file ({file_size_mb:.2f}MB) with async parsing")
-                
-                # Detect if handwritten text is present (cost optimization)
-                from .services.handwritten_detection_service import HandwrittenDetectionService
-                handwritten_detector = HandwrittenDetectionService()
-                handwritten_check = handwritten_detector.detect_handwritten_text(
-                    file_path=temp_file_path,
-                    reducto_service=reducto
-                )
-                needs_agentic = handwritten_check['needs_agentic']
-                logger.info(f"🔍 Handwritten detection: {handwritten_check['reason']} (needs_agentic={needs_agentic})")
-                
-                parse_result = reducto.parse_document(
-                    file_path=temp_file_path,
-                    return_images=["figure", "table"],
-                    use_async=True,  # Always async for concurrent processing
-                    use_agentic=needs_agentic  # Only enable if handwritten detected
-                )
-                
-                job_id = parse_result['job_id']
-                document_text = parse_result['document_text']
-                image_urls = parse_result['image_urls']
-                chunks = parse_result.get('chunks', [])
-                image_blocks_metadata = parse_result.get('image_blocks_metadata', [])
-                
-                logger.info(f"✅ Reducto Parse completed (section-based chunking). Job ID: {job_id}")
-                logger.info(f"📄 Extracted {len(document_text)} characters of text")
-                logger.info(f"📸 Found {len(image_urls)} images")
-                logger.info(f"📦 Extracted {len(chunks)} section-based chunks")
-                
-                # ========================================================================
-                # PHASE 4: LOCAL ADDRESS EXTRACTION (for file system linking)
-                # ========================================================================
-                property_address = None
-                address_source = None
-                address_hash = None
-                normalized_address = None
-                
-                # Only extract address if local extraction is enabled
-                use_local_extraction = os.environ.get('USE_LOCAL_ADDRESS_EXTRACTION', 'true').lower() == 'true'
-                
-                if use_local_extraction and chunks:
-                    try:
-                        from .services.local_address_extraction_service import LocalAddressExtractionService
-                        from .services.address_service import AddressNormalizationService
-                        from .services.supabase_property_hub_service import SupabasePropertyHubService
+            if not use_preparsed:
+                try:
+                    # REDUCTO PATH: Parse and classify using Reducto (section-based chunking)
+                    extraction_mode = document_summary.get('extraction_mode') or 'standard'
+                    logger.info(f"Using Reducto for parsing and classification (section-based chunking): {original_filename} (extraction_mode={extraction_mode})")
+                    from .services.reducto_service import ReductoService
+                    
+                    reducto = ReductoService()
+                    
+                    file_size_mb = len(file_content) / (1024 * 1024)
+                    logger.info(f"📦 Processing file ({file_size_mb:.2f}MB) with async parsing")
+                    
+                    if extraction_mode == 'deep':
+                        # Detect if handwritten text is present (cost optimization)
+                        from .services.handwritten_detection_service import HandwrittenDetectionService
+                        handwritten_detector = HandwrittenDetectionService()
+                        handwritten_check = handwritten_detector.detect_handwritten_text(
+                            file_path=temp_file_path,
+                            reducto_service=reducto
+                        )
+                        needs_agentic = handwritten_check['needs_agentic']
+                        logger.info(f"🔍 Handwritten detection: {handwritten_check['reason']} (needs_agentic={needs_agentic})")
                         
-                        # Extract address using Ollama (for file system linking only)
-                        logger.info("🔍 Starting local address extraction from document chunks...")
-                        address_extractor = LocalAddressExtractionService()
-                        address_result = address_extractor.extract_address_from_chunks(
-                            chunks=chunks[:10],  # First 10 chunks usually contain address
-                            max_chunks=10
+                        parse_result = reducto.parse_document(
+                            file_path=temp_file_path,
+                            return_images=["figure", "table"],
+                            use_async=True,
+                            use_agentic=needs_agentic
+                        )
+                    else:
+                        parse_result = reducto.parse_document_fast(
+                            file_path=temp_file_path,
+                            use_sync_for_small=False
+                        )
+                    
+                    job_id = parse_result['job_id']
+                    document_text = parse_result['document_text']
+                    image_urls = parse_result['image_urls']
+                    chunks = parse_result.get('chunks', [])
+                    image_blocks_metadata = parse_result.get('image_blocks_metadata', [])
+                    
+                    logger.info(f"✅ Reducto Parse completed (section-based chunking). Job ID: {job_id}")
+                    logger.info(f"📄 Extracted {len(document_text)} characters of text")
+                    logger.info(f"📸 Found {len(image_urls)} images")
+                    logger.info(f"📦 Extracted {len(chunks)} section-based chunks")
+                except Exception as parse_err:
+                    logger.error(f"❌ Reducto parse failed: {parse_err}", exc_info=True)
+                    raise
+            
+            # ========================================================================
+            # PHASE 4: LOCAL ADDRESS EXTRACTION (for file system linking)
+            # ========================================================================
+            property_address = None
+            address_source = None
+            address_hash = None
+            normalized_address = None
+            
+            # Only extract address if local extraction is enabled
+            use_local_extraction = os.environ.get('USE_LOCAL_ADDRESS_EXTRACTION', 'true').lower() == 'true'
+            
+            if use_local_extraction and chunks:
+                try:
+                    from .services.local_address_extraction_service import LocalAddressExtractionService
+                    from .services.address_service import AddressNormalizationService
+                    from .services.supabase_property_hub_service import SupabasePropertyHubService
+                    
+                    # Extract address using Ollama (for file system linking only)
+                    logger.info("🔍 Starting local address extraction from document chunks...")
+                    address_extractor = LocalAddressExtractionService()
+                    address_result = address_extractor.extract_address_from_chunks(
+                        chunks=chunks[:10],  # First 10 chunks usually contain address
+                        max_chunks=10
+                    )
+                    
+                    # Determine address to use (Priority: Ollama > Filename > None)
+                    if address_result and address_result.get('address'):
+                        property_address = address_result['address']
+                        address_source = 'ollama_extraction'
+                        logger.info(f"📍 Address extracted via Ollama: {property_address}")
+                    else:
+                        # Fallback to filename extraction
+                        logger.info("📍 Ollama extraction failed, trying filename extraction...")
+                        from .services.filename_address_service import FilenameAddressService
+                        filename_service = FilenameAddressService()
+                        filename_address = filename_service.extract_address_from_filename(original_filename)
+                        
+                        if filename_address:
+                            property_address = filename_address
+                            address_source = 'filename'
+                            logger.info(f"📍 Address extracted from filename: {property_address}")
+                        else:
+                            logger.warning("⚠️ No address found (Ollama + filename both failed)")
+                    
+                    # Normalize address and link to property (file system only)
+                    if property_address:
+                        address_service = AddressNormalizationService()
+                        # normalize_address() returns a string, not a dict
+                        normalized_address = address_service.normalize_address(property_address)
+                        # Compute hash separately
+                        address_hash = address_service.compute_address_hash(normalized_address)
+                        
+                        logger.info(f"✅ Address normalized: {normalized_address}")
+                        logger.info(f"✅ Address hash: {address_hash}")
+                        
+                        # Link document to property (file system only, no map display)
+                        property_hub = SupabasePropertyHubService()
+                        
+                        # Build address_data dict for function call (matches function signature)
+                        address_data = {
+                            'original_address': property_address,
+                            'normalized_address': normalized_address,
+                            'address_hash': address_hash,
+                            'formatted_address': normalized_address  # Use normalized as formatted
+                        }
+                        
+                        property_record = property_hub.create_property_with_relationships(
+                            address_data=address_data,
+                            document_id=str(document_id),
+                            business_id=business_id,
+                            extracted_data=None,  # No extraction data (address extraction only)
+                            skip_property_updates=True  # ✅ No property_details = no map display
                         )
                         
-                        # Determine address to use (Priority: Ollama > Filename > None)
-                        if address_result and address_result.get('address'):
-                            property_address = address_result['address']
-                            address_source = 'ollama_extraction'
-                            logger.info(f"📍 Address extracted via Ollama: {property_address}")
+                        if property_record and property_record.get('success'):
+                            linked_property_id = property_record.get('property_id')
+                            logger.info(f"✅ Document linked to property (file system only): {linked_property_id}")
+                            
+                            # Store property_id in document_summary for later use
+                            if linked_property_id:
+                                document_summary['linked_property_id'] = str(linked_property_id)
                         else:
-                            # Fallback to filename extraction
-                            logger.info("📍 Ollama extraction failed, trying filename extraction...")
-                            from .services.filename_address_service import FilenameAddressService
-                            filename_service = FilenameAddressService()
-                            filename_address = filename_service.extract_address_from_filename(original_filename)
-                            
-                            if filename_address:
-                                property_address = filename_address
-                                address_source = 'filename'
-                                logger.info(f"📍 Address extracted from filename: {property_address}")
-                            else:
-                                logger.warning("⚠️ No address found (Ollama + filename both failed)")
-                        
-                        # Normalize address and link to property (file system only)
-                        if property_address:
-                            address_service = AddressNormalizationService()
-                            # normalize_address() returns a string, not a dict
-                            normalized_address = address_service.normalize_address(property_address)
-                            # Compute hash separately
-                            address_hash = address_service.compute_address_hash(normalized_address)
-                            
-                            logger.info(f"✅ Address normalized: {normalized_address}")
-                            logger.info(f"✅ Address hash: {address_hash}")
-                            
-                            # Link document to property (file system only, no map display)
-                            property_hub = SupabasePropertyHubService()
-                            
-                            # Build address_data dict for function call (matches function signature)
-                            address_data = {
-                                'original_address': property_address,
-                                'normalized_address': normalized_address,
-                                'address_hash': address_hash,
-                                'formatted_address': normalized_address  # Use normalized as formatted
-                            }
-                            
-                            property_record = property_hub.create_property_with_relationships(
-                                address_data=address_data,
-                                document_id=str(document_id),
-                                business_id=business_id,
-                                extracted_data=None,  # No extraction data (address extraction only)
-                                skip_property_updates=True  # ✅ No property_details = no map display
-                            )
-                            
-                            if property_record and property_record.get('success'):
-                                linked_property_id = property_record.get('property_id')
-                                logger.info(f"✅ Document linked to property (file system only): {linked_property_id}")
-                                
-                                # Store property_id in document_summary for later use
-                                if linked_property_id:
-                                    document_summary['linked_property_id'] = str(linked_property_id)
-                            else:
-                                error_msg = property_record.get('error', 'Unknown error') if property_record else 'No response'
-                                logger.warning(f"⚠️ Failed to link document to property: {error_msg}")
-                        
-                    except Exception as e:
-                        logger.error(f"❌ Address extraction/linking failed: {e}", exc_info=True)
-                        # Continue processing even if address extraction fails
-                        property_address = None
-                
-                # Store job_id and image URLs in metadata (Supabase document_summary JSONB)
-                # Use helper function to safely parse document_summary
-                document_summary = get_document_summary_safe(document)
-                
-                document_summary['reducto_job_id'] = job_id
-                document_summary['reducto_parse_timestamp'] = datetime.utcnow().isoformat()
-                document_summary['reducto_image_urls'] = image_urls
-                document_summary['reducto_image_blocks_metadata'] = image_blocks_metadata
-                if chunks:
-                    # Store FULL chunks structure with bbox metadata for later retrieval
-                    # This ensures bbox data is available even if Reducto job_id expires
-                    chunks_data = []
-                    for chunk in chunks:
-                        chunks_data.append({
-                            'content': chunk.get('content', ''),
-                            'embed': chunk.get('embed', ''),
-                            'enriched': chunk.get('enriched'),
-                            'bbox': chunk.get('bbox'),
-                            'blocks': chunk.get('blocks', [])
-                        })
-                    document_summary['reducto_chunks'] = chunks_data
-                    document_summary['reducto_chunk_count'] = len(chunks)
-                    logger.info(f"✅ Stored {len(chunks_data)} chunks with bbox metadata in document metadata")
-                
-                # Store extracted address information (Phase 4: Local Address Extraction)
-                if property_address:
-                    document_summary['extracted_address'] = property_address
-                    document_summary['address_source'] = address_source
-                    if normalized_address:
-                        document_summary['normalized_address'] = normalized_address
-                    if address_hash:
-                        document_summary['address_hash'] = address_hash
-                    logger.info(f"✅ Stored address in document_summary: {property_address} (source: {address_source})")
-                else:
-                    logger.info("ℹ️ No address extracted - document will not be linked to property")
-
-                # Identify boilerplate candidates
-                try:
-                    from backend.services.structure_extraction_service import StructureExtractionService
-                    structure_service = StructureExtractionService()
-
-                    boilerplate_info = structure_service.identify_boilerplate(
-                        document_text=document_text,
-                        chunks=chunks,
-                        threashold_percent=25.0
-                    )
-
-                    # store boilerplate info in document_summary
-                    document_summary['boilerplate_lines'] = boilerplate_info['boilerplate_lines']
-                    document_summary['common_header'] = boilerplate_info['common_header']
-                    document_summary['common_footer'] = boilerplate_info['common_footer']
-
-                    logger.info(
-                        f"Identified {len(boilerplate_info['boilerplate_lines'])} boilerplate lines "
-                        f"({len(boilerplate_info['common_header'])} headers, "
-                        f"{len(boilerplate_info['common_footer'])} footers)"
-                    )
-                
+                            error_msg = property_record.get('error', 'Unknown error') if property_record else 'No response'
+                            logger.warning(f"⚠️ Failed to link document to property: {error_msg}")
+                    
                 except Exception as e:
-                    logger.warning(f"Boilerplate identification failed: {e}")
-                    # continue without boilerplate info 
-                    document_summary['boilerplate_lines'] = []
-                    document_summary['common_header'] = []
-                    document_summary['common_footer'] = []
+                    logger.error(f"❌ Address extraction/linking failed: {e}", exc_info=True)
+                    # Continue processing even if address extraction fails
+                    property_address = None
+            
+            # Store job_id and image URLs in metadata (Supabase document_summary JSONB)
+            # Use helper function to safely parse document_summary
+            document_summary = get_document_summary_safe(document)
+            
+            document_summary['reducto_job_id'] = job_id
+            document_summary['reducto_parse_timestamp'] = datetime.utcnow().isoformat()
+            document_summary['reducto_image_urls'] = image_urls
+            document_summary['reducto_image_blocks_metadata'] = image_blocks_metadata
+            if chunks:
+                # Store FULL chunks structure with bbox metadata for later retrieval
+                chunks_data = []
+                for chunk in chunks:
+                    chunks_data.append({
+                        'content': chunk.get('content', ''),
+                        'embed': chunk.get('embed', ''),
+                        'enriched': chunk.get('enriched'),
+                        'bbox': chunk.get('bbox'),
+                        'blocks': chunk.get('blocks', [])
+                    })
+                document_summary['reducto_chunks'] = chunks_data
+                document_summary['reducto_chunk_count'] = len(chunks)
+                logger.info(f"✅ Stored {len(chunks_data)} chunks with bbox metadata in document metadata")
+            
+            # Store extracted address information (Phase 4: Local Address Extraction)
+            if property_address:
+                document_summary['extracted_address'] = property_address
+                document_summary['address_source'] = address_source
+                if normalized_address:
+                    document_summary['normalized_address'] = normalized_address
+                if address_hash:
+                    document_summary['address_hash'] = address_hash
+                logger.info(f"✅ Stored address in document_summary: {property_address} (source: {address_source})")
+            else:
+                logger.info("ℹ️ No address extracted - document will not be linked to property")
 
+            # Identify boilerplate candidates
+            try:
+                from backend.services.structure_extraction_service import StructureExtractionService
+                structure_service = StructureExtractionService()
 
-                # Store parsed text and metadata in Supabase
-                doc_storage.update_document_extraction(
-                    document_id=str(document_id),
-                    parsed_text=document_text,
-                    extracted_json={},  # Will be populated later in extraction step
-                    business_id=business_id
+                boilerplate_info = structure_service.identify_boilerplate(
+                    document_text=document_text,
+                    chunks=chunks,
+                    threashold_percent=25.0
                 )
-                
-                # Update document_summary using dedicated method with proper JSONB merging
-                # This ensures job_id, chunks, and other metadata are preserved
-                summary_updates = {
-                        'reducto_job_id': job_id,
-                        'reducto_parse_timestamp': datetime.utcnow().isoformat(),
-                        'reducto_image_urls': image_urls,
-                        'reducto_image_blocks_metadata': image_blocks_metadata,
-                        'reducto_chunks': chunks_data if chunks else [],
-                    'reducto_chunk_count': len(chunks) if chunks else 0,
-                        # Add in the boilerplate info 
-                        'boilerplate_lines': document_summary.get('boilerplate_lines', []),
-                    'common_header': document_summary.get('common_header', []),
-                    'common_footer': document_summary.get('common_footer', [])
+
+                document_summary['boilerplate_lines'] = boilerplate_info['boilerplate_lines']
+                document_summary['common_header'] = boilerplate_info['common_header']
+                document_summary['common_footer'] = boilerplate_info['common_footer']
+
+                logger.info(
+                    f"Identified {len(boilerplate_info['boilerplate_lines'])} boilerplate lines "
+                    f"({len(boilerplate_info['common_header'])} headers, "
+                    f"{len(boilerplate_info['common_footer'])} footers)"
+                )
+            except Exception as e:
+                logger.warning(f"Boilerplate identification failed: {e}")
+                document_summary['boilerplate_lines'] = []
+                document_summary['common_header'] = []
+                document_summary['common_footer'] = []
+
+            # Store parsed text and metadata in Supabase
+            doc_storage.update_document_extraction(
+                document_id=str(document_id),
+                parsed_text=document_text,
+                extracted_json={},
+                business_id=business_id
+            )
+            
+            # Update document_summary using dedicated method with proper JSONB merging
+            summary_updates = {
+                'reducto_job_id': job_id,
+                'reducto_parse_timestamp': datetime.utcnow().isoformat(),
+                'reducto_image_urls': image_urls,
+                'reducto_image_blocks_metadata': image_blocks_metadata,
+                'reducto_chunks': chunks_data if chunks else [],
+                'reducto_chunk_count': len(chunks) if chunks else 0,
+                'boilerplate_lines': document_summary.get('boilerplate_lines', []),
+                'common_header': document_summary.get('common_header', []),
+                'common_footer': document_summary.get('common_footer', [])
+            }
+            
+            if property_address:
+                summary_updates['extracted_address'] = property_address
+                summary_updates['address_source'] = address_source
+                if normalized_address:
+                    summary_updates['normalized_address'] = normalized_address
+                if address_hash:
+                    summary_updates['address_hash'] = address_hash
+                if 'linked_property_id' in document_summary:
+                    summary_updates['linked_property_id'] = document_summary['linked_property_id']
+                logger.info(f"✅ Including address in document_summary: {property_address} (source: {address_source})")
+            
+            doc_storage.update_document_summary(
+                document_id=str(document_id),
+                business_id=business_id,
+                updates=summary_updates,
+                merge=True
+            )
+            
+            if property_address and 'linked_property_id' in document_summary:
+                linked_property_id = document_summary['linked_property_id']
+                try:
+                    from .services.supabase_document_service import SupabaseDocumentService
+                    doc_service = SupabaseDocumentService()
+                    doc_service.update_document(
+                        document_id=str(document_id),
+                        document_data={'property_id': linked_property_id}
+                    )
+                    logger.info(f"✅ Updated property_id in documents table: {linked_property_id}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to update property_id in documents table: {e}")
+            
+            # Compute page_count
+            pdf_pages = get_pdf_page_count_from_bytes(file_content) if file_content else None
+            page_numbers = []
+            for ch in (chunks or []):
+                p = extract_page_number_from_chunk(ch)
+                if p is not None:
+                    page_numbers.append(p)
+            max_page_from_chunks = max(page_numbers) if page_numbers else 0
+            page_count = pdf_pages if pdf_pages is not None else max_page_from_chunks
+
+            doc_storage.update_document_status(
+                document_id=str(document_id),
+                status='processing',
+                business_id=business_id,
+                additional_data={'page_count': page_count}
+            )
+            logger.info(f"✅ Stored parsed text and metadata in Supabase (page_count={page_count})")
+            
+            # Feature flag: Use local address extraction instead of Reducto
+            use_local_extraction = os.environ.get('USE_LOCAL_ADDRESS_EXTRACTION', 'true').lower() == 'true'
+            
+            if use_local_extraction:
+                classification_result = {
+                    'type': 'other_documents',
+                    'confidence': 0.5,
+                    'reasoning': 'Classification skipped for cost optimization (use RAG for document queries)',
+                    'method': 'default'
                 }
-                
-                # Add address information if extracted (Phase 4)
-                if property_address:
-                    summary_updates['extracted_address'] = property_address
-                    summary_updates['address_source'] = address_source
-                    if normalized_address:
-                        summary_updates['normalized_address'] = normalized_address
-                    if address_hash:
-                        summary_updates['address_hash'] = address_hash
-                    if 'linked_property_id' in document_summary:
-                        summary_updates['linked_property_id'] = document_summary['linked_property_id']
-                    logger.info(f"✅ Including address in document_summary: {property_address} (source: {address_source})")
-                
+                logger.info("ℹ️ Reducto classification skipped (USE_LOCAL_ADDRESS_EXTRACTION=true)")
+            else:
+                logger.info("🔄 Using Reducto classification (USE_LOCAL_ADDRESS_EXTRACTION=false)")
+                reducto = ReductoService()
+                classification = reducto.classify_document(job_id)
+                confidence_numeric = convert_confidence_to_numeric(classification['confidence'])
+                classification_result = {
+                    'type': classification['document_type'],
+                    'confidence': confidence_numeric,
+                    'reasoning': f"Reducto classification: {classification['document_type']} (confidence: {classification['confidence']})",
+                    'method': 'reducto_extract'
+                }
+            
+            doc_storage.update_document_summary(
+                document_id=str(document_id),
+                business_id=business_id,
+                updates={
+                    'reducto_parsed_text': document_text,
+                    'reducto_image_urls': image_urls,
+                },
+                merge=True
+            )
+            if image_blocks_metadata:
                 doc_storage.update_document_summary(
                     document_id=str(document_id),
                     business_id=business_id,
-                    updates=summary_updates,
-                    merge=True  # Merge with existing document_summary to preserve other fields
+                    updates={'reducto_image_blocks_metadata': image_blocks_metadata},
+                    merge=True
                 )
-                
-                # Also update property_id in documents table if linked (Phase 4)
-                if property_address and 'linked_property_id' in document_summary:
-                    linked_property_id = document_summary['linked_property_id']
-                    try:
-                        from .services.supabase_document_service import SupabaseDocumentService
-                        doc_service = SupabaseDocumentService()
-                        doc_service.update_document(
-                            document_id=str(document_id),
-                            document_data={'property_id': linked_property_id}
-                        )
-                        logger.info(f"✅ Updated property_id in documents table: {linked_property_id}")
-                    except Exception as e:
-                        logger.warning(f"⚠️ Failed to update property_id in documents table: {e}")
-                
-                # Compute page_count: use actual PDF page count when available, else max from chunks
-                pdf_pages = get_pdf_page_count_from_bytes(file_content) if file_content else None
-                page_numbers = []
-                for ch in (chunks or []):
-                    p = extract_page_number_from_chunk(ch)
-                    if p is not None:
-                        page_numbers.append(p)
-                max_page_from_chunks = max(page_numbers) if page_numbers else 0
-                page_count = pdf_pages if pdf_pages is not None else max_page_from_chunks
-
-                # Also update status and page_count (separate call)
+            
+            # Generate and store key facts once
+            try:
+                from .services.key_facts_service import build_key_facts_and_text
+                doc_for_facts = {
+                    **document,
+                    'document_summary': document_summary,
+                    'parsed_text': document_text,
+                }
+                key_facts, llm_summary, key_facts_text = build_key_facts_and_text(
+                    doc_for_facts, document_id=str(document_id)
+                )
+                summary_for_storage = llm_summary or document_summary.get('summary') or ''
+                updates = {
+                    'stored_key_facts': key_facts,
+                    'summary': summary_for_storage,
+                }
+                if key_facts_text:
+                    updates['key_facts_text'] = key_facts_text
+                doc_storage.update_document_summary(
+                    document_id=str(document_id),
+                    business_id=business_id,
+                    updates=updates,
+                    merge=True,
+                )
+                logger.info(f"✅ Stored key facts for document {document_id} ({len(key_facts)} facts)")
+            except Exception as kf_err:
+                logger.warning("Key facts generation during pipeline failed (non-fatal): %s", kf_err)
+            
+            if history_id:
+                history_service.log_step_completion(
+                    history_id=history_id,
+                    step_message=f"Text extraction completed: {len(document_text)} characters",
+                    step_metadata={
+                        'text_length': len(document_text),
+                        'provider': 'reducto'
+                    }
+                )
+            
+            # Store classification and trigger extraction (success path - was missing, only ran in except)
+            if classification_result is not None:
+                doc_storage.update_document_classification(
+                    document_id=str(document_id),
+                    classification_type=classification_result['type'],
+                    classification_confidence=classification_result['confidence'],
+                    business_id=business_id
+                )
                 doc_storage.update_document_status(
                     document_id=str(document_id),
-                    status='processing',  # Keep processing status
+                    status='processing',
                     business_id=business_id,
-                    additional_data={'page_count': page_count}
+                    additional_data={'classification_timestamp': datetime.utcnow().isoformat()}
                 )
-                logger.info(f"✅ Stored parsed text and metadata in Supabase (page_count={page_count})")
-                
-                # Phase 5: REMOVED duplicate vector creation from classification step
-                # Vector creation now happens in extraction step with proper metadata:
-                # - property_id (from property linking)
-                # - classification_type (from classification)
-                # - address_hash (from extraction)
-                # This eliminates duplicate embeddings and ensures metadata is complete.
-                
-                # Feature flag: Use local address extraction instead of Reducto
-                use_local_extraction = os.environ.get('USE_LOCAL_ADDRESS_EXTRACTION', 'true').lower() == 'true'
-                
-                if use_local_extraction:
-                    # Skip Reducto classification (cost optimization)
-                    # Use default classification - local model will extract address
-                    classification_result = {
-                        'type': 'other_documents',  # Default classification
-                        'confidence': 0.5,
-                        'reasoning': 'Classification skipped for cost optimization (use RAG for document queries)',
-                        'method': 'default'
-                    }
-                    logger.info("ℹ️ Reducto classification skipped (USE_LOCAL_ADDRESS_EXTRACTION=true)")
-                else:
-                    # Use Reducto classification (legacy mode for testing/comparison)
-                    logger.info("🔄 Using Reducto classification (USE_LOCAL_ADDRESS_EXTRACTION=false)")
-                    classification = reducto.classify_document(job_id)
-                    
-                    # Convert string confidence to numeric for compatibility
-                    confidence_numeric = convert_confidence_to_numeric(classification['confidence'])
-                    
-                    classification_result = {
-                        'type': classification['document_type'],
-                        'confidence': confidence_numeric,
-                        'reasoning': f"Reducto classification: {classification['document_type']} (confidence: {classification['confidence']})",
-                        'method': 'reducto_extract'
-                    }
-                
-                # parsed_text and job_id already stored above via update_document_summary
-                # Just ensure classification metadata is also stored
-                # Note: reducto_job_id was already stored in update_document_summary call above (line 819-831)
-                doc_storage.update_document_summary(
-                    document_id=str(document_id),
-                    business_id=business_id,
-                    updates={
-                        'reducto_parsed_text': document_text,  # backup
-                        'reducto_image_urls': image_urls,
-                    },
-                    merge=True  # Merge to preserve reducto_job_id and other fields
-                )
-                if image_blocks_metadata:
-                    doc_storage.update_document_summary(
-                    document_id=str(document_id),
-                    business_id=business_id,
-                        updates={'reducto_image_blocks_metadata': image_blocks_metadata},
-                        merge=True
-                )
-                
-                # Generate and store key facts once (so key-facts API returns instantly on refresh)
-                try:
-                    from .services.key_facts_service import build_key_facts_and_text
-                    doc_for_facts = {
-                        **document,
-                        'document_summary': document_summary,
-                        'parsed_text': document_text,
-                    }
-                    key_facts, llm_summary, key_facts_text = build_key_facts_and_text(
-                        doc_for_facts, document_id=str(document_id)
-                    )
-                    summary_for_storage = llm_summary or document_summary.get('summary') or ''
-                    updates = {
-                        'stored_key_facts': key_facts,
-                        'summary': summary_for_storage,
-                    }
-                    if key_facts_text:
-                        updates['key_facts_text'] = key_facts_text
-                    doc_storage.update_document_summary(
-                        document_id=str(document_id),
-                        business_id=business_id,
-                        updates=updates,
-                        merge=True,
-                    )
-                    logger.info(f"✅ Stored key facts for document {document_id} ({len(key_facts)} facts)")
-                except Exception as kf_err:
-                    logger.warning("Key facts generation during pipeline failed (non-fatal): %s", kf_err)
-                
-                # Log text extraction success (non-fatal if history_id is None)
                 if history_id:
                     history_service.log_step_completion(
                         history_id=history_id,
-                        step_message=f"Text extraction completed: {len(document_text)} characters",
+                        step_message=f"Document classified as '{classification_result['type']}' with confidence {classification_result['confidence']:.2f}",
                         step_metadata={
-                            'text_length': len(document_text),
-                            'provider': 'reducto'
+                            'classification_type': classification_result['type'],
+                            'classification_confidence': classification_result['confidence'],
+                            'classification_reasoning': classification_result['reasoning']
                         }
                     )
-                
-            except Exception as e:
-                logger.error(f"Reducto extraction failed: {e}")
-                # Use fallback text extraction
-                document_text = f"Document: {original_filename}\nSize: {len(file_content)} bytes"
-                # Store fallback text in Supabase
-                doc_storage.update_document_extraction(
-                    document_id=str(document_id),
-                    parsed_text=document_text,
-                    extracted_json={},
-                    business_id=business_id
-                )
-                
-                # Log text extraction with fallback (non-fatal if history_id is None)
-                if history_id:
-                    history_service.log_step_completion(
-                        history_id=history_id,
-                        step_message=f"Text extraction completed with fallback: {len(document_text)} characters",
-                        step_metadata={
-                            'text_length': len(document_text),
+                job_id_for_extraction = None
+                if 'job_id' in locals() and job_id:
+                    job_id_for_extraction = job_id
+                else:
+                    job_id_for_extraction = get_document_summary_safe(document).get('reducto_job_id')
+                time.sleep(1.0)
+                if classification_result['type'] in ['valuation_report', 'market_appraisal']:
+                    task = process_document_with_dual_stores.delay(
+                        document_id=document_id,
+                        original_filename=original_filename,
+                        business_id=business_id,
+                        job_id=job_id_for_extraction
+                    )
+                    logger.info(f"✅ EXTRACTION TASK QUEUED: {task.id}")
+                else:
+                    task = process_document_minimal_extraction.delay(
+                        document_id=document_id,
+                        original_filename=original_filename,
+                        business_id=business_id,
+                        job_id=job_id_for_extraction
+                    )
+                    logger.info(f"✅ MINIMAL EXTRACTION TASK QUEUED: {task.id}")
+                try:
+                    _r.delete(crash_key)
+                except Exception:
+                    pass
+                return task
+        
+        except Exception as e:
+            logger.error(f"Reducto extraction failed: {e}")
+            document_text = f"Document: {original_filename}\nSize: {len(file_content)} bytes"
+            doc_storage.update_document_extraction(
+                document_id=str(document_id),
+                parsed_text=document_text,
+                extracted_json={},
+                business_id=business_id
+            )
+            if history_id:
+                history_service.log_step_completion(
+                    history_id=history_id,
+                    step_message=f"Text extraction completed with fallback: {len(document_text)} characters",
+                    step_metadata={
+                        'text_length': len(document_text),
                         'fallback_used': True,
                         'extraction_error': str(e),
                         'provider': 'reducto'
                     }
                 )
-            
-                # If Reducto failed, we still need classification_result for error handling
-                if classification_result is None:
-                    raise  # Re-raise the exception since we can't continue without classification
+            if classification_result is None:
+                raise
             
             # Verify classification_result is set before using it
             if classification_result is None:
@@ -1391,11 +1434,11 @@ def process_document_classification(self, document_id, original_filename, busine
             return {"error": str(e)}
         
         finally:
-            # Clean up temporary file
+            # Clean up temporary file (only when we created one; skip when pre-parsed)
             try:
-                if os.path.exists(temp_file_path):
+                if temp_file_path and os.path.exists(temp_file_path):
                     os.unlink(temp_file_path)
-            except:
+            except Exception:
                 pass
 
 @shared_task(bind=True)
@@ -1523,25 +1566,30 @@ def process_document_minimal_extraction(self, document_id, original_filename, bu
                     logger.error(f"❌ Invalid job_id: {job_id}. Cannot proceed with extraction without valid job_id.")
                     # If no job_id after retries, only then parse (shouldn't happen in normal flow)
                     logger.warning("⚠️ No job_id found, parsing document now (this should be rare)...")
+                    extraction_mode_fb = document_summary.get('extraction_mode') or 'standard'
                     file_size_mb = len(file_content) / (1024 * 1024)
-                    logger.info(f"📦 Processing file ({file_size_mb:.2f}MB) with async parsing")
+                    logger.info(f"📦 Processing file ({file_size_mb:.2f}MB) with async parsing (extraction_mode={extraction_mode_fb})")
                     
-                    # Detect if handwritten text is present (cost optimization)
-                    from .services.handwritten_detection_service import HandwrittenDetectionService
-                    handwritten_detector = HandwrittenDetectionService()
-                    handwritten_check = handwritten_detector.detect_handwritten_text(
-                        file_path=temp_file_path,
-                        reducto_service=reducto
-                    )
-                    needs_agentic = handwritten_check['needs_agentic']
-                    logger.info(f"🔍 Handwritten detection: {handwritten_check['reason']} (needs_agentic={needs_agentic})")
-                    
-                    parse_result = reducto.parse_document(
-                        file_path=temp_file_path,
-                        return_images=["figure", "table"],
-                        use_async=True,  # Always async for concurrent processing
-                        use_agentic=needs_agentic  # Only enable if handwritten detected
-                    )
+                    if extraction_mode_fb == 'deep':
+                        from .services.handwritten_detection_service import HandwrittenDetectionService
+                        handwritten_detector = HandwrittenDetectionService()
+                        handwritten_check = handwritten_detector.detect_handwritten_text(
+                            file_path=temp_file_path,
+                            reducto_service=reducto
+                        )
+                        needs_agentic = handwritten_check['needs_agentic']
+                        logger.info(f"🔍 Handwritten detection: {handwritten_check['reason']} (needs_agentic={needs_agentic})")
+                        parse_result = reducto.parse_document(
+                            file_path=temp_file_path,
+                            return_images=["figure", "table"],
+                            use_async=True,
+                            use_agentic=needs_agentic
+                        )
+                    else:
+                        parse_result = reducto.parse_document_fast(
+                            file_path=temp_file_path,
+                            use_sync_for_small=False
+                        )
                     job_id = parse_result['job_id']
                     document_text = parse_result['document_text']
                     
@@ -2109,25 +2157,30 @@ def process_document_with_dual_stores(self, document_id, original_filename, busi
             # Now uses section-based chunking to maintain document structure
             if not job_id:
                 logger.warning("⚠️ No job_id found after retries, parsing document now...")
+                extraction_mode_fb = document_summary.get('extraction_mode') or 'standard'
                 file_size_mb = len(file_content) / (1024 * 1024)
-                logger.info(f"📦 Processing file ({file_size_mb:.2f}MB) with async parsing")
+                logger.info(f"📦 Processing file ({file_size_mb:.2f}MB) with async parsing (extraction_mode={extraction_mode_fb})")
                 
-                # Detect if handwritten text is present (cost optimization)
-                from .services.handwritten_detection_service import HandwrittenDetectionService
-                handwritten_detector = HandwrittenDetectionService()
-                handwritten_check = handwritten_detector.detect_handwritten_text(
-                    file_path=temp_file_path,
-                    reducto_service=reducto
-                )
-                needs_agentic = handwritten_check['needs_agentic']
-                logger.info(f"🔍 Handwritten detection: {handwritten_check['reason']} (needs_agentic={needs_agentic})")
-                
-                parse_result = reducto.parse_document(
-                    file_path=temp_file_path,
-                    return_images=["figure", "table"],
-                    use_async=True,  # Always async for concurrent processing
-                    use_agentic=needs_agentic  # Only enable if handwritten detected
-                )
+                if extraction_mode_fb == 'deep':
+                    from .services.handwritten_detection_service import HandwrittenDetectionService
+                    handwritten_detector = HandwrittenDetectionService()
+                    handwritten_check = handwritten_detector.detect_handwritten_text(
+                        file_path=temp_file_path,
+                        reducto_service=reducto
+                    )
+                    needs_agentic = handwritten_check['needs_agentic']
+                    logger.info(f"🔍 Handwritten detection: {handwritten_check['reason']} (needs_agentic={needs_agentic})")
+                    parse_result = reducto.parse_document(
+                        file_path=temp_file_path,
+                        return_images=["figure", "table"],
+                        use_async=True,
+                        use_agentic=needs_agentic
+                    )
+                else:
+                    parse_result = reducto.parse_document_fast(
+                        file_path=temp_file_path,
+                        use_sync_for_small=False
+                    )
                 job_id = parse_result['job_id']
                 document_text = parse_result['document_text']
                 image_urls = parse_result['image_urls']
@@ -3542,23 +3595,7 @@ def process_document_fast_task(
             logger.info(f"⚡ FAST PIPELINE: Starting for document {document_id}")
             logger.info(f"   Property ID: {property_id}")
             
-            # Download file from S3 (avoids passing large payload through Celery from upload request)
-            try:
-                file_content, original_filename = _download_document_bytes_from_s3(document_id, business_id)
-            except Exception as e:
-                logger.error(f"Failed to download document from S3: {e}")
-                try:
-                    doc_storage = DocumentStorageService()
-                    doc_storage.supabase.table('documents').update({'status': 'failed'}).eq('id', document_id).execute()
-                except Exception:
-                    pass
-                raise
-            
-            logger.info(f"   File: {original_filename} ({len(file_content)} bytes)")
-            
-            # Initialize services
             doc_storage = DocumentStorageService()
-            reducto = ReductoService()
             
             # Update status to processing
             try:
@@ -3569,104 +3606,152 @@ def process_document_fast_task(
             except Exception as e:
                 logger.warning(f"Could not update document status: {e}")
             
-            # Save file to temp location
-            temp_file_path = None
-            try:
-                # Create temp file with proper extension
-                file_ext = os.path.splitext(original_filename)[1] or '.pdf'
-                temp_file = tempfile.NamedTemporaryFile(
-                    suffix=file_ext,
-                    delete=False
-                )
-                temp_file.write(file_content)
-                temp_file_path = temp_file.name
-                temp_file.close()
-                
-                logger.info(f"✅ Saved file to temp location: {temp_file_path}")
-            except Exception as e:
-                logger.error(f"Failed to save temp file: {e}")
-                raise
+            # Check for pre-parsed data from upload (parallel parse optimization)
+            success, document_dict, _ = doc_storage.get_document(str(document_id), business_id)
+            document_summary = get_document_summary_safe(document_dict or {})
             
-            # Optional: submit with webhook and return (no polling); webhook handler enqueues after-parse task
-            use_webhook = os.environ.get('USE_REDUCTO_WEBHOOK_FOR_FAST', 'false').lower() == 'true'
-            webhook_base = (os.environ.get('REDUCTO_WEBHOOK_BASE_URL') or '').rstrip('/')
-            webhook_secret = os.environ.get('REDUCTO_WEBHOOK_SECRET')
-            webhook_url = f"{webhook_base}/api/internal/reducto-webhook" if webhook_base else None
-            if use_webhook and webhook_url and webhook_secret:
+            if document_summary.get('reducto_chunks'):
+                # Pre-parsed at upload - skip download and parse
+                logger.info(f"✅ Using pre-parsed data from upload ({len(document_summary['reducto_chunks'])} chunks)")
+                chunks = document_summary['reducto_chunks']
+                document_text = document_summary.get('reducto_parsed_text') or '\n\n'.join(
+                    ch.get('content', '') for ch in chunks if isinstance(ch, dict)
+                )
+                job_id = document_summary.get('reducto_job_id')
+                logger.info(f"✅ Extracted {len(chunks)} section-based chunks from pre-parse, {len(document_text)} chars")
+                result = _run_fast_pipeline_after_parse(
+                    document_id=document_id,
+                    business_id=business_id,
+                    property_id=property_id,
+                    chunks=chunks,
+                    document_text=document_text,
+                    original_filename=original_filename,
+                    parse_time=0.0,
+                    job_id=job_id,
+                    processing_start_time=processing_start_time
+                )
+                return result
+            else:
+                # Download file from S3 (avoids passing large payload through Celery from upload request)
                 try:
-                    job_id = reducto.submit_parse_job_with_webhook(
-                        file_path=temp_file_path,
-                        webhook_url=webhook_url,
-                        metadata={
-                            'document_id': document_id,
-                            'business_id': business_id,
-                            'property_id': property_id,
-                            'pipeline_type': 'fast',
-                            'original_filename': original_filename,
-                            'webhook_secret': webhook_secret
-                        }
-                    )
-                    try:
-                        if temp_file_path and os.path.exists(temp_file_path):
-                            os.unlink(temp_file_path)
-                            logger.info(f"✅ Cleaned up temp file")
-                    except Exception as e:
-                        logger.warning(f"Could not clean up temp file: {e}")
-                    logger.info(f"✅ Submitted parse job with webhook: {job_id}, document {document_id}")
-                    return {
-                        'success': True,
-                        'document_id': document_id,
-                        'status': 'submitted',
-                        'job_id': job_id,
-                        'property_id': property_id
-                    }
+                    file_content, original_filename = _download_document_bytes_from_s3(document_id, business_id)
                 except Exception as e:
-                    logger.warning(f"Webhook submit failed, falling back to polling: {e}")
-                    use_webhook = False
+                    logger.error(f"Failed to download document from S3: {e}")
+                    try:
+                        doc_storage.supabase.table('documents').update({'status': 'failed'}).eq('id', document_id).execute()
+                    except Exception:
+                        pass
+                    raise
+                
+                logger.info(f"   File: {original_filename} ({len(file_content)} bytes)")
+                reducto = ReductoService()
+            
+                # Save file to temp location
+                temp_file_path = None
+                try:
+                    file_ext = os.path.splitext(original_filename)[1] or '.pdf'
+                    temp_file = tempfile.NamedTemporaryFile(
+                        suffix=file_ext,
+                        delete=False
+                    )
+                    temp_file.write(file_content)
+                    temp_file_path = temp_file.name
+                    temp_file.close()
+                    
+                    logger.info(f"✅ Saved file to temp location: {temp_file_path}")
+                except Exception as e:
+                    logger.error(f"Failed to save temp file: {e}")
+                    raise
+                
+                # Optional: submit with webhook and return (no polling); webhook handler enqueues after-parse task
+                use_webhook = os.environ.get('USE_REDUCTO_WEBHOOK_FOR_FAST', 'false').lower() == 'true'
+                webhook_base = (os.environ.get('REDUCTO_WEBHOOK_BASE_URL') or '').rstrip('/')
+                webhook_secret = os.environ.get('REDUCTO_WEBHOOK_SECRET')
+                webhook_url = f"{webhook_base}/api/internal/reducto-webhook" if webhook_base else None
+                if use_webhook and webhook_url and webhook_secret:
+                    try:
+                        job_id = reducto.submit_parse_job_with_webhook(
+                            file_path=temp_file_path,
+                            webhook_url=webhook_url,
+                            metadata={
+                                'document_id': document_id,
+                                'business_id': business_id,
+                                'property_id': property_id,
+                                'pipeline_type': 'fast',
+                                'original_filename': original_filename,
+                                'webhook_secret': webhook_secret
+                            }
+                        )
+                        try:
+                            if temp_file_path and os.path.exists(temp_file_path):
+                                os.unlink(temp_file_path)
+                                logger.info(f"✅ Cleaned up temp file")
+                        except Exception as e:
+                            logger.warning(f"Could not clean up temp file: {e}")
+                        logger.info(f"✅ Submitted parse job with webhook: {job_id}, document {document_id}")
+                        return {
+                            'success': True,
+                            'document_id': document_id,
+                            'status': 'submitted',
+                            'job_id': job_id,
+                            'property_id': property_id
+                        }
+                    except Exception as e:
+                        logger.warning(f"Webhook submit failed, falling back to polling: {e}")
+                        use_webhook = False
 
-            # Step 1: Parse with Reducto (fast, section-based, always async) or poll path
-            parse_start_time = time.time()
-            try:
-                parse_result = reducto.parse_document_fast(
-                    file_path=temp_file_path,
-                    use_sync_for_small=False  # Always async for concurrent processing
+                # Step 1: Parse with Reducto - use extraction_mode from document (standard=fast, deep=full)
+                extraction_mode = document_summary.get('extraction_mode') or 'standard'
+                parse_start_time = time.time()
+                try:
+                    if extraction_mode == 'deep':
+                        parse_result = reducto.parse_document(
+                            file_path=temp_file_path,
+                            return_images=["figure", "table"],
+                            use_async=True,
+                            use_agentic=False
+                        )
+                    else:
+                        parse_result = reducto.parse_document_fast(
+                            file_path=temp_file_path,
+                            use_sync_for_small=False  # Always async for concurrent processing
+                        )
+                    parse_time = time.time() - parse_start_time
+                    logger.info(f"✅ Parse completed in {parse_time:.2f}s (extraction_mode={extraction_mode})")
+                except Exception as e:
+                    logger.error(f"❌ Fast parse failed: {e}")
+                    raise
+                
+                job_id = parse_result.get('job_id')
+                document_text = parse_result.get('document_text', '')
+                chunks = parse_result.get('chunks', [])
+                
+                if not chunks:
+                    raise Exception("No chunks extracted from document")
+                
+                logger.info(f"✅ Extracted {len(chunks)} section-based chunks, {len(document_text)} chars")
+                
+                result = _run_fast_pipeline_after_parse(
+                    document_id=document_id,
+                    business_id=business_id,
+                    property_id=property_id,
+                    chunks=chunks,
+                    document_text=document_text,
+                    original_filename=original_filename,
+                    parse_time=parse_time,
+                    job_id=job_id,
+                    processing_start_time=processing_start_time
                 )
-                parse_time = time.time() - parse_start_time
-                logger.info(f"✅ Parse completed in {parse_time:.2f}s")
-            except Exception as e:
-                logger.error(f"❌ Fast parse failed: {e}")
-                raise
-            
-            job_id = parse_result.get('job_id')
-            document_text = parse_result.get('document_text', '')
-            chunks = parse_result.get('chunks', [])
-            
-            if not chunks:
-                raise Exception("No chunks extracted from document")
-            
-            logger.info(f"✅ Extracted {len(chunks)} section-based chunks, {len(document_text)} chars")
-            
-            result = _run_fast_pipeline_after_parse(
-                document_id=document_id,
-                business_id=business_id,
-                property_id=property_id,
-                chunks=chunks,
-                document_text=document_text,
-                original_filename=original_filename,
-                parse_time=parse_time,
-                job_id=job_id,
-                processing_start_time=processing_start_time
-            )
-            
-            # Cleanup temp file
-            try:
-                if temp_file_path and os.path.exists(temp_file_path):
-                    os.unlink(temp_file_path)
-                    logger.info(f"✅ Cleaned up temp file")
-            except Exception as e:
-                logger.warning(f"Could not clean up temp file: {e}")
-            
-            return result
+                
+                # Cleanup temp file
+                try:
+                    if temp_file_path and os.path.exists(temp_file_path):
+                        os.unlink(temp_file_path)
+                        logger.info(f"✅ Cleaned up temp file")
+                except Exception as e:
+                    logger.warning(f"Could not clean up temp file: {e}")
+                
+                return result
             
         except Exception as e:
             logger.error(f"❌ Fast pipeline failed: {e}", exc_info=True)
@@ -4039,11 +4124,11 @@ def store_extracted_properties_in_supabase(extracted_data, business_id, document
         properties = []
         if extracted_data:
             if "subject_property" in extracted_data:
-                # New Velora agent format
+                # New OpenFind agent format
                 subject_prop = extracted_data["subject_property"]
                 if subject_prop:
                     properties = [subject_prop]
-                    logger.info("✅ Found subject property in new Velora format")
+                    logger.info("✅ Found subject property in new OpenFind format")
             elif "subject_properties" in extracted_data:
                 # Transitional format
                 properties = extracted_data["subject_properties"]

@@ -1,5 +1,5 @@
 """
-Personality (tone) overlays for Velora responses.
+Personality (tone) overlays for OpenFind responses.
 
 Re-exports from backend.llm.prompts.personality for backward compatibility.
 Prefer: from backend.llm.prompts import get_personality_overlay, PERSONALITY_OVERLAYS, ...

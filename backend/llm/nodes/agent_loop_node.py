@@ -455,7 +455,7 @@ async def agent_loop_node(state: MainWorkflowState, runnable_config=None) -> Mai
     
     for iteration in range(MAX_ITERATIONS):
         if emitter and iteration == 0:
-            emitter.emit_reasoning(label="Planning next moves", detail=None)
+            emitter.emit_reasoning(label="Thinking", detail=None)
         
         try:
             response = await llm_with_tools.ainvoke(messages)
@@ -511,7 +511,7 @@ async def agent_loop_node(state: MainWorkflowState, runnable_config=None) -> Mai
                             reading_detail = "Page %s, %s" % (page if page is not None else "?", filename or "document")
                             emitter.emit_reasoning(label="Reading", detail=reading_detail)
                         emitter.emit_reasoning(label="Read", detail=None)
-                        emitter.emit_reasoning(label="Thinking", detail=None)
+                        emitter.emit_reasoning(label="Planning next moves", detail=None)
                         note_preview = (content or "(no content)").strip()[:80]
                         if len((content or "").strip()) > 80:
                             note_preview += "..."

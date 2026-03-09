@@ -1,5 +1,5 @@
 """
-Central usage tracking for Velora billing.
+Central usage tracking for OpenFind billing.
 Single source of truth: pages used this month = sum of document page_count
 for completed docs in the current billing month (UTC).
 See BILLING_SPEC.md for tier limits and pricing.

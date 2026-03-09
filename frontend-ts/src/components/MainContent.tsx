@@ -45,6 +45,7 @@ import { FileViewModal, type FileViewDocument } from './FileViewModal';
 import { ProjectsPage } from './ProjectsPage';
 import { PropertyDetailsPanel } from './PropertyDetailsPanel';
 import { preloadDocumentCovers } from '@/utils/preloadDocumentCovers';
+import { getProfilePictureSrc } from '@/utils/profilePicture';
 import {
   INPUT_BAR_SPACE_BELOW_DASHBOARD,
   INPUT_BAR_SPACE_BELOW_MAP,
@@ -1460,7 +1461,7 @@ const BackgroundSettings: React.FC = () => {
     { id: 'background4', name: 'Background 4', image: '/Background4.png' },
     { id: 'background5', name: 'Background 5', image: '/Background5.png' },
     { id: 'background6', name: 'Background 6', image: '/Background6.png' },
-    { id: 'velora-grass', name: 'Velora Grass', image: '/VeloraGrassBackground.png' },
+    { id: 'openfind-grass', name: 'OpenFind Grass', image: '/VeloraGrassBackground.png' },
   ];
 
   const [selectedBackground, setSelectedBackground] = React.useState<string>('default-background');
@@ -1664,7 +1665,7 @@ const NotificationsSettingsContent: React.FC = () => {
           <span className="text-[17px] font-normal text-gray-900">Response completion sound</span>
         </div>
         <p className="text-[13px] text-gray-600 mb-4">
-          Play a short sound when Velora finishes a response. Adjust volume and choose a sound.
+          Play a short sound when OpenFind finishes a response. Adjust volume and choose a sound.
         </p>
 
         {/* Volume: Spotify-style — speaker icon + horizontal slider */}
@@ -1756,6 +1757,20 @@ const SettingsView: React.FC<{
       }
     }).catch(() => {});
     return () => { cancelled = true; };
+  }, []);
+
+  // Sync prefetchedUser when profile picture is updated from Profile (so switching tabs shows new picture)
+  React.useEffect(() => {
+    const handler = (e: CustomEvent<{ profileImageUrl?: string; removed?: boolean }>) => {
+      const { detail } = e;
+      if (detail.removed) {
+        setPrefetchedUser((prev) => prev ? { ...prev, profile_image: undefined, avatar_url: undefined, profile_picture_url: undefined } : null);
+      } else if (detail.profileImageUrl) {
+        setPrefetchedUser((prev) => prev ? { ...prev, profile_image: detail.profileImageUrl, avatar_url: detail.profileImageUrl, profile_picture_url: detail.profileImageUrl } : null);
+      }
+    };
+    window.addEventListener('profilePictureUpdated', handler as EventListener);
+    return () => window.removeEventListener('profilePictureUpdated', handler as EventListener);
   }, []);
 
   // When opening Settings with a specific category (e.g. Usage & Billing), select it once then clear
@@ -1911,7 +1926,7 @@ const SettingsView: React.FC<{
                       <SelectItem value="share" hideIndicator className="py-1 px-3 focus:bg-gray-100 text-[11px]">
                         <div className="flex flex-col gap-0">
                           <span className="font-medium text-gray-900 text-[11px]">Share Data</span>
-                          <span className="text-[10px] text-gray-500">Improve Velora for everyone</span>
+                          <span className="text-[10px] text-gray-500">Improve OpenFind for everyone</span>
                         </div>
                       </SelectItem>
                       <SelectItem value="privacy" hideIndicator className="py-1 px-3 focus:bg-gray-100 text-[11px]">
@@ -1929,7 +1944,7 @@ const SettingsView: React.FC<{
                 <span className="text-[13px] text-gray-600">
                   {privacyMode === 'privacy'
                     ? 'Privacy Mode is enabled. Background Agent and some features not available.'
-                    : 'Share Data is enabled. Your data helps improve Velora for everyone.'}
+                    : 'Share Data is enabled. Your data helps improve OpenFind for everyone.'}
                 </span>
                 <button
                   type="button"
@@ -2381,6 +2396,8 @@ export const MainContent = ({
   } | null>(null);
   // When true, we navigated to search from "Analyse with AI" - don't reset map/chat in the currentView effect
   const openingFromAnalyseWithAIRef = React.useRef<boolean>(false);
+  // When true, we navigated to search from "View Document" in FileViewModal - don't reset map/chat in the currentView effect
+  const openingFromViewDocumentRef = React.useRef<boolean>(false);
   // Ref for main content wrapper so Choose Project modal can portal into dashboard area when on search/home view
   const mainContentRef = React.useRef<HTMLDivElement>(null);
 
@@ -2816,19 +2833,21 @@ export const MainContent = ({
   // Must navigate to search + set visibility flags so chat panel appears and document preview renders (same as search modal's open file)
   const handleFileViewDocument = React.useCallback((docId: string, filename: string) => {
     const label = filename || 'Document';
+    openingFromViewDocumentRef.current = true; // Prevent currentView effect from resetting map/chat when navigating from Projects etc.
+    // CRITICAL: Set parent map visibility FIRST (same as Map button) so dashboard hides and effects don't reset our state
+    onMapVisibilityChange?.(true);
     openFilingSidebar(); // Ensure sidebar is open (file list on left)
     setFileViewDocument(null); // Close the pop-up modal
     // Navigate to search and show chat so 50/50 layout works (without this, document doesn't open when on dashboard)
     onNavigate?.('search');
     setHasPerformedSearch(true);
     setIsMapVisibleFromSearchBar(true);
-    setIsMapVisible(true);
     setResetWidthForDocPreviewTrigger((t) => t + 1); // Force 50% split
     openExpandedCardView(docId, label); // Open document in the 50/50 panel (document preview on right)
     if (activeChatId) {
       openDocumentForChat(activeChatId, { docId, filename: label });
     }
-  }, [openFilingSidebar, openExpandedCardView, activeChatId, openDocumentForChat, onNavigate]);
+  }, [openFilingSidebar, openExpandedCardView, activeChatId, openDocumentForChat, onNavigate, onMapVisibilityChange]);
 
   // File View modal: close sidebar + open fullscreen chat with document in preview
   const handleFileViewAnalyseWithAI = React.useCallback((docId: string, filename: string) => {
@@ -3790,7 +3809,7 @@ export const MainContent = ({
 
     // Track detailed search activity
     addActivity({
-      action: `Advanced search initiated: "${query}" - Velora is analyzing relevant documents`,
+      action: `Advanced search initiated: "${query}" - OpenFind is analyzing relevant documents`,
       documents: [],
       type: 'search',
       details: { 
@@ -3838,7 +3857,7 @@ export const MainContent = ({
     if (messages.length > 0) {
       const lastMessage = messages[messages.length - 1];
       addActivity({
-        action: `Velora generated response for query: "${chatQuery}" - Analysis complete`,
+        action: `OpenFind generated response for query: "${chatQuery}" - Analysis complete`,
         documents: [],
         type: 'analysis',
         details: { 
@@ -4186,6 +4205,8 @@ export const MainContent = ({
     // shouldRestoreActiveChat = New chat; inChatMode = parent set chat mode (Chats or New chat)
     if (openingFromAnalyseWithAIRef.current) {
       openingFromAnalyseWithAIRef.current = false;
+    } else if (openingFromViewDocumentRef.current) {
+      openingFromViewDocumentRef.current = false;
     } else if ((currentView === 'search' || currentView === 'home') && isActualNavigation && prevView !== 'search' && prevView !== 'home' && !shouldRestoreActiveChat && !externalIsMapVisible && !inChatMode) {
       // Only hide map if we're actually navigating FROM a different view TO search/home
       // This prevents hiding the map when just toggling sidebar on map view
@@ -4242,6 +4263,10 @@ export const MainContent = ({
       // This prevents the home reset from interfering when Map button is clicked
       if (externalIsMapVisible === true) {
         console.log('🏠 Home clicked but map is explicitly visible - skipping reset');
+        return;
+      }
+      // CRITICAL: Don't reset when opening from "View Document" in FileViewModal
+      if (openingFromViewDocumentRef.current) {
         return;
       }
       
@@ -6160,8 +6185,8 @@ export const MainContent = ({
           clickOutsideExcludeRef={filingSidebarContainerRef}
           uploaderName={userData?.first_name || userData?.email || 'User'}
           uploaderAvatarUrl={(() => {
-            const base = userData?.profile_picture_url ?? userData?.profile_image ?? userData?.avatar_url ?? null;
-            return base && profilePicCacheBust ? `${base}?t=${profilePicCacheBust}` : base;
+            const base = userData?.profile_picture_url ?? userData?.profile_image ?? userData?.avatar_url;
+            return base ? getProfilePictureSrc(base, profilePicCacheBust) : undefined;
           })()}
           uploaderTitle={userData?.title ?? null}
         />

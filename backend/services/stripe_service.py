@@ -1,5 +1,5 @@
 """
-Stripe billing integration for Velora subscriptions.
+Stripe billing integration for OpenFind subscriptions.
 Uses Checkout Sessions for subscription signup/plan changes and Customer Portal for management.
 See BILLING_SPEC.md for tier definitions. Map Stripe Price IDs to tier keys via env.
 """
@@ -73,7 +73,7 @@ def create_checkout_session(
         line_items=[{"price": price_id, "quantity": 1}],
         success_url=success_url,
         cancel_url=cancel_url,
-        subscription_data={"metadata": {"velora_plan": plan}},
+        subscription_data={"metadata": {"openfind_plan": plan}},
         allow_promotion_codes=True,
     )
     return session.url
@@ -107,6 +107,6 @@ def _get_price_id_from_subscription(subscription) -> Optional[str]:
 
 
 def tier_from_subscription(stripe_api, subscription) -> Optional[str]:
-    """Map a Stripe subscription to Velora tier from the first item's price id."""
+    """Map a Stripe subscription to OpenFind tier from the first item's price id."""
     price_id = _get_price_id_from_subscription(subscription)
     return PRICE_ID_TO_TIER.get(price_id) if price_id else None

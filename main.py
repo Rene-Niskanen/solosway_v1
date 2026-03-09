@@ -1,5 +1,5 @@
 from dotenv import load_dotenv
-from os import path
+from os import path, environ
 # Load .env from project root (where main.py lives) so LangSmith/tracing vars are always found
 load_dotenv(path.join(path.dirname(path.abspath(__file__)), ".env"))
 
@@ -25,6 +25,34 @@ async def initialize_langgraph():
     except Exception as e:
         logger.error(f"Failed to initialize LangGraph GraphRunner: {e}", exc_info=True)
         # Continue anyway - endpoints will fall back to legacy behavior until refactor completes
+
+    # Initialize Mem0 AsyncMemory (fixes 'coroutine' object has no attribute 'search')
+    try:
+        from backend.llm.config import config as llm_config
+        if getattr(llm_config, "mem0_enabled", False):
+            from backend.services.memory_service import init_memory_async
+            ok = await init_memory_async()
+            if ok:
+                logger.info("Mem0 AsyncMemory initialized on app startup")
+    except Exception as e:
+        logger.warning(f"Mem0 init skipped: {e}")
+
+    # Embedding cache warm-up (reduces first-query latency)
+    if environ.get("EMBEDDING_WARMUP_ENABLED", "true").lower() == "true":
+        try:
+            from backend.llm.hyde import get_query_embedding_for_retrieval
+            emb = await asyncio.wait_for(
+                asyncio.to_thread(get_query_embedding_for_retrieval, "test query"),
+                timeout=5.0,
+            )
+            if emb:
+                logger.info("Embedding cache warmed up on app startup")
+            else:
+                logger.warning("Embedding warm-up returned None")
+        except asyncio.TimeoutError:
+            logger.warning("Embedding warm-up timed out (5s)")
+        except Exception as e:
+            logger.warning(f"Embedding warm-up skipped: {e}")
 
 # Only initialize LangGraph when actually running the server (not for Flask CLI commands)
 # Check if we're running a Flask command (db, routes, etc.) vs. starting the server

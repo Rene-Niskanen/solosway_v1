@@ -4,6 +4,7 @@ import * as React from "react";
 import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { LogOut, User, ArrowRight, ChevronRight } from "lucide-react";
+import { getProfilePictureSrc } from "@/utils/profilePicture";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { backendApi } from "@/services/backendApi";
 
@@ -138,10 +139,7 @@ export const ProfileDropdown: React.FC<ProfileDropdownProps> = ({
       >
         <Avatar className="w-full h-full">
           <AvatarImage 
-            src={(() => {
-              const base = userData?.profile_image || userData?.avatar_url;
-              return base && profilePicCacheBust ? `${base}?t=${profilePicCacheBust}` : base;
-            })()} 
+            src={getProfilePictureSrc(userData?.profile_image || userData?.avatar_url || userData?.profile_picture_url, profilePicCacheBust)} 
             alt={userName}
             className="object-cover"
           />
@@ -191,10 +189,7 @@ export const ProfileDropdown: React.FC<ProfileDropdownProps> = ({
                 <div className="flex items-center gap-2">
                   <Avatar className="w-5 h-5 flex-shrink-0 border border-gray-300/50">
                     <AvatarImage 
-                      src={(() => {
-                        const base = userData?.profile_image || userData?.avatar_url;
-                        return base && profilePicCacheBust ? `${base}?t=${profilePicCacheBust}` : base;
-                      })()} 
+                      src={getProfilePictureSrc(userData?.profile_image || userData?.avatar_url || userData?.profile_picture_url, profilePicCacheBust)} 
                       alt={userName}
                       className="object-cover"
                     />

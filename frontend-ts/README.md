@@ -1,8 +1,8 @@
-# Velora - Property Intelligence Platform
+# OpenFind - Property Intelligence Platform
 
 ## Project Overview
 
-**Velora** is a comprehensive property intelligence platform that combines AI-powered search, analytics, and property valuation tools to help users make informed real estate decisions.
+**OpenFind** is a comprehensive property intelligence platform that combines AI-powered search, analytics, and property valuation tools to help users make informed real estate decisions.
 
 ## Repository Information
 
@@ -88,4 +88,4 @@ npm run preview
 
 ## Development Team
 
-This is a Velora company project. For collaboration and access, contact the repository administrators.
+This is an OpenFind company project. For collaboration and access, contact the repository administrators.
