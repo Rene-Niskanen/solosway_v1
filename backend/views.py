@@ -1276,11 +1276,13 @@ def query_documents_stream():
                         targets.append('size')
                     if any(word in q_lower for word in ['address', 'location', 'where']):
                         targets.append('location')
+                    if any(word in q_lower for word in ['inventory', 'contents']) or "what's in" in q_lower or "whats in" in q_lower:
+                        targets.append('inventory')
                     
                     # Extract potential document/property names (capitalized words)
                     import re
                     # Look for capitalized words that might be names (excluding common words)
-                    common_words = {'the', 'a', 'an', 'of', 'in', 'for', 'to', 'and', 'or', 'please', 'find', 'me', 'what', 'is', 'are', 'show', 'get', 'tell', 'who', 'how', 'why', 'when', 'where'}
+                    common_words = {'the', 'a', 'an', 'of', 'in', 'for', 'to', 'and', 'or', 'please', 'find', 'me', 'what', 'is', 'are', 'show', 'get', 'tell', 'who', 'how', 'why', 'when', 'where', 'run', 'walk', 'talk'}  # 'run' in "run me through", 'walk'/'talk' in "walk/talk me through"
                     words = q.split()
                     potential_names = [w for w in words if len(w) > 2 and w[0].isupper() and w.lower() not in common_words]
                     

@@ -1043,6 +1043,7 @@ const DashboardLayoutContent = ({
         onChatHistoryCreate={handleChatHistoryCreate}
         currentChatData={currentChatData}
         currentChatId={currentChatId}
+        onChatSelect={handleChatSelect}
         isInChatMode={isInChatMode}
         resetTrigger={resetTrigger}
         onNewChat={(handler) => {

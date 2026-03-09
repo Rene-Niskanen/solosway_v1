@@ -48,6 +48,7 @@ import { PlanViewer, PlanBuildStatus } from './PlanViewer';
 import { ExpandedPlanViewer } from './ExpandedPlanViewer';
 import { AdjustmentBlock, AdjustmentBlockData } from './AdjustmentBlock';
 import { PlanReasoningSteps, ReasoningStep as PlanReasoningStep } from './PlanReasoningSteps';
+import { ChatTabsBar } from './ChatTabsBar';
 import { diffLines } from 'diff';
 import { AtMentionPopover } from './AtMentionPopover';
 import type { AtMentionItem } from './AtMentionPopover';
@@ -2089,9 +2090,9 @@ const StreamingResponseText: React.FC<{
       if (inHighlight && pending.length > 0) {
         pendingToUse = [...pending];
         if (pendingToUse.length > 1 && typeof pendingToUse[pendingToUse.length - 1] === 'string') {
-          pendingToUse[pendingToUse.length - 1] = (pendingToUse[pendingToUse.length - 1] as string).trimEnd();
+          pendingToUse[pendingToUse.length - 1] = (pendingToUse[pendingToUse.length - 1] as string).trimEnd().replace(/,\s*$/, '');
         } else if (pendingToUse.length === 1 && typeof pendingToUse[0] === 'string') {
-          pendingToUse[0] = (pendingToUse[0] as string).trimEnd();
+          pendingToUse[0] = (pendingToUse[0] as string).trimEnd().replace(/,\s*$/, '');
         }
         if (typeof pendingToUse[0] === 'string') {
           const first = pendingToUse[0] as string;
@@ -2133,12 +2134,12 @@ const StreamingResponseText: React.FC<{
         result.push(<CitedTextContainer key={`${keyPrefix}-wrap-${segIndex}-${citKey}`}><OrangeCitationSwoopHighlight key={`${keyPrefix}-orange-${segIndex}-${citKey}`} roundTop={roundTop} roundBottom={roundBottom}>{content}</OrangeCitationSwoopHighlight>{citationNode}</CitedTextContainer>);
         lastHighlightType = 'orange';
       } else {
-        // Keep "3, 4" on one line: when pending is only punctuation and we have the next citation, push in a no-break span
+        // Keep "3 4" on one line: when pending is only punctuation (comma/space) and we have the next citation, omit the punctuation so it doesn't interfere with citation buttons
         const isPunctuationOnly = pending.length === 1 && typeof pending[0] === 'string' && /^[\s,]+$/.test(pending[0]);
         if (isPunctuationOnly && citationNode != null) {
           result.push(
             <span key={`${keyPrefix}-cit-nowrap-${segIndex}`} className="citation-nowrap-wrap" style={{ whiteSpace: 'nowrap', pointerEvents: 'auto' }}>
-              {content}{citationNode}
+              {citationNode}
             </span>
           );
           pending = [];
@@ -2175,17 +2176,16 @@ const StreamingResponseText: React.FC<{
           const nextNextIsCitation = typeof nextNextSeg === 'string' && nextNextSeg.startsWith('%%CITATION_');
           const nextNextNum = nextNextIsCitation ? citationNumFromPlaceholder(nextNextSeg as string) : null;
           const nextNextRejected = nextNextNum != null && (rejectedCitationNumbers?.has(nextNextNum) ?? false);
-          // Keep "3, 4" on one line: wrap first citation + punctuation + second citation in nowrap
+          // Keep "3 4" on one line: wrap first citation + second citation in nowrap (no comma—commas interfere with citation buttons)
           if (nextIsPunctuationOnly && nextNextIsCitation && !nextNextRejected) {
             const firstNode = renderCitationPlaceholder(seg, `${keyPrefix}-cit-${i}-${seg}`);
-            const punctContent = typeof nextSeg === 'string' ? renderStringSegment(nextSeg, `${keyPrefix}-p${segIndex}`) : null;
             const secondNode = renderCitationPlaceholder(nextNextSeg as string, `${keyPrefix}-cit-${i + 2}-${nextNextSeg}`);
-            if (firstNode != null && secondNode != null && punctContent != null) {
+            if (firstNode != null && secondNode != null) {
               // Flush any pending content first so "Security Deposit: ..." appears before the citations, not after
               flushPending(null, 'before-nowrap', null);
               result.push(
                 <span key={`${keyPrefix}-cit-nowrap-${i}-${i + 2}`} className="citation-nowrap-wrap" style={{ whiteSpace: 'nowrap', pointerEvents: 'auto' }}>
-                  {firstNode}{punctContent}{secondNode}
+                  {firstNode}{secondNode}
                 </span>
               );
               skipNext = 2;
@@ -2245,15 +2245,14 @@ const StreamingResponseText: React.FC<{
               const nextNextIsCitation = nextNextPart?.startsWith('%%CITATION_');
               const nextNextNum = nextNextPart ? citationNumFromPlaceholder(nextNextPart) : null;
               const nextNextRejected = nextNextNum != null && (rejectedCitationNumbers?.has(nextNextNum) ?? false);
-              // Keep "1, 2" (and "1 2") on one line: wrap first citation + punctuation + second citation in nowrap
+              // Keep "1 2" on one line: wrap first citation + second citation in nowrap (no comma—commas interfere with citation buttons)
               if (nextIsPunctuationOnly && nextNextIsCitation && !nextNextRejected) {
                 const firstNode = renderCitationPlaceholder(part, `cit-${idx}-${part}`);
-                const punctContent = renderStringSegment(nextPart, `text-${idx + 1}`);
                 const secondNode = renderCitationPlaceholder(nextNextPart, `cit-${idx + 2}-${nextNextPart}`);
                 if (firstNode != null && secondNode != null) {
                   result.push(
                     <span key={`cit-nowrap-${idx}-${idx + 2}`} className="citation-nowrap-wrap" style={{ whiteSpace: 'nowrap', pointerEvents: 'auto' }}>
-                      {firstNode}{punctContent}{secondNode}
+                      {firstNode}{secondNode}
                     </span>
                   );
                   consumedInNowrap.add(idx).add(idx + 1).add(idx + 2);
@@ -2285,9 +2284,12 @@ const StreamingResponseText: React.FC<{
               const roundTop = !inHighlight || lastHighlightType !== currentHighlightType;
               const nextType = inHighlight ? nextHighlightTypeInParts(parts, idx + 1) : null;
               const roundBottom = !inHighlight || nextType !== currentHighlightType;
-              // When highlighted: strip leading space so it renders outside the highlight; trim trailing
+              // When highlighted: strip leading space so it renders outside the highlight; trim trailing comma so it doesn't interfere with the highlight or citation
               const leadingSpace = inHighlight && part ? (part.match(/^\s*/)?.[0] ?? '') : '';
-              const segmentToRender = isBetweenCitations && /^[\s,]*$/.test(part) ? '' : (inHighlight ? part.slice(leadingSpace.length).trimEnd() : part);
+              let segmentToRender = isBetweenCitations && /^[\s,]*$/.test(part) ? '' : (inHighlight ? part.slice(leadingSpace.length).trimEnd() : part);
+              if (inHighlight && segmentToRender && nextPart?.startsWith('%%CITATION_')) {
+                segmentToRender = segmentToRender.replace(/,\s*$/, '');
+              }
               const content = renderStringSegment(segmentToRender, `text-${idx}`);
               // Highlight wraps only the cited text; citation badge is rendered outside the highlight so it is not highlighted. Prefer blue over green when both apply.
               const citationNode = nextPart?.startsWith('%%CITATION_') ? renderCitationPlaceholder(nextPart, `cit-${idx + 1}-${nextPart}`) : null;
@@ -2304,13 +2306,13 @@ const StreamingResponseText: React.FC<{
                 result.push(<CitedTextContainer key={`wrap-${idx}`}><OrangeCitationSwoopHighlight key={`orange-${idx}`} roundTop={roundTop} roundBottom={roundBottom}>{content}</OrangeCitationSwoopHighlight>{citationNode}</CitedTextContainer>);
                 lastHighlightType = 'orange';
               } else {
-                // Keep trailing punctuation (e.g. ", ") and the following citation on the same line when the citation bar is shown
+                // Keep citation on same line when bar is shown; omit comma/space so it doesn't interfere with citation buttons
                 const isPunctuationOnly = /^[\s,]+$/.test(part);
                 const nextIsCitation = nextPart?.startsWith('%%CITATION_');
                 if (isPunctuationOnly && nextIsCitation && citationNode != null) {
                   result.push(
                     <span key={`cit-nowrap-${idx}-${idx + 1}`} className="citation-nowrap-wrap" style={{ whiteSpace: 'nowrap', pointerEvents: 'auto' }}>
-                      {content}{citationNode}
+                      {citationNode}
                     </span>
                   );
                   consumedInNowrap.add(idx + 1);
@@ -6425,6 +6427,10 @@ interface SideChatPanelProps {
   keepDocumentOpenOnNewChat?: boolean;
   /** When true, we're transitioning from dashboard to chat - disable all animations/transitions for instant switch. */
   isTransitioningToChat?: boolean;
+  /** Currently selected chat ID (for ChatTabsBar highlighting). */
+  selectedChatId?: string | null;
+  /** Callback when user selects a chat from ChatTabsBar (same as ChatPanel onChatSelect). */
+  onChatSelect?: (chatId: string) => void;
 }
 
 export interface SideChatPanelRef {
@@ -6548,6 +6554,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   currentProperty,
   keepDocumentOpenOnNewChat = false,
   isTransitioningToChat = false,
+  selectedChatId: selectedChatIdProp,
+  onChatSelect,
 }, ref) => {
   // Main navigation state:
   // - collapsed: icon-only sidebar (treat as "closed" for the purposes of showing open controls)
@@ -8758,6 +8766,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   const [isTitleStreaming, setIsTitleStreaming] = React.useState<boolean>(false);
   const [streamedTitle, setStreamedTitle] = React.useState<string>('');
   const titleStreamIntervalRef = React.useRef<NodeJS.Timeout | null>(null);
+  const streamedTitleAccumulatedRef = React.useRef<string>('');
   
   // File choice flow state - tracks pending file choice when attachments have extracted text
   const pendingFileChoiceRef = React.useRef<{
@@ -9153,7 +9162,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   }, [addPropertyAttachment, segmentInput, atMentionDocumentChips]);
   
   // Use chat history context
-  const { addChatToHistory, getChatById, updateChatTitle, updateChatStatus, updateChatDescription, updateChatInHistory, chatHistory, saveChatState, removeChatFromHistory } = useChatHistory();
+  const { addChatToHistory, getChatById, updateChatTitle, updateChatStatus, updateChatDescription, updateChatInHistory, chatHistory, saveChatState, removeChatFromHistory, archiveChat, unarchiveChat } = useChatHistory();
   
   // Update chat status to 'completed' when all messages finish loading
   React.useEffect(() => {
@@ -9536,8 +9545,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       isFirstCitationRef.current = true;
       setChatMessages([]);
       setSubmittedQueries([]);
-      setCurrentChatId(null);
-      currentChatIdRef.current = null;
+      const newPlaceholderId = addChatToHistory({
+        title: 'New chat',
+        timestamp: new Date().toISOString(),
+        preview: '',
+        messages: [],
+        status: 'completed',
+      });
+      setCurrentChatId(newPlaceholderId);
+      currentChatIdRef.current = newPlaceholderId;
       activeChatIdRef.current = null;
       if (expandedCardViewDoc && !keepDocumentOpenOnNewChat) {
         closeExpandedCardView();
@@ -9580,8 +9596,21 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       setIsSubmitted(false);
       setIsFocused(false);
       isFirstCitationRef.current = true;
-      setCurrentChatId(null);
-      currentChatIdRef.current = null;
+      if (currentChatId) {
+        const existingChat = getChatById(currentChatId);
+        if (existingChat?.messages?.length === 0) {
+          removeChatFromHistory(currentChatId);
+        }
+      }
+      const newPlaceholderId = addChatToHistory({
+        title: 'New chat',
+        timestamp: new Date().toISOString(),
+        preview: '',
+        messages: [],
+        status: 'completed',
+      });
+      setCurrentChatId(newPlaceholderId);
+      currentChatIdRef.current = newPlaceholderId;
       activeChatIdRef.current = null;
       setChatTitle('');
       setIsTitleStreaming(false);
@@ -9594,7 +9623,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       }
       if (onNewChat) onNewChat();
     }
-  }, [chatMessages, currentChatId, chatTitle, addChatToHistory, updateChatTitle, getChatById, updateChatInHistory, getBufferedState, closeExpandedCardView, clearPropertyAttachments, onNewChat, expandedCardViewDoc, keepDocumentOpenOnNewChat]);
+  }, [chatMessages, currentChatId, chatTitle, addChatToHistory, updateChatTitle, getChatById, updateChatInHistory, getBufferedState, closeExpandedCardView, clearPropertyAttachments, onNewChat, expandedCardViewDoc, keepDocumentOpenOnNewChat, removeChatFromHistory]);
 
   // Track last processed newAgentTrigger to prevent infinite loops
   const lastProcessedTriggerRef = React.useRef<number>(0);
@@ -9680,9 +9709,25 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       // Set flag to prevent restore from interfering
       newAgentRequestedRef.current = true;
       
-      // CRITICAL: Clear currentChatId FIRST, synchronously
-      setCurrentChatId(null);
-      currentChatIdRef.current = null; // Also update ref synchronously to avoid stale closure issues
+      // Remove existing empty placeholder if any (avoids duplicate "New chat" tabs when Plus is clicked repeatedly)
+      const prevChatId = currentChatIdRef.current;
+      if (prevChatId) {
+        const existingChat = getChatById(prevChatId);
+        if (existingChat?.messages?.length === 0) {
+          removeChatFromHistory(prevChatId);
+        }
+      }
+      
+      // Create placeholder "New chat" tab so it's visible in the bar until first message is sent
+      const newPlaceholderId = addChatToHistory({
+        title: 'New chat',
+        timestamp: new Date().toISOString(),
+        preview: '',
+        messages: [],
+        status: 'completed',
+      });
+      setCurrentChatId(newPlaceholderId);
+      currentChatIdRef.current = newPlaceholderId;
       
       // Clear all other state immediately
       setChatTitle('');
@@ -9745,7 +9790,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         newAgentRequestedRef.current = false;
       }, 500);
     }
-  }, [newAgentTrigger, clearPropertyAttachments, getBufferedState]); // CRITICAL: Removed currentChatId, expandedCardViewDoc, chatMessages to prevent infinite loop
+  }, [newAgentTrigger, clearPropertyAttachments, getBufferedState, addChatToHistory, getChatById, removeChatFromHistory]); // CRITICAL: Removed currentChatId, expandedCardViewDoc, chatMessages to prevent infinite loop
   
   // CRITICAL: When restoreChatId is cleared (set to null), clear currentChatId to allow new chat creation
   // This is a fallback for when restoreChatId changes from a value to null
@@ -9769,7 +9814,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     // Use ref to get latest value without adding to dependency array (prevents infinite loop)
     if (prevRestoreChatId && !restoreChatId && currentChatIdRef.current) {
       console.log('🆕 SideChatPanel: restoreChatId cleared (was:', prevRestoreChatId, ') - clearing currentChatId for new chat');
-      setCurrentChatId(null);
+      const newPlaceholderId = addChatToHistory({
+        title: 'New chat',
+        timestamp: new Date().toISOString(),
+        preview: '',
+        messages: [],
+        status: 'completed',
+      });
+      setCurrentChatId(newPlaceholderId);
+      currentChatIdRef.current = newPlaceholderId;
       setChatTitle('');
       setChatMessages([]);
       setSubmittedQueries([]);
@@ -9799,7 +9852,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       setIsBotPaused(false);
       isBotPausedRef.current = false;
     }
-  }, [restoreChatId, clearPropertyAttachments]); // CRITICAL: Removed currentChatId from deps to prevent infinite loop
+  }, [restoreChatId, clearPropertyAttachments, addChatToHistory]); // CRITICAL: Removed currentChatId from deps to prevent infinite loop
   
   // NOTE: Document preview restoration for restoreChatId is now handled by ChatStateStore
   // When activeChatId changes, MainContent automatically shows that chat's document preview
@@ -10312,6 +10365,22 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     return queryText;
   }, [extractPropertySubject, extractMainTopic, extractQuestionType]);
   
+  /** Derive chat title from complete data when backend title is missing (e.g. "New chat" -> first response) */
+  const deriveTitleFromComplete = React.useCallback((data: any, userQuery: string, chatId: string | null): string | null => {
+    const fromBackend = (data?.title ?? '').trim();
+    if (fromBackend) return fromBackend;
+    const fromStreamed = (streamedTitleAccumulatedRef.current ?? '').trim();
+    if (fromStreamed) return fromStreamed;
+    const fromQuery = generateSmartChatTitle(userQuery)?.trim();
+    if (fromQuery && fromQuery !== 'New chat') return fromQuery;
+    const summary = (data?.summary ?? '').trim();
+    if (summary) {
+      const firstLine = summary.split(/\r?\n/).find((l: string) => l.trim().length > 0)?.trim() ?? '';
+      if (firstLine) return firstLine.length <= 60 ? firstLine : firstLine.substring(0, 57) + '...';
+    }
+    return null;
+  }, [generateSmartChatTitle]);
+  
   // Streaming typing effect for title
   const streamTitle = React.useCallback((title: string) => {
     // Clear any existing interval
@@ -10665,7 +10734,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         // Priority: Check ref first (updated synchronously), then state as fallback
         const currentChatIdValue = currentChatIdRef.current ?? currentChatId;
         const currentMessagesLength = chatMessagesRef.current.length || chatMessages.length;
-        const isNewChatSession = !currentChatIdValue || currentMessagesLength === 0;
+        // Only create new chat when we have no currentChatId (placeholder from Plus/New chat has one)
+        const isNewChatSession = !currentChatIdValue;
         
         let chatSessionId = sessionId; // Default to component sessionId, will be overridden if new chat
         let savedChatId: string | undefined; // Declare at higher scope for status update
@@ -11587,15 +11657,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   updateChatInHistory(queryChatId, finalMessages);
                   updateChatStatus(queryChatId, 'completed');
                   
-                  // Apply streamed title from backend (everything shown to user is streamed)
-                  const streamedTitleFromBackend = data.title;
-                  if (streamedTitleFromBackend) {
-                    setChatTitle(streamedTitleFromBackend);
-                    updateChatTitle(queryChatId, streamedTitleFromBackend);
+                  // Apply title from backend or derive from response (updates "New chat" tab after first response)
+                  const resolvedTitle = deriveTitleFromComplete(data, queryText || '', queryChatId);
+                  if (resolvedTitle && queryChatId) {
+                    setChatTitle(resolvedTitle);
+                    updateChatTitle(queryChatId, resolvedTitle);
                   }
+                  streamedTitleAccumulatedRef.current = '';
                   setIsTitleStreaming(false);
                   setStreamedTitle('');
-                  
+
                   // Clean up abort controller
                   delete abortControllersRef.current[queryChatId];
                   console.log('✅ [HISTORY_SAVE] Final save on complete (query path):', { chatId: queryChatId, messageCount: finalMessages.length, hasContent: finalMessages.some(m => m.content && m.content.trim().length > 0) });
@@ -14016,6 +14087,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               })();
             };
             
+            streamedTitleAccumulatedRef.current = '';
             await backendApi.queryDocumentsStreamFetch(
               queryText,
               propertyId,
@@ -14041,10 +14113,13 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 } else {
                   stopPerplexityRevealInterval();
                 }
-                if (data?.title && currentChatId) {
-                  setChatTitle(data.title);
-                  updateChatTitle(currentChatId, data.title);
+                const chatIdForTitle = currentChatIdRef.current ?? currentChatId;
+                const resolvedTitle = deriveTitleFromComplete(data, queryText || '', chatIdForTitle);
+                if (resolvedTitle && chatIdForTitle) {
+                  setChatTitle(resolvedTitle);
+                  updateChatTitle(chatIdForTitle, resolvedTitle);
                 }
+                streamedTitleAccumulatedRef.current = '';
                 setIsTitleStreaming(false);
                 setStreamedTitle('');
                 
@@ -14514,6 +14589,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               undefined, // existingPlan
               // onTitleChunk: Stream chat title from backend (everything shown to user is streamed)
               (token: string) => {
+                streamedTitleAccumulatedRef.current = (streamedTitleAccumulatedRef.current || '') + token;
                 setIsTitleStreaming(true);
                 setStreamedTitle(prev => prev + token);
               },
@@ -15465,7 +15541,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       // Priority: Check ref first (updated synchronously), then state as fallback
       const currentChatIdValue = currentChatIdRef.current ?? currentChatId;
       const currentMessagesLength = chatMessagesRef.current.length || chatMessages.length;
-      const isNewChatSession = !currentChatIdValue || currentMessagesLength === 0;
+      // Only create new chat when we have no currentChatId (placeholder from Plus/New chat has one)
+      const isNewChatSession = !currentChatIdValue;
       
       let chatSessionId = sessionId; // Default to component sessionId, will be overridden if new chat
       let savedChatId: string | undefined; // Declare at higher scope for status update
@@ -15854,6 +15931,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           // Initialize buffered state for this chat if it doesn't exist
           if (queryChatId) {
             getBufferedState(queryChatId);
+            streamedTitleAccumulatedRef.current = '';
             // CRITICAL: activeChatIdRef is already set above, but log for debugging
             if (isVisible) {
               console.log('✅ SideChatPanel: Set activeChatIdRef for handleSubmit query:', {
@@ -16108,15 +16186,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   updateChatInHistory(queryChatId, finalMessages);
                   updateChatStatus(queryChatId, 'completed');
                   
-                  // Apply streamed title from backend (everything shown to user is streamed)
-                  const streamedTitleFromBackend = data.title;
-                  if (streamedTitleFromBackend) {
-                    setChatTitle(streamedTitleFromBackend);
-                    updateChatTitle(queryChatId, streamedTitleFromBackend);
+                  // Apply title from backend or derive from response (updates "New chat" tab after first response)
+                  const resolvedTitle = deriveTitleFromComplete(data, submitted || '', queryChatId);
+                  if (resolvedTitle && queryChatId) {
+                    setChatTitle(resolvedTitle);
+                    updateChatTitle(queryChatId, resolvedTitle);
                   }
+                  streamedTitleAccumulatedRef.current = '';
                   setIsTitleStreaming(false);
                   setStreamedTitle('');
-                  
+
                   // Clean up abort controller
                   delete abortControllersRef.current[queryChatId];
                   console.log('✅ [HISTORY_SAVE] Final save on complete (submit path):', { chatId: queryChatId, messageCount: finalMessages.length, hasContent: finalMessages.some(m => m.content && m.content.trim().length > 0) });
@@ -16754,6 +16833,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             undefined, // existingPlan
             // onTitleChunk: Stream chat title from backend (everything shown to user is streamed)
             (token: string) => {
+              streamedTitleAccumulatedRef.current = (streamedTitleAccumulatedRef.current || '') + token;
               setIsTitleStreaming(true);
               setStreamedTitle(prev => prev + token);
             },
@@ -18570,6 +18650,39 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 flex: 1,
               }}
             >
+            {/* Cursor-like: show ChatTabsBar at top when agent sidebar is closed (even in centered empty state) */}
+            {useCenteredEmptyState && !isChatPanelOpen && onChatSelect && (
+              <div
+                className="flex-shrink-0 border-b border-black/[0.06]"
+                style={{
+                  backgroundColor: '#FFFFFF',
+                  paddingTop: 12,
+                  paddingBottom: 12,
+                  paddingLeft: 16,
+                  paddingRight: 16,
+                  zIndex: 10002,
+                }}
+              >
+                <ChatTabsBar
+                  fullWidth
+                  chats={[...chatHistory.filter(c => !c.archived && !c.id.startsWith('property-')).slice(0, 5)].reverse()}
+                  selectedChatId={selectedChatIdProp ?? currentChatId}
+                  onChatSelect={onChatSelect}
+                  onNewChat={() => onNewChat?.()}
+                  onOpenChatHistory={onOpenChatHistory}
+                  onCloseChat={(chatId) => {
+                    removeChatFromHistory(chatId);
+                    if ((selectedChatIdProp ?? currentChatId) === chatId) {
+                      onNewChat?.();
+                    }
+                  }}
+                  onUpdateChatTitle={updateChatTitle}
+                  onArchiveChat={archiveChat}
+                  onUnarchiveChat={unarchiveChat}
+                  onRemoveChat={removeChatFromHistory}
+                />
+              </div>
+            )}
             {/* Header - Hidden in centered empty state so layout matches dashboard exactly (no movement when switching) */}
             {!useCenteredEmptyState && (
             <div 
@@ -18607,9 +18720,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     setIsNearEditButton(distance < 60);
                   }
                 }}
-                onMouseLeave={() => {
-                  setIsNearEditButton(false);
-                }}
+                onMouseLeave={() => setIsNearEditButton(false)}
               >
                 <div className="flex items-center space-x-2 min-w-0" data-view-dropdown-ignore>
                   {/* View dropdown: Sidebar, Files, New chat, Fullscreen. Close sidebar only when big (full) sidebar is open, not when small/icons-only. Same styling in all contexts so positioning matches fullscreen property vs map/search. */}
@@ -18835,8 +18946,37 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       </div>
                     </PopoverContent>
                   </Popover>
-                  {/* Chat name dropdown to the right of View button (when not new chat) */}
-                  {!isNewChatSection && (
+                  {/* Center column: ChatTabsBar (when onChatSelect) or chat title (when not new chat) - same layout as streaming content */}
+                  {onChatSelect ? (
+                    <div
+                      className="min-w-0 flex items-center overflow-x-auto place-self-center w-full"
+                      style={{
+                        maxWidth: '720px',
+                        paddingLeft: actualPanelWidth < 320 ? '20px' : '48px',
+                        paddingRight: actualPanelWidth < 320 ? '20px' : '48px',
+                        margin: '0 auto',
+                      }}
+                    >
+                      <ChatTabsBar
+                        fullWidth
+                        chats={[...chatHistory.filter(c => !c.archived && !c.id.startsWith('property-')).slice(0, 5)].reverse()}
+                        selectedChatId={selectedChatIdProp ?? currentChatId}
+                        onChatSelect={onChatSelect}
+                        onNewChat={() => onNewChat?.()}
+                        onOpenChatHistory={onOpenChatHistory}
+                        onCloseChat={(chatId) => {
+                          removeChatFromHistory(chatId);
+                          if ((selectedChatIdProp ?? currentChatId) === chatId) {
+                            onNewChat?.();
+                          }
+                        }}
+                        onUpdateChatTitle={updateChatTitle}
+                        onArchiveChat={archiveChat}
+                        onUnarchiveChat={unarchiveChat}
+                        onRemoveChat={removeChatFromHistory}
+                      />
+                    </div>
+                  ) : !isNewChatSection && (
                   actualPanelWidth >= 900 ? (
                     <div className="flex items-center gap-2.5 max-w-[220px] mr-1 ml-16 min-h-[32px]">
                       {isEditingTitle ? (

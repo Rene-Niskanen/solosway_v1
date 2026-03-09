@@ -2860,28 +2860,28 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                     <X className="w-3.5 h-3.5" />
                   </button>
                 </div>
-                {/* Extraction mode toggles - Standard (fast) vs Deep (agentic); each is one white card with label + image. Unselected collapses; expands on hover. Selected always at top. */}
-                <div className="mt-3 flex flex-col gap-4">
+                {/* Extraction mode toggles - Standard (fast) vs Deep (agentic); each is one white card with label + image. Unselected collapses; expands on hover. Selected always at top. Scrollable so cards don't push action buttons off screen. */}
+                <div className="mt-4 flex flex-col gap-5 max-h-[min(70vh,520px)] overflow-y-auto">
                   {/* Standard Extraction */}
                   <button
                     type="button"
                     onClick={() => setExtractionMode('standard')}
                     onMouseEnter={() => setHoveredExtractionCard('standard')}
                     onMouseLeave={() => setHoveredExtractionCard(null)}
-                    className={`w-full flex flex-col items-center rounded-lg transition-all duration-200 text-left overflow-hidden ${extractionMode === 'standard' ? 'order-first' : 'order-last'} ${
+                    className={`relative w-full flex flex-col items-start rounded-lg transition-all duration-200 text-left overflow-visible ${extractionMode === 'standard' ? 'order-first' : 'order-last'} ${hoveredExtractionCard === 'standard' ? 'z-10' : 'z-0'} ${
                       extractionMode === 'standard'
-                        ? 'p-3 bg-white border-4 border-[#F3F3E7] ring-2 ring-[#F3F3E7] ring-offset-2 ring-offset-white shadow-sm'
+                        ? 'p-4 bg-white border-4 border-[#F3F3E7] ring-2 ring-[#F3F3E7] ring-offset-2 ring-offset-white shadow-sm'
                         : `bg-white border border-gray-200 hover:bg-[#FAFAFA] shadow-[0_0_20px_4px_rgba(255,255,255,0.7),0_1px_3px_rgba(0,0,0,0.08)] ${
-                            hoveredExtractionCard === 'standard' ? 'p-3' : 'py-2 px-3'
+                            hoveredExtractionCard === 'standard' ? 'p-4' : 'py-2.5 px-4'
                           }`
                     }`}
                   >
                     <div
-                      className={`flex items-center justify-center gap-2 w-full min-h-[20px] ${
-                        extractionMode === 'standard' || hoveredExtractionCard === 'standard' ? 'mb-2' : 'mb-0'
+                      className={`flex items-center gap-2 w-full min-h-[20px] ${
+                        extractionMode === 'standard' || hoveredExtractionCard === 'standard' ? 'mb-3' : 'mb-0'
                       }`}
                     >
-                      <span className={`text-xs font-medium ${extractionMode === 'standard' ? 'text-slate-700' : 'text-slate-600'}`}>
+                      <span className={`text-sm font-medium ${extractionMode === 'standard' ? 'text-slate-700' : 'text-slate-600'}`}>
                         Standard Extraction
                       </span>
                       {extractionMode === 'standard' && (
@@ -2891,7 +2891,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                       )}
                     </div>
                     {(extractionMode === 'standard' || hoveredExtractionCard === 'standard') && (
-                      <ul className="text-[10px] text-slate-500 space-y-0.5 mb-2 list-disc list-inside text-left w-full">
+                      <ul className="text-xs text-slate-500 space-y-1.5 mb-4 list-disc list-outside pl-4 w-full leading-relaxed">
                         <li>Answers in seconds</li>
                         <li>Optimised for digital documents and typed text</li>
                         <li>Quick, reliable extraction</li>
@@ -2899,13 +2899,13 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                       </ul>
                     )}
                     <div
-                      className={`grid transition-all duration-200 ease-out ${
+                      className={`grid transition-all duration-200 ease-out w-full ${
                         extractionMode === 'standard' || hoveredExtractionCard === 'standard'
                           ? 'grid-rows-[1fr] opacity-100'
                           : 'grid-rows-[0fr] opacity-0'
                       }`}
                     >
-                      <div className="min-h-0 overflow-hidden">
+                      <div className="min-h-0 overflow-hidden flex justify-center">
                         <img
                           src="/Standard.png"
                           alt="Standard extraction preview"
@@ -2920,20 +2920,20 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                     onClick={() => setExtractionMode('deep')}
                     onMouseEnter={() => setHoveredExtractionCard('deep')}
                     onMouseLeave={() => setHoveredExtractionCard(null)}
-                    className={`w-full flex flex-col items-center rounded-lg transition-all duration-200 text-left overflow-hidden ${extractionMode === 'deep' ? 'order-first' : 'order-last'} ${
+                    className={`relative w-full flex flex-col items-start rounded-lg transition-all duration-200 text-left overflow-visible ${extractionMode === 'deep' ? 'order-first' : 'order-last'} ${hoveredExtractionCard === 'deep' ? 'z-10' : 'z-0'} ${
                       extractionMode === 'deep'
-                        ? 'p-3 bg-white border-4 border-[#F3F3E7] ring-2 ring-[#F3F3E7] ring-offset-2 ring-offset-white shadow-sm'
+                        ? 'p-4 bg-white border-4 border-[#F3F3E7] ring-2 ring-[#F3F3E7] ring-offset-2 ring-offset-white shadow-sm'
                         : `bg-white border border-gray-200 hover:bg-[#FAFAFA] shadow-[0_0_20px_4px_rgba(255,255,255,0.7),0_1px_3px_rgba(0,0,0,0.08)] ${
-                            hoveredExtractionCard === 'deep' ? 'p-3' : 'py-2 px-3'
+                            hoveredExtractionCard === 'deep' ? 'p-4' : 'py-2.5 px-4'
                           }`
                     }`}
                   >
                     <div
-                      className={`flex items-center justify-center gap-2 w-full min-h-[20px] ${
-                        extractionMode === 'deep' || hoveredExtractionCard === 'deep' ? 'mb-2' : 'mb-0'
+                      className={`flex items-center gap-2 w-full min-h-[20px] ${
+                        extractionMode === 'deep' || hoveredExtractionCard === 'deep' ? 'mb-3' : 'mb-0'
                       }`}
                     >
-                      <span className={`text-xs font-medium ${extractionMode === 'deep' ? 'text-slate-700' : 'text-slate-600'}`}>
+                      <span className={`text-sm font-medium ${extractionMode === 'deep' ? 'text-slate-700' : 'text-slate-600'}`}>
                         Deep Extract (Agentic Mode)
                       </span>
                       {extractionMode === 'deep' && (
@@ -2943,7 +2943,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                       )}
                     </div>
                     {(extractionMode === 'deep' || hoveredExtractionCard === 'deep') && (
-                      <ul className="text-[10px] text-slate-500 space-y-0.5 mb-2 list-disc list-inside text-left w-full">
+                      <ul className="text-xs text-slate-500 space-y-1.5 mb-4 list-disc list-outside pl-4 w-full leading-relaxed">
                         <li>Goes deeper with AI-powered reasoning</li>
                         <li>Handles handwritten notes and tricky scans</li>
                         <li>Automatically steps up when documents need extra attention</li>
@@ -2951,13 +2951,13 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                       </ul>
                     )}
                     <div
-                      className={`grid transition-all duration-200 ease-out ${
+                      className={`grid transition-all duration-200 ease-out w-full ${
                         extractionMode === 'deep' || hoveredExtractionCard === 'deep'
                           ? 'grid-rows-[1fr] opacity-100'
                           : 'grid-rows-[0fr] opacity-0'
                       }`}
                     >
-                      <div className="min-h-0 overflow-hidden">
+                      <div className="min-h-0 overflow-hidden flex justify-center">
                         <img
                           src="/Deep.png"
                           alt="Deep extraction preview"

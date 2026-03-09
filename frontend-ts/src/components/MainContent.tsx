@@ -2146,6 +2146,7 @@ export interface MainContentProps {
     isFromHistory?: boolean;
   } | null;
   currentChatId?: string | null;
+  onChatSelect?: (chatId: string) => void;
   isInChatMode?: boolean;
   resetTrigger?: number;
   onNavigate?: (view: string, options?: { showMap?: boolean; openCategory?: string }) => void;
@@ -2184,6 +2185,7 @@ export const MainContent = ({
   onChatHistoryCreate,
   currentChatData,
   currentChatId,
+  onChatSelect,
   isInChatMode: inChatMode = false,
   resetTrigger: parentResetTrigger,
   onNavigate,
@@ -5897,6 +5899,8 @@ export const MainContent = ({
         isFilingSidebarOpening={isFilingSidebarOpening}
         isSidebarCollapsing={isSidebarCollapsing}
         restoreChatId={restoreChatId}
+        selectedChatId={currentChatId}
+        onChatSelect={onChatSelect}
         newAgentTrigger={newAgentTrigger}
         initialAttachedFiles={
           pendingSideChatAttachmentsRef.current.length > 0 

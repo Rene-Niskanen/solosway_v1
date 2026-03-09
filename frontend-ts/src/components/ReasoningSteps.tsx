@@ -718,6 +718,7 @@ const StepRenderer: React.FC<{
       const isNoResultsStep = step.message.toLowerCase().includes('no relevant');
       // Retrieved passages step has no doc_previews; don't show "document details not available" under it
       const isRetrievedPassagesStep = step.step === 'found_sections' || /Retrieved\s+\d+\s+passage/i.test((step.message || '').trim());
+      const isFindingStep = /^Finding\s+/i.test((step.message || '').trim());
       const foundActionColor = thoughtCompleted ? FAINT_COLOR : ACTION_COLOR;
       const foundActionStyle = { color: foundActionColor, fontWeight: 500 as const };
       const foundDetailColor = foundActionColor;
@@ -898,7 +899,7 @@ const StepRenderer: React.FC<{
             </span>
             )}
           </div>
-          {!isSectionsStep && !isNoResultsStep && !showDocsInline && !(step.details?.doc_previews?.length) && !isRetrievedPassagesStep ? (
+          {!isSectionsStep && !isNoResultsStep && !isFindingStep && !showDocsInline && !(step.details?.doc_previews?.length) && !isRetrievedPassagesStep ? (
             <div style={{ marginTop: '2px', paddingLeft: '0', color: foundDetailColor, fontStyle: 'italic', fontSize: '12px' }}>
               (document details not available)
             </div>
@@ -1565,8 +1566,14 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
     }
     // Hide "Searching" once we have reading steps: show only Found + Read... (searching step disappears, reading steps appear)
     // When showAllStepsInTrace (e.g. expanded Thought dropdown) or during loading, keep all steps including Searching
+    // Exception: keep searching step when it has intent-based task text (e.g. "Finding the valuation details of Koch Sales")
     if (!effectiveShowAllStepsInTrace && list.some(s => s.action_type === 'reading')) {
-      list = list.filter(s => s.action_type !== 'searching');
+      list = list.filter(s => {
+        if (s.action_type !== 'searching') return true;
+        const msg = (s.message || '').trim();
+        const hasIntentBasedTask = /^(Finding|Searching for|Preparing|Locating)\s+(the\s+)?[^.?!]+$/i.test(msg) && msg.length > 20;
+        return hasIntentBasedTask; // keep searching when it conveys the user's actual task
+      });
     }
     // UX: When thought is completed (collapsed trace), also hide searching so we show Found + reading list only
     if (thoughtCompleted && !effectiveShowAllStepsInTrace) {
@@ -1840,10 +1847,14 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
     return items;
   }, [stepsForDisplay]);
 
-  // Single-step-at-a-time during loading: (1) Planning (2) Searching (3) Found N relevant sections (4) Analysing (5) Thinking (6) Generating response
-  type Phase = 1 | 2 | 3 | 4 | 5 | 6;
-  const [phase4ShownAt, setPhase4ShownAt] = useState<number | null>(null);
+  // Single-step-at-a-time during loading: (1) Planning (2) Searching (3) Finding X (4) Found N relevant sections (5) Analysing (6) Thinking (7) Generating response
+  type Phase = 1 | 2 | 3 | 4 | 5 | 6 | 7;
+  const [phase3ShownAt, setPhase3ShownAt] = useState<number | null>(null);
+  const [phase5ShownAt, setPhase5ShownAt] = useState<number | null>(null);
+  const FINDING_MIN_MS = 2800;  // Ensure "Finding X" stays visible long enough to read
   const ANALYSING_MIN_MS = 900;
+
+  const [phase3MinReached, setPhase3MinReached] = useState(false);
 
   const currentPhaseAndItem = useMemo((): { phase: Phase; displayItem: DisplayItem | null; displayIdx: number } => {
     if (!stepsForDisplay || stepsForDisplay.length === 0) {
@@ -1868,14 +1879,25 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
     const hasFoundSections = stepsForDisplay.some(
       (s) => s.step === 'found_sections' || /Retrieved\s+\d+\s+passage/i.test((s.message || '').trim()) || /Found\s+\d+\s+relevant\s+section/i.test((s.message || '').trim()) || /Analysing\s+\d+\s+section/i.test((s.message || '').trim())
     );
+    const hasFindingExploring = stepsForDisplay.some(
+      (s) =>
+        s.action_type === 'exploring' &&
+        /^Finding\s+/i.test((s.message || '').trim()) &&
+        !/Retrieved\s+\d+\s+passage/i.test((s.message || '').trim()) &&
+        !/^Analysing\s+\d+\s+documents?\s*:?/i.test((s.message || '').trim())
+    );
     const hasSearching = stepsForDisplay.some((s) => s.action_type === 'searching');
 
+    // Stay on Finding phase for minimum duration before advancing to Retrieved
+    const findingMinElapsed = phase3MinReached;
+
     let phase: Phase = 1;
-    if (hasGenerating) phase = 6;
-    else if (hasThinking && (!hasAnalysing || (phase4ShownAt !== null && Date.now() - phase4ShownAt >= ANALYSING_MIN_MS)))
-      phase = 5;
-    else if (hasAnalysing) phase = 4;
-    else if (hasFoundSections) phase = 3;
+    if (hasGenerating) phase = 7;
+    else if (hasThinking && (!hasAnalysing || (phase5ShownAt !== null && Date.now() - phase5ShownAt >= ANALYSING_MIN_MS)) && !(hasFindingExploring && !findingMinElapsed))
+      phase = 6;
+    else if (hasAnalysing) phase = 5;
+    else if (hasFoundSections && (!hasFindingExploring || findingMinElapsed)) phase = 4;
+    else if (hasFindingExploring) phase = 3;
     else if (hasSearching) phase = 2;
 
     if (phase === 1) {
@@ -1894,22 +1916,30 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
       /^Analysing\s+\d+\s+documents?\s*:?/i.test((s.message || '').trim());
     const isFoundSectionsStep = (s: ReasoningStep) =>
       s.step === 'found_sections' || /Retrieved\s+\d+\s+passage/i.test((s.message || '').trim()) || /Found\s+\d+\s+relevant\s+section/i.test((s.message || '').trim()) || /Analysing\s+\d+\s+section/i.test((s.message || '').trim());
+    const isFindingExploringStep = (s: ReasoningStep) =>
+      s.action_type === 'exploring' &&
+      /^Finding\s+/i.test((s.message || '').trim()) &&
+      !/Retrieved\s+\d+\s+passage/i.test((s.message || '').trim()) &&
+      !/^Analysing\s+\d+\s+documents?\s*:?/i.test((s.message || '').trim());
 
     for (let idx = 0; idx < displayItems.length; idx++) {
       const item = displayItems[idx];
-      if (phase === 6 && item.kind === 'single' && isGeneratingStep(item.step)) {
+      if (phase === 7 && item.kind === 'single' && isGeneratingStep(item.step)) {
+        return { phase: 7, displayItem: item, displayIdx: idx };
+      }
+      if (phase === 6 && item.kind === 'single' && isThinkingStep(item.step)) {
         return { phase: 6, displayItem: item, displayIdx: idx };
       }
-      if (phase === 5 && item.kind === 'single' && isThinkingStep(item.step)) {
-        return { phase: 5, displayItem: item, displayIdx: idx };
-      }
-      if (phase === 4) {
-        if (item.kind === 'group') return { phase: 4, displayItem: item, displayIdx: idx };
+      if (phase === 5) {
+        if (item.kind === 'group') return { phase: 5, displayItem: item, displayIdx: idx };
         if (item.kind === 'single' && (isAnalysingExploring(item.step) || item.step.action_type === 'reading')) {
-          return { phase: 4, displayItem: item, displayIdx: idx };
+          return { phase: 5, displayItem: item, displayIdx: idx };
         }
       }
-      if (phase === 3 && item.kind === 'single' && isFoundSectionsStep(item.step)) {
+      if (phase === 4 && item.kind === 'single' && isFoundSectionsStep(item.step)) {
+        return { phase: 4, displayItem: item, displayIdx: idx };
+      }
+      if (phase === 3 && item.kind === 'single' && isFindingExploringStep(item.step)) {
         return { phase: 3, displayItem: item, displayIdx: idx };
       }
       if (phase === 2 && item.kind === 'single' && item.step.action_type === 'searching') {
@@ -1917,14 +1947,27 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
       }
     }
     return { phase: 1, displayItem: null, displayIdx: 0 };
-  }, [stepsForDisplay, displayItems, phase4ShownAt]);
+  }, [stepsForDisplay, displayItems, phase3MinReached, phase5ShownAt]);
 
   useEffect(() => {
-    if (!stepsForDisplay || stepsForDisplay.length === 0) setPhase4ShownAt(null);
+    if (!stepsForDisplay || stepsForDisplay.length === 0) {
+      setPhase3ShownAt(null);
+      setPhase5ShownAt(null);
+      setPhase3MinReached(false);
+    }
   }, [stepsForDisplay]);
   useEffect(() => {
-    if (currentPhaseAndItem.phase === 4 && phase4ShownAt === null) setPhase4ShownAt(Date.now());
-  }, [currentPhaseAndItem.phase, phase4ShownAt]);
+    if (currentPhaseAndItem.phase === 3 && phase3ShownAt === null) setPhase3ShownAt(Date.now());
+  }, [currentPhaseAndItem.phase, phase3ShownAt]);
+  useEffect(() => {
+    if (currentPhaseAndItem.phase !== 3) return;
+    if (phase3ShownAt === null) return;
+    const id = setTimeout(() => setPhase3MinReached(true), FINDING_MIN_MS);
+    return () => clearTimeout(id);
+  }, [currentPhaseAndItem.phase, phase3ShownAt]);
+  useEffect(() => {
+    if (currentPhaseAndItem.phase === 5 && phase5ShownAt === null) setPhase5ShownAt(Date.now());
+  }, [currentPhaseAndItem.phase, phase5ShownAt]);
 
   const [documentsDropdownStepKey, setDocumentsDropdownStepKey] = useState<string | null>(null);
   
@@ -2222,14 +2265,14 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
 
             if (displayItem.kind === 'group') {
               const groupKey = anim.stepKey + '-group';
-              const isPhase5Or6 = currentPhaseAndItem.phase === 5 || currentPhaseAndItem.phase === 6;
+              const isPhase5Or6Or7 = currentPhaseAndItem.phase === 5 || currentPhaseAndItem.phase === 6 || currentPhaseAndItem.phase === 7;
               return (
                 <motion.div
                   key={`phase-${currentPhaseAndItem.phase}`}
                   initial={skipAnimations ? { opacity: 1, y: 0, scale: 1 } : { opacity: 0, y: 2, scale: 0.98 }}
                   animate={{ opacity: 1, y: 0, scale: 1 }}
                   exit={{ opacity: 0, transition: { duration: 0.05 } }}
-                  transition={(hasResponseText || skipAnimations) ? { duration: 0 } : { duration: 0.06, delay: isPhase5Or6 ? 0 : anim.delay, ease: [0.16, 1, 0.3, 1] }}
+                  transition={(hasResponseText || skipAnimations) ? { duration: 0 } : { duration: 0.06, delay: isPhase5Or6Or7 ? 0 : anim.delay, ease: [0.16, 1, 0.3, 1] }}
                   style={{
                     fontSize: '14px',
                     color: DETAIL_COLOR,
@@ -2266,14 +2309,14 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
             }
 
             const { step, delay: stepDelay, readingIndex: currentReadingIndex, isLastReadingStep, stepIndex: idx } = anim;
-            const isPhase5Or6 = currentPhaseAndItem.phase === 5 || currentPhaseAndItem.phase === 6;
+            const isPhase5Or6Or7 = currentPhaseAndItem.phase === 5 || currentPhaseAndItem.phase === 6 || currentPhaseAndItem.phase === 7;
             return (
               <motion.div
                 key={`phase-${currentPhaseAndItem.phase}`}
                 initial={skipAnimations ? { opacity: 1, y: 0, scale: 1 } : { opacity: 0, y: 2, scale: 0.98 }}
                 animate={{ opacity: 1, y: 0, scale: 1 }}
                 exit={{ opacity: 0, transition: { duration: 0.05 } }}
-                transition={(hasResponseText || skipAnimations) ? { duration: 0 } : { duration: 0.06, delay: isPhase5Or6 ? 0 : stepDelay, ease: [0.16, 1, 0.3, 1] }}
+                transition={(hasResponseText || skipAnimations) ? { duration: 0 } : { duration: 0.06, delay: isPhase5Or6Or7 ? 0 : stepDelay, ease: [0.16, 1, 0.3, 1] }}
                 style={{
                   fontSize: '14px',
                   color: DETAIL_COLOR,
