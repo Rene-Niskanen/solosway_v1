@@ -74,11 +74,19 @@ function stripHtmlFromQuery(s: string): string {
   return s.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
 }
 
-/** Compute "Thought Xs" label from actual response generation time (responseStartedAt → responseCompletedAt) or fallback to step timestamps. */
+/** Compute "Thought Xs" label from query sent to first token streamed (responseStartedAt → firstTokenAt), or fallback to step timestamps. */
 function getThoughtDurationLabel(
   steps: ReasoningStep[],
-  message?: { responseStartedAt?: number; responseCompletedAt?: number }
+  message?: { responseStartedAt?: number; firstTokenAt?: number; responseCompletedAt?: number }
 ): string {
+  // Prefer: query sent → first token (time to first meaningful response)
+  if (message?.responseStartedAt != null && message?.firstTokenAt != null && message.firstTokenAt >= message.responseStartedAt) {
+    const durationMs = message.firstTokenAt - message.responseStartedAt;
+    const durationSec = Math.round(durationMs / 1000);
+    if (durationSec <= 0) return 'Thought <1s';
+    return `Thought ${durationSec}s`;
+  }
+  // Fallback: full response time (legacy) or when firstTokenAt not yet recorded
   if (message?.responseStartedAt != null && message?.responseCompletedAt != null && message.responseCompletedAt >= message.responseStartedAt) {
     const durationMs = message.responseCompletedAt - message.responseStartedAt;
     const durationSec = Math.round(durationMs / 1000);
@@ -2411,9 +2419,9 @@ const StreamingResponseText: React.FC<{
           out.push(
             <motion.span
               key={`${keyPrefix}-w${chunkKey++}`}
-              initial={{ filter: `blur(${blurPx}px)`, opacity: 0.6 }}
+              initial={{ filter: `blur(${blurPx}px)`, opacity: 0 }}
               animate={{ filter: 'blur(0px)', opacity: 1 }}
-              transition={{ duration: 0.7, ease: [0.22, 0.61, 0.36, 1] }}
+              transition={{ duration: 2, ease: [0.22, 0.61, 0.36, 1] }}
               style={{ display: 'inline' }}
             >
               {withTrailingSpace}
@@ -8686,7 +8694,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     contentSegments?: QueryContentSegment[];
     /** When response generation started (ms); used for "Thought Xs" duration. */
     responseStartedAt?: number;
-    /** When response generation finished (ms); used for "Thought Xs" duration. */
+    /** When first token was streamed (ms); used for "Thought Xs" = query sent → first token. */
+    firstTokenAt?: number;
+    /** When response generation finished (ms); used for "Thought Xs" fallback duration. */
     responseCompletedAt?: number;
     /** When false, response is still streaming (used for blur reveal); set true only in finalize/onComplete. */
     responseStreamComplete?: boolean;
@@ -9066,6 +9076,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     clearPropertyAttachments,
     addPropertyAttachment
   } = usePropertySelection();
+
+  // Documents from current property/chat for ReasoningSteps filename resolution (when backend sends doc_id but no filename)
+  const documentsForResolution = React.useMemo((): Array<{ id: string; original_filename?: string | null }> => {
+    const fromProperty = currentProperty?.propertyHub?.documents ?? currentProperty?.documents ?? [];
+    const fromAttachments = propertyAttachments?.flatMap((p: any) =>
+      (p.property?.propertyHub?.documents ?? p.property?.documents ?? []).map((d: any) => ({ id: d.id, original_filename: d.original_filename }))
+    ) ?? [];
+    const merged = fromProperty.length ? fromProperty : fromAttachments;
+    return merged.map((d: any) => ({ id: String(d.id), original_filename: d.original_filename ?? null }));
+  }, [currentProperty, propertyAttachments]);
 
   const initialSegments = React.useMemo(
     () => buildInitialSegments('', [], atMentionDocumentChips),
@@ -11068,7 +11088,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               const processingStep: ReasoningStep = {
                 step: 'processing_attachments',
                 action_type: 'analysing',
-                message: 'Generating response...',
+                message: 'Summarising content...',
                 details: {},
                 timestamp: Date.now()
               };
@@ -11379,9 +11399,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               chatSessionId, // Use chat's sessionId (not component sessionId) for backend isolation
               // onToken: Buffer tokens until we have complete markdown blocks, then display formatted
               (token: string) => {
+                const isFirstToken = accumulatedText.length === 0;
                 accumulatedText += token;
                 tokenBuffer += token;
                 streamingAccumulatedTextRef.current = accumulatedText;
+                if (isFirstToken) {
+                  setChatMessages(prev => prev.map(msg =>
+                    msg.id === loadingResponseId ? { ...msg, firstTokenAt: Date.now() } : msg
+                  ));
+                }
 
                 // Check if chat is active before updating UI
                 // CRITICAL: For new chats, currentChatId might not be updated yet (async state)
@@ -11593,8 +11619,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         responseStreamComplete: true,
                         reasoningSteps: existingMessage?.reasoningSteps || [], // Keep reasoning steps visible so user sees what ran (Searching, etc.)
                         citations: finalCitations, // Use final citations (normalized to string keys)
-                        responseStartedAt: existingMessage?.responseStartedAt,
-                        responseCompletedAt: existingMessage?.responseCompletedAt ?? Date.now(),
+responseStartedAt: existingMessage?.responseStartedAt,
+                    firstTokenAt: existingMessage?.firstTokenAt,
+                    responseCompletedAt: existingMessage?.responseCompletedAt ?? Date.now(),
                         noResults: data?.no_results === true,
                         webCitations: webCitationsFromComplete.length > 0 ? webCitationsFromComplete : undefined,
                       };
@@ -11643,6 +11670,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       reasoningSteps: existingMessage?.reasoningSteps || [],
                       citations: finalCitations,
                       responseStartedAt: existingMessage?.responseStartedAt,
+                      firstTokenAt: existingMessage?.firstTokenAt,
                       responseCompletedAt: existingMessage?.responseCompletedAt ?? Date.now()
                     };
                     
@@ -11844,6 +11872,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     responseStreamComplete: true,
                     reasoningSteps: existingMessage?.reasoningSteps || [], // Preserve reasoning steps
                   responseStartedAt: existingMessage?.responseStartedAt,
+                  firstTokenAt: existingMessage?.firstTokenAt,
                   responseCompletedAt: existingMessage?.responseCompletedAt ?? Date.now()
                 };
                 
@@ -11869,6 +11898,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     responseStreamComplete: true,
                     reasoningSteps: existingMessage?.reasoningSteps || [],
                     responseStartedAt: existingMessage?.responseStartedAt,
+                    firstTokenAt: existingMessage?.firstTokenAt,
                     responseCompletedAt: existingMessage?.responseCompletedAt ?? Date.now()
                   };
                   
@@ -14171,9 +14201,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               sessionId,
               // onToken: Perplexity 2-words-at-a-time driven by parent interval
               (token: string) => {
+                const isFirstToken = accumulatedText.length === 0;
                 accumulatedText += token;
                 tokenBuffer += token;
                 streamingAccumulatedTextRef.current = accumulatedText;
+                if (isFirstToken) {
+                  setChatMessages(prev => prev.map(msg =>
+                    msg.id === loadingResponseId ? { ...msg, firstTokenAt: Date.now() } : msg
+                  ));
+                }
 
                 if (usePerplexityStyleRef.current) {
                   perplexityLoadingIdRef.current = loadingResponseId;
@@ -14291,6 +14327,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     reasoningSteps: existingMessage?.reasoningSteps || [], // Preserve reasoning steps
                       citations: mergedCitations, // Merged citations applied once
                     responseStartedAt: existingMessage?.responseStartedAt,
+                    firstTokenAt: existingMessage?.firstTokenAt,
                     responseCompletedAt: existingMessage?.responseCompletedAt ?? Date.now(),
                     webCitations: webCitationsFromCompleteInit.length > 0 ? webCitationsFromCompleteInit : undefined,
                 };
@@ -14376,6 +14413,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     responseStreamComplete: true,
                     reasoningSteps: existingMessage?.reasoningSteps || [], // Preserve reasoning steps
                   responseStartedAt: existingMessage?.responseStartedAt,
+                  firstTokenAt: existingMessage?.firstTokenAt,
                   responseCompletedAt: existingMessage?.responseCompletedAt ?? Date.now()
                 };
                 
@@ -15919,7 +15957,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             const processingStep: ReasoningStep = {
               step: 'processing_attachments',
               action_type: 'analysing',
-              message: 'Generating response...',
+              message: 'Summarising content...',
               details: {},
               timestamp: Date.now()
             };
@@ -16042,9 +16080,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             chatSessionId, // Use chat's sessionId (not component sessionId) for backend isolation
             // onToken: Perplexity 2-words-at-a-time driven by parent interval
             (token: string) => {
+              const isFirstToken = accumulatedText.length === 0;
               accumulatedText += token;
               tokenBuffer += token;
               streamingAccumulatedTextRef.current = accumulatedText;
+              if (isFirstToken) {
+                setChatMessages(prev => prev.map(msg =>
+                  msg.id === loadingResponseId ? { ...msg, firstTokenAt: Date.now() } : msg
+                ));
+              }
 
               const chatIsActive = isChatActiveForQuery(queryChatId, savedChatId);
               if (usePerplexityStyleRef.current && chatIsActive) {
@@ -16203,6 +16247,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       reasoningSteps: latestReasoningSteps.length > 0 ? latestReasoningSteps : (existingMessage?.reasoningSteps || []), // Preserve reasoning steps
                       citations: mergedCitations, // Merged citations applied once
                       responseStartedAt: existingMessage?.responseStartedAt,
+                      firstTokenAt: existingMessage?.firstTokenAt,
                       responseCompletedAt: existingMessage?.responseCompletedAt ?? Date.now(),
                       webCitations: webCitationsFromCompleteNoFile.length > 0 ? webCitationsFromCompleteNoFile : undefined,
                     };
@@ -16230,6 +16275,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     reasoningSteps: latestReasoningSteps.length > 0 ? latestReasoningSteps : (existingMessage?.reasoningSteps || []),
                     citations: mergedCitations,
                     responseStartedAt: existingMessage?.responseStartedAt,
+                    firstTokenAt: existingMessage?.firstTokenAt,
                     responseCompletedAt: existingMessage?.responseCompletedAt ?? Date.now(),
                     webCitations: webCitationsFromCompleteNoFile.length > 0 ? webCitationsFromCompleteNoFile : undefined,
                   };
@@ -16402,6 +16448,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     responseStreamComplete: true,
                     reasoningSteps: existingMessage?.reasoningSteps || [], // Preserve reasoning steps
                     responseStartedAt: existingMessage?.responseStartedAt,
+                    firstTokenAt: existingMessage?.firstTokenAt,
                     responseCompletedAt: existingMessage?.responseCompletedAt ?? Date.now()
                   };
 
@@ -16436,6 +16483,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   responseStreamComplete: true,
                   reasoningSteps: existingMessage?.reasoningSteps || [],
                   responseStartedAt: existingMessage?.responseStartedAt,
+                  firstTokenAt: existingMessage?.firstTokenAt,
                   responseCompletedAt: existingMessage?.responseCompletedAt ?? Date.now()
                 };
 
@@ -16990,6 +17038,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               isLoading: false,
               reasoningSteps: existingMessage?.reasoningSteps || [], // Preserve reasoning steps
             responseStartedAt: existingMessage?.responseStartedAt,
+            firstTokenAt: existingMessage?.firstTokenAt,
             responseCompletedAt: existingMessage?.responseCompletedAt ?? Date.now()
           };
           
@@ -17311,7 +17360,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       const isRestored = message.id && restoredMessageIdsRef.current.has(message.id);
       const isInjectedAgentResult = !!(message as { isAgentTaskResult?: boolean }).isAgentTaskResult;
       const isLatestAssistantMessage = latestAssistantMessageKey !== null && finalKey === latestAssistantMessageKey;
-      
+
       if (message.type === 'query') {
         // Only truncate citation-sourced query previews; show full query text for normal (non-citation) messages
         const containerWidth = contentAreaRef.current?.clientWidth || 600;
@@ -17614,10 +17663,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             position: 'relative',
             minHeight: '1px' // Prevent collapse
           }}>
-          {/* Reasoning Steps: show instantly when loading (Planning next moves) then real steps replace it; when finished show under collapsible "Thought Xs" header (collapsed by default). Hide entirely when query is paused. */}
+          {/* Reasoning Steps: show fully when loading and no response yet; once response starts streaming, collapse to "Thought Xs" header. When finished, show under collapsible "Thought Xs" header (collapsed by default). Hide entirely when query is paused. */}
           {(message.isLoading || (message.reasoningSteps && message.reasoningSteps.length > 0 && (message.isLoading || showReasoningTrace))) && !isBotPaused && (
-            message.isLoading ? (
-                <ReasoningSteps key={`reasoning-${finalKey}`} steps={message.reasoningSteps ?? []} isLoading={message.isLoading} hasResponseText={!!message.text} isAgentMode={isAgentMode} skipAnimations={!!isRestored} transientStep={message.id === transientThinkingMessageId ? { message: 'Thinking' } : undefined} onAskQuestion={handleAskQuestionFromDoc} />
+            message.isLoading && !message.text ? (
+                <ReasoningSteps key={`reasoning-${finalKey}`} steps={message.reasoningSteps ?? []} isLoading={message.isLoading} hasResponseText={!!message.text} isAgentMode={isAgentMode} skipAnimations={!!isRestored} transientStep={message.id === transientThinkingMessageId ? { message: 'Thinking' } : undefined} onAskQuestion={handleAskQuestionFromDoc} documentsForResolution={documentsForResolution} />
             ) : (
               <div key={`thought-${finalKey}`} style={{ marginBottom: '17.6px' }}>
                 <button
@@ -17645,7 +17694,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 </button>
                 {expandedThoughtMessageIds.has(finalKey) && (
                   <div style={{ marginTop: '2px' }}>
-                    <ReasoningSteps steps={message.reasoningSteps ?? []} isLoading={false} hasResponseText={!!message.text} isAgentMode={isAgentMode} skipAnimations={!!isRestored} thoughtCompleted={true} showAllStepsInTrace={true} />
+                    <ReasoningSteps steps={message.reasoningSteps ?? []} isLoading={message.isLoading} hasResponseText={!!message.text} isAgentMode={isAgentMode} skipAnimations={!!isRestored} thoughtCompleted={!message.isLoading} showAllStepsInTrace={true} documentsForResolution={documentsForResolution} />
                   </div>
                 )}
               </div>
@@ -17861,7 +17910,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     onClick={(e) => { e.stopPropagation(); handleCopyResponse(message.text || '', finalKey); }}
                     style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', border: 'none', cursor: 'pointer', color: copiedResponseId === finalKey ? '#10B981' : '#9CA3AF' }}
                   >
-                    {copiedResponseId === finalKey ? <Check size={12} /> : <Copy size={12} />}
+                    {copiedResponseId === finalKey ? <Check size={14} /> : <Copy size={14} />}
                   </button>
                 </TooltipTrigger>
                 <TooltipContent side="bottom" sideOffset={6} className="bg-black text-white rounded-sm px-1.5 py-0.5 text-[11px] border-0 shadow-md">
@@ -17878,7 +17927,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         onClick={(e) => e.stopPropagation()}
                         style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', border: 'none', cursor: 'pointer', color: '#9CA3AF' }}
                       >
-                        <Download size={12} />
+                        <Download size={14} />
                       </button>
                     </DropdownMenuTrigger>
                   </TooltipTrigger>
@@ -17953,7 +18002,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   color: likedResponseIds.has(finalKey) ? '#16a34a' : '#9CA3AF'
                 }}
               >
-                <ThumbsUp size={12} />
+                <ThumbsUp size={14} />
               </button>
                 </TooltipTrigger>
                 <TooltipContent side="bottom" sideOffset={6} className="bg-black text-white rounded-sm px-1.5 py-0.5 text-[11px] border-0 shadow-md">
@@ -17973,7 +18022,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     color: dislikedResponseIds.has(finalKey) ? '#374151' : '#9CA3AF'
                   }}
                 >
-                  <ThumbsDown size={12} />
+                  <ThumbsDown size={14} />
                 </button>
                   </TooltipTrigger>
                   <TooltipContent side="bottom" sideOffset={6} className="bg-black text-white rounded-sm px-1.5 py-0.5 text-[11px] border-0 shadow-md">
@@ -18004,7 +18053,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         ...(addedToDbResponseIds.has(finalKey) ? { backgroundColor: 'rgba(0,0,0,0.85)', color: 'white' } : { color: '#9CA3AF' })
                       }}
                     >
-                      <CloudDownload size={12} />
+                      <CloudDownload size={14} />
                     </button>
                   </PopoverTrigger>
                 ) : (
@@ -18031,7 +18080,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             ...(addedToDbResponseIds.has(finalKey) ? { backgroundColor: 'rgba(0,0,0,0.85)', color: 'white' } : { color: '#9CA3AF' })
                           }}
                         >
-                          <CloudDownload size={12} />
+                          <CloudDownload size={14} />
                         </button>
                       </PopoverTrigger>
                     </TooltipTrigger>
@@ -18111,7 +18160,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   title="Close citations bar"
                   style={sourcesButtonStyle}
                 >
-                  <CaptionsOff size={10} style={{ flexShrink: 0, color: '#374151', background: 'none' }} />
+                  <CaptionsOff size={12} style={{ flexShrink: 0, color: '#374151', background: 'none' }} />
                   <span style={{ background: 'none' }}>Close</span>
                 </button>
               )}
@@ -18147,7 +18196,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   title="Show citations bar"
                   style={sourcesButtonStyle}
                 >
-                  <Captions size={10} style={{ flexShrink: 0, color: '#374151', background: 'none' }} />
+                  <Captions size={12} style={{ flexShrink: 0, color: '#374151', background: 'none' }} />
                   <span style={{ background: 'none' }}>Open</span>
                 </button>
               )}
@@ -18158,9 +18207,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     onClick={(e) => { e.stopPropagation(); setSourcesDropdownMessageId(isSourcesOpen ? null : finalKey); }}
                     style={{ ...sourcesButtonStyle, marginLeft: (citationBarVisible || showOpen) ? '4px' : '8px' }}
                   >
-                    <Link2 size={10} style={{ flexShrink: 0, color: '#374151', background: 'none' }} />
+                    <Link2 size={12} style={{ flexShrink: 0, color: '#374151', background: 'none' }} />
                     <span style={{ background: 'none' }}>Sources</span>
-                    <ChevronDown size={12} style={{ flexShrink: 0, color: '#374151', transition: 'transform 0.15s ease', transform: isSourcesOpen ? 'rotate(180deg)' : 'rotate(0deg)', background: 'none' }} />
+                    <ChevronDown size={14} style={{ flexShrink: 0, color: '#374151', transition: 'transform 0.15s ease', transform: isSourcesOpen ? 'rotate(180deg)' : 'rotate(0deg)', background: 'none' }} />
                   </button>
                 </PopoverTrigger>
                 <PopoverContent className="p-0 bg-transparent border-0 shadow-none" align="start" sideOffset={4} style={{ width: '240px', borderRadius: '10px', zIndex: 1, background: 'transparent' }}>

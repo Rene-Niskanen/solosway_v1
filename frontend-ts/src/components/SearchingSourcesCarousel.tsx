@@ -4,10 +4,9 @@ import { SEARCHING_CAROUSEL_TYPES } from '../constants/documentTypes';
 
 const CIRCLE_SIZE_PX = 20;
 const OVERLAP_PX = 11; // stacked but not too tight
-const VISIBLE_COUNT = 3;
-// Extra space so enter animation and rightmost icon are never clipped
-const CONTAINER_EXTRA_RIGHT_PX = 18;
-const CONTAINER_WIDTH_PX = CIRCLE_SIZE_PX + OVERLAP_PX * (VISIBLE_COUNT - 1) + CONTAINER_EXTRA_RIGHT_PX;
+// Minimal right padding: none when static; 2px when animating so enter animation isn't clipped
+const EXTRA_RIGHT_STATIC_PX = 0;
+const EXTRA_RIGHT_ANIMATED_PX = 2;
 const CYCLE_INTERVAL_MS = 520;
 const FAST_CYCLE_INTERVAL_MS = 420;
 const STACK_DURATION_S = 0.4;
@@ -27,6 +26,8 @@ interface SearchingSourcesCarouselProps {
   docPreviews?: DocPreviewForCarousel[];
   isActive?: boolean;
   sourceCount?: number;
+  /** When set, show exactly this many icons (1, 2, or 3) - e.g. for Analysing 1 file show 1 icon */
+  maxVisible?: number;
 }
 
 function CircleIcon({ type }: { type: string }) {
@@ -95,6 +96,7 @@ export function SearchingSourcesCarousel({
   docPreviews,
   isActive = true,
   sourceCount,
+  maxVisible,
 }: SearchingSourcesCarouselProps) {
   const allowedTypes = useMemo(
     () => (sourceTypes?.length ? sourceTypes : SEARCHING_CAROUSEL_TYPES),
@@ -102,39 +104,50 @@ export function SearchingSourcesCarousel({
   );
 
   // Ordered list of files we're going to read (from file sidebar or exploring step).
-  // Ensure at least 9 items so the step interval visibly rotates; repeat short lists.
+  // When maxVisible is set, use exactly that many (no repetition). Otherwise ensure 9+ for rotation.
   const typesList = useMemo(() => {
     let list: string[];
     if (docPreviews && docPreviews.length > 0) {
       list = typesListFromDocPreviews(docPreviews, allowedTypes);
-      // Repeat so we have enough slots for visible rotation (otherwise 1–3 docs look static)
-      while (list.length < 9) list = list.concat(list);
+      if (maxVisible == null) {
+        while (list.length < 9) list = list.concat(list);
+      }
       if (list.length > 30) list = list.slice(0, 30);
     } else {
-      const n = Math.min(Math.max(sourceCount ?? 0, 9), 30);
+      const n = maxVisible != null ? Math.max(maxVisible, 1) : Math.min(Math.max(sourceCount ?? 0, 9), 30);
       list = [];
       for (let i = 0; i < n; i++) list.push(allowedTypes[i % allowedTypes.length]);
       if (list.length === 0) list = [...allowedTypes, ...allowedTypes, ...allowedTypes];
     }
     return list;
-  }, [docPreviews, allowedTypes, sourceCount]);
+  }, [docPreviews, allowedTypes, sourceCount, maxVisible]);
 
   const [step, setStep] = useState(0);
   const L = typesList.length;
+  const visibleCount = maxVisible != null ? Math.min(maxVisible, 3) : 3;
+  // Actual stacked width: first icon full, each extra adds (CIRCLE - OVERLAP)
+  const stackedWidth = visibleCount === 1
+    ? CIRCLE_SIZE_PX
+    : CIRCLE_SIZE_PX + (CIRCLE_SIZE_PX - OVERLAP_PX) * (visibleCount - 1);
+  const containerWidthPx =
+    stackedWidth + (maxVisible != null ? EXTRA_RIGHT_STATIC_PX : EXTRA_RIGHT_ANIMATED_PX);
 
-  // Exactly 3 items in the stack; step advances so back disappears and new stacks on
+  // Show 1, 2, or 3 items in the stack based on visibleCount
   const stripList = useMemo(() => {
     if (L === 0) return [];
-    return [0, 1, 2].map((i) => ({ type: typesList[(step + i) % L], key: step + i }));
-  }, [typesList, step, L]);
+    return Array.from({ length: visibleCount }, (_, i) => ({
+      type: typesList[(step + i) % L],
+      key: step + i
+    }));
+  }, [typesList, step, L, visibleCount]);
 
   useEffect(() => {
-    if (!isActive || L === 0) return;
+    if (!isActive || L === 0 || maxVisible != null) return;
     const interval =
       (sourceCount != null && sourceCount > 5) ? FAST_CYCLE_INTERVAL_MS : CYCLE_INTERVAL_MS;
     const id = setInterval(() => setStep((s) => s + 1), interval);
     return () => clearInterval(id);
-  }, [isActive, L, sourceCount]);
+  }, [isActive, L, sourceCount, maxVisible]);
 
   useEffect(() => {
     setStep(0);
@@ -153,8 +166,8 @@ export function SearchingSourcesCarousel({
         display: 'inline-flex',
         alignItems: 'center',
         justifyContent: 'flex-start',
-        width: CONTAINER_WIDTH_PX,
-        minWidth: CONTAINER_WIDTH_PX,
+        width: containerWidthPx,
+        minWidth: containerWidthPx,
         height: CIRCLE_SIZE_PX,
         flexShrink: 0,
         overflow: 'visible',
