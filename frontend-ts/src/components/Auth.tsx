@@ -736,7 +736,7 @@ const Auth: React.FC = () => {
               aria-hidden
             />
 
-            <h1 className="auth-form-text text-xl md:text-2xl text-center mb-12 flex flex-wrap items-center justify-center gap-x-2 gap-y-1">
+            <h1 className="auth-form-text text-xl md:text-2xl text-center mt-8 mb-12 flex flex-wrap items-center justify-center gap-x-2 gap-y-1">
               <span className="auth-form-heading-intro">Get started with</span>
               <img
                 src="/OpenFind(1).png"
@@ -960,21 +960,18 @@ const Auth: React.FC = () => {
                 <button
                   type="submit"
                   disabled={loading}
-                  className="w-full py-3 px-4 rounded-lg font-medium text-white focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[#909FF7] disabled:opacity-50 disabled:cursor-not-allowed transition-colors mt-8 mb-14"
-                  style={{ backgroundColor: '#909FF7' }}
-                  onMouseEnter={(e) => { if (!e.currentTarget.disabled) e.currentTarget.style.backgroundColor = '#7b8bf5'; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = '#909FF7'; }}
+                  className="w-full py-2 px-4 rounded-lg font-medium text-gray-900 bg-white border border-gray-200 hover:border-gray-300 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-300 disabled:opacity-50 disabled:cursor-not-allowed transition-colors mt-4 mb-6"
                 >
                   {loading ? 'Creating Account...' : 'Sign up'}
                 </button>
               </>
             )}
 
-            <p className="auth-form-text text-sm text-center mt-4">
+            <p className="auth-form-text text-sm text-center mt-1">
               If you are part of a team, please contact your team&apos;s administrator for an invite link.
             </p>
 
-            <div className="text-center pt-10">
+            <div className="text-center pt-5">
               <button
                 type="button"
                 onClick={toggleMode}

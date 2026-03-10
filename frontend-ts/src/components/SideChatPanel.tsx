@@ -6782,7 +6782,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   const perplexityFinalizeRef = React.useRef<(() => void) | null>(null);
   /** When document preview (first citation callout) unveils, we resume revealing post-callout text. Until then, we pause. */
   const firstCalloutUnveiledForStreamingRef = React.useRef(false);
-  const PERPLEXITY_CHUNK_MS = 65;
+  const PERPLEXITY_CHUNK_MS = 32;
   /** Reveal first N words but preserve original newlines/spacing (no join(' ') so paragraphs stay). */
   const getPrefixUpToWordCount = (text: string, wordCount: number): string => {
     if (wordCount <= 0 || !text) return '';

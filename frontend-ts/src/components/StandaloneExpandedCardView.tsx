@@ -355,12 +355,14 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
     // Update document preview so we navigate to the next citation (MainContent reads ChatStateStore first)
     const nextDocId = nextCitation.doc_id || docId;
     const nextFilename = nextCitation.original_filename || filename;
+    const scrollRequestId = Date.now();
     if (activeChatId) {
       openDocumentForChat(activeChatId, {
         docId: nextDocId,
         filename: nextFilename,
         highlight: highlightData,
         viewedCitation: viewed ?? null,
+        scrollRequestId,
       });
     }
     openExpandedCardView(nextDocId, nextFilename, highlightData, false);
@@ -400,12 +402,14 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
     // Update document preview so we navigate to the previous citation (MainContent reads ChatStateStore first)
     const prevDocId = prevCitation.doc_id || docId;
     const prevFilename = prevCitation.original_filename || filename;
+    const scrollRequestId = Date.now();
     if (activeChatId) {
       openDocumentForChat(activeChatId, {
         docId: prevDocId,
         filename: prevFilename,
         highlight: highlightData,
         viewedCitation: viewed ?? null,
+        scrollRequestId,
       });
     }
     openExpandedCardView(prevDocId, prevFilename, highlightData, false);
@@ -1270,12 +1274,13 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
 
 
   // Reset scroll tracking and "initial scroll applied" when document, highlight, or scroll request changes.
-  // scrollRequestId changes when user re-clicks a citation so we re-apply scroll-to-highlight.
+  // scrollRequestId changes when user re-clicks a citation or uses prev/next nav so we re-apply scroll-to-highlight.
+  // Include bbox left/top so same-page citation changes trigger re-scroll.
   // Must run in useLayoutEffect so it runs before the scroll effect below (same commit).
   React.useLayoutEffect(() => {
     didAutoScrollToHighlightRef.current = null;
     setInitialScrollApplied(false);
-  }, [docId, highlight?.fileId, highlight?.bbox?.page, scrollRequestId]);
+  }, [docId, highlight?.fileId, highlight?.bbox?.page, highlight?.bbox?.left, highlight?.bbox?.top, scrollRequestId]);
 
   // Pre-position scroll so the citation is centered the moment the preview opens (no visible correction).
   const didAutoScrollToHighlightRef = useRef<string | null>(null);
