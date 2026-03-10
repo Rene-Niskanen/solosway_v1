@@ -101,38 +101,15 @@ export const AuthGuard: React.FC<AuthGuardProps> = ({ children }) => {
     }
   }, [isLoading, isAuthenticated, navigate]);
 
-  // Shared loading screen with grow/shrink logo animation
-  const loadingScreen = (
-    <div className="flex h-screen items-center justify-center bg-background">
-      <style>{`
-        @keyframes auth-loading-pulse {
-          0%, 100% { transform: scale(1); }
-          50% { transform: scale(1.15); }
-        }
-        .auth-loading-logo {
-          animation: auth-loading-pulse 1.2s ease-in-out infinite;
-        }
-      `}</style>
-      <img
-        src="/O-logo.png"
-        alt=""
-        className="auth-loading-logo h-14 w-auto object-contain block"
-      />
-    </div>
-  );
-
-  // Show loading state - OpenFind logo
-  if (isLoading) {
-    return loadingScreen;
+  // No loading screen - render children immediately. Auth check runs in background; redirects to /auth if not authenticated.
+  if (isAuthenticated === false) {
+    return null; // Will redirect to /auth via useEffect
   }
 
-  // Show loading while redirecting or checking auth
-  if (!isAuthenticated) {
-    return loadingScreen;
+  // Render children (when authenticated or still loading - avoids loading screen)
+  if (isAuthenticated) {
+    console.log('✅ AuthGuard: Rendering protected content for user:', userInfo?.email);
   }
-
-  // User is authenticated, render children with user in context so Sidebar etc. show correct role on first paint
-  console.log('✅ AuthGuard: Rendering protected content for user:', userInfo?.email);
   // Update localStorage to track auth state
   if (isAuthenticated) {
     localStorage.setItem('isAuthenticated', 'true');
