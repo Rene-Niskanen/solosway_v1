@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { Plus, MoreHorizontal, Loader2, CircleCheck, PanelRight, Trash2 } from "lucide-react";
+import { Plus, MoreHorizontal, Loader2, CircleCheck, PanelRight } from "lucide-react";
 import type { ChatHistoryEntry } from "./ChatHistoryContext";
 import {
   DropdownMenu,
@@ -63,19 +63,25 @@ export const ChatTabsBar: React.FC<ChatTabsBarProps> = ({
   const [editingTitle, setEditingTitle] = React.useState("");
   const editInputRef = React.useRef<HTMLInputElement>(null);
   const scrollContainerRef = React.useRef<HTMLDivElement>(null);
+  const prevChatsLengthRef = React.useRef(chats.length);
 
-  // Auto-scroll to the right (most recent chats) when chats or selection changes
+  // Auto-scroll to the right (most recent chats) only when NEW chats are added,
+  // NOT when selection changes. This prevents jitter when switching between tabs.
   React.useLayoutEffect(() => {
-    const el = scrollContainerRef.current;
-    if (el) {
-      const scrollToEnd = () => {
-        el.scrollLeft = el.scrollWidth - el.clientWidth;
-      };
-      scrollToEnd();
-      // Run again after layout in case content wasn't measured yet
-      requestAnimationFrame(scrollToEnd);
+    const chatsAdded = chats.length > prevChatsLengthRef.current;
+    prevChatsLengthRef.current = chats.length;
+
+    if (chatsAdded) {
+      const el = scrollContainerRef.current;
+      if (el) {
+        const scrollToEnd = () => {
+          el.scrollLeft = el.scrollWidth - el.clientWidth;
+        };
+        scrollToEnd();
+        requestAnimationFrame(scrollToEnd);
+      }
     }
-  }, [chats, selectedChatId]);
+  }, [chats]);
 
   React.useEffect(() => {
     if (editingChatId && editInputRef.current) {
@@ -148,7 +154,7 @@ export const ChatTabsBar: React.FC<ChatTabsBarProps> = ({
                   : "bg-transparent border-none hover:opacity-80"
                 }
               `}
-              style={{ minHeight: 23, maxWidth: 192 }}
+              style={{ minHeight: 23, maxWidth: 112 }}
             >
               {chat.status === "loading" && (
                 <Loader2 className="w-3.5 h-3.5 animate-spin flex-shrink-0 text-[#6B7280]" strokeWidth={1.5} />
@@ -212,9 +218,8 @@ export const ChatTabsBar: React.FC<ChatTabsBarProps> = ({
                     {onRemoveChat && (
                       <DropdownMenuItem
                         onClick={(e) => { e.stopPropagation(); onRemoveChat(chat.id); }}
-                        className="flex items-center gap-2 text-red-600 focus:text-red-600 focus:bg-gray-100 data-[highlighted]:bg-gray-100 data-[highlighted]:text-red-600 py-0.5 px-1.5 min-h-0 text-[14px] font-light rounded-none"
+                        className="text-red-600 focus:text-red-600 focus:bg-gray-100 data-[highlighted]:bg-gray-100 data-[highlighted]:text-red-600 py-0.5 px-1.5 min-h-0 text-[14px] font-light rounded-none"
                       >
-                        <Trash2 className="w-4 h-4 flex-shrink-0" strokeWidth={1.5} />
                         Delete
                       </DropdownMenuItem>
                     )}

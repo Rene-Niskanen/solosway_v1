@@ -6936,6 +6936,21 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     }
     prevChatPanelOpenRef.current = isChatPanelOpen;
   }, [isChatPanelOpen]);
+
+  // Track chat tab switches to disable width transition and prevent document preview jitter
+  const prevSelectedChatIdRef = React.useRef<string | null>(selectedChatIdProp ?? null);
+  const [isChatJustSwitched, setIsChatJustSwitched] = React.useState(false);
+  React.useEffect(() => {
+    const prev = prevSelectedChatIdRef.current;
+    prevSelectedChatIdRef.current = selectedChatIdProp ?? null;
+    const switched = prev !== null && selectedChatIdProp !== null && prev !== selectedChatIdProp;
+    if (switched) {
+      setIsChatJustSwitched(true);
+      requestAnimationFrame(() => {
+        setIsChatJustSwitched(false);
+      });
+    }
+  }, [selectedChatIdProp]);
   
   // Browser Fullscreen API - shared state so all fullscreen buttons show "Exit" when active
   const { isBrowserFullscreen, toggleBrowserFullscreen } = useBrowserFullscreen();
@@ -18450,9 +18465,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             // Use local tracking (isSidebarJustCollapsed) for immediate detection, plus props for MainContent tracking
             // This ensures chat panel adjusts immediately with no animation delay
             // Also disable transitions when ChatPanel (agent sidebar) opens/closes for instant width adjustment
-            transition: (isResizing || isFilingSidebarResizing || isChatPanelResizing || isChatPanelJustToggled || isFilingSidebarClosing || isFilingSidebarOpening || isSidebarCollapsing || isSidebarJustCollapsed || !isFilingSidebarOpen || justEnteredFullscreen || justEnteredNewChatSection || isTransitioningToChat || shouldExpand || keepDocumentOpenOnNewChat || isRestoringFullscreen || (isFullscreenMode && !isRestoringFullscreen) || isFirstOpen || isPropertyDetailsOpen) ? 'none' : 'width 0.4s cubic-bezier(0.4, 0, 0.2, 1)',
-            transitionProperty: (isResizing || isFilingSidebarResizing || isChatPanelResizing || isChatPanelJustToggled || isFilingSidebarClosing || isFilingSidebarOpening || isSidebarCollapsing || isSidebarJustCollapsed || !isFilingSidebarOpen || isFirstOpen || justEnteredNewChatSection || isTransitioningToChat || keepDocumentOpenOnNewChat || isPropertyDetailsOpen) ? 'none' : 'width',
-            willChange: (isResizing || isFilingSidebarResizing || isChatPanelResizing || isChatPanelJustToggled || isFilingSidebarClosing || isFilingSidebarOpening || isSidebarCollapsing || isSidebarJustCollapsed || justEnteredNewChatSection || isTransitioningToChat) ? 'left, width' : 'width', // Optimize for instant changes when closing/opening or ChatPanel toggle
+            transition: (isResizing || isFilingSidebarResizing || isChatPanelResizing || isChatPanelJustToggled || isChatJustSwitched || isFilingSidebarClosing || isFilingSidebarOpening || isSidebarCollapsing || isSidebarJustCollapsed || !isFilingSidebarOpen || justEnteredFullscreen || justEnteredNewChatSection || isTransitioningToChat || shouldExpand || keepDocumentOpenOnNewChat || isRestoringFullscreen || (isFullscreenMode && !isRestoringFullscreen) || isFirstOpen || isPropertyDetailsOpen) ? 'none' : 'width 0.4s cubic-bezier(0.4, 0, 0.2, 1)',
+            transitionProperty: (isResizing || isFilingSidebarResizing || isChatPanelResizing || isChatPanelJustToggled || isChatJustSwitched || isFilingSidebarClosing || isFilingSidebarOpening || isSidebarCollapsing || isSidebarJustCollapsed || !isFilingSidebarOpen || isFirstOpen || justEnteredNewChatSection || isTransitioningToChat || keepDocumentOpenOnNewChat || isPropertyDetailsOpen) ? 'none' : 'width',
+            willChange: (isResizing || isFilingSidebarResizing || isChatPanelResizing || isChatPanelJustToggled || isChatJustSwitched || isFilingSidebarClosing || isFilingSidebarOpening || isSidebarCollapsing || isSidebarJustCollapsed || justEnteredNewChatSection || isTransitioningToChat) ? 'left, width' : 'width', // Optimize for instant changes when closing/opening or ChatPanel toggle
             backfaceVisibility: 'hidden', // Prevent flickering
             transform: 'translateZ(0)' // Force GPU acceleration
           }}
@@ -18749,32 +18764,62 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 flex: 1,
               }}
             >
-            {/* Cursor-like: show ChatTabsBar at top when agent sidebar is closed (even in centered empty state) */}
+            {/* Cursor-like: show ChatTabsBar at top when agent sidebar is closed — position absolute so it overlays and does NOT affect chat bar / welcome layout (matches dashboard) */}
             {useCenteredEmptyState && !isChatPanelOpen && onChatSelect && (
               <div
-                className="flex-shrink-0 border-b border-black/[0.06]"
+                className="border-b border-black/[0.06] pr-4 pl-6"
                 style={{
+                  position: 'absolute',
+                  top: 0,
+                  left: 0,
+                  right: 0,
                   backgroundColor: '#FFFFFF',
-                  paddingTop: 12,
-                  paddingBottom: 12,
-                  paddingLeft: 16,
-                  paddingRight: 16,
+                  paddingTop: 18,
+                  paddingBottom: 19,
                   zIndex: 10002,
+                  pointerEvents: 'auto',
                 }}
                 onClick={(e) => e.stopPropagation()}
               >
-                <ChatTabsBar
-                  fullWidth
-                  chats={[...chatHistory.filter(c => !c.archived && !c.id.startsWith('property-')).slice(0, CHAT_TABS_VISIBLE)].reverse()}
-                  selectedChatId={currentChatId}
-                  onChatSelect={onChatSelect}
-                  onNewChat={() => onNewChat?.()}
-                  onOpenAgents={openChatPanel}
-                  onUpdateChatTitle={updateChatTitle}
-                  onArchiveChat={archiveChat}
-                  onUnarchiveChat={unarchiveChat}
-                  onRemoveChat={removeChatFromHistory}
-                />
+                <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 group min-h-[32px]">
+                  <div className="flex items-center space-x-2 min-w-0" data-view-dropdown-ignore>
+                    <div
+                      className="min-w-0 flex items-center overflow-x-auto place-self-center w-full"
+                      style={{
+                        maxWidth: '720px',
+                        paddingLeft: actualPanelWidth < 320 ? '20px' : '48px',
+                        paddingRight: actualPanelWidth < 320 ? '20px' : '48px',
+                        margin: 0,
+                      }}
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <ChatTabsBar
+                        fullWidth
+                        chats={[...chatHistory.filter(c => !c.archived && !c.id.startsWith('property-')).slice(0, CHAT_TABS_VISIBLE)].reverse()}
+                        selectedChatId={currentChatId}
+                        onChatSelect={onChatSelect}
+                        onNewChat={() => onNewChat?.()}
+                        onUpdateChatTitle={updateChatTitle}
+                        onArchiveChat={archiveChat}
+                        onUnarchiveChat={unarchiveChat}
+                        onRemoveChat={removeChatFromHistory}
+                      />
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-center px-4 min-w-0" />
+                  <div className="flex items-center space-x-2 min-w-0 justify-end">
+                    <button
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); openChatPanel(); }}
+                      className="w-8 h-8 flex items-center justify-center rounded-md hover:bg-gray-100 transition-colors"
+                      title="Agents Sidebar"
+                      aria-label="Open agents"
+                      style={{ position: 'relative', zIndex: 10001, pointerEvents: 'auto' }}
+                    >
+                      <PanelRight className="w-4 h-4 text-[#6B7280]" strokeWidth={1.5} />
+                    </button>
+                  </div>
+                </div>
               </div>
             )}
             {/* Header - Hidden in centered empty state so layout matches dashboard exactly (no movement when switching) */}

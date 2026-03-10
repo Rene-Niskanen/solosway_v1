@@ -6140,7 +6140,7 @@ export const MainContent = ({
       <AnimatePresence mode="wait">
         {expandedCardViewDoc && (
           <motion.div
-            key={`doc-preview-${activeChatId ?? 'none'}-${expandedCardViewDoc.docId}`}
+            key={`doc-preview-${expandedCardViewDoc.docId}`}
             initial={false}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0, transition: { duration: 0 } }}

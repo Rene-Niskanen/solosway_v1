@@ -6,8 +6,8 @@ export const CHAT_TABS_VISIBLE = 5;
  * MainContent, and StandaloneExpandedCardView.
  */
 export const CHAT_PANEL_WIDTH = {
-  /** Default collapsed width (px) */
-  COLLAPSED: 382.5,
+  /** Default collapsed width (px) - wide enough to show 4 chat tabs */
+  COLLAPSED: 520,
   /** Expanded width as viewport percentage */
   EXPANDED_VW: 42.5,
   /** Minimum width during navigation tasks (px) */
