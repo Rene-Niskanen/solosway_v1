@@ -16,6 +16,7 @@ import { usePreview, type CitationHighlight } from '../contexts/PreviewContext';
 import { useChatStateStore, useActiveChatDocumentPreview, type DocumentPreview } from '../contexts/ChatStateStore';
 import { usePropertySelection } from '../contexts/PropertySelectionContext';
 import { useDocumentSelection } from '../contexts/DocumentSelectionContext';
+import { useChooseProjectModal } from '../contexts/ChooseProjectModalContext';
 import { useFilingSidebar } from '../contexts/FilingSidebarContext';
 import { useChatPanel } from '../contexts/ChatPanelContext';
 import * as pdfjs from 'pdfjs-dist';
@@ -3921,6 +3922,7 @@ const CitationLink: React.FC<{
       <button
         ref={buttonRef}
         type="button"
+        data-citation-number={citationNumber}
         className={`citation-link-btn${isSaved ? ' citation-link-btn--saved' : ''}${isSelected ? ' citation-link-btn--selected' : ''}`}
         onClick={(e) => {
           e.preventDefault();
@@ -6716,7 +6718,13 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     text: string;
     rect: DOMRect;
     messageId: string;
+    citationNumber?: string;
+    citationData?: CitationDataType & { document_id?: string };
   } | null>(null);
+  const highlightFloatingZoneRef = React.useRef<HTMLDivElement | null>(null);
+  const chatMessagesForHighlightRef = React.useRef<ChatMessage[]>([]);
+  const highlightSelectionRef = React.useRef(highlightSelection);
+  React.useEffect(() => { highlightSelectionRef.current = highlightSelection; }, [highlightSelection]);
   // Button only appears after user hovers over the selection (not immediately on mouseup)
   const [hasHoveredSelection, setHasHoveredSelection] = React.useState(false);
   // When user clicks "View in document", keep this citation highlighted (blue) in chat while document view is open
@@ -8725,6 +8733,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   // Keep ref in sync with state
   React.useEffect(() => {
     chatMessagesRef.current = chatMessages;
+    chatMessagesForHighlightRef.current = chatMessages;
   }, [chatMessages]);
   // Citation bar wheel: keep citationReviewForWheelRef in sync with current message and citation count
   React.useEffect(() => {
@@ -9076,6 +9085,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     clearPropertyAttachments,
     addPropertyAttachment
   } = usePropertySelection();
+  const { openChooseProjectModal } = useChooseProjectModal();
 
   // Documents from current property/chat for ReasoningSteps filename resolution (when backend sends doc_id but no filename)
   const documentsForResolution = React.useMemo((): Array<{ id: string; original_filename?: string | null }> => {
@@ -13125,8 +13135,8 @@ responseStartedAt: existingMessage?.responseStartedAt,
     });
   }, [segmentInput]);
 
-  // Ask OpenFind: open first citation's document preview when user clicks "Check Source" on highlighted text
-  const onCheckSourceFromHighlight = React.useCallback((messageId: string) => {
+  // Ask OpenFind: open citation's document preview with bbox when user clicks "Check Source" on highlighted text
+  const onCheckSourceFromHighlight = React.useCallback((messageId: string, citationNumber?: string, citationData?: CitationData & { document_id?: string }) => {
     const msg = chatMessages.find((m, idx) => (m.id ?? `msg-${idx}`) === messageId);
     if (!msg) {
       toast({ title: 'Source not available', description: 'Could not find the message.', variant: 'destructive' });
@@ -13137,21 +13147,25 @@ responseStartedAt: existingMessage?.responseStartedAt,
       toast({ title: 'No source available', description: 'This text has no cited source.', variant: 'default' });
       return;
     }
-    const firstNum = ordered[0]!;
-    const citationData = msg.citations?.[firstNum] as CitationData & { document_id?: string } | undefined;
-    if (!citationData) {
+    const num = citationNumber ?? ordered[0]!;
+    const data = citationData ?? (msg.citations?.[num] as CitationData & { document_id?: string } | undefined);
+    if (!data) {
       toast({ title: 'Source not available', description: 'Could not load citation data.', variant: 'destructive' });
       return;
     }
-    const normalized = { ...citationData, doc_id: citationData.doc_id ?? citationData.document_id } as CitationData;
-    openCitationInDocumentView(normalized, false, { messageId, citationNumber: firstNum });
+    const normalized = { ...data, doc_id: data.doc_id ?? data.document_id } as CitationData;
+    openCitationInDocumentView(normalized, false, { messageId, citationNumber: num });
     setHighlightSelection(null);
     setHasHoveredSelection(false);
   }, [chatMessages, openCitationInDocumentView]);
 
   // Ask OpenFind: detect text selection in assistant response messages
   React.useEffect(() => {
-    const checkSelection = () => {
+    const checkSelection = (e?: MouseEvent) => {
+      // If user clicked inside our floating zone (buttons), don't clear — keep highlight until they click outside
+      if (e?.target && highlightFloatingZoneRef.current?.contains(e.target as Node)) {
+        return;
+      }
       const sel = window.getSelection();
       if (!sel || sel.isCollapsed || !sel.toString().trim()) {
         setHighlightSelection(null);
@@ -13185,17 +13199,47 @@ responseStartedAt: existingMessage?.responseStartedAt,
         const range = sel.getRangeAt(0);
         const rect = range.getBoundingClientRect();
         if (rect.width < 2 && rect.height < 2) return;
-        setHighlightSelection({ text, rect, messageId });
+        // Find citation that applies to selected text (first citation marker after selection end)
+        let citationNumber: string | undefined;
+        let citationData: (CitationDataType & { document_id?: string }) | undefined;
+        const citations = container.querySelectorAll<HTMLElement>('[data-citation-number]');
+        const selRange = sel.getRangeAt(0);
+        const msg = chatMessagesForHighlightRef.current.find((m, idx) => (m.id ?? `msg-${idx}`) === messageId);
+        for (const el of citations) {
+          try {
+            const pointRange = container.ownerDocument?.createRange();
+            if (pointRange) {
+              pointRange.setStart(selRange.endContainer, selRange.endOffset);
+              pointRange.setEnd(selRange.endContainer, selRange.endOffset);
+              if (pointRange.comparePoint(el, 0) === 1) {
+                citationNumber = el.getAttribute('data-citation-number') ?? undefined;
+                if (citationNumber && msg?.citations?.[citationNumber]) {
+                  citationData = msg.citations[citationNumber] as CitationDataType & { document_id?: string };
+                }
+                break;
+              }
+            }
+          } catch {}
+        }
+        setHighlightSelection({ text, rect, messageId, citationNumber, citationData });
         setHasHoveredSelection(false); // Reset — button appears only after hover
       } catch {
         setHighlightSelection(null);
       }
     };
-    // Only check on mouseup (end of drag) — not selectionchange, which fires during the drag
-    const onMouseUp = () => requestAnimationFrame(checkSelection);
+    const onMouseUp = (e: MouseEvent) => requestAnimationFrame(() => checkSelection(e));
+    const onMouseDown = (e: MouseEvent) => {
+      if (!highlightSelectionRef.current) return;
+      if (highlightFloatingZoneRef.current?.contains(e.target as Node)) return;
+      if ((e.target as Node)?.parentElement?.closest?.('[data-ask-openfind-content]')) return;
+      setHighlightSelection(null);
+      setHasHoveredSelection(false);
+    };
     document.addEventListener('mouseup', onMouseUp);
+    document.addEventListener('mousedown', onMouseDown);
     return () => {
       document.removeEventListener('mouseup', onMouseUp);
+      document.removeEventListener('mousedown', onMouseDown);
     };
   }, []);
 
@@ -17868,7 +17912,11 @@ responseStartedAt: existingMessage?.responseStartedAt,
               </button>
               <button
                 type="button"
-                onClick={(e) => { e.stopPropagation(); window.dispatchEvent(new CustomEvent('openChooseProjectModal')); }}
+                onClick={(e) => {
+                e.stopPropagation();
+                const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                openChooseProjectModal({ left: rect.left, top: rect.top, width: rect.width, height: rect.height });
+              }}
                 className="flex items-center justify-center gap-1.5 text-gray-700 transition-colors focus:outline-none outline-none rounded-md bg-black/[0.01] hover:bg-black/[0.05]"
                 style={{
                   border: 'none',
@@ -18415,8 +18463,27 @@ responseStartedAt: existingMessage?.responseStartedAt,
       })()}
       {/* Ask OpenFind floating button - appears above text selection in assistant responses */}
       {highlightSelection && createPortal(
-        <>
-          {/* Invisible overlay over selection — hover reveals the button; always present to keep highlight zone active */}
+        <div
+          ref={highlightFloatingZoneRef}
+          style={{ position: 'fixed', zIndex: 10049, pointerEvents: 'auto' }}
+        >
+          {/* Persistent blue highlight overlay — stays visible even when native selection collapses on hover */}
+          <div
+            role="presentation"
+            aria-hidden
+            style={{
+              position: 'fixed',
+              left: highlightSelection.rect.left,
+              top: highlightSelection.rect.top,
+              width: Math.max(highlightSelection.rect.width, 1),
+              height: Math.max(highlightSelection.rect.height, 1),
+              zIndex: 10048,
+              pointerEvents: 'none',
+              backgroundColor: 'rgba(59, 130, 246, 0.2)',
+              borderRadius: 2,
+            }}
+          />
+          {/* Invisible overlay over selection — hover reveals the button; keeps highlight zone active */}
           <div
             role="presentation"
             aria-hidden
@@ -18431,7 +18498,7 @@ responseStartedAt: existingMessage?.responseStartedAt,
               pointerEvents: 'auto',
             }}
           />
-          {/* Bridge overlay: fills gap between selection and buttons so cursor path keeps highlight visible */}
+          {/* Bridge overlay: fills gap between selection and buttons so cursor path keeps highlight visible (tall enough to reach buttons) */}
           {hasHoveredSelection && (
             <div
               role="presentation"
@@ -18440,27 +18507,44 @@ responseStartedAt: existingMessage?.responseStartedAt,
               style={{
                 position: 'fixed',
                 left: highlightSelection.rect.left,
-                top: highlightSelection.rect.top - 14,
+                top: highlightSelection.rect.top - 38,
                 width: Math.max(highlightSelection.rect.width, 1),
-                height: 14,
+                height: 38,
                 zIndex: 10049,
                 pointerEvents: 'auto',
               }}
             />
           )}
           {hasHoveredSelection && (
-            <AskOpenFindFloatingButton
-              position={{ x: highlightSelection.rect.left, y: highlightSelection.rect.top - 38 }}
-              selectedText={highlightSelection.text}
-              onAsk={() => onAskOpenFindFromHighlight(highlightSelection.text)}
-              onCheckSource={() => onCheckSourceFromHighlight(highlightSelection.messageId)}
-              hasSource={(() => {
-                const msg = chatMessages.find((m, idx) => (m.id ?? `msg-${idx}`) === highlightSelection.messageId);
-                return !!(msg && getOrderedCitationNumbersForMessage(msg).length > 0);
-              })()}
-            />
+            <>
+              {/* Invisible overlay under buttons so whole area is one contiguous hover zone */}
+              <div
+                role="presentation"
+                aria-hidden
+                onMouseEnter={() => setHasHoveredSelection(true)}
+                style={{
+                  position: 'fixed',
+                  left: highlightSelection.rect.left,
+                  top: highlightSelection.rect.top - 38,
+                  width: 180,
+                  height: 36,
+                  zIndex: 10049,
+                  pointerEvents: 'auto',
+                }}
+              />
+              <AskOpenFindFloatingButton
+                position={{ x: highlightSelection.rect.left, y: highlightSelection.rect.top - 38 }}
+                selectedText={highlightSelection.text}
+                onAsk={() => onAskOpenFindFromHighlight(highlightSelection.text)}
+                onCheckSource={() => onCheckSourceFromHighlight(highlightSelection.messageId, highlightSelection.citationNumber, highlightSelection.citationData)}
+                hasSource={!!(highlightSelection.citationNumber && highlightSelection.citationData) || (() => {
+                  const msg = chatMessages.find((m, idx) => (m.id ?? `msg-${idx}`) === highlightSelection.messageId);
+                  return !!(msg && getOrderedCitationNumbersForMessage(msg).length > 0);
+                })()}
+              />
+            </>
           )}
-        </>,
+        </div>,
         document.body
       )}
     <AnimatePresence mode="wait">
@@ -18823,14 +18907,14 @@ responseStartedAt: existingMessage?.responseStartedAt,
                   left: 0,
                   right: 0,
                   backgroundColor: '#FFFFFF',
-                  paddingTop: 18,
-                  paddingBottom: 19,
+                  paddingTop: 10,
+                  paddingBottom: 10,
                   zIndex: 10002,
                   pointerEvents: 'auto',
                 }}
                 onClick={(e) => e.stopPropagation()}
               >
-                <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 group min-h-[32px]">
+                <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 group min-h-[28px]">
                   <div className="flex items-center space-x-2 min-w-0" data-view-dropdown-ignore>
                     <div
                       className="min-w-0 flex items-center overflow-x-auto place-self-center w-full"
@@ -19221,7 +19305,7 @@ responseStartedAt: existingMessage?.responseStartedAt,
                         aria-expanded={displayOptionsOpen}
                         title="Response – reasoning trace, highlight key points, and citations"
                         aria-label="Response options"
-                        className="w-8 h-8 flex items-center justify-center rounded-md hover:bg-gray-100 transition-colors"
+                        className="w-8 h-8 flex items-center justify-center rounded-md hover:bg-gray-100 data-[state=open]:bg-gray-100 transition-colors"
                         style={{
                           position: 'relative',
                           zIndex: 10001,
@@ -19268,7 +19352,7 @@ responseStartedAt: existingMessage?.responseStartedAt,
                             onCheckedChange={(checked) => {
                               flushSync(() => setShowReasoningTrace(checked));
                             }}
-                            className="h-4 w-7 border border-black/[0.08] bg-[#e5e7eb] shadow-none data-[state=checked]:bg-[#6b7280] data-[state=unchecked]:bg-[#e5e7eb] [&>span]:h-3 [&>span]:w-3 [&>span]:data-[state=checked]:translate-x-3"
+                            className="h-4 w-7 border border-black/[0.08] bg-[#e5e7eb] shadow-none data-[state=checked]:bg-[#9ca3af] data-[state=unchecked]:bg-[#e5e7eb] [&>span]:h-3 [&>span]:w-3 [&>span]:data-[state=checked]:translate-x-3"
                             aria-label="Toggle reasoning trace"
                           />
                         </div>
@@ -19281,7 +19365,7 @@ responseStartedAt: existingMessage?.responseStartedAt,
                             checked={showHighlight}
                             onClick={(e) => e.stopPropagation()}
                             onCheckedChange={(checked) => setShowHighlight(checked)}
-                            className="h-4 w-7 border border-black/[0.08] bg-[#e5e7eb] shadow-none data-[state=checked]:bg-[#6b7280] data-[state=unchecked]:bg-[#e5e7eb] [&>span]:h-3 [&>span]:w-3 [&>span]:data-[state=checked]:translate-x-3"
+                            className="h-4 w-7 border border-black/[0.08] bg-[#e5e7eb] shadow-none data-[state=checked]:bg-[#9ca3af] data-[state=unchecked]:bg-[#e5e7eb] [&>span]:h-3 [&>span]:w-3 [&>span]:data-[state=checked]:translate-x-3"
                             aria-label="Toggle key points"
                           />
                         </div>
@@ -19294,7 +19378,7 @@ responseStartedAt: existingMessage?.responseStartedAt,
                             checked={showCitations}
                             onClick={(e) => e.stopPropagation()}
                             onCheckedChange={(checked) => setShowCitations(checked)}
-                            className="h-4 w-7 border border-black/[0.08] bg-[#e5e7eb] shadow-none data-[state=checked]:bg-[#6b7280] data-[state=unchecked]:bg-[#e5e7eb] [&>span]:h-3 [&>span]:w-3 [&>span]:data-[state=checked]:translate-x-3"
+                            className="h-4 w-7 border border-black/[0.08] bg-[#e5e7eb] shadow-none data-[state=checked]:bg-[#9ca3af] data-[state=unchecked]:bg-[#e5e7eb] [&>span]:h-3 [&>span]:w-3 [&>span]:data-[state=checked]:translate-x-3"
                             aria-label="Toggle citations"
                           />
                         </div>
@@ -19307,7 +19391,7 @@ responseStartedAt: existingMessage?.responseStartedAt,
                             checked={showCitationPreviewBar}
                             onClick={(e) => e.stopPropagation()}
                             onCheckedChange={(checked) => setShowCitationPreviewBar(checked)}
-                            className="h-4 w-7 border border-black/[0.08] bg-[#e5e7eb] shadow-none data-[state=checked]:bg-[#6b7280] data-[state=unchecked]:bg-[#e5e7eb] [&>span]:h-3 [&>span]:w-3 [&>span]:data-[state=checked]:translate-x-3"
+                            className="h-4 w-7 border border-black/[0.08] bg-[#e5e7eb] shadow-none data-[state=checked]:bg-[#9ca3af] data-[state=unchecked]:bg-[#e5e7eb] [&>span]:h-3 [&>span]:w-3 [&>span]:data-[state=checked]:translate-x-3"
                             aria-label="Toggle citation preview"
                           />
                         </div>
@@ -19320,7 +19404,7 @@ responseStartedAt: existingMessage?.responseStartedAt,
                             checked={showBlueCitationHighlight}
                             onClick={(e) => e.stopPropagation()}
                             onCheckedChange={(checked) => setShowBlueCitationHighlight(checked)}
-                            className="h-4 w-7 border border-black/[0.08] bg-[#e5e7eb] shadow-none data-[state=checked]:bg-[#6b7280] data-[state=unchecked]:bg-[#e5e7eb] [&>span]:h-3 [&>span]:w-3 [&>span]:data-[state=checked]:translate-x-3"
+                            className="h-4 w-7 border border-black/[0.08] bg-[#e5e7eb] shadow-none data-[state=checked]:bg-[#9ca3af] data-[state=unchecked]:bg-[#e5e7eb] [&>span]:h-3 [&>span]:w-3 [&>span]:data-[state=checked]:translate-x-3"
                             aria-label="Toggle citation highlight"
                           />
                         </div>
@@ -19805,7 +19889,10 @@ responseStartedAt: existingMessage?.responseStartedAt,
                               {buttonCollapseLevel < 3 && (
                                 <button
                                   type="button"
-                                  onClick={() => window.dispatchEvent(new CustomEvent('openChooseProjectModal'))}
+                                  onClick={(e) => {
+                                  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                                  openChooseProjectModal({ left: rect.left, top: rect.top, width: rect.width, height: rect.height });
+                                }}
                                   className="flex items-center justify-center gap-1.5 text-gray-700 transition-colors focus:outline-none outline-none rounded-md bg-black/[0.01] hover:bg-black/[0.05]"
                                   style={{
                                     border: 'none',
@@ -20805,7 +20892,10 @@ responseStartedAt: existingMessage?.responseStartedAt,
                               {buttonCollapseLevel < 3 && (
                                 <button
                                   type="button"
-                                  onClick={() => window.dispatchEvent(new CustomEvent('openChooseProjectModal'))}
+                                  onClick={(e) => {
+                                  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                                  openChooseProjectModal({ left: rect.left, top: rect.top, width: rect.width, height: rect.height });
+                                }}
                                   className="flex items-center justify-center gap-1.5 text-gray-700 transition-colors focus:outline-none outline-none rounded-md bg-black/[0.01] hover:bg-black/[0.05]"
                                   style={{
                                     border: 'none',

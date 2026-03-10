@@ -87,7 +87,7 @@ export function ChatBarAttachDropdown({
               return (
                 <DropdownMenuItem
                   key={item.id}
-                  onClick={() => item.onClick()}
+                  onClick={(e) => item.onClick(e as unknown as React.MouseEvent)}
                   onMouseEnter={() => setHoveredId(item.id)}
                   onMouseLeave={() => setHoveredId(null)}
                   className="flex items-center gap-2 cursor-pointer rounded-[6px] px-2 py-1"

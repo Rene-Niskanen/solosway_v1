@@ -95,6 +95,9 @@ def _focus_for_document_search(user_query: str) -> str:
     """
     Produce a short phrase for document-level search (titles/summaries/filenames).
     Used only for retrieve_documents; chunk search uses the full user query.
+
+    For compound queries (e.g. "value of highlands and value of dorchester"),
+    preserves BOTH entities so retrieval can find documents for each.
     """
     if not (user_query and user_query.strip()):
         return ""
@@ -111,16 +114,38 @@ def _focus_for_document_search(user_query: str) -> str:
             s = s[len(prefix):].strip()
             lower = s.lower()
             break
-    # First clause or cap length (e.g. first 8 words) so result stays short
-    for sep in (" and ", "?", ","):
-        if sep in s:
-            s = s.split(sep)[0].strip()
-            break
-    words = s.split()
-    if len(words) > 8:
-        s = " ".join(words[:8])
+    # Compound query (and / and then): extract key terms from BOTH clauses
+    # so we search for documents about BOTH entities (e.g. highlands AND dorchester)
+    _FILLER = frozenset(
+        ("the", "a", "an", "of", "to", "for", "and", "then", "is", "are", "this", "that",
+         "what", "which", "when", "where", "who", "how")
+    )
+    if " and " in lower or " and then " in lower:
+        parts = []
+        for sep in (" and then ", " and "):
+            if sep in lower:
+                parts = [p.strip() for p in s.split(sep) if p.strip()]
+                break
+        if len(parts) >= 2:
+            seen = set()
+            terms = []
+            for part in parts:
+                for w in part.lower().split():
+                    clean = w.rstrip(".,;")
+                    if len(clean) >= 4 and clean not in _FILLER and clean not in seen:
+                        seen.add(clean)
+                        terms.append(clean)
+            if terms:
+                s = " ".join(terms[:12])
+    else:
+        for sep in ("?", ","):
+            if sep in s:
+                s = s.split(sep)[0].strip()
+                break
+        words = s.split()
+        if len(words) > 8:
+            s = " ".join(words[:8])
     s = s.strip()
-    # If empty or too short, return original with trivial cleanup so we don't break behaviour
     if len(s) < 2:
         return (user_query or "").strip()
     return s
@@ -234,6 +259,8 @@ def _choose_search_intro(intent: str) -> str:
     phrase = (intent[0].lower() + intent[1:]) if (len(intent) > 0 and intent[0].isupper()) else intent
     lower = intent.lower()
     words = lower.split()
+    # Strip "?" so Finding/Searching/Locating steps read as statements, not questions
+    phrase = phrase.replace("?", "")
     # Document / report / appraisal by name → "Locating" (we're locating that doc)
     doc_like = any(t in lower for t in ("document", "appraisal", "report", "valuation", "file"))
     if doc_like or (len(words) >= 3 and words[0] not in ("the", "a", "an", "overview", "value", "summary")):
@@ -602,7 +629,7 @@ async def executor_node(state: MainWorkflowState, runnable_config=None) -> MainW
                             if did is not None:
                                 unique_doc_ids.add(str(did))
                 doc_count = len(unique_doc_ids) if unique_doc_ids else 0
-                doc_word = "document" if doc_count == 1 else "documents"
+                doc_word = "file" if doc_count == 1 else "files"
                 if result_count > 0:
                     emitter.emit_reasoning(
                         label=f"Retrieved {result_count} passage{'' if result_count == 1 else 's'} from {doc_count} {doc_word}"

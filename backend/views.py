@@ -986,7 +986,7 @@ def query_documents_stream():
             document_ids = [str(doc_id) for doc_id in document_ids if doc_id]
         else:
             document_ids = []
-        
+
         # CRITICAL: Log routing parameters for debugging
         attachment_info = "None"
         if attachment_context:
@@ -1218,12 +1218,17 @@ def query_documents_stream():
                 streamed_chat_title = generate_chat_title_from_query(query)
                 if streamed_chat_title:
                     yield f"data: {json.dumps({'type': 'title_chunk', 'token': streamed_chat_title})}\n\n"
-                
+                    time.sleep(0.005)
+
                 # Extract intent from query for contextual reasoning step
                 # Simple heuristic: identify what user is looking for and where
                 def extract_query_intent(q: str) -> str:
                     """Extract a human-readable intent from the query."""
                     q_lower = q.lower().strip()
+                    # Greetings and vague queries: show "Thinking" first, not "Finding the information"
+                    greetings = ('hello', 'hi', 'hey', 'hiya', 'yo', 'sup', 'howdy', 'good morning', 'good afternoon', 'good evening')
+                    if q_lower in greetings or (len(q_lower) <= 3 and q_lower.isalpha()):
+                        return "Thinking"
                     words_in_query = q_lower.split()
                     
                     # Common search targets
@@ -1289,18 +1294,43 @@ def query_documents_stream():
                     # Build the intent message: rephrase query as "Finding the [X] of [Y]" (e.g. "Finding the EPC rating of highlands")
                     target_str = ', '.join(targets) if targets else 'information'
                     # Subject from " of X" / " for X" (works for lowercase: "value of highlands")
+                    # Handle compound queries: "value of highlands and the value of the dorchester property" -> "Highlands and Dorchester"
                     name_str = None
                     q_lower = q.lower().strip()
                     for sep in (' of ', ' for '):
                         if sep in q_lower:
                             parts = q_lower.split(sep, 1)
                             if len(parts) == 2 and parts[1].strip():
-                                name_str = parts[1].strip().split()[0:2]  # 1–2 words
-                                name_str = ' '.join(name_str).title()
+                                rest = parts[1].strip()
+                                # Compound query: "X and (the) Y" / "X and the Y property" -> extract both entities
+                                if ' and ' in rest:
+                                    segments = rest.split(' and ', 1)
+                                    first = segments[0].strip().split()
+                                    second = segments[1].strip() if len(segments) > 1 else ''
+                                    # Skip connector words in second part: "the value of the dorchester property" -> "dorchester"
+                                    second_words = second.replace('the ', '').replace('value of ', '').replace('the ', '').strip().split()
+                                    second_entity = next((w for w in second_words if len(w) >= 4 and w not in ('value', 'property', 'information')), second_words[0] if second_words else '')
+                                    # First entity: "highlands" (drop "and" if it landed in first)
+                                    first_entity = first[0] if first and first[0] != 'and' else ''
+                                    if first_entity and second_entity and first_entity != second_entity:
+                                        name_str = f"{first_entity.title()} and {second_entity.title()}"
+                                    else:
+                                        name_str = ' '.join(first[:2]).title() if first else None
+                                else:
+                                    # Simple: take first 1–2 meaningful words (e.g. "highlands", "berden")
+                                    words = [w for w in rest.split()[:3] if w != 'and']
+                                    name_str = ' '.join(words[0:2]).title() if words else None
                                 break
                     if not name_str and potential_names:
-                        name_str = ' '.join(potential_names[:2])
+                        # For compound (Highlands, Dorchester), take both
+                        if len(potential_names) >= 2 and ' and ' in q_lower:
+                            name_str = ' and '.join(potential_names[:2])
+                        else:
+                            name_str = ' '.join(potential_names[:2])
                     if name_str and target_str:
+                        # Pluralise when multiple entities: "Finding values for X and Y"
+                        if ' and ' in name_str and target_str in ('value', 'price', 'valuation details'):
+                            return f"Finding {target_str}s for {name_str}"
                         return f"Finding the {target_str} of {name_str}"
                     if target_str:
                         return f"Finding the {target_str}"
@@ -1401,6 +1431,8 @@ def query_documents_stream():
                     timing.mark("intent_extracted")
                 
                 # Step (1): Thinking (all queries including citation - immediate feedback)
+                # Small sleep between yields so each chunk is more likely to be sent/seen before the next
+                # (avoids buffering all initial steps into one packet; negligible latency ~5ms each)
                 initial_reasoning = {
                     'type': 'reasoning_step',
                     'step': 'planning_next_moves',
@@ -1410,8 +1442,20 @@ def query_documents_stream():
                 }
                 yield f"data: {json.dumps(initial_reasoning)}\n\n"
                 logger.debug("🟡 [REASONING] Emitted step (1): Thinking")
-                
-                # Step (2): Intent-based step for real-time feedback (e.g. "Finding the EPC rating of Highlands")
+                time.sleep(0.005)
+
+                # Step (2): Accessing files
+                accessing_step = {
+                    'type': 'reasoning_step',
+                    'step': 'accessing_files',
+                    'action_type': 'exploring',
+                    'message': 'Accessing files',
+                    'details': {}
+                }
+                yield f"data: {json.dumps(accessing_step)}\n\n"
+                time.sleep(0.005)
+
+                # Step (3): Intent-based step for real-time feedback (e.g. "Finding the EPC rating of Highlands")
                 # Shown immediately while checkpointer/graph/classifier load - no I/O, pure heuristic
                 intent_msg = extract_query_intent(query)
                 if intent_msg and intent_msg != "Thinking":
@@ -1425,7 +1469,8 @@ def query_documents_stream():
                     }
                     yield f"data: {json.dumps(intent_step)}\n\n"
                     logger.debug("🟡 [REASONING] Emitted step (2): %s", intent_msg)
-                
+                    time.sleep(0.005)
+
                 # Detect if user wants agent to perform UI actions (show me, save, navigate)
                 action_intent = detect_action_intent(query)
                 if action_intent['wants_action']:
@@ -1441,30 +1486,71 @@ def query_documents_stream():
                         logger.info("🟡 [STREAM] run_and_stream() async function started (runner_graph=%s)", runner_graph is not None)
                         # Yield immediately so the client gets feedback (don't block on get_document/Supabase)
                         if effective_document_ids:
-                            # Include first document name in step so UI shows actual filename instead of "Document"
-                            details_reading = {}
+                            # Emit Searching and Analysing N files BEFORE Read so user sees the full sequence
+                            ids_list = list(effective_document_ids)[:5] if effective_document_ids else []
+                            doc_count = len(ids_list)
+                            # Step: Searching (we're about to search the selected documents)
+                            yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'searching_documents', 'action_type': 'searching', 'message': 'Searching', 'details': {}, 'timestamp': time.time()})}\n\n"
+                            time.sleep(0.005)
+                            # Step: Analysing N files (so user sees this before Reading)
+                            doc_word = "file" if doc_count == 1 else "files"
+                            analysing_msg = f'Analysing {doc_count} {doc_word}:'
+                            doc_previews_init = []
                             try:
-                                ids_list = list(effective_document_ids)[:5] if effective_document_ids else []
                                 if ids_list and business_id:
                                     supabase = get_supabase_client()
-                                    name_res = supabase.table("documents").select("id, original_filename").in_("id", ids_list).eq("business_uuid", str(business_id)).limit(5).execute()
+                                    name_res = supabase.table("documents").select("id, original_filename, classification_type").in_("id", ids_list).eq("business_uuid", str(business_id)).limit(5).execute()
                                     if name_res.data and len(name_res.data) > 0:
-                                        names = [row.get("original_filename") or "" for row in name_res.data if (row.get("original_filename") or "").strip()]
-                                        if names:
-                                            details_reading["filename"] = names[0].strip() or None
-                                            details_reading["document_names"] = names
-                                    # Include first doc_id so frontend can resolve name from sidebar when DB has no filename
-                                    if ids_list and not details_reading.get("filename"):
-                                        details_reading["doc_metadata"] = {"doc_id": ids_list[0], "original_filename": None}
+                                        doc_names = []
+                                        for row in name_res.data:
+                                            fn = (row.get("original_filename") or "").strip()
+                                            ct = (row.get("classification_type") or "Document").strip() or "Document"
+                                            display = (fn[:32] + "...") if len(fn) > 35 else (fn or ct.replace("_", " ").title())
+                                            doc_names.append(display)
+                                            doc_previews_init.append({
+                                                "doc_id": row.get("id"),
+                                                "original_filename": fn or None,
+                                                "classification_type": ct,
+                                                "page_range": "",
+                                                "page_numbers": [],
+                                                "s3_path": "",
+                                                "download_url": f"/api/files/download?document_id={row.get('id')}" if row.get("id") else ""
+                                            })
+                                        yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'found_documents', 'action_type': 'exploring', 'message': analysing_msg, 'count': doc_count, 'timestamp': time.time(), 'details': {'documents_found': doc_count, 'document_names': doc_names, 'doc_previews': doc_previews_init}})}\n\n"
+                                        time.sleep(0.005)
+                                    else:
+                                        yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'found_documents', 'action_type': 'exploring', 'message': analysing_msg, 'count': doc_count, 'timestamp': time.time(), 'details': {'documents_found': doc_count}})}\n\n"
+                                        time.sleep(0.005)
+                                else:
+                                    yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'found_documents', 'action_type': 'exploring', 'message': analysing_msg, 'count': doc_count, 'timestamp': time.time(), 'details': {'documents_found': doc_count}})}\n\n"
+                                    time.sleep(0.005)
+                            except Exception as name_err:
+                                logger.debug("Analysing step filename lookup skipped: %s", name_err)
+                                yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'found_documents', 'action_type': 'exploring', 'message': analysing_msg, 'count': doc_count, 'timestamp': time.time(), 'details': {'documents_found': doc_count}})}\n\n"
+                            time.sleep(0.005)
+                            # Emit one reading step per document (so UI shows "Reading file1" -> "Read file1" for each)
+                            ids_list = list(effective_document_ids)[:5] if effective_document_ids else []
+                            doc_rows = []
+                            try:
+                                if ids_list and business_id:
+                                    supabase = get_supabase_client()
+                                    name_res = supabase.table("documents").select("id, original_filename, classification_type").in_("id", ids_list).eq("business_uuid", str(business_id)).limit(5).execute()
+                                    if name_res.data:
+                                        doc_rows = name_res.data
                             except Exception as name_err:
                                 logger.debug("Reading step filename lookup skipped: %s", name_err)
-                            # When we have document ids but no filename/doc_metadata yet, pass first doc_id so frontend can resolve from sidebar
-                            ids_list = list(effective_document_ids)[:1] if effective_document_ids else []
-                            if ids_list and not details_reading.get("doc_metadata"):
-                                details_reading["doc_metadata"] = {"doc_id": ids_list[0], "original_filename": None}
-                            first_name = (details_reading.get("filename") or (details_reading.get("document_names") or [None])[0]) if details_reading else None
-                            message_reading = f"Read {first_name}" if first_name else "Reading selected documents..."
-                            yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'reading_documents', 'action_type': 'reading', 'message': message_reading, 'details': details_reading, 'timestamp': time.time()})}\n\n"
+                            # Emit one step per document
+                            rows_to_emit = doc_rows if doc_rows else [{"id": aid, "original_filename": None, "classification_type": "Document"} for aid in ids_list]
+                            for i, row in enumerate(rows_to_emit):
+                                rid = row.get("id") if isinstance(row, dict) else getattr(row, "id", ids_list[i] if i < len(ids_list) else None)
+                                fn = (row.get("original_filename") or "").strip() if isinstance(row, dict) else (getattr(row, "original_filename", None) or "").strip()
+                                ct = (row.get("classification_type") or "Document").strip() if isinstance(row, dict) else (getattr(row, "classification_type", "Document") or "Document").strip()
+                                display_name = fn or ct.replace("_", " ").title() if ct else "Document"
+                                doc_metadata = {"doc_id": rid, "original_filename": fn or None, "classification_type": ct}
+                                step_details = {"document_index": i, "filename": fn or None, "doc_metadata": doc_metadata}
+                                reading_step_ts = time.time() + (i * 0.01)
+                                yield f"data: {json.dumps({'type': 'reasoning_step', 'step': f'reading_sync_{i}', 'action_type': 'reading', 'message': f'Read {display_name}', 'details': step_details, 'timestamp': reading_step_ts})}\n\n"
+                                time.sleep(0.005)
                         else:
                             # Non-citation: intent step already emitted from sync; emit fallback only when intent was generic
                             if not intent_msg or intent_msg == "Thinking":
@@ -1723,8 +1809,8 @@ def query_documents_stream():
                                 'details': {}
                             },
                             'summarize_results': {
-                                'action_type': 'planning',
-                                'message': 'Summarising content',
+                                'action_type': 'analysing',
+                                'message': 'Thinking',
                                 'details': {}
                             },
                             # Main retrieval path: step (1) "Planning next moves" from initial_reasoning; (2) from phase "Searching for {query}"
@@ -1794,6 +1880,15 @@ def query_documents_stream():
                                         token = (payload.get('metadata') or {}).get('token', '')
                                         if token:
                                             if not first_token_sent_marked:
+                                                # Emit "Generating response" (step 15) when first token streams
+                                                generating_step = {
+                                                    'type': 'reasoning_step',
+                                                    'step': 'generating_response',
+                                                    'action_type': 'analysing',
+                                                    'message': 'Generating response',
+                                                    'details': {}
+                                                }
+                                                yield f"data: {json.dumps(generating_step)}\n\n"
                                                 timing.mark("first_token_sent")
                                                 first_token_sent_marked = True
                                             yield f"data: {json.dumps({'type': 'token', 'token': token})}\n\n"
@@ -1823,12 +1918,24 @@ def query_documents_stream():
                                                 logger.info("🟡 [REASONING] Emitted searching step (phase): Searching")
                                         elif label and ('Reviewed' in label or 'review' in label.lower()):
                                             pass
-                                        elif label and (label_stripped.startswith('Retrieved ') and 'passage' in label_stripped.lower() and ' from ' in label_stripped and 'document' in label_stripped.lower()):
+                                        elif label and (label_stripped.startswith('Retrieved ') and 'passage' in label_stripped.lower() and ' from ' in label_stripped and ('document' in label_stripped.lower() or 'file' in label_stripped.lower())):
                                             yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'found_sections', 'action_type': 'exploring', 'message': label_stripped, 'timestamp': time.time(), 'details': {}})}\n\n"
                                         elif label and label_stripped.startswith('Analysing ') and 'section' in label_stripped.lower() and ' for ' in label_stripped and 'document' in label_stripped.lower():
                                             yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'found_sections', 'action_type': 'exploring', 'message': label_stripped, 'timestamp': time.time(), 'details': {}})}\n\n"
                                         elif label and label_stripped.startswith('Analysing '):
-                                            yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'analysing_documents', 'action_type': 'analysing', 'message': label_stripped, 'timestamp': time.time(), 'details': {}})}\n\n"
+                                            # Normalise "Analysing [filename]" (malformed) to "Analysing 1 file:" so UI shows consistent format
+                                            if re.match(r'^Analysing\s+\d+\s+(?:documents?|files?)\s*:?', label_stripped, re.I):
+                                                msg = label_stripped
+                                                step_details = {}
+                                            else:
+                                                rest = label_stripped[9:].strip()  # after "Analysing "
+                                                if rest and ('.pdf' in rest.lower() or '.docx' in rest.lower() or '_' in rest):
+                                                    msg = 'Analysing 1 file:'
+                                                    step_details = {'documents_found': 1, 'document_names': [rest], 'filename': rest}
+                                                else:
+                                                    msg = label_stripped
+                                                    step_details = {}
+                                            yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'analysing_documents', 'action_type': 'exploring' if step_details else 'analysing', 'message': msg, 'timestamp': time.time(), 'details': step_details})}\n\n"
                                         elif label and (label_stripped.startswith('Found ') and 'section' in label_stripped.lower()):
                                             detail = (payload.get('metadata') or {}).get('detail', '')
                                             yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'found_sections', 'action_type': 'exploring', 'message': label_stripped + (' (' + detail + ')' if detail else ''), 'timestamp': time.time(), 'details': {}})}\n\n"
@@ -1841,7 +1948,7 @@ def query_documents_stream():
                                         elif label_stripped == 'Read':
                                             yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'read_done', 'action_type': 'reading', 'message': 'Read', 'timestamp': time.time(), 'details': {'status': 'read'}})}\n\n"
                                         elif label_stripped == 'Thinking':
-                                            yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'thinking_note', 'action_type': 'thinking', 'message': 'Planning next moves', 'timestamp': time.time(), 'details': {}})}\n\n"
+                                            yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'thinking_note', 'action_type': 'thinking', 'message': 'Thinking', 'timestamp': time.time(), 'details': {}})}\n\n"
                                         elif label_stripped == 'Making a note for the curated piece':
                                             detail = (payload.get('metadata') or {}).get('detail', '') or ''
                                             yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'making_note', 'action_type': 'making_note', 'message': 'Making a note', 'timestamp': time.time(), 'details': {'note_content': detail}})}\n\n"
@@ -1907,17 +2014,17 @@ def query_documents_stream():
                                         logger.info("🟡 [REASONING] ✅ Emitted attachment_fast step: Generating response")
                                     elif not is_fast_path and node_name in node_messages and node_name not in processed_nodes:
                                         if node_name == "responder":
-                                            # Emit "Generating response" when prompt is sent to LLM (disappears when streaming starts)
+                                            # Emit "Thinking" when LLM starts final reasoning (step 14); Generating response emits at first token
                                             processed_nodes.add(node_name)
-                                            generating_data = {
+                                            thinking_data = {
                                                 'type': 'reasoning_step',
-                                                'step': 'generating_response',
+                                                'step': 'thinking_before_response',
                                                 'action_type': 'analysing',
-                                                'message': 'Generating response',
+                                                'message': 'Thinking',
                                                 'details': {}
                                             }
-                                            yield f"data: {json.dumps(generating_data)}\n\n"
-                                            logger.info("🟡 [REASONING] ✅ Emitted step: Generating response (prompt sent to LLM)")
+                                            yield f"data: {json.dumps(thinking_data)}\n\n"
+                                            logger.info("🟡 [REASONING] ✅ Emitted step: Thinking (responder started)")
                                         else:
                                             processed_nodes.add(node_name)
                                             reasoning_data = {
@@ -1993,14 +2100,16 @@ def query_documents_stream():
                                                 docs_result = r["result"]
                                             if r.get("action") == "retrieve_chunks" and r.get("result"):
                                                 chunks_result = r["result"]
-                                        # Build set of document_ids we actually have chunks for
+                                        # Build ordered list of document_ids we actually read (first occurrence = retrieval order)
                                         doc_ids_with_chunks = set()
+                                        doc_ids_ordered = []
                                         if chunks_result and isinstance(chunks_result, list):
                                             for item in chunks_result:
                                                 if isinstance(item, dict):
-                                                    did = item.get("document_id") or item.get("doc_id")
-                                                    if did:
-                                                        doc_ids_with_chunks.add(str(did))
+                                                    did = str(item.get("document_id") or item.get("doc_id") or "")
+                                                    if did and did not in doc_ids_with_chunks:
+                                                        doc_ids_with_chunks.add(did)
+                                                        doc_ids_ordered.append(did)
                                         # Prime doc-chunk cache in background for same-doc follow-ups (fire-and-forget, once per request)
                                         if not doc_chunk_cache_prime_scheduled and execution_results and chunks_result is not None:
                                             try:
@@ -2012,13 +2121,36 @@ def query_documents_stream():
                                                     doc_chunk_cache_prime_scheduled = True
                                             except Exception as prime_err:
                                                 logger.debug("[STREAM] Doc chunk cache prime skipped: %s", prime_err)
-                                        # Only emit once, and only when we have retrieve_chunks so we can filter
-                                        if docs_result and not executor_found_docs_emitted and chunks_result is not None:
-                                            # Restrict to docs we actually read (have chunks for); preserve order from docs_result
-                                            docs_read = [d for d in docs_result if str(d.get("document_id") or d.get("doc_id") or "") in doc_ids_with_chunks]
-                                            if not docs_read and docs_result and len(doc_ids_with_chunks) == 0:
-                                                # Chunks result was empty list - we "read" no docs
-                                                docs_read = []
+                                        # Emit when we have retrieve_chunks (documents we actually read). Use docs_result if available;
+                                        # otherwise build from doc_ids_with_chunks + DB lookup (e.g. when only retrieve_chunks ran)
+                                        if not executor_found_docs_emitted and chunks_result is not None:
+                                            docs_read = []
+                                            if docs_result:
+                                                # Restrict to docs we actually read (have chunks for); preserve order from docs_result
+                                                docs_read = [d for d in docs_result if str(d.get("document_id") or d.get("doc_id") or "") in doc_ids_with_chunks]
+                                                if not docs_read and len(doc_ids_with_chunks) == 0:
+                                                    docs_read = []
+                                            elif doc_ids_ordered and business_id:
+                                                # No retrieve_docs ran (e.g. user pre-scoped to document_ids) - look up from DB using retrieval order
+                                                try:
+                                                    ids_list = doc_ids_ordered[:10]
+                                                    name_res = get_supabase_client().table("documents").select("id, original_filename, classification_type").in_("id", ids_list).eq("business_uuid", str(business_id)).limit(10).execute()
+                                                    row_by_id = {str(r.get("id", "")): r for r in (name_res.data or []) if r.get("id")}
+                                                    for did in ids_list:
+                                                        row = row_by_id.get(str(did))
+                                                        if row:
+                                                            fn = (row.get("original_filename") or "").strip() or None
+                                                            ct = row.get("classification_type") or "Document"
+                                                            docs_read.append({
+                                                                "document_id": did,
+                                                                "doc_id": did,
+                                                                "filename": fn,
+                                                                "original_filename": fn,
+                                                                "document_type": ct,
+                                                                "classification_type": ct,
+                                                            })
+                                                except Exception as lookup_err:
+                                                    logger.debug("DB lookup for doc names (chunks-only path): %s", lookup_err)
                                             executor_found_docs_emitted = True
                                             # When @-tagged docs have no filename in executor result, look up original_filename from DB
                                             doc_ids_missing_name = [str(d.get("document_id") or d.get("doc_id") or "") for d in docs_read[:10] if not (d.get("filename") or d.get("original_filename") or "").strip()]
@@ -2056,7 +2188,7 @@ def query_documents_stream():
                                             if doc_count == 0:
                                                 logger.debug("🟡 [REASONING] No documents had chunks; skipping found_documents + reading steps")
                                             else:
-                                                doc_word = "document" if doc_count == 1 else "documents"
+                                                doc_word = "file" if doc_count == 1 else "files"
                                                 message = f'Analysing {doc_count} {doc_word}:'
                                                 if reading_timestamp is None:
                                                     reading_timestamp = time.time() + 0.1
@@ -2105,12 +2237,12 @@ def query_documents_stream():
                                                     }
                                                     yield f"data: {json.dumps(reading_data)}\n\n"
                                                 logger.debug(f"🟡 [REASONING] Emitted executor found_documents + {len(doc_previews)} reading steps ({doc_count} docs we read)")
-                                                # After chunk retrieval: emit "Planning next moves" step that replaces the Analysing + documents block in the UI
+                                                # After chunk retrieval: emit "Thinking" step that replaces the Analysing + documents block in the UI
                                                 thinking_after_chunks_data = {
                                                     'type': 'reasoning_step',
                                                     'step': 'thinking_after_chunks',
                                                     'action_type': 'analysing',
-                                                    'message': 'Planning next moves',
+                                                    'message': 'Thinking',
                                                     'timestamp': time.time(),
                                                     'details': {'replaces_analysing': True}
                                                 }
@@ -2137,7 +2269,7 @@ def query_documents_stream():
                                                     'type': 'reasoning_step',
                                                     'step': 'analyzing_for_followup',
                                                     'action_type': 'analysing',
-                                                    'message': f'Analysing {doc_outputs_count} documents for your question',
+                                                    'message': f'Analysing {doc_outputs_count} files for your question',
                                                     'timestamp': time.time(),  # Ensure proper ordering
                                                     'details': {'documents_analyzed': doc_outputs_count}
                                                 }
@@ -2161,7 +2293,7 @@ def query_documents_stream():
                                                         's3_path': doc_output.get('s3_path', ''),
                                                         'download_url': f"/api/files/download?document_id={doc_id}" if doc_id else ''
                                                     })
-                                                doc_word = "document" if doc_outputs_count == 1 else "documents"
+                                                doc_word = "file" if doc_outputs_count == 1 else "files"
                                                 message = f'Analysing {doc_outputs_count} {doc_word}:'
                                                 reasoning_data = {
                                                     'type': 'reasoning_step',
@@ -2254,6 +2386,15 @@ def query_documents_stream():
                                             streamed_summary = summary_to_stream
                                             yield f"data: {json.dumps({'type': 'documents_found', 'count': 1})}\n\n"
                                             yield f"data: {json.dumps({'type': 'status', 'message': 'Streaming response...'})}\n\n"
+                                            if not first_token_sent_marked:
+                                                generating_step = {
+                                                    'type': 'reasoning_step',
+                                                    'step': 'generating_response',
+                                                    'action_type': 'analysing',
+                                                    'message': 'Generating response',
+                                                    'details': {}
+                                                }
+                                                yield f"data: {json.dumps(generating_step)}\n\n"
                                             for i in range(0, len(summary_to_stream), STREAM_CHUNK_SIZE):
                                                 if i == 0 and not first_token_sent_marked:
                                                     timing.mark("first_token_sent")
@@ -2309,6 +2450,15 @@ def query_documents_stream():
                                             # Stream the formatted response (same structure as retrieval)
                                             if not summary_already_streamed:
                                                 yield f"data: {json.dumps({'type': 'status', 'message': 'Streaming response...'})}\n\n"
+                                                if not first_token_sent_marked:
+                                                    generating_step = {
+                                                        'type': 'reasoning_step',
+                                                        'step': 'generating_response',
+                                                        'action_type': 'analysing',
+                                                        'message': 'Generating response',
+                                                        'details': {}
+                                                    }
+                                                    yield f"data: {json.dumps(generating_step)}\n\n"
                                                 for i in range(0, len(formatted_summary), STREAM_CHUNK_SIZE):
                                                     if i == 0 and not first_token_sent_marked:
                                                         timing.mark("first_token_sent")
@@ -2401,6 +2551,15 @@ def query_documents_stream():
                                             doc_count = len(chunk_citations_from_responder) if chunk_citations_from_responder else 1
                                             yield f"data: {json.dumps({'type': 'documents_found', 'count': doc_count})}\n\n"
                                             yield f"data: {json.dumps({'type': 'status', 'message': 'Streaming response...'})}\n\n"
+                                            if not first_token_sent_marked:
+                                                generating_step = {
+                                                    'type': 'reasoning_step',
+                                                    'step': 'generating_response',
+                                                    'action_type': 'analysing',
+                                                    'message': 'Generating response',
+                                                    'details': {}
+                                                }
+                                                yield f"data: {json.dumps(generating_step)}\n\n"
                                             for i in range(0, len(summary_to_stream), STREAM_CHUNK_SIZE):
                                                 if i == 0 and not first_token_sent_marked:
                                                     timing.mark("first_token_sent")
@@ -2582,7 +2741,16 @@ def query_documents_stream():
                                             doc_count = len(doc_outputs_from_state) if doc_outputs_from_state else len(relevant_docs_from_state)
                                             yield f"data: {json.dumps({'type': 'documents_found', 'count': doc_count})}\n\n"
                                             
-                                            # Do NOT emit "Generating response" here - it was already emitted when responder started; hide it when streaming starts (frontend)
+                                            # Emit "Generating response" (step 15) when about to stream first token (summarize_results path)
+                                            if not first_token_sent_marked:
+                                                generating_step = {
+                                                    'type': 'reasoning_step',
+                                                    'step': 'generating_response',
+                                                    'action_type': 'analysing',
+                                                    'message': 'Generating response',
+                                                    'details': {}
+                                                }
+                                                yield f"data: {json.dumps(generating_step)}\n\n"
                                             
                                             # AGENT-NATIVE: Agent actions are now emitted from frontend when they actually happen
                                             # This ensures "Opening citation view" appears when document actually opens, not before
@@ -2708,7 +2876,7 @@ def query_documents_stream():
                                                         's3_path': doc_output.get('s3_path', ''),
                                                         'download_url': f"/api/files/download?document_id={doc_id}" if doc_id else ''
                                                     })
-                                                doc_word = "document" if doc_outputs_count == 1 else "documents"
+                                                doc_word = "file" if doc_outputs_count == 1 else "files"
                                                 message = f'Analysing {doc_outputs_count} {doc_word}:'
                                                 reasoning_data = {
                                                     'type': 'reasoning_step',
@@ -2896,12 +3064,20 @@ def query_documents_stream():
                                         if payload.get('type') == 'phase' and (payload.get('metadata') or {}).get('reasoning'):
                                             label = (payload.get('metadata') or {}).get('label') or payload.get('description', '')
                                             label_stripped = (label or '').strip()
-                                            if label and (label_stripped.startswith('Retrieved ') and 'passage' in label_stripped.lower() and ' from ' in label_stripped and 'document' in label_stripped.lower()):
+                                            if label and (label_stripped.startswith('Retrieved ') and 'passage' in label_stripped.lower() and ' from ' in label_stripped and ('document' in label_stripped.lower() or 'file' in label_stripped.lower())):
                                                 yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'found_sections', 'action_type': 'exploring', 'message': label_stripped, 'timestamp': time.time(), 'details': {}})}\n\n"
                                             elif label and label_stripped.startswith('Analysing ') and 'section' in label_stripped.lower() and ' for ' in label_stripped and 'document' in label_stripped.lower():
                                                 yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'found_sections', 'action_type': 'exploring', 'message': label_stripped, 'timestamp': time.time(), 'details': {}})}\n\n"
                                             elif label_stripped.startswith('Analysing '):
-                                                yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'analysing_documents', 'action_type': 'analysing', 'message': label_stripped, 'timestamp': time.time(), 'details': {}})}\n\n"
+                                                if re.match(r'^Analysing\s+\d+\s+(?:documents?|files?)\s*:?', label_stripped, re.I):
+                                                    msg, step_details = label_stripped, {}
+                                                else:
+                                                    rest = label_stripped[9:].strip()
+                                                    if rest and ('.pdf' in rest.lower() or '.docx' in rest.lower() or '_' in rest):
+                                                        msg, step_details = 'Analysing 1 file:', {'documents_found': 1, 'document_names': [rest], 'filename': rest}
+                                                    else:
+                                                        msg, step_details = label_stripped, {}
+                                                yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'analysing_documents', 'action_type': 'exploring' if step_details else 'analysing', 'message': msg, 'timestamp': time.time(), 'details': step_details})}\n\n"
                                             elif label and (label_stripped.startswith('Found ') and 'section' in label_stripped.lower()):
                                                 detail = (payload.get('metadata') or {}).get('detail', '')
                                                 yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'found_sections', 'action_type': 'exploring', 'message': label_stripped + (' (' + detail + ')' if detail else ''), 'timestamp': time.time(), 'details': {}})}\n\n"
@@ -2931,12 +3107,20 @@ def query_documents_stream():
                                     if payload.get('type') == 'phase' and (payload.get('metadata') or {}).get('reasoning'):
                                         label = (payload.get('metadata') or {}).get('label') or payload.get('description', '')
                                         label_stripped = (label or '').strip()
-                                        if label and (label_stripped.startswith('Retrieved ') and 'passage' in label_stripped.lower() and ' from ' in label_stripped and 'document' in label_stripped.lower()):
+                                        if label and (label_stripped.startswith('Retrieved ') and 'passage' in label_stripped.lower() and ' from ' in label_stripped and ('document' in label_stripped.lower() or 'file' in label_stripped.lower())):
                                             yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'found_sections', 'action_type': 'exploring', 'message': label_stripped, 'timestamp': time.time(), 'details': {}})}\n\n"
                                         elif label and label_stripped.startswith('Analysing ') and 'section' in label_stripped.lower() and ' for ' in label_stripped and 'document' in label_stripped.lower():
                                             yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'found_sections', 'action_type': 'exploring', 'message': label_stripped, 'timestamp': time.time(), 'details': {}})}\n\n"
                                         elif label_stripped.startswith('Analysing '):
-                                            yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'analysing_documents', 'action_type': 'analysing', 'message': label_stripped, 'timestamp': time.time(), 'details': {}})}\n\n"
+                                            if re.match(r'^Analysing\s+\d+\s+(?:documents?|files?)\s*:?', label_stripped, re.I):
+                                                msg, step_details = label_stripped, {}
+                                            else:
+                                                rest = label_stripped[9:].strip()
+                                                if rest and ('.pdf' in rest.lower() or '.docx' in rest.lower() or '_' in rest):
+                                                    msg, step_details = 'Analysing 1 file:', {'documents_found': 1, 'document_names': [rest], 'filename': rest}
+                                                else:
+                                                    msg, step_details = label_stripped, {}
+                                            yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'analysing_documents', 'action_type': 'exploring' if step_details else 'analysing', 'message': msg, 'timestamp': time.time(), 'details': step_details})}\n\n"
                                         elif label and (label_stripped.startswith('Found ') and 'section' in label_stripped.lower()):
                                             detail = (payload.get('metadata') or {}).get('detail', '')
                                             yield f"data: {json.dumps({'type': 'reasoning_step', 'step': 'found_sections', 'action_type': 'exploring', 'message': label_stripped + (' (' + detail + ')' if detail else ''), 'timestamp': time.time(), 'details': {}})}\n\n"
@@ -2956,8 +3140,16 @@ def query_documents_stream():
                         else:
                             # Stream the existing summary token by token (simulate streaming for UX)
                             logger.info("🟡 [STREAM] Streaming existing summary (no redundant LLM call)")
-                            # "Generating response" was already shown when prompt was sent; frontend hides it when streaming starts
                             yield f"data: {json.dumps({'type': 'status', 'message': 'Streaming response...'})}\n\n"
+                            if not first_token_sent_marked:
+                                generating_step = {
+                                    'type': 'reasoning_step',
+                                    'step': 'generating_response',
+                                    'action_type': 'analysing',
+                                    'message': 'Generating response',
+                                    'details': {}
+                                }
+                                yield f"data: {json.dumps(generating_step)}\n\n"
                             
                             # Stream the final response text directly - preserve all formatting
                             # Stream character-by-character in chunks to maintain exact formatting (markdown, newlines, spaces)

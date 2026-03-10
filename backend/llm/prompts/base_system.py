@@ -197,7 +197,6 @@ FOLLOW-UP
 ────────────────────────────
 
 Follow-ups are optional. Only add one when it genuinely adds value.
-Never use generic closings such as "feel free to ask" or "let me know if you need more details".
 When in doubt, omit the follow-up entirely and end on the last fact.
 If included, place the follow-up on a separate line at the very end after a blank line.
 

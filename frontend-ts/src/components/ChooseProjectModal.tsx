@@ -1,8 +1,8 @@
 "use client";
 
 import * as React from "react";
-import { Dialog, DialogContent } from "@/components/ui/dialog";
-import { ChevronRight } from "lucide-react";
+import { Dialog, DialogContent, DialogClose } from "@/components/ui/dialog";
+import { ChevronRight, X } from "lucide-react";
 import { backendApi } from "@/services/backendApi";
 
 export interface ChooseProjectModalProps {
@@ -120,7 +120,8 @@ export function ChooseProjectModal({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         container={portalContainer ?? undefined}
-        className={`p-0 gap-0 overflow-hidden border-0 bg-white shadow-xl max-h-[70vh] min-w-0 max-w-[840px] w-[min(840px,calc(100vw-32px))] rounded-xl flex flex-col !z-[100100] !top-auto !translate-y-0 ${anchorStyle ? "" : "translate-x-[-50%]"} ${anchorStyle ? "" : "bottom-[100px]"} ${anchorStyle ? "" : leftStyle ? "" : "left-[50%]"}`}
+        hideClose
+        className={`p-0 gap-0 overflow-hidden border-0 bg-white shadow-xl max-h-[50vh] min-w-0 max-w-[840px] w-[min(840px,calc(100vw-32px))] rounded-xl flex flex-col !z-[100100] !top-auto !translate-y-0 ${anchorStyle ? "" : "translate-x-[-50%]"} ${anchorStyle ? "" : "bottom-[100px]"} ${anchorStyle ? "" : leftStyle ? "" : "left-[50%]"}`}
         style={{
           boxShadow: "0 4px 24px rgba(0,0,0,0.08)",
           ...(anchorStyle ?? leftStyle),
@@ -130,7 +131,7 @@ export function ChooseProjectModal({
         onEscapeKeyDown={() => onOpenChange(false)}
       >
         <div
-          className="flex shrink-0 items-center gap-3 pl-10 pr-12 py-6 rounded-t-xl"
+          className="flex shrink-0 items-center gap-3 pl-10 pr-4 py-4 rounded-t-xl"
           style={{ backgroundColor: "#F5F5F5" }}
         >
           <input
@@ -142,8 +143,17 @@ export function ChooseProjectModal({
             className="flex-1 min-w-0 h-full bg-transparent text-sm pl-0 text-neutral-600 placeholder:text-neutral-400 placeholder:font-normal font-medium outline-none"
             aria-label="Search projects"
           />
+          <DialogClose asChild>
+            <button
+              type="button"
+              className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-neutral-500 opacity-70 hover:opacity-100 transition-opacity"
+              aria-label="Close"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </DialogClose>
         </div>
-        <div className="flex-1 min-h-0 overflow-y-auto py-4 px-4 scroll-smooth [-webkit-overflow-scrolling:touch]">
+        <div className="h-[calc(50vh-5rem)] overflow-y-auto py-4 px-4 scroll-smooth [-webkit-overflow-scrolling:touch] [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-black/10 [&::-webkit-scrollbar-thumb]:rounded-full hover:[&::-webkit-scrollbar-thumb]:bg-black/15" style={{ scrollbarColor: 'rgba(0,0,0,0.1) transparent' }}>
           <p className="px-4 pt-1 pb-2 text-[11px] text-gray-500 font-medium">Projects</p>
           {projectsViewList.length === 0 ? (
             <div className="py-6 flex flex-col items-center justify-center text-center">

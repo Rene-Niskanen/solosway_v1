@@ -55,8 +55,6 @@ import {
 } from '@/utils/inputBarPosition';
 import { useChatHistory } from './ChatHistoryContext';
 import { useBrowserFullscreen } from '../contexts/BrowserFullscreenContext';
-import { usePropertySelection } from '../contexts/PropertySelectionContext';
-import { ChooseProjectModal } from './ChooseProjectModal';
 import type { QueryContentSegment } from '@/types/segmentInput';
 import {
   Select,
@@ -1147,7 +1145,7 @@ const LocationPickerModal: React.FC<{
         >
           {/* Top bar — same style as SearchOrStartChatModal (New chat / Recents dialog) */}
           <div
-            className="flex shrink-0 flex-col gap-3 pl-10 pr-12 py-6 rounded-t-xl"
+            className="flex shrink-0 flex-col gap-3 pl-10 pr-12 py-4 rounded-t-xl"
             style={{ backgroundColor: '#F5F5F5' }}
           >
             <DialogTitle className="text-[14px] font-medium text-gray-900 tracking-tight m-0 p-0">
@@ -2058,7 +2056,7 @@ const FullscreenPropertyView: React.FC<FullscreenPropertyViewProps> = ({
   const [resetWidthTrigger, setResetWidthTrigger] = React.useState<number>(0);
   // Agent sidebar (right) – reserve space so chat + property details don't extend under it
   const { isOpen: isAgentSidebarOpen, width: agentSidebarWidth } = useChatPanel();
-  const agentSidebarReserve = isAgentSidebarOpen ? (agentSidebarWidth || 320) + AGENT_SIDEBAR_RAIL_WIDTH : 0;
+  const agentSidebarReserve = isAgentSidebarOpen ? (agentSidebarWidth || 265) + AGENT_SIDEBAR_RAIL_WIDTH : 0;
 
   // Calculate sidebar width for positioning (must match MainContent effectiveSidebarWidthWithRail logic)
   const TOGGLE_RAIL_WIDTH = 12;
@@ -2313,11 +2311,8 @@ export const MainContent = ({
   const [hasActiveChat, setHasActiveChat] = React.useState<boolean>(false); // Track if there's an active chat query running
   const [resetWidthForDocPreviewTrigger, setResetWidthForDocPreviewTrigger] = React.useState<number>(0); // Increment to force 50/50 when opening file from search modal
   const [chatBarGlowTrigger, setChatBarGlowTrigger] = React.useState<number>(0); // Timestamp to trigger chat bar border glow after query submit (dashboard/map)
-  const [chooseProjectModalOpen, setChooseProjectModalOpen] = React.useState<boolean>(false);
   const [projectsChatActive, setProjectsChatActive] = React.useState<boolean>(false); // Chat opened from projects; keep visible when doc preview is closed
-  const [chooseProjectModalAnchorRect, setChooseProjectModalAnchorRect] = React.useState<{ left: number; top: number; width: number; height: number } | null>(null);
 
-  const { addPropertyAttachment } = usePropertySelection();
 
   // Browser Fullscreen API - shared state so all fullscreen buttons show "Exit" when active
   const { isBrowserFullscreen, toggleBrowserFullscreen } = useBrowserFullscreen();
@@ -2770,7 +2765,7 @@ export const MainContent = ({
     const sidebarWidth = isFilingSidebarOpen || isFilingSidebarClosing
       ? (isSidebarCollapsed ? TOGGLE_RAIL_WIDTH : effectiveSidebarWidth) + filingSidebarWidth
       : (isSidebarCollapsed ? 0 : effectiveSidebarWidth) + TOGGLE_RAIL_WIDTH;
-    const agentSidebarWidth = isChatHistoryPanelOpen ? (chatHistoryPanelWidth || 320) + AGENT_RAIL : 0;
+    const agentSidebarWidth = isChatHistoryPanelOpen ? (chatHistoryPanelWidth || 265) + AGENT_RAIL : 0;
     const availableForSplit = viewportWidth - sidebarWidth - agentSidebarWidth;
     const expectedChatWidth = Math.round(availableForSplit * CHAT_PANEL_WIDTH.DOC_PREVIEW_CHAT_RATIO);
     const roundedChat = Math.round(effectiveChatWidthForDocPreview || 0);
@@ -4029,52 +4024,6 @@ export const MainContent = ({
   React.useEffect(() => {
     backendApi.preloadPropertyHubs();
   }, []);
-
-  // Open Choose Project modal when "Choose project" is clicked from chat bar (attach flow; do not navigate)
-  React.useEffect(() => {
-    const handler = (e: Event) => {
-      const detail = (e as CustomEvent<{ anchorRect?: { left: number; top: number; width: number; height: number } }>).detail;
-      setChooseProjectModalAnchorRect(detail?.anchorRect ?? null);
-      setChooseProjectModalOpen(true);
-    };
-    window.addEventListener('openChooseProjectModal', handler);
-    return () => window.removeEventListener('openChooseProjectModal', handler);
-  }, []);
-
-  const handleChooseProjectSelect = React.useCallback(
-    (project: { id: string; label: string; imageUrl?: string; documentCount?: number }) => {
-      const id = project.id;
-      const label = project.label || 'Project';
-      const imageUrl = project.imageUrl || '';
-      const documentCount = project.documentCount;
-      const minimalProperty = {
-        id: id as unknown as number,
-        address: label,
-        postcode: '',
-        property_type: '',
-        bedrooms: 0,
-        bathrooms: 0,
-        price: 0,
-        square_feet: 0,
-        days_on_market: 0,
-        latitude: 0,
-        longitude: 0,
-        summary: '',
-        features: '',
-        condition: 0,
-        similarity: 0,
-        image: imageUrl,
-        primary_image_url: imageUrl,
-        formatted_address: label,
-        normalized_address: label,
-        agent: { name: '', company: '' },
-        ...(documentCount != null && { documentCount, document_count: documentCount }),
-      } as any;
-      addPropertyAttachment(minimalProperty);
-      setChooseProjectModalOpen(false);
-    },
-    [addPropertyAttachment]
-  );
 
   // When user clicks a file in the search modal: open 50/50 document preview + chat
   React.useEffect(() => {
@@ -5568,7 +5517,7 @@ export const MainContent = ({
   // Agent sidebar (right) has a 12px toggle rail on its left edge - reserve it so map/content don't extend under it
   const AGENT_TOGGLE_RAIL_WIDTH = 12;
   const effectiveAgentSidebarTotalWidth = isChatHistoryPanelOpen
-    ? (chatPanelWidth || chatHistoryPanelWidth || 320) + AGENT_TOGGLE_RAIL_WIDTH
+    ? (chatPanelWidth || chatHistoryPanelWidth || 265) + AGENT_TOGGLE_RAIL_WIDTH
     : 0;
   
   return (
@@ -6310,22 +6259,6 @@ export const MainContent = ({
         userFirstName={(authUser?.first_name ?? userData?.first_name)?.trim() || undefined}
       />
 
-      <ChooseProjectModal
-        open={chooseProjectModalOpen}
-        onOpenChange={(open) => {
-          setChooseProjectModalOpen(open);
-          if (!open) setChooseProjectModalAnchorRect(null);
-        }}
-        onSelectProject={handleChooseProjectSelect}
-        anchorRect={chooseProjectModalAnchorRect}
-        portalContainer={(currentView === 'search' || currentView === 'home') ? mainContentRef.current : undefined}
-        alignWithSearchBar={{
-          sidebarWidth: effectiveSidebarWidthWithRail,
-          isSidebarCollapsed,
-          // Viewport center on dashboard (search bar in flow); content-area center when bar is fixed (map or very small viewport)
-          useViewportCenter: !isMapVisible && viewportSize.width >= 600 && viewportSize.height >= 500,
-        }}
-      />
     </div>
   );
   };

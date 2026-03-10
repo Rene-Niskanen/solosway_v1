@@ -4,6 +4,7 @@ import * as React from "react";
 import {
   Dialog,
   DialogContent,
+  DialogClose,
 } from "@/components/ui/dialog";
 import {
   MessageSquare,
@@ -12,6 +13,7 @@ import {
   CornerDownLeft,
   ChevronRight,
   ChevronLeft,
+  X,
 } from "lucide-react";
 import { useChatHistory } from "./ChatHistoryContext";
 import { cn } from "@/lib/utils";
@@ -223,7 +225,14 @@ export function SearchOrStartChatModal({
         label: `New chat "${query.trim()}"`,
         query: query.trim(),
       });
-      // Chats (recents) first when typing, so starting a chat or opening a recent is quicker
+      // Files first, then projects, then recents, then actions
+      filteredFiles.forEach((d) => {
+        const label = d.original_filename || d.filename || d.name || "Document";
+        list.push({ type: "file", id: `file-${d.id}`, fileId: d.id, label });
+      });
+      filteredProjects.forEach((p) => {
+        list.push({ type: "project", id: `project-${p.id}`, projectId: p.id, label: p.label, imageUrl: p.imageUrl });
+      });
       filteredRecents.forEach((c) => {
         list.push({
           type: "recent-chat",
@@ -240,14 +249,6 @@ export function SearchOrStartChatModal({
           list.push({ type: "action", id: "action-upload", action: "upload", label: "Upload file" });
         }
       }
-      // When there's a search query, show matching files and projects below actions
-      filteredProjects.forEach((p) => {
-        list.push({ type: "project", id: `project-${p.id}`, projectId: p.id, label: p.label, imageUrl: p.imageUrl });
-      });
-      filteredFiles.forEach((d) => {
-        const label = d.original_filename || d.filename || d.name || "Document";
-        list.push({ type: "file", id: `file-${d.id}`, fileId: d.id, label });
-      });
     }
     return list;
   }, [query, filteredRecents, filteredProjects, filteredFiles, onUploadFile, chatsAndProjectsOnly]);
@@ -382,15 +383,16 @@ export function SearchOrStartChatModal({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         container={container ?? undefined}
-        className="p-0 gap-0 overflow-hidden border-0 bg-white shadow-xl max-h-[70vh] min-w-0 max-w-[840px] w-[min(840px,calc(100vw-32px))] rounded-xl flex flex-col !z-[100100]"
+        hideClose
+        className="p-0 gap-0 overflow-hidden border-0 bg-white shadow-xl max-h-[55vh] min-h-[280px] min-w-0 max-w-[840px] w-[min(840px,calc(100vw-32px))] rounded-xl flex flex-col !z-[100100] transition-[max-height] duration-300 ease-out"
         style={{ boxShadow: "0 4px 24px rgba(0,0,0,0.08)" }}
         overlayClassName="bg-black/10 !z-[100100]"
         onPointerDownOutside={() => onOpenChange(false)}
         onEscapeKeyDown={() => onOpenChange(false)}
       >
-        {/* Search bar — pr-12 leaves space for the dialog's close (X) button */}
+        {/* Search bar with close button aligned to input */}
         <div
-          className="flex shrink-0 items-center gap-3 pl-10 pr-12 py-6 rounded-t-xl"
+          className="flex shrink-0 items-center gap-3 pl-10 pr-4 py-4 rounded-t-xl"
           style={{ backgroundColor: "#F5F5F5" }}
         >
           <input
@@ -402,12 +404,22 @@ export function SearchOrStartChatModal({
             className="flex-1 min-w-0 h-full bg-transparent text-sm pl-0 text-neutral-600 placeholder:text-neutral-400 placeholder:font-light font-medium outline-none"
             aria-label="Search or start a chat"
           />
+          <DialogClose asChild>
+            <button
+              type="button"
+              className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-neutral-500 opacity-70 hover:opacity-100 transition-opacity"
+              aria-label="Close"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </DialogClose>
         </div>
 
-        {/* Scrollable list — flex-1 min-h-0 so it fills remaining space and scrolls */}
+        {/* Scrollable list — fixed height, faint scrollbar */}
         <div
           ref={listRef}
-          className="flex-1 min-h-0 overflow-y-auto py-4 px-4 scroll-smooth [-webkit-overflow-scrolling:touch]"
+          className="h-[calc(62vh-5rem)] overflow-y-auto py-4 px-4 scroll-smooth [-webkit-overflow-scrolling:touch] [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-black/10 [&::-webkit-scrollbar-thumb]:rounded-full hover:[&::-webkit-scrollbar-thumb]:bg-black/15"
+          style={{ scrollbarColor: 'rgba(0,0,0,0.1) transparent' }}
         >
           {showProjectsView ? (
             <>
@@ -534,6 +546,16 @@ export function SearchOrStartChatModal({
                 item.type === "new-chat" || item.type === "new-chat-query";
               return (
                 <React.Fragment key={item.id}>
+                  {isFirstFile && (
+                    <p className="px-4 pt-3 pb-2 text-[11px] text-gray-500 font-medium">
+                      Files &gt;
+                    </p>
+                  )}
+                  {isFirstProject && (
+                    <p className="px-4 pt-3 pb-2 text-[11px] text-gray-500 font-medium">
+                      Projects &gt;
+                    </p>
+                  )}
                   {isFirstRecent && (
                     <div className="px-4 pt-3 pb-2" onClick={(e) => e.stopPropagation()}>
                       <button
@@ -550,16 +572,6 @@ export function SearchOrStartChatModal({
                   {isFirstAction && (
                     <p className="px-4 pt-3 pb-2 text-[11px] text-gray-500 font-medium">
                       Actions &gt;
-                    </p>
-                  )}
-                  {isFirstProject && (
-                    <p className="px-4 pt-3 pb-2 text-[11px] text-gray-500 font-medium">
-                      Projects &gt;
-                    </p>
-                  )}
-                  {isFirstFile && (
-                    <p className="px-4 pt-3 pb-2 text-[11px] text-gray-500 font-medium">
-                      Files &gt;
                     </p>
                   )}
                 <button

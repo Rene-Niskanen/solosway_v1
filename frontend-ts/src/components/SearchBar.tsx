@@ -11,6 +11,7 @@ import { PropertyPillChip } from './PropertyPillChip';
 import { toast } from "@/hooks/use-toast";
 import { usePreview } from '../contexts/PreviewContext';
 import { usePropertySelection } from '../contexts/PropertySelectionContext';
+import { useChooseProjectModal } from '../contexts/ChooseProjectModalContext';
 import { useDocumentSelection } from '../contexts/DocumentSelectionContext';
 import { backendApi } from '../services/backendApi';
 import { QuickStartBar } from './QuickStartBar';
@@ -235,6 +236,7 @@ export const SearchBar = forwardRef<{
     removePropertyAttachment,
     clearPropertyAttachments 
   } = usePropertySelection();
+  const { openChooseProjectModal } = useChooseProjectModal();
   
   // Use document selection context (for document selection like SideChatPanel)
   const {
@@ -1745,7 +1747,11 @@ export const SearchBar = forwardRef<{
                             id: 'choose-project',
                             icon: FolderOpen,
                             label: 'Choose project',
-                            onClick: () => window.dispatchEvent(new CustomEvent('openChooseProjectModal')),
+                            onClick: (e?: React.MouseEvent) => {
+                              const el = e?.currentTarget as HTMLElement | undefined;
+                              const rect = el?.getBoundingClientRect();
+                              openChooseProjectModal(rect ? { left: rect.left, top: rect.top, width: rect.width, height: rect.height } : undefined);
+                            },
                           }] : []),
                           {
                             id: 'web-search',
@@ -1767,13 +1773,7 @@ export const SearchBar = forwardRef<{
                           onClick={() => {
                             const el = searchFormRef.current;
                             const rect = el?.getBoundingClientRect();
-                            if (rect) {
-                              window.dispatchEvent(new CustomEvent('openChooseProjectModal', {
-                                detail: { anchorRect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height } },
-                              }));
-                            } else {
-                              window.dispatchEvent(new CustomEvent('openChooseProjectModal'));
-                            }
+                            openChooseProjectModal(rect ? { left: rect.left, top: rect.top, width: rect.width, height: rect.height } : undefined);
                           }}
                           className="flex items-center justify-center gap-1.5 text-gray-700 transition-colors focus:outline-none outline-none rounded-md bg-black/[0.01] hover:bg-black/[0.05]"
                           style={{

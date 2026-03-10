@@ -21,6 +21,8 @@ export const WebSearchPill: React.FC<WebSearchPillProps> = ({ onDismiss, classNa
         paddingLeft: '6px',
         paddingRight: '4px',
         cursor: 'pointer',
+        position: 'relative',
+        zIndex: 50,
       }}
       aria-label="Web search mode - click to disable"
       title="Web search enabled - click to disable"

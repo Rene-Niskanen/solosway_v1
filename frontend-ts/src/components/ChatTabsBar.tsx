@@ -118,7 +118,7 @@ export const ChatTabsBar: React.FC<ChatTabsBarProps> = ({
     <div
       data-chat-tabs-bar
       className={`flex items-center gap-1 min-h-[23px] w-full ${fullWidth ? 'justify-between' : 'justify-center mx-auto'}`}
-      style={{ marginTop: 6 }}
+      style={{ marginTop: 2, marginLeft: -6 }}
       onClick={(e) => e.stopPropagation()}
     >
       {/* Chat tabs - scrollable */}
@@ -150,7 +150,7 @@ export const ChatTabsBar: React.FC<ChatTabsBarProps> = ({
                 flex items-center gap-1 cursor-pointer flex-shrink-0 px-1.5 py-0.5
                 transition-all duration-75 ease-out group
                 ${isSelected
-                  ? "bg-[#E5E7EB] border-none rounded-[3px]"
+                  ? "bg-[#F3F4F6] border-none rounded-[3px]"
                   : "bg-transparent border-none hover:opacity-80"
                 }
               `}

@@ -72,152 +72,6 @@ from backend.llm.citation import (
 
 logger = logging.getLogger(__name__)
 
-# Patterns for closing phrases that must only appear at the end (move to end when they appear with more content after)
-_MID_RESPONSE_CLOSING_PATTERNS = [
-    # "Please let me know if you need more details about the transaction process or any other aspect! 📄 ✨"
-    re.compile(
-        r"\s*Please\s+let\s+me\s+know\s+if\s+you\s+need\s+more\s+details(?:\s+about\s+[^.!?]+)?\s+or\s+any\s+other\s+aspect\!?\s*[📄✨\s]*",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"\s*If\s+you\s+need\s+more\s+details(?:\s+about[^.!?]*?)?(?:\s+or\s+any\s+other\s+aspect)?[^.]*?[!.]?\s*[📄✨\s]*",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"\s*Let\s+me\s+know\s+if\s+you\s+have\s+any\s+(?:other\s+)?questions[^.]*?[!.]?\s*[📄✨\s]*",
-        re.IGNORECASE,
-    ),
-    # "If you want to dive deeper into specific sections or concepts, feel free to ask! 📊 ✨"
-    re.compile(
-        r"\s*If\s+you\s+want\s+to\s+dive\s+deeper(?:\s+into\s+specific\s+sections\s+or\s+concepts)?\s*,\s*feel\s+free\s+to\s+ask\!?\s*[\s📄✨📋🌳📊💡✅😊]*",
-        re.IGNORECASE,
-    ),
-    # Generic "feel free to ask" + optional "dive deeper" variant
-    re.compile(
-        r"\s*Feel\s+free\s+to\s+ask(?:\s+if\s+you\s+want\s+to\s+dive\s+deeper[^.!?\n]*)?\!?\s*[\s📄✨📋🌳📊💡✅😊🙂]*",
-        re.IGNORECASE,
-    ),
-    # "If you need further details or assistance, feel free to ask! 🙂"
-    re.compile(
-        r"\s*If\s+you\s+need\s+further\s+details\s+or\s+assistance\s*,\s*feel\s+free\s+to\s+ask\!?\s*[\s🙂😊📄✨📋🌳📊💡✅]*",
-        re.IGNORECASE,
-    ),
-    # Catch-all: "If you need [anything], feel free to ask" (generic opener before substantive content)
-    re.compile(
-        r"\s*If\s+you\s+need\s+(?:further\s+)?(?:details\s+or\s+assistance|more\s+information|any\s+clarification)[^.!?]*feel\s+free\s+to\s+ask\!?\s*[\s🙂😊📄✨📋🌳📊💡✅]*",
-        re.IGNORECASE,
-    ),
-    # "If you have any more questions about the fees or the process, feel free to ask! 😊" (must only be at end)
-    re.compile(
-        r"\s*If\s+you\s+have\s+any\s+(?:more\s+)?questions(?:\s+about\s+[^.!?\n]+)?\s*,\s*feel\s+free\s+to\s+ask\!?\s*[\s😊🙂📄✨📋🌳📊💡✅]*",
-        re.IGNORECASE,
-    ),
-]
-
-# Closing phrases to strip entirely (never show to user)
-_STRIP_ENTIRELY_CLOSING_PATTERNS = [
-    # "If you need further insights into the comparables or the valuation process, feel free to ask! 😊"
-    re.compile(
-        r"\s*If\s+you\s+need\s+further\s+insights\s+into\s+(?:the\s+)?comparables\s+or\s+(?:the\s+)?valuation\s+process\s*,\s*feel\s+free\s+to\s+ask\!?\s*[😊🙂📄✨\s]*",
-        re.IGNORECASE,
-    ),
-    # "If you have any more questions about the details or next steps, feel free to ask! 😊" (and similar)
-    re.compile(
-        r"\s*If\s+you\s+have\s+any\s+(?:more\s+)?questions\s+about\s+(?:the\s+)?details\s+or\s+next\s+steps\s*,\s*feel\s+free\s+to\s+ask\!?\s*[😊🙂📄✨\s]*",
-        re.IGNORECASE,
-    ),
-    # Any "If you have any [more] questions about [X], feel free to ask! [emojis]"
-    re.compile(
-        r"\s*If\s+you\s+have\s+any\s+(?:more\s+)?questions\s+about\s+[^.!?\n]+,\s*feel\s+free\s+to\s+ask\!?\s*[😊🙂📄✨📋🌳📊💡✅\s]*",
-        re.IGNORECASE,
-    ),
-    # "If you have more questions about the commission structure or related fees, feel free to ask! 😊" (no "any")
-    re.compile(
-        r"\s*If\s+you\s+have\s+more\s+questions\s+about\s+[^.!?\n]+,\s*feel\s+free\s+to\s+ask\!?\s*[😊🙂📄✨📋🌳📊💡✅\s]*",
-        re.IGNORECASE,
-    ),
-    # "If you need further details or assistance, feel free to ask!"
-    re.compile(
-        r"\s*If\s+you\s+need\s+further\s+details\s+or\s+assistance\s*,\s*feel\s+free\s+to\s+ask\!?\s*[😊🙂📄✨\s]*",
-        re.IGNORECASE,
-    ),
-    # Generic "feel free to ask" standalone closing line (with optional lead-in)
-    re.compile(
-        r"\s*(?:If\s+you\s+need\s+more\s+details[^.!?\n]*?|Hope\s+that\s+helps\.?)\s*,\s*feel\s+free\s+to\s+ask\!?\s*[😊🙂📄✨\s]*",
-        re.IGNORECASE,
-    ),
-    # Location-specific: "If you need more specific details about the area or amenities nearby, feel free to ask! 😊"
-    re.compile(
-        r"\s*If\s+you\s+need\s+more\s+specific\s+details\s+about\s+the\s+area\s+or\s+amenities\s+nearby\s*,\s*feel\s+free\s+to\s+ask\!?\s*[😊🙂📄✨\s]*",
-        re.IGNORECASE,
-    ),
-]
-
-
-def _looks_like_closing_line(s: str) -> bool:
-    """True if the string looks like a standalone closing/follow-up line (for dedupe when moving to end)."""
-    if not s or len(s) > 200:
-        return False
-    t = s.strip().lower()
-    return (
-        "feel free to ask" in t
-        or "let me know" in t
-        or "need more details" in t
-        or "further details or assistance" in t
-        or "specific details about the area or amenities" in t
-        or "dive deeper" in t
-        or "any more questions" in t
-        or "any further questions" in t
-    )
-
-
-# Patterns that match closing fragments *embedded* in a line (e.g. "Offer Details for Banda Lane free to ask! 😊")
-# Strip these from the end of any line that is NOT the last paragraph (leakage from LLM putting closing in heading).
-_EMBEDDED_CLOSING_SUFFIX_PATTERNS = [
-    re.compile(r"\s+free to ask\!?\s*[😊🙂📄✨📋🌳📊💡✅\s]*$", re.IGNORECASE),
-    re.compile(r",?\s*feel free to ask\!?\s*[😊🙂📄✨📋🌳📊💡✅\s]*$", re.IGNORECASE),
-    # Bold-wrapped closing leaking into address line (e.g. "Address: ... nearby, **feel free to ask! 😊**-")
-    re.compile(r",?\s*\*\*feel free to ask\!?\s*[😊🙂📄✨📋🌳📊💡✅\s]*\*\*[-–—]?\s*$", re.IGNORECASE),
-    re.compile(r"\s+If you need (?:more )?information or further assistance, feel\s*$", re.IGNORECASE),
-    re.compile(r"\s+If you need further details or assistance, feel free to ask\!?\s*[😊🙂\s]*$", re.IGNORECASE),
-    # Location-specific closing (full or truncated) at end of line
-    re.compile(
-        r"\s+If you need more specific details about the area or amenities(?: nearby)?,?\s*(?:feel free to ask\!?\s*[😊🙂📄✨\s]*)?\s*$",
-        re.IGNORECASE,
-    ),
-    re.compile(r"\s+let me know(?: if you need[^.]*)?\!?\s*[😊🙂📄✨\s]*$", re.IGNORECASE),
-]
-
-# Fragments that leak at the *start* or *middle* of a line (e.g. after "**Market Value**").
-# Strip these from non-final paragraphs / headings so the closing only appears at the end.
-_EMBEDDED_CLOSING_MIDLINE_PATTERNS = [
-    # Full phrase including optional "**Label** " or "Market Value " so we remove the whole leakage in one go
-    re.compile(
-        r"(?:\*\*[^*]+\*\*\s+)?(?:Market\s+Value\s+)?or\s+related\s+details\s*,\s*feel\s+free\s+to\s+ask\!?\s*[😊🙂📄✨📋🌳📊💡✅\s]*",
-        re.IGNORECASE,
-    ),
-    # "any more questions about [X], feel free to ask! 😊" leaking before the value (e.g. before **£1,950,000**)
-    re.compile(
-        r"\s*any\s+more\s+questions\s+about\s+[^.!?\n]+(?:,\s*feel\s+free\s+to\s+ask\!?\s*[😊🙂📄✨\s]*)?(?=\s*\*\*|\s*£|\s*\[?\d+\]?)",
-        re.IGNORECASE,
-    ),
-    re.compile(r"\s+or\s+need\s+more\s+details\s*,\s*feel\s+free\s+to\s+ask\!?\s*[😊🙂\s]*", re.IGNORECASE),
-    re.compile(r",\s*feel\s+free\s+to\s+ask\!?\s*[😊🙂📄✨\s]*(?=\s*\*\*|\s*\[?\d+\]?|\s*£|\s*\d)", re.IGNORECASE),
-    # Location-specific closing leaking mid-response (full or truncated after Accessibility etc.)
-    re.compile(
-        r"\s+If you need more specific details about the area or amenities(?: nearby)?,?\s*(?:feel free to ask\!?\s*[😊🙂📄✨\s]*)?",
-        re.IGNORECASE,
-    ),
-]
-
-# Full closing phrase when it appears in the *middle* of a paragraph (e.g. after "Completion Deadline").
-# Only match when followed by more content (lookahead) so we don't strip a legitimate closing at end.
-_EMBEDDED_CLOSING_MIDLINE_FULL_PHRASE = re.compile(
-    r"\s+If\s+you\s+need\s+further\s+details\s+or\s+assistance\s*,\s*feel\s+free\s+to\s+ask\!?\s*[😊🙂📄✨📋🌳📊💡✅\s]*"
-    r"(?=\s+[A-Z]|\s+The\s+|\s+This\s+|\s+\d|\s*\[)",
-    re.IGNORECASE,
-)
-
 # Parentheticals that are spelled-out amounts from source docs (e.g. "(One Million, Nine Hundred and Fifty Thousand Pounds)")
 # Strip these so they don't leak into the answer.
 _AMOUNT_IN_WORDS_PAREN = re.compile(
@@ -272,33 +126,6 @@ _RAW_ID_DATE_DAY = re.compile(
     r"\[ID:\s*(\d{1,2})\]\s*\(\s*BLOCK_CITE_ID_\d+\s*\)(\s*(?:\*\*)?\s*)(" + _MONTHS + r")\b",
     re.IGNORECASE,
 )
-
-
-def _strip_embedded_closing_fragments(text: str) -> str:
-    """Remove closing phrases that were leaked into headings or mid-response lines (e.g. 'Offer Details for X free to ask! 😊' or '**Market Value** or related details, feel free to ask!')."""
-    if not (text or text.strip()):
-        return text
-    paras = re.split(r"\n\n+", text)
-    out = []
-    for i, para in enumerate(paras):
-        is_last = i == len(paras) - 1
-        # Strip embedded closing fragments from: (1) any non-final paragraph, or (2) a line that looks like a heading (leakage)
-        looks_like_heading = "**" in para or para.strip().startswith("#")
-        if not is_last or looks_like_heading:
-            for pat in _EMBEDDED_CLOSING_SUFFIX_PATTERNS:
-                para = pat.sub("", para).rstrip()
-                para = re.sub(r"\s*[,–\-]\s*$", "", para)
-            # Strip closing fragments that appear in the *middle* of a line (e.g. "**Market Value** or related details, feel free to ask! **£1,950,000**")
-            for pat in _EMBEDDED_CLOSING_MIDLINE_PATTERNS:
-                para = pat.sub(" ", para)
-            para = re.sub(r"  +", " ", para).strip()
-        # Always strip the full "If you need further details or assistance, feel free to ask! 😊" when it appears
-        # in the middle of any paragraph (e.g. "Completion Deadline If you need... The preferred...") — only when
-        # followed by more content, so we don't remove a legitimate closing at end.
-        para = _EMBEDDED_CLOSING_MIDLINE_FULL_PHRASE.sub(" ", para)
-        para = re.sub(r"  +", " ", para).strip()
-        out.append(para)
-    return "\n\n".join(out)
 
 
 def _strip_amount_in_words_parentheticals(text: str) -> str:
@@ -448,54 +275,15 @@ def _strip_standalone_value_label_line(text: str) -> str:
     return rest
 
 
-def _strip_entirely_closings(text: str) -> str:
-    """Remove closing phrases that should never appear (e.g. comparables/valuation 'feel free to ask')."""
-    if not (text or text.strip()):
-        return text
-    result = text
-    for pat in _STRIP_ENTIRELY_CLOSING_PATTERNS:
-        result = pat.sub("", result)
-    result = re.sub(r"\n{3,}", "\n\n", result).strip()
-    result = re.sub(r"  +", " ", result)
-    return result
-
-
 def _strip_mid_response_generic_closings(text: str) -> str:
-    """Move closing phrases that appear in the middle or start of a response to the end (on their own line)."""
+    """Apply formatting cleanups: normalize bare citation digits, strip source-doc leakage, etc."""
     if not (text or text.strip()):
         return text
-    # Remove phrases that must never appear (e.g. "further insights into comparables/valuation... feel free to ask")
-    text = _strip_entirely_closings(text)
-    # First: remove closing fragments embedded in headings/mid lines (e.g. "Offer Details for Banda Lane free to ask! 😊")
-    result = _strip_embedded_closing_fragments(text)
-    changed = True
-    while changed:
-        changed = False
-        for pattern in _MID_RESPONSE_CLOSING_PATTERNS:
-            for m in pattern.finditer(result):
-                end = m.end()
-                rest = result[end:].strip()
-                if rest and re.search(r"[a-zA-Z0-9\u00C0-\u024F]", rest):
-                    closing_line = m.group(0).strip()
-                    result = (result[: m.start()] + " " + result[end:]).strip()
-                    result = re.sub(r"  +", " ", result)
-                    result = re.sub(r"\n{3,}", "\n\n", result)
-                    # Append at end on its own line, unless it's already there
-                    last_para = result.rsplit("\n\n", 1)[-1].strip() if "\n\n" in result else result.strip()
-                    if not _looks_like_closing_line(last_para):
-                        result = result.rstrip() + "\n\n" + closing_line
-                    changed = True
-                    break
-            if changed:
-                break
-    # Normalize bare citation digits (**...**1 → **...**[1], )2 → )[2]) then strip source-doc leakage
-    result = _normalize_bare_citation_digits(result)
+    result = _normalize_bare_citation_digits(text)
     result = _strip_amount_in_words_parentheticals(result)
     result = _strip_leaked_heading_before_value(result)
     result = _strip_standalone_value_label_line(result)
     result = re.sub(r"  +", " ", result).strip() if result else result
-    # Remove any "strip entirely" closings that were moved to the end (so they never appear)
-    result = _strip_entirely_closings(result)
     return result
 
 

@@ -395,7 +395,7 @@ export const ChatPanel = ({
                 }} 
                 whileHover={{ scale: 1.01 }} 
                 whileTap={{ scale: 0.99 }} 
-                className="w-full flex items-center justify-center gap-1.5 px-2.5 py-1.5 border border-gray-300/80 hover:border-gray-400 rounded transition-[border-color,background-color] duration-75 ease-out group"
+                className="w-full flex items-center justify-center gap-1.5 px-2.5 py-1.5 border border-gray-300/80 hover:border-gray-400 rounded-md transition-[border-color,background-color] duration-75 ease-out group"
                 style={{ backgroundColor: '#FFFFFF', opacity: 1, backdropFilter: 'none' }}
               >
                 <Plus className="w-3.5 h-3.5 text-slate-500" />

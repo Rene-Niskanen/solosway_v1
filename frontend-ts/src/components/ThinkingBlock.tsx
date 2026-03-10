@@ -16,8 +16,9 @@ const injectStyles = () => {
       cursor: pointer;
       user-select: none;
       color: #9CA3AF;
-      font-size: 13px;
+      font-size: 14px;
       font-weight: 500;
+      line-height: 1.35;
       padding: 2px 0;
     }
     .thinking-header:hover { color: #6B7280; }
@@ -29,13 +30,16 @@ const injectStyles = () => {
     }
     .thinking-chevron.expanded { transform: rotate(90deg); }
     .thinking-label-streaming {
+      display: inline-block;
+      font-size: 14px;
       font-weight: 500;
+      line-height: 1.35;
       background: linear-gradient(90deg, #6B7280 0%, #9CA3AF 25%, #D1D5DB 50%, #9CA3AF 75%, #6B7280 100%);
       background-size: 300% 100%;
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
       background-clip: text;
-      animation: thinking-shimmer 0.8s ease-in-out infinite;
+      animation: reasoning-shimmer 0.8s ease-in-out infinite;
     }
     .thinking-content-wrapper {
       overflow: hidden;
@@ -66,7 +70,7 @@ const injectStyles = () => {
     .thinking-content::-webkit-scrollbar-thumb { background: #E5E7EB; border-radius: 2px; }
     .thinking-new-text { animation: thinking-fade-in 0.15s ease-out forwards; }
     @keyframes thinking-fade-in { from { opacity: 0.4; } to { opacity: 1; } }
-    @keyframes thinking-shimmer { 0% { background-position: 100% 0; } 100% { background-position: -100% 0; } }
+    @keyframes reasoning-shimmer { 0% { background-position: 100% 0; } 100% { background-position: -100% 0; } }
   `;
   document.head.appendChild(style);
 };
@@ -374,16 +378,27 @@ export const ThinkingBlock: React.FC<ThinkingBlockProps> = ({
     userHasToggledRef.current = true;
   }, []);
   
-  // Don't render if no content and not streaming
+  // When no content or trivial content: render minimal label to avoid empty gap in reasoning steps
   if (!hasContent && !isStreaming) {
-    return null;
+    return (
+      <div className="thinking-block">
+        <div className="thinking-header" style={{ cursor: 'default' }}>
+          <span style={{ color: '#9CA3AF', fontSize: '14px', fontWeight: 500 }}>{label}</span>
+        </div>
+      </div>
+    );
   }
-  
-  // Don't render if the thinking content is just a trivial/generic phrase (streaming or not)
+
   if (isTrivialThinkingContent(processedContent)) {
-    return null;
+    return (
+      <div className="thinking-block">
+        <div className="thinking-header" style={{ cursor: 'default' }}>
+          <span style={{ color: '#9CA3AF', fontSize: '14px', fontWeight: 500 }}>{label}</span>
+        </div>
+      </div>
+    );
   }
-  
+
   return (
     <div className="thinking-block">
       {/* Header - always visible */}

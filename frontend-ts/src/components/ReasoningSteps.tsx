@@ -1552,15 +1552,11 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
   // During loading, show the full trace (Searching, Found N relevant sections, Thinking, etc.) so it matches the dropdown.
   const effectiveShowAllStepsInTrace = showAllStepsInTrace || isLoading;
 
-  // Remove "Planning next moves" as soon as the very next reasoning step appears (searching, exploring, reading, analysing, etc.).
+  // Keep "Planning next moves" (Thinking) in the sequence so user always sees it first before progressing.
   // When the only reasoning is "Planning next moves" + a thinking step with trivial content, hide both (simple response).
   const stepsToRender = useMemo(() => {
     if (!filteredSteps || filteredSteps.length === 0) return filteredSteps;
-    const hasAnyOtherStep = filteredSteps.some(s => !isPlanningPlaceholder(s));
     let list = filteredSteps;
-    if (hasAnyOtherStep) {
-      list = filteredSteps.filter(s => !isPlanningPlaceholder(s));
-    }
     // Simple response: hide planning and/or thought when the only reasoning is "Planning next moves"
     // (After the block above, list may only contain the thinking step — we still need to hide it if trivial)
     const hasTrivialThinking = list.some(

@@ -125,9 +125,22 @@ def resolve_single_document_from_query(query: str, business_id: Optional[str] = 
 
     When the user literally provides a filename (e.g. "High_Street_X.pdf"), we match on that
     first so "what is the value of High_Street_X.pdf" resolves correctly.
+
+    For compound queries (e.g. "value of highlands and value of dorchester"), returns None
+    so full 2-step retrieval runs and can find documents for BOTH entities.
     """
     if not business_id:
         return None
+
+    # Compound query: user asks about multiple entities (highlands AND dorchester)
+    # -> do NOT resolve to a single doc; let full retrieval find both
+    q_lower = (query or "").lower().strip()
+    if " and " in q_lower or " and then " in q_lower:
+        tokens = _distinctive_name_tokens_from_query(query)
+        # Two+ entity-like tokens (e.g. highlands, dorchester) = compound query
+        if len(tokens) >= 2:
+            logger.info("[RETRIEVER] Compound query (%d entities: %s) - skipping single-doc resolve", len(tokens), tokens[:3])
+            return None
 
     # Prioritize explicit filename in query (e.g. "value of High_Street_X.pdf")
     filename_token = _filename_like_token_from_query(query)

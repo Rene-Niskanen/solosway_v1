@@ -543,8 +543,10 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
 
   const rootStyle: React.CSSProperties =
     style?.height != null && scrollWrapperStyle != null
-      ? { position: "relative", height: style.height, minHeight: style.height, flexShrink: 0, minWidth: 0, ...(style?.width != null ? { width: style.width } : {}) }
-      : { position: "relative", minWidth: 0, ...(style?.width != null ? { width: style.width } : {}) };
+      ? { position: "relative", height: style.height, minHeight: style.height, flexShrink: 0, minWidth: 0, ...(style?.width != null ? { width: style.width } : {}), ...(leadingPill ? { display: "flex", flexDirection: "row", alignItems: "flex-start" } : {}) }
+      : { position: "relative", minWidth: 0, ...(style?.width != null ? { width: style.width } : {}), ...(leadingPill ? { display: "flex", flexDirection: "row", alignItems: "flex-start" } : {}) };
+
+  const contentAreaStyle: React.CSSProperties = leadingPill ? { flex: 1, minWidth: 0 } : {};
 
   return (
     <div style={rootStyle}>
@@ -552,6 +554,21 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
   0%, 50% { opacity: 1; }
   51%, 100% { opacity: 0; }
 }`}</style>
+      {/* Pill outside scroll wrapper so it stays fixed and isn't clipped by overflow */}
+      {leadingPill && (
+        <div
+          style={{
+            flexShrink: 0,
+            marginRight: "6px",
+            position: "relative",
+            zIndex: 50,
+            alignSelf: "flex-start",
+          }}
+        >
+          {leadingPill}
+        </div>
+      )}
+      <div style={contentAreaStyle}>
       {scrollWrapperStyle ? (
         <>
           <style>{`.segment-input-scroll::-webkit-scrollbar { width: 6px; }
@@ -600,40 +617,10 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
           >
             {showPlaceholderOverlay && (
               <div aria-hidden contentEditable={false} suppressContentEditableWarning style={overlayStyle}>
-                {leadingPill && (
-                  <span
-                    contentEditable={false}
-                    suppressContentEditableWarning
-                    style={{
-                      display: "inline-flex",
-                      alignItems: "center",
-                      flexShrink: 0,
-                      marginRight: "6px",
-                      pointerEvents: "auto",
-                    }}
-                  >
-                    {leadingPill}
-                  </span>
-                )}
                 {isFocused && <span style={bobbingCaretStyle} aria-hidden />}
                 <span style={{ flex: 1, minWidth: 0, whiteSpace: "pre-wrap", wordWrap: "break-word" }}>{placeholder}</span>
               </div>
             )}
-        {leadingPill && !showPlaceholderOverlay && (
-          <span
-            contentEditable={false}
-            suppressContentEditableWarning
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              verticalAlign: "middle",
-              marginRight: "6px",
-              flexShrink: 0,
-            }}
-          >
-            {leadingPill}
-          </span>
-        )}
         {segments.map((seg, i) => {
         if (isTextSegment(seg)) {
           const isOnlyEmpty = segments.length === 1 && seg.value === "";
@@ -777,40 +764,10 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
       >
             {showPlaceholderOverlay && (
               <div aria-hidden contentEditable={false} suppressContentEditableWarning style={overlayStyle}>
-                {leadingPill && (
-                  <span
-                    contentEditable={false}
-                    suppressContentEditableWarning
-                    style={{
-                      display: "inline-flex",
-                      alignItems: "center",
-                      flexShrink: 0,
-                      marginRight: "6px",
-                      pointerEvents: "auto",
-                    }}
-                  >
-                    {leadingPill}
-                  </span>
-                )}
                 {isFocused && <span style={bobbingCaretStyle} aria-hidden />}
                 <span style={{ flex: 1, minWidth: 0, whiteSpace: "pre-wrap", wordWrap: "break-word" }}>{placeholder}</span>
               </div>
             )}
-        {leadingPill && !showPlaceholderOverlay && (
-          <span
-            contentEditable={false}
-            suppressContentEditableWarning
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              verticalAlign: "middle",
-              marginRight: "6px",
-              flexShrink: 0,
-            }}
-          >
-            {leadingPill}
-          </span>
-        )}
         {segments.map((seg, i) => {
         if (isTextSegment(seg)) {
           const isOnlyEmpty = segments.length === 1 && seg.value === "";
@@ -911,6 +868,7 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
       })}
       </div>
       )}
+      </div>
     </div>
   );
 });

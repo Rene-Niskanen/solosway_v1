@@ -4,7 +4,7 @@ import React, { createContext, useContext, useState, useCallback, useEffect } fr
 
 interface ChatPanelContextType {
   isOpen: boolean;
-  width: number; // Current width of ChatPanel (default 320px, can be resized)
+  width: number; // Current width of ChatPanel (default 265px, can be resized)
   isResizing: boolean; // Whether ChatPanel is currently being resized
   showGlow: boolean; // Gold glow animation for first chat creation
   openPanel: () => void;
@@ -19,7 +19,7 @@ const ChatPanelContext = createContext<ChatPanelContextType | undefined>(undefin
 
 export const ChatPanelProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [isOpen, setIsOpen] = useState<boolean>(false);
-  const [width, setWidthState] = useState<number>(320); // Default width: 320px (w-80)
+  const [width, setWidthState] = useState<number>(265); // Default width: 265px
   const [isResizing, setIsResizingState] = useState<boolean>(false);
   const [showGlow, setShowGlow] = useState<boolean>(false);
 

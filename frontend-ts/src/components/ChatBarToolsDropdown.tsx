@@ -13,7 +13,7 @@ export interface ChatBarToolsDropdownItem {
   id: string;
   icon: LucideIcon;
   label: string;
-  onClick: () => void;
+  onClick: (e?: React.MouseEvent) => void;
   badge?: string;
 }
 
@@ -77,7 +77,7 @@ export function ChatBarToolsDropdown({
           return (
             <DropdownMenuItem
               key={item.id}
-              onClick={() => item.onClick()}
+              onClick={(e) => item.onClick(e as unknown as React.MouseEvent)}
               onMouseEnter={() => setHoveredId(item.id)}
               onMouseLeave={() => setHoveredId(null)}
               className="flex items-center gap-1.5 cursor-pointer rounded-[5px] px-1.5 py-1.5"

@@ -91,7 +91,7 @@ export function ModeSelector({ className, compact = false, small = false, large 
             fontSize: '13px',
             fontWeight: 400,
             cursor: 'pointer',
-            padding: compact ? '6px 8px' : '6px 10px',
+            padding: compact ? '6px 10px 6px 6px' : '6px 12px 6px 8px', // more space right, less left
             borderRadius: '8px',
             transition: 'none',
           }}

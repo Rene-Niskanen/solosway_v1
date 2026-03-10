@@ -18,7 +18,10 @@ import { BrowserFullscreenProvider } from '../contexts/BrowserFullscreenContext'
 import { FeedbackModalProvider, useFeedbackModal } from '../contexts/FeedbackModalContext';
 import { ShareFeedbackModal } from './ShareFeedbackModal';
 import { SearchOrStartChatModal } from './SearchOrStartChatModal';
+import { ChooseProjectModal } from './ChooseProjectModal';
 import { UploadOverlay } from './UploadOverlay';
+import { usePropertySelection } from '../contexts/PropertySelectionContext';
+import { ChooseProjectModalProvider } from '../contexts/ChooseProjectModalContext';
 import { PlanModalProvider, usePlanModal } from '../contexts/PlanModalContext';
 import { CurrencyProvider } from '../contexts/CurrencyContext';
 import { AgentOrchestrationProvider } from '../contexts/AgentOrchestrationContext';
@@ -54,7 +57,25 @@ const DashboardLayoutContent = ({
   const [planChangeInProgress, setPlanChangeInProgress] = React.useState(false);
   const [planChangeTierId, setPlanChangeTierId] = React.useState<TierKey | null>(null);
   const [searchModalOpen, setSearchModalOpen] = React.useState(false);
+  const [chooseProjectModalOpen, setChooseProjectModalOpen] = React.useState(false);
+  const [chooseProjectModalAnchorRect, setChooseProjectModalAnchorRect] = React.useState<{ left: number; top: number; width: number; height: number } | null>(null);
+  const { addPropertyAttachment } = usePropertySelection();
   const uploadFileInputRef = React.useRef<HTMLInputElement>(null);
+
+  // Open Choose Project modal - context + window event so it works from all chat bars
+  const openChooseProjectModal = React.useCallback((anchorRect?: { left: number; top: number; width: number; height: number } | null) => {
+    setChooseProjectModalAnchorRect(anchorRect ?? null);
+    setChooseProjectModalOpen(true);
+  }, []);
+
+  React.useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent<{ anchorRect?: { left: number; top: number; width: number; height: number } }>).detail;
+      openChooseProjectModal(detail?.anchorRect ?? null);
+    };
+    window.addEventListener('openChooseProjectModal', handler);
+    return () => window.removeEventListener('openChooseProjectModal', handler);
+  }, [openChooseProjectModal]);
 
   // Preload @ mention cache (properties + documents) so popover shows results instantly
   React.useEffect(() => {
@@ -677,6 +698,7 @@ const DashboardLayoutContent = ({
   }, []);
 
   return (
+    <ChooseProjectModalProvider onOpen={openChooseProjectModal}>
     <div 
       className={`flex h-screen w-full overflow-hidden relative border-l border-r border-t border-b border-[#e9edf1] ${className || ''}`}
       style={{ backgroundColor: 'transparent', boxShadow: 'none' }}
@@ -1022,6 +1044,49 @@ const DashboardLayoutContent = ({
         }}
       />
 
+      <ChooseProjectModal
+        open={chooseProjectModalOpen}
+        onOpenChange={(open) => {
+          setChooseProjectModalOpen(open);
+          if (!open) setChooseProjectModalAnchorRect(null);
+        }}
+        onSelectProject={(project) => {
+          const { id, label, imageUrl, documentCount } = project;
+          const minimalProperty = {
+            id: id as unknown as number,
+            address: label,
+            postcode: '',
+            property_type: '',
+            bedrooms: 0,
+            bathrooms: 0,
+            price: 0,
+            square_feet: 0,
+            days_on_market: 0,
+            latitude: 0,
+            longitude: 0,
+            summary: '',
+            features: '',
+            condition: 0,
+            similarity: 0,
+            image: imageUrl ?? '',
+            primary_image_url: imageUrl ?? '',
+            formatted_address: label,
+            normalized_address: label,
+            agent: { name: '', company: '' },
+            ...(documentCount != null && { documentCount, document_count: documentCount }),
+          } as any;
+          addPropertyAttachment(minimalProperty);
+          setChooseProjectModalOpen(false);
+        }}
+        anchorRect={chooseProjectModalAnchorRect}
+        portalContainer={undefined}
+        alignWithSearchBar={{
+          sidebarWidth: isSidebarCollapsed ? 0 : (isSidebarIconsOnly ? SIDEBAR_ICONS_ONLY_WIDTH : 224),
+          isSidebarCollapsed,
+          useViewportCenter: typeof window !== 'undefined' && window.innerWidth >= 600 && window.innerHeight >= 500,
+        }}
+      />
+
       <UploadOverlay />
       <input
         ref={uploadFileInputRef}
@@ -1086,6 +1151,7 @@ const DashboardLayoutContent = ({
         mainContentContainerRef={mainContentContainerRef}
       />
     </div>
+    </ChooseProjectModalProvider>
   );
 };
 

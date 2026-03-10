@@ -270,17 +270,43 @@ def _rephrase_query_to_finding(user_query: str) -> str:
     elif display_rest.startswith("mv ") or display_rest.startswith("mv of") or display_rest == "mv":
         display_rest = "market value" + display_rest[2:]
     # Capitalise first letter; preserve property/location name (e.g. "highlands")
+    def _strip_q(s: str) -> str:
+        return (s or "").replace("?", "").strip()
+
     if " of " in display_rest:
         part, name = display_rest.split(" of ", 1)
-        part = part.strip().capitalize() if part else "information"
-        name = name.strip().title() if name else ""
+        part = _strip_q(part)
+        part = part.capitalize() if part else "information"
+        name = _strip_q(name)
+        # Compound query: "highlands and the value of the dorchester property" -> "Highlands and Dorchester"
+        if name and " and " in name.lower():
+            segments = name.lower().split(" and ", 1)
+            first = segments[0].strip().split()[0:2]  # First entity (e.g. "highlands")
+            second_rest = segments[1].strip() if len(segments) > 1 else ""
+            # Strip "the value of the" etc. to get second entity
+            for strip in ("the value of the ", "the value of ", "the "):
+                if second_rest.startswith(strip):
+                    second_rest = second_rest[len(strip):].strip()
+            second = second_rest.split()[0:1] if second_rest else []
+            entities = [w.title() for w in (first + second) if w and w not in ("and", "the")]
+            if len(entities) >= 2:
+                name = " and ".join(entities[:2])
+                if part.lower() in ("value", "values", "price", "valuation"):
+                    return f"Finding {part}s for {name}"
+            else:
+                name = name.title() if name else ""
+        else:
+            name = name.title() if name else ""
         return f"Finding the {part} of {name}" if name else f"Finding the {part}"
     if " for " in display_rest:
         part, name = display_rest.split(" for ", 1)
-        part = part.strip().capitalize() if part else "information"
-        name = name.strip().title() if name else ""
+        part = _strip_q(part)
+        part = part.capitalize() if part else "information"
+        name = _strip_q(name)
+        name = name.title() if name else ""
         return f"Finding the {part} for {name}" if name else f"Finding the {part}"
-    return f"Finding the {display_rest.strip().capitalize()}" if display_rest else "Thinking"
+    display_rest = _strip_q(display_rest)
+    return f"Finding the {display_rest.capitalize()}" if display_rest else "Thinking"
 
 
 def _log_rewrite_if_applied(execution_plan: dict, user_query: str) -> None:

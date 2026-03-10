@@ -511,7 +511,7 @@ async def agent_loop_node(state: MainWorkflowState, runnable_config=None) -> Mai
                             reading_detail = "Page %s, %s" % (page if page is not None else "?", filename or "document")
                             emitter.emit_reasoning(label="Reading", detail=reading_detail)
                         emitter.emit_reasoning(label="Read", detail=None)
-                        emitter.emit_reasoning(label="Planning next moves", detail=None)
+                        emitter.emit_reasoning(label="Thinking", detail=None)
                         note_preview = (content or "(no content)").strip()[:80]
                         if len((content or "").strip()) > 80:
                             note_preview += "..."
@@ -577,7 +577,7 @@ async def agent_loop_node(state: MainWorkflowState, runnable_config=None) -> Mai
                             if did is not None:
                                 unique_doc_ids.add(str(did))
                     n_docs_used = len(unique_doc_ids)
-                    doc_word = "document" if n_docs_used == 1 else "documents"
+                    doc_word = "file" if n_docs_used == 1 else "files"
                     emitter.emit_reasoning(
                         label=f"Analysing {n_docs_used} {doc_word}",
                         detail=None,
