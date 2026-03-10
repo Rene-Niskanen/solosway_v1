@@ -1,3 +1,6 @@
+/** Number of chat tabs to show in ChatTabsBar */
+export const CHAT_TABS_VISIBLE = 5;
+
 /**
  * Single source of truth for chat panel width values used across SideChatPanel,
  * MainContent, and StandaloneExpandedCardView.

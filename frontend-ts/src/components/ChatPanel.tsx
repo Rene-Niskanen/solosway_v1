@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { MessageSquare, Plus, MoreVertical, Archive, ArchiveRestore, X, Trash2, Loader2, CircleCheck, SlidersHorizontal } from "lucide-react";
+import { MessageSquare, Plus, MoreVertical, Archive, ArchiveRestore, X, Trash2, Loader2, CircleCheck } from "lucide-react";
 import { useChatHistory } from "./ChatHistoryContext";
 import { useChatPanel } from "../contexts/ChatPanelContext";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
@@ -295,17 +295,18 @@ export const ChatPanel = ({
                 />
                 {/* Options (sliders) + Close - Inline with Search Input */}
                 <div className="absolute right-1 top-1/2 -translate-y-1/2 flex items-center gap-0.5 z-10">
-                  <Popover open={optionsMenuOpen} onOpenChange={setOptionsMenuOpen}>
+                  <Popover open={optionsMenuOpen} onOpenChange={(open) => { setOptionsMenuOpen(open); if (!open) setShowClearConfirm(false); }}>
                     <PopoverTrigger asChild>
                       <button
                         type="button"
                         onClick={(e) => e.stopPropagation()}
-                        className="p-0.5 rounded-full hover:bg-black/8 active:bg-black/12 transition-colors duration-75 ease-out flex items-center justify-center"
-                        title="Options"
+                        className="rounded-full hover:bg-black/8 active:bg-black/12 transition-colors duration-75 ease-out flex items-center justify-center flex-shrink-0"
+                        style={{ width: 26, height: 26, minWidth: 26, minHeight: 26 }}
+                        title="Clear all chats"
                         aria-haspopup="true"
                         aria-expanded={optionsMenuOpen}
                       >
-                        <SlidersHorizontal className="w-5 h-5 text-[#6B7280] hover:text-[#374151]" strokeWidth={1.25} />
+                        <Trash2 className="w-4 h-4 text-[#6B7280] hover:text-[#374151]" strokeWidth={1.25} />
                       </button>
                     </PopoverTrigger>
                     <PopoverContent
@@ -317,17 +318,47 @@ export const ChatPanel = ({
                       onClick={(e) => e.stopPropagation()}
                     >
                       <div className="flex flex-col gap-0.5">
-                        {showChatHistory && baseChats.length > 0 ? (
+                        {showClearConfirm ? (
+                          <>
+                            <p className="text-[11px] text-slate-800 mb-2 text-center leading-tight">
+                              Delete all {baseChats.length} chat{baseChats.length !== 1 ? 's' : ''}?
+                            </p>
+                            <div className="flex gap-1.5">
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  clearAllChats();
+                                  onNewChat?.();
+                                  setShowClearConfirm(false);
+                                  setOptionsMenuOpen(false);
+                                }}
+                                className="flex-1 py-1 text-[11px] font-medium text-white bg-slate-700 hover:bg-slate-800 rounded border border-slate-600/80 transition-colors duration-75 ease-out"
+                              >
+                                Delete
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setShowClearConfirm(false);
+                                }}
+                                className="flex-1 py-1 text-[11px] font-medium text-slate-600 hover:bg-slate-200/60 rounded border border-slate-200/80 transition-colors duration-75 ease-out"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </>
+                        ) : showChatHistory && baseChats.length > 0 ? (
                           <button
                             type="button"
                             onClick={(e) => {
                               e.stopPropagation();
-                              setOptionsMenuOpen(false);
                               setShowClearConfirm(true);
                             }}
-                            className="flex items-center gap-1.5 w-full rounded-sm px-1.5 py-1 text-left hover:bg-[#f5f5f5] text-[12px] text-[#374151] transition-colors duration-75 ease-out"
+                            className="flex items-center gap-1 w-full rounded-sm px-1.5 py-0.5 text-left hover:bg-[#f5f5f5] text-[11px] text-[#374151] transition-colors duration-75 ease-out min-h-0"
                           >
-                            <Trash2 className="w-5 h-5 text-[#666] flex-shrink-0" strokeWidth={1.25} />
+                            <Trash2 className="w-4 h-4 text-[#666] flex-shrink-0" strokeWidth={1.25} />
                             Clear all chats
                           </button>
                         ) : (
@@ -342,11 +373,11 @@ export const ChatPanel = ({
                       closePanel();
                     }}
                     className="rounded-full hover:bg-black/8 active:bg-black/12 transition-colors duration-75 ease-out flex items-center justify-center flex-shrink-0"
-                    style={{ width: 32, height: 32, minWidth: 32, minHeight: 32 }}
+                    style={{ width: 26, height: 26, minWidth: 26, minHeight: 26 }}
                     title="Close Agent Sidebar"
                     type="button"
                   >
-                    <X className="w-5 h-5 text-[#6B7280] hover:text-[#374151]" strokeWidth={1.75} />
+                    <X className="w-4 h-4 text-[#6B7280] hover:text-[#374151]" strokeWidth={1.75} />
                   </button>
                 </div>
               </div>
@@ -523,60 +554,6 @@ export const ChatPanel = ({
                 </AnimatePresence>
               </div>
             )}
-
-            {/* Clear-all confirmation overlay (shown when triggered from Options dropdown) */}
-            <AnimatePresence>
-              {showClearConfirm && (
-                <motion.div
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
-                  transition={{ duration: 0.15 }}
-                  className="absolute inset-0 z-10 flex items-center justify-center bg-black/10"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setShowClearConfirm(false);
-                  }}
-                >
-                  <motion.div
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: 10 }}
-                    transition={{ duration: 0.15 }}
-                    className="px-3 py-2 w-[200px] bg-white rounded-md shadow-lg border border-slate-200/80"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <p className="text-[11px] text-slate-800 mb-2 text-center leading-tight">
-                      Delete all {baseChats.length} chat{baseChats.length !== 1 ? 's' : ''}?
-                    </p>
-                    <div className="flex gap-1.5">
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          clearAllChats();
-                          onNewChat?.();
-                          setShowClearConfirm(false);
-                        }}
-                        className="flex-1 py-1 text-[11px] font-medium text-white bg-slate-700 hover:bg-slate-800 rounded border border-slate-600/80 transition-colors duration-75 ease-out"
-                      >
-                        Delete
-                      </button>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setShowClearConfirm(false);
-                        }}
-                        className="flex-1 py-1 text-[11px] font-medium text-slate-600 hover:bg-slate-200/60 rounded border border-slate-200/80 transition-colors duration-75 ease-out"
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  </motion.div>
-                </motion.div>
-              )}
-            </AnimatePresence>
 
             {/* Empty State when no chat history should be shown - sticky with panel */}
             {!showChatHistory && (

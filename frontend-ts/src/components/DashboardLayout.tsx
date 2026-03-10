@@ -377,12 +377,13 @@ const DashboardLayoutContent = ({
       
       // CRITICAL: Do NOT close chat panel - keep agent sidebar open when selecting a chat
       // closeChatPanel(); // REMOVED - allows viewing chat history while sidebar stays open
-      // Don't auto-collapse sidebar in upload view
-      if (currentView !== 'upload') {
-        setIsSidebarCollapsed(true); // Auto-collapse sidebar when entering chat
+      // Don't auto-collapse sidebar when switching chat tabs - user is already in chat view
+      // Only collapse when first entering chat from outside (e.g. sidebar list when not yet in chat)
+      if (currentView !== 'upload' && !isInChatMode) {
+        setIsSidebarCollapsed(true);
       }
     }
-  }, [getChatById, currentView, closeChatPanel, updateChatStatus]);
+  }, [getChatById, currentView, isInChatMode, closeChatPanel, updateChatStatus]);
 
 
   const handleSidebarToggle = React.useCallback(() => {
@@ -739,7 +740,7 @@ const DashboardLayoutContent = ({
         onDismiss={handleDismissNotification}
       />
       
-      {/* Agent sidebar backdrop – click closes only the agent sidebar (no darkening over chat) */}
+      {/* Agent sidebar backdrop – click closes only the agent sidebar (no darkening over chat). Don't close when clicking ChatTabsBar. */}
       {!isSidebarExpanded && isChatPanelOpen && (
         <div
           role="button"
@@ -751,7 +752,11 @@ const DashboardLayoutContent = ({
             zIndex: 9999,
             pointerEvents: 'auto',
           }}
-          onClick={() => closeChatPanel()}
+          onClick={(e) => {
+            const elements = document.elementsFromPoint(e.clientX, e.clientY);
+            if (elements.some((el) => (el as HTMLElement).closest?.('[data-chat-tabs-bar]'))) return;
+            closeChatPanel();
+          }}
           onKeyDown={(e) => e.key === 'Enter' && closeChatPanel()}
         />
       )}

@@ -5710,10 +5710,9 @@ export const MainContent = ({
       {/* Search Bar for Map View - Rendered at top level to ensure visibility */}
       {isMapVisible && !hasPerformedSearch && (currentView === 'search' || currentView === 'home') && !showNewPropertyWorkflow && (() => {
         // Calculate actual sidebar width based on state (same as dashboard and first SearchBar)
-        // Collapsed: 12px (toggle rail only)
+        // Collapsed: 48px (toggle rail with Agents button)
         // Normal: 236px (224px sidebar + 12px toggle rail)
         // Expanded: 332px (320px sidebar + 12px toggle rail)
-        const TOGGLE_RAIL_WIDTH = 12;
         const actualSidebarWidth = effectiveSidebarWidthWithRail;
         
         // Calculate center point of available space (same logic as dashboard and first SearchBar)

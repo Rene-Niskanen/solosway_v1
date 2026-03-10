@@ -5,7 +5,7 @@ import { useMemo } from "react";
 import { createPortal, flushSync } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { generateAnimatePresenceKey, generateConditionalKey, generateUniqueKey } from '../utils/keyGenerator';
-import { ChevronLeft, ChevronRight, ChevronDown, ChevronUp, ArrowUp, Mic, Map, Globe, X, SquareDashedMousePointer, Scan, Fullscreen, PanelLeftOpen, PanelRightClose, PictureInPicture2, Trash2, CreditCard, MoveDiagonal, Square, Files, Image as ImageIcon, File as FileIcon, FileText, FileCheck, Minimize, Minimize2, Workflow, Home, Brain, BrainCircuit, AudioLines, MessageCircle, MessageCircleDashed, Copy, Search, MessageSquare, Pencil, Check, Highlighter, SlidersHorizontal, Book, BookOpen, Download, ThumbsUp, ThumbsDown, Link2, Quote, Star, FolderPlus, FolderOpen, Undo2, CloudUpload, Plus, Captions, CaptionsOff, CloudDownload } from "lucide-react";
+import { ChevronLeft, ChevronRight, ChevronDown, ChevronUp, ArrowUp, Mic, Map, Globe, X, SquareDashedMousePointer, Scan, Fullscreen, PanelLeftOpen, PanelRight, PictureInPicture2, Trash2, CreditCard, MoveDiagonal, Square, Files, Image as ImageIcon, File as FileIcon, FileText, FileCheck, Minimize, Minimize2, Workflow, Home, Brain, BrainCircuit, AudioLines, MessageCircle, MessageCircleDashed, Copy, Search, MessageSquare, Pencil, Check, Highlighter, SlidersHorizontal, Book, BookOpen, Download, ThumbsUp, ThumbsDown, Link2, Quote, Star, FolderPlus, FolderOpen, Undo2, CloudUpload, Plus, Captions, CaptionsOff, CloudDownload } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { FileAttachment, FileAttachmentData } from './FileAttachment';
 import { PropertyPillChip } from './PropertyPillChip';
@@ -22,7 +22,6 @@ import * as pdfjs from 'pdfjs-dist';
 import type { PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist';
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import citationIcon from '/citation.png';
-import openFindIcon from '/O.png';
 import { prepareResponseTextForDisplay, textForCopy, normalizeIdCitationsToBracket, stripBlockCiteIdFromDisplay } from '../utils/responseTextPreprocessing';
 
 // Configure PDF.js worker globally (same as other components)
@@ -68,7 +67,7 @@ import { buildDocxMarkdownWithCitationImages, cropPageImageToBbox } from '../uti
 import { convertMarkdownToDocx, downloadDocx } from '@mohtasham/md-to-docx';
 import { playCompletionSound } from '../utils/playCompletionSound';
 import { INPUT_BAR_SPACE_BELOW_PANEL, CHAT_INPUT_MAX_HEIGHT_PX, CHAT_BAR_MAX_WIDTH_PX, DASHBOARD_CHAT_LAYOUT, CHAT_BAR_BORDER, CHAT_BAR_BORDER_DRAG, CHAT_BAR_BOX_SHADOW } from '@/utils/inputBarPosition';
-import { CHAT_PANEL_WIDTH } from './chatPanelConstants';
+import { CHAT_PANEL_WIDTH, CHAT_TABS_VISIBLE } from './chatPanelConstants';
 
 /** Strip HTML/SVG tags from query string so submitted text never includes e.g. <svg /> from icons. */
 function stripHtmlFromQuery(s: string): string {
@@ -3670,6 +3669,9 @@ function getOrderedCitationNumbersFromMessageText(text: string): string[] {
   // Raw bracket citations from backend: [1], [2], [12]
   const bracketRe = /\[(\d+)\]/g;
   while ((m = bracketRe.exec(text)) !== null) hits.push({ index: m.index, num: m[1]! });
+  // Web citations: [Web 1], [Web 2] (web-only responses)
+  const webBracketRe = /\[Web\s+(\d+)\]/gi;
+  while ((m = webBracketRe.exec(text)) !== null) hits.push({ index: m.index, num: m[1]! });
   // Superscript citations: ¹, ², ³, etc. (e.g. in list items or inline)
   const superscriptMap: Record<string, string> = {
     '¹': '1', '²': '2', '³': '3', '⁴': '4', '⁵': '5',
@@ -3697,6 +3699,8 @@ function getCitedRunFromMessageText(messageText: string, citationNumber: string)
   while ((m = placeholderRe.exec(messageText)) !== null) hits.push({ index: m.index, end: m.index + m[0].length, num: m[1]! });
   const bracketRe = /\[(\d+)\]/g;
   while ((m = bracketRe.exec(messageText)) !== null) hits.push({ index: m.index, end: m.index + m[0].length, num: m[1]! });
+  const webBracketRe = /\[Web\s+(\d+)\]/gi;
+  while ((m = webBracketRe.exec(messageText)) !== null) hits.push({ index: m.index, end: m.index + m[0].length, num: m[1]! });
   const superscriptMap: Record<string, string> = {
     '¹': '1', '²': '2', '³': '3', '⁴': '4', '⁵': '5',
     '⁶': '6', '⁷': '7', '⁸': '8', '⁹': '9'
@@ -4177,6 +4181,10 @@ const citationCalloutSubmittedKeys = new Set<string>();
 /** Viewport Y of the Accept button at the moment the user clicked it. Used to auto-scroll so the next citation's Accept button appears at the same position. */
 let lastAcceptBtnClickY: number | null = null;
 
+/** Viewport Y of the Close citation bar button when clicked. Used to auto-scroll so the Open button (or next target) appears at the same position. */
+let lastCloseBtnClickY: number | null = null;
+let lastCloseBtnMessageId: string | null = null;
+
 /** Inline citation callout: gray box with cited excerpt and optional document preview (same as citation panel). */
 const CitationCallout: React.FC<{
   citationNumber: string;
@@ -4234,7 +4242,8 @@ const CitationCallout: React.FC<{
   const hasBbox = bbox && typeof bbox.left === 'number' && typeof bbox.top === 'number' && typeof bbox.width === 'number' && typeof bbox.height === 'number';
   const filename = (citation?.original_filename ?? '').toLowerCase();
   const isWordDoc = filename.endsWith('.docx') || filename.endsWith('.doc');
-  const canShowPreview = docId && hasBbox && !isWordDoc;
+  const isWebCitation = (citation as { source_type?: string })?.source_type === 'web' || (typeof docId === 'string' && docId.startsWith('web_'));
+  const canShowPreview = docId && hasBbox && !isWordDoc && !isWebCitation;
   const submittedKey = `${messageIdProp ?? ''}-${citationNumber}`;
 
   // Initialize from cache when present so we don't flash "Loading preview…" on remount or when cache was pre-filled
@@ -4597,7 +4606,7 @@ const CitationCallout: React.FC<{
           <div
             style={{ display: 'flex', flexDirection: 'column', width: '100%', minWidth: 0 }}
           >
-          {/* When preview: excerpt + document preview (no collapse toggle). Only show when we have the actual image. */}
+          {/* When preview: excerpt + document preview (no collapse toggle). Only show when we have the actual image. Web citations get a source card instead. */}
           {showPreviewImage ? (
             <>
               {/* Document preview — click to focus chat input */}
@@ -4892,6 +4901,56 @@ const CitationCallout: React.FC<{
               )}
             </div>
           </>
+        ) : isWebCitation ? (
+            <>
+          {/* Web source card — title, url, Open link */}
+          <div
+            style={{
+              padding: '16px 20px',
+              backgroundColor: '#f8fafc',
+              borderBottom: '1px solid #e5e7eb',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 8,
+            }}
+          >
+            <div style={{ fontSize: '14px', fontWeight: 600, color: '#111827' }}>
+              {(citation as { title?: string }).title || 'Web source'}
+            </div>
+            {(citation as { summary?: string }).summary && (
+              <div style={{ fontSize: '13px', color: '#6b7280', lineHeight: 1.5 }}>
+                {((citation as { summary?: string }).summary || '').slice(0, 200)}
+                {((citation as { summary?: string }).summary || '').length > 200 ? '…' : ''}
+              </div>
+            )}
+            <a
+              href={(citation as { url?: string }).url || '#'}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{
+                fontSize: '13px',
+                color: '#2563eb',
+                textDecoration: 'none',
+                fontWeight: 500,
+              }}
+            >
+              Open source →
+            </a>
+          </div>
+          {((totalCitations > 1 && (onPrevCitation != null || onNextCitation != null)) || !!onCloseCallout) && (
+            <div style={{ padding: '8px 10px', backgroundColor: '#ffffff', borderTop: '1px solid #e5e7eb', display: 'flex', justifyContent: 'flex-end', gap: 6 }}>
+              {totalCitations > 1 && (onPrevCitation != null || onNextCitation != null) && (
+                <>
+                  <button type="button" aria-label="Previous citation" disabled={currentCitationIndex <= 0} onClick={() => onPrevCitation?.()} style={{ padding: 4, border: 'none', background: 'transparent', cursor: currentCitationIndex <= 0 ? 'default' : 'pointer', color: currentCitationIndex <= 0 ? '#9ca3af' : '#666' }}><ChevronUp size={16} /></button>
+                  <button type="button" aria-label="Next citation" disabled={currentCitationIndex >= (totalCitations ?? 1) - 1} onClick={() => onNextCitation?.()} style={{ padding: 4, border: 'none', background: 'transparent', cursor: currentCitationIndex >= (totalCitations ?? 1) - 1 ? 'default' : 'pointer', color: currentCitationIndex >= (totalCitations ?? 1) - 1 ? '#9ca3af' : '#666' }}><ChevronDown size={16} /></button>
+                </>
+              )}
+              {onCloseCallout && (
+                <button type="button" onClick={() => { setIsClosed(true); onCloseCallout(); }} style={{ padding: '3px 8px', fontSize: 12, fontWeight: 500, color: '#666', backgroundColor: '#EBF1DE', border: '1px solid rgba(0,0,0,0.12)', borderRadius: 5.5, cursor: 'pointer' }}>Close</button>
+              )}
+            </div>
+          )}
+            </>
         ) : (
             <>
           {/* Preview area: only show when we have the actual image (no placeholder while loading). */}
@@ -5047,10 +5106,13 @@ const CitationCallout: React.FC<{
           {onCloseCitationBar && (
             <button
               type="button"
+              data-citation-close-btn
               title="Close citation bar"
               aria-label="Close citation bar"
               onClick={(e) => {
                 e.stopPropagation();
+                lastCloseBtnClickY = (e.currentTarget as HTMLElement).getBoundingClientRect().top;
+                lastCloseBtnMessageId = messageIdProp ?? null;
                 (e.currentTarget as HTMLElement).blur();
                 onCloseCitationBar();
               }}
@@ -6933,6 +6995,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     // Normalize [ID: X](BLOCK_CITE_ID_N) -> [X]; [X] is the format citation buttons expect (citations[num])
     // Must produce [1], [2], etc. so renderTextWithCitations can match citations["1"], citations["2"]
     cleaned = normalizeIdCitationsToBracket(cleaned);
+    // Normalize [Web N] -> [N] for web-only responses (consistent display with document citations)
+    cleaned = cleaned.replace(/\[Web\s+(\d+)\]/gi, '[$1]');
     // Strip any remaining BLOCK_CITE_ID markers (mapping-only, never shown to user)
     cleaned = stripBlockCiteIdFromDisplay(cleaned);
     
@@ -7685,41 +7749,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   };
   const handleDisplayOptionsContentLeave = () => {
     displayOptionsCloseTimeoutRef.current = setTimeout(() => setDisplayOptionsOpen(false), HOVER_CLOSE_DELAY_MS);
-  };
-
-  // View options popover (Sidebar, Files, New chat, Fullscreen): same hover open/close pattern
-  const [viewOptionsOpen, setViewOptionsOpen] = React.useState(false);
-  const viewOptionsOpenTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
-  const viewOptionsCloseTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
-  const clearViewOptionsOpenTimeout = () => {
-    if (viewOptionsOpenTimeoutRef.current != null) {
-      clearTimeout(viewOptionsOpenTimeoutRef.current);
-      viewOptionsOpenTimeoutRef.current = null;
-    }
-  };
-  const clearViewOptionsCloseTimeout = () => {
-    if (viewOptionsCloseTimeoutRef.current != null) {
-      clearTimeout(viewOptionsCloseTimeoutRef.current);
-      viewOptionsCloseTimeoutRef.current = null;
-    }
-  };
-  React.useEffect(() => {
-    return () => {
-      clearViewOptionsOpenTimeout();
-      clearViewOptionsCloseTimeout();
-    };
-  }, []);
-  const handleViewOptionsTriggerEnter = () => {
-    clearViewOptionsCloseTimeout();
-    viewOptionsOpenTimeoutRef.current = setTimeout(() => setViewOptionsOpen(true), HOVER_OPEN_DELAY_MS);
-  };
-  const handleViewOptionsTriggerLeave = () => {
-    clearViewOptionsOpenTimeout();
-    viewOptionsCloseTimeoutRef.current = setTimeout(() => setViewOptionsOpen(false), HOVER_CLOSE_DELAY_MS);
-  };
-  const handleViewOptionsContentEnter = () => { clearViewOptionsCloseTimeout(); };
-  const handleViewOptionsContentLeave = () => {
-    viewOptionsCloseTimeoutRef.current = setTimeout(() => setViewOptionsOpen(false), HOVER_CLOSE_DELAY_MS);
   };
 
   // Sync expanded state with shouldExpand prop
@@ -9365,17 +9394,32 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   }, [citationReviewCurrentIndex, citationReviewMessageId, closeExpandedCardView]);
 
   React.useLayoutEffect(() => {
-    if (lastAcceptBtnClickY == null) return;
     const scrollContainer = contentAreaRef.current;
     if (!scrollContainer) return;
-    const targetY = lastAcceptBtnClickY;
-    lastAcceptBtnClickY = null;
-    const newBtn = scrollContainer.querySelector<HTMLElement>('[data-citation-accept-btn]');
-    if (newBtn) {
-      const delta = newBtn.getBoundingClientRect().top - targetY;
-      scrollContainer.scrollTop += delta;
+    if (lastAcceptBtnClickY != null) {
+      const targetY = lastAcceptBtnClickY;
+      lastAcceptBtnClickY = null;
+      const newBtn = scrollContainer.querySelector<HTMLElement>('[data-citation-accept-btn]');
+      if (newBtn) {
+        const delta = newBtn.getBoundingClientRect().top - targetY;
+        scrollContainer.scrollTop += delta;
+      }
+    } else if (lastCloseBtnClickY != null) {
+      const targetY = lastCloseBtnClickY;
+      const msgId = lastCloseBtnMessageId;
+      lastCloseBtnClickY = null;
+      lastCloseBtnMessageId = null;
+      const targetBtn = scrollContainer.querySelector<HTMLElement>('[data-citation-close-btn]')
+        ?? (msgId
+          ? scrollContainer.querySelector<HTMLElement>(`[data-citation-open-btn][data-citation-message-id="${msgId}"]`)
+          : null)
+        ?? scrollContainer.querySelector<HTMLElement>('[data-citation-open-btn]');
+      if (targetBtn) {
+        const delta = targetBtn.getBoundingClientRect().top - targetY;
+        scrollContainer.scrollTop += delta;
+      }
     }
-  }, [citationReviewCurrentIndex]);
+  }, [citationReviewCurrentIndex, citationReviewMessageId]);
 
   // Citation bar: set review state only for latest (by position) when it has citations; clear when latest has no text/citations or when latest message id changes
   React.useEffect(() => {
@@ -11456,8 +11500,25 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   const completeCitations = data.citations && typeof data.citations === 'object' && Object.keys(data.citations).length > 0
                     ? data.citations
                     : null;
-                  const finalCitations = normalizeCitations(completeCitations ?? accumulatedCitations ?? {});
+                  let finalCitations = normalizeCitations(completeCitations ?? accumulatedCitations ?? {});
                   const webCitationsFromComplete = Array.isArray(data.web_citations) ? data.web_citations : [];
+                  // Merge web citations into citations so CitationCallout can resolve [Web 1] -> citations["1"]
+                  if (webCitationsFromComplete.length > 0) {
+                    const merged = { ...finalCitations };
+                    for (let i = 0; i < webCitationsFromComplete.length; i++) {
+                      const wc = webCitationsFromComplete[i];
+                      const num = String(i + 1);
+                      merged[num] = {
+                        doc_id: wc.citation_number ?? `web_${num}`,
+                        source_type: 'web',
+                        title: wc.title ?? '',
+                        url: wc.url ?? '',
+                        summary: wc.summary,
+                        cited_text: wc.summary ?? wc.title ?? '',
+                      } as unknown as CitationDataType;
+                    }
+                    finalCitations = merged;
+                  }
                   
                   console.log('✅ SideChatPanel: finalizeText called:', {
                     finalTextLength: finalText.length,
@@ -14161,11 +14222,26 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   
                   // Merge accumulated citations with any from backend complete message; ensure doc_id set from document_id
                   const mergedRaw = { ...accumulatedCitations, ...(data.citations || {}) };
-                  const mergedCitations: Record<string, CitationDataType> = {};
+                  let mergedCitations: Record<string, CitationDataType> = {};
                   for (const [k, v] of Object.entries(mergedRaw)) {
                     mergedCitations[String(k)] = normalizeCitationDocId(v) as CitationDataType;
                   }
                 const webCitationsFromCompleteInit = Array.isArray(data.web_citations) ? data.web_citations : [];
+                if (webCitationsFromCompleteInit.length > 0) {
+                  mergedCitations = { ...mergedCitations };
+                  for (let i = 0; i < webCitationsFromCompleteInit.length; i++) {
+                    const wc = webCitationsFromCompleteInit[i];
+                    const num = String(i + 1);
+                    mergedCitations[num] = {
+                      doc_id: wc.citation_number ?? `web_${num}`,
+                      source_type: 'web',
+                      title: wc.title ?? '',
+                      url: wc.url ?? '',
+                      summary: wc.summary,
+                      cited_text: wc.summary ?? wc.title ?? '',
+                    } as unknown as CitationDataType;
+                  }
+                }
                 console.log('✅ SideChatPanel: LLM streaming complete for initial query:', {
                   summary: finalText.substring(0, 100),
                   documentsFound: data.relevant_documents?.length || 0,
@@ -14175,7 +14251,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 // Full-PDF preload for "View document" so it opens instantly
                 const seenDocsInitial = new Set<string>();
                 Object.values(mergedCitations).forEach((cit: CitationDataType) => {
-                  if (cit?.doc_id && !seenDocsInitial.has(cit.doc_id)) {
+                  const isWeb = (cit as { source_type?: string }).source_type === 'web' || String(cit?.doc_id ?? '').startsWith('web_');
+                  if (cit?.doc_id && !seenDocsInitial.has(cit.doc_id) && !isWeb) {
                     seenDocsInitial.add(cit.doc_id);
                     preloadDocumentByIdInitial(cit.doc_id, cit.original_filename ?? (cit as any).filename);
                   }
@@ -16029,11 +16106,26 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               
                 // Merge accumulated citations with any from backend complete message; ensure doc_id set from document_id
                 const mergedRaw = { ...accumulatedCitations, ...(data.citations || {}) };
-                const mergedCitations: Record<string, CitationDataType> = {};
+                let mergedCitations: Record<string, CitationDataType> = {};
                 for (const [k, v] of Object.entries(mergedRaw)) {
                   mergedCitations[String(k)] = normalizeCitationDocId(v) as CitationDataType;
                 }
               const webCitationsFromCompleteNoFile = Array.isArray(data.web_citations) ? data.web_citations : [];
+              if (webCitationsFromCompleteNoFile.length > 0) {
+                mergedCitations = { ...mergedCitations };
+                for (let i = 0; i < webCitationsFromCompleteNoFile.length; i++) {
+                  const wc = webCitationsFromCompleteNoFile[i];
+                  const num = String(i + 1);
+                  mergedCitations[num] = {
+                    doc_id: wc.citation_number ?? `web_${num}`,
+                    source_type: 'web',
+                    title: wc.title ?? '',
+                    url: wc.url ?? '',
+                    summary: wc.summary,
+                    cited_text: wc.summary ?? wc.title ?? '',
+                  } as unknown as CitationDataType;
+                }
+              }
               console.log('✅ SideChatPanel: LLM streaming complete:', {
                 summary: finalText.substring(0, 100),
                 documentsFound: data.relevant_documents?.length || 0,
@@ -16046,7 +16138,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 // Full-PDF preload for "View document" so it opens instantly
                 const seenDocs = new Set<string>();
                 Object.values(mergedCitations).forEach((cit: CitationDataType) => {
-                  if (cit?.doc_id && !seenDocs.has(cit.doc_id)) {
+                  const isWeb = (cit as { source_type?: string }).source_type === 'web' || String(cit?.doc_id ?? '').startsWith('web_');
+                  if (cit?.doc_id && !seenDocs.has(cit.doc_id) && !isWeb) {
                     seenDocs.add(cit.doc_id);
                     preloadDocumentById(cit.doc_id, cit.original_filename ?? (cit as any).filename);
                   }
@@ -17983,8 +18076,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               {citationBarVisible && (
                 <button
                   type="button"
+                  data-citation-close-btn
+                  data-citation-message-id={citationReviewMessageId ?? undefined}
                   onClick={(e) => {
                     e.stopPropagation();
+                    lastCloseBtnClickY = (e.currentTarget as HTMLElement).getBoundingClientRect().top;
+                    lastCloseBtnMessageId = citationReviewMessageId;
                     const msgId = citationReviewMessageId;
                     if (msgId) {
                       setLastClosedCitationIndexByMessageId((prev) => ({ ...prev, [msgId]: citationReviewCurrentIndex }));
@@ -18006,6 +18103,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               {showOpen && (
                 <button
                   type="button"
+                  data-citation-open-btn
+                  data-citation-message-id={finalKey}
                   onClick={(e) => {
                     e.stopPropagation();
                     // Open citations for this specific message (finalKey), not the latest
@@ -18662,20 +18761,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   paddingRight: 16,
                   zIndex: 10002,
                 }}
+                onClick={(e) => e.stopPropagation()}
               >
                 <ChatTabsBar
                   fullWidth
-                  chats={[...chatHistory.filter(c => !c.archived && !c.id.startsWith('property-')).slice(0, 5)].reverse()}
-                  selectedChatId={selectedChatIdProp ?? currentChatId}
+                  chats={[...chatHistory.filter(c => !c.archived && !c.id.startsWith('property-')).slice(0, CHAT_TABS_VISIBLE)].reverse()}
+                  selectedChatId={currentChatId}
                   onChatSelect={onChatSelect}
                   onNewChat={() => onNewChat?.()}
-                  onOpenChatHistory={onOpenChatHistory}
-                  onCloseChat={(chatId) => {
-                    removeChatFromHistory(chatId);
-                    if ((selectedChatIdProp ?? currentChatId) === chatId) {
-                      onNewChat?.();
-                    }
-                  }}
+                  onOpenAgents={openChatPanel}
                   onUpdateChatTitle={updateChatTitle}
                   onArchiveChat={archiveChat}
                   onUnarchiveChat={unarchiveChat}
@@ -18723,41 +18817,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 onMouseLeave={() => setIsNearEditButton(false)}
               >
                 <div className="flex items-center space-x-2 min-w-0" data-view-dropdown-ignore>
-                  {/* View dropdown: Sidebar, Files, New chat, Fullscreen. Close sidebar only when big (full) sidebar is open, not when small/icons-only. Same styling in all contexts so positioning matches fullscreen property vs map/search. */}
-                  {isMainSidebarOpen && !isSidebarIconsOnly && (
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        e.preventDefault();
-                        setViewOptionsOpen(false);
-                        if (onSidebarToggle) onSidebarToggle();
-                      }}
-                      className={`flex items-center ${isPropertyDetailsOpen ? 'justify-center' : actualPanelWidth >= 750 ? 'gap-1.5' : 'justify-center'} rounded-xl border border-black/[0.06] bg-white text-[#4b5563] shadow-[0_1px_1px_rgba(0,0,0,0.02)] transition-all duration-150 hover:border-black/[0.10] hover:text-[#111827] hover:shadow-[0_1px_2px_rgba(0,0,0,0.03)] active:scale-[0.99] cursor-pointer`}
-                      title="Close sidebar"
-                      type="button"
-                      style={{
-                        padding: actualPanelWidth >= 750 ? '6px 10px' : '6px',
-                        height: '34px',
-                        minHeight: '34px',
-                        position: 'relative',
-                        zIndex: 10001,
-                        pointerEvents: 'auto',
-                        backgroundColor: 'rgba(255, 255, 255, 0.92)'
-                      }}
-                    >
-                      <PanelRightClose className="w-5 h-5 text-[#666] scale-x-[-1] flex-shrink-0" strokeWidth={1.25} />
-                      {!isPropertyDetailsOpen && actualPanelWidth >= 750 && (
-                        <span className="text-[13px] font-medium text-inherit text-left whitespace-nowrap tracking-[-0.01em]">Close</span>
-                      )}
-                    </button>
-                  )}
                   {/* Exit fullscreen: not shown outside dropdown in chat – use View → Fullscreen/Exit */}
                   {isChatLarge && hasUserExpandedFromView && (
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
                         e.preventDefault();
-                        setViewOptionsOpen(false);
                         handleMinimiseChat();
                       }}
                       className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150`}
@@ -18786,7 +18851,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       onClick={(e) => {
                         e.stopPropagation();
                         e.preventDefault();
-                        setViewOptionsOpen(false);
                         handleExpandChat();
                       }}
                       className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150`}
@@ -18810,144 +18874,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       )}
                     </button>
                   )}
-                  <Popover open={viewOptionsOpen} onOpenChange={setViewOptionsOpen}>
-                    <PopoverTrigger asChild>
-                      <button
-                        type="button"
-                        aria-haspopup="true"
-                        aria-expanded={viewOptionsOpen}
-                        title={viewOptionsOpen ? 'Close' : 'View – sidebar, files, new chat, fullscreen'}
-                        className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1.5' : 'justify-center'} rounded-xl border border-black/[0.06] bg-white text-[#4b5563] shadow-[0_1px_1px_rgba(0,0,0,0.02)] transition-all duration-150 hover:border-black/[0.10] hover:text-[#111827] hover:shadow-[0_1px_2px_rgba(0,0,0,0.03)] active:scale-[0.99] cursor-pointer`}
-                        style={{
-                          padding: actualPanelWidth >= 750 ? '6px 10px' : '6px',
-                          height: '34px',
-                          minHeight: '34px',
-                          position: 'relative',
-                          zIndex: 10001,
-                          pointerEvents: 'auto',
-                          backgroundColor: viewOptionsOpen ? 'rgba(255, 255, 255, 0.98)' : 'rgba(255, 255, 255, 0.92)',
-                        }}
-                        onMouseEnter={handleViewOptionsTriggerEnter}
-                        onMouseLeave={handleViewOptionsTriggerLeave}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setViewOptionsOpen((prev) => !prev);
-                        }}
-                      >
-                        <PictureInPicture2 className="w-5 h-5 text-[#666] flex-shrink-0" strokeWidth={1.25} />
-                        {actualPanelWidth >= 750 && (
-                          <span className="text-[13px] font-medium text-inherit text-left whitespace-nowrap tracking-[-0.01em]">{viewOptionsOpen ? 'Close' : 'View'}</span>
-                        )}
-                      </button>
-                    </PopoverTrigger>
-                    <PopoverContent
-                      align="start"
-                      side="bottom"
-                      sideOffset={4}
-                      onMouseEnter={handleViewOptionsContentEnter}
-                      onMouseLeave={handleViewOptionsContentLeave}
-                      onPointerDownOutside={(e) => {
-                        // Don't close when clicking header buttons or sidebar/rail toggles so the click can register
-                        if ((e.target as HTMLElement).closest?.('[data-view-dropdown-ignore]')) {
-                          e.preventDefault();
-                        }
-                      }}
-                      className="min-w-[165px] w-auto rounded-md border border-gray-200 bg-white p-2 shadow-md"
-                      onOpenAutoFocus={(e) => e.preventDefault()}
-                    >
-                      <div className="flex flex-col gap-2">
-                        {!isMainSidebarOpen && (
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setViewOptionsOpen(false);
-                              if (onSidebarToggle) onSidebarToggle();
-                            }}
-                            className="flex items-center gap-2 w-full rounded-md px-2 py-1.5 h-8 min-h-8 text-left hover:bg-[#f5f5f5] text-[13px] font-normal text-[#374151]"
-                          >
-                            <PanelLeftOpen className="w-5 h-5 text-[#666] flex-shrink-0 scale-x-[-1]" strokeWidth={1.25} />
-                            Sidebar
-                          </button>
-                        )}
-                        {!isMainSidebarOpen && !isFilingSidebarOpen && (
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setViewOptionsOpen(false);
-                              toggleFilingSidebar();
-                            }}
-                            className="flex items-center gap-2 w-full rounded-md px-2 py-1.5 h-8 min-h-8 text-left hover:bg-[#f5f5f5] text-[13px] font-normal text-[#374151]"
-                          >
-                            <Files className="w-5 h-5 text-[#666] flex-shrink-0" strokeWidth={1.25} />
-                            Files
-                          </button>
-                        )}
-                        {isFullscreenMode ? (
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setViewOptionsOpen(false);
-                              handleMinimiseChat();
-                            }}
-                            className="flex items-center gap-2 w-full rounded-md px-2 py-1.5 h-8 min-h-8 text-left hover:bg-[#f5f5f5] text-[13px] font-normal text-[#374151]"
-                          >
-                            <Minimize2 className="w-5 h-5 text-[#666] flex-shrink-0" strokeWidth={1.25} />
-                            Minimise
-                          </button>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setViewOptionsOpen(false);
-                              handleExpandChat();
-                            }}
-                            className="flex items-center gap-2 w-full rounded-md px-2 py-1.5 h-8 min-h-8 text-left hover:bg-[#f5f5f5] text-[13px] font-normal text-[#374151]"
-                          >
-                            <MoveDiagonal className="w-5 h-5 text-[#666] flex-shrink-0" strokeWidth={1.25} />
-                            Expand
-                          </button>
-                        )}
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            e.preventDefault();
-                            // Call fullscreen first so it runs in the same user gesture (browser requirement)
-                            void toggleBrowserFullscreen();
-                            setViewOptionsOpen(false);
-                          }}
-                          className="flex items-center gap-2 w-full rounded-md px-2 py-1.5 h-8 min-h-8 text-left hover:bg-[#f5f5f5] text-[13px] font-normal text-[#374151]"
-                        >
-                          {isBrowserFullscreen ? (
-                            <Minimize className="w-5 h-5 text-[#666] flex-shrink-0" strokeWidth={1.25} />
-                          ) : (
-                            <Fullscreen className="w-5 h-5 text-[#666] flex-shrink-0" strokeWidth={1.25} />
-                          )}
-                          {isBrowserFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
-                        </button>
-                        {!isNewChatSection && (
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setViewOptionsOpen(false);
-                              handleNewChatClick();
-                            }}
-                            className="flex items-center gap-2 w-full rounded-md px-2 py-1.5 h-8 min-h-8 text-left hover:bg-[#f5f5f5] text-[13px] font-normal text-[#374151]"
-                          >
-                            <img src="/newchat1.png" alt="" className="h-6 w-6 flex-shrink-0 object-contain" />
-                            New chat
-                          </button>
-                        )}
-                      </div>
-                    </PopoverContent>
-                  </Popover>
-                  {/* Center column: ChatTabsBar (when onChatSelect) or chat title (when not new chat) - same layout as streaming content */}
-                  {onChatSelect ? (
+                  {/* Center column: ChatTabsBar (when onChatSelect) or chat title (when not new chat) - same layout as streaming content. Hidden when agent sidebar is open. */}
+                  {!isChatPanelOpen && (onChatSelect ? (
                     <div
                       className="min-w-0 flex items-center overflow-x-auto place-self-center w-full"
                       style={{
@@ -18956,20 +18884,14 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         paddingRight: actualPanelWidth < 320 ? '20px' : '48px',
                         margin: '0 auto',
                       }}
+                      onClick={(e) => e.stopPropagation()}
                     >
                       <ChatTabsBar
                         fullWidth
-                        chats={[...chatHistory.filter(c => !c.archived && !c.id.startsWith('property-')).slice(0, 5)].reverse()}
-                        selectedChatId={selectedChatIdProp ?? currentChatId}
+                        chats={[...chatHistory.filter(c => !c.archived && !c.id.startsWith('property-')).slice(0, CHAT_TABS_VISIBLE)].reverse()}
+                        selectedChatId={currentChatId}
                         onChatSelect={onChatSelect}
                         onNewChat={() => onNewChat?.()}
-                        onOpenChatHistory={onOpenChatHistory}
-                        onCloseChat={(chatId) => {
-                          removeChatFromHistory(chatId);
-                          if ((selectedChatIdProp ?? currentChatId) === chatId) {
-                            onNewChat?.();
-                          }
-                        }}
                         onUpdateChatTitle={updateChatTitle}
                         onArchiveChat={archiveChat}
                         onUnarchiveChat={unarchiveChat}
@@ -19041,7 +18963,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                   if (onNewChat) onNewChat();
                                 }
                               }}
-                              className="flex items-center gap-2 cursor-pointer rounded-md px-2 py-1.5 h-8 min-h-8 text-left text-[13px] font-normal text-red-600 hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-red-600"
+                              className="flex items-center gap-2 cursor-pointer rounded-none px-2 py-1.5 h-8 min-h-8 text-left text-[13px] font-normal text-red-600 hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-red-600"
                             >
                               <Trash2 className="w-5 h-5 text-red-600 flex-shrink-0" strokeWidth={1.25} />
                               Delete
@@ -19111,7 +19033,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                 if (onNewChat) onNewChat();
                               }
                             }}
-                            className="flex items-center gap-2 cursor-pointer rounded-md px-2 py-1.5 h-8 min-h-8 text-left text-[13px] font-normal text-red-600 hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-red-600"
+                            className="flex items-center gap-2 cursor-pointer rounded-none px-2 py-1.5 h-8 min-h-8 text-left text-[13px] font-normal text-red-600 hover:bg-[#f5f5f5] focus:bg-[#f5f5f5] focus:text-red-600"
                           >
                             <Trash2 className="w-5 h-5 text-red-600 flex-shrink-0" strokeWidth={1.25} />
                             Delete
@@ -19120,7 +19042,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       </DropdownMenu>
                     </div>
                   )
-                  )}
+                  ))}
                 </div>
                 
                 {/* Center - empty; chat title is shown next to View button in left column */}
@@ -19173,54 +19095,27 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     if (citationBarVisible) return null; // Close button is now in feedback bar next to Sources
                     return null;
                   })()}
-                  {/* Agents Sidebar Button – shown on opening screen and when chat has messages */}
+                  {/* Agents Sidebar Button – only when panel is closed */}
+                  {!isChatPanelOpen && (
                   <button
+                    type="button"
                     onClick={(e) => {
                       e.stopPropagation();
                       e.preventDefault();
-                      if (isChatPanelOpen) {
-                        // Only close when open - use closePanel instead of toggle
-                        closeChatPanel();
-                      } else {
-                        // Open when closed
-                        toggleChatPanel();
-                      }
+                      toggleChatPanel();
                     }}
-                    className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1.5' : 'justify-center'} rounded-xl border border-black/[0.06] bg-white text-[#4b5563] shadow-[0_1px_1px_rgba(0,0,0,0.02)] transition-all duration-150 hover:border-black/[0.10] hover:text-[#111827] hover:shadow-[0_1px_2px_rgba(0,0,0,0.03)] active:scale-[0.99] cursor-pointer`}
-                    title={isChatPanelOpen ? "Close Agent Sidebar" : "Agents Sidebar"}
-                    type="button"
+                    className="w-8 h-8 flex items-center justify-center rounded-md hover:bg-gray-100 transition-colors"
+                    title="Agents Sidebar"
+                    aria-label="Open agents"
                     style={{
-                      padding: actualPanelWidth >= 750 ? '6px 10px' : '6px',
-                      height: '34px',
-                      minHeight: '34px',
                       position: 'relative',
                       zIndex: 10001,
                       pointerEvents: 'auto',
-                      backgroundColor: isChatPanelOpen ? 'rgba(255, 255, 255, 0.98)' : 'rgba(255, 255, 255, 0.92)',
                     }}
                   >
-                    {isChatPanelOpen ? (
-                      <PanelRightClose
-                        size={16}
-                        className="w-4 h-4 text-[#666] flex-shrink-0"
-                        strokeWidth={1.25}
-                      />
-                    ) : (
-                      <img
-                        src={openFindIcon}
-                        alt="OpenFind"
-                        // @ts-expect-error - use lowercase fetchpriority per React DOM warning; types use fetchPriority
-                        fetchpriority="high"
-                        style={{ height: 'clamp(0.625rem, 1.2vw, 0.875rem)', opacity: 0.82 }}
-                        aria-hidden
-                      />
-                    )}
-                    {actualPanelWidth >= 750 && (
-                      <span className="text-[13px] font-medium text-inherit text-left whitespace-nowrap tracking-[-0.01em]">
-                        {isChatPanelOpen ? "Close" : "Agents"}
-                      </span>
-                    )}
+                    <PanelRight className="w-4 h-4 text-[#6B7280]" strokeWidth={1.5} />
                   </button>
+                  )}
 
                   {/* Response (reasoning trace + answer highlight) – hover popover */}
                   {!isNewChatSection && (
@@ -19231,15 +19126,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         aria-haspopup="true"
                         aria-expanded={displayOptionsOpen}
                         title="Response – reasoning trace, highlight key points, and citations"
-                        className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1.5' : 'justify-center'} rounded-xl border border-black/[0.06] bg-white text-[#4b5563] shadow-[0_1px_1px_rgba(0,0,0,0.02)] transition-all duration-150 hover:border-black/[0.10] hover:text-[#111827] hover:shadow-[0_1px_2px_rgba(0,0,0,0.03)] active:scale-[0.99] cursor-pointer`}
+                        aria-label="Response options"
+                        className="w-8 h-8 flex items-center justify-center rounded-md hover:bg-gray-100 transition-colors"
                         style={{
-                          padding: actualPanelWidth >= 750 ? '6px 10px' : '6px',
-                          height: '34px',
-                          minHeight: '34px',
                           position: 'relative',
                           zIndex: 10001,
                           pointerEvents: 'auto',
-                          backgroundColor: displayOptionsOpen ? 'rgba(255, 255, 255, 0.98)' : 'rgba(255, 255, 255, 0.92)',
                         }}
                         onMouseEnter={handleDisplayOptionsTriggerEnter}
                         onMouseLeave={handleDisplayOptionsTriggerLeave}
@@ -19248,10 +19140,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           setDisplayOptionsOpen((prev) => !prev);
                         }}
                       >
-                        <SlidersHorizontal className="w-5 h-5 text-[#666] flex-shrink-0" strokeWidth={1.25} />
-                        {actualPanelWidth >= 750 && (
-                          <span className="text-[13px] font-medium text-inherit tracking-[-0.01em]">Response</span>
-                        )}
+                        <SlidersHorizontal className="w-4 h-4 text-[#6B7280]" strokeWidth={1.5} />
                       </button>
                     </PopoverTrigger>
                     <PopoverContent
@@ -19443,40 +19332,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               key="chat-content-area"
               style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', position: 'relative', width: '100%' }}
             >
-            {/* Agents button in top right – same UI as existing Agents Sidebar button; only on new chat (centered empty) screen when agent sidebar is closed */}
-            {isVisible && !isChatPanelOpen && useCenteredEmptyState && (
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  openChatPanel();
-                }}
-                aria-label="Open agents"
-                title="Agents Sidebar"
-                className="flex items-center gap-1.5 rounded-xl border border-black/[0.06] bg-white text-[#4b5563] shadow-[0_1px_1px_rgba(0,0,0,0.02)] transition-all duration-150 hover:border-black/[0.10] hover:text-[#111827] hover:shadow-[0_1px_2px_rgba(0,0,0,0.03)] active:scale-[0.99] cursor-pointer"
-                style={{
-                  position: 'absolute',
-                  top: 20,
-                  right: 20,
-                  zIndex: 20,
-                  pointerEvents: 'auto',
-                  padding: '6px 10px',
-                  height: '34px',
-                  minHeight: '34px',
-                  backgroundColor: 'rgba(255, 255, 255, 0.92)',
-                }}
-              >
-                <img
-                  src={openFindIcon}
-                  alt="OpenFind"
-                  // @ts-expect-error - use lowercase fetchpriority per React DOM warning; types use fetchPriority
-                  fetchpriority="high"
-                  style={{ height: 'clamp(0.625rem, 1.2vw, 0.875rem)', opacity: 0.82 }}
-                  aria-hidden
-                />
-                <span className="text-[13px] font-medium text-inherit text-left whitespace-nowrap tracking-[-0.01em]">Agents</span>
-              </button>
-            )}
             {useCenteredEmptyState ? (
               /* Empty chat state - Same positioning as dashboard (shared DASHBOARD_CHAT_LAYOUT) so bar + welcome have identical vertical position */
               <div

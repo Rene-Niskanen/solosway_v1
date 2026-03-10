@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { Plus, Clock, MoreHorizontal, X, Loader2, CircleCheck } from "lucide-react";
+import { Plus, MoreHorizontal, Loader2, CircleCheck, PanelRight, Trash2 } from "lucide-react";
 import type { ChatHistoryEntry } from "./ChatHistoryContext";
 import {
   DropdownMenu,
@@ -11,6 +11,22 @@ import {
 } from "@/components/ui/dropdown-menu";
 
 const MAX_TITLE_LENGTH = 22;
+
+function isEmptyNewChat(c: ChatHistoryEntry): boolean {
+  return (!c.title || c.title === "New chat") && (!c.messages || c.messages.length === 0);
+}
+
+function dedupeEmptyNewChats(chats: ChatHistoryEntry[], selectedChatId: string | null): ChatHistoryEntry[] {
+  const emptyOnes = chats.filter(isEmptyNewChat);
+  if (emptyOnes.length <= 1) return chats;
+  const keepId = selectedChatId && emptyOnes.some((e) => e.id === selectedChatId)
+    ? selectedChatId
+    : emptyOnes[0].id;
+  return chats.filter((c) => {
+    if (!isEmptyNewChat(c)) return true;
+    return c.id === keepId;
+  });
+}
 
 function truncateTitle(title: string): string {
   if (!title || title.length <= MAX_TITLE_LENGTH) return title || "New chat";
@@ -22,8 +38,7 @@ export interface ChatTabsBarProps {
   selectedChatId: string | null;
   onChatSelect: (chatId: string) => void;
   onNewChat: () => void;
-  onOpenChatHistory?: () => void;
-  onCloseChat?: (chatId: string) => void;
+  onOpenAgents?: () => void;
   onUpdateChatTitle?: (chatId: string, newTitle: string) => void;
   onArchiveChat?: (chatId: string) => void;
   onUnarchiveChat?: (chatId: string) => void;
@@ -37,8 +52,7 @@ export const ChatTabsBar: React.FC<ChatTabsBarProps> = ({
   selectedChatId,
   onChatSelect,
   onNewChat,
-  onOpenChatHistory,
-  onCloseChat,
+  onOpenAgents,
   onUpdateChatTitle,
   onArchiveChat,
   onUnarchiveChat,
@@ -48,6 +62,20 @@ export const ChatTabsBar: React.FC<ChatTabsBarProps> = ({
   const [editingChatId, setEditingChatId] = React.useState<string | null>(null);
   const [editingTitle, setEditingTitle] = React.useState("");
   const editInputRef = React.useRef<HTMLInputElement>(null);
+  const scrollContainerRef = React.useRef<HTMLDivElement>(null);
+
+  // Auto-scroll to the right (most recent chats) when chats or selection changes
+  React.useLayoutEffect(() => {
+    const el = scrollContainerRef.current;
+    if (el) {
+      const scrollToEnd = () => {
+        el.scrollLeft = el.scrollWidth - el.clientWidth;
+      };
+      scrollToEnd();
+      // Run again after layout in case content wasn't measured yet
+      requestAnimationFrame(scrollToEnd);
+    }
+  }, [chats, selectedChatId]);
 
   React.useEffect(() => {
     if (editingChatId && editInputRef.current) {
@@ -82,12 +110,18 @@ export const ChatTabsBar: React.FC<ChatTabsBarProps> = ({
 
   return (
     <div
-      className={`flex items-center gap-1 min-h-[23px] overflow-x-auto overflow-y-hidden scrollbar-thin w-full ${fullWidth ? 'justify-between' : 'justify-center mx-auto'}`}
-      style={{ scrollbarColor: "rgba(0,0,0,0.2) transparent" }}
+      data-chat-tabs-bar
+      className={`flex items-center gap-1 min-h-[23px] w-full ${fullWidth ? 'justify-between' : 'justify-center mx-auto'}`}
+      style={{ marginTop: 6 }}
+      onClick={(e) => e.stopPropagation()}
     >
       {/* Chat tabs - scrollable */}
-      <div className="flex items-center gap-1 flex-shrink-0 min-w-0">
-        {chats.map((chat) => {
+      <div
+        ref={scrollContainerRef}
+        className="flex items-center gap-1 min-w-0 flex-1 overflow-x-auto overflow-y-hidden [&::-webkit-scrollbar]:hidden"
+        style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}
+      >
+        {dedupeEmptyNewChats(chats, selectedChatId).map((chat) => {
           const isSelected = selectedChatId === chat.id;
           const isEditing = editingChatId === chat.id;
 
@@ -96,7 +130,10 @@ export const ChatTabsBar: React.FC<ChatTabsBarProps> = ({
               key={chat.id}
               role="button"
               tabIndex={0}
-              onClick={() => !isEditing && onChatSelect(chat.id)}
+              onClick={(e) => {
+                e.stopPropagation();
+                if (!isEditing && onChatSelect) onChatSelect(chat.id);
+              }}
               onKeyDown={(e) => {
                 if (e.key === "Enter" || e.key === " ") {
                   e.preventDefault();
@@ -107,7 +144,7 @@ export const ChatTabsBar: React.FC<ChatTabsBarProps> = ({
                 flex items-center gap-1 cursor-pointer flex-shrink-0 px-1.5 py-0.5
                 transition-all duration-75 ease-out group
                 ${isSelected
-                  ? "bg-[#E8E9F3] border-none rounded-[3px]"
+                  ? "bg-[#E5E7EB] border-none rounded-[3px]"
                   : "bg-transparent border-none hover:opacity-80"
                 }
               `}
@@ -175,8 +212,9 @@ export const ChatTabsBar: React.FC<ChatTabsBarProps> = ({
                     {onRemoveChat && (
                       <DropdownMenuItem
                         onClick={(e) => { e.stopPropagation(); onRemoveChat(chat.id); }}
-                        className="text-red-600 focus:text-red-600 focus:bg-gray-100 data-[highlighted]:bg-gray-100 data-[highlighted]:text-red-600 py-0.5 px-1.5 min-h-0 text-[14px] font-light"
+                        className="flex items-center gap-2 text-red-600 focus:text-red-600 focus:bg-gray-100 data-[highlighted]:bg-gray-100 data-[highlighted]:text-red-600 py-0.5 px-1.5 min-h-0 text-[14px] font-light rounded-none"
                       >
+                        <Trash2 className="w-4 h-4 flex-shrink-0" strokeWidth={1.5} />
                         Delete
                       </DropdownMenuItem>
                     )}
@@ -199,26 +237,15 @@ export const ChatTabsBar: React.FC<ChatTabsBarProps> = ({
         >
           <Plus className="w-4 h-4 text-[#6B7280]" strokeWidth={1.5} />
         </button>
-        {onOpenChatHistory && (
+        {onOpenAgents && (
           <button
             type="button"
-            onClick={(e) => { e.stopPropagation(); onOpenChatHistory(); }}
+            onClick={(e) => { e.stopPropagation(); onOpenAgents(); }}
             className="w-8 h-8 flex items-center justify-center rounded-md hover:bg-gray-100 transition-colors"
-            title="Chat history"
-            aria-label="Chat history"
+            title="Agents Sidebar"
+            aria-label="Open agents"
           >
-            <Clock className="w-4 h-4 text-[#6B7280]" strokeWidth={1.5} />
-          </button>
-        )}
-        {selectedChatId && onCloseChat && (
-          <button
-            type="button"
-            onClick={(e) => { e.stopPropagation(); onCloseChat(selectedChatId); }}
-            className="w-8 h-8 flex items-center justify-center rounded-md hover:bg-gray-100 transition-colors"
-            title="Close chat"
-            aria-label="Close chat"
-          >
-            <X className="w-4 h-4 text-[#6B7280]" strokeWidth={1.5} />
+            <PanelRight className="w-4 h-4 text-[#6B7280]" strokeWidth={1.5} />
           </button>
         )}
       </div>
