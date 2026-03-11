@@ -1518,7 +1518,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
           padding: 0, // Explicitly remove any padding
           borderRadius: '16px', // All corners rounded like Prism
           boxShadow: isDark ? '0 4px 16px rgba(0, 0, 0, 0.15), 0 1px 4px rgba(0, 0, 0, 0.1)' : '0 4px 16px rgba(0, 0, 0, 0.06), 0 1px 4px rgba(0, 0, 0, 0.04)',
-          border: isDark ? '1px solid hsl(var(--border))' : '1px solid rgba(226, 232, 240, 0.6)',
+          border: isDark ? 'none' : '1px solid rgba(226, 232, 240, 0.6)',
           display: 'flex',
           flexDirection: 'column',
           pointerEvents: 'auto',
