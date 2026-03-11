@@ -1,4 +1,4 @@
-# LLM Usage Cost Forecast — Velora
+# LLM Usage Cost Forecast — OpenFind
 
 This document gives an **accurate forecast of usage costs for LLM and embedding API calls** based on your codebase configuration and typical usage. Prices are as of early 2025; check provider pages for current rates.
 

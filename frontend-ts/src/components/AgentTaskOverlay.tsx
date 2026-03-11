@@ -71,9 +71,9 @@ export const AgentTaskOverlay: React.FC<AgentTaskOverlayProps> = ({ message, onS
           >
             {/* OpenFind Agent branding */}
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-              {/* Velora Icon - larger */}
+              {/* OpenFind Icon - larger */}
               <img 
-                src="/veloraboxlogo-fade.png" 
+                src="/OpenFind.png" 
                 alt="OpenFind" 
                 style={{
                   width: '26px',

@@ -171,7 +171,7 @@ const DashboardLayoutContent = ({
       'background4': '/Background4.png',
       'background5': '/Background5.png',
       'background6': '/Background6.png',
-      'openfind-grass': '/VeloraGrassBackground.png',
+      'openfind-grass': '/OpenFindGrassBackground.png',
     };
     return backgroundMap[selectedBackground] || null;
   };

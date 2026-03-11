@@ -20,7 +20,7 @@ npm start
 # Or: npm run dev  (tsx, no build)
 ```
 
-Listens on port 5002 (or `PORT` env). The main app start script (`./start-velora-go.sh`) starts this service when present and Node is available. Ensure nothing else (e.g. the local embedding server) is bound to 5002.
+Listens on port 5002 (or `PORT` env). The main app start script (`./start-openfind-go.sh`) starts this service when present and Node is available. Ensure nothing else (e.g. the local embedding server) is bound to 5002.
 
 ## Env (backend)
 

@@ -6,7 +6,7 @@
 
 ## Repository Information
 
-**GitHub Repository**: https://github.com/tomhornerr/velora-main
+**GitHub Repository**: https://github.com/tomhornerr/openfind-main
 
 ## How to work with this codebase?
 
@@ -22,10 +22,10 @@ Follow these steps:
 
 ```sh
 # Step 1: Clone the repository using the project's Git URL.
-git clone https://github.com/tomhornerr/velora-main.git
+git clone https://github.com/tomhornerr/openfind-main.git
 
 # Step 2: Navigate to the project directory.
-cd velora-main
+cd openfind-main
 
 # Step 3: Install the necessary dependencies.
 npm i

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Start Velora: Redis, Flask API, Celery worker, and frontend.
-# Run from project root: ./scripts/start-velora-go.sh  or  ./start-velora-go.sh
+# Start OpenFind: Redis, Flask API, Celery worker, and frontend.
+# Run from project root: ./scripts/start-openfind-go.sh  or  ./start-openfind-go.sh
 # To stop: press Ctrl+C (stops all child processes).
 
 set -e
@@ -20,7 +20,7 @@ EMBEDDING_PID=""
 
 cleanup() {
   echo ""
-  echo "Stopping Velora..."
+  echo "Stopping OpenFind..."
   [ -n "$FRONTEND_PID" ]    && kill "$FRONTEND_PID" 2>/dev/null || true
   [ -n "$CELERY_PID" ]      && kill "$CELERY_PID" 2>/dev/null || true
   [ -n "$EXTRACTION_PID" ]  && kill "$EXTRACTION_PID" 2>/dev/null || true
@@ -32,7 +32,7 @@ cleanup() {
 trap cleanup SIGINT SIGTERM
 
 echo "=============================================="
-echo "  Start Velora Go – Redis, Extraction, Fast Extract, Flask, Worker, Frontend"
+echo "  Start OpenFind Go – Redis, Extraction, Fast Extract, Flask, Worker, Frontend"
 echo "=============================================="
 
 # 1. Redis
@@ -81,7 +81,7 @@ if [ -d "$PROJECT_ROOT/services/doc-extraction-node" ] && command -v node &>/dev
   fi
   if (cd "$EXTRACTION_DIR" && npm run build); then
     if [ -f "$PROJECT_ROOT/services/doc-extraction-node/dist/server.js" ]; then
-      (cd "$PROJECT_ROOT/services/doc-extraction-node" && node dist/server.js) &>/tmp/velora-extraction.log &
+      (cd "$PROJECT_ROOT/services/doc-extraction-node" && node dist/server.js) &>/tmp/openfind-extraction.log &
       EXTRACTION_PID=$!
       export EXTRACTION_SERVICE_URL="${EXTRACTION_SERVICE_URL:-http://localhost:5002}"
       # Wait for extraction service to be ready (retry health check)
@@ -93,7 +93,7 @@ if [ -d "$PROJECT_ROOT/services/doc-extraction-node" ] && command -v node &>/dev
             break
           fi
         else
-          echo "   Doc extraction process exited. Check /tmp/velora-extraction.log"
+          echo "   Doc extraction process exited. Check /tmp/openfind-extraction.log"
           EXTRACTION_PID=""
           break
         fi
@@ -101,9 +101,9 @@ if [ -d "$PROJECT_ROOT/services/doc-extraction-node" ] && command -v node &>/dev
       done
       if [ -n "$EXTRACTION_PID" ]; then
         if [ -n "$EXTRACTION_READY" ]; then
-          echo "   Doc extraction running (PID $EXTRACTION_PID). Health check OK. Logs: /tmp/velora-extraction.log"
+          echo "   Doc extraction running (PID $EXTRACTION_PID). Health check OK. Logs: /tmp/openfind-extraction.log"
         else
-          echo "   Doc extraction running (PID $EXTRACTION_PID). Health check not ready yet; may be available shortly. Logs: /tmp/velora-extraction.log"
+          echo "   Doc extraction running (PID $EXTRACTION_PID). Health check not ready yet; may be available shortly. Logs: /tmp/openfind-extraction.log"
         fi
       fi
     else
@@ -132,17 +132,17 @@ if command -v python &>/dev/null; then
   echo ""
   echo "4. Starting fast extraction (local embedding server, port 5003)..."
   if python -c "from sentence_transformers import SentenceTransformer" 2>/dev/null; then
-    (cd "$PROJECT_ROOT" && python -m uvicorn backend.services.embedding_server:app --host 127.0.0.1 --port 5003) &>/tmp/velora-embedding.log &
+    (cd "$PROJECT_ROOT" && python -m uvicorn backend.services.embedding_server:app --host 127.0.0.1 --port 5003) &>/tmp/openfind-embedding.log &
     EMBEDDING_PID=$!
     sleep 3
     if kill -0 "$EMBEDDING_PID" 2>/dev/null; then
       if command -v curl &>/dev/null && curl -s -o /dev/null -w "%{http_code}" --connect-timeout 2 http://127.0.0.1:5003/health 2>/dev/null | grep -q 200; then
-        echo "   Fast extraction (embedding server) running (PID $EMBEDDING_PID). Logs: /tmp/velora-embedding.log"
+        echo "   Fast extraction (embedding server) running (PID $EMBEDDING_PID). Logs: /tmp/openfind-embedding.log"
       else
-        echo "   Fast extraction (embedding server) running (PID $EMBEDDING_PID). Logs: /tmp/velora-embedding.log"
+        echo "   Fast extraction (embedding server) running (PID $EMBEDDING_PID). Logs: /tmp/openfind-embedding.log"
       fi
     else
-      echo "   Fast extraction skipped (failed to start). Logs: /tmp/velora-embedding.log"
+      echo "   Fast extraction skipped (failed to start). Logs: /tmp/openfind-embedding.log"
       EMBEDDING_PID=""
     fi
   else
@@ -156,43 +156,43 @@ fi
 # 5. Flask API
 echo ""
 echo "5. Starting Flask API (port 5001)..."
-python main.py &>/tmp/velora-flask.log &
+python main.py &>/tmp/openfind-flask.log &
 FLASK_PID=$!
 sleep 2
 if kill -0 "$FLASK_PID" 2>/dev/null; then
-  echo "   Flask running (PID $FLASK_PID). Logs: /tmp/velora-flask.log"
+  echo "   Flask running (PID $FLASK_PID). Logs: /tmp/openfind-flask.log"
 else
-  echo "   Flask failed to start. Check /tmp/velora-flask.log"
+  echo "   Flask failed to start. Check /tmp/openfind-flask.log"
   exit 1
 fi
 
 # 6. Celery worker
 echo ""
 echo "6. Starting Celery worker..."
-python run_celery_worker.py &>/tmp/velora-celery.log &
+python run_celery_worker.py &>/tmp/openfind-celery.log &
 CELERY_PID=$!
 sleep 2
 if kill -0 "$CELERY_PID" 2>/dev/null; then
-  echo "   Celery worker running (PID $CELERY_PID). Logs: /tmp/velora-celery.log"
+  echo "   Celery worker running (PID $CELERY_PID). Logs: /tmp/openfind-celery.log"
 else
-  echo "   Celery may still be starting. Logs: /tmp/velora-celery.log"
+  echo "   Celery may still be starting. Logs: /tmp/openfind-celery.log"
 fi
 
 # 7. Frontend
 echo ""
 echo "7. Starting frontend (Vite)..."
-(cd frontend-ts && npm run dev) &>/tmp/velora-frontend.log &
+(cd frontend-ts && npm run dev) &>/tmp/openfind-frontend.log &
 FRONTEND_PID=$!
 sleep 3
 if kill -0 "$FRONTEND_PID" 2>/dev/null; then
-  echo "   Frontend running (PID $FRONTEND_PID). Logs: /tmp/velora-frontend.log"
+  echo "   Frontend running (PID $FRONTEND_PID). Logs: /tmp/openfind-frontend.log"
 else
-  echo "   Frontend may still be starting. Logs: /tmp/velora-frontend.log"
+  echo "   Frontend may still be starting. Logs: /tmp/openfind-frontend.log"
 fi
 
 echo ""
 echo "=============================================="
-echo "  Velora is up."
+echo "  OpenFind is up."
 echo "  API:      http://localhost:5001"
 echo "  Frontend: http://localhost:5173 (or port in log)"
 echo "  Worker:   processing uploads in background"

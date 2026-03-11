@@ -30,8 +30,8 @@ To send LLM and LangGraph traces to [LangSmith](https://smith.langchain.com) for
 2. **Set environment variables** (e.g. in `.env`):
    - `LANGCHAIN_TRACING_V2=true`
    - `LANGCHAIN_API_KEY=<your-langsmith-api-key>`
-   - `LANGCHAIN_PROJECT=velora` (optional; groups runs in the LangSmith UI)
-3. Restart the backend. On startup you should see: `LangSmith tracing enabled (project: velora)`.
+   - `LANGCHAIN_PROJECT=openfind` (optional; groups runs in the LangSmith UI)
+3. Restart the backend. On startup you should see: `LangSmith tracing enabled (project: openfind)`.
 
 The codebase also accepts `LANGSMITH_TRACING`, `LANGSMITH_API_KEY`, and `LANGSMITH_PROJECT`; these are mapped to the `LANGCHAIN_*` names if the latter are not set.
 

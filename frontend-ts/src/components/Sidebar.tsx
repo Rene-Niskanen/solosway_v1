@@ -1206,8 +1206,8 @@ export const Sidebar = ({
           // When sidebar is collapsed, position at left: 0
           // Otherwise, position at the right edge of the sidebar
           left: isCollapsed ? '0px' : `${sidebarWidthValue}px`,
-          // Match agentsidebar background
-          background: 'hsl(var(--muted))',
+          // Match sidebar background: light #F2F2EF, dark hsl(var(--muted))
+          background: isDark ? 'hsl(var(--muted))' : '#F2F2EF',
           pointerEvents: isFeedbackModalOpen ? 'none' : 'auto',
           visibility: isFeedbackModalOpen ? 'hidden' : 'visible',
           transition: 'left 0s ease-out' // Instant transition to prevent gaps

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Restart Velora: stop Flask, Celery, and frontend (by port/process), then run start-velora-go.
-# Run from project root: ./restart-velora-go.sh
+# Restart OpenFind: stop Flask, Celery, and frontend (by port/process), then run start-openfind-go.
+# Run from project root: ./restart-openfind-go.sh
 # Redis is left running; other services are killed and restarted.
 
 set -e
@@ -8,10 +8,10 @@ PROJECT_ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$PROJECT_ROOT"
 
 echo "=============================================="
-echo "  Restart Velora Go"
+echo "  Restart OpenFind Go"
 echo "=============================================="
 
-# Kill by port (works even if started by start-velora-go.sh in another terminal)
+# Kill by port (works even if started by start-openfind-go.sh in another terminal)
 echo ""
 echo "Stopping existing services..."
 
@@ -38,4 +38,4 @@ echo "  Done stopping."
 echo ""
 
 # Start again
-exec ./start-velora-go.sh
+exec ./start-openfind-go.sh

@@ -984,8 +984,6 @@ def _strip_openfind_greeting(query: str) -> str:
     return cleaned
 
 
-# Alias for backwards compatibility (main_graph still imports this name)
-_strip_velora_greeting = _strip_openfind_greeting
 
 # USER.md / user context / profile: route to agent (has read/write_workspace_file tools)
 _USER_CONTEXT_PHRASES = ("user.md", "user md", "user context", "my profile")

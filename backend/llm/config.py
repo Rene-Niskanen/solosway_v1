@@ -81,8 +81,8 @@ class LLMConfig(BaseSettings):
     use_extraction_guided_retrieval: bool = os.getenv("USE_EXTRACTION_GUIDED_RETRIEVAL", "true").lower() == "true"
 
     # Bootstrap / USER.md (project context injected into system prompt)
-    bootstrap_max_chars: int = int(os.getenv("VELORA_BOOTSTRAP_MAX_CHARS", "20000"))
-    bootstrap_total_max_chars: int = int(os.getenv("VELORA_BOOTSTRAP_TOTAL_MAX_CHARS", "150000"))
+    bootstrap_max_chars: int = int(os.getenv("OPENFIND_BOOTSTRAP_MAX_CHARS", os.getenv("VELORA_BOOTSTRAP_MAX_CHARS", "20000")))
+    bootstrap_total_max_chars: int = int(os.getenv("OPENFIND_BOOTSTRAP_TOTAL_MAX_CHARS", os.getenv("VELORA_BOOTSTRAP_TOTAL_MAX_CHARS", "150000")))
 
 
 config = LLMConfig()

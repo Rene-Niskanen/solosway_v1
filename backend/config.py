@@ -32,12 +32,12 @@ class Config:
         'pool_pre_ping': True,  # Check connections before using (validates connection is alive)
     }
     
-    # CORS settings (add your deployed frontend origins e.g. https://app.veloraview.com)
+    # CORS settings (add your deployed frontend origins e.g. https://app.openfindview.com)
     CORS_ORIGINS = [
         'http://localhost:3000', 'http://localhost:5173', 'http://localhost:8080',
         'http://localhost:8081', 'http://localhost:8083', 'http://localhost:5002',
-        'https://veloraview.com', 'https://www.veloraview.com',
-        'https://app.veloraview.com', 'https://dev.veloraview.com',
+        'https://openfindview.com', 'https://www.openfindview.com',
+        'https://app.openfindview.com', 'https://dev.openfindview.com',
         'https://your-frontend-domain.com'
     ]
     

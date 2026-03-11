@@ -321,7 +321,7 @@ def get_conversation_system_content(
     Structure:
       BASE_ROLE (OpenFind identity + core principles)
       + CONVERSATION_RULES (behavioral policy + style)
-      + ABOUT VELORA reference (file content for self-questions)
+      + ABOUT OPENFIND reference (file content for self-questions)
       + WRITING_RULES (rewrite / restructuring rules)
       + OUTPUT_FORMATTING_RULES (shared layout standard)
       + workspace_section (if any — current project/documents in scope)

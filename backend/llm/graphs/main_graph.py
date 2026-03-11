@@ -69,7 +69,7 @@ from backend.llm.nodes.routing_nodes import (
     handle_attachment_fast,
     handle_navigation_action,
     _GREETING_EXACT,
-    _strip_velora_greeting,
+    _strip_openfind_greeting,
     _PERSONAL_STARTS,
     _USER_CONTEXT_PHRASES,
     _USER_CONTEXT_ACTION_RE,
@@ -557,9 +557,9 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
         if query_lower in _GREETING_EXACT:
             logger.info("[GRAPH] greeting -> conversation")
             return "conversation"
-        stripped = _strip_velora_greeting(query_lower)
-        if not stripped and "velora" in query_lower:
-            logger.info("[GRAPH] greeting to Velora -> conversation")
+        stripped = _strip_openfind_greeting(query_lower)
+        if not stripped and "openfind" in query_lower:
+            logger.info("[GRAPH] greeting to OpenFind -> conversation")
             return "conversation"
         if any(query_lower.startswith(p) for p in _PERSONAL_STARTS):
             logger.info("[GRAPH] personal -> conversation")

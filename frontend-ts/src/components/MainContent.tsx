@@ -1463,7 +1463,7 @@ const BackgroundSettings: React.FC = () => {
     { id: 'background4', name: 'Background 4', image: '/Background4.png' },
     { id: 'background5', name: 'Background 5', image: '/Background5.png' },
     { id: 'background6', name: 'Background 6', image: '/Background6.png' },
-    { id: 'openfind-grass', name: 'OpenFind Grass', image: '/VeloraGrassBackground.png' },
+    { id: 'openfind-grass', name: 'OpenFind Grass', image: '/OpenFindGrassBackground.png' },
   ];
 
   const [selectedBackground, setSelectedBackground] = React.useState<string>('default-background');
@@ -4476,7 +4476,7 @@ export const MainContent = ({
                       {useTopSpacerLayout && (
                         <div style={{ flexShrink: 0, height: DASHBOARD_CHAT_LAYOUT.TOP_SPACER_HEIGHT, width: '100%' }} aria-hidden />
                       )}
-                {/* VELORA Branding Section - same dimensions as chat section logo-equivalent for identical positioning */}
+                {/* OpenFind Branding Section - same dimensions as chat section logo-equivalent for identical positioning */}
                       <div className="flex flex-col items-center" style={{ 
                         flexShrink: 0,
                         minHeight: useTopSpacerLayout ? DASHBOARD_CHAT_LAYOUT.LOGO_SECTION_MIN_HEIGHT : undefined,

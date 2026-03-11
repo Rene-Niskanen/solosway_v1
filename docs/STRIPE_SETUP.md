@@ -1,6 +1,6 @@
-# Stripe billing setup for Velora
+# Stripe billing setup for OpenFind
 
-Velora’s subscription tiers (Starter, Pro, Ultra) can be powered by Stripe. If Stripe is not configured, the app keeps using the existing “test” flow (PATCH plan with no payment).
+OpenFind’s subscription tiers (Starter, Pro, Ultra) can be powered by Stripe. If Stripe is not configured, the app keeps using the existing “test” flow (PATCH plan with no payment).
 
 ## 1. Stripe Dashboard
 

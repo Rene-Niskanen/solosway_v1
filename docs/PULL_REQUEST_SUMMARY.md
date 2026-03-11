@@ -67,7 +67,7 @@ Follow-ups and new sessions can use name, preferences, and past context; documen
 After context_manager we run `classify_intent(state)` → `"conversation"` or `"document"`. Heuristic only (no LLM); we default to **document** so retrieval is never skipped by mistake.
 
 - **→ document:** Files attached, property selected, or any doc/real-estate keyword (“search”, “valuation”, “EPC”, “lease”, “summarise”, “find”, “report”).  
-- **→ conversation:** No files/property and: exact greeting (“hi”, “thanks”, “bye”…), or “hey velora”, or personal start (“who are you”, “what can you do”, “my name is”, “remember that i…”), or very short (≤3 words) with no doc keywords (“ok”, “cool”).
+- **→ conversation:** No files/property and: exact greeting (“hi”, “thanks”, “bye”…), or “hey openfind”, or personal start (“who are you”, “what can you do”, “my name is”, “remember that i…”), or very short (≤3 words) with no doc keywords (“ok”, “cool”).
 
 **Conversation path**  
 Intent `"conversation"` → **conversation node** (not planner). Node: reads messages + optional Mem0 memories; builds system prompt (base role + conversation rules + writing/formatting + memories + personality instruction + previous personality); one LLM call with `PersonalityResponse` (personality_id + response); writes final_summary, personality_id, empty citations, appends message, → END. No planner, executor, or retrieve_docs/retrieve_chunks — ~1s instead of 6–12s.

@@ -18,7 +18,7 @@ def get_attachment_fast_system_prompt() -> str:
         "You are a helpful assistant that answers questions based on provided document content. "
         "Provide thorough, detailed answers rather than brief summaries. Cover key points fully and "
         "include relevant context and explanations when helpful. Apply the same formatting standards "
-        "as for any Velora response.\n\n"
+        "as for any OpenFind response.\n\n"
         + OUTPUT_FORMATTING_RULES
     )
 

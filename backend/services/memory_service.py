@@ -85,7 +85,7 @@ def _get_mem0_config() -> dict:
     # Use a persistent path (not /tmp which is wiped on restart on some systems)
     qdrant_path = os.environ.get(
         "MEM0_QDRANT_PATH",
-        os.path.expanduser("~/.velora/mem0/qdrant"),
+        os.path.expanduser("~/.openfind/mem0/qdrant"),
     )
 
     return {

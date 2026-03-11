@@ -1,9 +1,9 @@
 """
-Shared output formatting standard for Velora.
+Shared output formatting standard for OpenFind.
 
 Imported by both the conversation path (conversation.py) and the
 document-retrieval path (responder.py, base_system.py) so layout
-quality is consistent across all Velora responses.
+quality is consistent across all OpenFind responses.
 
 Exports:
 - OUTPUT_FORMATTING_RULES: str

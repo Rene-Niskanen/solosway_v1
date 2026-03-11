@@ -1,12 +1,12 @@
-# WhatsApp Integration for Velora (Query + Citation Screenshots)
+# WhatsApp Integration for OpenFind (Query + Citation Screenshots)
 
-This doc outlines what it takes to add a WhatsApp channel so users can query Velora like the web app, with citations delivered as **screenshot images** instead of in-document preview.
+This doc outlines what it takes to add a WhatsApp channel so users can query OpenFind like the web app, with citations delivered as **screenshot images** instead of in-document preview.
 
 ## High-level flow
 
 1. User sends a WhatsApp message (query).
 2. Your backend receives it via **WhatsApp Business Cloud API** webhook.
-3. Backend maps the WhatsApp user to a Velora user/session and runs the **same RAG pipeline** as the web (`/api/llm/query/stream` logic, but non-streaming).
+3. Backend maps the WhatsApp user to a OpenFind user/session and runs the **same RAG pipeline** as the web (`/api/llm/query/stream` logic, but non-streaming).
 4. Response = **text reply** (answer) + **one image per citation** (screenshot of the cited page/region).
 
 ---
@@ -35,7 +35,7 @@ Docs: [Set up webhooks](https://developers.facebook.com/docs/whatsapp/cloud-api/
 - From webhook payload:
   - Get sender phone (and optionally name).
   - Get message text → **user query**.
-- **Map phone → Velora user**:  
+- **Map phone → OpenFind user**:  
   Either store `phone_number → user_id` (after linking in app) or use a single “WhatsApp bot” user; then resolve `user_id` and optionally `business_id` / `property_id` / `document_ids` from your DB (e.g. “default project” or last context).
 - Call your existing **query pipeline** (see 2.2) with that user/session.
 - When pipeline returns **summary + citations**, generate citation images (2.3) and send **one text message + N image messages** via WhatsApp Send API.
@@ -78,7 +78,7 @@ So: **one new backend piece** that, for each citation with `doc_id` and `page_nu
 
 ## 3. Data and auth
 
-- **Linking WhatsApp to Velora**: You need a way to know which Velora user (and optionally which property/project) the WhatsApp number is querying. For example:
+- **Linking WhatsApp to OpenFind**: You need a way to know which OpenFind user (and optionally which property/project) the WhatsApp number is querying. For example:
   - In the web app, “Link WhatsApp” flow: user enters phone, you send a code; after verification, store `user_id ↔ phone_number` (and optionally default `property_id`).
   - Or use a single shared “bot” user and one default context.
 - **Scoping**: Use the same `property_id` / `document_ids` / `message_history` / `session_id` as the web so that “what documents can this user see?” and “what conversation is this?” are consistent.
@@ -88,7 +88,7 @@ So: **one new backend piece** that, for each citation with `doc_id` and `page_nu
 
 ## 4. Summary checklist
 
-| Piece | Status in Velora | What to do |
+| Piece | Status in OpenFind | What to do |
 |-------|-------------------|------------|
 | WhatsApp Business + webhook | New | Meta app, webhook URL (HTTPS), verify + receive messages |
 | Map phone → user/session | New | DB + optional “Link WhatsApp” in web app |

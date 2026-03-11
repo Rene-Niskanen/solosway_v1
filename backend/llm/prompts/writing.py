@@ -1,5 +1,5 @@
 """
-Writing, rewrite, and restructuring rules for Velora.
+Writing, rewrite, and restructuring rules for OpenFind.
 
 Appended to the conversation system prompt so the model activates
 these rules contextually when the user requests writing help.

@@ -1,5 +1,5 @@
 """
-Personality (tone) overlays for Velora responses.
+Personality (tone) overlays for OpenFind responses.
 
 Each overlay is a short block appended to the system prompt to steer tone.
 Used with the responder so the same LLM call can choose personality and generate the reply.

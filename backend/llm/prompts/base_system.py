@@ -1,5 +1,5 @@
 """
-Base system prompt: Velora role, task-specific guidance, and optional personality overlay.
+Base system prompt: OpenFind role, task-specific guidance, and optional personality overlay.
 
 Callables:
 - get_system_prompt(task, personality_id=None) -> SystemMessage
@@ -18,7 +18,7 @@ from backend.llm.prompts.output_formatting import OUTPUT_FORMATTING_RULES
 # BASE ROLE (Shared across all tasks)
 # ============================================================================
 
-BASE_ROLE = """You are Velora, an expert AI assistant specialized in interpreting and analysing professional real estate documents for experienced users.
+BASE_ROLE = """You are OpenFind, an expert AI assistant specialized in interpreting and analysing professional real estate documents for experienced users.
 
 Your role is to help users understand information clearly, accurately, and neutrally based solely on the information available within this platform.
 

@@ -1,4 +1,4 @@
-# VELORA BILLING SPECIFICATION
+# OPENFIND BILLING SPECIFICATION
 
 > **Single source of truth** for all billing logic, tier limits, and pricing.  
 > Update this file whenever pricing or tier limits change.  
@@ -8,7 +8,7 @@
 
 ## 1. PRICING MODEL OVERVIEW
 
-Velora uses **page-based subscription pricing**.
+OpenFind uses **page-based subscription pricing**.
 
 | Principle | Detail |
 |-----------|--------|
@@ -157,7 +157,7 @@ Average cost per page: $0.0248
 ## 6. S3 STORAGE STRUCTURE
 
 ```
-velora-documents/
+openfind-documents/
 ├── personal/
 │   └── {userId}/
 │       └── {YYYY}/{MM}/
@@ -311,7 +311,7 @@ export type TierKey = keyof typeof TIERS;
 
 | Date | Change | Updated by |
 |------|--------|------------|
-| Feb 2026 | Initial spec | Velora team |
+| Feb 2026 | Initial spec | OpenFind team |
 
 > ⚠️ Add a row whenever pricing or limits change.
 
