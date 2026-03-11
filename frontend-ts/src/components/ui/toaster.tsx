@@ -29,15 +29,15 @@ export function Toaster() {
                 <ToastClose />
               </>
             ) : isPlanSuccess ? (
-              <div className="flex items-center gap-1 rounded-full border border-[#E0E0E0] bg-white px-2 py-0.5 pr-8 relative" style={{ color: "#333333" }}>
+              <div className="flex items-center gap-1 rounded-full border border-border bg-background px-2 py-0.5 pr-8 relative text-foreground">
                 {description}
-                <ToastClose className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-1 text-gray-500 opacity-70 hover:opacity-100 hover:bg-gray-100 transition-opacity" />
+                <ToastClose className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-1 text-muted-foreground opacity-70 hover:opacity-100 hover:bg-muted transition-opacity" />
               </div>
             ) : isSuccess ? (
               <>
                 <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-emerald-100">{displayIcon}</span>
                 <div className="grid gap-0.5 min-w-0 flex-1">
-                  {title && <ToastTitle className="text-[13px] font-semibold text-[#141413]">{title}</ToastTitle>}
+                  {title && <ToastTitle className="text-[13px] font-semibold text-foreground">{title}</ToastTitle>}
                   {description && <ToastDescription className="text-xs text-emerald-700">{description}</ToastDescription>}
                 </div>
                 {action}

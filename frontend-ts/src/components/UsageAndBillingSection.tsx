@@ -30,8 +30,8 @@ export const UsageAndBillingSection: React.FC = () => {
     return (
       <div className="space-y-6">
         <div>
-          <h3 className="text-[15px] font-medium text-gray-900">Usage & Billing</h3>
-          <p className="text-[13px] text-gray-500 mt-1.5 font-normal">
+          <h3 className="text-[15px] font-medium text-foreground">Usage & Billing</h3>
+          <p className="text-[13px] text-muted-foreground mt-1.5 font-normal">
             View your page usage and plan details.
           </p>
         </div>
@@ -48,8 +48,8 @@ export const UsageAndBillingSection: React.FC = () => {
     return (
       <div className="space-y-6">
         <div>
-          <h3 className="text-[15px] font-medium text-gray-900">Usage & Billing</h3>
-          <p className="text-[13px] text-gray-500 mt-1.5 font-normal">
+          <h3 className="text-[15px] font-medium text-foreground">Usage & Billing</h3>
+          <p className="text-[13px] text-muted-foreground mt-1.5 font-normal">
             View your page usage and plan details.
           </p>
         </div>
@@ -87,13 +87,13 @@ export const UsageAndBillingSection: React.FC = () => {
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
-          <h3 className="text-[15px] font-medium text-gray-900">Usage & Billing</h3>
-          <p className="text-[13px] text-gray-500 mt-1.5 font-normal">
+          <h3 className="text-[15px] font-medium text-foreground">Usage & Billing</h3>
+          <p className="text-[13px] text-muted-foreground mt-1.5 font-normal">
             View your page usage and plan details.
           </p>
         </div>
         {currencyContext?.setCurrency && (
-          <label className="flex items-center gap-2 text-[13px] text-gray-600">
+          <label className="flex items-center gap-2 text-[13px] text-foreground">
             <span>Currency</span>
             <Select value={currency} onValueChange={currencyContext.setCurrency}>
               <SelectTrigger className="flex h-6 w-[72px] items-center justify-between rounded-md border border-gray-200 bg-white py-0 pl-1.5 pr-0.5 gap-0.5 text-xs text-gray-900 focus:ring-1 focus:ring-gray-300 focus:ring-offset-0 [&_svg]:h-2.5 [&_svg]:w-2.5">

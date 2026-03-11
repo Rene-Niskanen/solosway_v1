@@ -28,6 +28,7 @@ import { AgentOrchestrationProvider } from '../contexts/AgentOrchestrationContex
 import { UsageProvider, useUsage } from '../contexts/UsageContext';
 import { PlanSelectionModal } from './PlanSelectionModal';
 import { useToast } from '@/hooks/use-toast';
+import { useTheme } from 'next-themes';
 import { Check } from 'lucide-react';
 import { TIERS, type TierKey } from '@/config/billing';
 
@@ -53,6 +54,10 @@ const DashboardLayoutContent = ({
   const { isOpen: planModalOpen, currentPlan: planModalCurrentPlan, billingCycleEnd: planModalBillingCycleEnd, targetTier: planModalTargetTier, closePlanModal, clearTargetTier } = usePlanModal();
   const { setUsageOptimistic, refetch: refetchUsage } = useUsage();
   const { toast: showToast } = useToast();
+  const { resolvedTheme } = useTheme();
+  const isDark = resolvedTheme === 'dark';
+  const layoutBorderClass = isDark ? 'border-border' : 'border-[#e9edf1]';
+  const tapAreaBg = isDark ? 'hsl(var(--muted))' : '#FFFFFF';
   const [selectedBackground, setSelectedBackground] = React.useState<string>('default-background');
   const [planChangeInProgress, setPlanChangeInProgress] = React.useState(false);
   const [planChangeTierId, setPlanChangeTierId] = React.useState<TierKey | null>(null);
@@ -700,7 +705,7 @@ const DashboardLayoutContent = ({
   return (
     <ChooseProjectModalProvider onOpen={openChooseProjectModal}>
     <div 
-      className={`flex h-screen w-full overflow-hidden relative border-l border-r border-t border-b border-[#e9edf1] ${className || ''}`}
+      className={`flex h-screen w-full overflow-hidden relative border-l border-r border-t border-b ${layoutBorderClass} ${className || ''}`}
       style={{ backgroundColor: 'transparent', boxShadow: 'none' }}
     >
       {/* Dashboard Background - Behind everything except search bar, logo, and recent projects */}
@@ -809,14 +814,14 @@ const DashboardLayoutContent = ({
           style={{
             left: (isSidebarCollapsed ? 12 : (isSidebarIconsOnly ? SIDEBAR_ICONS_ONLY_WIDTH : 224)) + filingSidebarWidth - 12,
             zIndex: 100002,
-            background: '#F2F2EF',
+            background: tapAreaBg,
             pointerEvents: 'auto',
             WebkitTapHighlightColor: 'transparent'
           }}
         >
           <div
             className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity"
-            style={{ background: 'rgba(0, 0, 0, 0.04)' }}
+            style={{ background: isDark ? 'hsl(var(--muted))' : '#F2F2EF' }}
           />
         </button>
       )}

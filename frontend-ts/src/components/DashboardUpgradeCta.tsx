@@ -57,7 +57,7 @@ export const DashboardUpgradeCta: React.FC = () => {
     <button
       type="button"
       onClick={handleClick}
-      className="absolute left-1/2 -translate-x-1/2 flex items-center gap-1 rounded-full border px-2 py-0.5 transition-all duration-150 hover:bg-[#F0F0EE] hover:border-[#D4D4D0] hover:shadow-md hover:scale-[1.02] focus:outline-none focus:ring-2 focus:ring-[#141413]/20"
+      className="absolute left-1/2 -translate-x-1/2 flex items-center gap-1 rounded-full border px-2 py-0.5 transition-all duration-150 hover:bg-muted hover:border-border hover:shadow-md hover:scale-[1.02] focus:outline-none focus:ring-2 focus:ring-[#141413]/20"
       style={{
         top: 24,
         zIndex: 1000,

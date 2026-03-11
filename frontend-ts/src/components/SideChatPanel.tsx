@@ -801,7 +801,8 @@ const OrangeCitationSwoopHighlight: React.FC<{
             line-height: inherit;
             overflow: visible;
             pointer-events: none;
-            background: #F2F2EF;
+            background: hsl(220, 14%, 96%);
+            color: #0D0D0D;
             background-repeat: no-repeat;
             background-size: 0% 100%;
             animation: orange-citation-swoop 0.22s cubic-bezier(0.22, 1, 0.36, 1) 0.04s forwards;
@@ -859,7 +860,8 @@ const OrangeCitationSwoopHighlight: React.FC<{
         line-height: inherit;
         overflow: visible;
         pointer-events: none;
-        background: #F2F2EF;
+        background: hsl(220, 14%, 96%);
+        color: #0D0D0D;
         background-repeat: no-repeat;
         background-size: 0% 100%;
         animation: orange-citation-swoop 0.22s cubic-bezier(0.22, 1, 0.36, 1) 0.04s forwards;
@@ -1007,7 +1009,8 @@ const BlueCitedTextHighlight: React.FC<{
     padding: '5px 5px',
     boxDecorationBreak: 'clone',
     WebkitBoxDecorationBreak: 'clone',
-    backgroundColor: '#F2F2EF',
+    backgroundColor: 'hsl(220, 14%, 96%)',
+    color: '#0D0D0D',
     border: 'none',
     lineHeight: 1.5,
     overflow: 'visible',
@@ -2581,7 +2584,7 @@ const StreamingResponseText: React.FC<{
       if (currentCitationNum === firstCitationNum) {
         if (firstCalloutBlockIndexRef.current === null) firstCalloutBlockIndexRef.current = blockIndexRef.current;
         return (
-        <CitationCalloutUnveilWrapper key={`first-callout-unveil-${messageId ?? ''}`} onUnveilComplete={handleFirstCalloutUnveil} skipAnimation={skipRevealAnimation || firstCalloutUnveiledRef.current || isStreaming} triggerRef={firstPartTriggerRef} isStreaming={isStreaming}>
+        <CitationCalloutUnveilWrapper key={`first-callout-unveil-${messageId ?? ''}`} onUnveilComplete={handleFirstCalloutUnveil} skipAnimation={true} triggerRef={firstPartTriggerRef} isStreaming={isStreaming}>
           {calloutNode}
         </CitationCalloutUnveilWrapper>
         );
@@ -2611,7 +2614,7 @@ const StreamingResponseText: React.FC<{
     const renderFirstCalloutWithUnveil = () => {
       if (firstCalloutBlockIndexRef.current === null) firstCalloutBlockIndexRef.current = blockIndexRef.current;
       return (
-        <CitationCalloutUnveilWrapper key={`first-callout-unveil-${messageId ?? ''}`} onUnveilComplete={handleFirstCalloutUnveil} skipAnimation={skipRevealAnimation || firstCalloutUnveiledRef.current || isStreaming} triggerRef={firstPartTriggerRef} isStreaming={isStreaming}>
+        <CitationCalloutUnveilWrapper key={`first-callout-unveil-${messageId ?? ''}`} onUnveilComplete={handleFirstCalloutUnveil} skipAnimation={true} triggerRef={firstPartTriggerRef} isStreaming={isStreaming}>
           {renderCallout(firstCitationNum!, 'callout-p', 0)}
         </CitationCalloutUnveilWrapper>
       );
@@ -2933,7 +2936,7 @@ const StreamingResponseText: React.FC<{
       if (currentCitationNum === firstCitationNumP) {
         if (firstCalloutBlockIndexRef.current === null) firstCalloutBlockIndexRef.current = blockIndexRef.current;
         return (
-        <CitationCalloutUnveilWrapper key={`first-callout-unveil-${messageId ?? ''}`} onUnveilComplete={handleFirstCalloutUnveil} skipAnimation={skipRevealAnimation || firstCalloutUnveiledRef.current || isStreaming} triggerRef={firstPartTriggerRefP} isStreaming={isStreaming}>
+        <CitationCalloutUnveilWrapper key={`first-callout-unveil-${messageId ?? ''}`} onUnveilComplete={handleFirstCalloutUnveil} skipAnimation={true} triggerRef={firstPartTriggerRefP} isStreaming={isStreaming}>
           {calloutNode}
         </CitationCalloutUnveilWrapper>
         );
@@ -2963,7 +2966,7 @@ const StreamingResponseText: React.FC<{
     const renderFirstCalloutWithUnveilP = () => {
       if (firstCalloutBlockIndexRef.current === null) firstCalloutBlockIndexRef.current = blockIndexRef.current;
       return (
-        <CitationCalloutUnveilWrapper key={`first-callout-unveil-${messageId ?? ''}`} onUnveilComplete={handleFirstCalloutUnveil} skipAnimation={skipRevealAnimation || firstCalloutUnveiledRef.current || isStreaming} triggerRef={firstPartTriggerRefP} isStreaming={isStreaming}>
+        <CitationCalloutUnveilWrapper key={`first-callout-unveil-${messageId ?? ''}`} onUnveilComplete={handleFirstCalloutUnveil} skipAnimation={true} triggerRef={firstPartTriggerRefP} isStreaming={isStreaming}>
           {renderCalloutP(firstCitationNumP!, 'callout-p', 0)}
         </CitationCalloutUnveilWrapper>
       );
@@ -6142,7 +6145,7 @@ const CitationBboxPreview: React.FC<CitationBboxPreviewProps> = ({ citationBboxD
           width: `${widthPct}%`,
           height: `${heightPct}%`,
           backgroundColor: 'rgba(212, 210, 255, 0.45)',
-          border: 'none',
+          border: '1px solid rgb(191, 189, 230)',
           borderRadius: '2px',
           pointerEvents: 'none',
           zIndex: 10
@@ -6381,7 +6384,7 @@ const CitationHoverPreview: React.FC<CitationHoverPreviewProps> = ({
                 width: `${Math.min(imageWidth, finalBboxWidth)}px`,
                 height: `${Math.min(imageHeight, finalBboxHeight)}px`,
                 backgroundColor: 'rgba(212, 210, 255, 0.45)',
-                border: 'none',
+                border: '1px solid rgb(191, 189, 230)',
                 borderRadius: '2px',
                 pointerEvents: 'none',
                 zIndex: 10
@@ -9426,17 +9429,47 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     }
   }, [chatMessages]);
 
-  /** When user moves to a different citation (prev/next or click), close the previous citation's document preview and click panel so only the new citation's callout shows. */
+  /** When user moves to a different citation (Accept, prev/next, or click), update the big document preview to show the new citation (same as response preview scroll behavior). Close click panel. */
   const citationReviewCurrentIndexRef = React.useRef<number>(citationReviewCurrentIndex);
   React.useEffect(() => {
     if (citationReviewMessageId == null) return;
     const prev = citationReviewCurrentIndexRef.current;
     citationReviewCurrentIndexRef.current = citationReviewCurrentIndex;
     if (prev !== citationReviewCurrentIndex) {
-      closeExpandedCardView();
       setCitationClickPanel(null);
+      // If document preview is open, navigate it to the new citation (like response preview does)
+      if (expandedCardViewDoc) {
+        const revMsg = chatMessages.find((m) => ((m as { id?: string }).id ?? `msg-${chatMessages.indexOf(m)}`) === citationReviewMessageId);
+        if (revMsg && revMsg.citations) {
+          const ordered = getOrderedCitationNumbersForMessage(revMsg);
+          const num = ordered[citationReviewCurrentIndex];
+          const nextCitation = num != null ? revMsg.citations[num] : null;
+          if (nextCitation && nextCitation.bbox) {
+            const pageNumber = (nextCitation.page || nextCitation.bbox?.page) ?? nextCitation.page_number ?? 1;
+            const highlightData = {
+              fileId: nextCitation.doc_id || (nextCitation as any).document_id,
+              bbox: {
+                left: nextCitation.bbox.left,
+                top: nextCitation.bbox.top,
+                width: nextCitation.bbox.width,
+                height: nextCitation.bbox.height,
+                page: pageNumber,
+              },
+              doc_id: nextCitation.doc_id || (nextCitation as any).document_id,
+              block_id: nextCitation.block_id,
+              block_content: nextCitation.matched_chunk_metadata?.content || '',
+              original_filename: nextCitation.original_filename || expandedCardViewDoc.filename,
+            };
+            const nextDocId = nextCitation.doc_id || (nextCitation as any).document_id || expandedCardViewDoc.docId;
+            const nextFilename = nextCitation.original_filename || expandedCardViewDoc.filename;
+            const viewed = citationReviewMessageId && num != null ? { messageId: citationReviewMessageId, citationNumber: num } : null;
+            openExpandedCardView(nextDocId, nextFilename, highlightData, false, viewed ?? null);
+            if (currentChatId && viewed) setDocumentViewedCitation(currentChatId, viewed);
+          }
+        }
+      }
     }
-  }, [citationReviewCurrentIndex, citationReviewMessageId, closeExpandedCardView]);
+  }, [citationReviewCurrentIndex, citationReviewMessageId, expandedCardViewDoc, chatMessages, openExpandedCardView, setDocumentViewedCitation, currentChatId]);
 
   React.useLayoutEffect(() => {
     const scrollContainer = contentAreaRef.current;
@@ -19352,7 +19385,7 @@ responseStartedAt: existingMessage?.responseStartedAt,
                             onCheckedChange={(checked) => {
                               flushSync(() => setShowReasoningTrace(checked));
                             }}
-                            className="h-4 w-7 border border-black/[0.08] bg-[#e5e7eb] shadow-none data-[state=checked]:bg-[#9ca3af] data-[state=unchecked]:bg-[#e5e7eb] [&>span]:h-3 [&>span]:w-3 [&>span]:data-[state=checked]:translate-x-3"
+                            className="h-4 w-7 border border-black/[0.08] bg-[#e5e7eb] shadow-none data-[state=checked]:bg-[#d1d5db] data-[state=unchecked]:bg-[#e5e7eb] [&>span]:h-3 [&>span]:w-3 [&>span]:bg-white [&>span]:data-[state=checked]:translate-x-3"
                             aria-label="Toggle reasoning trace"
                           />
                         </div>
@@ -19365,7 +19398,7 @@ responseStartedAt: existingMessage?.responseStartedAt,
                             checked={showHighlight}
                             onClick={(e) => e.stopPropagation()}
                             onCheckedChange={(checked) => setShowHighlight(checked)}
-                            className="h-4 w-7 border border-black/[0.08] bg-[#e5e7eb] shadow-none data-[state=checked]:bg-[#9ca3af] data-[state=unchecked]:bg-[#e5e7eb] [&>span]:h-3 [&>span]:w-3 [&>span]:data-[state=checked]:translate-x-3"
+                            className="h-4 w-7 border border-black/[0.08] bg-[#e5e7eb] shadow-none data-[state=checked]:bg-[#d1d5db] data-[state=unchecked]:bg-[#e5e7eb] [&>span]:h-3 [&>span]:w-3 [&>span]:bg-white [&>span]:data-[state=checked]:translate-x-3"
                             aria-label="Toggle key points"
                           />
                         </div>
@@ -19378,7 +19411,7 @@ responseStartedAt: existingMessage?.responseStartedAt,
                             checked={showCitations}
                             onClick={(e) => e.stopPropagation()}
                             onCheckedChange={(checked) => setShowCitations(checked)}
-                            className="h-4 w-7 border border-black/[0.08] bg-[#e5e7eb] shadow-none data-[state=checked]:bg-[#9ca3af] data-[state=unchecked]:bg-[#e5e7eb] [&>span]:h-3 [&>span]:w-3 [&>span]:data-[state=checked]:translate-x-3"
+                            className="h-4 w-7 border border-black/[0.08] bg-[#e5e7eb] shadow-none data-[state=checked]:bg-[#d1d5db] data-[state=unchecked]:bg-[#e5e7eb] [&>span]:h-3 [&>span]:w-3 [&>span]:bg-white [&>span]:data-[state=checked]:translate-x-3"
                             aria-label="Toggle citations"
                           />
                         </div>
@@ -19391,7 +19424,7 @@ responseStartedAt: existingMessage?.responseStartedAt,
                             checked={showCitationPreviewBar}
                             onClick={(e) => e.stopPropagation()}
                             onCheckedChange={(checked) => setShowCitationPreviewBar(checked)}
-                            className="h-4 w-7 border border-black/[0.08] bg-[#e5e7eb] shadow-none data-[state=checked]:bg-[#9ca3af] data-[state=unchecked]:bg-[#e5e7eb] [&>span]:h-3 [&>span]:w-3 [&>span]:data-[state=checked]:translate-x-3"
+                            className="h-4 w-7 border border-black/[0.08] bg-[#e5e7eb] shadow-none data-[state=checked]:bg-[#d1d5db] data-[state=unchecked]:bg-[#e5e7eb] [&>span]:h-3 [&>span]:w-3 [&>span]:bg-white [&>span]:data-[state=checked]:translate-x-3"
                             aria-label="Toggle citation preview"
                           />
                         </div>
@@ -19404,7 +19437,7 @@ responseStartedAt: existingMessage?.responseStartedAt,
                             checked={showBlueCitationHighlight}
                             onClick={(e) => e.stopPropagation()}
                             onCheckedChange={(checked) => setShowBlueCitationHighlight(checked)}
-                            className="h-4 w-7 border border-black/[0.08] bg-[#e5e7eb] shadow-none data-[state=checked]:bg-[#9ca3af] data-[state=unchecked]:bg-[#e5e7eb] [&>span]:h-3 [&>span]:w-3 [&>span]:data-[state=checked]:translate-x-3"
+                            className="h-4 w-7 border border-black/[0.08] bg-[#e5e7eb] shadow-none data-[state=checked]:bg-[#d1d5db] data-[state=unchecked]:bg-[#e5e7eb] [&>span]:h-3 [&>span]:w-3 [&>span]:bg-white [&>span]:data-[state=checked]:translate-x-3"
                             aria-label="Toggle citation highlight"
                           />
                         </div>
@@ -19462,22 +19495,19 @@ responseStartedAt: existingMessage?.responseStartedAt,
                         onMapToggle();
                       }
                     }}
-                    className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1.5' : 'justify-center'} rounded-xl border border-black/[0.06] bg-white text-[#4b5563] shadow-[0_1px_1px_rgba(0,0,0,0.02)] transition-all duration-150 hover:border-black/[0.10] hover:text-[#111827] hover:shadow-[0_1px_2px_rgba(0,0,0,0.03)] active:scale-[0.99] cursor-pointer`}
+                    className="w-8 h-8 flex items-center justify-center rounded-md hover:bg-gray-100 transition-colors"
                     title="Close chat"
                     type="button"
+                    aria-label="Close chat"
                     style={{
-                      padding: actualPanelWidth >= 750 ? '6px 6px' : '6px',
-                      height: '34px',
-                      minHeight: '34px',
                       marginLeft: '8px',
                       ...(isPropertyDetailsOpen ? { marginRight: '8px' } : {}),
                       position: 'relative',
                       zIndex: 10001,
                       pointerEvents: 'auto',
-                      backgroundColor: 'rgba(255, 255, 255, 0.92)'
                     }}
                   >
-                    <X className="w-4 h-4 text-[#666]" strokeWidth={1.25} />
+                    <X className="w-4 h-4 text-[#6B7280]" strokeWidth={1.5} />
                   </button>
                   )}
                 </div>

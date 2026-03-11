@@ -181,7 +181,7 @@ export const CitationPagePreviewContent: React.FC<{
             width: `${Math.min(cachedPageImage.imageWidth, transform.finalBboxWidth)}px`,
             height: `${Math.min(cachedPageImage.imageHeight, transform.finalBboxHeight)}px`,
             backgroundColor: "rgba(212, 210, 255, 0.45)",
-            border: "none",
+            border: "1px solid rgb(191, 189, 230)",
             borderRadius: "2px",
             pointerEvents: "none",
             zIndex: 10,
@@ -489,7 +489,7 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
               fontSize: "11px",
               fontWeight: 600,
               color: "#6b7280",
-              background: "#f9fafb",
+              background: "hsl(var(--muted))",
               border: "none",
               cursor: "pointer",
               display: "flex",
@@ -557,7 +557,7 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
           minHeight: 280,
           position: "relative",
           overflow: "hidden",
-          backgroundColor: "#f9fafb",
+          backgroundColor: "hsl(var(--muted))",
         }}
       >
         {/* Citation render area - scrollable, scrollbar hidden via class */}

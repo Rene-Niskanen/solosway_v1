@@ -158,20 +158,20 @@
 
     /* Dark Sidebar - Professional Blue Gradient */
     --sidebar-background: linear-gradient(180deg, hsl(215, 20%, 55%) 0%, hsl(220, 25%, 45%) 25%, hsl(225, 30%, 35%) 50%, hsl(230, 35%, 25%) 75%, hsl(235, 40%, 18%) 100%);
-    --sidebar-foreground: 255 255 255;
+    --sidebar-foreground: 120 2% 78%; /* #C5C7C5 - soft grey for icons and text */
     --sidebar-primary: 255 255 255;
     --sidebar-primary-foreground: 255 255 255;
-    --sidebar-accent: 255 255 255 / 0.1;
-    --sidebar-accent-foreground: 255 255 255;
+    --sidebar-accent: 222 47% 12%;
+    --sidebar-accent-foreground: 210 40% 98%;
     --sidebar-border: transparent;
     --sidebar-ring: 255 255 255;
-    --sidebar-active: 120 100% 45%; /* Darker green for active state */
+    --sidebar-active: 222 47% 9%; /* Dark blue, matches selected state */
   }
 }
 
 @layer base {
   body {
-    @apply bg-gradient-to-br from-slate-50 via-blue-50/30 to-purple-50/20 text-foreground min-h-screen;
+    @apply bg-gradient-to-br from-slate-50 via-blue-50/30 to-purple-50/20 dark:from-[#0f0f10] dark:via-[#131314] dark:to-[#161618] text-foreground min-h-screen;
     background-attachment: fixed;
     font-family: var(--font-sans);
   }
@@ -211,12 +211,24 @@
     scrollbar-color: hsl(var(--muted-foreground) / 0.3) hsl(220 14% 96%);
   }
 
+  .dark .scrollbar-track-slate-100 {
+    scrollbar-color: hsl(var(--muted-foreground) / 0.3) hsl(var(--muted));
+  }
+
   .scrollbar-thumb-slate-300::-webkit-scrollbar-thumb {
     background: hsl(220 9% 75%);
   }
 
+  .dark .scrollbar-thumb-slate-300::-webkit-scrollbar-thumb {
+    background: hsl(var(--muted-foreground) / 0.4);
+  }
+
   .scrollbar-thumb-slate-400:hover::-webkit-scrollbar-thumb {
     background: hsl(220 9% 60%);
+  }
+
+  .dark .scrollbar-thumb-slate-400:hover::-webkit-scrollbar-thumb {
+    background: hsl(var(--muted-foreground) / 0.6);
   }
 }
 
@@ -333,10 +345,22 @@
     background-color: rgb(148 163 184);
   }
 
+  .dark .scrollbar-thin::-webkit-scrollbar-thumb {
+    background-color: hsl(var(--muted-foreground) / 0.4);
+  }
+
+  .dark .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+    background-color: hsl(var(--muted-foreground) / 0.6);
+  }
+
   /* Firefox scrollbar */
   .scrollbar-thin {
     scrollbar-width: thin;
     scrollbar-color: rgb(203 213 225) transparent;
+  }
+
+  .dark .scrollbar-thin {
+    scrollbar-color: hsl(var(--muted-foreground) / 0.4) transparent;
   }
 
   /* Permanently hide Mapbox branding */
@@ -376,6 +400,18 @@ button:active {
 button:focus-visible:not(:focus-within) {
   outline: 2px solid transparent !important;
   outline-offset: 2px !important;
+}
+
+/* Text selection in chat responses: match drag highlight to persistent overlay (Ask OpenFind) */
+.streaming-response-text::selection,
+.streaming-response-text *::selection {
+  background: rgba(59, 130, 246, 0.2);
+  color: inherit;
+}
+.streaming-response-text::-moz-selection,
+.streaming-response-text *::-moz-selection {
+  background: rgba(59, 130, 246, 0.2);
+  color: inherit;
 }
 
 /* Citation link buttons – OpenAI/Claude-style reference pills */
@@ -446,6 +482,50 @@ button:focus-visible:not(:focus-within) {
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.08) !important;
 }
 
+/* Citation pills: same light design in dark mode (do not darken) */
+.dark .citation-link-btn {
+  color: #6b7280 !important;
+  background-color: rgba(0, 0, 0, 0.04) !important;
+}
+.dark .citation-link-btn:hover {
+  background-color: rgba(0, 0, 0, 0.06) !important;
+  color: #4b5563 !important;
+}
+.dark .citation-link-btn.citation-link-btn--saved {
+  color: #9ca3af !important;
+  background-color: rgba(0, 0, 0, 0.03) !important;
+}
+.dark .citation-link-btn.citation-link-btn--saved:hover {
+  background-color: rgba(0, 0, 0, 0.06) !important;
+  color: #6b7280 !important;
+}
+.dark .citation-link-btn.citation-link-btn--selected {
+  color: #4b5563 !important;
+  background-color: #f3f4f6 !important;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.08) !important;
+}
+.dark .citation-link-btn.citation-link-btn--selected:hover {
+  background-color: #e5e7eb !important;
+  color: #374151 !important;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.12) !important;
+}
+.dark [data-cited-text-block] .citation-link-btn {
+  background-color: rgba(0, 0, 0, 0.04) !important;
+  color: #6b7280 !important;
+}
+.dark [data-cited-text-block] .citation-link-btn:hover {
+  background-color: rgba(0, 0, 0, 0.06) !important;
+}
+.dark [data-cited-text-block] .citation-link-btn.citation-link-btn--saved {
+  background-color: rgba(0, 0, 0, 0.03) !important;
+  color: #9ca3af !important;
+}
+.dark [data-cited-text-block] .citation-link-btn.citation-link-btn--selected {
+  background-color: #f3f4f6 !important;
+  color: #4b5563 !important;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.08) !important;
+}
+
 /* Completely hidden scrollbar for tabs container - still scrollable */
 .tabs-scrollbar {
   scrollbar-width: none; /* Firefox */
@@ -488,6 +568,15 @@ button:focus-visible:not(:focus-within) {
 .filing-pending-files-scroll::-webkit-scrollbar-thumb:hover {
   background: rgba(0, 0, 0, 0.22);
 }
+.dark .filing-pending-files-scroll {
+  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+}
+.dark .filing-pending-files-scroll::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2);
+}
+.dark .filing-pending-files-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.35);
+}
 
 /* FilingSidebar search input – no border, no focus outline */
 .filing-sidebar-search-input {
@@ -507,6 +596,9 @@ button:focus-visible:not(:focus-within) {
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
 }
+.dark .filing-sidebar-main-scroll {
+  scrollbar-color: rgba(255, 255, 255, 0.25) transparent;
+}
 .filing-sidebar-main-scroll::-webkit-scrollbar {
   width: 6px;
 }
@@ -520,11 +612,20 @@ button:focus-visible:not(:focus-within) {
 .filing-sidebar-main-scroll::-webkit-scrollbar-thumb:hover {
   background: rgba(0, 0, 0, 0.3);
 }
+.dark .filing-sidebar-main-scroll::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.25);
+}
+.dark .filing-sidebar-main-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.4);
+}
 
 /* Translucent scrollbar for DOCX preview */
 .docx-scrollbar {
   scrollbar-width: thin; /* Firefox */
   scrollbar-color: rgba(0, 0, 0, 0.2) transparent;
+}
+.dark .docx-scrollbar {
+  scrollbar-color: rgba(255, 255, 255, 0.25) transparent;
 }
 
 .docx-scrollbar::-webkit-scrollbar {
@@ -544,6 +645,12 @@ button:focus-visible:not(:focus-within) {
 
 .docx-scrollbar::-webkit-scrollbar-thumb:hover {
   background: rgba(0, 0, 0, 0.3);
+}
+.dark .docx-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.25);
+}
+.dark .docx-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.4);
 }
 
 /* Material Symbols Outlined */

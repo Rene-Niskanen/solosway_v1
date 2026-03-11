@@ -910,7 +910,7 @@ const ExpandedCardView: React.FC<{
                                       width: `${Math.min(pageDimensions.width, finalBboxWidth)}px`,
                                       height: `${Math.min(pageDimensions.height, finalBboxHeight)}px`,
                                       backgroundColor: 'rgba(212, 210, 255, 0.45)',
-                                      border: 'none',
+                                      border: '1px solid rgb(191, 189, 230)',
                                       borderRadius: '2px',
                                       pointerEvents: 'auto',
                                       cursor: 'pointer',

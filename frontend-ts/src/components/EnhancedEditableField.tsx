@@ -292,7 +292,7 @@ export const EnhancedEditableField: React.FC<EnhancedEditableFieldProps> = ({
     textAlign: 'left',
     font: 'inherit',
     appearance: 'none',
-    backgroundColor: staticDisplay ? (containerBackgroundColor ?? 'transparent') : (isHovered ? '#f9fafb' : (containerBackgroundColor ?? 'transparent')),
+    backgroundColor: staticDisplay ? (containerBackgroundColor ?? 'transparent') : (isHovered ? 'hsl(var(--muted))' : (containerBackgroundColor ?? 'transparent')),
     transition: staticDisplay ? 'none' : 'all 150ms ease',
   };
 

@@ -25,6 +25,7 @@ import { useNavigate } from 'react-router-dom';
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import { FileAttachmentData } from './FileAttachment';
+import { useTheme } from 'next-themes';
 import { usePreview } from '../contexts/PreviewContext';
 import { useChatStateStore, useActiveChatDocumentPreview, type CitationData, type DocumentPreview } from '../contexts/ChatStateStore';
 import { useAuthUser } from '@/contexts/AuthContext';
@@ -116,6 +117,9 @@ const LocationPickerModal: React.FC<{
   onRestoreSidebarState?: (shouldBeCollapsed: boolean) => void;
   getSidebarState?: () => boolean;
 }> = ({ savedLocation, onLocationSaved, onCloseSidebar, onRestoreSidebarState, getSidebarState }) => {
+  const { resolvedTheme } = useTheme();
+  const isDark = resolvedTheme === 'dark';
+  const mapStyle = isDark ? 'mapbox://styles/mapbox/dark-v11' : 'mapbox://styles/mapbox/light-v11';
   const [isOpen, setIsOpen] = React.useState(false);
   const [isPreviewMode, setIsPreviewMode] = React.useState(false);
   // Store sidebar state before entering preview mode
@@ -399,7 +403,7 @@ const LocationPickerModal: React.FC<{
           
           map.current = new mapboxgl.Map({
             container: mapContainer.current,
-            style: 'mapbox://styles/mapbox/light-v11',
+            style: mapStyle,
             center: initialCenter,
             zoom: initialZoom,
             attributionControl: false,
@@ -983,7 +987,7 @@ const LocationPickerModal: React.FC<{
 
     previewMap.current = new mapboxgl.Map({
       container: previewMapContainer.current,
-      style: 'mapbox://styles/mapbox/light-v11',
+      style: mapStyle,
       center: selectedCoordinates,
       zoom: selectedZoom,
       attributionControl: false,
@@ -1107,24 +1111,24 @@ const LocationPickerModal: React.FC<{
 
   return (
     <>
-      <div className="w-full min-w-0 rounded-xl border border-gray-200 p-6 shadow-sm" style={{ backgroundColor: '#F6F7F3' }}>
+      <div className={`w-full min-w-0 rounded-xl border p-6 shadow-sm ${isDark ? 'border-border' : 'border-gray-200'}`} style={{ backgroundColor: isDark ? 'hsl(var(--muted))' : '#F6F7F3' }}>
         <div className="flex flex-wrap items-baseline gap-2 mb-2">
-          <span className="text-[17px] font-normal text-gray-900">Default Map Location</span>
+          <span className={`text-[17px] font-normal ${isDark ? 'text-foreground' : 'text-gray-900'}`}>Default Map Location</span>
         </div>
-        <p className="text-[13px] text-gray-600 mb-1">
+        <p className={`text-[13px] mb-1 ${isDark ? 'text-muted-foreground' : 'text-gray-600'}`}>
           Choose where the map opens when you first view it.
         </p>
         {savedLocation && (
           <div className="flex items-center gap-2 mb-6 mt-1.5">
-            <Locate className="w-3.5 h-3.5 flex-shrink-0 text-gray-500" strokeWidth={2} />
-            <span className="text-[13px] font-normal text-gray-700">{savedLocation}</span>
+            <Locate className={`w-3.5 h-3.5 flex-shrink-0 ${isDark ? 'text-muted-foreground' : 'text-gray-500'}`} strokeWidth={2} />
+            <span className={`text-[13px] font-normal ${isDark ? 'text-foreground' : 'text-gray-700'}`}>{savedLocation}</span>
           </div>
         )}
         {!savedLocation && <div className="mb-6" />}
         <Button
           variant="outline"
           onClick={() => setIsOpen(true)}
-          className="rounded-sm px-3 py-1 h-auto text-xs font-medium bg-transparent border border-gray-300 text-gray-700 hover:bg-transparent hover:text-gray-700 mt-6"
+          className={`rounded-sm px-3 py-1 h-auto text-xs font-medium bg-transparent border mt-6 ${isDark ? 'border-border text-foreground hover:bg-transparent hover:text-foreground' : 'border-gray-300 text-gray-700 hover:bg-transparent hover:text-gray-700'}`}
         >
           Set default location
         </Button>
@@ -1139,7 +1143,7 @@ const LocationPickerModal: React.FC<{
           }
         `}</style>
         <DialogContent
-          className="p-0 gap-0 overflow-hidden border-0 bg-white max-h-[90vh] min-w-0 max-w-4xl w-[min(56rem,calc(100vw-32px))] rounded-xl flex flex-col !z-[100100]"
+          className={`p-0 gap-0 overflow-hidden border-0 max-h-[90vh] min-w-0 max-w-4xl w-[min(56rem,calc(100vw-32px))] rounded-xl flex flex-col !z-[100100] ${isDark ? 'bg-background' : 'bg-white'}`}
           style={{ boxShadow: '0 4px 24px rgba(0,0,0,0.08)' }}
           overlayClassName="bg-black/10 !z-[100100]"
         >
@@ -1148,7 +1152,7 @@ const LocationPickerModal: React.FC<{
             className="flex shrink-0 flex-col gap-3 pl-10 pr-12 py-4 rounded-t-xl"
             style={{ backgroundColor: '#F5F5F5' }}
           >
-            <DialogTitle className="text-[14px] font-medium text-gray-900 tracking-tight m-0 p-0">
+            <DialogTitle className={`text-[14px] font-medium tracking-tight m-0 p-0 ${isDark ? 'text-foreground' : 'text-gray-900'}`}>
               Set Default Map Location
             </DialogTitle>
             <div className="relative">
@@ -1200,7 +1204,7 @@ const LocationPickerModal: React.FC<{
                 />
                 {isLoadingSuggestions && (
                   <div className="flex-shrink-0">
-                    <Loader2 className="w-5 h-5 animate-spin text-gray-400" />
+                    <Loader2 className={`w-5 h-5 animate-spin ${isDark ? 'text-muted-foreground' : 'text-gray-400'}`} />
                   </div>
                 )}
                 {locationInput && !isLoadingSuggestions && (
@@ -1211,7 +1215,7 @@ const LocationPickerModal: React.FC<{
                       }
                     }}
                     disabled={isGeocoding}
-                    className="flex-shrink-0 disabled:opacity-50 p-2 rounded-md hover:bg-gray-100 text-neutral-500 transition-colors"
+                    className={`flex-shrink-0 disabled:opacity-50 p-2 rounded-md text-neutral-500 transition-colors ${isDark ? 'hover:bg-muted' : 'hover:bg-gray-100'}`}
                   >
                     {isGeocoding ? <Loader2 className="w-5 h-5 animate-spin" /> : <ArrowRight className="w-5 h-5" strokeWidth={2} />}
                   </button>
@@ -1221,7 +1225,7 @@ const LocationPickerModal: React.FC<{
               {/* Suggestions Dropdown — list style like Recents (rounded-lg items, same typography) */}
               {showSuggestions && suggestions.length > 0 && (
                 <div
-                  className="absolute z-50 left-0 right-0 mt-1 rounded-lg border border-gray-200 bg-white shadow-lg overflow-hidden"
+                  className={`absolute z-50 left-0 right-0 mt-1 rounded-lg border shadow-lg overflow-hidden ${isDark ? 'border-border bg-background' : 'border-gray-200 bg-white'}`}
                   style={{ maxHeight: '320px' }}
                 >
                   <div className="overflow-y-auto py-2 max-h-[320px] [-webkit-overflow-scrolling:touch]">
@@ -1238,10 +1242,10 @@ const LocationPickerModal: React.FC<{
                           e.stopPropagation();
                           handleSuggestionSelect(suggestion);
                         }}
-                        className="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-left transition-colors hover:bg-gray-100 mx-2"
+                        className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg text-left transition-colors mx-2 ${isDark ? 'hover:bg-muted' : 'hover:bg-gray-100'}`}
                       >
-                        <MapPin className="w-4 h-4 text-gray-400 flex-shrink-0" strokeWidth={1.5} />
-                        <span className="flex-1 min-w-0 text-[13px] font-normal text-gray-900 truncate">
+                        <MapPin className={`w-4 h-4 flex-shrink-0 ${isDark ? 'text-muted-foreground' : 'text-gray-400'}`} strokeWidth={1.5} />
+                        <span className={`flex-1 min-w-0 text-[13px] font-normal truncate ${isDark ? 'text-foreground' : 'text-gray-900'}`}>
                           {suggestion.place_name}
                         </span>
                       </button>
@@ -1251,8 +1255,8 @@ const LocationPickerModal: React.FC<{
               )}
             </div>
             {isGeocoding && (
-              <p className="text-[12px] text-gray-500 flex items-center gap-1.5">
-                <span className="inline-block w-1 h-1 bg-gray-500 rounded-full animate-pulse" />
+              <p className={`text-[12px] flex items-center gap-1.5 ${isDark ? 'text-muted-foreground' : 'text-gray-500'}`}>
+                <span className={`inline-block w-1 h-1 rounded-full animate-pulse ${isDark ? 'bg-muted-foreground' : 'bg-gray-500'}`} />
                 Searching...
               </p>
             )}
@@ -1266,11 +1270,11 @@ const LocationPickerModal: React.FC<{
 
           {/* Scrollable body — same pattern as Search modal (flex-1 min-h-0 overflow-y-auto) */}
           <div className="flex-1 min-h-0 overflow-y-auto py-4 px-4 scroll-smooth [-webkit-overflow-scrolling:touch]">
-            <p className="px-4 pt-1 pb-2 text-[11px] text-gray-500 font-medium">
+            <p className={`px-4 pt-1 pb-2 text-[11px] font-medium ${isDark ? 'text-muted-foreground' : 'text-gray-500'}`}>
               Map Preview
             </p>
             <div
-              className="w-full h-96 overflow-hidden relative rounded-lg border border-gray-200 bg-gray-50"
+              className={`w-full h-96 overflow-hidden relative rounded-lg border ${isDark ? 'border-border bg-muted' : 'border-gray-200 bg-gray-50'}`}
               style={{ minHeight: '384px' }}
             >
                 {/* Map Container */}
@@ -1286,12 +1290,12 @@ const LocationPickerModal: React.FC<{
           </div>
 
           <DialogFooter
-            className="shrink-0 flex-row justify-between gap-2 rounded-b-xl border-t border-gray-200 px-6 py-4"
+            className={`shrink-0 flex-row justify-between gap-2 rounded-b-xl border-t px-6 py-4 ${isDark ? 'border-border' : 'border-gray-200'}`}
             style={{ backgroundColor: '#F5F5F5' }}
           >
             <button
               onClick={() => setIsOpen(false)}
-              className="px-4 py-2 text-[13px] font-medium text-gray-600 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors"
+              className={`px-4 py-2 text-[13px] font-medium rounded-lg transition-colors ${isDark ? 'text-muted-foreground bg-background border border-border hover:bg-muted' : 'text-gray-500 bg-white border border-gray-300 hover:bg-gray-100'}`}
             >
               Cancel
             </button>
@@ -1305,14 +1309,14 @@ const LocationPickerModal: React.FC<{
                   onCloseSidebar?.();
                   setIsPreviewMode(true);
                 }}
-                className="px-4 py-2 text-[13px] font-medium text-gray-600 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors"
+                className="px-4 py-2 text-[13px] font-medium text-muted-foreground bg-background border border-border rounded-lg hover:bg-muted transition-colors"
               >
                 Adjust Zoom & Preview
               </button>
               <button
                 onClick={handleConfirm}
                 disabled={!selectedCoordinates}
-                className="px-4 py-2 text-[13px] font-medium text-white rounded-lg min-w-[140px] transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:bg-gray-300 bg-gray-900 hover:bg-gray-800 disabled:hover:bg-gray-300"
+                className="px-4 py-2 text-[13px] font-medium text-white rounded-lg min-w-[140px] transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:bg-muted bg-primary hover:bg-primary/90 disabled:hover:bg-muted"
               >
                 Confirm Location
               </button>
@@ -1525,13 +1529,13 @@ const BackgroundSettings: React.FC = () => {
   return (
     <div className="space-y-6">
       <div>
-        <h3 className="text-[15px] font-medium text-gray-900">Background</h3>
-        <p className="text-[13px] text-gray-500 mt-1.5 font-normal">
+        <h3 className="text-[15px] font-medium text-foreground">Background</h3>
+        <p className="text-[13px] text-muted-foreground mt-1.5 font-normal">
           Choose your dashboard background.
         </p>
       </div>
 
-      {/* Background Preview Cards - borders match UsageAndBillingSection plan card (rounded-xl, border border-gray-200, shadow-sm) */}
+      {/* Background Preview Cards - borders match UsageAndBillingSection plan card (rounded-xl, border border-border, shadow-sm) */}
       <div className="grid grid-cols-3 gap-4">
         {BACKGROUNDS.map((background) => {
           const isSelected = selectedBackground === background.id;
@@ -1539,10 +1543,10 @@ const BackgroundSettings: React.FC = () => {
             <motion.button
               key={background.id}
               onClick={() => handleBackgroundSelect(background.id)}
-              className={`relative rounded-xl overflow-hidden border border-gray-200 transition-all ${
+              className={`relative rounded-xl overflow-hidden border border-border transition-all ${
                 isSelected
                   ? 'shadow-sm'
-                  : 'hover:border-gray-300'
+                  : 'hover:border-border'
               }`}
               style={{
                 aspectRatio: '16/9',
@@ -1563,12 +1567,12 @@ const BackgroundSettings: React.FC = () => {
               />
               {/* Overlay for selected state - subtle white overlay */}
               {isSelected && (
-                <div className="absolute inset-0 bg-white/5 rounded-xl" />
+                <div className="absolute inset-0 bg-background/5 rounded-xl" />
               )}
               {/* Checkmark indicator - white circle with checkmark */}
               {isSelected && (
-                <div className="absolute top-2 right-2 w-6 h-6 bg-white rounded-full flex items-center justify-center shadow-sm border border-gray-200">
-                  <Check className="w-5 h-5 text-gray-900" strokeWidth={2.5} />
+                <div className="absolute top-2 right-2 w-6 h-6 bg-background rounded-full flex items-center justify-center shadow-sm border border-border">
+                  <Check className="w-5 h-5 text-foreground" strokeWidth={2.5} />
                 </div>
               )}
             </motion.button>
@@ -1577,7 +1581,7 @@ const BackgroundSettings: React.FC = () => {
         {/* Add Background Button */}
         <motion.button
           onClick={() => fileInputRef.current?.click()}
-          className="relative rounded-xl overflow-hidden border border-gray-200 hover:border-gray-300 transition-all flex items-center justify-center"
+          className="relative rounded-xl overflow-hidden border border-border hover:border-border transition-all flex items-center justify-center"
           style={{
             aspectRatio: '16/9',
             background: 'white',
@@ -1631,6 +1635,8 @@ const COMPLETION_SOUND_OPTIONS: { value: CompletionSoundOption; label: string }[
 
 // Notifications settings: volume (Spotify-style) + sound selector (card styled like UsageAndBillingSection plan card)
 const NotificationsSettingsContent: React.FC = () => {
+  const { resolvedTheme } = useTheme();
+  const isDark = resolvedTheme === 'dark';
   const [soundOption, setSoundOptionState] = React.useState<CompletionSoundOption>(() => {
     if (typeof window === 'undefined') return 'ascending';
     const v = window.localStorage.getItem(NOTIFICATION_SOUND_STORAGE_KEY);
@@ -1653,22 +1659,22 @@ const NotificationsSettingsContent: React.FC = () => {
   return (
     <div className="space-y-6">
       <div>
-        <h3 className="text-[15px] font-medium text-gray-900">Notifications</h3>
-        <p className="text-[13px] text-gray-500 mt-1.5 font-normal">
+        <h3 className="text-[15px] font-medium text-foreground">Notifications</h3>
+        <p className="text-[13px] text-muted-foreground mt-1.5 font-normal">
           Control when and how you get notified.
         </p>
       </div>
-      <div className="w-full min-w-0 rounded-xl border border-gray-200 p-6 shadow-sm" style={{ backgroundColor: '#F6F7F3' }}>
+      <div className={`w-full min-w-0 rounded-xl border p-6 shadow-sm ${isDark ? 'border-border' : 'border-gray-200'}`} style={{ backgroundColor: isDark ? 'hsl(var(--muted))' : '#F6F7F3' }}>
         <div className="flex flex-wrap items-baseline gap-2 mb-2">
-          <span className="text-[17px] font-normal text-gray-900">Response completion sound</span>
+          <span className="text-[17px] font-normal text-foreground">Response completion sound</span>
         </div>
-        <p className="text-[13px] text-gray-600 mb-4">
+        <p className="text-[13px] text-muted-foreground mb-4">
           Play a short sound when OpenFind finishes a response. Adjust volume and choose a sound.
         </p>
 
         {/* Volume: Spotify-style — speaker icon + horizontal slider */}
         <div className="flex items-center gap-3 mb-5">
-          <Volume2 className="h-3.5 w-3.5 shrink-0 text-gray-500" aria-hidden />
+          <Volume2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
           <Slider
             value={[volume]}
             onValueChange={([v]) => setVolume(v)}
@@ -1676,9 +1682,9 @@ const NotificationsSettingsContent: React.FC = () => {
             max={100}
             step={1}
             aria-label="Notification sound volume"
-            className="flex-1 min-w-0 max-w-[240px] [&_.bg-primary]:!bg-gray-600 [&_.bg-secondary]:!bg-gray-200 [&_.border-primary]:!border-gray-400 [&_.border-primary]:!bg-white"
+            className="flex-1 min-w-0 max-w-[240px] [&_.bg-primary]:!bg-gray-600 [&_.bg-secondary]:!bg-gray-200 [&_.border-primary]:!border-gray-400 [&_.border-primary]:!bg-background"
           />
-          <span className="text-[12px] text-gray-500 w-7 tabular-nums">{volume}%</span>
+          <span className="text-[12px] text-muted-foreground w-7 tabular-nums">{volume}%</span>
         </div>
 
         {/* Sound selector + Test */}
@@ -1686,19 +1692,19 @@ const NotificationsSettingsContent: React.FC = () => {
           <Select value={soundOption} onValueChange={setSoundOption}>
             <SelectTrigger
               aria-label="Response completion sound"
-              className="h-auto min-w-[130px] w-[130px] shrink-0 rounded-sm border border-gray-200 bg-white px-3 py-1 text-xs font-medium text-gray-700 focus:ring-1 focus:ring-gray-300 focus:ring-offset-0 focus:border-gray-300 [&_svg]:text-gray-500"
+              className="h-auto min-w-[130px] w-[130px] shrink-0 rounded-sm border border-border bg-background px-3 py-1 text-xs font-medium text-foreground focus:ring-1 focus:ring-gray-300 focus:ring-offset-0 focus:border-border [&_svg]:text-muted-foreground"
             >
               <SelectValue />
             </SelectTrigger>
             <SelectContent
-              className="z-[200] border-gray-200 bg-white shadow-sm"
+              className="z-[200] border-border bg-background shadow-sm"
               position="popper"
             >
               {COMPLETION_SOUND_OPTIONS.map((opt) => (
                 <SelectItem
                   key={opt.value}
                   value={opt.value}
-                  className="text-[13px] text-gray-900 focus:bg-gray-100 focus:text-gray-900 data-[highlighted]:bg-gray-100 data-[highlighted]:text-gray-900"
+                  className="text-[13px] text-foreground focus:bg-gray-100 focus:text-foreground data-[highlighted]:bg-gray-100 data-[highlighted]:text-foreground"
                 >
                   {opt.label}
                 </SelectItem>
@@ -1710,7 +1716,7 @@ const NotificationsSettingsContent: React.FC = () => {
             size="sm"
             onClick={() => playCompletionSound()}
             disabled={!soundEnabled}
-            className="rounded-sm px-3 py-1 h-auto text-xs font-medium bg-white border border-gray-200 text-gray-700 hover:bg-gray-50 hover:text-gray-900"
+            className="rounded-sm px-3 py-1 h-auto text-xs font-medium bg-background border border-border text-foreground hover:bg-muted hover:text-foreground"
           >
             Test sound
           </Button>
@@ -1730,6 +1736,8 @@ const SettingsView: React.FC<{
   onClearInitialCategory?: () => void;
   }> = ({ onCloseSidebar, onRestoreSidebarState, getSidebarState, onNavigate, initialCategory, onClearInitialCategory }) => {
   const authUser = useAuthUser() as Record<string, unknown> | null | undefined;
+  const { resolvedTheme } = useTheme();
+  const isDark = resolvedTheme === 'dark';
   const [activeCategory, setActiveCategory] = React.useState<string>('general');
   const [savedLocation, setSavedLocation] = React.useState<string>('');
   // Prefetched user for General > Profile. Initialized from dashboard auth (loaded on app load) so Profile shows instantly; refreshed below when Settings opens.
@@ -1846,8 +1854,8 @@ const SettingsView: React.FC<{
         return (
           <div className="space-y-6">
             <div>
-              <h3 className="text-[15px] font-medium text-gray-900">General</h3>
-              <p className="text-[13px] text-gray-500 mt-1.5 font-normal">Profile and general preferences.</p>
+              <h3 className="text-[15px] font-medium text-foreground">General</h3>
+              <p className="text-[13px] text-muted-foreground mt-1.5 font-normal">Profile and general preferences.</p>
             </div>
             <Profile onNavigate={onNavigate} embeddedInSettings initialUserData={prefetchedUser} />
           </div>
@@ -1858,8 +1866,8 @@ const SettingsView: React.FC<{
         return (
           <div className="space-y-6">
             <div>
-              <h3 className="text-[15px] font-medium text-gray-900">Map Settings</h3>
-              <p className="text-[13px] text-gray-500 mt-1.5 font-normal">
+              <h3 className="text-[15px] font-medium text-foreground">Map Settings</h3>
+              <p className="text-[13px] text-muted-foreground mt-1.5 font-normal">
                 Configure your map preferences and default settings.
               </p>
             </div>
@@ -1886,19 +1894,19 @@ const SettingsView: React.FC<{
         return (
           <div className="space-y-6">
             <div>
-              <h3 className="text-[15px] font-medium text-gray-900">Privacy</h3>
-              <p className="text-[13px] text-gray-500 mt-1.5 font-normal">
+              <h3 className="text-[15px] font-medium text-foreground">Privacy</h3>
+              <p className="text-[13px] text-muted-foreground mt-1.5 font-normal">
                 Control your privacy and data settings.
               </p>
             </div>
-            <div className="w-full min-w-0 rounded-xl border border-gray-200 p-6 shadow-sm" style={{ backgroundColor: '#F6F7F3' }}>
+            <div className={`w-full min-w-0 rounded-xl border p-6 shadow-sm ${isDark ? 'border-border' : 'border-gray-200'}`} style={{ backgroundColor: isDark ? 'hsl(var(--muted))' : '#F6F7F3' }}>
               <div className="flex flex-wrap items-start justify-between gap-4">
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
-                    <Lock className="h-3.5 w-3.5 shrink-0 text-gray-600" aria-hidden />
-                    <span className="text-[15px] font-medium text-gray-900">Privacy Mode</span>
+                    <Lock className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
+                    <span className="text-[15px] font-medium text-foreground">Privacy Mode</span>
                   </div>
-                  <p className="text-[13px] text-gray-500 mt-1">
+                  <p className="text-[13px] text-muted-foreground mt-1">
                     Your code data will not be trained on or used to improve the product. We will not store your code.
                   </p>
                 </div>
@@ -1916,30 +1924,30 @@ const SettingsView: React.FC<{
                     }}>
                     <SelectTrigger
                       aria-label="Privacy mode"
-                      className="h-9 rounded-md border border-gray-300 bg-white text-[13px] text-gray-900 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 [&_svg]:h-3.5 [&_svg]:w-3.5"
+                      className="h-9 rounded-md border border-border bg-background text-[13px] text-foreground focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 [&_svg]:h-3.5 [&_svg]:w-3.5"
                     >
                       <SelectValue>{privacyModeLabel}</SelectValue>
                     </SelectTrigger>
-                    <SelectContent className="z-[200] w-[var(--radix-select-trigger-width)] min-w-0 max-w-[var(--radix-select-trigger-width)] border-gray-200 bg-white shadow-md text-[11px]" position="popper" viewportClassName="p-2">
+                    <SelectContent className="z-[200] w-[var(--radix-select-trigger-width)] min-w-0 max-w-[var(--radix-select-trigger-width)] border-border bg-background shadow-md text-[11px]" position="popper" viewportClassName="p-2">
                       <SelectItem value="share" hideIndicator className="py-1 px-3 focus:bg-gray-100 text-[11px]">
                         <div className="flex flex-col gap-0">
-                          <span className="font-medium text-gray-900 text-[11px]">Share Data</span>
-                          <span className="text-[10px] text-gray-500">Improve OpenFind for everyone</span>
+                          <span className="font-medium text-foreground text-[11px]">Share Data</span>
+                          <span className="text-[10px] text-muted-foreground">Improve OpenFind for everyone</span>
                         </div>
                       </SelectItem>
                       <SelectItem value="privacy" hideIndicator className="py-1 px-3 focus:bg-gray-100 text-[11px]">
                         <div className="flex flex-col gap-0">
-                          <span className="font-medium text-gray-900 text-[11px]">Privacy Mode</span>
-                          <span className="text-[10px] text-gray-500">No training. Data may be stored for Background Agent and other features.</span>
+                          <span className="font-medium text-foreground text-[11px]">Privacy Mode</span>
+                          <span className="text-[10px] text-muted-foreground">No training. Data may be stored for Background Agent and other features.</span>
                         </div>
                       </SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
               </div>
-              <div className="border-t border-gray-200 my-4" />
+              <div className="border-t border-border my-4" />
               <div className="flex flex-wrap items-center gap-2">
-                <span className="text-[13px] text-gray-600">
+                <span className="text-[13px] text-muted-foreground">
                   {privacyMode === 'privacy'
                     ? 'Privacy Mode is enabled. Background Agent and some features not available.'
                     : 'Share Data is enabled. Your data helps improve OpenFind for everyone.'}
@@ -1962,7 +1970,7 @@ const SettingsView: React.FC<{
               variant="outline"
               size="sm"
               onClick={handleLogout}
-              className="-mt-2 h-7 min-h-7 rounded-md bg-white hover:bg-gray-50 hover:text-gray-800 text-gray-800 border border-gray-200 px-2 py-0.5 text-xs font-medium focus-visible:ring-gray-200"
+              className="-mt-2 h-7 min-h-7 rounded-md bg-background hover:bg-muted hover:text-gray-800 text-gray-800 border border-border px-2 py-0.5 text-xs font-medium focus-visible:ring-gray-200"
             >
               Log Out
             </Button>
@@ -1974,12 +1982,12 @@ const SettingsView: React.FC<{
   };
 
   return (
-    <div className="w-full h-full flex gap-24 bg-[#FAF9F6] -ml-16 lg:-ml-24 pt-12">
+    <div className="w-full h-full flex gap-24 bg-background -ml-16 lg:-ml-24 pt-12">
       {/* Settings Sidebar - Sleek Design */}
-      <div className="w-64 shrink-0 bg-[#FAF9F6]">
+      <div className="w-64 shrink-0 bg-background">
         <div className="p-6">
-          <h2 className="text-[15px] font-medium text-gray-900">Settings</h2>
-          <p className="text-[13px] text-gray-500 mt-1.5 font-normal">Manage your preferences</p>
+          <h2 className="text-[15px] font-medium text-foreground">Settings</h2>
+          <p className="text-[13px] text-muted-foreground mt-1.5 font-normal">Manage your preferences</p>
         </div>
         <nav className="px-3 py-3 space-y-1">
           {settingsCategories.map((category) => {
@@ -1990,8 +1998,8 @@ const SettingsView: React.FC<{
                 onClick={() => setActiveCategory(category.id)}
                 className={`w-full flex items-center px-4 py-2 rounded-[5px] text-[13px] font-normal transition-colors duration-75 group relative text-left ${
                   isActive
-                    ? 'bg-[#F1EDE4] text-gray-900'
-                    : 'text-gray-600 hover:bg-[#F1EDE4]/40'
+                    ? isDark ? 'bg-muted text-foreground' : 'bg-gray-100 text-[#141413]'
+                    : isDark ? 'text-muted-foreground hover:bg-muted/60' : 'text-[#141413] hover:bg-gray-100'
                 }`}
                 aria-label={category.label}
               >
@@ -2005,7 +2013,7 @@ const SettingsView: React.FC<{
       </div>
 
       {/* Settings Content */}
-      <div className="flex-1 overflow-y-auto bg-[#FAF9F6]">
+      <div className="flex-1 overflow-y-auto bg-background">
         <div className="max-w-4xl mx-auto p-8">
           <div key={activeCategory}>
             {renderSettingsContent()}
@@ -5528,12 +5536,12 @@ export const MainContent = ({
         (mainContentContainerRef as React.MutableRefObject<HTMLDivElement | null>).current = el;
       }
     }}
-    className={`flex-1 relative ${(currentView === 'search' || currentView === 'home') ? '' : currentView === 'settings' ? 'bg-[#FAF9F6]' : 'bg-white'} ${className || ''}`} 
+    className={`flex-1 relative ${(currentView === 'search' || currentView === 'home') ? '' : 'bg-background'} ${className || ''}`} 
     style={{ 
       // Overlap 1px when Settings so dashboard background doesn't show through a subpixel gap (no reddish-brown leakage)
       // Projects: start at sidebar edge when open (no rail gap); when collapsed use rail-only offset
       marginLeft: currentView === 'settings' ? mainContentMarginLeft - 1 : currentView === 'projects' ? (isSidebarCollapsed ? mainContentMarginLeft : effectiveSidebarWidth) : mainContentMarginLeft,
-      backgroundColor: (currentView === 'search' || currentView === 'home') ? 'transparent' : currentView === 'settings' ? '#FAF9F6' : '#ffffff', 
+      backgroundColor: (currentView === 'search' || currentView === 'home') ? 'transparent' : undefined, 
       position: 'relative', 
       zIndex: isChatHistoryPanelOpen ? 10000 : 1, // Above backdrop (9999) when agent sidebar open so clicking the new-chat bar doesn't close it
       transition: 'none', // Instant transition to prevent gaps when sidebar opens/closes
@@ -6037,20 +6045,20 @@ export const MainContent = ({
       {/* Content container - transparent to show map background */}
       <div className={`relative h-full flex flex-col ${
         isInChatMode 
-          ? 'bg-white' 
+          ? 'bg-background' 
           : currentView === 'upload' 
-            ? 'bg-white' 
+            ? 'bg-background' 
             : currentView === 'analytics'
-              ? 'bg-white'
+              ? 'bg-background'
               : currentView === 'profile'
-                ? 'bg-white'
+                ? 'bg-background'
                 : currentView === 'notifications'
-                  ? 'bg-white'
+                  ? 'bg-background'
                   : currentView === 'settings'
-                    ? 'bg-[#FAF9F6]'
-                    : (currentView === 'search' || currentView === 'home') ? '' : 'bg-white'
+                    ? 'bg-background'
+                    : (currentView === 'search' || currentView === 'home') ? '' : 'bg-background'
       } ${isInChatMode ? 'p-0' : currentView === 'upload' ? 'p-8' : currentView === 'analytics' ? 'p-4' : currentView === 'profile' ? 'p-0' : currentView === 'notifications' ? 'p-0 m-0' : currentView === 'projects' ? 'p-0' : 'p-8 lg:p-16'}`} style={{ 
-        backgroundColor: (currentView === 'search' || currentView === 'home') ? 'transparent' : currentView === 'settings' ? '#FAF9F6' : '#ffffff', 
+        backgroundColor: (currentView === 'search' || currentView === 'home') ? 'transparent' : undefined, 
         background: (currentView === 'search' || currentView === 'home') ? 'transparent' : undefined,
         pointerEvents: currentView === 'settings' ? 'auto' : (MAP_ENABLED && (isMapVisible || externalIsMapVisible)) ? 'none' : 'auto', // Settings always receives clicks; otherwise block when map visible
         zIndex: currentView === 'settings' ? 1 : (MAP_ENABLED && (isMapVisible || externalIsMapVisible)) ? 0 : 1, // Settings always on top; below map when map visible otherwise

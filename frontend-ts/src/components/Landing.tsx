@@ -19,7 +19,7 @@ export const Landing: React.FC = () => {
 
   return (
   <div
-    className="bg-white group/design-root min-h-screen border-l border-r border-t border-b border-[#e9edf1]"
+    className="bg-background group/design-root min-h-screen border-l border-r border-t border-b border-border"
     style={{ 
       fontFamily: "'DM Sans', system-ui, sans-serif",
       backgroundColor: '#ffffff',
@@ -29,7 +29,7 @@ export const Landing: React.FC = () => {
       minHeight: '100vh'
     }}
   >
-    <header className="flex items-center justify-between whitespace-nowrap border-b border-solid border-b-[#e9edf1] px-10 py-3 bg-white">
+    <header className="flex items-center justify-between whitespace-nowrap border-b border-solid border-b-border px-10 py-3 bg-background">
       <div className="flex items-center gap-4 text-[#101419]">
         <div className="size-4">
           <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -71,7 +71,7 @@ export const Landing: React.FC = () => {
       </div>
     </header>
 
-    <main className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 bg-white">
+    <main className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 bg-background">
       <div className="flex flex-col gap-6 px-4 py-10">
         <div className="flex flex-col gap-8 md:flex-row">
           <div
@@ -180,7 +180,7 @@ export const Landing: React.FC = () => {
       </div>
     </main>
 
-    <footer className="flex justify-center py-10 bg-white border-t border-[#e9edf1]">
+    <footer className="flex justify-center py-10 bg-background border-t border-border">
       <div className="flex flex-col items-center gap-6 text-center">
         <div className="flex flex-wrap items-center justify-center gap-6">
           <button className="text-[#58728d] text-base font-normal leading-normal bg-transparent border-none cursor-pointer">Terms of Service</button>

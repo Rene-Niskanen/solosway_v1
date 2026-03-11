@@ -6,6 +6,7 @@ import { X, MapPin, Upload, FileText, Check, ArrowRight, Loader2, Search, Moon, 
 import { backendApi } from "@/services/backendApi";
 import { motion, AnimatePresence } from "framer-motion";
 import mapboxgl from "mapbox-gl";
+import { useTheme } from "next-themes";
 import "mapbox-gl/dist/mapbox-gl.css";
 import * as pdfjs from 'pdfjs-dist';
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
@@ -45,6 +46,8 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
   initialCenter,
   initialZoom
 }) => {
+  const { resolvedTheme } = useTheme();
+  const baseMapStyle = resolvedTheme === 'dark' ? 'mapbox://styles/mapbox/dark-v11' : 'mapbox://styles/mapbox/light-v11';
   // State
   const [propertyTitle, setPropertyTitle] = useState<string>('');
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
@@ -214,7 +217,7 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
       mapboxgl.accessToken = mapboxToken;
       map.current = new mapboxgl.Map({
         container: mapContainer.current!,
-        style: isColorfulMap ? 'mapbox://styles/mapbox/outdoors-v12' : 'mapbox://styles/mapbox/light-v11',
+        style: isColorfulMap ? 'mapbox://styles/mapbox/outdoors-v12' : baseMapStyle,
         center: initialCenter || [-0.1276, 51.5074],
         zoom: initialZoom || 11,
         attributionControl: false
@@ -533,7 +536,7 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
       // Create Light preview map
       lightPreviewMap.current = new mapboxgl.Map({
         container: lightPreviewContainer.current!,
-        style: 'mapbox://styles/mapbox/light-v11',
+        style: baseMapStyle,
         center: center,
         zoom: previewZoom,
         attributionControl: false,
@@ -614,7 +617,7 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
       const currentZoom = map.current.getZoom();
       
       // Set the new style
-      const newStyle = willBeColorful ? 'mapbox://styles/mapbox/outdoors-v12' : 'mapbox://styles/mapbox/light-v11';
+      const newStyle = willBeColorful ? 'mapbox://styles/mapbox/outdoors-v12' : baseMapStyle;
       map.current.setStyle(newStyle);
       
       // Restore view state after style loads

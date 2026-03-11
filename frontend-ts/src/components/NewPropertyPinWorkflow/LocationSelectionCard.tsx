@@ -3,6 +3,7 @@
 import * as React from "react";
 import { useEffect, useRef, useState } from "react";
 import mapboxgl from "mapbox-gl";
+import { useTheme } from "next-themes";
 import "mapbox-gl/dist/mapbox-gl.css";
 import { MapPin, Search } from "lucide-react";
 
@@ -27,6 +28,8 @@ export const LocationSelectionCard: React.FC<LocationSelectionCardProps> = ({
   const [searchQuery, setSearchQuery] = useState("");
   const [isSearching, setIsSearching] = useState(false);
   const mapboxToken = import.meta.env.VITE_MAPBOX_TOKEN || '';
+  const { resolvedTheme } = useTheme();
+  const mapStyle = resolvedTheme === 'dark' ? 'mapbox://styles/mapbox/dark-v11' : 'mapbox://styles/mapbox/light-v11';
 
   // Initialize map
   useEffect(() => {
@@ -36,7 +39,7 @@ export const LocationSelectionCard: React.FC<LocationSelectionCardProps> = ({
 
     map.current = new mapboxgl.Map({
       container: mapContainer.current,
-      style: 'mapbox://styles/mapbox/light-v11',
+      style: mapStyle,
       center: [-0.1276, 51.5074], // Default to London
       zoom: 12,
       attributionControl: false
@@ -75,7 +78,7 @@ export const LocationSelectionCard: React.FC<LocationSelectionCardProps> = ({
         map.current = null;
       }
     };
-  }, [mapboxToken, onLocationSelect]);
+  }, [mapboxToken, onLocationSelect, mapStyle]);
 
   // Update marker when location changes
   useEffect(() => {

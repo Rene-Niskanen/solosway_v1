@@ -28,13 +28,13 @@ const toastVariants = cva(
     variants: {
       variant: {
         default:
-          "w-full justify-between space-x-3 border-2 border-[#F2F2EF] bg-white p-3 pr-4 text-[#141413]",
+          "w-full justify-between space-x-3 border-2 border-border bg-background p-3 pr-4 text-foreground",
         compact:
-          "w-fit max-w-[200px] justify-between gap-2 border-2 border-[#F2F2EF] bg-white py-1.5 pl-2 pr-7 text-[#141413]",
+          "w-fit max-w-[200px] justify-between gap-2 border-2 border-border bg-background py-1.5 pl-2 pr-7 text-foreground",
         destructive:
           "destructive w-fit max-w-[320px] justify-between gap-2 border border-red-100 bg-red-50 p-2 pr-8 text-red-800",
         success:
-          "w-fit max-w-[340px] justify-start gap-3 border border-emerald-200 bg-emerald-50 rounded-xl pl-3.5 pr-4 py-3 text-[#141413] shadow-[0_4px_24px_rgba(16,185,129,0.10)]",
+          "w-fit max-w-[340px] justify-start gap-3 border border-emerald-200 bg-emerald-50 dark:border-emerald-900 dark:bg-emerald-950/50 rounded-xl pl-3.5 pr-4 py-3 text-foreground shadow-[0_4px_24px_rgba(16,185,129,0.10)]",
         planSuccess:
           "w-fit justify-between gap-1.5 border-0 bg-transparent p-0 pr-6 shadow-none min-w-0 rounded-none",
       },
@@ -98,7 +98,7 @@ const ToastDescription = React.forwardRef<
   React.ElementRef<typeof ToastPrimitives.Description>,
   React.ComponentPropsWithoutRef<typeof ToastPrimitives.Description>
 >(({ className, ...props }, ref) => (
-  <ToastPrimitives.Description ref={ref} className={cn("text-xs text-gray-600", className)} {...props} />
+  <ToastPrimitives.Description ref={ref} className={cn("text-xs text-muted-foreground", className)} {...props} />
 ));
 ToastDescription.displayName = ToastPrimitives.Description.displayName;
 

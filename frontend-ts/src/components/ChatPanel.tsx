@@ -5,6 +5,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { MessageSquare, Plus, MoreVertical, Archive, ArchiveRestore, X, Trash2, Loader2, CircleCheck } from "lucide-react";
 import { useChatHistory } from "./ChatHistoryContext";
 import { useChatPanel } from "../contexts/ChatPanelContext";
+import { useTheme } from "next-themes";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 
 export interface ChatPanelProps {
@@ -25,6 +26,10 @@ export const ChatPanel = ({
   selectedChatId = null // Currently selected chat ID
 }: ChatPanelProps) => {
   const { isOpen, width, closePanel, setWidth, setIsResizing, isResizing } = useChatPanel();
+  const { resolvedTheme } = useTheme();
+  const isDark = resolvedTheme === 'dark';
+  const panelBg = isDark ? 'hsl(var(--muted))' : '#FFFFFF';
+  const popoverClass = isDark ? 'border-border bg-background' : 'border-gray-200 bg-white';
   const closePanelRef = React.useRef(closePanel);
   closePanelRef.current = closePanel;
   console.log('ChatPanel rendering with isOpen:', isOpen, 'showChatHistory:', showChatHistory);
@@ -203,7 +208,7 @@ export const ChatPanel = ({
           if (openMenuId) setOpenMenuId(null);
         }}
         style={{
-          background: '#FFFFFF',
+          background: panelBg,
           right: isOpen ? '0px' : '-1000px', // Move off-screen when closed
           width: isOpen ? `${totalSidebarWidth}px` : '332px',
           transition: 'right 0s ease-out, width 0s ease-out',
@@ -223,7 +228,7 @@ export const ChatPanel = ({
             className="relative shrink-0 h-full flex items-center justify-center cursor-ew-resize group"
             style={{
               width: AGENT_SIDEBAR_RAIL_WIDTH,
-              background: '#FFFFFF',
+              background: panelBg,
               borderLeft: '1px solid rgba(0,0,0,0.08)',
               pointerEvents: 'auto',
               WebkitTapHighlightColor: 'transparent',
@@ -262,7 +267,7 @@ export const ChatPanel = ({
             <div
               className="px-4 flex flex-col"
               style={{
-                backgroundColor: '#FFFFFF',
+                backgroundColor: panelBg,
                 paddingTop: 18,
                 paddingBottom: 19,
               }}
@@ -276,7 +281,7 @@ export const ChatPanel = ({
                     className={`p-1.5 text-xs rounded-md transition-colors duration-75 ease-out ${
                       showArchived 
                         ? 'bg-amber-500/30 text-amber-800 hover:bg-amber-500/40' 
-                        : 'bg-black/8 text-[#374151] hover:bg-black/12'
+                        : isDark ? 'bg-white/10 text-slate-200 hover:bg-white/15' : 'bg-black/8 text-[#374151] hover:bg-black/12'
                     }`}
                   >
                     {showArchived ? <ArchiveRestore className="w-3.5 h-3.5" /> : <Archive className="w-3.5 h-3.5" />}
@@ -290,8 +295,8 @@ export const ChatPanel = ({
                   placeholder="Search"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full h-full pl-1.5 pr-14 py-0 text-[15px] font-light bg-transparent border-none focus:outline-none placeholder:text-[15px] placeholder:text-[#9CA3AF] placeholder:font-light"
-                  style={{ color: '#374151', caretColor: '#374151', height: 32, minHeight: 32 }}
+                  className={`w-full h-full pl-1.5 pr-14 py-0 text-[15px] font-light bg-transparent border-none focus:outline-none placeholder:text-[15px] placeholder:font-light ${isDark ? 'placeholder:text-slate-400' : 'placeholder:text-[#9CA3AF]'}`}
+                  style={{ color: isDark ? 'hsl(var(--foreground))' : '#374151', caretColor: isDark ? 'hsl(var(--foreground))' : '#374151', height: 32, minHeight: 32 }}
                 />
                 {/* Options (sliders) + Close - Inline with Search Input */}
                 <div className="absolute right-1 top-1/2 -translate-y-1/2 flex items-center gap-0.5 z-10">
@@ -300,20 +305,20 @@ export const ChatPanel = ({
                       <button
                         type="button"
                         onClick={(e) => e.stopPropagation()}
-                        className="rounded-full hover:bg-black/8 active:bg-black/12 transition-colors duration-75 ease-out flex items-center justify-center flex-shrink-0"
+                        className={`rounded-full transition-colors duration-75 ease-out flex items-center justify-center flex-shrink-0 ${isDark ? 'hover:bg-white/10 active:bg-white/15' : 'hover:bg-black/8 active:bg-black/12'}`}
                         style={{ width: 26, height: 26, minWidth: 26, minHeight: 26 }}
                         title="Clear all chats"
                         aria-haspopup="true"
                         aria-expanded={optionsMenuOpen}
                       >
-                        <Trash2 className="w-4 h-4 text-[#6B7280] hover:text-[#374151]" strokeWidth={1.25} />
+                        <Trash2 className={`w-4 h-4 ${isDark ? 'text-slate-300 hover:text-slate-100' : 'text-[#6B7280] hover:text-[#374151]'}`} strokeWidth={1.25} />
                       </button>
                     </PopoverTrigger>
                     <PopoverContent
                       align="end"
                       side="bottom"
                       sideOffset={4}
-                      className="z-[10001] min-w-[200px] w-auto rounded-lg border border-gray-200 bg-white p-2 shadow-md"
+                      className={`z-[10001] min-w-[200px] w-auto rounded-lg border p-2 shadow-md ${popoverClass}`}
                       onOpenAutoFocus={(e) => e.preventDefault()}
                       onClick={(e) => e.stopPropagation()}
                     >
@@ -372,12 +377,12 @@ export const ChatPanel = ({
                       e.stopPropagation();
                       closePanel();
                     }}
-                    className="rounded-full hover:bg-black/8 active:bg-black/12 transition-colors duration-75 ease-out flex items-center justify-center flex-shrink-0"
+                    className={`rounded-full transition-colors duration-75 ease-out flex items-center justify-center flex-shrink-0 ${isDark ? 'hover:bg-white/10 active:bg-white/15' : 'hover:bg-black/8 active:bg-black/12'}`}
                     style={{ width: 26, height: 26, minWidth: 26, minHeight: 26 }}
                     title="Close Agent Sidebar"
                     type="button"
                   >
-                    <X className="w-4 h-4 text-[#6B7280] hover:text-[#374151]" strokeWidth={1.75} />
+                    <X className={`w-4 h-4 ${isDark ? 'text-slate-300 hover:text-slate-100' : 'text-[#6B7280] hover:text-[#374151]'}`} strokeWidth={1.75} />
                   </button>
                 </div>
               </div>
@@ -395,11 +400,11 @@ export const ChatPanel = ({
                 }} 
                 whileHover={{ scale: 1.01 }} 
                 whileTap={{ scale: 0.99 }} 
-                className="w-full flex items-center justify-center gap-1.5 px-2.5 py-1.5 border border-gray-300/80 hover:border-gray-400 rounded-md transition-[border-color,background-color] duration-75 ease-out group"
-                style={{ backgroundColor: '#FFFFFF', opacity: 1, backdropFilter: 'none' }}
+                className={`w-full flex items-center justify-center gap-1.5 px-2.5 py-1.5 border rounded-md transition-[border-color,background-color] duration-75 ease-out group ${isDark ? 'border-slate-500/60 hover:border-slate-400' : 'border-gray-300/80 hover:border-gray-400'}`}
+                style={{ backgroundColor: panelBg, opacity: 1, backdropFilter: 'none' }}
               >
-                <Plus className="w-3.5 h-3.5 text-slate-500" />
-                <span className="text-[13px] font-medium text-slate-500">
+                <Plus className={`w-3.5 h-3.5 ${isDark ? 'text-slate-200' : 'text-slate-500'}`} />
+                <span className={`text-[13px] font-medium ${isDark ? 'text-slate-200' : 'text-slate-500'}`}>
                   New Agent
                 </span>
               </motion.button>
@@ -409,12 +414,12 @@ export const ChatPanel = ({
             {showChatHistory && (
               <div
                 className="flex-1 overflow-y-auto overflow-x-hidden px-3 pt-2 pb-3 scrollbar-thin scrollbar-track-transparent min-h-0"
-                style={{ backgroundColor: '#FFFFFF', scrollbarColor: 'rgba(0,0,0,0.2) transparent' }}
+                style={{ backgroundColor: panelBg, scrollbarColor: 'rgba(0,0,0,0.2) transparent' }}
               >
                 {/* Agents Heading */}
                 {displayedChats.length > 0 && (
                   <div className="px-0 pt-2 pb-0.5 mb-0.5">
-                    <h2 className="text-[12px] font-medium pl-2" style={{ color: '#6B7280' }}>Agents</h2>
+                    <h2 className={`text-[12px] font-medium pl-2 ${isDark ? 'text-slate-300' : ''}`} style={!isDark ? { color: '#6B7280' } : undefined}>Agents</h2>
                   </div>
                 )}
                 <AnimatePresence mode="popLayout">
@@ -459,9 +464,9 @@ export const ChatPanel = ({
                         className={`group relative px-2.5 py-1.5 rounded-md cursor-pointer w-full mb-0.5 transition-[background-color] duration-75 ease-out ${
                           selectedChatId === chat.id 
                             ? '' 
-                            : openMenuId ? '' : 'hover:bg-black/[0.03]'
+                            : openMenuId ? '' : (isDark ? 'hover:bg-white/5' : 'hover:bg-black/[0.03]')
                         }`}
-                        style={selectedChatId === chat.id ? { backgroundColor: '#F2F2EF' } : undefined}
+                        style={selectedChatId === chat.id ? { backgroundColor: isDark ? 'hsl(var(--muted))' : '#F2F2EF' } : undefined}
                       >
                         {isEditing ? (
                           <div className="flex items-center space-x-2" onClick={(e) => e.stopPropagation()}>
@@ -481,16 +486,16 @@ export const ChatPanel = ({
                         ) : (
                           <div className="flex flex-col w-full relative">
                             {/* Title row */}
-                            <div className="flex items-center gap-1.5 text-[12px] font-normal truncate pr-5" style={{ color: '#374151' }}>
+                            <div className={`flex items-center gap-1.5 text-[12px] font-normal truncate pr-5 ${isDark ? 'text-slate-200' : ''}`} style={!isDark ? { color: '#374151' } : undefined}>
                               {chat.status === 'loading' && (
-                                <Loader2 className="w-3 h-3 animate-spin flex-shrink-0" style={{ color: '#6B7280' }} />
+                                <Loader2 className={`w-3 h-3 animate-spin flex-shrink-0 ${isDark ? 'text-slate-400' : ''}`} style={!isDark ? { color: '#6B7280' } : undefined} />
                               )}
                               {chat.status === 'completed' && (
-                                <CircleCheck className="w-3 h-3 flex-shrink-0" style={{ color: '#6B7280' }} aria-hidden />
+                                <CircleCheck className={`w-3 h-3 flex-shrink-0 ${isDark ? 'text-slate-400' : ''}`} style={!isDark ? { color: '#6B7280' } : undefined} aria-hidden />
                               )}
                               <span
-                                className="text-[12px] font-normal truncate cursor-pointer flex-1 min-w-0 hover:opacity-90"
-                                style={{ color: '#374151', display: 'inline-block', padding: 0, margin: 0 }}
+                                className={`text-[12px] font-normal truncate cursor-pointer flex-1 min-w-0 hover:opacity-90 ${isDark ? 'text-slate-200' : ''}`}
+                                style={!isDark ? { color: '#374151', display: 'inline-block', padding: 0, margin: 0 } : { display: 'inline-block', padding: 0, margin: 0 }}
                                 title="Click to edit chat name"
                               >
                                 {chat.title || 'New chat'}
@@ -498,7 +503,7 @@ export const ChatPanel = ({
                             </div>
                             
                             {/* Timestamp below title */}
-                            <div className="text-[10px] mt-0.5" style={{ color: '#9CA3AF' }}>
+                            <div className={`text-[10px] mt-0.5 ${isDark ? 'text-slate-400' : ''}`} style={!isDark ? { color: '#9CA3AF' } : undefined}>
                               {formatTimestamp(new Date(chat.timestamp))}
                             </div>
                             
@@ -508,7 +513,7 @@ export const ChatPanel = ({
                                 onClick={(e) => handleMenuToggle(e, chat.id)}
                                 className="opacity-0 group-hover:opacity-100 p-0.5 rounded transition-[opacity,transform] duration-75 ease-out transform hover:scale-110 active:scale-95"
                               >
-                                <MoreVertical className="w-3.5 h-3.5 transition-colors duration-75 ease-out" style={{ color: '#9CA3AF' }} />
+                                <MoreVertical className={`w-3.5 h-3.5 transition-colors duration-75 ease-out ${isDark ? 'text-slate-400' : ''}`} style={!isDark ? { color: '#9CA3AF' } : undefined} />
                               </button>
                               
                               {openMenuId === chat.id && (
@@ -518,8 +523,8 @@ export const ChatPanel = ({
                                   exit={{ opacity: 0, scale: 0.95, y: -4 }}
                                   transition={{ duration: 0.12 }}
                                   className="absolute right-0 top-8 w-28 rounded-md p-1 z-[9999]"
-                                  style={{ 
-                                    backgroundColor: '#FFFFFF',
+style={{
+                                    backgroundColor: isDark ? 'hsl(var(--background))' : '#FFFFFF',
                                     isolation: 'isolate'
                                   }}
                                   onClick={(e) => e.stopPropagation()}
@@ -557,15 +562,15 @@ export const ChatPanel = ({
 
             {/* Empty State when no chat history should be shown - sticky with panel */}
             {!showChatHistory && (
-              <div className="flex-1 min-h-0 flex items-center justify-center p-8" style={{ backgroundColor: '#FFFFFF' }}>
+              <div className="flex-1 min-h-0 flex items-center justify-center p-8" style={{ backgroundColor: panelBg }}>
                 <div className="text-center max-w-xs">
-                  <div className="w-20 h-20 rounded-3xl flex items-center justify-center mx-auto mb-6 border-2 border-black/10" style={{ background: 'linear-gradient(to bottom right, rgba(0,0,0,0.04), rgba(0,0,0,0.02))' }}>
-                    <MessageSquare className="w-8 h-8" style={{ color: '#9CA3AF' }} strokeWidth={1.5} />
+                  <div className={`w-20 h-20 rounded-3xl flex items-center justify-center mx-auto mb-6 border-2 ${isDark ? 'border-white/10' : 'border-black/10'}`} style={isDark ? { background: 'linear-gradient(to bottom right, rgba(255,255,255,0.06), rgba(255,255,255,0.02))' } : { background: 'linear-gradient(to bottom right, rgba(0,0,0,0.04), rgba(0,0,0,0.02))' }}>
+                    <MessageSquare className={`w-8 h-8 ${isDark ? 'text-slate-400' : ''}`} style={!isDark ? { color: '#9CA3AF' } : undefined} strokeWidth={1.5} />
                   </div>
-                  <h3 className="font-semibold text-xl mb-3 tracking-tight" style={{ color: '#374151' }}>
+                  <h3 className={`font-semibold text-xl mb-3 tracking-tight ${isDark ? 'text-slate-200' : ''}`} style={!isDark ? { color: '#374151' } : undefined}>
                     <span>Start a Conversation</span>
                   </h3>
-                  <p className="text-sm leading-relaxed font-medium" style={{ color: '#6B7280' }}>
+                  <p className={`text-sm leading-relaxed font-medium ${isDark ? 'text-slate-400' : ''}`} style={!isDark ? { color: '#6B7280' } : undefined}>
                     <span>Search for something to begin an intelligent conversation with AI</span>
                   </p>
                 </div>

@@ -704,7 +704,7 @@ const Auth: React.FC = () => {
   return (
     <div className="h-screen min-h-0 flex flex-col md:flex-row md:gap-0 overflow-hidden">
       {/* Left column: white form panel */}
-      <div className="w-full md:min-w-[380px] md:w-[40%] flex-shrink-0 bg-white flex flex-col min-h-0 flex-1 md:flex-none overflow-hidden">
+      <div className="w-full md:min-w-[380px] md:w-[40%] flex-shrink-0 bg-background flex flex-col min-h-0 flex-1 md:flex-none overflow-hidden">
         <div className="flex-1 flex flex-col justify-center px-8 py-12 md:px-10 md:py-16 max-w-md mx-auto w-full auth-form">
           <form
             onSubmit={handleSubmit}
@@ -759,7 +759,7 @@ const Auth: React.FC = () => {
               type="button"
               onClick={triggerGoogleSignIn}
               disabled={googleLoading}
-              className="auth-form-text w-full py-3 px-4 rounded-lg font-medium focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-3 bg-white border border-gray-200 hover:border-gray-300 hover:bg-gray-50 transition-colors mt-0 mb-0"
+              className="auth-form-text w-full py-3 px-4 rounded-lg font-medium focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-3 bg-white border border-border hover:border-border hover:bg-muted transition-colors mt-0 mb-0"
             >
               <svg width="18" height="18" viewBox="0 0 18 18" className="flex-shrink-0">
                 <path fill="#4285F4" d="M17.64 9.2c0-.637-.057-1.22-.163-1.782H9v3.38h4.844c-.209 1.125-.843 2.078-1.796 2.717v2.258h2.908c1.702-1.567 2.684-3.874 2.684-6.575z"/>
@@ -779,8 +779,8 @@ const Auth: React.FC = () => {
             {/* Email field: step 1 login only - squared outline with icon */}
             {showEmailStep && (
               <div>
-                <div className="flex items-center gap-3 w-full border border-gray-200 rounded-none bg-white px-4 py-3.5 focus-within:border-gray-400 focus-within:outline-none">
-                  <Mail className="w-5 h-5 text-gray-400 flex-shrink-0" aria-hidden />
+                <div className="flex items-center gap-3 w-full border border-border rounded-none bg-background px-4 py-3.5 focus-within:border-ring focus-within:outline-none">
+                  <Mail className="w-5 h-5 text-muted-foreground flex-shrink-0" aria-hidden />
                   <input
                     ref={emailInputRefCallback}
                     type="email"
@@ -808,7 +808,7 @@ const Auth: React.FC = () => {
                   type="button"
                   onClick={handleContinueToPassword}
                   disabled={loading}
-                  className="w-full py-2 px-4 rounded-lg font-medium text-gray-900 bg-white border border-gray-200 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-300 disabled:opacity-50 disabled:cursor-not-allowed transition-colors mt-4 mb-0"
+                  className="w-full py-2 px-4 rounded-lg font-medium text-foreground bg-background border border-border hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-ring disabled:opacity-50 disabled:cursor-not-allowed transition-colors mt-4 mb-0"
                 >
                   Continue
                 </button>
@@ -821,8 +821,8 @@ const Auth: React.FC = () => {
             {showPasswordStep && (
               <>
                 <div style={{ pointerEvents: 'auto' }}>
-                  <div className="flex items-center gap-3 w-full border border-gray-200 rounded-none bg-white px-4 py-3.5 focus-within:border-gray-400 focus-within:outline-none">
-                    <Lock className="w-5 h-5 text-gray-400 flex-shrink-0" aria-hidden />
+                  <div className="flex items-center gap-3 w-full border border-border rounded-none bg-background px-4 py-3.5 focus-within:border-ring focus-within:outline-none">
+                    <Lock className="w-5 h-5 text-muted-foreground flex-shrink-0" aria-hidden />
                     <input
                       ref={passwordInputRefCallback}
                       type="password"
@@ -848,7 +848,7 @@ const Auth: React.FC = () => {
                 <button
                   type="submit"
                   disabled={loading}
-                  className="w-full py-2 px-4 rounded-lg font-medium text-gray-900 bg-white border border-gray-200 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-300 disabled:opacity-50 disabled:cursor-not-allowed transition-colors mt-4 mb-0"
+                  className="w-full py-2 px-4 rounded-lg font-medium text-foreground bg-background border border-border hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-ring disabled:opacity-50 disabled:cursor-not-allowed transition-colors mt-4 mb-0"
                 >
                   {loading ? 'Signing in...' : 'Sign in'}
                 </button>
@@ -869,7 +869,7 @@ const Auth: React.FC = () => {
                     value={formData.email}
                     onChange={handleChange}
                     onInput={handleInput}
-                    className="auth-input w-full border-0 border-b border-gray-200 bg-transparent py-2 outline-none focus:border-gray-400"
+                    className="auth-input w-full border-0 border-b border-border bg-transparent py-2 outline-none focus:border-ring"
                     placeholder="Email"
                     disabled={loading}
                     autoComplete="email"
@@ -885,7 +885,7 @@ const Auth: React.FC = () => {
                     value={formData.firstName || ''}
                     onChange={handleChange}
                     onInput={handleInput}
-                    className="auth-input w-full border-0 border-b border-gray-200 bg-transparent py-2 outline-none focus:border-gray-400"
+                    className="auth-input w-full border-0 border-b border-border bg-transparent py-2 outline-none focus:border-ring"
                     placeholder="First Name"
                     disabled={loading}
                     autoComplete="given-name"
@@ -901,7 +901,7 @@ const Auth: React.FC = () => {
                     value={formData.lastName || ''}
                     onChange={handleChange}
                     onInput={handleInput}
-                    className="auth-input w-full border-0 border-b border-gray-200 bg-transparent py-2 outline-none focus:border-gray-400"
+                    className="auth-input w-full border-0 border-b border-border bg-transparent py-2 outline-none focus:border-ring"
                     placeholder="Last Name"
                     disabled={loading}
                     autoComplete="family-name"
@@ -916,7 +916,7 @@ const Auth: React.FC = () => {
                     value={formData.companyName || ''}
                     onChange={handleChange}
                     onInput={handleInput}
-                    className="auth-input w-full border-0 border-b border-gray-200 bg-transparent py-2 outline-none focus:border-gray-400"
+                    className="auth-input w-full border-0 border-b border-border bg-transparent py-2 outline-none focus:border-ring"
                     placeholder="Company Name"
                     disabled={loading}
                     autoComplete="organization"
@@ -932,7 +932,7 @@ const Auth: React.FC = () => {
                     value={formData.password}
                     onChange={handleChange}
                     onInput={handleInput}
-                    className="auth-input w-full border-0 border-b border-gray-200 bg-transparent py-2 outline-none focus:border-gray-400"
+                    className="auth-input w-full border-0 border-b border-border bg-transparent py-2 outline-none focus:border-ring"
                     placeholder="Password"
                     disabled={loading}
                     autoComplete="new-password"
@@ -950,7 +950,7 @@ const Auth: React.FC = () => {
                     value={formData.confirmPassword || ''}
                     onChange={handleChange}
                     onInput={handleInput}
-                    className="auth-input w-full border-0 border-b border-gray-200 bg-transparent py-2 outline-none focus:border-gray-400"
+                    className="auth-input w-full border-0 border-b border-border bg-transparent py-2 outline-none focus:border-ring"
                     placeholder="Confirm Password"
                     disabled={loading}
                     autoComplete="new-password"
@@ -960,7 +960,7 @@ const Auth: React.FC = () => {
                 <button
                   type="submit"
                   disabled={loading}
-                  className="w-full py-2 px-4 rounded-lg font-medium text-gray-900 bg-white border border-gray-200 hover:border-gray-300 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-300 disabled:opacity-50 disabled:cursor-not-allowed transition-colors mt-4 mb-6"
+                  className="w-full py-2 px-4 rounded-lg font-medium text-gray-900 bg-white border border-border hover:border-border hover:bg-muted focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-ring disabled:opacity-50 disabled:cursor-not-allowed transition-colors mt-4 mb-6"
                 >
                   {loading ? 'Creating Account...' : 'Sign up'}
                 </button>

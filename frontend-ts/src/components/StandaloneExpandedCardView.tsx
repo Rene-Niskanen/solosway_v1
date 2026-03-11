@@ -8,6 +8,7 @@ import { usePreview } from '../contexts/PreviewContext';
 import { backendApi } from '../services/backendApi';
 import { useFilingSidebar } from '../contexts/FilingSidebarContext';
 import { useChatPanel } from '../contexts/ChatPanelContext';
+import { useTheme } from 'next-themes';
 import { CitationActionMenu } from './CitationActionMenu';
 import { useActiveChatState, useChatStateStore } from '../contexts/ChatStateStore';
 import type { CitationData, ChatMessage, ViewedCitation } from '../contexts/ChatStateStore';
@@ -113,6 +114,8 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
   allowFullscreen = true,
   onSnapTo50,
 }) => {
+  const { resolvedTheme } = useTheme();
+  const isDark = resolvedTheme === 'dark';
   // Local state for instant close - hides component immediately before parent state updates
   const [isLocallyHidden, setIsLocallyHidden] = useState(false);
   
@@ -1514,8 +1517,8 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
           margin: 0, // Explicitly remove any margins
           padding: 0, // Explicitly remove any padding
           borderRadius: '16px', // All corners rounded like Prism
-          boxShadow: '0 4px 16px rgba(0, 0, 0, 0.06), 0 1px 4px rgba(0, 0, 0, 0.04)',
-          border: '1px solid rgba(226, 232, 240, 0.6)',
+          boxShadow: isDark ? '0 4px 16px rgba(0, 0, 0, 0.15), 0 1px 4px rgba(0, 0, 0, 0.1)' : '0 4px 16px rgba(0, 0, 0, 0.06), 0 1px 4px rgba(0, 0, 0, 0.04)',
+          border: isDark ? '1px solid hsl(var(--border))' : '1px solid rgba(226, 232, 240, 0.6)',
           display: 'flex',
           flexDirection: 'column',
           pointerEvents: 'auto',
@@ -1561,9 +1564,9 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
       
       {/* Header - filename bar (close, PDF icon, name, fullscreen) */}
       <div className="pr-4 pl-6 shrink-0" style={{ 
-        background: '#FFFFFF',
-        backgroundColor: '#FFFFFF',
-        border: '4px solid #FFFFFF',
+        background: isDark ? 'hsl(var(--card))' : '#FFFFFF',
+        backgroundColor: isDark ? 'hsl(var(--card))' : '#FFFFFF',
+        border: isDark ? '4px solid hsl(var(--card))' : '4px solid #FFFFFF',
         paddingTop: '12px',
         paddingBottom: '8px',
         borderTopLeftRadius: isFullscreen ? 0 : '16px',
@@ -1577,14 +1580,14 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
             className="flex items-center gap-2 min-w-0 max-w-[36%]"
             style={{
               zIndex: 1,
-              borderBottom: '2px solid rgba(0, 0, 0, 0.25)',
+              borderBottom: isDark ? '2px solid rgba(255, 255, 255, 0.8)' : '2px solid rgba(0, 0, 0, 0.25)',
               paddingBottom: '4px',
               width: 'fit-content'
             }}
           >
             <button
               onClick={handleInstantClose}
-              className="flex items-center justify-center rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] flex-shrink-0"
+              className={`flex items-center justify-center rounded-sm flex-shrink-0 ${isDark ? 'hover:bg-muted active:bg-muted/80' : 'hover:bg-[#f0f0f0] active:bg-[#e8e8e8]'}`}
               style={{
                 padding: '4px',
                 height: '22px',
@@ -1597,10 +1600,10 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
               }}
               title="Close document"
             >
-              <X className="w-3.5 h-3.5 text-[#666]" strokeWidth={2} />
+              <X className={`w-3.5 h-3.5 ${isDark ? 'text-slate-200' : 'text-[#666]'}`} strokeWidth={2} />
             </button>
             <img src="/pdfnew.png" alt="PDF" className="w-4 h-4 object-contain flex-shrink-0" />
-            <span className="text-slate-700 text-sm font-medium truncate min-w-0">
+            <span className={`text-sm font-medium truncate min-w-0 ${isDark ? 'text-slate-300' : 'text-slate-700'}`}>
               {displayFilename}
             </span>
           </div>
@@ -1615,7 +1618,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
                     display: 'flex',
                     alignItems: 'center',
                     gap: 6,
-                    backgroundColor: '#ffffff',
+                    backgroundColor: isDark ? 'hsl(var(--card))' : '#ffffff',
                     padding: '4px 6px',
                     borderRadius: 8,
                   }}
@@ -1623,39 +1626,37 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
                   <button
                     type="button"
                     aria-label="Previous citation"
-                    disabled={currentCitationIndex <= 0}
+                    disabled={sortedCitations.length <= 1}
                     onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleReviewPrevCitation(); }}
+                    className={`rounded border border-transparent ${sortedCitations.length > 1 ? (isDark ? 'text-sidebar-foreground hover:bg-card/80 active:bg-card' : 'text-[#141413] hover:bg-white/60 active:bg-white/60') : (isDark ? 'text-sidebar-foreground/50' : 'text-muted-foreground')}`}
                     style={{
                       display: 'flex',
                       padding: 4,
                       border: 'none',
-                      background: 'rgba(255,255,255,0.95)',
-                      backdropFilter: 'blur(6px)',
+                      background: 'transparent',
                       borderRadius: 6,
-                      cursor: currentCitationIndex <= 0 ? 'default' : 'pointer',
-                      color: currentCitationIndex <= 0 ? '#9ca3af' : '#666666',
+                      cursor: sortedCitations.length <= 1 ? 'default' : 'pointer',
                       boxShadow: 'none',
                     }}
                   >
                     <ChevronUp size={20} strokeWidth={2} />
                   </button>
-                  <span className={`text-xs tabular-nums whitespace-nowrap font-medium ${sortedCitations.length > 0 ? 'text-slate-500' : 'text-slate-400'}`}>
+                  <span className={`text-xs tabular-nums whitespace-nowrap font-medium ${sortedCitations.length > 0 ? (isDark ? 'text-white' : 'text-slate-500') : (isDark ? 'text-white/60' : 'text-slate-400')}`}>
                     {sortedCitations.length > 0 ? `${currentCitationIndex + 1} of ${sortedCitations.length}` : '—'}
                   </span>
                   <button
                     type="button"
                     aria-label="Next citation"
-                    disabled={currentCitationIndex >= sortedCitations.length - 1}
+                    disabled={sortedCitations.length <= 1}
                     onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleReviewNextCitation(); }}
+                    className={`rounded border border-transparent ${sortedCitations.length > 1 ? (isDark ? 'text-sidebar-foreground hover:bg-card/80 active:bg-card' : 'text-[#141413] hover:bg-white/60 active:bg-white/60') : (isDark ? 'text-sidebar-foreground/50' : 'text-muted-foreground')}`}
                     style={{
                       display: 'flex',
                       padding: 4,
                       border: 'none',
-                      background: 'rgba(255,255,255,0.95)',
-                      backdropFilter: 'blur(6px)',
+                      background: 'transparent',
                       borderRadius: 6,
-                      cursor: currentCitationIndex >= sortedCitations.length - 1 ? 'default' : 'pointer',
-                      color: currentCitationIndex >= sortedCitations.length - 1 ? '#9ca3af' : '#666666',
+                      cursor: sortedCitations.length <= 1 ? 'default' : 'pointer',
                       boxShadow: 'none',
                     }}
                   >
@@ -1667,7 +1668,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
                   style={{
                     width: '1px',
                     height: '18px',
-                    backgroundColor: 'rgba(0,0,0,0.12)',
+                    backgroundColor: isDark ? 'rgba(255,255,255,0.35)' : 'rgba(0,0,0,0.12)',
                     marginLeft: '10px',
                     marginRight: '6px',
                   }}
@@ -1694,7 +1695,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
                       handleQuickZoom(parseInt(value, 10));
                     }
                   }}
-                  className="appearance-none pl-2.5 pr-7 py-1.5 text-xs font-medium border border-slate-200/60 hover:border-slate-300/80 bg-white/90 hover:bg-slate-50/90 text-slate-700 rounded-md transition-all duration-200 shadow-sm cursor-pointer focus:outline-none focus:ring-1 focus:ring-slate-300"
+                  className={`appearance-none pl-2.5 pr-7 py-1.5 text-xs font-medium rounded-md transition-all duration-200 shadow-sm cursor-pointer focus:outline-none ${isDark ? 'border border-border hover:border-border bg-card hover:bg-muted text-foreground focus:ring-1 focus:ring-ring' : 'border border-slate-200/60 hover:border-slate-300/80 bg-white/90 hover:bg-slate-50/90 text-slate-700 focus:ring-1 focus:ring-slate-300'}`}
                   style={{ minWidth: '70px' }}
                 >
                   <option value="50">50%</option>
@@ -1705,7 +1706,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
                   <option value="200">200%</option>
                   <option value="fit">Fit</option>
                 </select>
-                <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3 h-3 text-slate-500 pointer-events-none" />
+                <ChevronDown className={`absolute right-2 top-1/2 -translate-y-1/2 w-3 h-3 pointer-events-none ${isDark ? 'text-slate-200' : 'text-slate-500'}`} />
               </div>
             )}
             {/* Download button */}
@@ -1720,8 +1721,8 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
                   document.body.removeChild(link);
                 }
               }}
-              whileHover={{ backgroundColor: '#f0f0f0' }}
-              whileTap={{ backgroundColor: '#e8e8e8' }}
+              whileHover={{ backgroundColor: isDark ? 'hsl(var(--muted))' : '#f0f0f0' }}
+              whileTap={{ backgroundColor: isDark ? 'hsl(var(--muted) / 0.8)' : '#e8e8e8' }}
               className="flex items-center justify-center rounded-sm transition-all duration-150 mr-1.5"
               style={{
                 padding: '5px',
@@ -1734,14 +1735,14 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
               }}
               title="Download file"
             >
-              <Download className="w-4 h-4 text-[#666]" strokeWidth={1.75} />
+              <Download className={`w-4 h-4 ${isDark ? 'text-slate-200' : 'text-[#666]'}`} strokeWidth={1.75} />
             </motion.button>
             {/* Fullscreen button - only when allowFullscreen is true (hidden in 50/50 layout) */}
             {allowFullscreen && (
             <motion.button
               onClick={() => setIsFullscreen(!isFullscreen)}
-              whileHover={{ backgroundColor: '#f0f0f0' }}
-              whileTap={{ backgroundColor: '#e8e8e8' }}
+              whileHover={{ backgroundColor: isDark ? 'hsl(var(--muted))' : '#f0f0f0' }}
+              whileTap={{ backgroundColor: isDark ? 'hsl(var(--muted) / 0.8)' : '#e8e8e8' }}
               className="flex items-center justify-center rounded-sm transition-all duration-150"
               style={{
                 padding: '5px',
@@ -1755,9 +1756,9 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
               title={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
             >
               {isFullscreen ? (
-                <Minimize2 className="w-4 h-4 text-[#666]" strokeWidth={1.75} />
+                <Minimize2 className={`w-4 h-4 ${isDark ? 'text-slate-200' : 'text-[#666]'}`} strokeWidth={1.75} />
               ) : (
-                <Maximize className="w-4 h-4 text-[#666]" strokeWidth={1.75} />
+                <Maximize className={`w-4 h-4 ${isDark ? 'text-slate-200' : 'text-[#666]'}`} strokeWidth={1.75} />
               )}
             </motion.button>
             )}
@@ -1906,7 +1907,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
                               width: `${Math.min(dimensions.width, finalBboxWidth)}px`,
                               height: `${Math.min(dimensions.height, finalBboxHeight)}px`,
                               backgroundColor: 'rgba(212, 210, 255, 0.45)',
-                              border: 'none',
+                              border: '1px solid rgb(191, 189, 230)',
                               borderRadius: '2px',
                               pointerEvents: 'auto',
                               cursor: 'pointer',
@@ -2002,7 +2003,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
         width: `${panelWidth + 24}px`, // Extend to cover rounded corner area
         top: 0,
         bottom: 0,
-        backgroundColor: '#FFFFFF', // Match chat background (white)
+        backgroundColor: '#FFFFFF',
         zIndex: 9998, // Below the document preview (9999)
         pointerEvents: 'none',
         transition: 'none',

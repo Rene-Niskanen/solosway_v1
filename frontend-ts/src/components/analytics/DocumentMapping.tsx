@@ -1,5 +1,6 @@
 import React, { useRef, useEffect } from 'react';
 import mapboxgl from 'mapbox-gl';
+import { useTheme } from 'next-themes';
 import 'mapbox-gl/dist/mapbox-gl.css';
 
 interface SystemDocument {
@@ -26,6 +27,8 @@ export default function DocumentMapping({
   const map = useRef<mapboxgl.Map | null>(null);
   const mapboxToken = import.meta.env.VITE_MAPBOX_TOKEN || '';
   const markers = useRef<mapboxgl.Marker[]>([]);
+  const { resolvedTheme } = useTheme();
+  const mapStyle = resolvedTheme === 'dark' ? 'mapbox://styles/mapbox/dark-v11' : 'mapbox://styles/mapbox/satellite-streets-v12';
 
   // Initialize map when component mounts
   useEffect(() => {
@@ -36,7 +39,7 @@ export default function DocumentMapping({
     try {
       map.current = new mapboxgl.Map({
         container: mapContainer.current,
-        style: 'mapbox://styles/mapbox/satellite-streets-v12',
+        style: mapStyle,
         center: [-2.5879, 51.4545], // Bristol, UK
         zoom: 11,
         antialias: true
@@ -85,7 +88,7 @@ export default function DocumentMapping({
         map.current = null;
       }
     };
-  }, []);
+  }, [mapStyle]);
 
   // Update markers when documents change
   useEffect(() => {

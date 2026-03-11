@@ -398,7 +398,7 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate, embeddedInSettings, initi
       );
     }
     return (
-      <div className="flex items-center justify-center min-h-screen" style={{ backgroundColor: '#f9fafb' }}>
+      <div className="flex items-center justify-center min-h-screen" style={{ backgroundColor: 'hsl(var(--background))' }}>
         <style>{`
           @keyframes spin {
             0% { transform: rotate(0deg); }
@@ -421,7 +421,7 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate, embeddedInSettings, initi
   return (
     <div
       className={embeddedInSettings ? 'w-full' : 'min-h-screen w-full'}
-      style={embeddedInSettings ? { padding: 0 } : { backgroundColor: '#f9fafb', padding: '40px 24px' }}
+      style={embeddedInSettings ? { padding: 0 } : { backgroundColor: 'hsl(var(--background))', padding: '40px 24px' }}
     >
       <div style={{ maxWidth: embeddedInSettings ? '100%' : '1200px', margin: embeddedInSettings ? 0 : '0 auto', width: '100%' }}>
         <div
@@ -444,12 +444,12 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate, embeddedInSettings, initi
             {/* Left Sidebar / Profile form — when embedded: flat form layout (no cards) */}
             {embeddedInSettings ? (
               <div className="max-w-2xl space-y-6">
-                <h2 className="text-xl font-semibold text-gray-900">Profile</h2>
+                <h2 className="text-xl font-semibold text-foreground">Profile</h2>
 
                 {/* Full name (avatar left) + Title in one row */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   <div className="space-y-1.5">
-                    <label className="block text-sm font-normal text-gray-900">Full name</label>
+                    <label className="block text-sm font-normal text-foreground">Full name</label>
                     <div className="flex items-center gap-3">
                       <div className="flex flex-col items-start gap-1">
                         <div
@@ -504,7 +504,7 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate, embeddedInSettings, initi
                     </div>
                   </div>
                   <div className="space-y-1.5">
-                    <label className="block text-sm font-normal text-gray-900">Title</label>
+                    <label className="block text-sm font-normal text-foreground">Title</label>
                     <EnhancedEditableField
                       containerBackgroundColor="#F3F1EF"
                       staticDisplay
@@ -522,7 +522,7 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate, embeddedInSettings, initi
 
                 {/* Location */}
                 <div className="space-y-1.5">
-                  <label className="block text-sm font-normal text-gray-900">Location</label>
+                  <label className="block text-sm font-normal text-foreground">Location</label>
                   <EnhancedEditableField
                     containerBackgroundColor="#F3F1EF"
                     staticDisplay
@@ -539,7 +539,7 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate, embeddedInSettings, initi
 
                 {/* Email */}
                 <div className="space-y-1.5">
-                  <label className="block text-sm font-normal text-gray-900">Email</label>
+                  <label className="block text-sm font-normal text-foreground">Email</label>
                   <EnhancedEditableField
                     containerBackgroundColor="#F3F1EF"
                     staticDisplay
@@ -557,7 +557,7 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate, embeddedInSettings, initi
 
                 {/* Phone */}
                 <div className="space-y-1.5">
-                  <label className="block text-sm font-normal text-gray-900">Phone</label>
+                  <label className="block text-sm font-normal text-foreground">Phone</label>
                   <EnhancedEditableField
                     containerBackgroundColor="#F3F1EF"
                     staticDisplay
@@ -574,7 +574,7 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate, embeddedInSettings, initi
 
                 {/* Company */}
                 <div className="space-y-1.5">
-                  <label className="block text-sm font-normal text-gray-900">Company</label>
+                  <label className="block text-sm font-normal text-foreground">Company</label>
                   <EnhancedEditableField
                     containerBackgroundColor="#F3F1EF"
                     staticDisplay
@@ -594,10 +594,10 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate, embeddedInSettings, initi
                           <img src={userData.company_logo_url} alt="Company logo" className="w-full h-full object-contain" />
                         </div>
                         <div className="flex gap-2">
-                          <Button variant="outline" size="sm" onClick={() => setIsCompanyLogoModalOpen(true)} className="rounded-md border-gray-300 text-gray-700 text-sm font-medium">
+                          <Button variant="outline" size="sm" onClick={() => setIsCompanyLogoModalOpen(true)} className="rounded-md border-border text-foreground text-sm font-medium hover:bg-muted">
                             Change
                           </Button>
-                          <Button variant="outline" size="sm" onClick={() => { if (window.confirm('Remove company logo?')) { removeCompanyLogo().then(() => setUserData(prev => prev ? { ...prev, company_logo_url: undefined } : null)).catch(console.error); } }} className="rounded-md border-red-200 text-red-600 text-sm font-medium hover:bg-red-50">
+                          <Button variant="outline" size="sm" onClick={() => { if (window.confirm('Remove company logo?')) { removeCompanyLogo().then(() => setUserData(prev => prev ? { ...prev, company_logo_url: undefined } : null)).catch(console.error); } }} className="rounded-md border-destructive/50 text-destructive text-sm font-medium hover:bg-destructive/10">
                             Remove
                           </Button>
                         </div>
@@ -1023,7 +1023,7 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate, embeddedInSettings, initi
                           transition: 'background-color 150ms ease',
                         }}
                         onMouseEnter={(e) => {
-                          e.currentTarget.style.backgroundColor = '#f9fafb';
+                          e.currentTarget.style.backgroundColor = 'hsl(var(--muted))';
                         }}
                         onMouseLeave={(e) => {
                           e.currentTarget.style.backgroundColor = 'transparent';
@@ -1125,7 +1125,7 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate, embeddedInSettings, initi
                               transition: 'background-color 150ms ease',
                             }}
                             onMouseEnter={(e) => {
-                              e.currentTarget.style.backgroundColor = '#f9fafb';
+                              e.currentTarget.style.backgroundColor = 'hsl(var(--muted))';
                             }}
                             onMouseLeave={(e) => {
                               e.currentTarget.style.backgroundColor = 'transparent';

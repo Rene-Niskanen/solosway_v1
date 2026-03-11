@@ -1850,12 +1850,12 @@ export const SearchBar = forwardRef<{
                         }}
                         title="Open analyse mode"
                         onMouseEnter={(e) => {
-                          e.currentTarget.style.backgroundColor = '#f9fafb';
+                          e.currentTarget.style.backgroundColor = 'hsl(var(--muted))';
                           e.currentTarget.style.borderColor = 'rgba(209, 213, 219, 0.8)';
                           e.currentTarget.style.boxShadow = '0 2px 4px rgba(0, 0, 0, 0.08)';
                         }}
                         onMouseLeave={(e) => {
-                          e.currentTarget.style.backgroundColor = '#ffffff';
+                          e.currentTarget.style.backgroundColor = 'hsl(var(--background))';
                           e.currentTarget.style.borderColor = 'rgba(229, 231, 235, 0.8)';
                           e.currentTarget.style.boxShadow = '0 1px 2px rgba(0, 0, 0, 0.05)';
                         }}

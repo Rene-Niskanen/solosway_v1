@@ -2,6 +2,7 @@
 "use client";
 
 import React, { useEffect, useRef, useImperativeHandle, useState } from 'react';
+import { useTheme } from 'next-themes';
 import { createRoot } from 'react-dom/client';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Moon, Layers, Loader2, ArrowLeft, Plus } from 'lucide-react';
@@ -479,6 +480,8 @@ export const SquareMap = React.forwardRef<SquareMapRef, SquareMapProps>(({
   // Default to the colored map theme on first load (user preference)
   const [isColorfulMap, setIsColorfulMap] = useState(true);
   const [isChangingStyle, setIsChangingStyle] = useState(false);
+  const { resolvedTheme } = useTheme();
+  const baseMapStyle = resolvedTheme === 'dark' ? 'mapbox://styles/mapbox/dark-v11' : 'mapbox://styles/mapbox/light-v11';
   const [defaultPreviewUrl, setDefaultPreviewUrl] = useState<string | null>(null);
   const [lightPreviewUrl, setLightPreviewUrl] = useState<string | null>(null);
   const [showPropertyDetailsPanel, setShowPropertyDetailsPanel] = useState(false);
@@ -2645,7 +2648,7 @@ export const SquareMap = React.forwardRef<SquareMapRef, SquareMapProps>(({
       });
       
       // Use a calmer colored map style (colored but less busy/overpowering).
-      const newStyle = willBeColorful ? 'mapbox://styles/mapbox/outdoors-v12' : 'mapbox://styles/mapbox/light-v11';
+      const newStyle = willBeColorful ? 'mapbox://styles/mapbox/outdoors-v12' : (resolvedTheme === 'dark' ? 'mapbox://styles/mapbox/dark-v11' : 'mapbox://styles/mapbox/light-v11');
       
       // Set the new style
       map.current.setStyle(newStyle);
@@ -4751,7 +4754,7 @@ export const SquareMap = React.forwardRef<SquareMapRef, SquareMapProps>(({
       map.current = new mapboxgl.Map({
         container: mapContainer.current,
         // Default to a calmer colored style rather than the grey/light style.
-        style: isColorfulMap ? 'mapbox://styles/mapbox/outdoors-v12' : 'mapbox://styles/mapbox/light-v11',
+        style: isColorfulMap ? 'mapbox://styles/mapbox/outdoors-v12' : baseMapStyle,
         center: defaultLocation.center, // Start at default location immediately - no Mapbox default
         zoom: defaultLocation.zoom, // Start at default zoom immediately - no Mapbox default
         bearing: 15, // Slight rotation for better view
@@ -4977,6 +4980,13 @@ export const SquareMap = React.forwardRef<SquareMapRef, SquareMapProps>(({
     // Don't cleanup on visibility change - keep map initialized
     // Cleanup only happens on component unmount (see separate useEffect below)
   }, []); // Run once on mount, not when isVisible changes
+
+  // Update map style when theme changes (only for non-colorful/base style)
+  useEffect(() => {
+    if (!map.current || isColorfulMap || isChangingStyle) return;
+    const style = resolvedTheme === 'dark' ? 'mapbox://styles/mapbox/dark-v11' : 'mapbox://styles/mapbox/light-v11';
+    map.current.setStyle(style);
+  }, [resolvedTheme, isColorfulMap, isChangingStyle]);
 
   // Initialize both preview maps for toggle button thumbnails
   useEffect(() => {

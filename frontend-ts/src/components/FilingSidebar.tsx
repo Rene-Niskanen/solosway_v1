@@ -30,6 +30,7 @@ import {
   type PipelineProgressData,
 } from './PipelineStagesHoverPreview';
 import { toast } from '@/hooks/use-toast';
+import { useTheme } from 'next-themes';
 
 interface Document {
   id: string;
@@ -223,6 +224,9 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
     openSidebar: openFilingSidebar,
     registerUploadFromChat,
   } = useFilingSidebar();
+  const { resolvedTheme } = useTheme();
+  const isDark = resolvedTheme === 'dark';
+  const filingBg = isDark ? 'hsl(var(--muted))' : '#F2F2EF';
   const { getAllPropertyHubs } = useBackendApi();
 
   const [documents, setDocuments] = useState<Document[]>([]);
@@ -2533,7 +2537,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
             height: '100vh',
             maxHeight: '100vh',
             // Match ChatPanel / agent sidebar background for consistent look
-            background: '#F2F2EF',
+            background: filingBg,
             // Position FilingSidebar at main sidebar edge (parent passes effective width: 12 when collapsed, 56 icons-only, 224 full, 320 expanded)
             // When collapsed: FilingSidebar starts at 12px (after toggle rail)
             // When open (isSmallSidebarMode): FilingSidebar starts at sidebarWidth (56 / 224 / 320)
@@ -2566,7 +2570,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
           }}
         >
         {/* Header - Unified Design */}
-        <div className="px-4 pt-4 pb-1 border-b border-gray-100 w-full" style={{ boxSizing: 'border-box' }}>
+        <div className={`px-4 pt-4 pb-1 w-full ${isDark ? '' : 'border-b border-gray-100'}`} style={{ boxSizing: 'border-box' }}>
           {/* Close Button - same container/styling as SideChatPanel close (hidden in chat; close is in View dropdown) */}
           <div className="flex items-center space-x-2 min-w-0 justify-end mb-3 min-h-[2rem] mr-3">
             {!hideCloseButton ? (
@@ -3054,25 +3058,32 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                 ) : null}
               </div>
               <div
-                className="flex gap-0.5 h-1.5 rounded overflow-hidden cursor-default"
+                className="flex items-center gap-2 cursor-default"
                 aria-label="Page usage this period"
                 title="Hover for details"
               >
-                {usageLoading ? (
-                  <div className="flex-1 h-full rounded bg-gray-200" />
-                ) : usageData ? (
-                  Array.from({ length: 32 }).map((_, i) => {
-                    const barFill = Math.min((usageData.usage_percent ?? 0) / 100, 1);
-                    const fill = (i + 1) / 32 <= barFill;
-                    return (
-                      <div
-                        key={i}
-                        className={`flex-1 min-w-0 h-full ${fill ? 'bg-gradient-to-r from-orange-500 to-orange-600' : 'bg-gray-200'}`}
-                      />
-                    );
-                  })
-                ) : (
-                  <div className="flex-1 h-full rounded bg-gray-200" />
+                <div className="flex-1 min-w-0 flex gap-0.5 h-1.5 rounded overflow-hidden">
+                  {usageLoading ? (
+                    <div className="flex-1 h-full rounded bg-gray-200" />
+                  ) : usageData ? (
+                    Array.from({ length: 32 }).map((_, i) => {
+                      const barFill = Math.min((usageData.usage_percent ?? 0) / 100, 1);
+                      const fill = (i + 1) / 32 <= barFill;
+                      return (
+                        <div
+                          key={i}
+                          className={`flex-1 min-w-0 h-full ${fill ? 'bg-gradient-to-r from-orange-500 to-orange-600' : 'bg-gray-200'}`}
+                        />
+                      );
+                    })
+                  ) : (
+                    <div className="flex-1 h-full rounded bg-gray-200" />
+                  )}
+                </div>
+                {usageData && (
+                  <span className="flex-shrink-0 text-[10px] font-medium text-gray-600 tabular-nums">
+                    {((usageData.pages_used ?? 0) > (usageData.monthly_limit ?? 0) ? '100+' : Math.round(usageData.usage_percent ?? 0))}%
+                  </span>
                 )}
               </div>
             </div>
@@ -3395,8 +3406,8 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                     isSelectionMode 
                       ? (isSelected 
                           ? 'bg-gray-100 hover:bg-gray-100' 
-                          : 'bg-white hover:bg-[#f0f0f0] active:bg-[#e8e8e8]')
-                      : 'bg-white hover:bg-[#f0f0f0] active:bg-[#e8e8e8]'
+                          : isDark ? 'bg-white hover:bg-gray-100 active:bg-gray-200' : 'bg-white hover:bg-[#f0f0f0] active:bg-[#e8e8e8]')
+                      : isDark ? 'bg-white hover:bg-gray-100 active:bg-gray-200' : 'bg-white hover:bg-[#f0f0f0] active:bg-[#e8e8e8]'
                   }`}
                   onClick={(e) => {
                     if (editingItemId) return;
@@ -3590,10 +3601,10 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                                   isSelectionMode 
                                     ? (isSelected 
                                         ? 'bg-gray-100 hover:bg-gray-100' 
-                                        : 'bg-white hover:bg-gray-50/50 active:bg-gray-50')
+                                        : isDark ? 'bg-white hover:bg-gray-100 active:bg-gray-200' : 'bg-white hover:bg-gray-50/50 active:bg-gray-50')
                                     : isOpenInFileView
-                                      ? 'bg-blue-50 hover:bg-blue-100/80'
-                                      : 'bg-white hover:bg-gray-50/50 active:bg-gray-50'
+                                      ? isDark ? 'bg-blue-50/80 hover:bg-blue-100/60' : 'bg-blue-50 hover:bg-blue-100/80'
+                                      : isDark ? 'bg-white hover:bg-gray-100 active:bg-gray-200' : 'bg-white hover:bg-gray-50/50 active:bg-gray-50'
                                 }`}
                                 onClick={(e) => {
                                   if (editingItemId) return;
@@ -3766,10 +3777,10 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                         isSelectionMode 
                           ? (isSelected 
                               ? 'bg-gray-100 hover:bg-gray-100' 
-                              : 'bg-white hover:bg-gray-50/50 active:bg-gray-50')
+                              : isDark ? 'bg-white hover:bg-gray-100 active:bg-gray-200' : 'bg-white hover:bg-gray-50/50 active:bg-gray-50')
                           : isOpenInFileView
-                            ? 'bg-blue-50 hover:bg-blue-100/80'
-                            : 'bg-white hover:bg-gray-50/50 active:bg-gray-50'
+                            ? isDark ? 'bg-blue-50/80 hover:bg-blue-100/60' : 'bg-blue-50 hover:bg-blue-100/80'
+                            : isDark ? 'bg-white hover:bg-gray-100 active:bg-gray-200' : 'bg-white hover:bg-gray-50/50 active:bg-gray-50'
                       }`}
                       onClick={(e) => {
                         if (editingItemId) return;
@@ -4067,7 +4078,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
 
         {/* Selection count indicator at bottom */}
         {isSelectionMode && selectedItems.size > 0 && (
-          <div className="px-4 py-2 border-t border-gray-200 w-full flex items-center flex-shrink-0" style={{ backgroundColor: '#F2F2EE', boxSizing: 'border-box', minHeight: '28px' }}>
+          <div className="px-4 py-2 border-t border-gray-200 w-full flex items-center flex-shrink-0" style={{ backgroundColor: filingBg, boxSizing: 'border-box', minHeight: '28px' }}>
             <span className="text-[10px] font-medium text-gray-600">
               {selectedItems.size} {selectedItems.size === 1 ? 'item' : 'items'} selected
             </span>

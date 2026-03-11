@@ -18,7 +18,7 @@ import { Avatar, AvatarImage, AvatarFallback } from '@/components/ui/avatar';
 
 pdfjs.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
-const POPUP_BG = '#F2F2EF';
+const POPUP_BG = 'hsl(var(--muted))';
 
 const KEY_FACT_VALUE_MAX_LENGTH = 80;
 

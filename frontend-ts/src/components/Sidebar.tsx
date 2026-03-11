@@ -22,12 +22,18 @@ import {
   LogOut,
   MessageCircle,
   MessagesSquare,
+  Plus,
   Search,
   Upload,
   HelpCircle,
   Info,
-  CircleArrowUp
+  CircleArrowUp,
+  Monitor,
+  Sun,
+  Moon,
+  Check
 } from "lucide-react";
+import { useTheme } from "next-themes";
 import OrbitProgress from "react-loading-indicators/OrbitProgress";
 import { useChatHistory } from "./ChatHistoryContext";
 import { useFilingSidebar } from "../contexts/FilingSidebarContext";
@@ -111,13 +117,19 @@ export const Sidebar = ({
   const [editingTitle, setEditingTitle] = React.useState<string>('');
   const [showArchived, setShowArchived] = React.useState<boolean>(false);
   const [isBrandDropdownOpen, setIsBrandDropdownOpen] = React.useState<boolean>(false);
+  const [isThemeSubmenuOpen, setIsThemeSubmenuOpen] = React.useState<boolean>(false);
   const [profilePicCacheBust, setProfilePicCacheBust] = React.useState<number | null>(null);
   const { openPlanModal } = usePlanModal();
+  const { theme, setTheme, resolvedTheme } = useTheme();
+  const isDark = resolvedTheme === 'dark';
   const { usage: usageData, loading: usageLoading, error: usageError } = useUsage();
   const brandButtonRef = React.useRef<HTMLButtonElement>(null);
   const brandButtonRefExpanded = React.useRef<HTMLButtonElement>(null);
   const brandDropdownRef = React.useRef<HTMLDivElement>(null);
+  const themeButtonRef = React.useRef<HTMLButtonElement>(null);
+  const themeSubmenuRef = React.useRef<HTMLDivElement>(null);
   const [iconsOnlyDropdownPosition, setIconsOnlyDropdownPosition] = React.useState<{ top: number; left: number } | null>(null);
+  const [themeSubmenuPosition, setThemeSubmenuPosition] = React.useState<{ top: number; left: number } | null>(null);
   const { isOpen: isFeedbackModalOpen } = useFeedbackModal();
   const contextUser = useAuthUser();
   // Seed from AuthContext so role/name is correct on first paint (no "User" → "Admin" flash)
@@ -138,6 +150,18 @@ export const Sidebar = ({
     // Position dropdown to the right of the icons-only strip (56px) so it's never clipped by sidebar overflow/edge
     setIconsOnlyDropdownPosition({ top: rect.top, left: SIDEBAR_ICONS_ONLY_WIDTH });
   }, [isIconsOnly, isBrandDropdownOpen, isExpanded]);
+
+  // When Theme submenu open, position it to the right of the Theme button (portal so it isn't clipped by sidebar overflow)
+  React.useLayoutEffect(() => {
+    if (!isThemeSubmenuOpen || !isBrandDropdownOpen) {
+      setThemeSubmenuPosition(null);
+      return;
+    }
+    const el = themeButtonRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    setThemeSubmenuPosition({ top: rect.top, left: rect.right + 4 });
+  }, [isThemeSubmenuOpen, isBrandDropdownOpen]);
 
   // Chat history state
   const {
@@ -198,8 +222,11 @@ export const Sidebar = ({
       const inDropdown = brandDropdownRef.current?.contains(target);
       const inMainStrip = brandButtonRef.current?.contains(target);
       const inExpandedStrip = brandButtonRefExpanded.current?.contains(target);
-      if (isBrandDropdownOpen && !inDropdown && !inMainStrip && !inExpandedStrip) {
+      const inThemeSubmenu = themeSubmenuRef.current?.contains(target);
+      const inThemeButton = themeButtonRef.current?.contains(target);
+      if (isBrandDropdownOpen && !inDropdown && !inMainStrip && !inExpandedStrip && !inThemeSubmenu && !inThemeButton) {
         setIsBrandDropdownOpen(false);
+        setIsThemeSubmenuOpen(false);
       }
     };
 
@@ -210,6 +237,11 @@ export const Sidebar = ({
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
     };
+  }, [isBrandDropdownOpen]);
+
+  // Close theme submenu when brand dropdown closes
+  React.useEffect(() => {
+    if (!isBrandDropdownOpen) setIsThemeSubmenuOpen(false);
   }, [isBrandDropdownOpen]);
 
   // Close menu when clicking outside
@@ -425,8 +457,8 @@ export const Sidebar = ({
           onClick={() => handleNavClick(item)}
             className={`w-10 flex items-center justify-center p-2 rounded border ${
               active
-              ? 'bg-white text-[#141413] border-gray-300'
-              : 'text-[#141413] hover:bg-white/60 hover:text-[#141413] border-transparent active:bg-white active:text-[#141413]'
+                ? isDark ? 'bg-card text-sidebar-foreground border-border' : 'bg-white text-[#141413] border-gray-300'
+                : isDark ? 'text-sidebar-foreground hover:bg-card/80 border-transparent active:bg-card active:text-sidebar-foreground' : 'text-[#141413] hover:bg-white/60 border-transparent active:bg-white/60'
           }`}
           style={{
             boxShadow: active ? '0 1px 2px rgba(0, 0, 0, 0.04)' : 'none',
@@ -438,7 +470,7 @@ export const Sidebar = ({
         >
           <div className="relative">
             <span className="relative z-10 block">
-              <Icon className="w-5 h-5 flex-shrink-0 text-[#141413]" strokeWidth={1.25} />
+              <Icon className="w-5 h-5 flex-shrink-0 text-inherit" strokeWidth={1.25} />
             </span>
             {showChatIndicator && (
               <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-amber-500 rounded-full animate-pulse" />
@@ -459,8 +491,8 @@ export const Sidebar = ({
         onClick={() => handleNavClick(item)}
         className={`w-full flex items-center gap-3 px-3 py-1.5 rounded group relative border ${
           active
-            ? 'bg-white text-[#141413] border-gray-200/80' 
-            : 'text-[#141413] hover:bg-white/60 hover:text-[#141413] border-transparent active:bg-white active:text-[#141413]'
+            ? isDark ? 'bg-card text-sidebar-foreground border-border' : 'bg-white text-[#141413] border-gray-200/80'
+            : isDark ? 'text-sidebar-foreground hover:bg-card/80 border-transparent active:bg-card active:text-sidebar-foreground' : 'text-[#141413] hover:bg-white/60 border-transparent active:bg-white/60'
         }`}
         style={{
           boxShadow: active ? '0 1px 1px rgba(0, 0, 0, 0.03)' : 'none',
@@ -475,7 +507,7 @@ export const Sidebar = ({
         <div className="relative">
           <span className="relative z-10 block">
             <Icon
-              className="w-5 h-5 flex-shrink-0 text-[#141413]"
+              className="w-5 h-5 flex-shrink-0 text-inherit"
               strokeWidth={1.25}
             />
           </span>
@@ -488,7 +520,7 @@ export const Sidebar = ({
             </span>
           )}
         </div>
-        <span className="text-[14px] font-normal flex-1 text-left text-[#141413]">
+        <span className="text-[14px] font-normal flex-1 text-left text-inherit">
           {item.label}
         </span>
         {item.badge && (
@@ -520,8 +552,8 @@ export const Sidebar = ({
       <div
         className={`flex flex-col fixed top-0 h-full ${className?.includes('z-[150]') ? 'z-[150]' : 'z-[1000]'} ${className || ''}`}
         style={{
-          // Match agentsidebar background
-          background: '#F2F2EF',
+          // Light: before-dark style (#F2F2EF); Dark: muted
+          background: isDark ? 'hsl(var(--muted))' : '#F2F2EF',
           // When collapsed OR (map visible AND collapsed), move off-screen to the left
           // When open (even in map view if user toggled it), position at left: 0
           left: shouldHideSidebar ? '-1000px' : '0px',
@@ -533,8 +565,9 @@ export const Sidebar = ({
           transform: 'translateZ(0)',
           backfaceVisibility: 'hidden',
           // Ensure background extends fully to prevent any gaps (1px same-color border prevents dashboard background leakage at seam)
+          // Hide border on Settings so no white line shows between sidebar and Settings content (MainContent overlaps 1px there)
           boxShadow: 'none',
-          borderRight: '1px solid #F2F2EF',
+          borderRight: activeItem === 'settings' ? 'none' : isDark ? '1px solid hsl(var(--border))' : '1px solid #F2F2EF',
           // Ensure full height coverage - use 100vh to cover entire viewport
           minHeight: '100vh',
           height: '100vh',
@@ -547,7 +580,8 @@ export const Sidebar = ({
           // When map is visible, MainContent uses z-index 10000 (so chat bar stays clickable).
           // Sidebar must be above that so the map doesn't paint on top of the sidebar.
           // When agent sidebar (chat panel) is open, backdrop is 9999 – keep sidebar above it so nav clicks register in one click.
-          zIndex: className?.includes('z-[150]') ? 150 : (isMapVisible ? 10001 : (isChatPanelOpen ? 10000 : 1000)),
+          // When brand dropdown (profile menu) is open, use very high z-index so it appears above ChatPanel (10001).
+          zIndex: className?.includes('z-[150]') ? 150 : isBrandDropdownOpen ? 99999 : (isMapVisible ? 10001 : (isChatPanelOpen ? 10000 : 1000)),
           // Extend slightly beyond to ensure full coverage
           minWidth: `${sidebarWidthValue}px`,
           right: 'auto',
@@ -558,15 +592,15 @@ export const Sidebar = ({
       >
         {!shouldHideSidebar && (
           <div className="flex flex-col h-full min-h-0 pb-3 pt-12">
-            {/* VELORA logo - smaller, inline with sidebar buttons; invert for light sidebar (logo is dark-on-black); hidden when icons-only */}
+            {/* OpenFind logo - white variant for sidebar; hidden when icons-only */}
             {!isIconsOnly && (
               <div className="relative flex-shrink-0" style={{ height: 52 }}>
                 <div className="absolute left-0 right-0 flex items-center px-3" style={{ top: -26, marginLeft: 14 }}>
                   <img
-                    src="/OpenFind(1).png"
+                    src={isDark ? '/OpenFind-white.png' : '/OpenFind(1).png'}
                     alt="OpenFind"
                     className="h-6 object-contain object-left"
-                    style={{ width: 'auto', maxWidth: '240px', filter: 'invert(1) brightness(0.2)', opacity: 0.8 }}
+                    style={{ width: 'auto', maxWidth: '240px', filter: isDark ? undefined : 'invert(1) brightness(0.2)', opacity: isDark ? 1 : 0.8 }}
                   />
                 </div>
               </div>
@@ -577,11 +611,11 @@ export const Sidebar = ({
                 <button
                   type="button"
                   onClick={(e) => { e.stopPropagation(); onIconsOnlyToggle(); }}
-                  className="rounded border border-transparent text-[#141413] hover:bg-white/60 hover:text-[#141413] active:bg-white active:text-[#141413] transition-colors flex items-center justify-center shrink-0 p-1.5"
+                  className={`rounded border border-transparent transition-colors flex items-center justify-center shrink-0 p-1.5 ${isDark ? 'text-sidebar-foreground hover:bg-card/80 active:bg-card' : 'text-[#141413] hover:bg-white/60 active:bg-white/60'}`}
                   aria-label={isIconsOnly ? 'Expand sidebar' : 'Show only icons'}
                   title={isIconsOnly ? 'Expand sidebar' : 'Show only icons'}
                 >
-                  <img src="/sidebar.png" alt="" className="h-6 w-6 object-contain -mt-0.5" />
+                  <img src="/sidebar.png" alt="" className="h-6 w-6 object-contain -mt-0.5" style={{ filter: isDark ? 'brightness(0) invert(0.77)' : undefined }} />
                 </button>
               </div>
             )}
@@ -593,37 +627,39 @@ export const Sidebar = ({
                   onRestoreActiveChat?.();
                   onNewChat?.();
                 }}
-                className={`flex items-center rounded border border-transparent text-[#141413] hover:bg-white/60 hover:text-[#141413] active:bg-white active:text-[#141413] transition-colors ${isIconsOnly ? 'justify-center p-2 w-10 mt-6' : 'w-full gap-3 pl-2 pr-3 py-1.5'}`}
+                className={`flex items-center rounded border border-transparent transition-colors ${isDark ? 'text-sidebar-foreground hover:bg-muted active:bg-card' : 'text-[#141413] hover:bg-white/60 active:bg-white/60'} ${isIconsOnly ? 'justify-center p-2 w-10 mt-6' : 'w-full gap-3 pl-2 pr-3 py-1.5'}`}
                 aria-label="New chat"
               >
-                <img src="/newchat1.png" alt="" className="h-6 w-6 flex-shrink-0 object-contain" />
-                {!isIconsOnly && <span className="text-[14px] font-normal flex-1 text-left text-[#141413]" style={{ marginLeft: '-2px' }}>New chat</span>}
+                <span className={`h-6 w-6 flex-shrink-0 rounded-full flex items-center justify-center ${isDark ? 'border border-white/10' : 'bg-gray-200/80 border border-gray-300'}`} style={isDark ? { backgroundColor: 'hsl(220, 22%, 26%)' } : undefined}>
+                  <Plus className="h-3.5 w-3.5 text-inherit" strokeWidth={2.5} />
+                </span>
+                {!isIconsOnly && <span className="text-[14px] font-normal flex-1 text-left text-inherit" style={{ marginLeft: '-2px' }}>New chat</span>}
               </button>
               {onOpenSearch && (
                 <button
                   onClick={onOpenSearch}
                   className={`w-full flex items-center rounded border transition-colors ${
                     isSearchButtonActive
-                      ? 'bg-white text-[#141413] border-gray-300'
-                      : 'border-transparent text-[#141413] hover:bg-white/60 hover:text-[#141413] active:bg-white active:text-[#141413]'
+                      ? isDark ? 'bg-card text-card-foreground border-border' : 'bg-white text-[#141413] border-gray-300'
+                      : isDark ? 'border-transparent text-sidebar-foreground hover:bg-muted active:bg-card' : 'border-transparent text-[#141413] hover:bg-white/60 active:bg-white/60'
                   } ${isIconsOnly ? 'justify-center p-2 w-10' : 'gap-3 px-3 py-1.5 w-full'}`}
                   style={{
                     boxShadow: isSearchButtonActive ? '0 1px 2px rgba(0, 0, 0, 0.04)' : 'none',
                   }}
                   aria-label="Search"
                 >
-                  <Search className={`h-5 w-5 flex-shrink-0 text-[#141413]`} strokeWidth={1.5} />
-                  {!isIconsOnly && <span className="text-[14px] font-normal text-left text-[#141413]">Search</span>}
+                  <Search className="h-5 w-5 flex-shrink-0 text-inherit" strokeWidth={1.5} />
+                  {!isIconsOnly && <span className="text-[14px] font-normal text-left text-inherit">Search</span>}
                 </button>
               )}
               {onUploadFile && (
                 <button
                   onClick={onUploadFile}
-                  className={`flex items-center rounded border border-transparent text-[#141413] hover:bg-white/60 hover:text-[#141413] active:bg-white active:text-[#141413] transition-colors ${isIconsOnly ? 'justify-center p-2 w-10' : 'w-full gap-3 px-3 py-1.5'}`}
+                  className={`flex items-center rounded border border-transparent transition-colors ${isDark ? 'text-sidebar-foreground hover:bg-muted active:bg-card' : 'text-[#141413] hover:bg-white/60 active:bg-white/60'} ${isIconsOnly ? 'justify-center p-2 w-10' : 'w-full gap-3 px-3 py-1.5'}`}
                   aria-label="Upload files"
                 >
-                  <Upload className="h-5 w-5 flex-shrink-0 text-[#141413]" strokeWidth={1.5} />
-                  {!isIconsOnly && <span className="text-[14px] font-normal text-left text-[#141413]">Upload</span>}
+                  <Upload className="h-5 w-5 flex-shrink-0 text-inherit" strokeWidth={1.5} />
+                  {!isIconsOnly && <span className="text-[14px] font-normal text-left text-inherit">Upload</span>}
                 </button>
               )}
             </div>
@@ -639,7 +675,7 @@ export const Sidebar = ({
             </div>
 
             {/* Profile strip at bottom — line on top only; icons-only: symmetric padding so 36px avatar fits in 56px sidebar */}
-            <div className={`relative flex-shrink-0 min-h-[64px] border-0 border-t border-gray-200 pt-4 pb-2 ${isIconsOnly ? 'flex justify-center pl-[10px] pr-[10px]' : 'pl-5 pr-3'}`}>
+            <div className={`relative flex-shrink-0 min-h-[64px] border-0 border-t pt-4 pb-2 ${isDark ? 'border-border' : 'border-gray-200'} ${isIconsOnly ? 'flex justify-center pl-[10px] pr-[10px]' : 'pl-5 pr-3'}`}>
               {/* Icons-only: render dropdown in portal so it isn't clipped by sidebar transform/overflow */}
               {isIconsOnly && isBrandDropdownOpen && iconsOnlyDropdownPosition && typeof document !== 'undefined' &&
                 createPortal(
@@ -648,7 +684,7 @@ export const Sidebar = ({
                     initial={{ opacity: 0, y: 4 }}
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ duration: 0.15, ease: [0.4, 0, 0.2, 1] }}
-                    className="rounded-md bg-white pt-3 pb-1.5"
+                    className={`rounded-md pt-3 pb-1.5 ${isDark ? 'bg-popover' : 'bg-white'}`}
                     style={{
                       position: 'fixed',
                       left: iconsOnlyDropdownPosition.left,
@@ -663,7 +699,7 @@ export const Sidebar = ({
                     }}
                   >
                     <div className="px-3 pb-2">
-                      <p className="text-[13px] font-normal text-gray-500 truncate">{userData?.email || userHandle}</p>
+                      <p className={`text-[13px] font-normal truncate ${isDark ? 'text-muted-foreground' : 'text-gray-500'}`}>{userData?.email || userHandle}</p>
                     </div>
                     <div className="px-1">
                       <button
@@ -672,47 +708,58 @@ export const Sidebar = ({
                           setIsBrandDropdownOpen(false);
                           onNavigate?.('settings');
                         }}
-                        className="w-full flex items-center gap-3 px-2 py-2 rounded text-[#141413] hover:bg-gray-50 transition-colors text-left"
+                        className="w-full flex items-center gap-3 px-2 py-2 rounded text-popover-foreground hover:bg-muted transition-colors text-left"
                       >
-                        <Settings className="h-5 w-5 flex-shrink-0 text-[#141413]" strokeWidth={1.25} />
-                        <span className="text-[13px] font-normal text-[#141413]">Settings</span>
+                        <Settings className="h-5 w-5 flex-shrink-0" strokeWidth={1.25} />
+                        <span className="text-[13px] font-normal">Settings</span>
                       </button>
                       <button
                         onClick={() => setIsBrandDropdownOpen(false)}
-                        className="w-full flex items-center gap-3 px-2 py-2 rounded text-[#141413] hover:bg-gray-50 transition-colors text-left"
+                        className="w-full flex items-center gap-3 px-2 py-2 rounded text-popover-foreground hover:bg-muted transition-colors text-left"
                       >
-                        <HelpCircle className="h-5 w-5 flex-shrink-0 text-[#141413]" strokeWidth={1.25} />
-                        <span className="text-[13px] font-normal text-[#141413]">Get help</span>
+                        <HelpCircle className="h-5 w-5 flex-shrink-0" strokeWidth={1.25} />
+                        <span className="text-[13px] font-normal">Get help</span>
                       </button>
-                      <div className="border-t border-gray-100 my-1" />
+                      <div className="relative">
+                        <button
+                          ref={themeButtonRef}
+                          onClick={() => setIsThemeSubmenuOpen(!isThemeSubmenuOpen)}
+                          className="w-full flex items-center gap-3 px-2 py-2 rounded text-popover-foreground hover:bg-muted transition-colors text-left"
+                        >
+                          <Monitor className="h-5 w-5 flex-shrink-0" strokeWidth={1.25} />
+                          <span className="text-[13px] font-normal flex-1">Theme</span>
+                          <ChevronRight className="h-4 w-4 flex-shrink-0" strokeWidth={1.5} />
+                        </button>
+                      </div>
+                      <div className="border-t border-border my-1" />
                       <button
                         onClick={() => {
                           setIsBrandDropdownOpen(false);
                           openPlanModal(usageData?.plan ?? "professional", usageData?.billing_cycle_end);
                         }}
-                        className="w-full flex items-center gap-3 px-2 py-2 rounded text-[#141413] hover:bg-gray-50 transition-colors text-left"
+                        className="w-full flex items-center gap-3 px-2 py-2 rounded text-popover-foreground hover:bg-muted transition-colors text-left"
                       >
-                        <CircleArrowUp className="h-5 w-5 flex-shrink-0 text-[#141413]" strokeWidth={1.25} />
-                        <span className="text-[13px] font-normal text-[#141413]">Upgrade plan</span>
+                        <CircleArrowUp className="h-5 w-5 flex-shrink-0" strokeWidth={1.25} />
+                        <span className="text-[13px] font-normal">Upgrade plan</span>
                       </button>
                       <button
                         onClick={() => setIsBrandDropdownOpen(false)}
-                        className="w-full flex items-center gap-3 px-2 py-2 rounded text-[#141413] hover:bg-gray-50 transition-colors text-left"
+                        className="w-full flex items-center gap-3 px-2 py-2 rounded text-popover-foreground hover:bg-muted transition-colors text-left"
                       >
-                        <Info className="h-5 w-5 flex-shrink-0 text-[#141413]" strokeWidth={1.25} />
-                        <span className="text-[13px] font-normal text-[#141413] flex-1">Learn more</span>
+                        <Info className="h-5 w-5 flex-shrink-0" strokeWidth={1.25} />
+                        <span className="text-[13px] font-normal flex-1">Learn more</span>
                         <ChevronRight className="h-5 w-5 flex-shrink-0 text-muted-foreground" strokeWidth={1.5} />
                       </button>
-                      <div className="border-t border-gray-100 my-1" />
+                      <div className="border-t border-border my-1" />
                       <button
                         onClick={() => {
                           setIsBrandDropdownOpen(false);
                           onSignOut?.();
                         }}
-                        className="w-full flex items-center gap-3 px-2 py-2 rounded text-[#141413] hover:bg-gray-50 transition-colors text-left"
+                        className="w-full flex items-center gap-3 px-2 py-2 rounded text-popover-foreground hover:bg-muted transition-colors text-left"
                       >
-                        <LogOut className="h-5 w-5 flex-shrink-0 text-[#141413]" strokeWidth={1.25} />
-                        <span className="text-[13px] font-normal text-[#141413]">Log out</span>
+                        <LogOut className="h-5 w-5 flex-shrink-0" strokeWidth={1.25} />
+                        <span className="text-[13px] font-normal">Log out</span>
                       </button>
                     </div>
                   </motion.div>,
@@ -726,11 +773,11 @@ export const Sidebar = ({
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, y: 4 }}
                     transition={{ duration: 0.15, ease: [0.4, 0, 0.2, 1] }}
-                    className={`rounded-md bg-white z-[10002] pt-3 pb-1.5 absolute bottom-full mb-3 ${isIconsOnly ? 'left-2 right-2' : 'left-3 right-3'}`}
+                    className={`rounded-md z-[10002] pt-3 pb-1.5 absolute bottom-full mb-3 ${isDark ? 'bg-popover' : 'bg-white'} ${isIconsOnly ? 'left-2 right-2' : 'left-3 right-3'}`}
                     style={{ boxShadow: '0 4px 16px rgba(0,0,0,0.08), 0 0 0 1px rgba(0,0,0,0.03)' }}
                   >
                     <div className="px-3 pb-2">
-                      <p className="text-[13px] font-normal text-gray-500 truncate">{userData?.email || userHandle}</p>
+                      <p className={`text-[13px] font-normal truncate ${isDark ? 'text-muted-foreground' : 'text-gray-500'}`}>{userData?.email || userHandle}</p>
                     </div>
                     <div className="px-1">
                       <button
@@ -739,47 +786,58 @@ export const Sidebar = ({
                           setIsBrandDropdownOpen(false);
                           onNavigate?.('settings');
                         }}
-                        className="w-full flex items-center gap-3 px-2 py-2 rounded text-[#141413] hover:bg-gray-50 transition-colors text-left"
+                        className="w-full flex items-center gap-3 px-2 py-2 rounded text-popover-foreground hover:bg-muted transition-colors text-left"
                       >
-                        <Settings className="h-5 w-5 flex-shrink-0 text-[#141413]" strokeWidth={1.25} />
-                        <span className="text-[13px] font-normal text-[#141413]">Settings</span>
+                        <Settings className="h-5 w-5 flex-shrink-0" strokeWidth={1.25} />
+                        <span className="text-[13px] font-normal">Settings</span>
                       </button>
                       <button
                         onClick={() => setIsBrandDropdownOpen(false)}
-                        className="w-full flex items-center gap-3 px-2 py-2 rounded text-[#141413] hover:bg-gray-50 transition-colors text-left"
+                        className="w-full flex items-center gap-3 px-2 py-2 rounded text-popover-foreground hover:bg-muted transition-colors text-left"
                       >
-                        <HelpCircle className="h-5 w-5 flex-shrink-0 text-[#141413]" strokeWidth={1.25} />
-                        <span className="text-[13px] font-normal text-[#141413]">Get help</span>
+                        <HelpCircle className="h-5 w-5 flex-shrink-0" strokeWidth={1.25} />
+                        <span className="text-[13px] font-normal">Get help</span>
                       </button>
-                      <div className="border-t border-gray-100 my-1" />
+                      <div className="relative">
+                        <button
+                          ref={themeButtonRef}
+                          onClick={() => setIsThemeSubmenuOpen(!isThemeSubmenuOpen)}
+                          className="w-full flex items-center gap-3 px-2 py-2 rounded text-popover-foreground hover:bg-muted transition-colors text-left"
+                        >
+                          <Monitor className="h-5 w-5 flex-shrink-0" strokeWidth={1.25} />
+                          <span className="text-[13px] font-normal flex-1">Theme</span>
+                          <ChevronRight className="h-4 w-4 flex-shrink-0" strokeWidth={1.5} />
+                        </button>
+                      </div>
+                      <div className="border-t border-border my-1" />
                       <button
                         onClick={() => {
                           setIsBrandDropdownOpen(false);
                           openPlanModal(usageData?.plan ?? "professional", usageData?.billing_cycle_end);
                         }}
-                        className="w-full flex items-center gap-3 px-2 py-2 rounded text-[#141413] hover:bg-gray-50 transition-colors text-left"
+                        className="w-full flex items-center gap-3 px-2 py-2 rounded text-popover-foreground hover:bg-muted transition-colors text-left"
                       >
-                        <CircleArrowUp className="h-5 w-5 flex-shrink-0 text-[#141413]" strokeWidth={1.25} />
-                        <span className="text-[13px] font-normal text-[#141413]">Upgrade plan</span>
+                        <CircleArrowUp className="h-5 w-5 flex-shrink-0" strokeWidth={1.25} />
+                        <span className="text-[13px] font-normal">Upgrade plan</span>
                       </button>
                       <button
                         onClick={() => setIsBrandDropdownOpen(false)}
-                        className="w-full flex items-center gap-3 px-2 py-2 rounded text-[#141413] hover:bg-gray-50 transition-colors text-left"
+                        className="w-full flex items-center gap-3 px-2 py-2 rounded text-popover-foreground hover:bg-muted transition-colors text-left"
                       >
-                        <Info className="h-5 w-5 flex-shrink-0 text-[#141413]" strokeWidth={1.25} />
-                        <span className="text-[13px] font-normal text-[#141413] flex-1">Learn more</span>
+                        <Info className="h-5 w-5 flex-shrink-0" strokeWidth={1.25} />
+                        <span className="text-[13px] font-normal flex-1">Learn more</span>
                         <ChevronRight className="h-5 w-5 flex-shrink-0 text-muted-foreground" strokeWidth={1.5} />
                       </button>
-                      <div className="border-t border-gray-100 my-1" />
+                      <div className="border-t border-border my-1" />
                       <button
                         onClick={() => {
                           setIsBrandDropdownOpen(false);
                           onSignOut?.();
                         }}
-                        className="w-full flex items-center gap-3 px-2 py-2 rounded text-[#141413] hover:bg-gray-50 transition-colors text-left"
+                        className="w-full flex items-center gap-3 px-2 py-2 rounded text-popover-foreground hover:bg-muted transition-colors text-left"
                       >
-                        <LogOut className="h-5 w-5 flex-shrink-0 text-[#141413]" strokeWidth={1.25} />
-                        <span className="text-[13px] font-normal text-[#141413]">Log out</span>
+                        <LogOut className="h-5 w-5 flex-shrink-0" strokeWidth={1.25} />
+                        <span className="text-[13px] font-normal">Log out</span>
                       </button>
                     </div>
                   </motion.div>
@@ -810,9 +868,9 @@ export const Sidebar = ({
                   </Avatar>
                   {!isIconsOnly && (
                     <div className="min-w-0 flex-1 text-left flex flex-col gap-1 pl-1">
-                      <p className="text-[13px] font-semibold text-gray-600 truncate leading-tight">{userName}</p>
+                      <p className={`text-[13px] font-semibold truncate leading-tight ${isDark ? 'text-muted-foreground' : 'text-gray-600'}`}>{userName}</p>
                       <span
-                        className="rounded-full px-2 py-0.5 text-[10px] font-semibold leading-none bg-white w-fit -ml-1"
+                        className={`rounded-full px-2 py-0.5 text-[10px] font-semibold leading-none w-fit -ml-1 ${isDark ? 'bg-card' : 'bg-white'}`}
                         style={{ color: planBadgeInfo.badgeColor }}
                       >
                         {planBadgeInfo.badgeText} plan
@@ -827,7 +885,7 @@ export const Sidebar = ({
                       e.stopPropagation();
                       setIsBrandDropdownOpen((prev) => !prev);
                     }}
-                    className="p-1 rounded text-muted-foreground hover:text-[#141413] transition-colors"
+                    className={`p-1 rounded transition-colors ${isDark ? 'text-muted-foreground hover:text-foreground' : 'text-muted-foreground hover:text-[#141413]'}`}
                     aria-label="Account menu"
                   >
                     <ChevronsUpDown className="w-4 h-4" strokeWidth={1.5} />
@@ -840,7 +898,7 @@ export const Sidebar = ({
 
         {/* Expanded Sidebar Content (Chat History) - not shown when icons-only */}
         {isExpanded && !shouldHideSidebar && !isIconsOnly && (
-          <div className="absolute inset-0 flex flex-col" style={{ background: '#F2F2EF' }}>
+          <div className={`absolute inset-0 flex flex-col ${isDark ? 'bg-muted' : 'bg-[#F2F2EF]'}`}>
             {/* Header with New Chat button */}
             <div className="px-3 pt-4 pb-2">
               <div className="flex items-center justify-between mb-4">
@@ -850,10 +908,10 @@ export const Sidebar = ({
                     // It should NEVER affect the agent sidebar (chat panel) - they are independent
                     onExpand?.();
                   }}
-                  className="p-1.5 rounded-md text-[#141413] hover:text-[#141413] hover:bg-white/60 transition-colors"
+                  className="p-1.5 rounded-md text-foreground hover:bg-muted transition-colors"
                   aria-label="Close"
                 >
-                  <ListEnd className="w-3.5 h-3.5 text-[#141413]" strokeWidth={1.25} />
+                  <ListEnd className="w-3.5 h-3.5 text-foreground" strokeWidth={1.25} />
                 </button>
               </div>
               
@@ -861,37 +919,39 @@ export const Sidebar = ({
               <div className="space-y-px mb-4">
                 <button
                   onClick={onNewChat}
-                  className="w-full flex items-center gap-3 px-3 py-1.5 bg-white hover:bg-gray-50 rounded-lg transition-colors border border-gray-200/60"
+                  className={`w-full flex items-center gap-3 px-3 py-1.5 rounded-lg transition-colors border ${isDark ? 'bg-card hover:bg-muted border-border text-sidebar-foreground' : 'bg-white hover:bg-gray-50 border-gray-200/60 text-[#141413]'}`}
                   style={{ boxShadow: '0 1px 2px rgba(0, 0, 0, 0.04)' }}
                 >
-                  <img src="/newchat1.png" alt="" className="h-6 w-6 flex-shrink-0 object-contain" />
-                  <span className="text-[#141413] font-normal text-[14px] flex-1 text-left" style={{ marginLeft: '-2px' }}>New chat</span>
+                  <span className={`h-6 w-6 flex-shrink-0 rounded-full flex items-center justify-center ${isDark ? 'border border-white/10' : 'bg-gray-200/80 border border-gray-300'}`} style={isDark ? { backgroundColor: 'hsl(220, 22%, 26%)' } : undefined}>
+                    <Plus className="h-3.5 w-3.5 text-inherit" strokeWidth={2.5} />
+                  </span>
+                  <span className="text-inherit font-normal text-[14px] flex-1 text-left" style={{ marginLeft: '-2px' }}>New chat</span>
                 </button>
                 {onOpenSearch && (
                   <button
                     onClick={onOpenSearch}
                     className={`w-full flex items-center gap-3 px-3 py-1.5 rounded border transition-colors ${
                       isSearchButtonActive
-                        ? 'bg-white text-[#141413] border-gray-300'
-                        : 'border-transparent text-[#141413] hover:bg-white/60 hover:text-[#141413] active:bg-white active:text-[#141413]'
+                        ? isDark ? 'bg-card text-card-foreground border-border' : 'bg-white text-[#141413] border-gray-200/80'
+                        : isDark ? 'border-transparent text-sidebar-foreground hover:bg-muted active:bg-card' : 'border-transparent text-[#141413] hover:bg-white/60 active:bg-white/60'
                     }`}
                     style={{
                       boxShadow: isSearchButtonActive ? '0 1px 2px rgba(0, 0, 0, 0.04)' : 'none',
                     }}
                     aria-label="Search"
                   >
-                    <Search className="h-5 w-5 flex-shrink-0 text-[#141413]" strokeWidth={1.5} />
-                    <span className="text-[14px] font-normal text-left text-[#141413]">Search</span>
+                    <Search className="h-5 w-5 flex-shrink-0 text-inherit" strokeWidth={1.5} />
+                    <span className="text-[14px] font-normal text-left text-inherit">Search</span>
                   </button>
                 )}
                 {onUploadFile && (
                   <button
                     onClick={onUploadFile}
-                    className="w-full flex items-center gap-3 px-3 py-1.5 rounded border border-transparent text-[#141413] hover:bg-white/60 hover:text-[#141413] active:bg-white active:text-[#141413] transition-colors"
+                    className={`w-full flex items-center gap-3 px-3 py-1.5 rounded border border-transparent transition-colors ${isDark ? 'text-sidebar-foreground hover:bg-muted active:bg-card' : 'text-[#141413] hover:bg-white/60 active:bg-white/60'}`}
                     aria-label="Upload files"
                   >
-                    <Upload className="h-5 w-5 flex-shrink-0 text-[#141413]" strokeWidth={1.5} />
-                    <span className="text-[14px] font-normal text-left text-[#141413]">Upload</span>
+                    <Upload className="h-5 w-5 flex-shrink-0 text-inherit" strokeWidth={1.5} />
+                    <span className="text-[14px] font-normal text-left text-inherit">Upload</span>
                   </button>
                 )}
               </div>
@@ -902,7 +962,7 @@ export const Sidebar = ({
               {/* Archive Toggle - subtle */}
               {archivedChats.length > 0 && (
                 <div className="flex items-center justify-between py-2 mb-1">
-                  <span className="text-[11px] text-gray-400 uppercase tracking-wider font-normal">
+                  <span className="text-[11px] text-muted-foreground uppercase tracking-wider font-normal">
                     {showArchived ? 'Archived' : 'Recent'}
                   </span>
                   <button
@@ -910,7 +970,7 @@ export const Sidebar = ({
                     className={`p-1 rounded transition-colors ${
                       showArchived
                         ? 'text-amber-600 hover:bg-amber-50'
-                        : 'text-gray-400 hover:text-gray-600 hover:bg-white/60'
+                        : 'text-muted-foreground hover:text-foreground hover:bg-muted'
                     }`}
                   >
                     {showArchived ? <ArchiveRestore className="w-3.5 h-3.5" /> : <Archive className="w-3.5 h-3.5" />}
@@ -921,8 +981,8 @@ export const Sidebar = ({
               {/* Chat List */}
               {displayedChats.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-16 px-4">
-                  <MessageSquare className="w-6 h-6 text-gray-300 mb-3" strokeWidth={1.5} />
-                  <p className="text-gray-400 text-[14px] text-center">
+                  <MessageSquare className="w-6 h-6 text-muted-foreground mb-3" strokeWidth={1.5} />
+                  <p className="text-muted-foreground text-[14px] text-center">
                     {showArchived ? 'No archived chats' : 'Start a new conversation'}
                   </p>
                 </div>
@@ -936,7 +996,7 @@ export const Sidebar = ({
                         onClick={() => handleChatClick(chat.id)}
                         onMouseEnter={() => setHoveredChat(chat.id)}
                         onMouseLeave={() => setHoveredChat(null)}
-                        className="group relative px-3 py-2.5 rounded-lg transition-colors cursor-pointer hover:bg-white/70"
+                        className="group relative px-3 py-2.5 rounded-lg transition-colors cursor-pointer hover:bg-muted"
                       >
                         {isEditing ? (
                           <input
@@ -949,19 +1009,19 @@ export const Sidebar = ({
                             }}
                             onBlur={() => handleSaveRename(chat.id)}
                             onClick={(e) => e.stopPropagation()}
-                            className="w-full px-2 py-1 text-[14px] bg-white border border-gray-200 rounded-md focus:outline-none focus:ring-1 focus:ring-gray-300"
+                            className="w-full px-2 py-1 text-[14px] bg-card border border-border rounded-md focus:outline-none focus:ring-1 focus:ring-ring"
                             autoFocus
                           />
                         ) : (
                           <div className="flex items-center justify-between gap-2">
-                            <span className="text-[14px] text-gray-700 truncate flex-1 group-hover:text-gray-900">
+                            <span className="text-[14px] text-foreground truncate flex-1">
                               {chat.title}
                             </span>
                             <button
                               onClick={(e) => handleMenuToggle(e, chat.id)}
-                              className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-gray-100 transition-all flex-shrink-0"
+                              className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-muted transition-all flex-shrink-0"
                             >
-                              <MoreHorizontal className="w-3.5 h-3.5 text-gray-400" />
+                              <MoreHorizontal className="w-3.5 h-3.5 text-muted-foreground" />
                             </button>
                           </div>
                         )}
@@ -983,20 +1043,20 @@ export const Sidebar = ({
                           >
                             <button
                               onClick={(e) => handleRename(e, chat.id, chat.title)}
-                              className="w-full px-3 py-1.5 text-left text-[14px] text-white/90 hover:bg-white/10 transition-colors"
+                              className="w-full px-3 py-1.5 text-left text-[14px] text-popover-foreground hover:bg-muted transition-colors"
                             >
                               Rename
                             </button>
                             <button
                               onClick={(e) => chat.archived ? handleUnarchiveChat(e, chat.id) : handleArchiveChat(e, chat.id)}
-                              className="w-full px-3 py-1.5 text-left text-[14px] text-white/90 hover:bg-white/10 transition-colors"
+                              className="w-full px-3 py-1.5 text-left text-[14px] text-popover-foreground hover:bg-muted transition-colors"
                             >
                               {chat.archived ? 'Unarchive' : 'Archive'}
                             </button>
-                            <div className="h-px bg-white/10 my-1" />
+                            <div className="h-px bg-border my-1" />
                             <button
                               onClick={(e) => handleDeleteChat(e, chat.id)}
-                              className="w-full px-3 py-1.5 text-left text-[14px] text-white/90 hover:bg-white/10 transition-colors"
+                              className="w-full px-3 py-1.5 text-left text-[14px] text-popover-foreground hover:bg-muted transition-colors"
                             >
                               Delete
                             </button>
@@ -1010,7 +1070,7 @@ export const Sidebar = ({
             </div>
 
             {/* Profile strip at bottom — line on top only */}
-            <div className="relative flex-shrink-0 min-h-[64px] border-0 border-t border-gray-200 pl-5 pr-3 pt-4 pb-2">
+            <div className="relative flex-shrink-0 min-h-[64px] border-0 border-t border-border pl-5 pr-3 pt-4 pb-2">
               <AnimatePresence>
                 {isExpanded && isBrandDropdownOpen && (
                   <motion.div
@@ -1019,11 +1079,11 @@ export const Sidebar = ({
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, y: 4 }}
                     transition={{ duration: 0.15, ease: [0.4, 0, 0.2, 1] }}
-                    className="absolute bottom-full left-3 right-3 mb-3 rounded-md bg-white z-[10002] pt-3 pb-1.5"
+                    className={`absolute bottom-full left-3 right-3 mb-3 rounded-md z-[10002] pt-3 pb-1.5 ${isDark ? 'bg-popover' : 'bg-white'}`}
                     style={{ boxShadow: '0 4px 16px rgba(0,0,0,0.08), 0 0 0 1px rgba(0,0,0,0.03)' }}
                   >
                     <div className="px-3 pb-2">
-                      <p className="text-[13px] font-normal text-gray-500 truncate">{userData?.email || userHandle}</p>
+                      <p className={`text-[13px] font-normal truncate ${isDark ? 'text-muted-foreground' : 'text-gray-500'}`}>{userData?.email || userHandle}</p>
                     </div>
                     <div className="px-1">
                       <button
@@ -1032,47 +1092,58 @@ export const Sidebar = ({
                           setIsBrandDropdownOpen(false);
                           onNavigate?.('settings');
                         }}
-                        className="w-full flex items-center gap-3 px-2 py-2 rounded text-[#141413] hover:bg-gray-50 transition-colors text-left"
+                        className="w-full flex items-center gap-3 px-2 py-2 rounded text-popover-foreground hover:bg-muted transition-colors text-left"
                       >
-                        <Settings className="h-5 w-5 flex-shrink-0 text-[#141413]" strokeWidth={1.25} />
-                        <span className="text-[13px] font-normal text-[#141413]">Settings</span>
+                        <Settings className="h-5 w-5 flex-shrink-0" strokeWidth={1.25} />
+                        <span className="text-[13px] font-normal">Settings</span>
                       </button>
                       <button
                         onClick={() => setIsBrandDropdownOpen(false)}
-                        className="w-full flex items-center gap-3 px-2 py-2 rounded text-[#141413] hover:bg-gray-50 transition-colors text-left"
+                        className="w-full flex items-center gap-3 px-2 py-2 rounded text-popover-foreground hover:bg-muted transition-colors text-left"
                       >
-                        <HelpCircle className="h-5 w-5 flex-shrink-0 text-[#141413]" strokeWidth={1.25} />
-                        <span className="text-[13px] font-normal text-[#141413]">Get help</span>
+                        <HelpCircle className="h-5 w-5 flex-shrink-0" strokeWidth={1.25} />
+                        <span className="text-[13px] font-normal">Get help</span>
                       </button>
-                      <div className="border-t border-gray-100 my-1" />
+                      <div className="relative">
+                        <button
+                          ref={themeButtonRef}
+                          onClick={() => setIsThemeSubmenuOpen(!isThemeSubmenuOpen)}
+                          className="w-full flex items-center gap-3 px-2 py-2 rounded text-popover-foreground hover:bg-muted transition-colors text-left"
+                        >
+                          <Monitor className="h-5 w-5 flex-shrink-0" strokeWidth={1.25} />
+                          <span className="text-[13px] font-normal flex-1">Theme</span>
+                          <ChevronRight className="h-4 w-4 flex-shrink-0" strokeWidth={1.5} />
+                        </button>
+                      </div>
+                      <div className="border-t border-border my-1" />
                       <button
                         onClick={() => {
                           setIsBrandDropdownOpen(false);
                           openPlanModal(usageData?.plan ?? "professional", usageData?.billing_cycle_end);
                         }}
-                        className="w-full flex items-center gap-3 px-2 py-2 rounded text-[#141413] hover:bg-gray-50 transition-colors text-left"
+                        className="w-full flex items-center gap-3 px-2 py-2 rounded text-popover-foreground hover:bg-muted transition-colors text-left"
                       >
-                        <CircleArrowUp className="h-5 w-5 flex-shrink-0 text-[#141413]" strokeWidth={1.25} />
-                        <span className="text-[13px] font-normal text-[#141413]">Upgrade plan</span>
+                        <CircleArrowUp className="h-5 w-5 flex-shrink-0" strokeWidth={1.25} />
+                        <span className="text-[13px] font-normal">Upgrade plan</span>
                       </button>
                       <button
                         onClick={() => setIsBrandDropdownOpen(false)}
-                        className="w-full flex items-center gap-3 px-2 py-2 rounded text-[#141413] hover:bg-gray-50 transition-colors text-left"
+                        className="w-full flex items-center gap-3 px-2 py-2 rounded text-popover-foreground hover:bg-muted transition-colors text-left"
                       >
-                        <Info className="h-5 w-5 flex-shrink-0 text-[#141413]" strokeWidth={1.25} />
-                        <span className="text-[13px] font-normal text-[#141413] flex-1">Learn more</span>
+                        <Info className="h-5 w-5 flex-shrink-0" strokeWidth={1.25} />
+                        <span className="text-[13px] font-normal flex-1">Learn more</span>
                         <ChevronRight className="h-5 w-5 flex-shrink-0 text-muted-foreground" strokeWidth={1.5} />
                       </button>
-                      <div className="border-t border-gray-100 my-1" />
+                      <div className="border-t border-border my-1" />
                       <button
                         onClick={() => {
                           setIsBrandDropdownOpen(false);
                           onSignOut?.();
                         }}
-                        className="w-full flex items-center gap-3 px-2 py-2 rounded text-[#141413] hover:bg-gray-50 transition-colors text-left"
+                        className="w-full flex items-center gap-3 px-2 py-2 rounded text-popover-foreground hover:bg-muted transition-colors text-left"
                       >
-                        <LogOut className="h-5 w-5 flex-shrink-0 text-[#141413]" strokeWidth={1.25} />
-                        <span className="text-[13px] font-normal text-[#141413]">Log out</span>
+                        <LogOut className="h-5 w-5 flex-shrink-0" strokeWidth={1.25} />
+                        <span className="text-[13px] font-normal">Log out</span>
                       </button>
                     </div>
                   </motion.div>
@@ -1092,9 +1163,9 @@ export const Sidebar = ({
                     </AvatarFallback>
                   </Avatar>
                   <div className="min-w-0 flex-1 text-left flex flex-col gap-1 pl-1">
-                    <p className="text-[13px] font-semibold text-gray-600 truncate leading-tight">{userName}</p>
+                    <p className="text-[13px] font-semibold text-muted-foreground truncate leading-tight">{userName}</p>
                     <span
-                      className="rounded-full px-2 py-0.5 text-[10px] font-semibold leading-none bg-white w-fit -ml-1"
+                      className="rounded-full px-2 py-0.5 text-[10px] font-semibold leading-none bg-card w-fit -ml-1"
                       style={{ color: planBadgeInfo.badgeColor }}
                     >
                       {planBadgeInfo.badgeText} plan
@@ -1107,7 +1178,7 @@ export const Sidebar = ({
                     e.stopPropagation();
                     setIsBrandDropdownOpen((prev) => !prev);
                   }}
-                  className="p-1 rounded text-muted-foreground hover:text-[#141413] transition-colors"
+                  className="p-1 rounded text-muted-foreground hover:text-foreground transition-colors"
                   aria-label="Account menu"
                 >
                   <ChevronsUpDown className="w-4 h-4" strokeWidth={1.5} />
@@ -1136,18 +1207,45 @@ export const Sidebar = ({
           // Otherwise, position at the right edge of the sidebar
           left: isCollapsed ? '0px' : `${sidebarWidthValue}px`,
           // Match agentsidebar background
-          background: '#F2F2EF',
+          background: 'hsl(var(--muted))',
           pointerEvents: isFeedbackModalOpen ? 'none' : 'auto',
           visibility: isFeedbackModalOpen ? 'hidden' : 'visible',
           transition: 'left 0s ease-out' // Instant transition to prevent gaps
         }}
       >
-        {/* Subtle hover indicator */}
+        {/* Subtle hover indicator - match light sidebar (#F2F2EF) or dark muted */}
         <div 
           className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity"
-          style={{ background: 'rgba(0, 0, 0, 0.04)' }}
+          style={{ background: isDark ? 'hsl(var(--muted))' : '#F2F2EF' }}
         />
       </button>
+      {/* Theme submenu — portaled so it isn't clipped by sidebar overflow */}
+      {isThemeSubmenuOpen && themeSubmenuPosition && typeof document !== 'undefined' &&
+        createPortal(
+          <div
+            ref={themeSubmenuRef}
+            className="rounded-md bg-popover border border-border shadow-lg py-1 min-w-[120px]"
+            style={{
+              position: 'fixed',
+              top: themeSubmenuPosition.top,
+              left: themeSubmenuPosition.left,
+              zIndex: 100004,
+              boxShadow: '0 4px 16px rgba(0,0,0,0.08), 0 0 0 1px rgba(0,0,0,0.03)',
+            }}
+          >
+            <button onClick={() => { setTheme('light'); setIsThemeSubmenuOpen(false); }} className="w-full flex items-center gap-2 px-3 py-2 text-[13px] text-popover-foreground hover:bg-muted text-left">
+              {theme === 'light' && <Check className="h-3.5 w-3.5 text-primary" />}
+              {theme !== 'light' && <span className="w-3.5" />}
+              <Sun className="h-3.5 w-3.5" /> Light
+            </button>
+            <button onClick={() => { setTheme('dark'); setIsThemeSubmenuOpen(false); }} className="w-full flex items-center gap-2 px-3 py-2 text-[13px] text-popover-foreground hover:bg-muted text-left">
+              {theme === 'dark' && <Check className="h-3.5 w-3.5 text-primary" />}
+              {theme !== 'dark' && <span className="w-3.5" />}
+              <Moon className="h-3.5 w-3.5" /> Dark
+            </button>
+          </div>,
+          document.body
+        )}
     </>
   );
 };
