@@ -28,7 +28,7 @@ export default function DocumentMapping({
   const mapboxToken = import.meta.env.VITE_MAPBOX_TOKEN || '';
   const markers = useRef<mapboxgl.Marker[]>([]);
   const { resolvedTheme } = useTheme();
-  const mapStyle = resolvedTheme === 'dark' ? 'mapbox://styles/mapbox/dark-v11' : 'mapbox://styles/mapbox/satellite-streets-v12';
+  const mapStyle = (resolvedTheme !== 'light' && resolvedTheme !== undefined) ? 'mapbox://styles/mapbox/dark-v11' : 'mapbox://styles/mapbox/satellite-streets-v12';
 
   // Initialize map when component mounts
   useEffect(() => {

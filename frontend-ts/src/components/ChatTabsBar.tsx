@@ -148,10 +148,10 @@ export const ChatTabsBar: React.FC<ChatTabsBarProps> = ({
               }}
               className={`
                 flex items-center gap-1 cursor-pointer flex-shrink-0 px-1.5 py-0.5
-                transition-all duration-75 ease-out group
+                group
                 ${isSelected
                   ? "bg-[#F3F4F6] border-none rounded-[3px]"
-                  : "bg-transparent border-none hover:opacity-80"
+                  : "bg-transparent border-none hover:opacity-80 transition-opacity duration-75 ease-out"
                 }
               `}
               style={{ minHeight: 23, maxWidth: 112 }}
@@ -204,7 +204,7 @@ export const ChatTabsBar: React.FC<ChatTabsBarProps> = ({
                       <MoreHorizontal className="w-4 h-4 text-[#6B7280]" strokeWidth={1.5} />
                     </button>
                   </DropdownMenuTrigger>
-                  <DropdownMenuContent align="start" sideOffset={4} className="min-w-[88px] p-0.5 rounded-[1px]">
+                  <DropdownMenuContent align="start" sideOffset={4} className="min-w-[88px] p-0.5 rounded-lg bg-white text-gray-800 border-gray-200 shadow-lg">
                     {onUpdateChatTitle && (
                       <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleStartEdit(e as unknown as React.MouseEvent, chat.id, chat.title || "New chat"); }} className="py-0.5 px-1.5 min-h-0 text-[14px] font-light focus:bg-gray-100 focus:text-inherit data-[highlighted]:bg-gray-100 data-[highlighted]:text-inherit">
                         Rename

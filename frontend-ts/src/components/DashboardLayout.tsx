@@ -55,7 +55,7 @@ const DashboardLayoutContent = ({
   const { setUsageOptimistic, refetch: refetchUsage } = useUsage();
   const { toast: showToast } = useToast();
   const { resolvedTheme } = useTheme();
-  const isDark = resolvedTheme === 'dark';
+  const isDark = resolvedTheme !== 'light' && resolvedTheme !== undefined;
   const layoutBorderClass = isDark ? 'border-border' : 'border-[#e9edf1]';
   const tapAreaBg = isDark ? 'hsl(var(--muted))' : '#FFFFFF';
   const [selectedBackground, setSelectedBackground] = React.useState<string>('default-background');
@@ -705,7 +705,7 @@ const DashboardLayoutContent = ({
   return (
     <ChooseProjectModalProvider onOpen={openChooseProjectModal}>
     <div 
-      className={`flex h-screen w-full overflow-hidden relative border-l border-r border-t border-b ${layoutBorderClass} ${className || ''}`}
+      className={`flex h-screen w-full overflow-hidden relative ${currentView === 'settings' ? 'border-0' : `border-l border-r border-t border-b ${layoutBorderClass}`} ${className || ''}`}
       style={{ backgroundColor: 'transparent', boxShadow: 'none' }}
     >
       {/* Dashboard Background - Behind everything except search bar, logo, and recent projects */}

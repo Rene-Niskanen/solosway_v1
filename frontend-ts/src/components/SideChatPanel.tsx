@@ -6512,6 +6512,8 @@ export interface SideChatPanelRef {
   getAttachments: () => FileAttachmentData[];
   handleResizeStart: (e: React.MouseEvent) => void;
   isResizing: boolean;
+  /** Accept current citation when document preview is open (same as Accept in citation callout bar). */
+  handleAcceptCitationForDocPreview?: () => void;
 }
 
 // Utility function for computing adjustments from diff (extracted for incremental diff)
@@ -6739,6 +6741,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   const [citationReviewShowReviewNextOnly, setCitationReviewShowReviewNextOnly] = React.useState(false);
   /** Persisted accepted citation indices per message so callouts stay hidden after bar closes (e.g. Accept on last citation). */
   const [citationAcceptedByMessageId, setCitationAcceptedByMessageId] = React.useState<Record<string, Set<number>>>(() => ({}));
+  /** Ref for Accept citation when doc preview is open — called from StandaloneExpandedCardView header. */
+  const handleAcceptCitationForDocPreviewRef = React.useRef<() => void>();
   // Citation numbers (per message) that user has rejected — that cited text and marker are removed from the response
   const [rejectedCitationNumbersByMessage, setRejectedCitationNumbersByMessage] = React.useState<globalThis.Map<string, globalThis.Set<string>>>(() => new globalThis.Map());
   /** When true, we just rejected the current citation — show "Review next citation" and "Undo" instead of Accept/Reject. */
@@ -8510,7 +8514,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       return attachedFilesRef.current;
     },
     handleResizeStart,
-    isResizing
+    isResizing,
+    handleAcceptCitationForDocPreview: () => handleAcceptCitationForDocPreviewRef.current?.()
   }), [handleResizeStart, isResizing]);
   
   // Restore attachments when initialAttachedFiles prop changes
@@ -9428,6 +9433,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       setCitationReviewCurrentIndex(effectiveIndex + 1);
     }
   }, [chatMessages]);
+
+  handleAcceptCitationForDocPreviewRef.current = () => {
+    if (citationReviewMessageId) handleAcceptCitationInBar(citationReviewMessageId, citationReviewCurrentIndex);
+  };
 
   /** When user moves to a different citation (Accept, prev/next, or click), update the big document preview to show the new citation (same as response preview scroll behavior). Close click panel. */
   const citationReviewCurrentIndexRef = React.useRef<number>(citationReviewCurrentIndex);
@@ -13599,8 +13608,9 @@ responseStartedAt: existingMessage?.responseStartedAt,
           // Convert history messages to ChatMessage format
           // CRITICAL: Use index in map to ensure unique IDs even if Date.now() is the same
           let restoredMessages: ChatMessage[] = chat.messages.map((msg: any, idx: number) => {
-            // Use index + timestamp + random to guarantee uniqueness
-            const uniqueId = `restored-${Date.now()}-${idx}-${Math.random().toString(36).substr(2, 9)}`;
+            // Use stable IDs (preserve from history if available, else restored-{chatId}-{idx}) so React
+            // can reuse DOM when switching back to a chat — prevents query bubble flash
+            const uniqueId = (msg as any).id || `restored-${restoreChatId}-${idx}`;
             
             // Preserve isLoading state from history
             // If chat is running and this is the last assistant message, it should be loading
@@ -13632,7 +13642,7 @@ responseStartedAt: existingMessage?.responseStartedAt,
           // This handles cases where messages weren't saved properly (backend failure, stale closure, etc.)
           if (restoredMessages.length === 0 && chat.preview && chat.preview.trim()) {
             console.log('⚠️ SideChatPanel: Messages empty but preview exists, creating fallback query message:', chat.preview);
-            const fallbackQueryId = `fallback-query-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+            const fallbackQueryId = `fallback-query-${restoreChatId}`;
             restoredMessages = [{
               id: fallbackQueryId,
               type: 'query',
@@ -15024,15 +15034,16 @@ responseStartedAt: existingMessage?.responseStartedAt,
             return;
           }
 
+          const displayName = data.filename ?? (data as { original_filename?: string }).original_filename ?? 'Document';
           // Create optimistic attachment and add synchronously for instant UI update
           const attachmentId = `file-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-          const placeholderFile = new File([], data.filename, {
+          const placeholderFile = new File([], displayName, {
             type: data.fileType || 'application/pdf',
           });
           const optimisticFileData: FileAttachmentData = {
             id: attachmentId,
             file: placeholderFile,
-            name: data.filename,
+            name: displayName,
             type: data.fileType || 'application/pdf',
             size: 0, // Will be updated when file is fetched
             extractionStatus: 'extracting', // Show spinner while fetching (same feedback as chat bar)
@@ -15063,7 +15074,7 @@ responseStartedAt: existingMessage?.responseStartedAt,
               }
               
               const blob = await response.blob();
-              const actualFile = new File([blob], data.filename, {
+              const actualFile = new File([blob], displayName, {
                 type: data.fileType || blob.type || 'application/pdf',
               });
               
@@ -17484,6 +17495,7 @@ responseStartedAt: existingMessage?.responseStartedAt,
                       onRemove={() => {}}
                       onPreview={attachment.file ? () => addPreviewFile(attachment) : undefined}
                       compact
+                      variant="chat"
                     />
                   ))}
                 </div>
@@ -18342,7 +18354,7 @@ responseStartedAt: existingMessage?.responseStartedAt,
                             {isWebSource ? (
                               <Globe size={12} style={{ flexShrink: 0, color: '#374151' }} />
                             ) : rawLower.endsWith('.pdf') ? (
-                              <img src="/pdfnew.png" alt="PDF" style={{ width: 12, height: 12, flexShrink: 0, objectFit: 'contain' }} />
+                              <img src="/PDF(1).png" alt="PDF" style={{ width: 12, height: 12, flexShrink: 0, objectFit: 'contain' }} />
                             ) : rawLower.endsWith('.doc') || rawLower.endsWith('.docx') ? (
                               <img src="/word.png" alt="Word" style={{ width: 12, height: 12, flexShrink: 0, objectFit: 'contain' }} />
                             ) : rawLower.endsWith('.xlsx') || rawLower.endsWith('.xls') ? (
@@ -19700,7 +19712,7 @@ responseStartedAt: existingMessage?.responseStartedAt,
                             animate={{ opacity: 1 }}
                             exit={{ opacity: 0 }}
                             transition={{ duration: 0.1, ease: "easeOut" }}
-                            style={{ height: 'auto', marginBottom: '12px' }}
+                            style={{ height: 'auto', marginBottom: '16px' }}
                             className="flex flex-wrap gap-2 justify-start"
                             layout={false}
                           >
@@ -19721,6 +19733,7 @@ responseStartedAt: existingMessage?.responseStartedAt,
                                   setDraggedFileId(null);
                                   setIsOverBin(false);
                                 }}
+                                variant="chat"
                               />
                             ))}
                             {propertyAttachments.map((a) => (
@@ -20618,7 +20631,7 @@ responseStartedAt: existingMessage?.responseStartedAt,
                           animate={{ opacity: 1 }}
                           exit={{ opacity: 0 }}
                           transition={{ duration: 0.1, ease: "easeOut" }}
-                          style={{ maxHeight: '52px', overflowY: 'auto', marginBottom: '12px', flexShrink: 0 }}
+                          style={{ maxHeight: '80px', overflowY: 'auto', marginBottom: '16px', flexShrink: 0 }}
                           className="flex flex-wrap gap-2 justify-start"
                           layout={false}
                         >
@@ -20644,6 +20657,7 @@ responseStartedAt: existingMessage?.responseStartedAt,
                                 setDraggedFileId(null);
                                 setIsOverBin(false);
                               }}
+                              variant="chat"
                             />
                           ))}
                           {propertyAttachments.map((a) => (

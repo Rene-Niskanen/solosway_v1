@@ -7,6 +7,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { backendApi } from "@/services/backendApi";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -178,6 +179,157 @@ function getFeaturesForTier(tierId: TierKey, _currency: string): string[] {
   return FEATURES_BASE[tierId];
 }
 
+/** Button that opens the Enterprise contact form (email to connect@solosway.co). */
+function EnterpriseContactLink() {
+  const [open, setOpen] = React.useState(false);
+  const [name, setName] = React.useState("");
+  const [email, setEmail] = React.useState("");
+  const [company, setCompany] = React.useState("");
+  const [message, setMessage] = React.useState("");
+  const [submitting, setSubmitting] = React.useState(false);
+  const [submitError, setSubmitError] = React.useState<string | null>(null);
+  const [submitted, setSubmitted] = React.useState(false);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSubmitError(null);
+    if (!name.trim()) {
+      setSubmitError("Name is required");
+      return;
+    }
+    if (!email.trim()) {
+      setSubmitError("Email is required");
+      return;
+    }
+    setSubmitting(true);
+    const res = await backendApi.submitEnterpriseInquiry({
+      name: name.trim(),
+      email: email.trim(),
+      company: company.trim() || undefined,
+      message: message.trim() || undefined,
+    });
+    setSubmitting(false);
+    if (res.success) {
+      setSubmitted(true);
+      setTimeout(() => {
+        setOpen(false);
+        setSubmitted(false);
+        setName("");
+        setEmail("");
+        setCompany("");
+        setMessage("");
+      }, 1500);
+    } else {
+      setSubmitError(res.error || "Failed to send. Please try again.");
+    }
+  };
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="text-gray-700 underline hover:opacity-80 cursor-pointer bg-transparent border-none p-0 font-inherit"
+      >
+        See OpenFind Enterprise
+      </button>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent
+          className="max-w-md bg-background border border-gray-200 p-0 gap-0 !z-[120]"
+          overlayClassName="!z-[120]"
+        >
+          <DialogHeader className="p-6 pb-4">
+            <DialogTitle className="text-lg font-medium text-gray-900">
+              Contact us about OpenFind Enterprise
+            </DialogTitle>
+          </DialogHeader>
+          <form onSubmit={handleSubmit} className="px-6 pb-6 space-y-4">
+            <div>
+              <label htmlFor="enterprise-name" className="block text-sm font-medium text-gray-700 mb-1">
+                Name *
+              </label>
+              <input
+                id="enterprise-name"
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-1 focus:ring-gray-400"
+                placeholder="Your name"
+                disabled={submitting || submitted}
+              />
+            </div>
+            <div>
+              <label htmlFor="enterprise-email" className="block text-sm font-medium text-gray-700 mb-1">
+                Email *
+              </label>
+              <input
+                id="enterprise-email"
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-1 focus:ring-gray-400"
+                placeholder="you@company.com"
+                disabled={submitting || submitted}
+              />
+            </div>
+            <div>
+              <label htmlFor="enterprise-company" className="block text-sm font-medium text-gray-700 mb-1">
+                Company
+              </label>
+              <input
+                id="enterprise-company"
+                type="text"
+                value={company}
+                onChange={(e) => setCompany(e.target.value)}
+                className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-1 focus:ring-gray-400"
+                placeholder="Your company"
+                disabled={submitting || submitted}
+              />
+            </div>
+            <div>
+              <label htmlFor="enterprise-message" className="block text-sm font-medium text-gray-700 mb-1">
+                Message
+              </label>
+              <textarea
+                id="enterprise-message"
+                value={message}
+                onChange={(e) => setMessage(e.target.value)}
+                rows={3}
+                className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-1 focus:ring-gray-400 resize-none"
+                placeholder="Tell us about your enterprise needs..."
+                disabled={submitting || submitted}
+              />
+            </div>
+            {submitError && (
+              <p className="text-sm text-red-600">{submitError}</p>
+            )}
+            {submitted && (
+              <p className="text-sm text-green-600">Thank you! We&apos;ll be in touch soon.</p>
+            )}
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setOpen(false)}
+                className="px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-full hover:bg-gray-50"
+                disabled={submitting}
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={submitting || submitted}
+                className="px-3 py-1.5 text-xs font-medium text-white bg-gray-900 rounded-full hover:bg-gray-800 disabled:opacity-50"
+              >
+                {submitting ? "Sending…" : submitted ? "Sent!" : "Send"}
+              </button>
+            </div>
+          </form>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
+
 const iconClassName = "h-3.5 w-3.5 shrink-0 mt-0.5 text-gray-500";
 
 /** Renders the feature icon for a tier and index so Lucide Icon always receives a valid component. */
@@ -323,12 +475,7 @@ function PlanModalContent({
           style={{ width: 'auto', maxWidth: '240px' }}
         />
         <span>Need more capabilities for your business?</span>
-        <a
-          href="/enterprise"
-          className="text-gray-700 underline hover:opacity-80"
-        >
-          See OpenFind Enterprise
-        </a>
+        <EnterpriseContactLink />
       </div>
     </>
   );

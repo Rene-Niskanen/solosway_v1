@@ -93,8 +93,74 @@
     --ease-precise: cubic-bezier(0.25, 0.1, 0.25, 1);
   }
 
+  /* Dark - Neutral gray (#1E1F20) */
   .dark {
-    /* Dark Mode - Sophisticated Dark Theme */
+    --background: 210 3% 12%;
+    --foreground: 210 40% 98%;
+
+    --card: 210 3% 14%;
+    --card-foreground: 210 40% 98%;
+
+    --popover: 210 3% 14%;
+    --popover-foreground: 210 40% 98%;
+
+    --primary: 238 75% 65%;
+    --primary-foreground: 210 3% 12%;
+    --primary-glow: 238 85% 75%;
+
+    --secondary: 262 83% 65%;
+    --secondary-foreground: 210 3% 12%;
+
+    --muted: 210 5% 18%;
+    --muted-foreground: 215 20% 65%;
+
+    --accent: 235 89% 75%;
+    --accent-foreground: 210 3% 12%;
+
+    --success: 142 76% 40%;
+    --success-foreground: 210 40% 98%;
+
+    --warning: 25 95% 58%;
+    --warning-foreground: 210 3% 12%;
+
+    --destructive: 0 84% 65%;
+    --destructive-foreground: 210 40% 98%;
+
+    --border: 210 5% 18%;
+    --input: 210 5% 18%;
+    --ring: 238 75% 65%;
+
+    --glass-bg: 210 3% 14% / 0.8;
+    --glass-border: 255 255 255 / 0.1;
+    --glass-shadow: 0 8 32 rgba(0, 0, 0, 0.3);
+
+    --gradient-primary: linear-gradient(135deg, hsl(238, 75%, 65%), hsl(262, 83%, 65%));
+    --gradient-secondary: linear-gradient(135deg, hsl(262, 83%, 65%), hsl(290, 70%, 70%));
+    --gradient-property: linear-gradient(135deg, hsl(142, 76%, 40%), hsl(168, 70%, 45%));
+    --gradient-luxury: linear-gradient(135deg, hsl(235, 89%, 75%), hsl(238, 75%, 65%), hsl(262, 83%, 65%));
+    --gradient-hero: linear-gradient(135deg, #1E1F20 0%, #202122 50%, #222324 100%);
+
+    --gradient-animated: linear-gradient(270deg, hsl(238, 75%, 65%), hsl(262, 83%, 65%), hsl(290, 70%, 70%), hsl(238, 75%, 65%));
+
+    --shadow-soft: 0 2px 20px rgba(0, 0, 0, 0.4);
+    --shadow-medium: 0 4px 30px rgba(0, 0, 0, 0.5);
+    --shadow-strong: 0 8px 50px rgba(0, 0, 0, 0.6);
+    --shadow-glow: 0 0 40px hsl(238, 75%, 65%, 0.4);
+    --shadow-property: 0 8px 32px rgba(99, 102, 241, 0.25);
+
+    --sidebar-background: linear-gradient(180deg, hsl(210, 5%, 25%) 0%, hsl(210, 5%, 20%) 50%, hsl(210, 5%, 15%) 100%);
+    --sidebar-foreground: 0 0% 100%;
+    --sidebar-primary: 255 255 255;
+    --sidebar-primary-foreground: 255 255 255;
+    --sidebar-accent: 210 5% 22%;
+    --sidebar-accent-foreground: 210 40% 98%;
+    --sidebar-border: transparent;
+    --sidebar-ring: 255 255 255;
+    --sidebar-active: 210 5% 18%;
+  }
+
+  /* Dark Blue - Blue-tinted dark theme */
+  .dark-blue {
     --background: 222 47% 7%;
     --foreground: 210 40% 98%;
 
@@ -104,20 +170,16 @@
     --popover: 222 47% 9%;
     --popover-foreground: 210 40% 98%;
 
-    /* Dark Primary */
     --primary: 238 75% 65%;
     --primary-foreground: 222 47% 7%;
     --primary-glow: 238 85% 75%;
 
-    /* Dark Secondary */
     --secondary: 262 83% 65%;
     --secondary-foreground: 222 47% 7%;
 
-    /* Dark Muted */
     --muted: 217 32% 17%;
     --muted-foreground: 215 20% 65%;
 
-    /* Dark Accent */
     --accent: 235 89% 75%;
     --accent-foreground: 222 47% 7%;
 
@@ -134,46 +196,49 @@
     --input: 217 32% 17%;
     --ring: 238 75% 65%;
 
-    /* Dark Glass Morphism */
     --glass-bg: 222 47% 9% / 0.8;
     --glass-border: 255 255 255 / 0.1;
     --glass-shadow: 0 8 32 rgba(0, 0, 0, 0.3);
 
-    /* Dark Gradients */
     --gradient-primary: linear-gradient(135deg, hsl(238, 75%, 65%), hsl(262, 83%, 65%));
     --gradient-secondary: linear-gradient(135deg, hsl(262, 83%, 65%), hsl(290, 70%, 70%));
     --gradient-property: linear-gradient(135deg, hsl(142, 76%, 40%), hsl(168, 70%, 45%));
     --gradient-luxury: linear-gradient(135deg, hsl(235, 89%, 75%), hsl(238, 75%, 65%), hsl(262, 83%, 65%));
     --gradient-hero: linear-gradient(135deg, hsl(222, 47%, 8%) 0%, hsl(235, 30%, 10%) 50%, hsl(262, 30%, 12%) 100%);
-    
-    /* Dark Animated Gradients */
+
     --gradient-animated: linear-gradient(270deg, hsl(238, 75%, 65%), hsl(262, 83%, 65%), hsl(290, 70%, 70%), hsl(238, 75%, 65%));
-    
-    /* Dark Shadows */
+
     --shadow-soft: 0 2px 20px rgba(0, 0, 0, 0.4);
     --shadow-medium: 0 4px 30px rgba(0, 0, 0, 0.5);
     --shadow-strong: 0 8px 50px rgba(0, 0, 0, 0.6);
     --shadow-glow: 0 0 40px hsl(238, 75%, 65%, 0.4);
     --shadow-property: 0 8px 32px rgba(99, 102, 241, 0.25);
 
-    /* Dark Sidebar - Professional Blue Gradient */
     --sidebar-background: linear-gradient(180deg, hsl(215, 20%, 55%) 0%, hsl(220, 25%, 45%) 25%, hsl(225, 30%, 35%) 50%, hsl(230, 35%, 25%) 75%, hsl(235, 40%, 18%) 100%);
-    --sidebar-foreground: 120 2% 78%; /* #C5C7C5 - soft grey for icons and text */
+    --sidebar-foreground: 0 0% 100%;
     --sidebar-primary: 255 255 255;
     --sidebar-primary-foreground: 255 255 255;
     --sidebar-accent: 222 47% 12%;
     --sidebar-accent-foreground: 210 40% 98%;
     --sidebar-border: transparent;
     --sidebar-ring: 255 255 255;
-    --sidebar-active: 222 47% 9%; /* Dark blue, matches selected state */
+    --sidebar-active: 222 47% 9%;
   }
 }
 
 @layer base {
   body {
-    @apply bg-gradient-to-br from-slate-50 via-blue-50/30 to-purple-50/20 dark:from-[#0f0f10] dark:via-[#131314] dark:to-[#161618] text-foreground min-h-screen;
+    @apply bg-gradient-to-br from-slate-50 via-blue-50/30 to-purple-50/20 text-foreground min-h-screen;
     background-attachment: fixed;
     font-family: var(--font-sans);
+  }
+  .dark body {
+    background: linear-gradient(to bottom right, #1E1F20, #202122, #222324) !important;
+    background-attachment: fixed;
+  }
+  .dark-blue body {
+    background: linear-gradient(to bottom right, #0f0f10, #131314, #161618) !important;
+    background-attachment: fixed;
   }
 
   /* Smooth scrolling + slightly larger default font */
@@ -211,7 +276,8 @@
     scrollbar-color: hsl(var(--muted-foreground) / 0.3) hsl(220 14% 96%);
   }
 
-  .dark .scrollbar-track-slate-100 {
+  .dark .scrollbar-track-slate-100,
+  .dark-blue .scrollbar-track-slate-100 {
     scrollbar-color: hsl(var(--muted-foreground) / 0.3) hsl(var(--muted));
   }
 
@@ -219,7 +285,8 @@
     background: hsl(220 9% 75%);
   }
 
-  .dark .scrollbar-thumb-slate-300::-webkit-scrollbar-thumb {
+  .dark .scrollbar-thumb-slate-300::-webkit-scrollbar-thumb,
+  .dark-blue .scrollbar-thumb-slate-300::-webkit-scrollbar-thumb {
     background: hsl(var(--muted-foreground) / 0.4);
   }
 
@@ -227,7 +294,8 @@
     background: hsl(220 9% 60%);
   }
 
-  .dark .scrollbar-thumb-slate-400:hover::-webkit-scrollbar-thumb {
+  .dark .scrollbar-thumb-slate-400:hover::-webkit-scrollbar-thumb,
+  .dark-blue .scrollbar-thumb-slate-400:hover::-webkit-scrollbar-thumb {
     background: hsl(var(--muted-foreground) / 0.6);
   }
 }
@@ -345,11 +413,13 @@
     background-color: rgb(148 163 184);
   }
 
-  .dark .scrollbar-thin::-webkit-scrollbar-thumb {
+  .dark .scrollbar-thin::-webkit-scrollbar-thumb,
+  .dark-blue .scrollbar-thin::-webkit-scrollbar-thumb {
     background-color: hsl(var(--muted-foreground) / 0.4);
   }
 
-  .dark .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+  .dark .scrollbar-thin::-webkit-scrollbar-thumb:hover,
+  .dark-blue .scrollbar-thin::-webkit-scrollbar-thumb:hover {
     background-color: hsl(var(--muted-foreground) / 0.6);
   }
 
@@ -359,7 +429,8 @@
     scrollbar-color: rgb(203 213 225) transparent;
   }
 
-  .dark .scrollbar-thin {
+  .dark .scrollbar-thin,
+  .dark-blue .scrollbar-thin {
     scrollbar-color: hsl(var(--muted-foreground) / 0.4) transparent;
   }
 
@@ -483,44 +554,54 @@ button:focus-visible:not(:focus-within) {
 }
 
 /* Citation pills: same light design in dark mode (do not darken) */
-.dark .citation-link-btn {
+.dark .citation-link-btn,
+.dark-blue .citation-link-btn {
   color: #6b7280 !important;
   background-color: rgba(0, 0, 0, 0.04) !important;
 }
-.dark .citation-link-btn:hover {
+.dark .citation-link-btn:hover,
+.dark-blue .citation-link-btn:hover {
   background-color: rgba(0, 0, 0, 0.06) !important;
   color: #4b5563 !important;
 }
-.dark .citation-link-btn.citation-link-btn--saved {
+.dark .citation-link-btn.citation-link-btn--saved,
+.dark-blue .citation-link-btn.citation-link-btn--saved {
   color: #9ca3af !important;
   background-color: rgba(0, 0, 0, 0.03) !important;
 }
-.dark .citation-link-btn.citation-link-btn--saved:hover {
+.dark .citation-link-btn.citation-link-btn--saved:hover,
+.dark-blue .citation-link-btn.citation-link-btn--saved:hover {
   background-color: rgba(0, 0, 0, 0.06) !important;
   color: #6b7280 !important;
 }
-.dark .citation-link-btn.citation-link-btn--selected {
+.dark .citation-link-btn.citation-link-btn--selected,
+.dark-blue .citation-link-btn.citation-link-btn--selected {
   color: #4b5563 !important;
   background-color: #f3f4f6 !important;
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.08) !important;
 }
-.dark .citation-link-btn.citation-link-btn--selected:hover {
+.dark .citation-link-btn.citation-link-btn--selected:hover,
+.dark-blue .citation-link-btn.citation-link-btn--selected:hover {
   background-color: #e5e7eb !important;
   color: #374151 !important;
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.12) !important;
 }
-.dark [data-cited-text-block] .citation-link-btn {
+.dark [data-cited-text-block] .citation-link-btn,
+.dark-blue [data-cited-text-block] .citation-link-btn {
   background-color: rgba(0, 0, 0, 0.04) !important;
   color: #6b7280 !important;
 }
-.dark [data-cited-text-block] .citation-link-btn:hover {
+.dark [data-cited-text-block] .citation-link-btn:hover,
+.dark-blue [data-cited-text-block] .citation-link-btn:hover {
   background-color: rgba(0, 0, 0, 0.06) !important;
 }
-.dark [data-cited-text-block] .citation-link-btn.citation-link-btn--saved {
+.dark [data-cited-text-block] .citation-link-btn.citation-link-btn--saved,
+.dark-blue [data-cited-text-block] .citation-link-btn.citation-link-btn--saved {
   background-color: rgba(0, 0, 0, 0.03) !important;
   color: #9ca3af !important;
 }
-.dark [data-cited-text-block] .citation-link-btn.citation-link-btn--selected {
+.dark [data-cited-text-block] .citation-link-btn.citation-link-btn--selected,
+.dark-blue [data-cited-text-block] .citation-link-btn.citation-link-btn--selected {
   background-color: #f3f4f6 !important;
   color: #4b5563 !important;
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.08) !important;
@@ -568,13 +649,16 @@ button:focus-visible:not(:focus-within) {
 .filing-pending-files-scroll::-webkit-scrollbar-thumb:hover {
   background: rgba(0, 0, 0, 0.22);
 }
-.dark .filing-pending-files-scroll {
+.dark .filing-pending-files-scroll,
+.dark-blue .filing-pending-files-scroll {
   scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
 }
-.dark .filing-pending-files-scroll::-webkit-scrollbar-thumb {
+.dark .filing-pending-files-scroll::-webkit-scrollbar-thumb,
+.dark-blue .filing-pending-files-scroll::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.2);
 }
-.dark .filing-pending-files-scroll::-webkit-scrollbar-thumb:hover {
+.dark .filing-pending-files-scroll::-webkit-scrollbar-thumb:hover,
+.dark-blue .filing-pending-files-scroll::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.35);
 }
 
@@ -596,7 +680,8 @@ button:focus-visible:not(:focus-within) {
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
 }
-.dark .filing-sidebar-main-scroll {
+.dark .filing-sidebar-main-scroll,
+.dark-blue .filing-sidebar-main-scroll {
   scrollbar-color: rgba(255, 255, 255, 0.25) transparent;
 }
 .filing-sidebar-main-scroll::-webkit-scrollbar {
@@ -612,10 +697,12 @@ button:focus-visible:not(:focus-within) {
 .filing-sidebar-main-scroll::-webkit-scrollbar-thumb:hover {
   background: rgba(0, 0, 0, 0.3);
 }
-.dark .filing-sidebar-main-scroll::-webkit-scrollbar-thumb {
+.dark .filing-sidebar-main-scroll::-webkit-scrollbar-thumb,
+.dark-blue .filing-sidebar-main-scroll::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.25);
 }
-.dark .filing-sidebar-main-scroll::-webkit-scrollbar-thumb:hover {
+.dark .filing-sidebar-main-scroll::-webkit-scrollbar-thumb:hover,
+.dark-blue .filing-sidebar-main-scroll::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.4);
 }
 
@@ -624,7 +711,8 @@ button:focus-visible:not(:focus-within) {
   scrollbar-width: thin; /* Firefox */
   scrollbar-color: rgba(0, 0, 0, 0.2) transparent;
 }
-.dark .docx-scrollbar {
+.dark .docx-scrollbar,
+.dark-blue .docx-scrollbar {
   scrollbar-color: rgba(255, 255, 255, 0.25) transparent;
 }
 
@@ -646,10 +734,12 @@ button:focus-visible:not(:focus-within) {
 .docx-scrollbar::-webkit-scrollbar-thumb:hover {
   background: rgba(0, 0, 0, 0.3);
 }
-.dark .docx-scrollbar::-webkit-scrollbar-thumb {
+.dark .docx-scrollbar::-webkit-scrollbar-thumb,
+.dark-blue .docx-scrollbar::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.25);
 }
-.dark .docx-scrollbar::-webkit-scrollbar-thumb:hover {
+.dark .docx-scrollbar::-webkit-scrollbar-thumb:hover,
+.dark-blue .docx-scrollbar::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.4);
 }
 

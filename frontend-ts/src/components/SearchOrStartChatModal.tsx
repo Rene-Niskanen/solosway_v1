@@ -512,7 +512,7 @@ export function SearchOrStartChatModal({
                       }}
                     >
                       <span className="flex h-[22px] w-[22px] shrink-0 items-center justify-center text-gray-600">
-                        <img src="/pdfnew.png" alt="PDF" className="h-[22px] w-[22px] object-contain" />
+                        <img src="/PDF(1).png" alt="PDF" className="h-[22px] w-[22px] object-contain" />
                       </span>
                       <span className="flex-1 min-w-0 text-[13px] font-normal text-gray-900 truncate">
                         {label}
@@ -681,7 +681,7 @@ export function SearchOrStartChatModal({
                   {item.type === "file" && (
                     <>
                       <span className="flex h-[22px] w-[22px] shrink-0 items-center justify-center text-gray-600">
-                        <img src="/pdfnew.png" alt="PDF" className="h-[22px] w-[22px] object-contain" />
+                        <img src="/PDF(1).png" alt="PDF" className="h-[22px] w-[22px] object-contain" />
                       </span>
                       <span className="flex-1 min-w-0 text-[13px] font-normal text-gray-900 truncate">
                         {item.label}

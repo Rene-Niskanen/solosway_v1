@@ -31,6 +31,7 @@ import {
   Monitor,
   Sun,
   Moon,
+  Palette,
   Check
 } from "lucide-react";
 import { useTheme } from "next-themes";
@@ -121,7 +122,7 @@ export const Sidebar = ({
   const [profilePicCacheBust, setProfilePicCacheBust] = React.useState<number | null>(null);
   const { openPlanModal } = usePlanModal();
   const { theme, setTheme, resolvedTheme } = useTheme();
-  const isDark = resolvedTheme === 'dark';
+  const isDark = resolvedTheme !== 'light' && resolvedTheme !== undefined;
   const { usage: usageData, loading: usageLoading, error: usageError } = useUsage();
   const brandButtonRef = React.useRef<HTMLButtonElement>(null);
   const brandButtonRefExpanded = React.useRef<HTMLButtonElement>(null);
@@ -871,7 +872,7 @@ export const Sidebar = ({
                       <p className={`text-[13px] font-semibold truncate leading-tight ${isDark ? 'text-muted-foreground' : 'text-gray-600'}`}>{userName}</p>
                       <span
                         className={`rounded-full px-2 py-0.5 text-[10px] font-semibold leading-none w-fit -ml-1 ${isDark ? 'bg-card' : 'bg-white'}`}
-                        style={{ color: planBadgeInfo.badgeColor }}
+                        style={{ color: isDark ? planBadgeInfo.badgeColorDark : planBadgeInfo.badgeColor }}
                       >
                         {planBadgeInfo.badgeText} plan
                       </span>
@@ -1166,7 +1167,7 @@ export const Sidebar = ({
                     <p className="text-[13px] font-semibold text-muted-foreground truncate leading-tight">{userName}</p>
                     <span
                       className="rounded-full px-2 py-0.5 text-[10px] font-semibold leading-none bg-card w-fit -ml-1"
-                      style={{ color: planBadgeInfo.badgeColor }}
+                      style={{ color: isDark ? planBadgeInfo.badgeColorDark : planBadgeInfo.badgeColor }}
                     >
                       {planBadgeInfo.badgeText} plan
                     </span>
@@ -1242,6 +1243,11 @@ export const Sidebar = ({
               {theme === 'dark' && <Check className="h-3.5 w-3.5 text-primary" />}
               {theme !== 'dark' && <span className="w-3.5" />}
               <Moon className="h-3.5 w-3.5" /> Dark
+            </button>
+            <button onClick={() => { setTheme('dark-blue'); setIsThemeSubmenuOpen(false); }} className="w-full flex items-center gap-2 px-3 py-2 text-[13px] text-popover-foreground hover:bg-muted text-left">
+              {theme === 'dark-blue' && <Check className="h-3.5 w-3.5 text-primary" />}
+              {theme !== 'dark-blue' && <span className="w-3.5" />}
+              <Palette className="h-3.5 w-3.5" /> Dark Blue
             </button>
           </div>,
           document.body

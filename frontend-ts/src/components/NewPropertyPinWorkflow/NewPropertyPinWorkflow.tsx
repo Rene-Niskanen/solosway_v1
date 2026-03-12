@@ -47,7 +47,7 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
   initialZoom
 }) => {
   const { resolvedTheme } = useTheme();
-  const baseMapStyle = resolvedTheme === 'dark' ? 'mapbox://styles/mapbox/dark-v11' : 'mapbox://styles/mapbox/light-v11';
+  const baseMapStyle = (resolvedTheme !== 'light' && resolvedTheme !== undefined) ? 'mapbox://styles/mapbox/dark-v11' : 'mapbox://styles/mapbox/light-v11';
   // State
   const [propertyTitle, setPropertyTitle] = useState<string>('');
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
@@ -1808,7 +1808,7 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
                                 const getFileIcon = () => {
                                   const filename = uploadedFile.file.name.toLowerCase();
                                   if (filename.endsWith('.pdf')) {
-                                    return <img src="/pdfnew.png" alt="PDF" className="w-4 h-4 object-contain" />;
+                                    return <img src="/PDF(1).png" alt="PDF" className="w-4 h-4 object-contain" />;
                                   } else if (filename.endsWith('.doc') || filename.endsWith('.docx')) {
                                     return <FileText className="w-4 h-4 text-blue-600" />;
                                   } else if (filename.match(/\.(jpg|jpeg|png|gif|webp)$/i)) {

@@ -145,10 +145,10 @@ const PendingFileItem = React.forwardRef<HTMLDivElement, {
       role={onSelect ? 'button' : undefined}
       className={`flex items-center gap-2 px-2 py-1.5 bg-white rounded-lg transition-all duration-200 group cursor-pointer ${showOutline ? 'ring-1 ring-gray-300' : 'hover:bg-[#f0f0f0] active:bg-[#e8e8e8]'}`}
     >
-      {/* Image preview or file icon — same size as document list (w-6 h-6) */}
+      {/* Image preview or file icon — same size as document list (w-5 h-5) */}
       <div className="flex-shrink-0 flex items-center justify-center">
         {isImage && imageUrl ? (
-          <div className="w-6 h-6 rounded overflow-hidden bg-gray-100 border border-gray-200 flex items-center justify-center flex-shrink-0">
+          <div className="w-5 h-5 rounded overflow-hidden bg-gray-100 border border-gray-200 flex items-center justify-center flex-shrink-0">
             <img
               src={imageUrl}
               alt={file.name}
@@ -225,7 +225,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
     registerUploadFromChat,
   } = useFilingSidebar();
   const { resolvedTheme } = useTheme();
-  const isDark = resolvedTheme === 'dark';
+  const isDark = resolvedTheme !== 'light' && resolvedTheme !== undefined;
   const filingBg = isDark ? 'hsl(var(--muted))' : '#F2F2EF';
   const { getAllPropertyHubs } = useBackendApi();
 
@@ -1133,12 +1133,12 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
     });
   };
 
-  // Get file type icon (same size as FileAttachment chip: w-6 h-6)
-  const iconClass = "w-6 h-6 object-contain flex-shrink-0 rounded";
+  // Get file type icon (same size as FileAttachment chip: w-5 h-5)
+  const iconClass = "w-5 h-5 object-contain flex-shrink-0 rounded";
   const getFileIcon = (doc: Document) => {
     const filename = doc.original_filename.toLowerCase();
     if (filename.endsWith('.pdf')) {
-      return <img src="/pdfnew.png" alt="PDF" className={iconClass} />;
+      return <img src="/PDF(1).png" alt="PDF" className={iconClass} />;
     }
     if (filename.endsWith('.doc') || filename.endsWith('.docx')) {
       return <img src="/word.png" alt="Word" className={iconClass} />;
@@ -1150,9 +1150,9 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
       return <img src="/powerpoint.png" alt="PowerPoint" className={iconClass} />;
     }
     if (filename.match(/\.(jpg|jpeg|png|gif|webp)$/i)) {
-      return <FileIcon className="w-6 h-6 text-green-600 flex-shrink-0" />;
+      return <FileIcon className="w-5 h-5 text-green-600 flex-shrink-0" />;
     }
-    return <FileIcon className="w-6 h-6 text-gray-600 flex-shrink-0" />;
+    return <FileIcon className="w-5 h-5 text-gray-600 flex-shrink-0" />;
   };
 
   // File type label for chip (matches FileAttachment: PDF, DOC, XLS, PPT, etc.)
@@ -1203,10 +1203,12 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
 
   // Handle drag start for file items
   const handleDragStart = (e: React.DragEvent, doc: Document) => {
+    const docAny = doc as Document & { filename?: string };
+    const displayName = docAny.original_filename || docAny.filename || 'Document';
     const payload = {
       type: 'filing-sidebar-document',
       documentId: doc.id,
-      filename: doc.original_filename,
+      filename: displayName,
       fileType: doc.file_type,
       s3Path: doc.s3_path
     };
@@ -2591,7 +2593,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                   backgroundColor: 'rgba(0, 0, 0, 0.02)'
                 }}
               >
-                <span className="text-[13px] font-normal text-[#666]">Close</span>
+                <X className="w-4 h-4 text-white" strokeWidth={1.5} />
               </button>
             ) : null}
           </div>
@@ -3081,7 +3083,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                   )}
                 </div>
                 {usageData && (
-                  <span className="flex-shrink-0 text-[10px] font-medium text-gray-600 tabular-nums">
+                  <span className="flex-shrink-0 text-[10px] font-medium text-gray-400 tabular-nums">
                     {((usageData.pages_used ?? 0) > (usageData.monthly_limit ?? 0) ? '100+' : Math.round(usageData.usage_percent ?? 0))}%
                   </span>
                 )}
@@ -3352,7 +3354,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                             className="w-3 h-3 text-gray-400 flex-shrink-0"
                             strokeWidth={1.75}
                           />
-                          <span className="w-6 h-6 flex-shrink-0 block">
+                          <span className="w-5 h-5 flex-shrink-0 block">
                             <img
                               src="/projectsfolder.png"
                               alt=""
@@ -3545,7 +3547,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                           className={`w-3 h-3 text-gray-400 flex-shrink-0 transition-transform duration-200 ${isExpanded ? 'rotate-90' : ''}`}
                           strokeWidth={1.75}
                         />
-                        <span className="w-6 h-6 flex-shrink-0 block">
+                        <span className="w-5 h-5 flex-shrink-0 block">
                           <img 
                             src="/projectsfolder.png" 
                             alt=""

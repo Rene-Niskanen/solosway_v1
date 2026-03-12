@@ -130,25 +130,29 @@ function normalizePlanToTier(plan: TierKey | string | null | undefined): TierKey
 
 /**
  * Badge info for the current plan (sidebar, profile, etc.) — pill label and color.
+ * badgeColor: for light mode. badgeColorDark: for dark mode (higher contrast).
  */
 export function getPlanBadgeInfo(plan: TierKey | string | null | undefined): {
   badgeText: string;
   badgeColor: string;
+  badgeColorDark: string;
 } {
   if (!plan || (typeof plan === 'string' && plan.toLowerCase() === 'free')) {
-    return { badgeText: 'Free', badgeColor: '#6B7280' };
+    return { badgeText: 'Free', badgeColor: '#6B7280', badgeColorDark: '#9CA3AF' };
   }
   const key = normalizePlanToTier(plan);
   const tier = TIERS[key];
   const name = tier?.name ?? (plan ? String(plan).charAt(0).toUpperCase() + String(plan).slice(1) : 'Free');
-  const colors: Record<TierKey, string> = {
-    personal: '#5B9A8B',
-    professional: '#388E8C',
-    business: '#24808C',
+  const colors: Record<TierKey, { light: string; dark: string }> = {
+    personal: { light: '#5B9A8B', dark: '#7BC4B5' },
+    professional: { light: '#388E8C', dark: '#5DB8B5' },
+    business: { light: '#24808C', dark: '#3BA8B0' },
   };
+  const { light, dark } = colors[key] ?? { light: '#6B7280', dark: '#9CA3AF' };
   return {
     badgeText: name,
-    badgeColor: colors[key] ?? '#6B7280',
+    badgeColor: light,
+    badgeColorDark: dark,
   };
 }
 

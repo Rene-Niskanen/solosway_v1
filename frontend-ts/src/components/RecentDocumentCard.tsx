@@ -68,6 +68,46 @@ const getDocumentExtension = (filename: string): string => {
   return ext ? ext.toUpperCase().slice(0, 6) : 'FILE';
 };
 
+// Determine document type for display - PRIORITIZE filename extension over file_type
+// (fixes cases like client_email.docx incorrectly labeled as PDF when backend has wrong file_type)
+const getDocumentTypeForDisplay = (doc: DocumentData): 'pdf' | 'doc' | 'docx' | 'xls' | 'xlsx' | 'csv' | 'ppt' | 'pptx' | 'image' | 'file' => {
+  const filename = doc.original_filename?.toLowerCase() || '';
+  const ext = filename.split('.').pop()?.trim() || '';
+  if (['pdf'].includes(ext)) return 'pdf';
+  if (['doc'].includes(ext)) return 'doc';
+  if (['docx'].includes(ext)) return 'docx';
+  if (['xls'].includes(ext)) return 'xls';
+  if (['xlsx'].includes(ext)) return 'xlsx';
+  if (['csv'].includes(ext)) return 'csv';
+  if (['ppt'].includes(ext)) return 'ppt';
+  if (['pptx'].includes(ext)) return 'pptx';
+  if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg'].includes(ext)) return 'image';
+  const fileType = doc.file_type?.toLowerCase() || '';
+  if (fileType.includes('pdf')) return 'pdf';
+  if (fileType.includes('word') || fileType.includes('document')) return 'docx';
+  if (fileType.includes('sheet') || fileType.includes('excel') || fileType.includes('csv')) return 'xlsx';
+  if (fileType.includes('presentation') || fileType.includes('powerpoint')) return 'pptx';
+  if (fileType.startsWith('image/')) return 'image';
+  return 'file';
+};
+
+// Doc type icon component for card label
+const DOC_TYPE_ICON_SIZE = 14;
+const DocTypeIcon: React.FC<{ doc: DocumentData }> = ({ doc }) => {
+  const type = getDocumentTypeForDisplay(doc);
+  const style = { width: DOC_TYPE_ICON_SIZE, height: DOC_TYPE_ICON_SIZE, objectFit: 'contain' as const };
+  if (type === 'pdf') return <img src="/PDF(1).png" alt="PDF" style={style} />;
+  if (type === 'doc' || type === 'docx') return <img src="/word.png" alt="Word" style={style} />;
+  if (type === 'xls' || type === 'xlsx' || type === 'csv') return <img src="/excel.png" alt="Excel" style={style} />;
+  if (type === 'ppt' || type === 'pptx') return <img src="/powerpoint.png" alt="PowerPoint" style={style} />;
+  // Fallback: show extension text for unknown types
+  return (
+    <span style={{ fontSize: '9px', fontWeight: 600, letterSpacing: '0.06em', color: '#4B5563' }}>
+      {getDocumentExtension(doc.original_filename)}
+    </span>
+  );
+};
+
 // Get download URL for a document
 const getDownloadUrl = (doc: DocumentData): string | null => {
   const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5001';
@@ -81,10 +121,14 @@ const getDownloadUrl = (doc: DocumentData): string | null => {
   return null;
 };
 
-// Check if document is a PDF
+// Check if document is a PDF (for thumbnail rendering)
+// Filename extension takes precedence - fixes client_email.docx incorrectly treated as PDF
 const isPdfDocument = (doc: DocumentData): boolean => {
   const fileName = doc.original_filename?.toLowerCase() || '';
   const fileType = doc.file_type?.toLowerCase() || '';
+  if (fileName.endsWith('.docx') || fileName.endsWith('.doc') || fileName.endsWith('.xlsx') || fileName.endsWith('.xls') || fileName.endsWith('.csv') || fileName.endsWith('.pptx') || fileName.endsWith('.ppt')) {
+    return false;
+  }
   return fileType.includes('pdf') || fileName.endsWith('.pdf');
 };
 
@@ -356,7 +400,6 @@ export const RecentDocumentCard: React.FC<RecentDocumentCardProps> = React.memo(
   };
 
   const documentName = getDocumentName(document.original_filename);
-  const documentExtension = isPdfDocument(document) ? 'PDF' : getDocumentExtension(document.original_filename);
   const shortDate = new Date(document.created_at).toLocaleDateString('en-US', {
     month: 'short',
     day: 'numeric',
@@ -404,17 +447,8 @@ export const RecentDocumentCard: React.FC<RecentDocumentCardProps> = React.memo(
       >
         <div className="relative flex h-full flex-col" style={{ padding: contentPadding }}>
           <div className="flex items-center justify-between gap-2">
-            <span
-              className="inline-flex items-center rounded-md px-1.5 py-0.5"
-              style={{
-                background: '#F3F4F6',
-                color: '#4B5563',
-                fontSize: compact ? '9px' : '9px',
-                fontWeight: 600,
-                letterSpacing: '0.06em',
-              }}
-            >
-              {documentExtension}
+            <span className="inline-flex items-center">
+              <DocTypeIcon doc={document} />
             </span>
             <span
               style={{

@@ -314,6 +314,22 @@ class BackendApiService {
   }
 
   /**
+   * Submit OpenFind Enterprise inquiry - sends to connect@solosway.co via backend.
+   * No auth required.
+   */
+  async submitEnterpriseInquiry(payload: {
+    name: string;
+    email: string;
+    company?: string;
+    message?: string;
+  }): Promise<ApiResponse<{ success: boolean }>> {
+    return this.fetchApi('/api/enterprise-inquiry', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  /**
    * Query documents using LangGraph RAG system
    * This connects the SideChatPanel to the document Q&A system
    */

@@ -669,8 +669,8 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
           border: '2px solid #E4E4E1',
         }}
       >
-        {/* Header - extra right padding so role text doesn't sit under close button */}
-        <div className="relative flex items-center justify-between pl-3 pr-10 py-2.5 shrink-0" style={{ backgroundColor: POPUP_BG }}>
+        {/* Header - extra right padding so role text doesn't sit under close button — always light */}
+        <div className="relative flex items-center justify-between pl-3 pr-10 py-2.5 shrink-0" style={{ backgroundColor: '#F6F7F3' }}>
           <div className="flex items-center gap-2 min-w-0 pr-2">
             <Avatar
               className="w-10 h-10 flex-shrink-0 rounded-lg overflow-hidden"

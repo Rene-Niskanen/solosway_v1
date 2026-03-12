@@ -2,9 +2,9 @@
 
 import * as React from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { X, ChevronDown, ChevronUp, FileText } from "lucide-react";
+import { X, ChevronDown, ChevronUp } from "lucide-react";
 import ReactMarkdown from "react-markdown";
-import { FileAttachmentData } from './FileAttachment';
+import { FileAttachment, FileAttachmentData } from './FileAttachment';
 import { PropertyAttachmentData } from './PropertyAttachment';
 import { AtMentionChip } from './AtMentionChip';
 import { usePreview } from '../contexts/PreviewContext';
@@ -113,133 +113,6 @@ const CitationLink: React.FC<{
   );
 };
 
-// Component for displaying attachment in query bubble (same as SideChatPanel)
-const QueryAttachment: React.FC<{ attachment: FileAttachmentData }> = ({ attachment }) => {
-  const isImage = attachment.type.startsWith('image/');
-  const [imageUrl, setImageUrl] = React.useState<string | null>(null);
-  const { addPreviewFile } = usePreview();
-  
-  React.useEffect(() => {
-    if (isImage && attachment.file) {
-      const preloadedBlob = (window as any).__preloadedAttachmentBlobs?.[attachment.id];
-      if (preloadedBlob) {
-        setImageUrl(preloadedBlob);
-      } else {
-        const url = URL.createObjectURL(attachment.file);
-        setImageUrl(url);
-        return () => {
-          URL.revokeObjectURL(url);
-        };
-      }
-    }
-  }, [isImage, attachment.id, attachment.file]);
-  
-  const handleImageClick = () => {
-    if (attachment.file) {
-      const freshAttachment: FileAttachmentData = {
-        ...attachment,
-        file: attachment.file
-      };
-      addPreviewFile(freshAttachment);
-    }
-  };
-  
-  if (isImage && imageUrl) {
-    return (
-      <div
-        onClick={handleImageClick}
-        style={{
-          width: '40px',
-          height: '40px',
-          borderRadius: '4px',
-          overflow: 'hidden',
-          backgroundColor: '#F3F4F6',
-          border: '1px solid #E5E7EB',
-          display: 'inline-flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          flexShrink: 0,
-          cursor: 'pointer',
-          transition: 'opacity 0.2s ease'
-        }}
-        onMouseEnter={(e) => {
-          e.currentTarget.style.opacity = '0.8';
-        }}
-        onMouseLeave={(e) => {
-          e.currentTarget.style.opacity = '1';
-        }}
-        title={`Click to preview ${attachment.name}`}
-      >
-        <img
-          src={imageUrl}
-          alt={attachment.name}
-          style={{
-            width: '100%',
-            height: '100%',
-            objectFit: 'cover',
-            display: 'block'
-          }}
-        />
-      </div>
-    );
-  }
-  
-  // For non-image files, match FileAttachment composer style: file-type icon + name + type label
-  const isPDF = attachment.type === 'application/pdf' || (attachment.name && attachment.name.toLowerCase().endsWith('.pdf'));
-  const isDOCX = attachment.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
-    attachment.type === 'application/msword' ||
-    (attachment.name && (attachment.name.toLowerCase().endsWith('.docx') || attachment.name.toLowerCase().endsWith('.doc')));
-  const getFileTypeLabel = (type: string): string => {
-    if (type.includes('pdf')) return 'PDF';
-    if (type.includes('word') || type.includes('document')) return 'DOC';
-    if (type.includes('excel') || type.includes('spreadsheet')) return 'XLS';
-    if (type.includes('image')) return 'IMG';
-    if (type.includes('text')) return 'TXT';
-    return 'FILE';
-  };
-  const formatFileName = (name: string): string => {
-    if (name.length > 24) {
-      const ext = name.split('.').pop();
-      const base = name.substring(0, name.lastIndexOf('.'));
-      return `${base.substring(0, 21)}...${ext ? '.' + ext : ''}`;
-    }
-    return name;
-  };
-  return (
-    <div
-      style={{
-        fontSize: '11px',
-        color: '#111',
-        backgroundColor: '#fff',
-        border: '1px solid #E5E7EB',
-        padding: '3px 6px',
-        borderRadius: '5px',
-        display: 'inline-flex',
-        alignItems: 'center',
-        gap: '5px',
-        boxShadow: '0 1px 2px rgba(0,0,0,0.05)'
-      }}
-      title={attachment.name}
-    >
-      {isDOCX ? (
-        <img src="/word.png" alt="Word" style={{ width: 16, height: 16, objectFit: 'contain', flexShrink: 0 }} />
-      ) : (
-        <div style={{
-          width: 16, height: 16, borderRadius: 3, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-          backgroundColor: isPDF ? '#dc2626' : '#6B7280'
-        }}>
-          <FileText style={{ width: 10, height: 10, color: '#fff' }} strokeWidth={2} />
-        </div>
-      )}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 0, minWidth: 0 }}>
-        <span style={{ fontWeight: 600, color: '#111', fontSize: '11px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {formatFileName(attachment.name)}
-        </span>
-      </div>
-    </div>
-  );
-};
-
 // Component for displaying property attachment in query bubble (same as SideChatPanel)
 const QueryPropertyAttachment: React.FC<{ attachment: PropertyAttachmentData }> = ({ attachment }) => {
   const imageUrl = attachment.imageUrl || attachment.property.image || attachment.property.primary_image_url;
@@ -329,7 +202,7 @@ export const FloatingChatBubble: React.FC<FloatingChatBubbleProps> = ({
   // Ref for messages container to enable auto-scroll
   const messagesContainerRef = React.useRef<HTMLDivElement>(null);
   const messagesEndRef = React.useRef<HTMLDivElement>(null);
-  const { openExpandedCardView } = usePreview();
+  const { openExpandedCardView, addPreviewFile } = usePreview();
   
   // Per-message expanded state for "Thought" section (default = collapsed; only show steps when user expands)
   const [expandedThoughtMessageIds, setExpandedThoughtMessageIds] = React.useState<Set<string>>(() => new Set());
@@ -659,7 +532,14 @@ export const FloatingChatBubble: React.FC<FloatingChatBubbleProps> = ({
                     {message.attachments && message.attachments.length > 0 && (
                       <div style={{ marginBottom: (message.text || (message.propertyAttachments && message.propertyAttachments.length > 0)) ? '8.8px' : '0', display: 'flex', flexWrap: 'wrap', gap: '4.4px' }}>
                         {message.attachments.map((attachment) => (
-                          <QueryAttachment key={attachment.id} attachment={attachment} />
+                          <FileAttachment
+                            key={attachment.id}
+                            attachment={attachment}
+                            onRemove={() => {}}
+                            onPreview={attachment.file ? () => addPreviewFile(attachment) : undefined}
+                            compact
+                            variant="chat"
+                          />
                         ))}
                       </div>
                     )}

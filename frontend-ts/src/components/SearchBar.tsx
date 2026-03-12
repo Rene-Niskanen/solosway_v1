@@ -993,13 +993,14 @@ export const SearchBar = forwardRef<{
       return;
     }
     const attachmentId = `file-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-    const placeholderFile = new File([], data.filename ?? 'Document', {
+    const displayName = data.filename ?? (data as { original_filename?: string }).original_filename ?? 'Document';
+    const placeholderFile = new File([], displayName, {
       type: data.fileType || 'application/pdf',
     });
     const optimisticFileData: FileAttachmentData = {
       id: attachmentId,
       file: placeholderFile,
-      name: data.filename ?? 'Document',
+      name: displayName,
       type: data.fileType || 'application/pdf',
       size: 0,
       extractionStatus: 'extracting',
@@ -1023,7 +1024,7 @@ export const SearchBar = forwardRef<{
         const response = await fetch(downloadUrl, { credentials: 'include' });
         if (!response.ok) throw new Error('Failed to fetch document');
         const blob = await response.blob();
-        const actualFile = new File([blob], data.filename ?? 'Document', {
+        const actualFile = new File([blob], displayName, {
           type: data.fileType || blob.type || 'application/pdf',
         });
         setAttachedFiles(prev => {
@@ -1569,7 +1570,7 @@ export const SearchBar = forwardRef<{
                   animate={{ opacity: 1 }}
                   exit={{ opacity: 0 }}
                   transition={{ duration: 0.1, ease: "easeOut" }}
-                  style={{ maxHeight: '52px', overflowY: 'auto', marginBottom: '12px', flexShrink: 0, position: 'relative', zIndex: 10, pointerEvents: 'auto' }}
+                  style={{ maxHeight: '80px', overflowY: 'auto', marginBottom: '16px', flexShrink: 0, position: 'relative', zIndex: 10, pointerEvents: 'auto' }}
                   className="flex flex-wrap gap-2 justify-start"
                   layout={false}
                 >
@@ -1585,6 +1586,7 @@ export const SearchBar = forwardRef<{
                         onPreview={(file) => {
                           addPreviewFile(file);
                         }}
+                        variant="chat"
                       />
                     );
                   })}

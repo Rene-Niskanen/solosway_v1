@@ -177,11 +177,11 @@ export function ChooseProjectModal({
                 onClick={() => handleSelect(p)}
               >
                 {p.imageUrl ? (
-                  <span className="flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded overflow-hidden bg-gray-100">
+                  <span className="flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded overflow-hidden bg-gray-100">
                     <img src={p.imageUrl} alt="" className="h-full w-full object-cover" />
                   </span>
                 ) : (
-                  <span className="flex h-[22px] w-[22px] shrink-0 items-center justify-center">
+                  <span className="flex h-[18px] w-[18px] shrink-0 items-center justify-center">
                     <img
                       src="/projectsfolder.png"
                       alt=""

@@ -195,7 +195,7 @@ export const CreateProjectModal: React.FC<CreateProjectModalProps> = ({
     }
     // PDF
     if (type.includes("pdf") || name.endsWith(".pdf")) {
-      return <img src="/pdfnew.png" alt="PDF" className={iconClass} />;
+      return <img src="/PDF(1).png" alt="PDF" className={iconClass} />;
     }
     // PowerPoint — check before Word (both contain "document" in MIME)
     if (

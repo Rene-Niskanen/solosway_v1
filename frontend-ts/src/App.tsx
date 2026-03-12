@@ -26,7 +26,7 @@ const App = () => (
   <QueryClientProvider client={queryClient}>
     <TooltipProvider>
       <SystemProvider>
-        <ThemeProvider defaultTheme="light" storageKey="openfind-theme" attribute="class">
+        <ThemeProvider defaultTheme="light" storageKey="openfind-theme" attribute="class" themes={["light", "dark", "dark-blue"]}>
         <BackendApiProvider>
           <PreviewProvider>
             <PropertySelectionProvider>

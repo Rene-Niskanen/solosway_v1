@@ -431,8 +431,10 @@ export const PropertyFilesModal: React.FC<PropertyFilesModalProps> = ({
                           {/* File Icon - PDF/Word images, colored box for others (matching FileAttachment) */}
                           {isDOC ? (
                             <img src="/word.png" alt="Word" className="w-6 h-6 rounded object-contain flex-shrink-0" />
+                          ) : isPDF ? (
+                            <img src="/PDF(1).png" alt="PDF" className="w-6 h-6 rounded object-contain flex-shrink-0" />
                           ) : (
-                            <div className={`w-6 h-6 ${isPDF ? 'bg-red-500' : isImage ? 'bg-red-500' : 'bg-gray-600'} rounded flex items-center justify-center flex-shrink-0`}>
+                            <div className={`w-6 h-6 ${isImage ? 'bg-red-500' : 'bg-gray-600'} rounded flex items-center justify-center flex-shrink-0`}>
                               <FileText className="w-4 h-4 text-white" strokeWidth={2} />
                             </div>
                           )}

@@ -94,6 +94,8 @@ interface StandaloneExpandedCardViewProps {
   lastResponseCitations?: Record<string, CitationData>;
   /** Currently viewed citation (messageId + citationNumber). When set, used to show correct "X of Y" and order in response order. */
   viewedCitation?: ViewedCitation | null;
+  /** Called when user clicks Accept (same as Accept in citation callout bar). When provided, shows Accept button. */
+  onAcceptCitation?: () => void;
 }
 
 export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProps> = ({
@@ -106,6 +108,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
   lastResponseMessageId,
   lastResponseCitations,
   viewedCitation,
+  onAcceptCitation,
   chatPanelWidth = 0,
   sidebarWidth = 56,
   onResizeStart,
@@ -115,7 +118,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
   onSnapTo50,
 }) => {
   const { resolvedTheme } = useTheme();
-  const isDark = resolvedTheme === 'dark';
+  const isDark = resolvedTheme !== 'light' && resolvedTheme !== undefined;
   // Local state for instant close - hides component immediately before parent state updates
   const [isLocallyHidden, setIsLocallyHidden] = useState(false);
   
@@ -319,12 +322,12 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
     };
   }, [activeChatState, docId, highlight, citationsFromLastResponse, lastResponseMessageId, lastResponseCitations, viewedCitation]);
 
-  // Navigate to next citation
+  // Navigate to next citation (same as response: no wrap, disabled at end)
   const handleReviewNextCitation = useCallback(() => {
     if (sortedCitations.length === 0) return;
+    if (currentCitationIndex >= sortedCitations.length - 1) return;
     
-    // Calculate next citation index (wrap around if at end)
-    const nextIndex = (currentCitationIndex + 1) % sortedCitations.length;
+    const nextIndex = currentCitationIndex + 1;
     const nextCitation = sortedCitations[nextIndex];
     
     if (!nextCitation || !nextCitation.bbox) return;
@@ -372,10 +375,12 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
     if (activeChatId && viewed) setDocumentViewedCitation(activeChatId, viewed);
   }, [sortedCitations, currentCitationIndex, docId, filename, openExpandedCardView, openDocumentForChat, activeChatId, activeChatState, setDocumentViewedCitation]);
 
-  // Navigate to previous citation
+  // Navigate to previous citation (same as response: no wrap, disabled at start)
   const handleReviewPrevCitation = useCallback(() => {
     if (sortedCitations.length === 0) return;
-    const prevIndex = currentCitationIndex <= 0 ? sortedCitations.length - 1 : currentCitationIndex - 1;
+    if (currentCitationIndex <= 0) return;
+    
+    const prevIndex = currentCitationIndex - 1;
     const prevCitation = sortedCitations[prevIndex];
     if (!prevCitation || !prevCitation.bbox) return;
     const pageNumber = prevCitation.page || prevCitation.bbox?.page || prevCitation.page_number || 1;
@@ -1562,11 +1567,11 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
         />
       )}
       
-      {/* Header - filename bar (close, PDF icon, name, fullscreen) */}
+      {/* Header - filename bar (close, PDF icon, name, fullscreen) — always light for readability */}
       <div className="pr-4 pl-6 shrink-0" style={{ 
-        background: isDark ? 'hsl(var(--card))' : '#FFFFFF',
-        backgroundColor: isDark ? 'hsl(var(--card))' : '#FFFFFF',
-        border: isDark ? '4px solid hsl(var(--card))' : '4px solid #FFFFFF',
+        background: '#FFFFFF',
+        backgroundColor: '#FFFFFF',
+        border: '4px solid #FFFFFF',
         paddingTop: '12px',
         paddingBottom: '8px',
         borderTopLeftRadius: isFullscreen ? 0 : '16px',
@@ -1580,14 +1585,14 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
             className="flex items-center gap-2 min-w-0 max-w-[36%]"
             style={{
               zIndex: 1,
-              borderBottom: isDark ? '2px solid rgba(255, 255, 255, 0.8)' : '2px solid rgba(0, 0, 0, 0.25)',
+              borderBottom: '2px solid rgba(0, 0, 0, 0.25)',
               paddingBottom: '4px',
               width: 'fit-content'
             }}
           >
             <button
               onClick={handleInstantClose}
-              className={`flex items-center justify-center rounded-sm flex-shrink-0 ${isDark ? 'hover:bg-muted active:bg-muted/80' : 'hover:bg-[#f0f0f0] active:bg-[#e8e8e8]'}`}
+              className="flex items-center justify-center rounded-sm flex-shrink-0 hover:bg-[#f0f0f0] active:bg-[#e8e8e8]"
               style={{
                 padding: '4px',
                 height: '22px',
@@ -1600,16 +1605,16 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
               }}
               title="Close document"
             >
-              <X className={`w-3.5 h-3.5 ${isDark ? 'text-slate-200' : 'text-[#666]'}`} strokeWidth={2} />
+              <X className="w-3.5 h-3.5 text-[#666]" strokeWidth={2} />
             </button>
-            <img src="/pdfnew.png" alt="PDF" className="w-4 h-4 object-contain flex-shrink-0" />
-            <span className={`text-sm font-medium truncate min-w-0 ${isDark ? 'text-slate-300' : 'text-slate-700'}`}>
+            <img src="/PDF(1).png" alt="PDF" className="w-4 h-4 object-contain flex-shrink-0" />
+            <span className="text-sm font-medium truncate min-w-0 text-slate-700">
               {displayFilename}
             </span>
           </div>
           
           {/* Right: Citations nav + Download + Fullscreen — only show citations pill when opened from a citation (has highlight), not on default document preview open */}
-          <div className="flex items-center gap-0 justify-end min-h-[30px]">
+          <div className="flex items-center gap-3 justify-end min-h-[30px]">
             {/* Citations: compact pill — show only when document was opened from a citation (highlight set), not for default preview */}
             {!initialFullscreen && highlight != null && (
               <>
@@ -1617,50 +1622,52 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
                   style={{
                     display: 'flex',
                     alignItems: 'center',
-                    gap: 6,
-                    backgroundColor: isDark ? 'hsl(var(--card))' : '#ffffff',
-                    padding: '4px 6px',
+                    gap: 8,
+                    backgroundColor: '#ffffff',
+                    padding: '4px 8px',
                     borderRadius: 8,
                   }}
                 >
                   <button
                     type="button"
                     aria-label="Previous citation"
-                    disabled={sortedCitations.length <= 1}
+                    disabled={sortedCitations.length <= 1 || currentCitationIndex <= 0}
                     onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleReviewPrevCitation(); }}
-                    className={`rounded border border-transparent ${sortedCitations.length > 1 ? (isDark ? 'text-sidebar-foreground hover:bg-card/80 active:bg-card' : 'text-[#141413] hover:bg-white/60 active:bg-white/60') : (isDark ? 'text-sidebar-foreground/50' : 'text-muted-foreground')}`}
                     style={{
                       display: 'flex',
                       padding: 4,
                       border: 'none',
-                      background: 'transparent',
+                      background: 'rgba(255,255,255,0.95)',
+                      backdropFilter: 'blur(6px)',
                       borderRadius: 6,
-                      cursor: sortedCitations.length <= 1 ? 'default' : 'pointer',
+                      cursor: sortedCitations.length <= 1 || currentCitationIndex <= 0 ? 'default' : 'pointer',
+                      color: sortedCitations.length <= 1 || currentCitationIndex <= 0 ? '#9ca3af' : '#666666',
                       boxShadow: 'none',
                     }}
                   >
-                    <ChevronUp size={20} strokeWidth={2} />
+                    <ChevronUp size={16} strokeWidth={2} />
                   </button>
-                  <span className={`text-xs tabular-nums whitespace-nowrap font-medium ${sortedCitations.length > 0 ? (isDark ? 'text-white' : 'text-slate-500') : (isDark ? 'text-white/60' : 'text-slate-400')}`}>
+                  <span className={`text-xs tabular-nums whitespace-nowrap font-medium ${sortedCitations.length > 0 ? 'text-slate-500' : 'text-slate-400'}`}>
                     {sortedCitations.length > 0 ? `${currentCitationIndex + 1} of ${sortedCitations.length}` : '—'}
                   </span>
                   <button
                     type="button"
                     aria-label="Next citation"
-                    disabled={sortedCitations.length <= 1}
+                    disabled={sortedCitations.length <= 1 || currentCitationIndex >= sortedCitations.length - 1}
                     onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleReviewNextCitation(); }}
-                    className={`rounded border border-transparent ${sortedCitations.length > 1 ? (isDark ? 'text-sidebar-foreground hover:bg-card/80 active:bg-card' : 'text-[#141413] hover:bg-white/60 active:bg-white/60') : (isDark ? 'text-sidebar-foreground/50' : 'text-muted-foreground')}`}
                     style={{
                       display: 'flex',
                       padding: 4,
                       border: 'none',
-                      background: 'transparent',
+                      background: 'rgba(255,255,255,0.95)',
+                      backdropFilter: 'blur(6px)',
                       borderRadius: 6,
-                      cursor: sortedCitations.length <= 1 ? 'default' : 'pointer',
+                      cursor: sortedCitations.length <= 1 || currentCitationIndex >= sortedCitations.length - 1 ? 'default' : 'pointer',
+                      color: sortedCitations.length <= 1 || currentCitationIndex >= sortedCitations.length - 1 ? '#9ca3af' : '#666666',
                       boxShadow: 'none',
                     }}
                   >
-                    <ChevronDown size={20} strokeWidth={2} />
+                    <ChevronDown size={16} strokeWidth={2} />
                   </button>
                 </div>
                 <div
@@ -1668,11 +1675,73 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
                   style={{
                     width: '1px',
                     height: '18px',
-                    backgroundColor: isDark ? 'rgba(255,255,255,0.35)' : 'rgba(0,0,0,0.12)',
-                    marginLeft: '10px',
-                    marginRight: '6px',
+                    backgroundColor: 'rgba(0,0,0,0.12)',
+                    flexShrink: 0,
                   }}
                 />
+                <div className="flex items-center gap-1.5">
+                {onClose && (
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); handleInstantClose(); }}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: 4.4,
+                      padding: '3.3px 6.6px',
+                      fontSize: '12px',
+                      lineHeight: 1,
+                      fontWeight: 500,
+                      color: '#666666',
+                      backgroundColor: '#ffffff',
+                      border: '1px solid #d4d4d4',
+                      borderRadius: 5.5,
+                      cursor: 'pointer',
+                      boxShadow: '0 1px 1px rgba(0,0,0,0.05)',
+                      outline: 'none',
+                      minHeight: 26,
+                    }}
+                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#f5f5f5'; }}
+                    onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#ffffff'; }}
+                  >
+                    Close
+                  </button>
+                )}
+                {onAcceptCitation && (
+                  <button
+                    type="button"
+                    data-citation-accept-btn
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      (e.currentTarget as HTMLElement).blur();
+                      onAcceptCitation();
+                    }}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: 4.4,
+                      padding: '3.3px 6.6px',
+                      fontSize: '12px',
+                      lineHeight: 1,
+                      fontWeight: 500,
+                      color: '#666666',
+                      backgroundColor: '#EBF1DE',
+                      border: '1px solid rgba(0,0,0,0.12)',
+                      borderRadius: 5.5,
+                      cursor: 'pointer',
+                      boxShadow: 'none',
+                      outline: 'none',
+                      minHeight: 26,
+                    }}
+                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#e0e8d4'; }}
+                    onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#EBF1DE'; }}
+                  >
+                    Accept
+                  </button>
+                )}
+                </div>
               </>
             )}
             {/* Quick Zoom dropdown - only show in fullscreen mode */}
@@ -1695,7 +1764,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
                       handleQuickZoom(parseInt(value, 10));
                     }
                   }}
-                  className={`appearance-none pl-2.5 pr-7 py-1.5 text-xs font-medium rounded-md transition-all duration-200 shadow-sm cursor-pointer focus:outline-none ${isDark ? 'border border-border hover:border-border bg-card hover:bg-muted text-foreground focus:ring-1 focus:ring-ring' : 'border border-slate-200/60 hover:border-slate-300/80 bg-white/90 hover:bg-slate-50/90 text-slate-700 focus:ring-1 focus:ring-slate-300'}`}
+                  className="appearance-none pl-2.5 pr-7 py-1.5 text-xs font-medium rounded-md transition-all duration-200 shadow-sm cursor-pointer focus:outline-none border border-slate-200/60 hover:border-slate-300/80 bg-white/90 hover:bg-slate-50/90 text-slate-700 focus:ring-1 focus:ring-slate-300"
                   style={{ minWidth: '70px' }}
                 >
                   <option value="50">50%</option>
@@ -1706,7 +1775,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
                   <option value="200">200%</option>
                   <option value="fit">Fit</option>
                 </select>
-                <ChevronDown className={`absolute right-2 top-1/2 -translate-y-1/2 w-3 h-3 pointer-events-none ${isDark ? 'text-slate-200' : 'text-slate-500'}`} />
+                <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3 h-3 pointer-events-none text-slate-500" />
               </div>
             )}
             {/* Download button */}
@@ -1721,9 +1790,9 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
                   document.body.removeChild(link);
                 }
               }}
-              whileHover={{ backgroundColor: isDark ? 'hsl(var(--muted))' : '#f0f0f0' }}
-              whileTap={{ backgroundColor: isDark ? 'hsl(var(--muted) / 0.8)' : '#e8e8e8' }}
-              className="flex items-center justify-center rounded-sm transition-all duration-150 mr-1.5"
+              whileHover={{ backgroundColor: '#f0f0f0' }}
+              whileTap={{ backgroundColor: '#e8e8e8' }}
+              className="flex items-center justify-center rounded-sm transition-all duration-150"
               style={{
                 padding: '5px',
                 height: '26px',
@@ -1735,14 +1804,14 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
               }}
               title="Download file"
             >
-              <Download className={`w-4 h-4 ${isDark ? 'text-slate-200' : 'text-[#666]'}`} strokeWidth={1.75} />
+              <Download className="w-4 h-4 text-[#666]" strokeWidth={1.75} />
             </motion.button>
             {/* Fullscreen button - only when allowFullscreen is true (hidden in 50/50 layout) */}
             {allowFullscreen && (
             <motion.button
               onClick={() => setIsFullscreen(!isFullscreen)}
-              whileHover={{ backgroundColor: isDark ? 'hsl(var(--muted))' : '#f0f0f0' }}
-              whileTap={{ backgroundColor: isDark ? 'hsl(var(--muted) / 0.8)' : '#e8e8e8' }}
+              whileHover={{ backgroundColor: '#f0f0f0' }}
+              whileTap={{ backgroundColor: '#e8e8e8' }}
               className="flex items-center justify-center rounded-sm transition-all duration-150"
               style={{
                 padding: '5px',
@@ -1756,9 +1825,9 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
               title={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
             >
               {isFullscreen ? (
-                <Minimize2 className={`w-4 h-4 ${isDark ? 'text-slate-200' : 'text-[#666]'}`} strokeWidth={1.75} />
+                <Minimize2 className="w-4 h-4 text-[#666]" strokeWidth={1.75} />
               ) : (
-                <Maximize className={`w-4 h-4 ${isDark ? 'text-slate-200' : 'text-[#666]'}`} strokeWidth={1.75} />
+                <Maximize className="w-4 h-4 text-[#666]" strokeWidth={1.75} />
               )}
             </motion.button>
             )}

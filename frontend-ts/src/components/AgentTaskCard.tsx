@@ -18,7 +18,7 @@ interface AgentTaskCardProps {
 function DocTypeIcon({ type }: { type: string }) {
   if (type === 'pdf') {
     return (
-      <img src="/pdfnew.png" alt="" aria-hidden style={{ width: 13, height: 13, objectFit: 'contain' }} />
+      <img src="/PDF(1).png" alt="" aria-hidden style={{ width: 13, height: 13, objectFit: 'contain' }} />
     );
   }
   return (
@@ -135,7 +135,7 @@ function DocCountChip({ count }: { count: number }) {
       border: '1px solid #E5E7EB', fontSize: 11, fontWeight: 500, color: '#4B5563',
       marginLeft: 6, lineHeight: '18px',
     }}>
-      <img src="/pdfnew.png" alt="" style={{ width: 11, height: 11, objectFit: 'contain' }} />
+      <img src="/PDF(1).png" alt="" style={{ width: 11, height: 11, objectFit: 'contain' }} />
       {count} document{count !== 1 ? 's' : ''}
     </span>
   );

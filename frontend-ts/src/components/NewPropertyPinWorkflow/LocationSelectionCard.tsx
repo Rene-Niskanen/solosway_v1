@@ -29,7 +29,7 @@ export const LocationSelectionCard: React.FC<LocationSelectionCardProps> = ({
   const [isSearching, setIsSearching] = useState(false);
   const mapboxToken = import.meta.env.VITE_MAPBOX_TOKEN || '';
   const { resolvedTheme } = useTheme();
-  const mapStyle = resolvedTheme === 'dark' ? 'mapbox://styles/mapbox/dark-v11' : 'mapbox://styles/mapbox/light-v11';
+  const mapStyle = (resolvedTheme !== 'light' && resolvedTheme !== undefined) ? 'mapbox://styles/mapbox/dark-v11' : 'mapbox://styles/mapbox/light-v11';
 
   // Initialize map
   useEffect(() => {

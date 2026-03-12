@@ -812,6 +812,71 @@ def submit_chat_feedback():
     return jsonify({'success': True}), 200
 
 
+def _send_email_via_smtp(to_email, subject, body, from_email=None):
+    """Helper to send email via SMTP. Returns (success, error_msg)."""
+    smtp_host = os.environ.get('SMTP_HOST')
+    smtp_port = int(os.environ.get('SMTP_PORT', '587'))
+    smtp_user = os.environ.get('SMTP_USER')
+    smtp_password = os.environ.get('SMTP_PASSWORD')
+    if not (smtp_host and smtp_user and smtp_password):
+        logger.info('Email not sent (SMTP not configured): to=%s subject=%s', to_email, subject[:50] if subject else '')
+        return True, None  # SMTP not configured - caller logs and returns success
+    _from = from_email or os.environ.get('FEEDBACK_FROM_EMAIL') or os.environ.get('SMTP_USER') or 'feedback@solosway.co'
+    try:
+        import smtplib
+        from email.mime.text import MIMEText
+        msg = MIMEText(body, 'plain')
+        msg['Subject'] = subject
+        msg['From'] = _from
+        msg['To'] = to_email
+        with smtplib.SMTP(smtp_host, smtp_port) as server:
+            server.starttls()
+            server.login(smtp_user, smtp_password)
+            server.sendmail(_from, [to_email], msg.as_string())
+        return True, None
+    except Exception as e:
+        logger.exception('Failed to send email')
+        return False, str(e)
+
+
+@views.route('/api/enterprise-inquiry', methods=['POST', 'OPTIONS'])
+def submit_enterprise_inquiry():
+    """
+    Accept enterprise/OpenFind Enterprise inquiries and send email to connect@solosway.co.
+    No login required. Body: name (required), email (required), company (optional), message (optional).
+    """
+    if request.method == 'OPTIONS':
+        return jsonify({}), 200
+    data = request.get_json() or {}
+    name = (data.get('name') or '').strip()
+    email = (data.get('email') or '').strip()
+    if not name:
+        return jsonify({'success': False, 'error': 'Name is required'}), 400
+    if not email:
+        return jsonify({'success': False, 'error': 'Email is required'}), 400
+    if '@' not in email or '.' not in email.split('@')[-1]:
+        return jsonify({'success': False, 'error': 'Invalid email address'}), 400
+    company = (data.get('company') or '').strip()[:200]
+    message = (data.get('message') or '').strip()[:3000]
+    to_email = 'connect@solosway.co'
+    body_lines = [
+        'OpenFind Enterprise inquiry',
+        '',
+        f'Name: {name}',
+        f'Email: {email}',
+        f'Company: {company or "(not provided)"}',
+        '',
+        'Message:',
+        message or '(none)',
+    ]
+    body = '\n'.join(body_lines)
+    ok, err = _send_email_via_smtp(to_email, 'OpenFind Enterprise inquiry', body)
+    if not ok:
+        return jsonify({'success': False, 'error': err or 'Failed to send'}), 500
+    logger.info('Enterprise inquiry sent to %s from %s', to_email, email)
+    return jsonify({'success': True}), 200
+
+
 # Add before_request handler to respond to OPTIONS (CORS preflight) with 200 so browser gets HTTP OK
 @views.before_request
 def handle_options_request():

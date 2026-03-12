@@ -1176,7 +1176,7 @@ const ChatInterface = forwardRef<{ handleFileDrop: (file: File) => void }, ChatI
                       duration: 0.1,
                       ease: "easeOut"
                     }}
-                    className="mb-4 flex flex-wrap gap-2 justify-start"
+                    className="mb-5 flex flex-wrap gap-2 justify-start"
                     layout={false}
                   >
                     {attachedFiles.map((file) => (
@@ -1188,6 +1188,7 @@ const ChatInterface = forwardRef<{ handleFileDrop: (file: File) => void }, ChatI
                           // Use shared preview context to add file (will add to existing preview if open)
                           addPreviewFile(file);
                         }}
+                        variant="chat"
                       />
                     ))}
                   </motion.div>

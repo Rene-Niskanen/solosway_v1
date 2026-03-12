@@ -118,7 +118,7 @@ const LocationPickerModal: React.FC<{
   getSidebarState?: () => boolean;
 }> = ({ savedLocation, onLocationSaved, onCloseSidebar, onRestoreSidebarState, getSidebarState }) => {
   const { resolvedTheme } = useTheme();
-  const isDark = resolvedTheme === 'dark';
+  const isDark = resolvedTheme !== 'light' && resolvedTheme !== undefined;
   const mapStyle = isDark ? 'mapbox://styles/mapbox/dark-v11' : 'mapbox://styles/mapbox/light-v11';
   const [isOpen, setIsOpen] = React.useState(false);
   const [isPreviewMode, setIsPreviewMode] = React.useState(false);
@@ -1636,7 +1636,7 @@ const COMPLETION_SOUND_OPTIONS: { value: CompletionSoundOption; label: string }[
 // Notifications settings: volume (Spotify-style) + sound selector (card styled like UsageAndBillingSection plan card)
 const NotificationsSettingsContent: React.FC = () => {
   const { resolvedTheme } = useTheme();
-  const isDark = resolvedTheme === 'dark';
+  const isDark = resolvedTheme !== 'light' && resolvedTheme !== undefined;
   const [soundOption, setSoundOptionState] = React.useState<CompletionSoundOption>(() => {
     if (typeof window === 'undefined') return 'ascending';
     const v = window.localStorage.getItem(NOTIFICATION_SOUND_STORAGE_KEY);
@@ -1737,7 +1737,7 @@ const SettingsView: React.FC<{
   }> = ({ onCloseSidebar, onRestoreSidebarState, getSidebarState, onNavigate, initialCategory, onClearInitialCategory }) => {
   const authUser = useAuthUser() as Record<string, unknown> | null | undefined;
   const { resolvedTheme } = useTheme();
-  const isDark = resolvedTheme === 'dark';
+  const isDark = resolvedTheme !== 'light' && resolvedTheme !== undefined;
   const [activeCategory, setActiveCategory] = React.useState<string>('general');
   const [savedLocation, setSavedLocation] = React.useState<string>('');
   // Prefetched user for General > Profile. Initialized from dashboard auth (loaded on app load) so Profile shows instantly; refreshed below when Settings opens.
@@ -1947,14 +1947,14 @@ const SettingsView: React.FC<{
               </div>
               <div className="border-t border-border my-4" />
               <div className="flex flex-wrap items-center gap-2">
-                <span className="text-[13px] text-muted-foreground">
+                <span className="text-[13px] text-muted-foreground dark:text-foreground/85">
                   {privacyMode === 'privacy'
                     ? 'Privacy Mode is enabled. Background Agent and some features not available.'
                     : 'Share Data is enabled. Your data helps improve OpenFind for everyone.'}
                 </span>
                 <button
                   type="button"
-                  className="text-[13px] text-blue-600 underline hover:text-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500/20 rounded"
+                  className="text-[13px] text-blue-600 dark:text-blue-400 underline hover:text-blue-700 dark:hover:text-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-500/20 rounded"
                   onClick={async () => {
                     const targetMode = privacyMode === 'privacy' ? 'share' : 'privacy';
                     setPrivacyMode(targetMode);
@@ -1970,7 +1970,7 @@ const SettingsView: React.FC<{
               variant="outline"
               size="sm"
               onClick={handleLogout}
-              className="-mt-2 h-7 min-h-7 rounded-md bg-background hover:bg-muted hover:text-gray-800 text-gray-800 border border-border px-2 py-0.5 text-xs font-medium focus-visible:ring-gray-200"
+              className="-mt-2 h-7 min-h-7 rounded-md bg-background hover:bg-muted text-foreground hover:text-foreground border border-border px-2 py-0.5 text-xs font-medium focus-visible:ring-2 focus-visible:ring-foreground/20"
             >
               Log Out
             </Button>
@@ -1982,7 +1982,7 @@ const SettingsView: React.FC<{
   };
 
   return (
-    <div className="w-full h-full flex gap-24 bg-background -ml-16 lg:-ml-24 pt-12">
+    <div className="w-full h-full flex gap-24 bg-background pl-8 lg:pl-16 pt-12 pr-8 lg:pr-16 pb-8 lg:pb-16">
       {/* Settings Sidebar - Sleek Design */}
       <div className="w-64 shrink-0 bg-background">
         <div className="p-6">
@@ -4505,7 +4505,7 @@ export const MainContent = ({
                             // @ts-expect-error - use lowercase fetchpriority per React DOM warning; types still use fetchPriority
                             fetchpriority="high"
                             style={{
-                              height: 'clamp(1.5rem, 4vw, 2rem)',
+                              height: 'clamp(1.25rem, 3.5vw, 1.75rem)',
                               width: 'auto',
                               objectFit: 'contain',
                               flexShrink: 0,
@@ -5540,7 +5540,7 @@ export const MainContent = ({
     style={{ 
       // Overlap 1px when Settings so dashboard background doesn't show through a subpixel gap (no reddish-brown leakage)
       // Projects: start at sidebar edge when open (no rail gap); when collapsed use rail-only offset
-      marginLeft: currentView === 'settings' ? mainContentMarginLeft - 1 : currentView === 'projects' ? (isSidebarCollapsed ? mainContentMarginLeft : effectiveSidebarWidth) : mainContentMarginLeft,
+      marginLeft: currentView === 'settings' ? mainContentMarginLeft - 4 : currentView === 'projects' ? (isSidebarCollapsed ? mainContentMarginLeft : effectiveSidebarWidth) : mainContentMarginLeft,
       backgroundColor: (currentView === 'search' || currentView === 'home') ? 'transparent' : undefined, 
       position: 'relative', 
       zIndex: isChatHistoryPanelOpen ? 10000 : 1, // Above backdrop (9999) when agent sidebar open so clicking the new-chat bar doesn't close it
@@ -6057,7 +6057,7 @@ export const MainContent = ({
                   : currentView === 'settings'
                     ? 'bg-background'
                     : (currentView === 'search' || currentView === 'home') ? '' : 'bg-background'
-      } ${isInChatMode ? 'p-0' : currentView === 'upload' ? 'p-8' : currentView === 'analytics' ? 'p-4' : currentView === 'profile' ? 'p-0' : currentView === 'notifications' ? 'p-0 m-0' : currentView === 'projects' ? 'p-0' : 'p-8 lg:p-16'}`} style={{ 
+      } ${isInChatMode ? 'p-0' : currentView === 'upload' ? 'p-8' : currentView === 'analytics' ? 'p-4' : currentView === 'profile' ? 'p-0' : currentView === 'notifications' ? 'p-0 m-0' : currentView === 'projects' ? 'p-0' : currentView === 'settings' ? 'p-0 overflow-hidden' : 'p-8 lg:p-16'}`} style={{ 
         backgroundColor: (currentView === 'search' || currentView === 'home') ? 'transparent' : undefined, 
         background: (currentView === 'search' || currentView === 'home') ? 'transparent' : undefined,
         pointerEvents: currentView === 'settings' ? 'auto' : (MAP_ENABLED && (isMapVisible || externalIsMapVisible)) ? 'none' : 'auto', // Settings always receives clicks; otherwise block when map visible
@@ -6077,6 +6077,7 @@ export const MainContent = ({
             : currentView === 'profile' ? 'h-full w-full'
             : currentView === 'notifications' ? 'h-full w-full'
             : currentView === 'projects' ? 'h-full w-full'
+            : currentView === 'settings' ? 'h-full w-full'
             : 'max-w-5xl mx-auto'
         } flex-1 flex flex-col`}>
           {/* Always render without animation - the y: 20 animation causes "drop" effect */}
@@ -6114,6 +6115,7 @@ export const MainContent = ({
               lastResponseCitations={messageForDocPreview?.citations}
               viewedCitation={(expandedCardViewDoc as DocumentPreview)?.viewedCitation ?? null}
               onClose={closeExpandedCardView}
+              onAcceptCitation={citationsForDocumentPreview && citationsForDocumentPreview.length > 0 ? () => sideChatPanelRef.current?.handleAcceptCitationForDocPreview?.() : undefined}
               chatPanelWidth={effectiveChatWidthForDocPreview}
               sidebarWidth={(() => {
                 if (isFilingSidebarOpen || isFilingSidebarClosing) {

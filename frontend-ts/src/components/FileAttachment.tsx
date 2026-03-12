@@ -27,6 +27,8 @@ export interface FileAttachmentProps {
   onDragEnd?: () => void;
   /** Slightly smaller UI for use inside query bubbles (no remove/drag). */
   compact?: boolean;
+  /** Chat-style dark bubble with document ID, red/colored icon, and type label. */
+  variant?: 'default' | 'chat';
 }
 
 export const FileAttachment: React.FC<FileAttachmentProps> = ({
@@ -35,10 +37,12 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
   onPreview,
   onDragStart,
   onDragEnd,
-  compact = false
+  compact = false,
+  variant = 'default'
 }) => {
   const [imagePreviewUrl, setImagePreviewUrl] = React.useState<string | null>(null);
   const [isDragging, setIsDragging] = React.useState(false);
+  const [isChatHovered, setIsChatHovered] = React.useState(false);
   const imageDragRef = React.useRef<HTMLDivElement>(null);
   const fileDragRef = React.useRef<HTMLDivElement>(null);
   const isImage = attachment.type.startsWith('image/');
@@ -106,6 +110,34 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
     if (type.includes('text')) return 'TXT';
     return 'FILE';
   };
+
+  /** Chat variant top row: show filename (without extension for cleaner display) */
+  const getChatDisplayName = (): string => {
+    const name = attachment.name?.trim();
+    if (!name) return '';
+    // Strip common extensions for cleaner display
+    const ext = name.split('.').pop()?.toLowerCase();
+    if (ext && ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'jpg', 'jpeg', 'png', 'gif', 'webp'].includes(ext)) {
+      const base = name.substring(0, name.lastIndexOf('.'));
+      return base || name;
+    }
+    return name;
+  };
+
+  /** Chat variant: icon bg color and label for file type */
+  const getChatIconStyle = (): { bg: string; label: string } => {
+    if (isPDF) return { bg: '#DC2626', label: 'PDF' };
+    if (isDOCX) return { bg: '#2B579A', label: 'DOC' };
+    if (isExcel) return { bg: '#217346', label: 'XLS' };
+    if (isPowerPoint) return { bg: '#D24726', label: 'PPT' };
+    if (isImage) return { bg: '#6B7280', label: 'IMG' };
+    if (attachment.type.includes('text')) return { bg: '#6B7280', label: 'TXT' };
+    return { bg: '#6B7280', label: 'FILE' };
+  };
+
+  const CHAT_BUBBLE_BG = '#4D4D4F';
+  const CHAT_BUBBLE_RADIUS = 10;
+  const CHAT_ICON_SIZE = 18;
 
   const formatFileName = (name: string): string => {
     // Truncate long file names
@@ -197,7 +229,255 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
     };
   }, [isImage, handleDragStart, handleDragEnd]);
 
-  // For images, show a small rectangular preview
+  // Chat variant: dark grey bubble with document ID and type label
+  if (variant === 'chat') {
+    const displayName = getChatDisplayName();
+    const { bg: iconBg, label: iconLabel } = getChatIconStyle();
+    const typeLabel = getFileTypeLabel(attachment.type);
+    const sourceLabel = typeLabel;
+
+    const chatBubbleBase = {
+      backgroundColor: CHAT_BUBBLE_BG,
+      borderRadius: CHAT_BUBBLE_RADIUS,
+      padding: '12px 14px',
+      display: 'inline-flex',
+      flexDirection: 'column' as const,
+      gap: '8px',
+      cursor: 'pointer',
+      flexShrink: 0,
+      transition: 'opacity 0.2s ease',
+    };
+
+    if (isImage && imagePreviewUrl) {
+      return (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.1, ease: "easeOut" }}
+          onClick={handleFileClick}
+          onMouseEnter={() => setIsChatHovered(true)}
+          onMouseLeave={() => setIsChatHovered(false)}
+          style={{
+            ...chatBubbleBase,
+            position: 'relative',
+            overflow: 'hidden',
+            width: 62,
+            minWidth: 62,
+            alignItems: 'center',
+          }}
+          title={`Click to preview ${attachment.name}`}
+        >
+          {!compact && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onRemove(attachment.id);
+              }}
+              style={{
+                position: 'absolute',
+                top: 6,
+                right: 6,
+                width: 20,
+                height: 20,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                borderRadius: '50%',
+                border: 'none',
+                background: 'rgba(0,0,0,0.3)',
+                color: '#fff',
+                cursor: 'pointer',
+                zIndex: 10,
+                opacity: isChatHovered ? 1 : 0,
+                transition: 'opacity 0.15s ease',
+                pointerEvents: isChatHovered ? 'auto' : 'none',
+              }}
+              title="Remove file"
+            >
+              <X className="w-3 h-3" strokeWidth={2.5} />
+            </button>
+          )}
+          {displayName && (
+            <span style={{ fontSize: '11px', color: '#fff', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%' }}>
+              {displayName}
+            </span>
+          )}
+          <div style={{ width: 40, height: 40, borderRadius: 6, overflow: 'hidden', flexShrink: 0 }}>
+            <img
+              src={imagePreviewUrl}
+              alt={attachment.name}
+              style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+            />
+          </div>
+          <span style={{ fontSize: '11px', color: '#fff', opacity: 0.9 }}>
+            {sourceLabel}
+          </span>
+        </motion.div>
+      );
+    }
+
+    if (isImage && !imagePreviewUrl) {
+      return (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.1, ease: "easeOut" }}
+          onMouseEnter={() => setIsChatHovered(true)}
+          onMouseLeave={() => setIsChatHovered(false)}
+          style={{
+            ...chatBubbleBase,
+            alignItems: 'center',
+            justifyContent: 'center',
+            minWidth: 80,
+            minHeight: 56,
+            position: 'relative',
+          }}
+        >
+          {!compact && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onRemove(attachment.id);
+              }}
+              style={{
+                position: 'absolute',
+                top: 6,
+                right: 6,
+                width: 20,
+                height: 20,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                borderRadius: '50%',
+                border: 'none',
+                background: 'rgba(0,0,0,0.3)',
+                color: '#fff',
+                cursor: 'pointer',
+                zIndex: 10,
+                opacity: isChatHovered ? 1 : 0,
+                transition: 'opacity 0.15s ease',
+                pointerEvents: isChatHovered ? 'auto' : 'none',
+              }}
+              title="Remove file"
+            >
+              <X className="w-3 h-3" strokeWidth={2.5} />
+            </button>
+          )}
+          {displayName && (
+            <span style={{ fontSize: '11px', color: '#fff', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%' }}>
+              {displayName}
+            </span>
+          )}
+          <div
+            style={{
+              width: CHAT_ICON_SIZE,
+              height: CHAT_ICON_SIZE,
+              borderRadius: 4,
+              backgroundColor: iconBg,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              flexShrink: 0,
+            }}
+          >
+            <span style={{ fontSize: '9px', color: '#fff', fontWeight: 600 }}>
+              {iconLabel}
+            </span>
+          </div>
+          <span style={{ fontSize: '11px', color: '#fff', opacity: 0.9 }}>
+            {sourceLabel}
+          </span>
+        </motion.div>
+      );
+    }
+
+    // Non-image files: doc ID + red/colored square + type label
+    return (
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        transition={{ duration: 0.1, ease: "easeOut" }}
+        onClick={handleFileClick}
+        onMouseEnter={() => setIsChatHovered(true)}
+        onMouseLeave={() => setIsChatHovered(false)}
+        style={{
+          ...chatBubbleBase,
+          alignItems: 'flex-start',
+          width: 'auto',
+          position: 'relative',
+        }}
+        title={`Click to preview ${attachment.name}`}
+      >
+        {!compact && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onRemove(attachment.id);
+            }}
+            style={{
+              position: 'absolute',
+              top: 6,
+              right: 6,
+              width: 20,
+              height: 20,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              borderRadius: '50%',
+              border: 'none',
+              background: 'rgba(0,0,0,0.3)',
+              color: '#fff',
+              cursor: 'pointer',
+              zIndex: 10,
+              opacity: isChatHovered ? 1 : 0,
+              transition: 'opacity 0.15s ease',
+              pointerEvents: isChatHovered ? 'auto' : 'none',
+            }}
+            title="Remove file"
+          >
+            <X className="w-3 h-3" strokeWidth={2.5} />
+          </button>
+        )}
+        {displayName && (
+          <span style={{ fontSize: '11px', color: '#fff', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%' }}>
+            {displayName}
+          </span>
+        )}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          <div
+            style={{
+              width: CHAT_ICON_SIZE,
+              height: CHAT_ICON_SIZE,
+              borderRadius: 4,
+              backgroundColor: iconBg,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              flexShrink: 0,
+            }}
+          >
+            <span style={{ fontSize: '9px', color: '#fff', fontWeight: 600 }}>
+              {iconLabel}
+            </span>
+          </div>
+          <span style={{ fontSize: '12px', color: '#fff', opacity: 0.95 }}>
+            {sourceLabel}
+          </span>
+        </div>
+      </motion.div>
+    );
+  }
+
+  // For images, show a small rectangular preview (default variant)
   if (isImage && imagePreviewUrl) {
     return (
       <motion.div
@@ -293,7 +573,7 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
       <div className={`flex items-center ${gapClass}`} style={{ width: 'auto', flexShrink: 0 }}>
         {/* File Icon - PDF, Word, Excel, PowerPoint images; Gray FileText for others */}
         {isPDF ? (
-          <img src="/pdfnew.png" alt="PDF" className={`${iconSize} rounded object-contain flex-shrink-0`} />
+          <img src="/PDF(1).png" alt="PDF" className={`${iconSize} rounded object-contain flex-shrink-0`} />
         ) : isDOCX ? (
           <img src="/word.png" alt="Word" className={`${compact ? 'w-6 h-6' : 'w-7 h-7'} rounded object-contain flex-shrink-0`} />
         ) : isExcel ? (

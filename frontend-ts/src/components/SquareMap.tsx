@@ -481,7 +481,7 @@ export const SquareMap = React.forwardRef<SquareMapRef, SquareMapProps>(({
   const [isColorfulMap, setIsColorfulMap] = useState(true);
   const [isChangingStyle, setIsChangingStyle] = useState(false);
   const { resolvedTheme } = useTheme();
-  const baseMapStyle = resolvedTheme === 'dark' ? 'mapbox://styles/mapbox/dark-v11' : 'mapbox://styles/mapbox/light-v11';
+  const baseMapStyle = resolvedTheme !== 'light' && resolvedTheme !== undefined ? 'mapbox://styles/mapbox/dark-v11' : 'mapbox://styles/mapbox/light-v11';
   const [defaultPreviewUrl, setDefaultPreviewUrl] = useState<string | null>(null);
   const [lightPreviewUrl, setLightPreviewUrl] = useState<string | null>(null);
   const [showPropertyDetailsPanel, setShowPropertyDetailsPanel] = useState(false);
@@ -2648,7 +2648,7 @@ export const SquareMap = React.forwardRef<SquareMapRef, SquareMapProps>(({
       });
       
       // Use a calmer colored map style (colored but less busy/overpowering).
-      const newStyle = willBeColorful ? 'mapbox://styles/mapbox/outdoors-v12' : (resolvedTheme === 'dark' ? 'mapbox://styles/mapbox/dark-v11' : 'mapbox://styles/mapbox/light-v11');
+      const newStyle = willBeColorful ? 'mapbox://styles/mapbox/outdoors-v12' : (resolvedTheme !== 'light' && resolvedTheme !== undefined ? 'mapbox://styles/mapbox/dark-v11' : 'mapbox://styles/mapbox/light-v11');
       
       // Set the new style
       map.current.setStyle(newStyle);
@@ -4984,7 +4984,7 @@ export const SquareMap = React.forwardRef<SquareMapRef, SquareMapProps>(({
   // Update map style when theme changes (only for non-colorful/base style)
   useEffect(() => {
     if (!map.current || isColorfulMap || isChangingStyle) return;
-    const style = resolvedTheme === 'dark' ? 'mapbox://styles/mapbox/dark-v11' : 'mapbox://styles/mapbox/light-v11';
+    const style = resolvedTheme !== 'light' && resolvedTheme !== undefined ? 'mapbox://styles/mapbox/dark-v11' : 'mapbox://styles/mapbox/light-v11';
     map.current.setStyle(style);
   }, [resolvedTheme, isColorfulMap, isChangingStyle]);
 

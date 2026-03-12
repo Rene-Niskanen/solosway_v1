@@ -27,7 +27,7 @@ export const ChatPanel = ({
 }: ChatPanelProps) => {
   const { isOpen, width, closePanel, setWidth, setIsResizing, isResizing } = useChatPanel();
   const { resolvedTheme } = useTheme();
-  const isDark = resolvedTheme === 'dark';
+  const isDark = resolvedTheme !== 'light' && resolvedTheme !== undefined;
   const panelBg = isDark ? 'hsl(var(--muted))' : '#FFFFFF';
   const popoverClass = isDark ? 'border-border bg-background' : 'border-gray-200 bg-white';
   const closePanelRef = React.useRef(closePanel);
@@ -522,29 +522,29 @@ export const ChatPanel = ({
                                   animate={{ opacity: 1, scale: 1, y: 0 }}
                                   exit={{ opacity: 0, scale: 0.95, y: -4 }}
                                   transition={{ duration: 0.12 }}
-                                  className="absolute right-0 top-8 w-28 rounded-md p-1 z-[9999]"
-style={{
-                                    backgroundColor: isDark ? 'hsl(var(--background))' : '#FFFFFF',
+                                  className="absolute right-0 top-8 w-28 rounded-lg p-1 z-[9999] border border-gray-200 shadow-lg"
+                                  style={{
+                                    backgroundColor: '#FFFFFF',
                                     isolation: 'isolate'
                                   }}
                                   onClick={(e) => e.stopPropagation()}
                                 >
                                   <button
                                     onClick={(e) => handleRename(e, chat.id, chat.title)}
-                                    className="w-full px-2 py-1 text-left text-[11px] text-gray-800 hover:bg-[#007AFF] hover:text-white rounded transition-colors duration-75 ease-out"
+                                    className="w-full px-2 py-1 text-left text-[11px] text-gray-800 hover:bg-gray-100 rounded transition-colors duration-75 ease-out"
                                   >
                                     Rename
                                   </button>
                                   <button
                                     onClick={(e) => chat.archived ? handleUnarchiveChat(e, chat.id) : handleArchiveChat(e, chat.id)}
-                                    className="w-full px-2 py-1 text-left text-[11px] text-gray-800 hover:bg-[#007AFF] hover:text-white rounded transition-colors duration-75 ease-out"
+                                    className="w-full px-2 py-1 text-left text-[11px] text-gray-800 hover:bg-gray-100 rounded transition-colors duration-75 ease-out"
                                   >
                                     {chat.archived ? 'Unarchive' : 'Archive'}
                                   </button>
                                   <div className="h-px bg-gray-200 my-1 mx-1" />
                                   <button
                                     onClick={(e) => handleDeleteChat(e, chat.id)}
-                                    className="w-full px-2 py-1 text-left text-[11px] text-gray-800 hover:bg-[#007AFF] hover:text-white rounded transition-colors duration-75 ease-out"
+                                    className="w-full px-2 py-1 text-left text-[11px] text-red-600 hover:bg-red-50 rounded transition-colors duration-75 ease-out"
                                   >
                                     Delete
                                   </button>
