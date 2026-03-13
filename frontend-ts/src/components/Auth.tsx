@@ -1,5 +1,6 @@
 import React, { useState, useRef, useCallback, useLayoutEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useTheme } from 'next-themes';
 import { Mail, Lock } from 'lucide-react';
 import { backendApi } from '../services/backendApi';
 
@@ -13,6 +14,8 @@ interface AuthFormData {
 }
 
 const Auth: React.FC = () => {
+  const { resolvedTheme } = useTheme();
+  const isDark = resolvedTheme !== 'light' && resolvedTheme !== undefined;
   const [isLoginMode, setIsLoginMode] = useState(true);
   const [loginStep, setLoginStep] = useState<1 | 2>(1); // Step 1: Email + Continue; Step 2: Password + Sign in
   // Use refs for form data to avoid re-renders on every keystroke
@@ -727,6 +730,13 @@ const Auth: React.FC = () => {
               .auth-input::placeholder { color: #9ca3af; opacity: 1; }
               .auth-input::-webkit-input-placeholder { color: #9ca3af; }
               .auth-input::-moz-placeholder { color: #9ca3af; opacity: 1; }
+              /* Dark mode: high-contrast text and logo */
+              .dark .auth-form .auth-form-text { color: hsl(var(--foreground)); }
+              .dark .auth-form .auth-form-heading-intro { color: hsl(var(--foreground)); font-weight: 300 !important; }
+              .dark .auth-input { color: hsl(var(--foreground)) !important; }
+              .dark .auth-input::placeholder { color: hsl(var(--muted-foreground)); opacity: 1; }
+              .dark .auth-input::-webkit-input-placeholder { color: hsl(var(--muted-foreground)); }
+              .dark .auth-input::-moz-placeholder { color: hsl(var(--muted-foreground)); opacity: 1; }
             `}</style>
 
             <div 
@@ -739,7 +749,7 @@ const Auth: React.FC = () => {
             <h1 className="auth-form-text text-xl md:text-2xl text-center mt-8 mb-12 flex flex-wrap items-center justify-center gap-x-2 gap-y-1">
               <span className="auth-form-heading-intro">Get started with</span>
               <img
-                src="/OpenFind(1).png"
+                src={isDark ? '/OpenFind-white.png' : '/OpenFind(1).png'}
                 alt="OpenFind"
                 className="h-8 md:h-9 object-contain object-left inline-block"
                 style={{ width: 'auto', maxWidth: '140px' }}
@@ -747,7 +757,7 @@ const Auth: React.FC = () => {
             </h1>
 
             {error && (
-              <div className="text-red-600 px-4 py-3 rounded-lg text-sm text-center mb-4 bg-red-50 border border-red-100">
+              <div className="text-red-600 dark:text-red-400 px-4 py-3 rounded-lg text-sm text-center mb-4 bg-red-50 dark:bg-red-950/40 border border-red-100 dark:border-red-900/50">
                 {error}
               </div>
             )}
@@ -759,7 +769,7 @@ const Auth: React.FC = () => {
               type="button"
               onClick={triggerGoogleSignIn}
               disabled={googleLoading}
-              className="auth-form-text w-full py-3 px-4 rounded-lg font-medium focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-3 bg-white border border-border hover:border-border hover:bg-muted transition-colors mt-0 mb-0"
+              className="w-full py-3 px-4 rounded-lg font-medium text-gray-900 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-3 bg-white border border-border hover:border-border hover:bg-muted transition-colors mt-0 mb-0"
             >
               <svg width="18" height="18" viewBox="0 0 18 18" className="flex-shrink-0">
                 <path fill="#4285F4" d="M17.64 9.2c0-.637-.057-1.22-.163-1.782H9v3.38h4.844c-.209 1.125-.843 2.078-1.796 2.717v2.258h2.908c1.702-1.567 2.684-3.874 2.684-6.575z"/>
@@ -771,9 +781,9 @@ const Auth: React.FC = () => {
             </button>
 
             <div className="flex items-center gap-4 mt-5 mb-5">
-              <div className="flex-1 h-px bg-gray-200" />
+              <div className="flex-1 h-px bg-border" />
               <span className="auth-form-text text-sm">OR</span>
-              <div className="flex-1 h-px bg-gray-200" />
+              <div className="flex-1 h-px bg-border" />
             </div>
 
             {/* Email field: step 1 login only - squared outline with icon */}

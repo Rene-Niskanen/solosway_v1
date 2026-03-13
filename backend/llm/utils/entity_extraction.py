@@ -259,6 +259,43 @@ def _phrase_heuristic_fallback(query: str) -> List[str]:
     return gate_phrases
 
 
+def _extract_lane_road_property_phrases(query: str) -> List[str]:
+    """
+    Extract property names from "X Lane", "X Road", "X Street" patterns.
+    E.g. "summarise the dik dik lane property" -> ["dik dik lane", "dik dik"].
+    Used so entity gating reliably filters when user asks about a specific address.
+    """
+    if not query or not query.strip():
+        return []
+    import re
+    q = query.lower().strip()
+    stopwords = get_stopwords()
+    phrases = []
+    # Match "X Lane", "X Road", "X Street" - X limited to 1-4 words to avoid grabbing whole sentence
+    for m in re.finditer(r"\b((?:\w+\s+){0,3}\w+)\s+(lane|road|street)\b", q):
+        full = m.group(0).strip()  # e.g. "dik dik lane"
+        prefix = m.group(1).strip().lower()  # e.g. "dik dik" or "the dik dik"
+        # Strip leading stopwords to get the distinctive property name (e.g. "the dik dik" -> "dik dik")
+        words = prefix.split()
+        while words and words[0] in stopwords:
+            words.pop(0)
+        distinctive = " ".join(words) if words else ""
+        # Prefer the distinctive form for gate phrases
+        to_add = distinctive if distinctive else prefix
+        if full and full not in phrases and len(full) <= 50:  # avoid whole-sentence matches
+            phrases.append(full)
+        if to_add and len(to_add) >= 2 and to_add not in get_generic_terms():
+            if not to_add.isdigit():
+                phrases.append(to_add)
+            # For "3 dik dik lane", also add "dik dik"
+            parts = to_add.split()
+            if len(parts) > 1 and parts[0].isdigit():
+                sub = " ".join(parts[1:]).strip()
+                if sub and len(sub) >= 2:
+                    phrases.append(sub)
+    return list(dict.fromkeys(phrases))  # dedupe, preserve order
+
+
 def _ensure_property_name_in_phrases(query: str, phrases: List[str]) -> List[str]:
     """
     When the query mentions a property by name (e.g. "value of the highlands property" or "value of highlands"),
@@ -269,12 +306,19 @@ def _ensure_property_name_in_phrases(query: str, phrases: List[str]) -> List[str
         return phrases
     import re
     q = query.lower().strip()
+    # First: check for "X Lane", "X Road", "X Street" - highest priority for property-specific queries
+    lane_road = _extract_lane_road_property_phrases(query)
+    if lane_road:
+        merged = lane_road + [p for p in phrases if p not in lane_road]
+        return merged
     # "value of the highlands property", "value of highlands", "the highlands property", "EPC of highlands"
     m = re.search(r"(?:value|epc|price|rent|valuation)\s+of\s+(?:the\s+)?(\w+)(?:\s+property)?", q)
     if not m:
         m = re.search(r"the\s+(\w+)\s+property", q)
     if not m:
         m = re.search(r"(?:of|for)\s+(\w+)(?:\s+property)?\s*$", q)
+    if not m:
+        m = re.search(r"(\w+(?:\s+\w+)?)\s+(?:lane|road|street)\s+property", q)  # "dik dik lane property"
     if not m:
         return phrases
     name = m.group(1).lower()
@@ -295,18 +339,28 @@ def get_entity_gate_phrases(query: str) -> List[str]:
     keyphrases (e.g. "stablecoin bill") and skips conversational words (e.g. "please").
     Fallback: spaCy NER + alias expansion, then phrase heuristic only when spaCy is available.
 
-    Returns:
-        List of lowercase strings to require in filename/summary (e.g. ["banda lane", "stablecoin bill"]).
+    CRITICAL: Queries like "summarise the dik dik lane property" always extract "dik dik lane"
+    and "dik dik" via _extract_lane_road_property_phrases so retrieval is scoped to that property.
     """
     if not query or not query.strip():
         return []
     _load_entity_gate_config()
+
+    # Always extract "X Lane", "X Road", "X Street" first - ensures property-specific queries
+    # (e.g. "dik dik lane") filter correctly even when KeyBERT returns generic phrases like "key details"
+    lane_road = _extract_lane_road_property_phrases(query)
+    if lane_road:
+        logger.debug("Entity gate phrases from Lane/Road pattern: %s", lane_road)
+
     phrases = []
     if _use_keybert:
         phrases = _get_keybert_phrases(query)
         if phrases:
             logger.debug("Entity gate phrases from KeyBERT: %s", phrases[:5])
             phrases = _ensure_property_name_in_phrases(query, phrases)
+            # Merge lane/road first if not already included
+            if lane_road:
+                phrases = lane_road + [p for p in phrases if p not in lane_road]
             return phrases
         logger.debug("KeyBERT returned no phrases; falling back to NER/heuristic")
     entities = _extract_entities_ner(query)
@@ -314,11 +368,16 @@ def get_entity_gate_phrases(query: str) -> List[str]:
         expanded = _expand_with_aliases(entities)
         if expanded:
             phrases = _ensure_property_name_in_phrases(query, expanded)
-            return phrases if phrases else expanded
+            if lane_road:
+                phrases = lane_road + [p for p in phrases if p not in lane_road]
+            return phrases if phrases else (lane_road or expanded)
     if _get_nlp() is None:
-        return []
+        return lane_road or []
     phrases = _phrase_heuristic_fallback(query)
-    return _ensure_property_name_in_phrases(query, phrases)
+    phrases = _ensure_property_name_in_phrases(query, phrases)
+    if lane_road:
+        phrases = lane_road + [p for p in phrases if p not in lane_road]
+    return phrases if phrases else lane_road
 
 
 def get_title_from_query(query: str, max_length: int = 50) -> str:

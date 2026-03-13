@@ -4524,6 +4524,37 @@ const CitationCallout: React.FC<{
     onCloseCallout?.();
   }, [onCloseCallout]);
 
+  // ⌘⏎ (Command+Enter) shortcut to Accept — same as Accept button. Chat uses Enter (not ⌘⏎) to send.
+  React.useEffect(() => {
+    if (!onCloseCallout || isCalloutClosed || isClosed) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Enter' || !e.metaKey) return;
+      e.preventDefault();
+      handleClose();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onCloseCallout, isCalloutClosed, isClosed, handleClose]);
+
+  // ⌘V shortcut to View/Close document (same as View button). Skip when focused on input so paste works.
+  const handleViewOrClose = React.useCallback(() => {
+    if (isViewedInDocument && onCloseDocument) onCloseDocument();
+    else onViewInDocument?.();
+  }, [isViewedInDocument, onCloseDocument, onViewInDocument]);
+  React.useEffect(() => {
+    if (!onViewInDocument && !(isViewedInDocument && onCloseDocument)) return;
+    if (isCalloutClosed || isClosed) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'v' || !e.metaKey) return;
+      const target = e.target as HTMLElement;
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) return;
+      e.preventDefault();
+      handleViewOrClose();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onViewInDocument, isViewedInDocument, onCloseDocument, isCalloutClosed, isClosed, handleViewOrClose]);
+
   const BAR_TRANSITION = 'opacity 0.28s cubic-bezier(0.16, 1, 0.3, 1), transform 0.28s cubic-bezier(0.16, 1, 0.3, 1)';
 
   /** Show the "Ask about this..." bar when user clicks the Ask button. */
@@ -4772,7 +4803,7 @@ const CitationCallout: React.FC<{
                                   flexShrink: 0,
                                 }}
                               >
-                                <ArrowUp size={10} strokeWidth={2.5} />
+                                <ArrowUp size={14} strokeWidth={2.5} />
                               </button>
                             )}
                           </div>
@@ -4842,6 +4873,7 @@ const CitationCallout: React.FC<{
                     {(onViewInDocument || (isViewedInDocument && onCloseDocument)) && (
                       <button
                         type="button"
+                        title={isViewedInDocument ? 'Close (⌘V)' : 'View (⌘V)'}
                         onClick={(e) => {
                           e.stopPropagation();
                           (e.currentTarget as HTMLElement).blur();
@@ -4852,30 +4884,31 @@ const CitationCallout: React.FC<{
                           display: 'flex',
                           alignItems: 'center',
                           justifyContent: 'center',
-                          gap: 4.4,
-                          padding: '3.3px 6.6px',
-                          fontSize: '12px',
+                          gap: 3.5,
+                          padding: '2.8px 5.5px',
+                          fontSize: '11px',
                           lineHeight: 1,
                           fontWeight: 500,
                           color: '#666666',
                           backgroundColor: '#ffffff',
                           border: '1px solid #d4d4d4',
-                          borderRadius: 5.5,
+                          borderRadius: 5,
                           cursor: 'pointer',
                           boxShadow: '0 1px 1px rgba(0,0,0,0.05)',
                           outline: 'none',
-                          minHeight: 26,
+                          minHeight: 22,
                         }}
                         onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#f5f5f5'; }}
                         onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#ffffff'; }}
                       >
-                        {isViewedInDocument ? 'Close' : 'View'}
+                        {isViewedInDocument ? 'Close ⌘V' : 'View ⌘V'}
                       </button>
                     )}
                     {onCloseCallout && (
                       <button
                         type="button"
                         data-citation-accept-btn
+                        title="Accept (⌘⏎)"
                         onClick={(e) => {
                           e.stopPropagation();
                           lastAcceptBtnClickY = (e.currentTarget as HTMLElement).getBoundingClientRect().top;
@@ -4887,24 +4920,24 @@ const CitationCallout: React.FC<{
                           display: 'flex',
                           alignItems: 'center',
                           justifyContent: 'center',
-                          gap: 4.4,
-                          padding: '3.3px 6.6px',
-                          fontSize: '12px',
+                          gap: 3.5,
+                          padding: '2.8px 5.5px',
+                          fontSize: '11px',
                           lineHeight: 1,
                           fontWeight: 500,
                           color: '#666666',
                           backgroundColor: '#EBF1DE',
                           border: '1px solid rgba(0,0,0,0.12)',
-                          borderRadius: 5.5,
+                          borderRadius: 5,
                           cursor: 'pointer',
                           boxShadow: '0 1px 1px rgba(0,0,0,0.05)',
                           outline: 'none',
-                          minHeight: 26,
+                          minHeight: 22,
                         }}
                         onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#E0E8D4'; }}
                         onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#EBF1DE'; }}
                       >
-                        Accept
+                        Accept ⌘⏎
                       </button>
                     )}
                   </div>
@@ -5095,7 +5128,7 @@ const CitationCallout: React.FC<{
                         flexShrink: 0,
                       }}
                     >
-                      <ArrowUp size={10} strokeWidth={2.5} />
+                      <ArrowUp size={14} strokeWidth={2.5} />
                     </button>
                         )}
                   </div>
@@ -5204,6 +5237,7 @@ const CitationCallout: React.FC<{
           <button
             type="button"
             data-citation-accept-btn
+            title="Accept (⌘⏎)"
             onClick={(e) => {
               e.stopPropagation();
               lastAcceptBtnClickY = (e.currentTarget as HTMLElement).getBoundingClientRect().top;
@@ -5215,24 +5249,24 @@ const CitationCallout: React.FC<{
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              gap: 4.4,
-              padding: '3.3px 6.6px',
-              fontSize: '12px',
+              gap: 3.5,
+              padding: '2.8px 5.5px',
+              fontSize: '11px',
               lineHeight: 1,
               fontWeight: 500,
               color: '#666666',
               backgroundColor: '#EBF1DE',
               border: '1px solid rgba(0,0,0,0.12)',
-              borderRadius: 5.5,
+              borderRadius: 5,
               cursor: 'pointer',
               boxShadow: '0 1px 1px rgba(0,0,0,0.05)',
               outline: 'none',
-              minHeight: 26,
+              minHeight: 22,
             }}
             onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#E0E8D4'; }}
             onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#EBF1DE'; }}
           >
-            Accept
+            Accept ⌘⏎
           </button>
         </div>
       )}
@@ -14565,8 +14599,7 @@ responseStartedAt: existingMessage?.responseStartedAt,
                   return updated;
                 });
               },
-              // onCitation: Accumulate citations locally (NO state updates to avoid re-render storm)
-              // Preloading happens via reasoning steps, so we just accumulate here
+              // onCitation: Accumulate citations and update message in real-time so document preview shows during streaming
               (citation: { citation_number: string | number; data: any }) => {
                 const citationNumStr = String(citation.citation_number);
                 
@@ -14592,7 +14625,6 @@ responseStartedAt: existingMessage?.responseStartedAt,
                 const finalBbox = normalizedBbox || { left: 0, top: 0, width: 0, height: 0 };
                 const docId = citation.data.doc_id ?? citation.data.document_id;
                 const pageNum = citation.data.page ?? citation.data.page_number ?? 0;
-                // Accumulate citation locally - will be applied in onComplete
                 accumulatedCitations[citationNumStr] = {
                   doc_id: docId,
                   page: pageNum,
@@ -14609,6 +14641,13 @@ responseStartedAt: existingMessage?.responseStartedAt,
                     preloadHoverPreview(docId, pageNum);
                   }
                 }
+                // Update message with citations in real-time so document preview shows during streaming
+                // For initial query, we're always active (no queryChatId yet); always update
+                setChatMessages(prev => prev.map(msg =>
+                  msg.id === loadingResponseId
+                    ? { ...msg, citations: { ...(msg.citations || {}), ...accumulatedCitations } }
+                    : msg
+                ));
               },
               undefined, // onExecutionEvent
               // citationContext: Pass structured citation metadata (hidden from user, for LLM)
@@ -16774,7 +16813,7 @@ responseStartedAt: existingMessage?.responseStartedAt,
                 }
               }
             },
-            // onCitation: Accumulate citations locally (NO state updates to avoid re-render storm)
+            // onCitation: Accumulate citations and update message in real-time so document preview shows during streaming
             (citation: { citation_number: string | number; data: any }) => {
               const citationNumStr = String(citation.citation_number);
               
@@ -16800,14 +16839,14 @@ responseStartedAt: existingMessage?.responseStartedAt,
               const finalBbox = normalizedBbox || { left: 0, top: 0, width: 0, height: 0 };
               
               const docId = citation.data.doc_id ?? citation.data.document_id;
-              // Accumulate citation locally - will be applied in onComplete
               accumulatedCitations[citationNumStr] = {
                 doc_id: docId,
                 page: citation.data.page || citation.data.page_number || 0,
                 bbox: finalBbox,
                 method: citation.data.method,
                 block_id: citation.data.block_id,
-                original_filename: citation.data.original_filename
+                original_filename: citation.data.original_filename,
+                cited_text: citation.data.cited_text
               };
               
               // Always accumulate citations in buffer (for inactive chats)
@@ -16826,6 +16865,15 @@ responseStartedAt: existingMessage?.responseStartedAt,
                 if (pageForPreview && !fn.endsWith('.docx') && !fn.endsWith('.doc')) {
                   preloadHoverPreview(docId, pageForPreview);
                 }
+              }
+              // Update message with citations in real-time so document preview shows during streaming
+              const chatIsActive = isChatActiveForQuery(queryChatId, savedChatId);
+              if (chatIsActive) {
+                setChatMessages(prev => prev.map(msg =>
+                  msg.id === loadingResponseId
+                    ? { ...msg, citations: { ...(msg.citations || {}), ...accumulatedCitations } }
+                    : msg
+                ));
               }
             },
             undefined, // onExecutionEvent
@@ -17717,7 +17765,7 @@ responseStartedAt: existingMessage?.responseStartedAt,
           width: '100%', 
           padding: '0', 
           margin: '0', 
-          marginTop: '14px', 
+          marginTop: '20px', 
           wordWrap: 'break-word',
           overflowWrap: 'break-word',
           wordBreak: 'break-word',
@@ -17736,7 +17784,7 @@ responseStartedAt: existingMessage?.responseStartedAt,
             message.isLoading && !message.text ? (
                 <ReasoningSteps key={`reasoning-${finalKey}`} steps={message.reasoningSteps ?? []} isLoading={message.isLoading} hasResponseText={!!message.text} isAgentMode={isAgentMode} skipAnimations={!!isRestored} transientStep={message.id === transientThinkingMessageId ? { message: 'Thinking' } : undefined} onAskQuestion={handleAskQuestionFromDoc} documentsForResolution={documentsForResolution} />
             ) : (
-              <div key={`thought-${finalKey}`} style={{ marginBottom: '17.6px' }}>
+              <div key={`thought-${finalKey}`} style={{ marginBottom: '24px' }}>
                 <button
                   type="button"
                   onClick={() => toggleThoughtExpanded(finalKey)}
@@ -18617,6 +18665,9 @@ responseStartedAt: existingMessage?.responseStartedAt,
             })(),
             backgroundColor: '#FFFFFF',
             boxShadow: 'none',
+            border: 'none',
+            borderRight: 'none',
+            outline: 'none',
             // Disable ALL transitions instantly when FilingSidebar/sidebar closes or resizes to prevent map showing through
             // Track previous sidebar state to detect collapse immediately
             // Use local tracking (isSidebarJustCollapsed) for immediate detection, plus props for MainContent tracking
@@ -18924,15 +18975,15 @@ responseStartedAt: existingMessage?.responseStartedAt,
             {/* Cursor-like: show ChatTabsBar at top when agent sidebar is closed — position absolute so it overlays and does NOT affect chat bar / welcome layout (matches dashboard) */}
             {useCenteredEmptyState && !isChatPanelOpen && onChatSelect && (
               <div
-                className="border-b border-black/[0.06] pr-4 pl-6"
+                className="pr-4 pl-6"
                 style={{
                   position: 'absolute',
                   top: 0,
                   left: 0,
                   right: 0,
                   backgroundColor: '#FFFFFF',
-                  paddingTop: 10,
-                  paddingBottom: 10,
+                  paddingTop: 18,
+                  paddingBottom: 8,
                   zIndex: 10002,
                   pointerEvents: 'auto',
                 }}
@@ -19306,7 +19357,7 @@ responseStartedAt: existingMessage?.responseStartedAt,
                       e.preventDefault();
                       toggleChatPanel();
                     }}
-                    className="w-8 h-8 flex items-center justify-center rounded-md hover:bg-gray-100 transition-colors"
+                    className="w-8 h-8 flex items-center justify-center rounded-md hover:bg-black/[0.04] transition-colors"
                     title="Agents Sidebar"
                     aria-label="Open agents"
                     style={{
@@ -19315,11 +19366,11 @@ responseStartedAt: existingMessage?.responseStartedAt,
                       pointerEvents: 'auto',
                     }}
                   >
-                    <PanelRight className="w-4 h-4 text-[#6B7280]" strokeWidth={1.5} />
+                    <PanelRight className="w-4 h-4 text-[#374151]" strokeWidth={1.5} />
                   </button>
                   )}
 
-                  {/* Response (reasoning trace + answer highlight) – hover popover */}
+                  {/* Response (reasoning trace + answer highlight) – click popover */}
                   {!isNewChatSection && (
                   <Popover open={displayOptionsOpen} onOpenChange={setDisplayOptionsOpen}>
                     <PopoverTrigger asChild>
@@ -19329,20 +19380,18 @@ responseStartedAt: existingMessage?.responseStartedAt,
                         aria-expanded={displayOptionsOpen}
                         title="Response – reasoning trace, highlight key points, and citations"
                         aria-label="Response options"
-                        className="w-8 h-8 flex items-center justify-center rounded-md hover:bg-gray-100 data-[state=open]:bg-gray-100 transition-colors"
+                        className="w-8 h-8 flex items-center justify-center rounded-md hover:bg-black/[0.04] data-[state=open]:bg-black/[0.04] transition-colors"
                         style={{
                           position: 'relative',
                           zIndex: 10001,
                           pointerEvents: 'auto',
                         }}
-                        onMouseEnter={handleDisplayOptionsTriggerEnter}
-                        onMouseLeave={handleDisplayOptionsTriggerLeave}
                         onClick={(e) => {
                           e.stopPropagation();
                           setDisplayOptionsOpen((prev) => !prev);
                         }}
                       >
-                        <SlidersHorizontal className="w-4 h-4 text-[#6B7280]" strokeWidth={1.5} />
+                        <SlidersHorizontal className="w-4 h-4 text-[#374151]" strokeWidth={1.5} />
                       </button>
                     </PopoverTrigger>
                     <PopoverContent
@@ -19350,8 +19399,6 @@ responseStartedAt: existingMessage?.responseStartedAt,
                       align="end"
                       side="bottom"
                       sideOffset={4}
-                      onMouseEnter={handleDisplayOptionsContentEnter}
-                      onMouseLeave={handleDisplayOptionsContentLeave}
                       onPointerDownOutside={(e) => {
                         if (responsePopoverContentRef.current?.contains(e.target as Node)) {
                           e.preventDefault();
@@ -19362,12 +19409,10 @@ responseStartedAt: existingMessage?.responseStartedAt,
                     >
                       <div
                         className="flex flex-col gap-0.5"
-                        onMouseEnter={handleDisplayOptionsContentEnter}
-                        onMouseLeave={handleDisplayOptionsContentLeave}
                       >
-                        <div className="flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 transition-colors hover:bg-[#f7f7f8]">
+                        <div className="flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 transition-colors hover:bg-black/[0.03]">
                           <div className="flex items-center gap-2 min-w-0">
-                            <BrainCircuit className="w-4 h-4 text-[#6b7280] flex-shrink-0" strokeWidth={1.6} />
+                            <BrainCircuit className="w-4 h-4 text-[#374151] flex-shrink-0" strokeWidth={1.6} />
                             <div className="text-[12px] font-medium tracking-[-0.01em] text-[#111827]">Reasoning trace</div>
                           </div>
                           <Switch
@@ -19376,59 +19421,59 @@ responseStartedAt: existingMessage?.responseStartedAt,
                             onCheckedChange={(checked) => {
                               flushSync(() => setShowReasoningTrace(checked));
                             }}
-                            className="h-4 w-7 border border-black/[0.08] bg-[#e5e7eb] shadow-none data-[state=checked]:bg-[#d1d5db] data-[state=unchecked]:bg-[#e5e7eb] [&>span]:h-3 [&>span]:w-3 [&>span]:bg-white [&>span]:data-[state=checked]:translate-x-3"
+                            className="h-4 w-7 border border-black/[0.06] bg-[#f3f4f6] shadow-none data-[state=checked]:bg-[#e5e7eb] data-[state=unchecked]:bg-[#f3f4f6] [&>span]:h-3 [&>span]:w-3 [&>span]:bg-white [&>span]:data-[state=checked]:translate-x-3"
                             aria-label="Toggle reasoning trace"
                           />
                         </div>
-                        <div className="flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 transition-colors hover:bg-[#f7f7f8]">
+                        <div className="flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 transition-colors hover:bg-black/[0.03]">
                           <div className="flex items-center gap-2 min-w-0">
-                            <Highlighter className="w-4 h-4 text-[#6b7280] flex-shrink-0" strokeWidth={1.6} />
+                            <Highlighter className="w-4 h-4 text-[#374151] flex-shrink-0" strokeWidth={1.6} />
                             <div className="text-[12px] font-medium tracking-[-0.01em] text-[#111827]">Key Points</div>
                           </div>
                           <Switch
                             checked={showHighlight}
                             onClick={(e) => e.stopPropagation()}
                             onCheckedChange={(checked) => setShowHighlight(checked)}
-                            className="h-4 w-7 border border-black/[0.08] bg-[#e5e7eb] shadow-none data-[state=checked]:bg-[#d1d5db] data-[state=unchecked]:bg-[#e5e7eb] [&>span]:h-3 [&>span]:w-3 [&>span]:bg-white [&>span]:data-[state=checked]:translate-x-3"
+                            className="h-4 w-7 border border-black/[0.06] bg-[#f3f4f6] shadow-none data-[state=checked]:bg-[#e5e7eb] data-[state=unchecked]:bg-[#f3f4f6] [&>span]:h-3 [&>span]:w-3 [&>span]:bg-white [&>span]:data-[state=checked]:translate-x-3"
                             aria-label="Toggle key points"
                           />
                         </div>
-                        <div className="flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 transition-colors hover:bg-[#f7f7f8]">
+                        <div className="flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 transition-colors hover:bg-black/[0.03]">
                           <div className="flex items-center gap-2 min-w-0">
-                            <Link2 className="w-4 h-4 text-[#6b7280] flex-shrink-0" strokeWidth={1.6} />
+                            <Link2 className="w-4 h-4 text-[#374151] flex-shrink-0" strokeWidth={1.6} />
                             <div className="text-[12px] font-medium tracking-[-0.01em] text-[#111827]">Citations</div>
                           </div>
                           <Switch
                             checked={showCitations}
                             onClick={(e) => e.stopPropagation()}
                             onCheckedChange={(checked) => setShowCitations(checked)}
-                            className="h-4 w-7 border border-black/[0.08] bg-[#e5e7eb] shadow-none data-[state=checked]:bg-[#d1d5db] data-[state=unchecked]:bg-[#e5e7eb] [&>span]:h-3 [&>span]:w-3 [&>span]:bg-white [&>span]:data-[state=checked]:translate-x-3"
+                            className="h-4 w-7 border border-black/[0.06] bg-[#f3f4f6] shadow-none data-[state=checked]:bg-[#e5e7eb] data-[state=unchecked]:bg-[#f3f4f6] [&>span]:h-3 [&>span]:w-3 [&>span]:bg-white [&>span]:data-[state=checked]:translate-x-3"
                             aria-label="Toggle citations"
                           />
                         </div>
-                        <div className="flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 transition-colors hover:bg-[#f7f7f8]">
+                        <div className="flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 transition-colors hover:bg-black/[0.03]">
                           <div className="flex items-center gap-2 min-w-0">
-                            <Captions className="w-4 h-4 text-[#6b7280] flex-shrink-0" strokeWidth={1.6} />
+                            <Captions className="w-4 h-4 text-[#374151] flex-shrink-0" strokeWidth={1.6} />
                             <div className="text-[12px] font-medium tracking-[-0.01em] text-[#111827]">Citation Preview</div>
                           </div>
                           <Switch
                             checked={showCitationPreviewBar}
                             onClick={(e) => e.stopPropagation()}
                             onCheckedChange={(checked) => setShowCitationPreviewBar(checked)}
-                            className="h-4 w-7 border border-black/[0.08] bg-[#e5e7eb] shadow-none data-[state=checked]:bg-[#d1d5db] data-[state=unchecked]:bg-[#e5e7eb] [&>span]:h-3 [&>span]:w-3 [&>span]:bg-white [&>span]:data-[state=checked]:translate-x-3"
+                            className="h-4 w-7 border border-black/[0.06] bg-[#f3f4f6] shadow-none data-[state=checked]:bg-[#e5e7eb] data-[state=unchecked]:bg-[#f3f4f6] [&>span]:h-3 [&>span]:w-3 [&>span]:bg-white [&>span]:data-[state=checked]:translate-x-3"
                             aria-label="Toggle citation preview"
                           />
                         </div>
-                        <div className="flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 transition-colors hover:bg-[#f7f7f8]">
+                        <div className="flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 transition-colors hover:bg-black/[0.03]">
                           <div className="flex items-center gap-2 min-w-0">
-                            <Quote className="w-4 h-4 text-[#6b7280] flex-shrink-0" strokeWidth={1.6} />
+                            <Quote className="w-4 h-4 text-[#374151] flex-shrink-0" strokeWidth={1.6} />
                             <div className="text-[12px] font-medium tracking-[-0.01em] text-[#111827]">Citation highlight</div>
                           </div>
                           <Switch
                             checked={showBlueCitationHighlight}
                             onClick={(e) => e.stopPropagation()}
                             onCheckedChange={(checked) => setShowBlueCitationHighlight(checked)}
-                            className="h-4 w-7 border border-black/[0.08] bg-[#e5e7eb] shadow-none data-[state=checked]:bg-[#d1d5db] data-[state=unchecked]:bg-[#e5e7eb] [&>span]:h-3 [&>span]:w-3 [&>span]:bg-white [&>span]:data-[state=checked]:translate-x-3"
+                            className="h-4 w-7 border border-black/[0.06] bg-[#f3f4f6] shadow-none data-[state=checked]:bg-[#e5e7eb] data-[state=unchecked]:bg-[#f3f4f6] [&>span]:h-3 [&>span]:w-3 [&>span]:bg-white [&>span]:data-[state=checked]:translate-x-3"
                             aria-label="Toggle citation highlight"
                           />
                         </div>
@@ -19532,7 +19577,7 @@ responseStartedAt: existingMessage?.responseStartedAt,
               style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', position: 'relative', width: '100%' }}
             >
             {useCenteredEmptyState ? (
-              /* Empty chat state - Same positioning as dashboard (shared DASHBOARD_CHAT_LAYOUT) so bar + welcome have identical vertical position */
+              /* Empty chat state - Content uses sidebar right edge; padding from sidebar for visual breathing room */
               <div
                 key="empty-chat-layout-inner"
                 ref={contentAreaRefWithWheel}
@@ -19544,7 +19589,7 @@ responseStartedAt: existingMessage?.responseStartedAt,
                   flexDirection: 'column',
                   justifyContent: 'flex-start',
                   alignItems: 'center',
-                  paddingLeft: DASHBOARD_CHAT_LAYOUT.HORIZONTAL_PADDING,
+                  paddingLeft: DASHBOARD_CHAT_LAYOUT.HORIZONTAL_PADDING_LEFT,
                   paddingRight: DASHBOARD_CHAT_LAYOUT.HORIZONTAL_PADDING,
                   paddingTop: 0,
                   paddingBottom: 0,
@@ -19563,7 +19608,7 @@ responseStartedAt: existingMessage?.responseStartedAt,
                   {emptyStateTitleMessage ? (
                     <div
                       className="w-full flex justify-center items-center gap-3"
-                      style={{ marginBottom: DASHBOARD_CHAT_LAYOUT.WELCOME_TO_BAR_GAP }}
+                      style={{ marginBottom: DASHBOARD_CHAT_LAYOUT.WELCOME_TO_BAR_GAP, flexWrap: 'wrap' }}
                     >
                       <img
                         src="/O.png"
@@ -19582,7 +19627,11 @@ responseStartedAt: existingMessage?.responseStartedAt,
                           fontSize: 'clamp(1.25rem, 3.5vw, 1.5rem)',
                           lineHeight: 1.3,
                           margin: 0,
-                          whiteSpace: 'nowrap',
+                          whiteSpace: 'normal',
+                          wordWrap: 'break-word',
+                          overflowWrap: 'break-word',
+                          minWidth: 0,
+                          maxWidth: '100%',
                         }}
                       >
                         {emptyStateTitleMessage}
@@ -19937,7 +19986,9 @@ responseStartedAt: existingMessage?.responseStartedAt,
 
                             {/* Right: Mode, Model, Voice, WebSearchPill, Send */}
                             <div className={`flex items-center gap-1.5 ${isVeryNarrowEmpty ? 'flex-wrap justify-end' : ''}`} style={{ flexShrink: 0 }}>
+                              {/* COMMENTED OUT - Agent selector (ModeSelector: Agent/Reader/Plan)
                               <ModeSelector compact={true} />
+                              */}
                               {!isVeryNarrowEmpty && <ModelSelector compact={true} />}
                               {!hideVoice && (
                                 <button
@@ -19945,7 +19996,7 @@ responseStartedAt: existingMessage?.responseStartedAt,
                                   onClick={() => {}}
                                   className="flex items-center gap-1.5 text-gray-600 transition-colors focus:outline-none outline-none hover:bg-black/[0.05]"
                                   style={{
-                                    backgroundColor: 'rgba(0, 0, 0, 0.03)',
+                                    backgroundColor: 'transparent',
                                     padding: '6px 8px',
                                     borderRadius: '8px',
                                     border: 'none',
@@ -20026,7 +20077,8 @@ responseStartedAt: existingMessage?.responseStartedAt,
                   style={{ 
                     backgroundColor: '#FFFFFF',
                     padding: '16px 0', // Simplified padding - content will be centered
-                    marginRight: '6px',
+                    marginRight: 0,
+                    borderRight: 'none',
                     scrollbarWidth: 'thin',
                     scrollbarColor: 'rgba(0, 0, 0, 0.02) transparent',
                     minWidth: 0,
@@ -20953,7 +21005,9 @@ responseStartedAt: existingMessage?.responseStartedAt,
                           className="hidden"
                           accept="image/*,.pdf,.doc,.docx,.xlsx,.xls,.pptx,.ppt"
                         />
+                        {/* COMMENTED OUT - Agent selector (ModeSelector: Agent/Reader/Plan)
                         <ModeSelector compact={true} />
+                        */}
                         {!isVeryNarrow && <ModelSelector compact={true} />}
                         {!hideVoice && (
                           <button
@@ -20961,7 +21015,7 @@ responseStartedAt: existingMessage?.responseStartedAt,
                             onClick={() => {}}
                             className="flex items-center gap-1.5 text-gray-600 transition-colors focus:outline-none outline-none hover:bg-black/[0.05]"
                             style={{
-                              backgroundColor: 'rgba(0, 0, 0, 0.03)',
+                              backgroundColor: 'transparent',
                               padding: '6px 8px',
                               borderRadius: '8px',
                               border: 'none',
@@ -21040,7 +21094,7 @@ responseStartedAt: existingMessage?.responseStartedAt,
                             const hasContent = inputValue.trim() || attachedFiles.length > 0 || propertyAttachments.length > 0;
                             
                             if (isStreaming) {
-                              // Show stop button when streaming - same size as send button to prevent layout shifts
+                              // Show stop button when streaming
                               return (
                                 <motion.button 
                                   key="stop-button"
@@ -21053,12 +21107,12 @@ responseStartedAt: existingMessage?.responseStartedAt,
                                   layout={false}
                                   className="flex items-center justify-center relative focus:outline-none outline-none"
                                   style={{
-                                    width: '30px',
-                                    height: '30px',
-                                    minWidth: '30px',
-                                    minHeight: '30px',
-                                    maxWidth: '30px',
-                                    maxHeight: '30px',
+                                    width: '24px',
+                                    height: '24px',
+                                    minWidth: '24px',
+                                    minHeight: '24px',
+                                    maxWidth: '24px',
+                                    maxHeight: '24px',
                                     borderRadius: '50%',
                                     border: 'none',
                                     backgroundColor: '#6E6E6E',
@@ -21071,7 +21125,7 @@ responseStartedAt: existingMessage?.responseStartedAt,
                                   title="Stop generating"
                                   tabIndex={0}
                                 >
-                                  <Square className="w-4 h-4" fill="#FFFFFF" stroke="#FFFFFF" strokeWidth={0} />
+                                  <Square className="w-3 h-3" fill="#FFFFFF" stroke="#FFFFFF" strokeWidth={0} />
                                 </motion.button>
                               );
                             }
@@ -21119,7 +21173,7 @@ responseStartedAt: existingMessage?.responseStartedAt,
                                     className="absolute inset-0 flex items-center justify-center"
                                     style={{ pointerEvents: 'none' }}
                                   >
-                                    <ArrowUp className="w-4 h-4" strokeWidth={2.5} style={{ color: '#ffffff' }} />
+                                    <ArrowUp className="w-5 h-5" strokeWidth={2.5} style={{ color: '#ffffff' }} />
                                   </motion.div>
                                 </motion.button>
                               );

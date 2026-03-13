@@ -213,7 +213,7 @@ export const PropertySelectorOverlay: React.FC<PropertySelectorOverlayProps> = (
               <Search size={16} style={{ color: '#9CA3AF' }} />
               <input
                 type="text"
-                placeholder="Search properties..."
+                placeholder="Search projects..."
                 value={searchQuery}
                 onChange={e => setSearchQuery(e.target.value)}
                 style={{

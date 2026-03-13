@@ -306,8 +306,9 @@ Generate the canonical summary for retrieval:"""
             embeddings_array = np.array(embeddings)
             mean_embedding = np.mean(embeddings_array, axis=0).tolist()
             
-            if len(mean_embedding) != 1024:
-                logger.error(f"❌ Mean pooled embedding dimension mismatch: expected 1024, got {len(mean_embedding)}")
+            # Accept 768 (Gemini) or 1024 (Voyage) dimensions
+            if len(mean_embedding) not in (768, 1024):
+                logger.error(f"❌ Mean pooled embedding dimension mismatch: expected 768 or 1024, got {len(mean_embedding)}")
                 return None
             
             logger.info(

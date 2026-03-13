@@ -1802,7 +1802,9 @@ export const SearchBar = forwardRef<{
                     {/* Right: Mode, Model, Voice, Panel Toggle, Document Selection, WebSearchPill, Send */}
                     <div className={`flex items-center gap-1.5 flex-shrink-0 ${isVeryNarrow ? 'flex-wrap justify-end' : ''}`} style={{ marginRight: '0' }}>
                       {/* Mode Selector, Model Selector, Voice */}
+                      {/* COMMENTED OUT - Agent selector (ModeSelector: Agent/Reader/Plan)
                       <ModeSelector compact={true} className="mr-2" />
+                      */}
                       <ModelSelector compact={true} />
                       {contextConfig.showMic && (
                         <button

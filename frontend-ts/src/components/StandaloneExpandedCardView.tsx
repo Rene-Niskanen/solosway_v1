@@ -139,12 +139,38 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
   useEffect(() => {
     setIsLocallyHidden(false);
   }, [docId]);
-  
+
+  // ⌘⏎ (Command+Enter) shortcut to Accept citation when document preview is open.
+  // No input/textarea skip: chat uses Enter (not ⌘⏎) to send, so ⌘⏎ works from anywhere including the chat input.
+  useEffect(() => {
+    if (!onAcceptCitation) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Enter' || !e.metaKey) return;
+      e.preventDefault();
+      onAcceptCitation();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onAcceptCitation]);
+
   // Instant close handler - hides immediately, then notifies parent
   const handleInstantClose = useCallback(() => {
     setIsLocallyHidden(true); // Hide immediately (local re-render returns null)
     onClose(); // Notify parent synchronously - React batches state updates
   }, [onClose]);
+
+  // ⌘V shortcut to close document preview (same as View/Close — when open, close). Skip when focused on input so paste works.
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'v' || !e.metaKey) return;
+      const target = e.target as HTMLElement;
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) return;
+      e.preventDefault();
+      handleInstantClose();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [handleInstantClose]);
   
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [blobType, setBlobType] = useState<string | null>(null);
@@ -1447,9 +1473,8 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
     const roundedChatPanelWidth = effectiveChatWidth;
     
     // CORRECT LAYOUT: Sidebar (far left) | Chat Panel (left) | Document Preview (RIGHT)
-    // Document preview is positioned AFTER sidebar AND chat panel
-    // Natural left position = sidebarWidth + chatPanelWidth + gap
-    const naturalDocLeft = sidebarWidth + roundedChatPanelWidth + 12;
+    // Document preview is positioned AFTER sidebar AND chat panel (no gap - flush against chat)
+    const naturalDocLeft = sidebarWidth + roundedChatPanelWidth;
     
     // Cap left position to ensure document preview stays on screen with minimum width
     // agentSidebarWidth already includes the 12px toggle rail; reserve right padding
@@ -1522,8 +1547,10 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
           margin: 0, // Explicitly remove any margins
           padding: 0, // Explicitly remove any padding
           borderRadius: '16px', // All corners rounded like Prism
-          boxShadow: isDark ? '0 4px 16px rgba(0, 0, 0, 0.15), 0 1px 4px rgba(0, 0, 0, 0.1)' : '0 4px 16px rgba(0, 0, 0, 0.06), 0 1px 4px rgba(0, 0, 0, 0.04)',
-          border: isDark ? 'none' : '1px solid rgba(226, 232, 240, 0.6)',
+          // No box shadow in side-by-side mode - avoids thick shadow between chat and document
+          boxShadow: isFullscreen ? (isDark ? '0 4px 16px rgba(0, 0, 0, 0.15), 0 1px 4px rgba(0, 0, 0, 0.1)' : '0 4px 16px rgba(0, 0, 0, 0.06), 0 1px 4px rgba(0, 0, 0, 0.04)') : 'none',
+          // Faint line at boundary between chat area and document preview (side-by-side mode only)
+          ...(onResizeStart && !isFullscreen ? { borderLeft: '1px solid rgba(0, 0, 0, 0.08)' } : { border: 'none' }),
           display: 'flex',
           flexDirection: 'column',
           pointerEvents: 'auto',
@@ -1567,16 +1594,16 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
         />
       )}
       
-      {/* Header - filename bar (close, PDF icon, name, fullscreen) — always light for readability */}
+      {/* Header - filename bar (close, PDF icon, name, fullscreen) — aligned with ChatTabsBar (18px from top) */}
       <div className="pr-4 pl-6 shrink-0" style={{ 
         background: '#FFFFFF',
         backgroundColor: '#FFFFFF',
         border: '4px solid #FFFFFF',
-        paddingTop: '12px',
+        paddingTop: '6px',
         paddingBottom: '8px',
         borderTopLeftRadius: isFullscreen ? 0 : '16px',
         borderTopRightRadius: isFullscreen ? 0 : '16px',
-        margin: '8px 8px 4px 8px',
+        margin: '0 8px 4px 8px',
         borderRadius: '8px'
       }}>
         <div className="flex items-center justify-between">
@@ -1683,35 +1710,37 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
                 {onClose && (
                   <button
                     type="button"
+                    title="Close (⌘V)"
                     onClick={(e) => { e.stopPropagation(); handleInstantClose(); }}
                     style={{
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'center',
-                      gap: 4.4,
-                      padding: '3.3px 6.6px',
-                      fontSize: '12px',
+                      gap: 3.5,
+                      padding: '2.8px 5.5px',
+                      fontSize: '11px',
                       lineHeight: 1,
                       fontWeight: 500,
                       color: '#666666',
                       backgroundColor: '#ffffff',
                       border: '1px solid #d4d4d4',
-                      borderRadius: 5.5,
+                      borderRadius: 5,
                       cursor: 'pointer',
                       boxShadow: '0 1px 1px rgba(0,0,0,0.05)',
                       outline: 'none',
-                      minHeight: 26,
+                      minHeight: 22,
                     }}
                     onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#f5f5f5'; }}
                     onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#ffffff'; }}
                   >
-                    Close
+                    Close ⌘V
                   </button>
                 )}
                 {onAcceptCitation && (
                   <button
                     type="button"
                     data-citation-accept-btn
+                    title="Accept (⌘⏎)"
                     onClick={(e) => {
                       e.stopPropagation();
                       (e.currentTarget as HTMLElement).blur();
@@ -1721,24 +1750,24 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'center',
-                      gap: 4.4,
-                      padding: '3.3px 6.6px',
-                      fontSize: '12px',
+                      gap: 3.5,
+                      padding: '2.8px 5.5px',
+                      fontSize: '11px',
                       lineHeight: 1,
                       fontWeight: 500,
                       color: '#666666',
                       backgroundColor: '#EBF1DE',
                       border: '1px solid rgba(0,0,0,0.12)',
-                      borderRadius: 5.5,
+                      borderRadius: 5,
                       cursor: 'pointer',
                       boxShadow: 'none',
                       outline: 'none',
-                      minHeight: 26,
+                      minHeight: 22,
                     }}
                     onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#e0e8d4'; }}
                     onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#EBF1DE'; }}
                   >
-                    Accept
+                    Accept ⌘⏎
                   </button>
                 )}
                 </div>

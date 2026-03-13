@@ -361,6 +361,11 @@ const READING_ANIMATION_DURATION = 100; // Brief animation to show "Reading" sta
 const ACTION_COLOR = '#9CA3AF';   // Light grey for "Searching", "Reading", "Read"
 const DETAIL_COLOR = '#374151';   // Dark grey for details: filenames, document card
 const FAINT_COLOR = '#9CA3AF';    // Faint when under thought dropdown and completed
+
+/** Shared typography for all reasoning step labels - consistent font size, weight, and positioning */
+const STEP_LABEL_BASE = { fontSize: '14px', fontWeight: 500 } as const;
+/** Step row layout - consistent vertical alignment */
+const STEP_ROW_STYLE = { padding: '0', marginLeft: 0, marginBottom: 0, minHeight: '20px' } as const;
 const ReadingStepWithTransition: React.FC<{
   filename: string;
   docMetadata: any;
@@ -451,12 +456,12 @@ const ReadingStepWithTransition: React.FC<{
   }, [docMetadata, onDocumentClick, keepAnimating, hasResponseText, hasSummarisingStep, hasPreparingResponseStep]); // Re-run if docMetadata changes (backend updates status) or response text appears or summarising/preparing response starts
   
   const actionStyle: React.CSSProperties = {
+    ...STEP_LABEL_BASE,
     color: thoughtCompleted ? FAINT_COLOR : ACTION_COLOR,
-    fontWeight: 500
   };
   const detailStyle: React.CSSProperties = {
+    ...STEP_LABEL_BASE,
     color: thoughtCompleted ? FAINT_COLOR : DETAIL_COLOR,
-    fontWeight: 500
   };
 
   // ALWAYS show "Reading" animation, then transition to "Read"
@@ -483,7 +488,7 @@ const ReadingStepWithTransition: React.FC<{
           // Cursor-style: "Read [filename] L1-[totalLines]" — icon + action label light, filename dark
           <>
             <BookOpenCheck style={{ width: '14px', height: '14px', color: thoughtCompleted ? FAINT_COLOR : ACTION_COLOR, flexShrink: 0 }} />
-            <span style={{ color: thoughtCompleted ? FAINT_COLOR : ACTION_COLOR, fontWeight: 500 }}>
+            <span style={{ ...STEP_LABEL_BASE, color: thoughtCompleted ? FAINT_COLOR : ACTION_COLOR }}>
               Read <span style={detailStyle}>{filename}</span>{lineRange ? ` ${lineRange}` : ''}
             </span>
           </>
@@ -532,23 +537,15 @@ const ReadingStepWithTransition: React.FC<{
 };
 
 // Initial step indicator - text only. Shimmer only when actively loading (no response text yet).
+// Matches StepRenderer planning/Thinking step layout (minHeight, no extra padding) for consistent vertical positioning.
 const ThinkingIndicator: React.FC<{ shimmer?: boolean }> = ({ shimmer = true }) => (
-  <div
-    style={{
-      fontSize: '14px',
-      fontWeight: 500,
-      lineHeight: 1.35,
-      padding: '2px 0',
-      display: 'inline-flex',
-      alignItems: 'center'
-    }}
-  >
+  <span style={{ display: 'inline-flex', alignItems: 'center', minHeight: '20px' }}>
     {shimmer ? (
-      <span className="planning-shimmer-full">Thinking</span>
+      <span className="ranking-shimmer-active">Thinking</span>
     ) : (
-      <span style={{ color: ACTION_COLOR, fontWeight: 500 }}>Thinking</span>
+      <span style={{ ...STEP_LABEL_BASE, color: ACTION_COLOR }}>Thinking</span>
     )}
-  </div>
+  </span>
 );
 
 // Individual step renderer based on action type
@@ -576,24 +573,23 @@ const StepRenderer: React.FC<{
   const actionColor = thoughtCompleted ? FAINT_COLOR : ACTION_COLOR;
   const detailColor = thoughtCompleted ? FAINT_COLOR : DETAIL_COLOR;
   const actionStyle: React.CSSProperties = {
+    ...STEP_LABEL_BASE,
     color: actionColor,
-    fontWeight: 500,
-    fontSize: '14px'
   };
 
   const targetStyle: React.CSSProperties = {
+    ...STEP_LABEL_BASE,
     color: detailColor,
-    fontWeight: 500
   };
 
   const highlightStyle: React.CSSProperties = {
+    ...STEP_LABEL_BASE,
     color: detailColor,
-    fontWeight: 500
   };
 
   const docNameStyle: React.CSSProperties = {
+    ...STEP_LABEL_BASE,
     color: detailColor,
-    fontWeight: 500
   };
 
   // PERFORMANCE OPTIMIZATION: Reduced animation delay for faster UI
@@ -627,7 +623,7 @@ const StepRenderer: React.FC<{
               }} />
             </div>
           )}
-          <span style={{ color: isError ? '#ef4444' : detailColor, fontWeight: 500 }}>
+          <span style={{ ...STEP_LABEL_BASE, color: isError ? '#ef4444' : detailColor }}>
             {step.message}
           </span>
         </div>
@@ -670,7 +666,7 @@ const StepRenderer: React.FC<{
       return (
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
           <span style={actionStyle}>{analysingMatch[1]}</span>
-          <span style={{ color, fontWeight: 500 }}>{rest ? ensureSingleColon(rest) : ''}</span>
+          <span style={{ ...STEP_LABEL_BASE, color }}>{rest ? ensureSingleColon(rest) : ''}</span>
         </span>
       );
     }
@@ -678,7 +674,7 @@ const StepRenderer: React.FC<{
       return (
         <span>
           <span style={actionStyle}>{foundMatch[1]}</span>
-          <span style={{ color, fontWeight: 500 }}> {ensureSingleColon(foundMatch[2])}</span>
+          <span style={{ ...STEP_LABEL_BASE, color }}> {ensureSingleColon(foundMatch[2])}</span>
         </span>
       );
     }
@@ -687,7 +683,7 @@ const StepRenderer: React.FC<{
       return (
         <span>
           <span style={actionStyle}>{findingMatch[1]}</span>
-          <span style={{ color, fontWeight: 500 }}> {findingMatch[2]}</span>
+          <span style={{ ...STEP_LABEL_BASE, color }}> {findingMatch[2]}</span>
         </span>
       );
     }
@@ -725,7 +721,7 @@ const StepRenderer: React.FC<{
             {isAccessingActive ? (
               <span className="ranking-shimmer-active">Accessing files</span>
             ) : (
-              <span style={{ color: accessingColor, fontWeight: 500 }}>Accessing files</span>
+              <span style={{ ...STEP_LABEL_BASE, color: accessingColor }}>Accessing files</span>
             )}
           </span>
         );
@@ -739,7 +735,7 @@ const StepRenderer: React.FC<{
       const isRetrievedPassagesStep = step.step === 'found_sections' || /Retrieved\s+\d+\s+passage/i.test((step.message || '').trim());
       const isFindingStep = /^Finding\s+/i.test((step.message || '').trim());
       const foundActionColor = thoughtCompleted ? FAINT_COLOR : ACTION_COLOR;
-      const foundActionStyle = { color: foundActionColor, fontWeight: 500 as const };
+      const foundActionStyle = { ...STEP_LABEL_BASE, color: foundActionColor };
       const foundDetailColor = foundActionColor;
 
       const colonIndex = step.message.indexOf(': ');
@@ -1244,7 +1240,7 @@ const StepRenderer: React.FC<{
           borderRadius: '6px',
           border: '1px solid rgba(0, 0, 0, 0.08)',
           backgroundColor: 'transparent',
-          marginLeft: '-2px', // Align with vertical line
+          marginLeft: 0,
           position: 'relative',
           zIndex: 2, // Above the vertical line
         }}>
@@ -1256,7 +1252,7 @@ const StepRenderer: React.FC<{
             strokeWidth: 2.5 
           }} />
           {isOpeningActive ? (
-            <span className="agent-opening-shimmer-active" style={{ fontSize: '14px', fontWeight: 500 }}>{step.message || 'Opening citation view'}</span>
+            <span className="agent-opening-shimmer-active" style={{ ...STEP_LABEL_BASE }}>{step.message || 'Opening citation view'}</span>
           ) : (
             <span style={{ color: detailColor, fontWeight: 500, fontSize: '14px' }}>{step.message || 'Opening citation view'}</span>
           )}
@@ -1275,7 +1271,7 @@ const StepRenderer: React.FC<{
           borderRadius: '6px',
           border: '1px solid rgba(0, 0, 0, 0.08)',
           backgroundColor: 'transparent',
-          marginLeft: '-2px', // Align with vertical line
+          marginLeft: 0,
           position: 'relative',
           zIndex: 2, // Above the vertical line
         }}>
@@ -1287,7 +1283,7 @@ const StepRenderer: React.FC<{
             strokeWidth: 2.5 
           }} />
           {isHighlightingActive ? (
-            <span className="agent-opening-shimmer-active" style={{ fontSize: '14px', fontWeight: 500 }}>{step.message || 'Highlighting content'}</span>
+            <span className="agent-opening-shimmer-active" style={{ ...STEP_LABEL_BASE }}>{step.message || 'Highlighting content'}</span>
           ) : (
             <span style={{ color: detailColor, fontWeight: 500, fontSize: '14px' }}>{step.message || 'Highlighting content'}</span>
           )}
@@ -1306,7 +1302,7 @@ const StepRenderer: React.FC<{
           borderRadius: '6px',
           border: '1px solid rgba(251, 191, 36, 0.4)',
           backgroundColor: 'rgba(251, 191, 36, 0.08)',
-          marginLeft: '-2px',
+          marginLeft: 0,
           position: 'relative',
           zIndex: 2,
         }}>
@@ -1318,7 +1314,7 @@ const StepRenderer: React.FC<{
             strokeWidth: 2.5 
           }} />
           {isNavigatingActive ? (
-            <span className="agent-opening-shimmer-active" style={{ fontSize: '14px' }}>{step.message || 'Navigating to property'}</span>
+            <span className="agent-opening-shimmer-active" style={{ ...STEP_LABEL_BASE }}>{step.message || 'Navigating to property'}</span>
           ) : (
             <span style={{ color: '#D97706', fontWeight: 500, fontSize: '14px' }}>{step.message || 'Navigating to property'}</span>
           )}
@@ -1337,7 +1333,7 @@ const StepRenderer: React.FC<{
           borderRadius: '6px',
           border: '1px solid rgba(251, 191, 36, 0.4)',
           backgroundColor: 'rgba(251, 191, 36, 0.08)',
-          marginLeft: '-2px',
+          marginLeft: 0,
           position: 'relative',
           zIndex: 2,
         }}>
@@ -1349,7 +1345,7 @@ const StepRenderer: React.FC<{
             strokeWidth: 2.5 
           }} />
           {isOpeningMapActive ? (
-            <span className="agent-opening-shimmer-active" style={{ fontSize: '14px' }}>{step.message || 'Opening map view'}</span>
+            <span className="agent-opening-shimmer-active" style={{ ...STEP_LABEL_BASE }}>{step.message || 'Opening map view'}</span>
           ) : (
             <span style={{ color: '#D97706', fontWeight: 500, fontSize: '14px' }}>{step.message || 'Opening map view'}</span>
           )}
@@ -1368,7 +1364,7 @@ const StepRenderer: React.FC<{
           borderRadius: '6px',
           border: '1px solid rgba(251, 191, 36, 0.4)',
           backgroundColor: 'rgba(251, 191, 36, 0.08)',
-          marginLeft: '-2px',
+          marginLeft: 0,
           position: 'relative',
           zIndex: 2,
         }}>
@@ -1380,7 +1376,7 @@ const StepRenderer: React.FC<{
             strokeWidth: 2.5 
           }} />
           {isSelectingPinActive ? (
-            <span className="agent-opening-shimmer-active" style={{ fontSize: '14px' }}>{step.message || 'Selecting property pin'}</span>
+            <span className="agent-opening-shimmer-active" style={{ ...STEP_LABEL_BASE }}>{step.message || 'Selecting property pin'}</span>
           ) : (
             <span style={{ color: '#D97706', fontWeight: 500, fontSize: '14px' }}>{step.message || 'Selecting property pin'}</span>
           )}
@@ -1893,11 +1889,34 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
   }, [displayItems, isLoading, hasResponseText, displayedStepIndex]);
 
   const [documentsDropdownStepKey, setDocumentsDropdownStepKey] = useState<string | null>(null);
+
+  // Stabilize vertical positioning: when steps change during loading (stagger mode), prevent container from shrinking
+  const stepContentRef = useRef<HTMLDivElement>(null);
+  const [stepContainerMinHeight, setStepContainerMinHeight] = useState<number | null>(null);
+  const isStaggerMode = isLoading && !hasResponseText && effectiveDisplayItems.length > 0;
+  useEffect(() => {
+    if (!isStaggerMode) {
+      setStepContainerMinHeight(null);
+      return;
+    }
+    const el = stepContentRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      for (const e of entries) {
+        const h = e.contentRect.height;
+        if (h > 0) {
+          setStepContainerMinHeight((prev) => (prev == null ? h : Math.max(prev, h)));
+        }
+      }
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [isStaggerMode, effectiveDisplayItems.length]);
   
   // When no steps at all, show ThinkingIndicator. When we have steps (even just one), use main render so replacement display works
   if (!filteredSteps || filteredSteps.length === 0) {
     // Show planning indicator when loading but no steps yet, or when the only step is "Planning next moves"
-    // Using one consistent block avoids: appear in one place → then move up when the planning step arrives
+    // Use same structure as step rows (flex column + step row div) for consistent vertical positioning when first step arrives
     // Never shimmer when response text has arrived (covers race where isLoading may lag)
     if (isLoading) {
       return (
@@ -1914,10 +1933,14 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
             border: 'none',
             position: 'relative',
             contain: 'layout style',
-            minHeight: '20px'
+            minHeight: '1px'
           }}
         >
-          <ThinkingIndicator shimmer={!hasResponseText} />
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 0, lineHeight: 1.2, alignItems: 'flex-start' }}>
+            <div style={{ fontSize: '14px', color: DETAIL_COLOR, padding: '0', lineHeight: 1.2, position: 'relative', marginBottom: 0, minHeight: '20px', flexShrink: 0 }}>
+              <ThinkingIndicator shimmer={!hasResponseText} />
+            </div>
+          </div>
           
           {/* CSS for shimmer animations */}
           <style>{`
@@ -2135,11 +2158,34 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
     }}>
       {/* When loading: show full accumulated trace (all steps so far), same as when done. Planning indicator only when no steps yet. */}
       {isLoading && !hasSteps ? (
-        <div key="reasoning-steps-planning-only" style={{ fontSize: '14px', color: DETAIL_COLOR, padding: '0', lineHeight: 1.35 }}>
-          <ThinkingIndicator shimmer={!hasResponseText} />
+        <div
+          ref={stepContentRef}
+          key="reasoning-steps-static"
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 0,
+            lineHeight: 1.2,
+            alignItems: 'flex-start'
+          }}
+        >
+          <div style={{ fontSize: '14px', color: DETAIL_COLOR, padding: '0', lineHeight: 1.2, position: 'relative', marginBottom: 0, minHeight: '20px', flexShrink: 0 }}>
+            <ThinkingIndicator shimmer={!hasResponseText} />
+          </div>
         </div>
       ) : (
-        <div key="reasoning-steps-static" style={{ display: 'flex', flexDirection: 'column', gap: '2px', lineHeight: 1.2 }}>
+        <div
+          ref={stepContentRef}
+          key="reasoning-steps-static"
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 0,
+            lineHeight: 1.2,
+            alignItems: 'flex-start',
+            minHeight: isStaggerMode && stepContainerMinHeight != null ? stepContainerMinHeight : undefined
+          }}
+        >
           {effectiveDisplayItems.map((displayItem) => {
             if (displayItem.kind === 'group') {
               const groupKey = generateAnimatePresenceKey('ReasoningStep', displayItem.exploringStepIndex, displayItem.exploringStep.details?.doc_previews?.length ?? 0, 'exploring-group');

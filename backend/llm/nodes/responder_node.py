@@ -25,6 +25,7 @@ from backend.llm.utils.node_logging import log_node_perf
 from backend.llm.nodes.agent_node import generate_conversational_answer, extract_chunk_citations_from_messages, get_document_filename
 from backend.llm.contracts.validators import validate_responder_output
 from backend.llm.config import config
+from backend.llm.utils.model_factory import get_llm
 from backend.llm.prompts import _get_main_answer_tagging_rule, ensure_main_tags_when_missing
 from backend.llm.prompts.responder import (
     get_responder_fact_mapping_system_prompt,
@@ -2233,11 +2234,8 @@ async def generate_conversational_answer_with_citations(
     When conversation_context is non-empty, it is prepended to the human message as "Previous exchange".
     """
     # Temperature 0.38: slight increase for more natural variation; revert if responses become inconsistent or repetitive (see plan: conversational responses).
-    llm = ChatOpenAI(
-        model=config.openai_model,
-        temperature=0.38,
-        max_tokens=4096  # Avoid mid-sentence cutoff; 2000 was too low for full answers
-    )
+    model_preference = (state or {}).get("model_preference")
+    llm = get_llm(model_preference, temperature=0.38, max_tokens=4096)
 
     metadata_section = _build_metadata_table_section(metadata_lookup_tables or {})
 
@@ -2307,7 +2305,7 @@ Is this the first message in the conversation? {is_first_message}
 {formatted_chunks}
 {metadata_section}
 """
-    instructions = "- Answer based on the content above. Use the block-tagged document content from search as the primary source for the answer. For each fact you use, cite it as [ID: X](BLOCK_CITE_ID_N). Cite every fact, figure, date, or value drawn from the document content. For summaries, cite all key facts — not just the one the user explicitly asked about. Do not cite blocks that only mention a topic without stating a fact. If you use the retrieved document context, ground the fact back to the matching block-tagged document content and cite that block.\n- RELEVANCE FILTER: You may receive content from multiple documents. Only use content that is directly relevant to the user's question. If the user asks to summarise a lease, ignore chunks from valuation reports, surveys, or other unrelated documents. If the user asks about a valuation, ignore lease clauses. Never mix content from unrelated documents into a single answer. When in doubt, check whether a chunk's subject matter matches what the user asked about — if it does not, skip it entirely."
+    instructions = "- Answer based on the content above. Use the block-tagged document content from search as the primary source for the answer. For each fact you use, cite it as [ID: X](BLOCK_CITE_ID_N). Cite every fact, figure, date, or value drawn from the document content. For summaries, cite all key facts — not just the one the user explicitly asked about. Do not cite blocks that only mention a topic without stating a fact. If you use the retrieved document context, ground the fact back to the matching block-tagged document content and cite that block.\n- RELEVANCE FILTER: You may receive content from multiple documents. Only use content that is directly relevant to the user's question. PROPERTY MATCH (CRITICAL): If the user asks about a specific property by name (e.g. Dik Dik Lane, Banda Lane), use ONLY content from documents about that property. Do NOT use or present information from documents about a different property. If the user asked about Dik Dik Lane and a chunk describes Banda Lane, skip it. The response title and all facts must match the property the user asked about. If no excerpts are about the asked-for property, say so clearly. Document type: If the user asks to summarise a lease, ignore valuation reports or surveys. If the user asks about a valuation, ignore lease clauses. Never mix content from unrelated documents into a single answer."
     if research_notes_instruction and research_notes_instruction.strip():
         instructions = instructions + research_notes_instruction.strip()
     if paste_section:
@@ -2376,7 +2374,7 @@ The lease runs for **12 months**, from **10 July 2023** to **10 July 2024**[ID: 
     except Exception as e:
         logger.warning(f"[RESPONDER] Structured output failed, using default personality: {e}")
         # Fallback: invoke without structured output and return default personality
-        fallback_llm = ChatOpenAI(model=config.openai_model, temperature=0.38, max_tokens=4096)
+        fallback_llm = get_llm(model_preference, temperature=0.38, max_tokens=4096)
         response = await fallback_llm.ainvoke([system_prompt, human_message])
         answer_text = response.content if hasattr(response, 'content') and response.content else ""
         answer_text = _strip_mid_response_generic_closings(answer_text)
@@ -2507,6 +2505,7 @@ async def generate_answer_with_direct_citations(
                 rewritten_response = await generate_citation_preserving_final_answer(
                     user_query,
                     draft_response,
+                    model_preference=(state or {}).get("model_preference"),
                 )
                 if rewritten_response and _rewrite_preserves_block_citations(draft_response, rewritten_response):
                     llm_response = _strip_mid_response_generic_closings(rewritten_response)
@@ -2585,7 +2584,9 @@ async def generate_answer_with_direct_citations(
         if chunks_metadata:
             chunk_texts = [chunk.get('chunk_text', '') for chunk in chunks_metadata if chunk.get('chunk_text')]
             formatted_chunk_text = "\n\n---\n\n".join(chunk_texts)
-            fallback_answer = await generate_conversational_answer(user_query, formatted_chunk_text)
+            fallback_answer = await generate_conversational_answer(
+                user_query, formatted_chunk_text, model_preference=(state or {}).get("model_preference")
+            )
             return fallback_answer, [], DEFAULT_PERSONALITY_ID
         return "I encountered an error while generating the answer. Please try again.", [], DEFAULT_PERSONALITY_ID
 
@@ -2593,6 +2594,7 @@ async def generate_answer_with_direct_citations(
 async def generate_citation_preserving_final_answer(
     user_query: str,
     cited_draft: str,
+    model_preference: Optional[str] = None,
 ) -> str:
     """
     Rewrite a citation-complete responder draft into a polished final answer.
@@ -2602,12 +2604,7 @@ async def generate_citation_preserving_final_answer(
     """
     system_content = get_responder_final_write_system_prompt()
     human_content = get_responder_final_write_human_prompt(user_query, cited_draft)
-    llm = ChatOpenAI(
-        api_key=config.openai_api_key,
-        model=config.openai_model,
-        temperature=0,
-        max_tokens=4096,
-    )
+    llm = get_llm(model_preference, temperature=0, max_tokens=4096)
     response = await llm.ainvoke([
         SystemMessage(content=system_content),
         HumanMessage(content=human_content),
@@ -2620,13 +2617,12 @@ async def generate_formatted_answer(
     prior_turn_content: Optional[str],
     execution_results: List[Dict[str, Any]],
     format_instruction: str,
+    model_preference: Optional[str] = None,
 ) -> str:
     """
     Combine prior answer and/or new retrieval into one block formatted per format_instruction.
     Used for refine/format flows (e.g. "make that into a concise paragraph").
     """
-    from langchain_openai import ChatOpenAI
-
     prior_block = ""
     if prior_turn_content and prior_turn_content.strip():
         prior_block = f"<prior_answer>\n{prior_turn_content.strip()}\n</prior_answer>\n\n"
@@ -2643,7 +2639,7 @@ async def generate_formatted_answer(
         user_query, format_instruction, prior_block, new_block
     )
 
-    llm = ChatOpenAI(api_key=config.openai_api_key, model=config.openai_model, temperature=0)
+    llm = get_llm(model_preference, temperature=0)
     response = await llm.ainvoke([SystemMessage(content=system_content), HumanMessage(content=user_content)])
     answer = (response.content or "").strip()
     return _strip_mid_response_generic_closings(answer)
@@ -2688,7 +2684,8 @@ async def responder_node(state: MainWorkflowState, runnable_config=None) -> Main
             emitter.emit_reasoning(label="Formatting", detail=format_instruction[:60])
         try:
             formatted_answer = await generate_formatted_answer(
-                user_query, prior_turn_content, execution_results, format_instruction
+                user_query, prior_turn_content, execution_results, format_instruction,
+                model_preference=state.get("model_preference"),
             )
             formatted_answer = ensure_main_tags_when_missing(formatted_answer, user_query)
             responder_output = {
@@ -2857,7 +2854,9 @@ async def responder_node(state: MainWorkflowState, runnable_config=None) -> Main
             try:
                 chunk_texts = [chunk.get('chunk_text', '') for chunk in chunks_metadata if chunk.get('chunk_text')]
                 formatted_chunk_text = "\n\n---\n\n".join(chunk_texts)
-                fallback_answer = await generate_conversational_answer(user_query, formatted_chunk_text)
+                fallback_answer = await generate_conversational_answer(
+                    user_query, formatted_chunk_text, model_preference=state.get("model_preference")
+                )
                 error_answer = fallback_answer
             except Exception as fallback_error:
                 logger.error(f"[RESPONDER] ❌ Fallback also failed: {fallback_error}", exc_info=True)
@@ -2903,10 +2902,9 @@ async def responder_node(state: MainWorkflowState, runnable_config=None) -> Main
         if emitter:
             emitter.emit_reasoning(label="Generating answer from web sources", detail=None)
 
-        from langchain_openai import ChatOpenAI as _ChatOpenAI
         from langchain_core.messages import HumanMessage as _HumanMessage, SystemMessage as _SystemMessage
         try:
-            web_llm = _ChatOpenAI(api_key=config.openai_api_key, model=config.openai_model, temperature=0)
+            web_llm = get_llm(state.get("model_preference"), temperature=0)
             from backend.llm.prompts.output_formatting import OUTPUT_FORMATTING_RULES as _OFR
             web_system = (
                 "You are a helpful assistant. Answer the user's question using ONLY the web sources provided below. "

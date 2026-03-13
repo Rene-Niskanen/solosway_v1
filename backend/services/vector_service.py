@@ -23,17 +23,44 @@ from .section_header_extractor import (
 
 logger = logging.getLogger(__name__)
 
+def _l2_normalize_embedding(vec: List[float]) -> List[float]:
+    """L2-normalize embedding for cosine similarity (required for Gemini 768/1536 dims)."""
+    import numpy as np
+    arr = np.array(vec, dtype=np.float32)
+    norm = np.linalg.norm(arr)
+    if norm < 1e-10:
+        return vec
+    return (arr / norm).tolist()
+
+
 class SupabaseVectorService:
     """Service for managing vector embeddings in Supabase with pgvector"""
     
     def __init__(self):
         self.supabase: Client = get_supabase_client()
         
-        # Check if using Voyage AI or OpenAI
-        use_voyage = os.environ.get('USE_VOYAGE_EMBEDDINGS', 'true').lower() == 'true'
+        # Priority: Gemini > Voyage > OpenAI
+        use_gemini = os.environ.get('USE_GEMINI_EMBEDDINGS', 'false').lower() == 'true'
+        gemini_api_key = os.environ.get('GEMINI_API_KEY', '')
         
-        if use_voyage:
-            # Initialize Voyage AI for embeddings
+        if use_gemini and gemini_api_key:
+            # Initialize Google Gemini for embeddings
+            try:
+                from google import genai
+                from google.genai import types
+                self._genai = genai
+                self._genai_types = types
+                self.gemini_client = genai.Client(api_key=gemini_api_key)
+                self.embedding_model = os.environ.get('GEMINI_EMBEDDING_MODEL', 'models/gemini-embedding-2-preview')
+                self.embedding_dimension = int(os.environ.get('GEMINI_EMBEDDING_DIMENSION', '768'))
+                self.use_gemini = True
+                self.use_voyage = False
+                logger.info(f"Using Gemini embeddings: {self.embedding_model} ({self.embedding_dimension} dimensions)")
+            except ImportError:
+                raise ImportError("google-genai package not installed. Run: pip install google-genai")
+        elif use_voyage := os.environ.get('USE_VOYAGE_EMBEDDINGS', 'true').lower() == 'true':
+            # Initialize Voyage AI for embeddings (when Gemini not enabled)
+            self.use_gemini = False
             self.voyage_api_key = os.environ.get('VOYAGE_API_KEY')
             if not self.voyage_api_key:
                 raise ValueError("VOYAGE_API_KEY environment variable is required when USE_VOYAGE_EMBEDDINGS=true")
@@ -47,8 +74,9 @@ class SupabaseVectorService:
                 logger.info(f"Using Voyage AI embeddings: {self.embedding_model} ({self.embedding_dimension} dimensions)")
             except ImportError:
                 raise ImportError("voyageai package not installed. Run: pip install voyageai")
-        else:
-            # Initialize OpenAI for embeddings (fallback)
+        elif not self.use_gemini:
+            # Initialize OpenAI for embeddings (fallback) — only when not using Gemini
+            self.use_gemini = False
             self.openai_api_key = os.environ.get('OPENAI_API_KEY')
             if not self.openai_api_key:
                 raise ValueError("OPENAI_API_KEY environment variable is required")
@@ -74,12 +102,13 @@ class SupabaseVectorService:
         self.document_vectors_table = "document_vectors"
         self.property_vectors_table = "property_vectors"
     
-    def create_embeddings(self, text_chunks: List[str]) -> List[List[float]]:
+    def create_embeddings(self, text_chunks: List[str], task_type: str = "RETRIEVAL_DOCUMENT") -> List[List[float]]:
         """
-        Generate embeddings using Voyage AI or OpenAI
+        Generate embeddings using Gemini, Voyage AI, or OpenAI.
         
         Args:
             text_chunks: List of text chunks to embed
+            task_type: For Gemini only - "RETRIEVAL_DOCUMENT" (chunks) or "RETRIEVAL_QUERY" (queries)
             
         Returns:
             List of embedding vectors
@@ -88,7 +117,33 @@ class SupabaseVectorService:
             if not text_chunks:
                 return []
             
-            if self.use_voyage:
+            if self.use_gemini:
+                # Use Google Gemini embeddings (task-specific: RETRIEVAL_DOCUMENT or RETRIEVAL_QUERY)
+                batch_size = 100
+                all_embeddings = []
+                for i in range(0, len(text_chunks), batch_size):
+                    batch = text_chunks[i:i + batch_size]
+                    result = self.gemini_client.models.embed_content(
+                        model=self.embedding_model,
+                        contents=batch,
+                        config=self._genai_types.EmbedContentConfig(
+                            task_type=task_type,
+                            output_dimensionality=self.embedding_dimension,
+                        ),
+                    )
+                    for emb_obj in (result.embeddings or []):
+                        vals = getattr(emb_obj, "values", emb_obj)
+                        if isinstance(vals, list):
+                            lst = vals
+                        else:
+                            lst = list(vals) if vals and hasattr(vals, "__iter__") and not isinstance(vals, str) else []
+                        if lst:
+                            all_embeddings.append(_l2_normalize_embedding(lst))
+                        else:
+                            logger.warning("Gemini returned empty embedding, skipping")
+                logger.debug(f"Generated {len(all_embeddings)} embeddings using Gemini ({self.embedding_model})")
+                return all_embeddings
+            elif self.use_voyage:
                 # Use Voyage AI
                 # Voyage AI can handle larger batches, but we'll use 100 to be safe
                 # Tier 1 (payment method added): 2000 RPM - default 0.1s between batches
@@ -1675,8 +1730,8 @@ class SupabaseVectorService:
             List of matching document chunks
         """
         try:
-            # Generate embedding for query
-            query_embeddings = self.create_embeddings([query])
+            # Generate embedding for query (RETRIEVAL_QUERY for Gemini task-specific optimization)
+            query_embeddings = self.create_embeddings([query], task_type="RETRIEVAL_QUERY")
             if not query_embeddings:
                 return []
             
@@ -1716,8 +1771,8 @@ class SupabaseVectorService:
             List of matching property chunks
         """
         try:
-            # Generate embedding for query
-            query_embeddings = self.create_embeddings([query])
+            # Generate embedding for query (RETRIEVAL_QUERY for Gemini task-specific optimization)
+            query_embeddings = self.create_embeddings([query], task_type="RETRIEVAL_QUERY")
             if not query_embeddings:
                 return []
             

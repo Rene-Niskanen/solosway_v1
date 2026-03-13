@@ -19,10 +19,10 @@ The LLM sees tool results and decides what to do next.
 
 import logging
 from typing import Optional
-from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from backend.llm.config import config
+from backend.llm.utils.model_factory import get_llm
 from backend.llm.types import MainWorkflowState
 from backend.llm.prompts import _get_main_answer_tagging_rule, ensure_main_tags_when_missing
 from backend.llm.prompts.agent import (
@@ -187,10 +187,12 @@ def extract_chunk_citations_from_messages(messages: list) -> list:
     
     return citations
 
-async def generate_conversational_answer(user_query: str, chunk_text: str) -> str:
+async def generate_conversational_answer(
+    user_query: str, chunk_text: str, model_preference: Optional[str] = None
+) -> str:
     """
     Generate conversational, intent-aware answer from chunk text only.
-    
+
     This function:
     - Receives ONLY chunk text (no metadata, filenames, IDs)
     - Uses intent-aware answer contract
@@ -202,11 +204,7 @@ async def generate_conversational_answer(user_query: str, chunk_text: str) -> st
     system_prompt = SystemMessage(content=get_agent_chip_system_prompt(main_tagging_rule))
     user_prompt = get_agent_chip_user_prompt(user_query, chunk_text)
 
-    llm = ChatOpenAI(
-        api_key=config.openai_api_key,
-        model=config.openai_model,
-        temperature=0.3,  # Slightly higher for more natural responses
-    )
+    llm = get_llm(model_preference, temperature=0.3)
     
     try:
         response = await llm.ainvoke([system_prompt, HumanMessage(content=user_prompt)])
@@ -426,11 +424,7 @@ The user has attached a **property** (e.g. a property pin or project). You must 
     logger.info(f"[AGENT_NODE] Agent has {len(all_tools)} tools available (including plan_step and chunk citation tool)")
     
     # Create LLM with tools bound
-    llm = ChatOpenAI(
-        api_key=config.openai_api_key,
-        model=config.openai_model,
-        temperature=0,
-    ).bind_tools(all_tools, tool_choice="auto")
+    llm = get_llm(state.get("model_preference"), temperature=0).bind_tools(all_tools, tool_choice="auto")
     
     logger.info("[AGENT_NODE] Invoking LLM with full message history...")
     
@@ -467,7 +461,9 @@ The user has attached a **property** (e.g. a property pin or project). You must 
             # Chunks exist - use conversational answer generation (metadata hidden from answer LLM)
             logger.info("[AGENT_NODE] ✅ Chunks detected - using conversational answer generation (metadata hidden)")
             user_query = state.get("user_query", "")
-            conversational_answer = await generate_conversational_answer(user_query, chunk_text)
+            conversational_answer = await generate_conversational_answer(
+                user_query, chunk_text, model_preference=state.get("model_preference")
+            )
             
             # Create clean AIMessage with conversational answer
             from langchain_core.messages import AIMessage

@@ -53,6 +53,7 @@ import {
   CHAT_BAR_MAX_WIDTH_PX,
   DASHBOARD_CHAT_LAYOUT,
   getInputBarFixedContainerStyles,
+  SIDEBAR_TO_BAR_GAP_PX,
 } from '@/utils/inputBarPosition';
 import { useChatHistory } from './ChatHistoryContext';
 import { useBrowserFullscreen } from '../contexts/BrowserFullscreenContext';
@@ -2834,14 +2835,14 @@ export const MainContent = ({
     console.log('🔄 MainContent: New agent requested - cleared restoreChatId and triggered newAgentTrigger');
   }, []);
 
-  // File View modal: "View Document" → open FilingSidebar (file list) then open doc in 50/50 panel so layout is sidebar + document preview
+  // File View modal: "View Document" → close FilingSidebar and open doc in 50/50 panel (chat + document preview)
   // Must navigate to search + set visibility flags so chat panel appears and document preview renders (same as search modal's open file)
   const handleFileViewDocument = React.useCallback((docId: string, filename: string) => {
     const label = filename || 'Document';
     openingFromViewDocumentRef.current = true; // Prevent currentView effect from resetting map/chat when navigating from Projects etc.
     // CRITICAL: Set parent map visibility FIRST (same as Map button) so dashboard hides and effects don't reset our state
     onMapVisibilityChange?.(true);
-    openFilingSidebar(); // Ensure sidebar is open (file list on left)
+    closeSidebar(); // Close filing sidebar so user focuses on document in 50/50 panel
     setFileViewDocument(null); // Close the pop-up modal
     // Navigate to search and show chat so 50/50 layout works (without this, document doesn't open when on dashboard)
     onNavigate?.('search');
@@ -2852,7 +2853,7 @@ export const MainContent = ({
     if (activeChatId) {
       openDocumentForChat(activeChatId, { docId, filename: label });
     }
-  }, [openFilingSidebar, openExpandedCardView, activeChatId, openDocumentForChat, onNavigate, onMapVisibilityChange]);
+  }, [closeSidebar, openExpandedCardView, activeChatId, openDocumentForChat, onNavigate, onMapVisibilityChange]);
 
   // File View modal: close sidebar + open fullscreen chat with document in preview
   const handleFileViewAnalyseWithAI = React.useCallback((docId: string, filename: string) => {
@@ -4451,7 +4452,7 @@ export const MainContent = ({
                     <div 
                       className="flex flex-col items-center w-full max-w-6xl mx-auto" 
                       style={{ 
-                        paddingLeft: DASHBOARD_CHAT_LAYOUT.HORIZONTAL_PADDING, 
+                        paddingLeft: DASHBOARD_CHAT_LAYOUT.HORIZONTAL_PADDING_LEFT, // Gap from sidebar right edge (same as chat)
                         paddingRight: DASHBOARD_CHAT_LAYOUT.HORIZONTAL_PADDING,
                         height: logoContainerHeight,
                         minHeight: logoContainerHeight,
@@ -4632,9 +4633,9 @@ export const MainContent = ({
                           ? (effectiveMapVisible ? 'left 0.3s ease-out' : 'all 0.3s ease-out')
                           : 'none';
                         
-                        // Cap dashboard wrapper so SearchBar matches SideChatPanel bar (same total width + same 16px padding each side)
-                        const DASHBOARD_BAR_PADDING_PX = 16; // Match SideChatPanel form padding so bar doesn't "grow" when switching panel -> dashboard
-                        const dashboardBarWrapperMaxPx = CHAT_BAR_MAX_WIDTH_PX + 2 * DASHBOARD_BAR_PADDING_PX;
+                        // Cap dashboard wrapper so SearchBar matches SideChatPanel bar
+                        const DASHBOARD_BAR_PADDING_PX = 16; // Right-side padding; left is 0 to align with toggle rail
+                        const dashboardBarWrapperMaxPx = CHAT_BAR_MAX_WIDTH_PX + DASHBOARD_BAR_PADDING_PX; // No left padding
                         return (
                           <div 
                             className={effectiveMapVisible ? "" : "w-full flex justify-center items-center"} 
@@ -4644,7 +4645,7 @@ export const MainContent = ({
                               alignItems: effectiveMapVisible ? 'center' : 'center', // Center content vertically
                               marginTop: shouldPositionAtBottom ? 'auto' : (isVerySmall ? 'auto' : '0'),
                               marginBottom: shouldPositionAtBottom ? '0' : (isVerySmall ? 'auto' : '0'),
-                              paddingLeft: effectiveMapVisible ? `${EXTRA_HORIZONTAL_PADDING}px` : `${DASHBOARD_BAR_PADDING_PX}px`,
+                              paddingLeft: effectiveMapVisible ? `${EXTRA_HORIZONTAL_PADDING}px` : `${SIDEBAR_TO_BAR_GAP_PX}px`, // Gap from sidebar right edge (Chats view); map uses EXTRA_HORIZONTAL_PADDING
                               paddingRight: effectiveMapVisible ? `${EXTRA_HORIZONTAL_PADDING}px` : `${DASHBOARD_BAR_PADDING_PX}px`,
                               paddingBottom: shouldPositionAtBottom ? '0' : '0', // No extra padding so bar bottom = INPUT_BAR_SPACE_BELOW_DASHBOARD (matches panel, no jump)
                               paddingTop: shouldPositionAtBottom ? '16px' : '0', // Top padding when fixed at bottom (ChatGPT-style)

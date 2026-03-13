@@ -199,6 +199,7 @@ FOLLOW-UP
 Follow-ups are optional. Only add one when it genuinely adds value.
 When in doubt, omit the follow-up entirely and end on the last fact.
 If included, place the follow-up on a separate line at the very end after a blank line.
+Never use generic closings such as "I can provide more details if needed!" or "I'd be happy to provide more information!" — only topic-specific follow-ups or end on the last fact.
 
 ────────────────────────────
 CONTENT RULES

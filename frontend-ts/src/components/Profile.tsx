@@ -13,6 +13,8 @@ import { validateImageFile, validateImageDimensions } from "@/utils/profileValid
 import { getProfilePictureSrc } from "@/utils/profilePicture";
 import { CompanyLogoUpload } from "./CompanyLogoUpload";
 import { Button } from "@/components/ui/button";
+import { toast } from "@/hooks/use-toast";
+import { clearDocumentCache } from "@/utils/clearDocumentCache";
 
 interface ProfileProps {
   onNavigate?: (view: string, options?: { showMap?: boolean }) => void;
@@ -604,6 +606,23 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate, embeddedInSettings, initi
                       </div>
                     ) : null}
                   </div>
+                </div>
+
+                {/* Troubleshooting — clear caches when docs show 404s or stale thumbnails */}
+                <div className="pt-6 mt-6 border-t border-gray-200">
+                  <div className="text-[11px] text-muted-foreground mb-1 font-semibold uppercase tracking-wider">Troubleshooting</div>
+                  <p className="text-sm text-muted-foreground mb-2">If documents show incorrect thumbnails or 404 errors, clearing the cache may help.</p>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={async () => {
+                      await clearDocumentCache();
+                      toast({ title: 'Cache cleared', description: 'Refreshing…' });
+                      window.location.reload();
+                    }}
+                  >
+                    Clear document cache
+                  </Button>
                 </div>
               </div>
               ) : (

@@ -17,6 +17,9 @@ export const INPUT_BAR_SPACE_BELOW_PANEL = 36;
 /** Shared width constraints for the fixed input bar container. */
 export const INPUT_BAR_CONTAINER_WIDTH = 'clamp(400px, 85vw, 650px)';
 
+/** Minimum gap (px) between sidebar right edge and chat/search bar - ensures bar never abuts sidebar. */
+export const SIDEBAR_TO_BAR_GAP_PX = 24;
+
 /** Max width (px) for the dashboard SearchBar and SideChatPanel chat bar so they match. */
 export const CHAT_BAR_MAX_WIDTH_PX = 680;
 
@@ -39,14 +42,16 @@ export const DASHBOARD_CHAT_LAYOUT = {
   TOP_SPACER_HEIGHT: 'calc(50vh - 400px)',
   /** Logo-equivalent section min height (dashboard logo + greeting + margins) */
   LOGO_SECTION_MIN_HEIGHT: '200px',
-  /** Margin below logo section – matches dashboard logo maxHeight + clamp margins */
-  LOGO_SECTION_MARGIN_BOTTOM: '5rem',
+  /** Margin below logo section – space between welcome block and chat bar */
+  LOGO_SECTION_MARGIN_BOTTOM: '1.5rem',
   /** Gap between welcome message (logo + greeting) and search/chat bar */
-  WELCOME_TO_BAR_GAP: '40px',
-  /** Horizontal padding for content – same on dashboard and chat */
+  WELCOME_TO_BAR_GAP: '24px',
+  /** Horizontal padding for content – same on dashboard and chat. Left uses SIDEBAR_TO_BAR_GAP_PX so bar never abuts sidebar. */
   HORIZONTAL_PADDING: 'clamp(1rem, 2vw, 1rem)',
-  /** Logo section max width */
-  LOGO_SECTION_MAX_WIDTH: '480px',
+  /** Left padding specifically – must match SIDEBAR_TO_BAR_GAP_PX so chat area uses sidebar right edge as position logic. */
+  HORIZONTAL_PADDING_LEFT: '24px',
+  /** Logo section max width – wide enough for "Hey {name}, What can I help you with today?" on one line in big view */
+  LOGO_SECTION_MAX_WIDTH: '640px',
   /** Logo section min width */
   LOGO_SECTION_MIN_WIDTH: '200px',
   /** Top padding to match dashboard's content container (p-8 lg:p-16) so welcome/bar align */

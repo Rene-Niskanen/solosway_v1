@@ -251,7 +251,7 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
     if (isImage && imagePreviewUrl) {
       return (
         <motion.div
-          initial={{ opacity: 0 }}
+          initial={false}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
           transition={{ duration: 0.1, ease: "easeOut" }}
@@ -322,7 +322,7 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
     if (isImage && !imagePreviewUrl) {
       return (
         <motion.div
-          initial={{ opacity: 0 }}
+          initial={false}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
           transition={{ duration: 0.1, ease: "easeOut" }}
@@ -400,7 +400,7 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
     // Non-image files: doc ID + red/colored square + type label
     return (
       <motion.div
-        initial={{ opacity: 0 }}
+        initial={false}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
         transition={{ duration: 0.1, ease: "easeOut" }}
@@ -482,7 +482,7 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
     return (
       <motion.div
         ref={compact ? undefined : imageDragRef}
-        initial={{ opacity: 0 }}
+        initial={false}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
         transition={{ duration: 0.1, ease: "easeOut" }}
@@ -546,7 +546,7 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
   return (
     <motion.div
       ref={compact ? undefined : fileDragRef}
-      initial={{ opacity: 0 }}
+      initial={false}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       transition={{ duration: 0.1, ease: "easeOut" }}

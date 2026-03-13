@@ -265,6 +265,12 @@ export const PRELOAD_THUMBNAIL_LIMIT = 8;
 /** Cache key used by ProjectsPage – must match so we can warmup from cache at dashboard start */
 const PROJECTS_PAGE_CACHE_KEY = 'projectsPage_propertyHubsCache';
 
+/** Clear thumbnail cache (use when fixing stale refs/404s). */
+export function clearThumbnailCache(): void {
+  thumbnailDataUrlCache.clear();
+  renderingInProgress.clear();
+}
+
 /** Call as soon as the dashboard mounts (e.g. DashboardLayout) to start loading thumbnails from cache before ProjectsPage renders. */
 export const warmupDashboardThumbnailsFromCache = (): void => {
   try {

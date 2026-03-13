@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { ChevronDown, Check, Cpu } from 'lucide-react';
+import { ChevronDown, Check } from 'lucide-react';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -67,7 +67,6 @@ export function ModelSelector({ className, compact = false }: ModelSelectorProps
   const miniMenuColor = '#0F0F0F';
   
   const showText = !compact;
-  const iconSize = compact ? "w-4 h-4" : "w-3.5 h-3.5";
 
   return (
     <DropdownMenu
@@ -86,7 +85,7 @@ export function ModelSelector({ className, compact = false }: ModelSelectorProps
         <button
           className={`flex items-center gap-1.5 focus:outline-none outline-none hover:bg-black/[0.05] ${className || ''}`}
           style={{
-            backgroundColor: 'rgba(0, 0, 0, 0.03)',
+            backgroundColor: 'transparent',
             color: '#525252',
             border: 'none',
             fontSize: '13px',
@@ -101,7 +100,23 @@ export function ModelSelector({ className, compact = false }: ModelSelectorProps
             transition: 'none',
           }}
         >
-          {compact && <Cpu className={`${iconSize} text-gray-600`} strokeWidth={1.5} />}
+          <div
+            className="flex items-center justify-center flex-shrink-0"
+            style={{
+              width: currentModel.provider === 'openai' ? (compact ? 17 : 15) : (compact ? 19 : 17),
+              height: currentModel.provider === 'openai' ? (compact ? 17 : 15) : (compact ? 19 : 17),
+            }}
+          >
+            <img
+              src={currentModel.provider === 'openai' ? '/OpenAIIcon.png' : '/ClaudeIcon.png'}
+              alt=""
+              style={{
+                width: currentModel.provider === 'openai' ? (compact ? 17 : 15) : (compact ? 19 : 17),
+                height: currentModel.provider === 'openai' ? (compact ? 17 : 15) : (compact ? 19 : 17),
+                objectFit: 'contain',
+              }}
+            />
+          </div>
           {showText && (
             <span style={{
               ...(currentModel.id === miniModelId ? { color: miniTriggerColor } : {}),
@@ -124,11 +139,11 @@ export function ModelSelector({ className, compact = false }: ModelSelectorProps
         style={{
           backgroundColor: '#FFFFFF',
           border: '1px solid rgba(0, 0, 0, 0.1)',
-          borderRadius: '6px',
+          borderRadius: '8px',
           boxShadow: '0 4px 16px rgba(0, 0, 0, 0.12)',
-          minWidth: '130px',
-          paddingTop: '2px',
-          paddingBottom: '2px',
+          minWidth: '155px',
+          paddingTop: '4px',
+          paddingBottom: '4px',
         }}
       >
         {models.map((modelOption) => {
@@ -144,16 +159,16 @@ export function ModelSelector({ className, compact = false }: ModelSelectorProps
                 didSelectRef.current = true;
                 setModel(modelOption.id);
               }}
-              className="flex items-center gap-1.5 px-2 cursor-pointer min-h-0"
+              className="flex items-center gap-2 px-3 cursor-pointer min-h-0"
               style={{
                 backgroundColor: showSelectionColor ? 'rgba(0, 0, 0, 0.04)' : 'transparent',
                 color: '#1A1A1A',
-                fontSize: '11px',
+                fontSize: '12px',
                 fontWeight: 400,
-                borderRadius: '4px',
-                paddingTop: '2px',
-                paddingBottom: '2px',
-                margin: '0 2px',
+                borderRadius: '6px',
+                paddingTop: '6px',
+                paddingBottom: '6px',
+                margin: '0 4px',
                 minHeight: 'unset',
                 transition: 'none',
               }}
@@ -161,6 +176,20 @@ export function ModelSelector({ className, compact = false }: ModelSelectorProps
                 setHoveredModel(modelOption.id);
               }}
             >
+              <div
+                className="flex items-center justify-center flex-shrink-0"
+                style={{ width: 18, height: 18 }}
+              >
+                <img
+                  src={modelOption.provider === 'openai' ? '/OpenAIIcon.png' : '/ClaudeIcon.png'}
+                  alt=""
+                  style={{
+                    width: modelOption.provider === 'openai' ? 15 : 17,
+                    height: modelOption.provider === 'openai' ? 15 : 17,
+                    objectFit: 'contain',
+                  }}
+                />
+              </div>
               <span
                 className="flex-1"
                 style={modelOption.id === miniModelId ? { color: miniMenuColor } : undefined}

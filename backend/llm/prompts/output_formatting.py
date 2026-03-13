@@ -47,25 +47,25 @@ Rules:
 - The period goes AFTER the citation.
 - Never place citations on their own line.
 
-CRITICAL — avoid excessive citation interruptions:
+CRITICAL — each key fact gets its own citation:
 
-Do not place a citation after almost every sentence. For readability, group citations when several adjacent facts come from the same section or source. Prefer one citation at the end of a short paragraph or group of related sentences when the same source supports them.
+Each distinct key fact (date, name, amount, duration, etc.) must have its own citation so the user can click through to verify each one in the document. Do not group multiple key facts under a single citation.
+
+Correct (each key fact cited):
+The lease agreement was made on **10 July 2023**[1] between **Martin Wainaina Kenyajui**[2] (Owner) and **Carlos Andres Espindola of Mellifera Ltd**[3] (Tenant).
+
+Wrong (one citation for multiple key facts):
+The lease agreement was made on **10 July 2023** between **Martin Wainaina Kenyajui** (Owner) and **Carlos Andres Espindola of Mellifera Ltd** (Tenant)[1].
+
+When the same value appears twice in quick succession (e.g. rent amount and deposit amount both "KSH 100,000"), you may use [2][3] at the end of that clause if both come from the same block. But for distinct key facts—date, owner name, tenant name, property address, rent amount, etc.—each must have its own citation immediately after it.
 
 Smoother:
-The monthly rent is **KSH 100,000**, payable annually in advance by **12 July** each year. A security deposit equivalent to one month's rent (**KSH 100,000**) is required and will be refunded once all obligations are satisfied[2][3].
+The monthly rent is **KSH 100,000**[1], payable annually in advance by **12 July**[2] each year. A security deposit equivalent to one month's rent (**KSH 100,000**[3]) is required and will be refunded once all obligations are satisfied.
 
 Avoid:
 sentence[2] sentence[3] sentence[4] sentence[5]
 
-Citation grouping rule:
-
-If several adjacent facts come from the same source, they may share one citation at the end of the group when it improves readability.
-
-Example:
-
-The lease runs from **10 July 2023** to **10 July 2024**.
-The monthly rent is **KSH 100,000**.
-Both terms are specified in the lease agreement[1].
+(Do not place a citation after every trivial phrase; but do cite every key fact.)
 
 Citation bracket rule:
 
@@ -197,13 +197,13 @@ Wrong (too dense):
 
 The lease agreement is made on 10 July 2023 between Martin Wainaina Kenyajui (Owner) and Carlos Andres Espindola of Mellifera Ltd (Tenant). The lease is for 12 months. The monthly rent is KSH 100,000.
 
-Correct (short blocks):
+Correct (short blocks, each key fact cited):
 
-The lease agreement was made on **10 July 2023** between **Martin Wainaina Kenyajui** (Owner) and **Carlos Andres Espindola of Mellifera Ltd** (Tenant)[1]
+The lease agreement was made on **10 July 2023**[1] between **Martin Wainaina Kenyajui**[2] (Owner) and **Carlos Andres Espindola of Mellifera Ltd**[3] (Tenant).
 
-The lease runs for **12 months**[2]
+The lease runs for **12 months**[4].
 
-The monthly rent is **KSH 100,000**[3]
+The monthly rent is **KSH 100,000**[5].
 
 Never produce walls of text or dense paragraphs.
 
@@ -391,6 +391,8 @@ Avoid filler phrases such as:
 "It should be mentioned that…"
 "Certainly"
 "Absolutely"
+"I can provide more details if needed!"
+"I'd be happy to provide more information!"
 
 Avoid report-style wording when unnecessary.
 
@@ -491,7 +493,7 @@ Before returning a response, verify the following:
 
 4. Are only key values bolded (prices, dates, durations, legal thresholds) — not every concept?
 
-5. Are citations grouped where possible to avoid a citation after almost every sentence?
+5. Does each key fact (date, names, amounts, etc.) have its own citation so users can verify each one in the document?
 
 6. Are citations placed correctly and formatted as [1], [2], etc.?
 

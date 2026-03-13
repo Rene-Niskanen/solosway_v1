@@ -141,11 +141,23 @@ Output only the extracted passage (or NONE). No explanation."""
 
 
 def _embed_passage(passage: str) -> Optional[List[float]]:
-    """Embed the passage using the same model as retrieval (Voyage or OpenAI)."""
+    """Embed the passage using the same model as retrieval (Gemini, Voyage, or OpenAI)."""
     if not passage or not passage.strip():
         return None
     try:
         from backend.llm.config import config
+        use_gemini = getattr(config, "use_gemini_embeddings", False) and getattr(config, "gemini_api_key", None)
+        if use_gemini:
+            from backend.services.gemini_embedding_helper import embed_with_gemini
+            embs = embed_with_gemini(
+                [passage.strip()],
+                task_type="RETRIEVAL_DOCUMENT",
+                api_key=config.gemini_api_key,
+                model=getattr(config, "gemini_embedding_model", "models/gemini-embedding-2-preview"),
+                dimension=getattr(config, "gemini_embedding_dimension", 768),
+            )
+            if embs and len(embs) > 0:
+                return embs[0]
         use_voyage = getattr(config, "use_voyage_embeddings", True) and getattr(config, "voyage_api_key", None)
         if use_voyage:
             from voyageai import Client

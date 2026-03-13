@@ -138,6 +138,29 @@ def get_query_embedding_for_retrieval(query: str) -> Optional[List[float]]:
         texts_to_embed = [query.strip()]
         input_type = "query"
 
+    # Priority: Gemini > Voyage > OpenAI
+    use_gemini = getattr(config, "use_gemini_embeddings", False) and getattr(config, "gemini_api_key", None)
+    if use_gemini:
+        from backend.services.gemini_embedding_helper import embed_with_gemini
+        task = "RETRIEVAL_DOCUMENT" if input_type == "document" else "RETRIEVAL_QUERY"
+        embs = embed_with_gemini(
+            texts_to_embed,
+            task_type=task,
+            api_key=config.gemini_api_key,
+            model=getattr(config, "gemini_embedding_model", "models/gemini-embedding-2-preview"),
+            dimension=getattr(config, "gemini_embedding_dimension", 768),
+        )
+        if embs:
+            if len(embs) == 1:
+                query_embedding = embs[0]
+            else:
+                dim = len(embs[0])
+                query_embedding = [sum(e[i] for e in embs) / len(embs) for i in range(dim)]
+            _embedding_cache[key] = (query_embedding, time.time())
+            elapsed_ms = max(0, int(round((time.perf_counter() - _t0) * 1000)))
+            logger.info("[PERF] phase=hyde_embedding elapsed_ms=%d cache_hit=False provider=gemini", elapsed_ms)
+            return query_embedding
+        logger.warning("Gemini embedding failed, falling back to Voyage/OpenAI")
     use_voyage = getattr(config, "use_voyage_embeddings", True)
     if use_voyage and getattr(config, "voyage_api_key", None):
         try:

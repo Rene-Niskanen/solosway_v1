@@ -32,7 +32,13 @@ class LLMConfig(BaseSettings):
     anthropic_thinking_budget: int = int(os.getenv('ANTHROPIC_THINKING_BUDGET', '5000'))  # Max thinking tokens
     use_extended_thinking: bool = os.getenv('USE_EXTENDED_THINKING', 'false').lower() == 'true'
 
-    # Voyage AI embeddings
+    # Google Gemini embeddings (preferred when enabled - 768 dim, RETRIEVAL_QUERY/DOCUMENT)
+    gemini_api_key: str = os.getenv("GEMINI_API_KEY", "")
+    gemini_embedding_model: str = os.getenv("GEMINI_EMBEDDING_MODEL", "models/gemini-embedding-2-preview")
+    gemini_embedding_dimension: int = int(os.getenv("GEMINI_EMBEDDING_DIMENSION", "768"))
+    use_gemini_embeddings: bool = os.getenv("USE_GEMINI_EMBEDDINGS", "false").lower() == "true"
+
+    # Voyage AI embeddings (fallback when Gemini disabled)
     voyage_api_key: str = os.getenv("VOYAGE_API_KEY", "")
     voyage_embedding_model: str = os.getenv("VOYAGE_EMBEDDING_MODEL", "voyage-law-2")
     use_voyage_embeddings: bool = os.getenv("USE_VOYAGE_EMBEDDINGS", "true").lower() == "true"
@@ -70,8 +76,9 @@ class LLMConfig(BaseSettings):
     mem0_search_limit: int = int(os.getenv("MEM0_SEARCH_LIMIT", "5"))
     mem0_search_timeout: float = float(os.getenv("MEM0_SEARCH_TIMEOUT", "2.0"))
 
-    # HyDE (Hypothetical Document Embeddings) - improve retrieval when user wording doesn't match docs
-    use_hyde: bool = os.getenv("USE_HYDE", "false").lower() == "true"
+    # HyDE (Hypothetical Document Embeddings) - DISABLED (redundant with Gemini task types when integrated)
+    # To re-enable: change to os.getenv("USE_HYDE", "false").lower() == "true"
+    use_hyde: bool = False
     hyde_num_docs: int = int(os.getenv("HYDE_NUM_DOCS", "2"))
     hyde_model: str = os.getenv("HYDE_MODEL", "")  # empty = use openai_model at runtime
     hyde_skip_max_words: int = int(os.getenv("HYDE_SKIP_MAX_WORDS", "8"))  # skip HyDE for short/entity-like queries (e.g. "value of highlands")

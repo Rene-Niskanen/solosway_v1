@@ -85,13 +85,13 @@ export function ModeSelector({ className, compact = false, small = false, large 
         <button
           className={`flex items-center gap-1.5 focus:outline-none outline-none hover:bg-black/[0.05] ${className || ''}`}
           style={{
-            backgroundColor: 'rgba(0, 0, 0, 0.03)',
+            backgroundColor: 'transparent',
             color: textColor,
             border: 'none',
             fontSize: '13px',
             fontWeight: 400,
             cursor: 'pointer',
-            padding: compact ? '6px 10px 6px 6px' : '6px 12px 6px 8px', // more space right, less left
+            padding: compact ? '6px 10px 6px 6px' : '6px 12px 6px 8px',
             borderRadius: '8px',
             transition: 'none',
           }}
@@ -118,9 +118,7 @@ export function ModeSelector({ className, compact = false, small = false, large 
           const Icon = modeOption.icon;
           const isSelected = mode === modeOption.id;
           const isHovered = hoveredMode === modeOption.id;
-          // Show selection color on hovered item, or on selected item if nothing is hovered
           const showSelectionColor = isHovered || (isSelected && hoveredMode === null);
-          
           return (
             <DropdownMenuItem
               key={modeOption.id}
@@ -137,26 +135,16 @@ export function ModeSelector({ className, compact = false, small = false, large 
                 borderRadius: '2px',
                 transition: 'none',
               }}
-              onMouseEnter={() => {
-                setHoveredMode(modeOption.id);
-              }}
+              onMouseEnter={() => setHoveredMode(modeOption.id)}
             >
               <Icon className="w-3 h-3" strokeWidth={1.75} style={{ opacity: 0.8 }} />
               <span className="flex-1">{modeOption.label}</span>
               <div className="flex items-center justify-end" style={{ width: '45px', gap: '4px' }}>
-              <span 
-                style={{ 
-                  fontSize: '10px', 
-                  opacity: 0.5,
-                  fontFamily: "'DM Sans', system-ui, -apple-system, sans-serif",
-                    display: 'inline-block',
-                    textAlign: 'right',
-                }}
-              >
-                {modeOption.shortcut}
-              </span>
+                <span style={{ fontSize: '10px', opacity: 0.5, fontFamily: "'DM Sans', system-ui, -apple-system, sans-serif", display: 'inline-block', textAlign: 'right' }}>
+                  {modeOption.shortcut}
+                </span>
                 <div style={{ width: isSelected ? '12px' : '0px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              {isSelected && <Check className="w-3 h-3" strokeWidth={2.5} style={{ opacity: 0.7 }} />}
+                  {isSelected && <Check className="w-3 h-3" strokeWidth={2.5} style={{ opacity: 0.7 }} />}
                 </div>
               </div>
             </DropdownMenuItem>

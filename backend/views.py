@@ -1024,6 +1024,10 @@ def query_documents_stream():
         response_mode = data.get('responseMode')  # NEW: Response mode for file attachments (fast/detailed/full)
         attachment_context = data.get('attachmentContext')  # NEW: Extracted text from attached files
         is_agent_mode = data.get('isAgentMode', True)  # AGENT MODE: Enable LLM tool-based actions (default to True for new architecture)
+        # MODEL SELECTION: User-selected LLM model (gpt-4o-mini, gpt-4o, claude-sonnet, claude-opus)
+        model_preference = data.get('model') or 'gpt-4o-mini'
+        if model_preference not in ('gpt-4o-mini', 'gpt-4o', 'claude-sonnet', 'claude-opus'):
+            model_preference = 'gpt-4o-mini'
         # Accept both keys: frontend agent-task stream sends web_search (snake_case)
         web_search_enabled = bool(data.get('web_search', data.get('webSearch', False)))  # WEB SEARCH: Exa integration
         if web_search_enabled:
@@ -1192,6 +1196,7 @@ def query_documents_stream():
                     "response_mode": response_mode if response_mode else None,  # NEW: Response mode for file attachments (fast/detailed/full) - ensure None not empty string
                     "attachment_context": attachment_context if attachment_context else None,  # NEW: Extracted text from attached files - ensure None not empty dict
                     "is_agent_mode": is_agent_mode,  # AGENT MODE: Enable LLM tool-based actions for proactive document display
+                    "model_preference": model_preference,  # MODEL SELECTION: User-selected LLM (gpt-4o-mini, gpt-4o, claude-sonnet, claude-opus)
                     "web_search_enabled": web_search_enabled,  # WEB SEARCH: Enable Exa web search tool in agent loop
                     "execution_events": emitter,  # NEW: Execution event emitter for execution trace
                     # Reset retry counts and refined query for new queries (prevents stale state)
@@ -5655,7 +5660,9 @@ def proxy_upload():
         response.headers.add('Access-Control-Max-Age', '3600')
         return response, 200
     
-    logger.info(f"📤 [PROXY-UPLOAD] POST request received from {current_user.email}")
+    file = request.files.get('file') if request.files else None
+    filename_preview = file.filename if file and file.filename else '(no file)'
+    logger.info(f"📤 [PROXY-UPLOAD] UPLOAD RECEIVED filename={filename_preview!r} from {current_user.email}")
     logger.info(f"📤 [PROXY-UPLOAD] Form data keys: {list(request.form.keys())}")
     logger.info(f"📤 [PROXY-UPLOAD] Files keys: {list(request.files.keys())}")
     
@@ -6274,7 +6281,6 @@ def upload_document():
     logger.info(f"📤 [UPLOAD] POST request received from {current_user.email}")
     logger.info(f"📤 [UPLOAD] Form data keys: {list(request.form.keys())}")
     logger.info(f"📤 [UPLOAD] Files keys: {list(request.files.keys())}")
-    
     try:
         if 'file' not in request.files:
             logger.error("No 'file' key in request.files")
@@ -6292,6 +6298,7 @@ def upload_document():
         
         # Generate unique S3 key
         filename = secure_filename(file.filename)
+        logger.info(f"📤 [UPLOAD] UPLOAD RECEIVED filename={filename!r} from {current_user.email} business_uuid={business_uuid_str}")
         
         # Check for exact duplicates before uploading (safety net - frontend should catch this first)
         # Only block duplicates from the SAME user AND business

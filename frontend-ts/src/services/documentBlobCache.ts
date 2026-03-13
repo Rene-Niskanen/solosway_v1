@@ -90,3 +90,17 @@ export async function preloadDocumentBlobs(docs: DocForPreload[]): Promise<void>
     await run(toFetch.slice(i, i + PRELOAD_CONCURRENCY));
   }
 }
+
+/**
+ * Clear document blob cache (e.g. when fixing 404s from stale references).
+ * Revokes all object URLs to free memory.
+ */
+export function clearDocumentBlobCache(): void {
+  for (const [id, entry] of cache) {
+    try {
+      URL.revokeObjectURL(entry.url);
+    } catch (_) {}
+  }
+  cache.clear();
+  accessOrder.length = 0;
+}

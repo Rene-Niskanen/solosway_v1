@@ -120,6 +120,7 @@ class MainWorkflowState(TypedDict, total=False):
     response_mode: Optional[str]  # NEW: Response mode for file attachments ("fast", "detailed", "full")
     attachment_context: Optional[dict]  # NEW: Extracted text from attached files (texts, pageTexts, filenames)
     is_agent_mode: Optional[bool]  # AGENT MODE: Enable LLM tool-based actions for proactive document display
+    model_preference: Optional[str]  # MODEL SELECTION: User-selected LLM (gpt-4o-mini, gpt-4o, claude-sonnet, claude-opus)
     agent_actions: Optional[list[dict]]  # AGENT MODE: Actions requested by LLM (open_document, navigate, etc.)
     messages: Annotated[List[BaseMessage], operator.add]  # NEW: Message history for agent conversation (includes tool calls and responses)
     execution_events: Optional[Any]  # NEW: ExecutionEventEmitter for execution trace (not serialized in checkpoints)

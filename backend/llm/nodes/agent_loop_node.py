@@ -18,9 +18,8 @@ from langchain_core.messages import (
     SystemMessage,
     ToolMessage,
 )
-from langchain_openai import ChatOpenAI
-
 from backend.llm.config import config
+from backend.llm.utils.model_factory import get_llm
 from backend.llm.types import MainWorkflowState
 from backend.llm.utils.execution_events import ExecutionEventEmitter
 from backend.llm.utils.node_logging import log_node_perf
@@ -444,11 +443,7 @@ async def agent_loop_node(state: MainWorkflowState, runnable_config=None) -> Mai
     research_notes: List[Dict[str, Any]] = []  # Fresh per turn for research-then-write
     emitter = state.get("execution_events")
     
-    llm = ChatOpenAI(
-        api_key=config.openai_api_key,
-        model=config.openai_model,
-        temperature=0,
-    )
+    llm = get_llm(state.get("model_preference"), temperature=0)
     
     # Bind tools for OpenAI function calling
     llm_with_tools = llm.bind_tools(tools)

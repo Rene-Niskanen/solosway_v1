@@ -287,7 +287,7 @@ export const PipelineStagesDetail: React.FC<PipelineStagesDetailProps> = ({
 
   const rootStyle: React.CSSProperties = {
     backgroundColor: 'white',
-    border: '1px solid #D1D5DB',
+    border: '1px solid #E8EAED',
     borderRadius: 8,
     boxShadow: '0 2px 6px rgba(0,0,0,0.06)',
     overflow: 'hidden',
@@ -784,7 +784,7 @@ export const PipelineStagesHoverPreview: React.FC<PipelineStagesHoverPreviewProp
   const viewportHeight = typeof window !== 'undefined' ? window.innerHeight : 800;
   const minLeft = containerBounds?.left ?? 10;
   const maxRight = containerBounds?.right ?? viewportWidth - 10;
-  const gapBelow = 10;  // Small gap so card appears right under the green dot
+  const gapBelow = 18;  // Gap so card appears below the green dot without overlapping
   const gapAbove = 10;
   // Estimated full card height (header + 5 stages)
   const estimatedCardHeight = 180;

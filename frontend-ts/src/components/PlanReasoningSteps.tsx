@@ -77,9 +77,9 @@ export const PlanReasoningSteps: React.FC<PlanReasoningStepsProps> = ({
                 display: 'flex',
                 alignItems: 'flex-start',
                 gap: '6px',
-                fontSize: '12px',
+                fontSize: '14px',
                 padding: '2px 0',
-                lineHeight: 1.4,
+                lineHeight: 1.2,
                 opacity: isLastVisible && isAnimating ? 0 : 1,
                 transform: isLastVisible && isAnimating ? 'translateY(2px)' : 'translateY(0)',
                 animation: isLastVisible && isAnimating ? 'fadeSlideIn 0.15s ease forwards' : 'none',
@@ -127,7 +127,7 @@ export const PlanReasoningSteps: React.FC<PlanReasoningStepsProps> = ({
                 {showSpinner ? (
                   <span className="planning-shimmer-full">{step.message}</span>
                 ) : (
-                  <span style={{ color: '#9CA3AF', fontWeight: 500 }}>{step.message}</span>
+                  <span style={{ color: '#9CA3AF', fontWeight: 500, fontSize: '14px' }}>{step.message}</span>
                 )}
                 
                 {/* Detail text */}
@@ -174,13 +174,15 @@ export const PlanReasoningSteps: React.FC<PlanReasoningStepsProps> = ({
         }
         
         .planning-shimmer-full {
+          font-size: 14px;
+          font-weight: 500;
+          line-height: 1.35;
           background: linear-gradient(90deg, #6B7280 0%, #9CA3AF 25%, #D1D5DB 50%, #9CA3AF 75%, #6B7280 100%);
           background-size: 300% 100%;
           -webkit-background-clip: text;
           -webkit-text-fill-color: transparent;
           background-clip: text;
           animation: shimmer-full 0.8s ease-in-out infinite;
-          font-weight: 500;
         }
         
         @keyframes shimmer-full {

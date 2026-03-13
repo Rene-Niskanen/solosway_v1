@@ -548,7 +548,9 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
                   default: { duration: 0.18, ease: [0.16, 1, 0.3, 1] }
                 }}
               >
+                {/* COMMENTED OUT - Agent selector (ModeSelector: Agent/Reader/Plan)
                 <ModeSelector compact={true} className="mr-2" />
+                */}
                 <ModelSelector compact={true} />
                 <button
                   type="button"
