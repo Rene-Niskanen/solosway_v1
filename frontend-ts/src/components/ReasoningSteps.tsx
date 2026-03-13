@@ -363,7 +363,7 @@ const DETAIL_COLOR = '#374151';   // Dark grey for details: filenames, document 
 const FAINT_COLOR = '#9CA3AF';    // Faint when under thought dropdown and completed
 
 /** Shared typography for all reasoning step labels - consistent font size, weight, and positioning */
-const STEP_LABEL_BASE = { fontSize: '14px', fontWeight: 500 } as const;
+const STEP_LABEL_BASE = { fontSize: '14px', fontWeight: 400 } as const;
 /** Step row layout - consistent vertical alignment */
 const STEP_ROW_STYLE = { padding: '0', marginLeft: 0, marginBottom: 0, minHeight: '20px' } as const;
 const ReadingStepWithTransition: React.FC<{
@@ -672,7 +672,7 @@ const StepRenderer: React.FC<{
     }
     if (foundMatch) {
       return (
-        <span>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
           <span style={actionStyle}>{foundMatch[1]}</span>
           <span style={{ ...STEP_LABEL_BASE, color }}> {ensureSingleColon(foundMatch[2])}</span>
         </span>
@@ -681,7 +681,7 @@ const StepRenderer: React.FC<{
     const findingMatch = prefix.match(/^(Finding)\s+(.+)$/i);
     if (findingMatch) {
       return (
-        <span>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
           <span style={actionStyle}>{findingMatch[1]}</span>
           <span style={{ ...STEP_LABEL_BASE, color }}> {findingMatch[2]}</span>
         </span>
@@ -809,7 +809,7 @@ const StepRenderer: React.FC<{
         alignItems: 'center',
         gap: '6px',
         fontSize: '14px',
-        fontWeight: 500,
+        fontWeight: 400,
         letterSpacing: '-0.01em',
         lineHeight: 1.2,
         padding: '3px 7px',
@@ -820,9 +820,11 @@ const StepRenderer: React.FC<{
         cursor: bubbleClickable ? 'pointer' : 'default',
       };
 
+      // Reserve fixed height so "Analysing" stays put when the file container appears (no layout shift)
+      const analysingRowHeight = '28px';
       return (
         <div style={{ display: 'contents' }}>
-          <div className="found-reveal-text" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', position: 'relative', zIndex: 1, width: 'fit-content', minHeight: '20px' }}>
+          <div className="found-reveal-text" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', position: 'relative', zIndex: 1, width: 'fit-content', minHeight: analysingRowHeight, height: analysingRowHeight }}>
             {((isAnalysingPrefix || isFindingPrefix) && isExploringActive) ? (
               <span className="ranking-shimmer-active">{isAnalysingPrefix ? 'Analysing' : (isFindingPrefix ? headingText : ensureColon(headingText))}</span>
             ) : isAnalysingPrefix ? (
@@ -1166,7 +1168,7 @@ const StepRenderer: React.FC<{
     
     case 'complete':
       return (
-        <span style={{ color: actionColor, fontWeight: 500 }}>
+        <span style={{ color: actionColor, fontWeight: 400 }}>
           ✓ {step.message}
         </span>
       );
@@ -1182,7 +1184,7 @@ const StepRenderer: React.FC<{
       return (
         <div style={{
           color: detailColor,
-          fontWeight: 500,
+          fontWeight: 400,
           fontSize: '14px',
           lineHeight: '1.5',
           marginTop: '0',
@@ -1254,7 +1256,7 @@ const StepRenderer: React.FC<{
           {isOpeningActive ? (
             <span className="agent-opening-shimmer-active" style={{ ...STEP_LABEL_BASE }}>{step.message || 'Opening citation view'}</span>
           ) : (
-            <span style={{ color: detailColor, fontWeight: 500, fontSize: '14px' }}>{step.message || 'Opening citation view'}</span>
+            <span style={{ color: detailColor, fontWeight: 400, fontSize: '14px' }}>{step.message || 'Opening citation view'}</span>
           )}
         </span>
       );
@@ -1285,7 +1287,7 @@ const StepRenderer: React.FC<{
           {isHighlightingActive ? (
             <span className="agent-opening-shimmer-active" style={{ ...STEP_LABEL_BASE }}>{step.message || 'Highlighting content'}</span>
           ) : (
-            <span style={{ color: detailColor, fontWeight: 500, fontSize: '14px' }}>{step.message || 'Highlighting content'}</span>
+            <span style={{ color: detailColor, fontWeight: 400, fontSize: '14px' }}>{step.message || 'Highlighting content'}</span>
           )}
         </span>
       );
@@ -1316,7 +1318,7 @@ const StepRenderer: React.FC<{
           {isNavigatingActive ? (
             <span className="agent-opening-shimmer-active" style={{ ...STEP_LABEL_BASE }}>{step.message || 'Navigating to property'}</span>
           ) : (
-            <span style={{ color: '#D97706', fontWeight: 500, fontSize: '14px' }}>{step.message || 'Navigating to property'}</span>
+            <span style={{ color: '#D97706', fontWeight: 400, fontSize: '14px' }}>{step.message || 'Navigating to property'}</span>
           )}
         </span>
       );
@@ -1347,7 +1349,7 @@ const StepRenderer: React.FC<{
           {isOpeningMapActive ? (
             <span className="agent-opening-shimmer-active" style={{ ...STEP_LABEL_BASE }}>{step.message || 'Opening map view'}</span>
           ) : (
-            <span style={{ color: '#D97706', fontWeight: 500, fontSize: '14px' }}>{step.message || 'Opening map view'}</span>
+            <span style={{ color: '#D97706', fontWeight: 400, fontSize: '14px' }}>{step.message || 'Opening map view'}</span>
           )}
         </span>
       );
@@ -1378,7 +1380,7 @@ const StepRenderer: React.FC<{
           {isSelectingPinActive ? (
             <span className="agent-opening-shimmer-active" style={{ ...STEP_LABEL_BASE }}>{step.message || 'Selecting property pin'}</span>
           ) : (
-            <span style={{ color: '#D97706', fontWeight: 500, fontSize: '14px' }}>{step.message || 'Selecting property pin'}</span>
+            <span style={{ color: '#D97706', fontWeight: 400, fontSize: '14px' }}>{step.message || 'Selecting property pin'}</span>
           )}
         </span>
       );
@@ -1956,7 +1958,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
             .planning-shimmer-full {
               display: inline-block;
               font-size: 14px;
-              font-weight: 500;
+              font-weight: 400;
               line-height: 1.35;
               background: linear-gradient(90deg, #6B7280 0%, #9CA3AF 25%, #D1D5DB 50%, #9CA3AF 75%, #6B7280 100%);
               background-size: 300% 100%;
@@ -1973,14 +1975,14 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
             
             .reading-shimmer-sequential {
               color: #374151;
-              font-weight: 500;
+              font-weight: 400;
               animation: reading-shimmer 0.5s ease-in-out 1;
               animation-fill-mode: forwards;
             }
             
             /* Active reading - OpenAI/Claude-style sophisticated blue-gray flow animation */
             .reading-shimmer-active {
-              font-weight: 500;
+              font-weight: 400;
               background: linear-gradient(
                 90deg, 
                 #475569 0%,      /* slate-600 - deep base */
@@ -2017,7 +2019,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
             .searching-shimmer-active {
               display: inline-block;
               font-size: 14px;
-              font-weight: 500;
+              font-weight: 400;
               line-height: 1.35;
               background: linear-gradient(90deg, #6B7280 0%, #9CA3AF 25%, #D1D5DB 50%, #9CA3AF 75%, #6B7280 100%);
               background-size: 300% 100%;
@@ -2031,7 +2033,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
             .ranking-shimmer-active {
               display: inline-block;
               font-size: 14px;
-              font-weight: 500;
+              font-weight: 400;
               line-height: 1.35;
               background: linear-gradient(90deg, #6B7280 0%, #9CA3AF 25%, #D1D5DB 50%, #9CA3AF 75%, #6B7280 100%);
               background-size: 300% 100%;
@@ -2043,7 +2045,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
             
             /* Agent opening/highlighting - orange flowing gradient animation */
             .agent-opening-shimmer-active {
-              font-weight: 500;
+              font-weight: 400;
               background: linear-gradient(
                 90deg, 
                 #D97706 0%,
@@ -2199,7 +2201,9 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
                   lineHeight: 1.2,
                   position: 'relative',
                   marginBottom: 0,
-                  minHeight: '20px',
+                  minHeight: '28px',
+                  display: 'flex',
+                  alignItems: 'center',
                   flexShrink: 0,
                 }}
               >
@@ -2288,7 +2292,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
             {isPlanningActive ? (
               <ThinkingIndicator />
             ) : (
-              <div style={{ fontSize: '14px', color: ACTION_COLOR, fontWeight: 500 }}>
+              <div style={{ fontSize: '14px', color: ACTION_COLOR, fontWeight: 400 }}>
                 Thinking
               </div>
             )}
@@ -2310,7 +2314,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
         .planning-shimmer-full {
           display: inline-block;
           font-size: 14px;
-          font-weight: 500;
+          font-weight: 400;
           line-height: 1.35;
           background: linear-gradient(90deg, #6B7280 0%, #9CA3AF 25%, #D1D5DB 50%, #9CA3AF 75%, #6B7280 100%);
           background-size: 300% 100%;
@@ -2332,7 +2336,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
         .searching-shimmer-active {
           display: inline-block;
           font-size: 14px;
-          font-weight: 500;
+          font-weight: 400;
           line-height: 1.35;
           background: linear-gradient(90deg, #6B7280 0%, #9CA3AF 25%, #D1D5DB 50%, #9CA3AF 75%, #6B7280 100%);
           background-size: 300% 100%;
@@ -2346,7 +2350,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
         .ranking-shimmer-active {
           display: inline-block;
           font-size: 14px;
-          font-weight: 500;
+          font-weight: 400;
           line-height: 1.35;
           background: linear-gradient(90deg, #6B7280 0%, #9CA3AF 25%, #D1D5DB 50%, #9CA3AF 75%, #6B7280 100%);
           background-size: 300% 100%;
@@ -2358,7 +2362,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
         
         /* Agent opening/highlighting - orange flowing gradient animation */
         .agent-opening-shimmer-active {
-          font-weight: 500;
+          font-weight: 400;
           background: linear-gradient(
             90deg, 
             #D97706 0%,      /* amber-600 - darker orange */
@@ -2388,14 +2392,14 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
         
         .reading-shimmer-sequential {
           color: #374151;
-          font-weight: 500;
+          font-weight: 400;
           animation: reading-shimmer 0.5s ease-in-out 1;
           animation-fill-mode: forwards;
         }
         
             /* Active reading - OpenAI/Claude-style sophisticated blue-gray flow animation */
             .reading-shimmer-active {
-              font-weight: 500;
+              font-weight: 400;
               background: linear-gradient(
                 90deg, 
                 #475569 0%,      /* slate-600 - deep base */
@@ -2441,7 +2445,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
             .searching-shimmer-active {
               display: inline-block;
               font-size: 14px;
-              font-weight: 500;
+              font-weight: 400;
               line-height: 1.35;
               background: linear-gradient(90deg, #6B7280 0%, #9CA3AF 25%, #D1D5DB 50%, #9CA3AF 75%, #6B7280 100%);
               background-size: 300% 100%;
@@ -2455,7 +2459,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
             .ranking-shimmer-active {
               display: inline-block;
               font-size: 14px;
-              font-weight: 500;
+              font-weight: 400;
               line-height: 1.35;
               background: linear-gradient(90deg, #6B7280 0%, #9CA3AF 25%, #D1D5DB 50%, #9CA3AF 75%, #6B7280 100%);
               background-size: 300% 100%;

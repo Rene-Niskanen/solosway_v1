@@ -15,6 +15,7 @@ import { CompanyLogoUpload } from "./CompanyLogoUpload";
 import { Button } from "@/components/ui/button";
 import { toast } from "@/hooks/use-toast";
 import { clearDocumentCache } from "@/utils/clearDocumentCache";
+import { useTheme } from "next-themes";
 
 interface ProfileProps {
   onNavigate?: (view: string, options?: { showMap?: boolean }) => void;
@@ -53,6 +54,8 @@ interface UserData {
 }
 
 const Profile: React.FC<ProfileProps> = ({ onNavigate, embeddedInSettings, initialUserData }) => {
+  const { resolvedTheme } = useTheme();
+  const isDark = resolvedTheme !== 'light' && resolvedTheme !== undefined;
   const hasInitial = Boolean(embeddedInSettings && initialUserData != null);
   const [userData, setUserData] = React.useState<UserData | null>(hasInitial ? initialUserData ?? null : null);
   const [profilePicCacheBust, setProfilePicCacheBust] = React.useState<number | null>(null);
@@ -609,12 +612,14 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate, embeddedInSettings, initi
                 </div>
 
                 {/* Troubleshooting — clear caches when docs show 404s or stale thumbnails */}
-                <div className="pt-6 mt-6 border-t border-gray-200">
-                  <div className="text-[11px] text-muted-foreground mb-1 font-semibold uppercase tracking-wider">Troubleshooting</div>
-                  <p className="text-sm text-muted-foreground mb-2">If documents show incorrect thumbnails or 404 errors, clearing the cache may help.</p>
+                <div className={`pt-6 mt-6 border-t ${isDark ? 'border-border' : 'border-gray-200'}`}>
+                  <div className={`text-[11px] mb-1 font-semibold uppercase tracking-wider ${!isDark ? 'text-muted-foreground' : ''}`} style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}>Troubleshooting</div>
+                  <p className={`text-sm mb-2 ${!isDark ? 'text-muted-foreground' : ''}`} style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}>If documents show incorrect thumbnails or 404 errors, clearing the cache may help.</p>
                   <Button
                     variant="outline"
                     size="sm"
+                    className={`h-auto rounded-sm border border-border bg-background px-3 py-1 text-xs font-medium focus:ring-1 focus:ring-gray-300 focus:ring-offset-0 focus:border-border ${!isDark ? 'text-foreground' : ''}`}
+                    style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}
                     onClick={async () => {
                       await clearDocumentCache();
                       toast({ title: 'Cache cleared', description: 'Refreshing…' });

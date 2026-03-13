@@ -782,6 +782,7 @@ const DashboardLayoutContent = ({
           onClick={(e) => {
             const elements = document.elementsFromPoint(e.clientX, e.clientY);
             if (elements.some((el) => (el as HTMLElement).closest?.('[data-chat-tabs-bar]'))) return;
+            if (elements.some((el) => (el as HTMLElement).closest?.('[data-side-chat-panel]'))) return;
             closeChatPanel();
           }}
           onKeyDown={(e) => e.key === 'Enter' && closeChatPanel()}
@@ -801,7 +802,7 @@ const DashboardLayoutContent = ({
 
       {/* Agent sidebar toggle rail is now inside ChatPanel so its width is included in the sidebar total */}
 
-      {/* FilingSidebar closing toggle rail - separate strip on right edge of FilingSidebar; matches FilingSidebar background (#F2F2EF) */}
+      {/* FilingSidebar closing toggle rail - same as Sidebar toggle rail: matches sidebar background (#F2F2EF) */}
       {isFilingSidebarOpen && (
         <button
           type="button"
@@ -814,7 +815,7 @@ const DashboardLayoutContent = ({
           style={{
             left: (isSidebarCollapsed ? 12 : (isSidebarIconsOnly ? SIDEBAR_ICONS_ONLY_WIDTH : 224)) + filingSidebarWidth - 12,
             zIndex: 100002,
-            background: tapAreaBg,
+            background: isDark ? 'hsl(var(--muted))' : '#F2F2EF',
             pointerEvents: 'auto',
             WebkitTapHighlightColor: 'transparent'
           }}

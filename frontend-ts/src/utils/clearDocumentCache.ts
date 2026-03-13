@@ -4,6 +4,7 @@
  */
 
 import { clearDocumentBlobCache } from '../services/documentBlobCache';
+import { clearDocumentThumbnailCache } from '../services/documentThumbnailCache';
 
 const PROJECTS_PAGE_CACHE_KEY = 'projectsPage_propertyHubsCache';
 
@@ -13,6 +14,7 @@ const PROJECTS_PAGE_CACHE_KEY = 'projectsPage_propertyHubsCache';
  * - window.__preloadedDocumentCovers (in-memory thumbnail cache)
  * - thumbnailDataUrlCache (RecentDocumentCard thumbnails)
  * - documentBlobCache (File View blob URLs)
+ * - documentThumbnailCache (FilingSidebar PDF thumbnails)
  */
 export async function clearDocumentCache(): Promise<void> {
   try {
@@ -27,4 +29,5 @@ export async function clearDocumentCache(): Promise<void> {
   clearThumbnailCache();
 
   clearDocumentBlobCache();
+  clearDocumentThumbnailCache();
 }

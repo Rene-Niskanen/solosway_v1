@@ -3377,10 +3377,9 @@ const StreamingResponseText: React.FC<{
           -webkit-background-clip: unset;
           background-clip: unset;
         }
-        /* Inline wrapper containing a block (e.g. strong section title or bold name) creates an empty first line box.
-           Make the wrapper block when it leads with any bold (.response-strong) so the citation line aligns with the first visible content. */
-        .streaming-response-text p > span > .cited-highlight-formatting:has(> .response-strong:first-child),
-        .streaming-response-text p > span > .cited-highlight-formatting:has(> .cited-highlight-formatting > .response-strong:first-child),
+        /* Inline wrapper containing a block (e.g. strong section title) creates an empty first line box.
+           Only make the wrapper block for section titles (.response-strong-title) so we avoid awkward line breaks
+           for plain bold text (e.g. "Highlands" as a proper noun) in the middle of a sentence. */
         .streaming-response-text p > span > .cited-highlight-formatting:has(> .response-strong-title:first-child),
         .streaming-response-text p > span > .cited-highlight-formatting:has(> .cited-highlight-formatting > .response-strong-title:first-child) {
           display: block !important;
@@ -3412,6 +3411,7 @@ const StreamingResponseText: React.FC<{
             minHeight: '1px',
             wordWrap: 'break-word',
             overflowWrap: 'break-word',
+            wordBreak: 'normal',
             maxWidth: '100%',
             overflow: 'visible',
             boxSizing: 'border-box',
@@ -17985,10 +17985,11 @@ responseStartedAt: existingMessage?.responseStartedAt,
               <button
                 type="button"
                 onClick={(e) => {
-                e.stopPropagation();
-                const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                openChooseProjectModal({ left: rect.left, top: rect.top, width: rect.width, height: rect.height });
-              }}
+                  e.preventDefault();
+                  e.stopPropagation();
+                  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                  openChooseProjectModal({ left: rect.left, top: rect.top, width: rect.width, height: rect.height });
+                }}
                 className="flex items-center justify-center gap-1.5 text-gray-700 transition-colors focus:outline-none outline-none rounded-md bg-black/[0.01] hover:bg-black/[0.05]"
                 style={{
                   border: 'none',
@@ -19961,9 +19962,11 @@ responseStartedAt: existingMessage?.responseStartedAt,
                                 <button
                                   type="button"
                                   onClick={(e) => {
-                                  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                                  openChooseProjectModal({ left: rect.left, top: rect.top, width: rect.width, height: rect.height });
-                                }}
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                                    openChooseProjectModal({ left: rect.left, top: rect.top, width: rect.width, height: rect.height });
+                                  }}
                                   className="flex items-center justify-center gap-1.5 text-gray-700 transition-colors focus:outline-none outline-none rounded-md bg-black/[0.01] hover:bg-black/[0.05]"
                                   style={{
                                     border: 'none',
@@ -20968,9 +20971,11 @@ responseStartedAt: existingMessage?.responseStartedAt,
                                 <button
                                   type="button"
                                   onClick={(e) => {
-                                  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                                  openChooseProjectModal({ left: rect.left, top: rect.top, width: rect.width, height: rect.height });
-                                }}
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                                    openChooseProjectModal({ left: rect.left, top: rect.top, width: rect.width, height: rect.height });
+                                  }}
                                   className="flex items-center justify-center gap-1.5 text-gray-700 transition-colors focus:outline-none outline-none rounded-md bg-black/[0.01] hover:bg-black/[0.05]"
                                   style={{
                                     border: 'none',

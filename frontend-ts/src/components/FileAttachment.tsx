@@ -27,7 +27,7 @@ export interface FileAttachmentProps {
   onDragEnd?: () => void;
   /** Slightly smaller UI for use inside query bubbles (no remove/drag). */
   compact?: boolean;
-  /** Chat-style dark bubble with document ID, red/colored icon, and type label. */
+  /** Chat-style bubble with document ID, red/colored icon, and type label. Always uses light container for consistency. */
   variant?: 'default' | 'chat';
 }
 
@@ -111,17 +111,24 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
     return 'FILE';
   };
 
-  /** Chat variant top row: show filename (without extension for cleaner display) */
+  /** Max chars for chat display name so it doesn't overlap the remove (x) button */
+  const CHAT_DISPLAY_NAME_MAX_LEN = 35;
+
+  /** Chat variant top row: show filename (without extension for cleaner display), truncated to avoid overlapping the x button */
   const getChatDisplayName = (): string => {
     const name = attachment.name?.trim();
     if (!name) return '';
     // Strip common extensions for cleaner display
     const ext = name.split('.').pop()?.toLowerCase();
+    let base = name;
     if (ext && ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'jpg', 'jpeg', 'png', 'gif', 'webp'].includes(ext)) {
-      const base = name.substring(0, name.lastIndexOf('.'));
-      return base || name;
+      base = name.substring(0, name.lastIndexOf('.'));
+      base = base || name;
     }
-    return name;
+    if (base.length > CHAT_DISPLAY_NAME_MAX_LEN) {
+      return base.substring(0, CHAT_DISPLAY_NAME_MAX_LEN - 3) + '...';
+    }
+    return base;
   };
 
   /** Chat variant: icon bg color and label for file type */
@@ -135,7 +142,6 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
     return { bg: '#6B7280', label: 'FILE' };
   };
 
-  const CHAT_BUBBLE_BG = '#4D4D4F';
   const CHAT_BUBBLE_RADIUS = 10;
   const CHAT_ICON_SIZE = 18;
 
@@ -229,15 +235,21 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
     };
   }, [isImage, handleDragStart, handleDragEnd]);
 
-  // Chat variant: dark grey bubble with document ID and type label
+  // Chat variant: matches light mode sidebar (#F2F2EF) or dark muted
   if (variant === 'chat') {
     const displayName = getChatDisplayName();
     const { bg: iconBg, label: iconLabel } = getChatIconStyle();
     const typeLabel = getFileTypeLabel(attachment.type);
     const sourceLabel = typeLabel;
 
+    // Always use light container for file attachments (consistent in light and dark modes)
+    const chatBubbleBg = '#F2F2EF';
+    const chatTextColor = '#374151';
+    const chatTextMuted = '#6B7280';
+    const chatRemoveBtn = { background: 'rgba(0,0,0,0.06)', color: '#374151' };
+
     const chatBubbleBase = {
-      backgroundColor: CHAT_BUBBLE_BG,
+      backgroundColor: chatBubbleBg,
       borderRadius: CHAT_BUBBLE_RADIUS,
       padding: '12px 14px',
       display: 'inline-flex',
@@ -287,8 +299,7 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
                 justifyContent: 'center',
                 borderRadius: '50%',
                 border: 'none',
-                background: 'rgba(0,0,0,0.3)',
-                color: '#fff',
+                ...chatRemoveBtn,
                 cursor: 'pointer',
                 zIndex: 10,
                 opacity: isChatHovered ? 1 : 0,
@@ -301,7 +312,7 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
             </button>
           )}
           {displayName && (
-            <span style={{ fontSize: '11px', color: '#fff', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%' }}>
+            <span style={{ fontSize: '11px', color: chatTextColor, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%', paddingRight: 28 }}>
               {displayName}
             </span>
           )}
@@ -312,7 +323,7 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
               style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
             />
           </div>
-          <span style={{ fontSize: '11px', color: '#fff', opacity: 0.9 }}>
+          <span style={{ fontSize: '11px', color: chatTextMuted }}>
             {sourceLabel}
           </span>
         </motion.div>
@@ -356,8 +367,7 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
                 justifyContent: 'center',
                 borderRadius: '50%',
                 border: 'none',
-                background: 'rgba(0,0,0,0.3)',
-                color: '#fff',
+                ...chatRemoveBtn,
                 cursor: 'pointer',
                 zIndex: 10,
                 opacity: isChatHovered ? 1 : 0,
@@ -370,7 +380,7 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
             </button>
           )}
           {displayName && (
-            <span style={{ fontSize: '11px', color: '#fff', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%' }}>
+            <span style={{ fontSize: '11px', color: chatTextColor, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%', paddingRight: 28 }}>
               {displayName}
             </span>
           )}
@@ -390,7 +400,7 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
               {iconLabel}
             </span>
           </div>
-          <span style={{ fontSize: '11px', color: '#fff', opacity: 0.9 }}>
+          <span style={{ fontSize: '11px', color: chatTextMuted }}>
             {sourceLabel}
           </span>
         </motion.div>
@@ -434,8 +444,7 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
               justifyContent: 'center',
               borderRadius: '50%',
               border: 'none',
-              background: 'rgba(0,0,0,0.3)',
-              color: '#fff',
+              ...chatRemoveBtn,
               cursor: 'pointer',
               zIndex: 10,
               opacity: isChatHovered ? 1 : 0,
@@ -448,7 +457,7 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
           </button>
         )}
         {displayName && (
-          <span style={{ fontSize: '11px', color: '#fff', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%' }}>
+          <span style={{ fontSize: '11px', color: chatTextColor, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%', paddingRight: 28 }}>
             {displayName}
           </span>
         )}
@@ -469,9 +478,6 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
               {iconLabel}
             </span>
           </div>
-          <span style={{ fontSize: '12px', color: '#fff', opacity: 0.95 }}>
-            {sourceLabel}
-          </span>
         </div>
       </motion.div>
     );

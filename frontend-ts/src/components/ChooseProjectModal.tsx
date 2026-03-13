@@ -193,26 +193,26 @@ export function ChooseProjectModal({
               <button
                 key={p.id}
                 type="button"
-                className="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-left transition-colors hover:bg-gray-100"
+                className="w-full flex items-center gap-0.5 px-2 py-1 rounded-md text-left transition-colors hover:bg-gray-100"
                 onClick={() => handleSelect(p)}
               >
                 {p.imageUrl ? (
-                  <span className="flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded overflow-hidden bg-gray-100">
+                  <span className="flex shrink-0 items-center justify-center rounded overflow-hidden bg-gray-100" style={{ width: 48, height: 48 }}>
                     <img src={p.imageUrl} alt="" className="h-full w-full object-cover" />
                   </span>
                 ) : (
-                  <span className="flex h-[18px] w-[18px] shrink-0 items-center justify-center">
+                  <span className="flex shrink-0 items-center justify-center" style={{ width: 48, height: 48 }}>
                     <img
                       src="/projectsfolder.png"
                       alt=""
-                      className="w-full h-full object-contain pointer-events-none"
+                      className="w-6 h-6 object-contain pointer-events-none"
                       style={{ display: "block" }}
                       draggable={false}
                     />
                   </span>
                 )}
-                <span className="flex-1 min-w-0 text-[13px] font-normal text-gray-900 truncate">{p.label}</span>
-                <ChevronRight className="h-4 w-4 shrink-0 text-gray-400" />
+                <span className="flex-1 min-w-0 text-xs font-medium text-slate-600 truncate" style={{ fontFamily: "'DM Sans', system-ui, -apple-system, sans-serif" }}>{p.label}</span>
+                <ChevronRight className="h-3 w-3 shrink-0 text-gray-400" strokeWidth={1.75} />
               </button>
             ))
           )}

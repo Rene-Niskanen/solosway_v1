@@ -303,12 +303,13 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
   const position = clampPanelPosition(anchorRect, PANEL_WIDTH, Math.min(ESTIMATED_PANEL_HEIGHT, maxHeightPx), highlightRect);
   const { left, top, bottom, openAbove } = position;
 
-  const filename = citationData.original_filename || "Document";
+  const rawFilename = citationData.original_filename || "Document";
+  const lastDot = rawFilename.lastIndexOf(".");
+  const base = lastDot >= 0 ? rawFilename.slice(0, lastDot) : rawFilename;
+  const ext = lastDot >= 0 ? rawFilename.slice(lastDot) : "";
+  const filename =
+    base.length > 28 ? base.slice(0, 25) + "…" + ext : rawFilename;
   const pageNum = citationData.page ?? citationData.bbox?.page ?? citationData.page_number ?? 1;
-  const docTypeLabel = citationData.classification_type
-    ? citationData.classification_type.replace(/_/g, " ")
-    : "PDF Document";
-  const displayDocType = docTypeLabel === "Document" ? "PDF Document" : docTypeLabel;
 
   const previewContainerRef = React.useRef<HTMLDivElement>(null);
   const [previewSize, setPreviewSize] = React.useState({ width: PANEL_WIDTH, height: 280 });
@@ -394,33 +395,17 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
           borderBottom: "1px solid #f0f0f0",
         }}
       >
-        <div
-          style={{
-            width: 24,
-            height: 24,
-            borderRadius: 6,
-            backgroundColor: "#FFFFFF",
-            border: "1px solid rgba(0,0,0,0.08)",
-            boxShadow: "0 1px 2px rgba(0,0,0,0.06)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            flexShrink: 0,
-            overflow: "hidden",
-          }}
-        >
-          <img
-            src="/PDF(1).png"
-            alt="PDF"
-            style={{ width: 14, height: 14, objectFit: "contain" }}
-          />
-        </div>
+        <img
+          src="/PDF(1).png"
+          alt="PDF"
+          style={{ width: 14, height: 14, objectFit: "contain", flexShrink: 0 }}
+        />
         <div style={{ minWidth: 0, flex: 1, display: "flex", alignItems: "center", gap: 6, flexWrap: "nowrap" }}>
           <div
             style={{
               fontWeight: 600,
-              fontSize: "11px",
-              color: "#1f2937",
+              fontSize: "13px",
+              color: "#4b5563",
               lineHeight: 1.25,
               overflow: "hidden",
               textOverflow: "ellipsis",
@@ -431,14 +416,15 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
           </div>
           <div
             style={{
-              fontSize: "11px",
+              fontSize: "13px",
               color: "#6b7280",
               lineHeight: 1.25,
               flexShrink: 0,
               whiteSpace: "nowrap",
+              marginLeft: "auto",
             }}
           >
-            {displayDocType} · Page {pageNum}
+            Page {pageNum}
           </div>
         </div>
         <button
@@ -472,7 +458,7 @@ export const CitationClickPanel: React.FC<CitationClickPanelProps> = ({
             e.currentTarget.style.color = "#6b7280";
           }}
         >
-          <ChevronDown size={14} strokeWidth={1.25} />
+          <ChevronDown size={18} strokeWidth={1.25} />
         </button>
       </div>
 

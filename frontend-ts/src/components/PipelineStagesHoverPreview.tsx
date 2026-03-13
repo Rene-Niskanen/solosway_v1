@@ -323,7 +323,7 @@ export const PipelineStagesDetail: React.FC<PipelineStagesDetailProps> = ({
             flexDirection: 'column',
             gap: 3,
             padding: '5px 8px',
-            backgroundColor: '#F9FAFB',
+            backgroundColor: 'white',
             borderBottom: '1px solid #E5E7EB',
           }}
         >

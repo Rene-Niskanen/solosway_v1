@@ -254,9 +254,18 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
   // Restore selection after segments/cursor change so caret is correct (matches old behavior from d41a1a5d).
   // When input is empty, skip so we don't trigger scroll-into-view on every re-render (placeholder glitch).
   // Empty case: selection is restored in onFocus and in the layout effect when isFocused (effect lives below).
+  // When user has an active text selection (non-collapsed), do NOT overwrite it – let the selection persist.
   const isInputEmpty = segments.length === 0 || (segments.length === 1 && isTextSegment(segments[0]) && segments[0].value === "");
   React.useLayoutEffect(() => {
     if (isInputEmpty) return;
+    const sel = window.getSelection();
+    const container = internalRef.current;
+    if (sel && sel.rangeCount > 0 && container) {
+      const range = sel.getRangeAt(0);
+      if (!range.collapsed && container.contains(range.startContainer) && container.contains(range.endContainer)) {
+        return; // Preserve user's text selection – do not collapse it
+      }
+    }
     restoreSelectionToCursor();
   }, [segments, cursor, restoreSelectionToCursor, isInputEmpty]);
 
@@ -410,6 +419,7 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
       const sel = window.getSelection();
       if (!sel || sel.rangeCount === 0) return;
       const range = sel.getRangeAt(0);
+      if (!range.collapsed) return; // User selected text – preserve selection, do not collapse to cursor
       const container = typeof containerRef === 'function' ? null : containerRef?.current;
       if (!container || !container.contains(range.startContainer)) return;
       for (let i = 0; i < segmentRefs.current.length; i++) {
@@ -578,6 +588,7 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
         <div ref={scrollWrapperRef} className="segment-input-scroll" style={scrollWrapperStyle}>
           <div
             ref={internalRef}
+            data-segment-input="true"
             contentEditable={!disabled}
             suppressContentEditableWarning
             role="textbox"
@@ -590,7 +601,8 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
               minHeight: "22px",
               minWidth: 0,
               wordWrap: "break-word",
-              wordBreak: "break-all",
+              overflowWrap: "break-word",
+              wordBreak: "normal",
               whiteSpace: "pre-wrap",
               overflowX: "hidden",
               WebkitTapHighlightColor: "transparent",
@@ -646,7 +658,7 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
                     : {}),
                 // Use inline-block + paddingLeft so wrapped lines align with first line (padding applies to whole block)
                 // maxWidth + wordBreak force long strings to wrap before the clear button
-                ...(i === 0 ? { display: "inline-block", paddingLeft: "8px", verticalAlign: "top", maxWidth: "100%", overflowWrap: "break-word", wordBreak: "break-all" } : {}),
+                ...(i === 0 ? { display: "inline-block", paddingLeft: "8px", verticalAlign: "top", maxWidth: "100%", overflowWrap: "break-word", wordBreak: "normal" } : {}),
               }}
             >
               {(isOnlyEmpty && showPlaceholderOverlay) || showPlaceholderHere ? placeholder : seg.value}
@@ -725,6 +737,7 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
       ) : (
       <div
         ref={internalRef}
+        data-segment-input="true"
         contentEditable={!disabled}
         suppressContentEditableWarning
         role="textbox"
@@ -737,7 +750,8 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
           minHeight: "22px",
           minWidth: 0,
           wordWrap: "break-word",
-          wordBreak: "break-all",
+          overflowWrap: "break-word",
+          wordBreak: "normal",
           whiteSpace: "pre-wrap",
           overflowX: "hidden",
           WebkitTapHighlightColor: "transparent",
@@ -793,7 +807,7 @@ export const SegmentInput = React.forwardRef<SegmentInputHandle, SegmentInputPro
                     : {}),
                 // Use inline-block + paddingLeft so wrapped lines align with first line (padding applies to whole block)
                 // maxWidth + wordBreak force long strings to wrap before the clear button
-                ...(i === 0 ? { display: "inline-block", paddingLeft: "8px", verticalAlign: "top", maxWidth: "100%", overflowWrap: "break-word", wordBreak: "break-all" } : {}),
+                ...(i === 0 ? { display: "inline-block", paddingLeft: "8px", verticalAlign: "top", maxWidth: "100%", overflowWrap: "break-word", wordBreak: "normal" } : {}),
               }}
             >
               {(isOnlyEmpty && showPlaceholderOverlay) || showPlaceholderHere ? placeholder : seg.value}

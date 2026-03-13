@@ -14,10 +14,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { useTheme } from "next-themes";
 
 export const UsageAndBillingSection: React.FC = () => {
   const { openPlanModal } = usePlanModal();
   const { usage, loading, error } = useUsage();
+  const { resolvedTheme } = useTheme();
+  const isDark = resolvedTheme !== 'light' && resolvedTheme !== undefined;
   const [stripeEnabled, setStripeEnabled] = React.useState<boolean | null>(null);
 
   React.useEffect(() => {
@@ -30,8 +33,8 @@ export const UsageAndBillingSection: React.FC = () => {
     return (
       <div className="space-y-6">
         <div>
-          <h3 className="text-[15px] font-medium text-foreground">Usage & Billing</h3>
-          <p className="text-[13px] text-muted-foreground mt-1.5 font-normal">
+          <h3 className="text-[15px] font-medium" style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}>Usage & Billing</h3>
+          <p className={`text-[13px] mt-1.5 font-normal ${!isDark ? 'text-muted-foreground' : ''}`} style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}>
             View your page usage and plan details.
           </p>
         </div>
@@ -48,8 +51,8 @@ export const UsageAndBillingSection: React.FC = () => {
     return (
       <div className="space-y-6">
         <div>
-          <h3 className="text-[15px] font-medium text-foreground">Usage & Billing</h3>
-          <p className="text-[13px] text-muted-foreground mt-1.5 font-normal">
+          <h3 className="text-[15px] font-medium" style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}>Usage & Billing</h3>
+          <p className={`text-[13px] mt-1.5 font-normal ${!isDark ? 'text-muted-foreground' : ''}`} style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}>
             View your page usage and plan details.
           </p>
         </div>
@@ -87,13 +90,13 @@ export const UsageAndBillingSection: React.FC = () => {
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
-          <h3 className="text-[15px] font-medium text-foreground">Usage & Billing</h3>
-          <p className="text-[13px] text-muted-foreground mt-1.5 font-normal">
+          <h3 className="text-[15px] font-medium" style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}>Usage & Billing</h3>
+          <p className={`text-[13px] mt-1.5 font-normal ${!isDark ? 'text-muted-foreground' : ''}`} style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}>
             View your page usage and plan details.
           </p>
         </div>
         {currencyContext?.setCurrency && (
-          <label className="flex items-center gap-2 text-[13px] text-foreground">
+          <label className={`flex items-center gap-2 text-[13px] ${!isDark ? 'text-foreground' : ''}`} style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}>
             <span>Currency</span>
             <Select value={currency} onValueChange={currencyContext.setCurrency}>
               <SelectTrigger className="flex h-6 w-[72px] items-center justify-between rounded-md border border-gray-200 bg-white py-0 pl-1.5 pr-0.5 gap-0.5 text-xs text-gray-900 focus:ring-1 focus:ring-gray-300 focus:ring-offset-0 [&_svg]:h-2.5 [&_svg]:w-2.5">
@@ -112,19 +115,19 @@ export const UsageAndBillingSection: React.FC = () => {
       </div>
 
       {/* Current plan card — same shape/position as overlay, primary styling */}
-      <div className="w-full min-w-0 rounded-xl border border-gray-200 p-6 shadow-sm" style={{ backgroundColor: '#F6F7F3' }}>
+      <div className={`w-full min-w-0 rounded-xl border p-6 shadow-sm ${isDark ? 'border-border' : 'border-gray-200'}`} style={{ backgroundColor: isDark ? 'hsl(var(--muted))' : '#F6F7F3' }}>
         <div className="flex flex-wrap items-baseline gap-2 mb-2">
-          <span className="text-[17px] font-normal text-gray-900">{planName}</span>
+          <span className="text-[17px] font-normal" style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}>{planName}</span>
           <span className="inline-flex items-center rounded-md bg-gray-600 px-1.5 py-px text-[10px] font-medium text-gray-200 leading-tight -translate-y-0.5">Current</span>
           {planPriceFormatted != null && (
-            <span className="text-[15px] font-normal text-gray-700">{planPriceFormatted}/mo.</span>
+            <span className="text-[15px] font-normal" style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}>{planPriceFormatted}/mo.</span>
           )}
         </div>
-        <p className="text-[13px] text-gray-600 mb-1">
+        <p className={`text-[13px] mb-1 ${!isDark ? 'text-gray-600' : ''}`} style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}>
           {usage.monthly_limit.toLocaleString()} pages/month for {planDescription.toLowerCase()}.
         </p>
         {businessCopy && (
-          <p className="text-[13px] text-gray-600 mb-4">
+          <p className={`text-[13px] mb-4 ${!isDark ? 'text-gray-600' : ''}`} style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}>
             {businessCopy}
           </p>
         )}
@@ -142,23 +145,24 @@ export const UsageAndBillingSection: React.FC = () => {
             }
             openPlanModal(usage.plan, usage.billing_cycle_end);
           }}
-          className="rounded-sm px-3 py-1 h-auto text-xs font-medium border border-gray-300 text-gray-700 mt-4 bg-[#F6F7F3] hover:bg-[#EEEFE9] hover:text-gray-700"
+          className={`rounded-sm border border-border bg-background px-3 py-1 h-auto text-xs font-medium mt-4 focus:ring-1 focus:ring-gray-300 focus:ring-offset-0 focus:border-border ${!isDark ? 'text-foreground' : ''}`}
+          style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}
         >
           Manage Subscription
         </Button>
       </div>
 
       {/* Usage this period / month */}
-      <div className="rounded-lg border border-gray-200 p-6 shadow-sm" style={{ backgroundColor: '#F6F7F3' }}>
-        <h4 className="text-[14px] font-normal text-gray-900 mb-3">
+      <div className={`rounded-lg border p-6 shadow-sm ${isDark ? 'border-border' : 'border-gray-200'}`} style={{ backgroundColor: isDark ? 'hsl(var(--muted))' : '#F6F7F3' }}>
+        <h4 className={`text-[14px] font-normal mb-3 ${!isDark ? 'text-gray-900' : ''}`} style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}>
           {usageSectionTitle}
           {periodEndFormatted && (
-            <span className="text-[12px] font-normal text-gray-500 ml-1.5">(ends {periodEndFormatted})</span>
+            <span className={`text-[12px] font-normal ml-1.5 ${!isDark ? 'text-gray-500' : ''}`} style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}>(ends {periodEndFormatted})</span>
           )}
         </h4>
         <div className="flex items-center justify-between mb-2">
-          <span className="text-[24px] font-normal text-gray-900">{displayPercentLabel}</span>
-          <span className="text-[13px] text-gray-600">
+          <span className={`text-[24px] font-normal ${!isDark ? 'text-gray-900' : ''}`} style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}>{displayPercentLabel}</span>
+          <span className={`text-[13px] ${!isDark ? 'text-gray-600' : ''}`} style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}>
             {(usage.pages_used ?? 0).toLocaleString()} / {(usage.monthly_limit ?? 0).toLocaleString()} pages
           </span>
         </div>
@@ -174,7 +178,7 @@ export const UsageAndBillingSection: React.FC = () => {
             );
           })}
         </div>
-        <p className="text-[13px] text-gray-600 mt-2">
+        <p className={`text-[13px] mt-2 ${!isDark ? 'text-gray-600' : ''}`} style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}>
           {overAllowance
             ? `0 pages remaining · Over allowance for this period${periodEndFormatted ? ` until ${periodEndFormatted}` : ""}`
             : `${(usage.remaining ?? monthlyLimit).toLocaleString()} pages remaining · ${formattedPercent} of monthly allowance used`}

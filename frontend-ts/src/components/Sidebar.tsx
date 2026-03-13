@@ -458,10 +458,11 @@ export const Sidebar = ({
           onClick={() => handleNavClick(item)}
             className={`w-10 flex items-center justify-center p-2 rounded border ${
               active
-                ? isDark ? 'bg-card text-sidebar-foreground border-border' : 'bg-white text-[#141413] border-gray-300'
-                : isDark ? 'text-sidebar-foreground hover:bg-card/80 border-transparent active:bg-card active:text-sidebar-foreground' : 'text-[#141413] hover:bg-white/60 border-transparent active:bg-white/60'
+                ? isDark ? 'bg-card border-border' : 'bg-white text-[#141413] border-gray-300'
+                : isDark ? 'hover:bg-card/80 border-transparent active:bg-card' : 'text-[#141413] hover:bg-white/60 border-transparent active:bg-white/60'
           }`}
           style={{
+            ...(isDark ? { color: 'rgb(220, 220, 220)' } : {}),
             boxShadow: active ? '0 1px 2px rgba(0, 0, 0, 0.04)' : 'none',
             transition: 'none',
             boxSizing: 'border-box',
@@ -492,10 +493,11 @@ export const Sidebar = ({
         onClick={() => handleNavClick(item)}
         className={`w-full flex items-center gap-3 px-3 py-1.5 rounded group relative border ${
           active
-            ? isDark ? 'bg-card text-sidebar-foreground border-border' : 'bg-white text-[#141413] border-gray-200/80'
-            : isDark ? 'text-sidebar-foreground hover:bg-card/80 border-transparent active:bg-card active:text-sidebar-foreground' : 'text-[#141413] hover:bg-white/60 border-transparent active:bg-white/60'
+            ? isDark ? 'bg-card border-border' : 'bg-white text-[#141413] border-gray-200/80'
+            : isDark ? 'hover:bg-card/80 border-transparent active:bg-card' : 'text-[#141413] hover:bg-white/60 border-transparent active:bg-white/60'
         }`}
         style={{
+          ...(isDark ? { color: 'rgb(220, 220, 220)' } : {}),
           boxShadow: active ? '0 1px 1px rgba(0, 0, 0, 0.03)' : 'none',
           transition: 'none',
           boxSizing: 'border-box',
@@ -612,7 +614,8 @@ export const Sidebar = ({
                 <button
                   type="button"
                   onClick={(e) => { e.stopPropagation(); onIconsOnlyToggle(); }}
-                  className={`rounded border border-transparent transition-colors flex items-center justify-center shrink-0 p-1.5 ${isDark ? 'text-sidebar-foreground hover:bg-card/80 active:bg-card' : 'text-[#141413] hover:bg-white/60 active:bg-white/60'}`}
+                  className={`rounded border border-transparent transition-colors flex items-center justify-center shrink-0 p-1.5 ${isDark ? 'hover:bg-card/80 active:bg-card' : 'text-[#141413] hover:bg-white/60 active:bg-white/60'}`}
+                  style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}
                   aria-label={isIconsOnly ? 'Expand sidebar' : 'Show only icons'}
                   title={isIconsOnly ? 'Expand sidebar' : 'Show only icons'}
                 >
@@ -628,10 +631,11 @@ export const Sidebar = ({
                   onRestoreActiveChat?.();
                   onNewChat?.();
                 }}
-                className={`flex items-center rounded border border-transparent transition-colors ${isDark ? 'text-sidebar-foreground hover:bg-muted active:bg-card' : 'text-[#141413] hover:bg-white/60 active:bg-white/60'} ${isIconsOnly ? 'justify-center p-2 w-10 mt-6' : 'w-full gap-3 pl-2 pr-3 py-1.5'}`}
+                className={`flex items-center rounded border border-transparent transition-colors ${isDark ? 'hover:bg-muted active:bg-card' : 'text-[#141413] hover:bg-white/60 active:bg-white/60'} ${isIconsOnly ? 'justify-center p-2 w-10 mt-6' : 'w-full gap-3 pl-2 pr-3 py-1.5'}`}
+                style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}
                 aria-label="New chat"
               >
-                <span className={`h-6 w-6 flex-shrink-0 rounded-full flex items-center justify-center ${isDark ? 'border border-white/10' : 'bg-gray-200/80 border border-gray-300'}`} style={isDark ? { backgroundColor: 'hsl(220, 22%, 26%)' } : undefined}>
+                <span className={`h-6 w-6 flex-shrink-0 rounded-full flex items-center justify-center ${isDark ? 'bg-card' : 'bg-white'}`} style={!isDark ? { boxShadow: '0 1px 2px rgba(0, 0, 0, 0.04)' } : undefined}>
                   <Plus className="h-3.5 w-3.5 text-inherit" strokeWidth={2.5} />
                 </span>
                 {!isIconsOnly && <span className="text-[14px] font-normal flex-1 text-left text-inherit" style={{ marginLeft: '-2px' }}>New chat</span>}
@@ -641,10 +645,11 @@ export const Sidebar = ({
                   onClick={onOpenSearch}
                   className={`w-full flex items-center rounded border transition-colors ${
                     isSearchButtonActive
-                      ? isDark ? 'bg-card text-card-foreground border-border' : 'bg-white text-[#141413] border-gray-300'
-                      : isDark ? 'border-transparent text-sidebar-foreground hover:bg-muted active:bg-card' : 'border-transparent text-[#141413] hover:bg-white/60 active:bg-white/60'
+                      ? isDark ? 'bg-card border-border' : 'bg-white text-[#141413] border-gray-300'
+                      : isDark ? 'border-transparent hover:bg-muted active:bg-card' : 'border-transparent text-[#141413] hover:bg-white/60 active:bg-white/60'
                   } ${isIconsOnly ? 'justify-center p-2 w-10' : 'gap-3 px-3 py-1.5 w-full'}`}
                   style={{
+                    ...(isDark ? { color: 'rgb(220, 220, 220)' } : {}),
                     boxShadow: isSearchButtonActive ? '0 1px 2px rgba(0, 0, 0, 0.04)' : 'none',
                   }}
                   aria-label="Search"
@@ -656,7 +661,8 @@ export const Sidebar = ({
               {onUploadFile && (
                 <button
                   onClick={onUploadFile}
-                  className={`flex items-center rounded border border-transparent transition-colors ${isDark ? 'text-sidebar-foreground hover:bg-muted active:bg-card' : 'text-[#141413] hover:bg-white/60 active:bg-white/60'} ${isIconsOnly ? 'justify-center p-2 w-10' : 'w-full gap-3 px-3 py-1.5'}`}
+                  className={`flex items-center rounded border border-transparent transition-colors ${isDark ? 'hover:bg-muted active:bg-card' : 'text-[#141413] hover:bg-white/60 active:bg-white/60'} ${isIconsOnly ? 'justify-center p-2 w-10' : 'w-full gap-3 px-3 py-1.5'}`}
+                  style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}
                   aria-label="Upload files"
                 >
                   <Upload className="h-5 w-5 flex-shrink-0 text-inherit" strokeWidth={1.5} />
@@ -920,10 +926,10 @@ export const Sidebar = ({
               <div className="space-y-px mb-4">
                 <button
                   onClick={onNewChat}
-                  className={`w-full flex items-center gap-3 px-3 py-1.5 rounded-lg transition-colors border ${isDark ? 'bg-card hover:bg-muted border-border text-sidebar-foreground' : 'bg-white hover:bg-gray-50 border-gray-200/60 text-[#141413]'}`}
-                  style={{ boxShadow: '0 1px 2px rgba(0, 0, 0, 0.04)' }}
+                  className={`w-full flex items-center gap-3 px-3 py-1.5 rounded-lg transition-colors border ${isDark ? 'bg-card hover:bg-muted border-border' : 'bg-white hover:bg-gray-50 border-gray-200/60 text-[#141413]'}`}
+                  style={{ ...(isDark ? { color: 'rgb(220, 220, 220)' } : {}), boxShadow: '0 1px 2px rgba(0, 0, 0, 0.04)' }}
                 >
-                  <span className={`h-6 w-6 flex-shrink-0 rounded-full flex items-center justify-center ${isDark ? 'border border-white/10' : 'bg-gray-200/80 border border-gray-300'}`} style={isDark ? { backgroundColor: 'hsl(220, 22%, 26%)' } : undefined}>
+                  <span className={`h-6 w-6 flex-shrink-0 rounded-full flex items-center justify-center ${isDark ? 'bg-card' : 'bg-white'}`} style={!isDark ? { boxShadow: '0 1px 2px rgba(0, 0, 0, 0.04)' } : undefined}>
                     <Plus className="h-3.5 w-3.5 text-inherit" strokeWidth={2.5} />
                   </span>
                   <span className="text-inherit font-normal text-[14px] flex-1 text-left" style={{ marginLeft: '-2px' }}>New chat</span>
@@ -933,10 +939,11 @@ export const Sidebar = ({
                     onClick={onOpenSearch}
                     className={`w-full flex items-center gap-3 px-3 py-1.5 rounded border transition-colors ${
                       isSearchButtonActive
-                        ? isDark ? 'bg-card text-card-foreground border-border' : 'bg-white text-[#141413] border-gray-200/80'
-                        : isDark ? 'border-transparent text-sidebar-foreground hover:bg-muted active:bg-card' : 'border-transparent text-[#141413] hover:bg-white/60 active:bg-white/60'
+                        ? isDark ? 'bg-card border-border' : 'bg-white text-[#141413] border-gray-200/80'
+                        : isDark ? 'border-transparent hover:bg-muted active:bg-card' : 'border-transparent text-[#141413] hover:bg-white/60 active:bg-white/60'
                     }`}
                     style={{
+                      ...(isDark ? { color: 'rgb(220, 220, 220)' } : {}),
                       boxShadow: isSearchButtonActive ? '0 1px 2px rgba(0, 0, 0, 0.04)' : 'none',
                     }}
                     aria-label="Search"
@@ -948,7 +955,8 @@ export const Sidebar = ({
                 {onUploadFile && (
                   <button
                     onClick={onUploadFile}
-                    className={`w-full flex items-center gap-3 px-3 py-1.5 rounded border border-transparent transition-colors ${isDark ? 'text-sidebar-foreground hover:bg-muted active:bg-card' : 'text-[#141413] hover:bg-white/60 active:bg-white/60'}`}
+                    className={`w-full flex items-center gap-3 px-3 py-1.5 rounded border border-transparent transition-colors ${isDark ? 'hover:bg-muted active:bg-card' : 'text-[#141413] hover:bg-white/60 active:bg-white/60'}`}
+                    style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}
                     aria-label="Upload files"
                   >
                     <Upload className="h-5 w-5 flex-shrink-0 text-inherit" strokeWidth={1.5} />

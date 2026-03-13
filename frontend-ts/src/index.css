@@ -473,6 +473,18 @@ button:focus-visible:not(:focus-within) {
   outline-offset: 2px !important;
 }
 
+/* Chat input bar: use native/default selection highlight (like ChatGPT) – system Highlight color */
+[data-segment-input]::selection,
+[data-segment-input] *::selection {
+  background: Highlight;
+  color: HighlightText;
+}
+[data-segment-input]::-moz-selection,
+[data-segment-input] *::-moz-selection {
+  background: Highlight;
+  color: HighlightText;
+}
+
 /* Text selection in chat responses: match drag highlight to persistent overlay (Ask OpenFind) */
 .streaming-response-text::selection,
 .streaming-response-text *::selection {
@@ -499,10 +511,10 @@ button:focus-visible:not(:focus-within) {
   font-weight: 500 !important;
   font-family: inherit !important;
   line-height: 1 !important;
-  color: #6b7280 !important;
-  background-color: rgba(0, 0, 0, 0.04) !important;
+  color: #5b6573 !important;
+  background-color: rgba(0, 0, 0, 0.06) !important;
   border: none !important;
-  border-radius: 0.1875rem !important; /* 3px – subtle pill */
+  border-radius: 0.5rem !important;  /* round pill */
   cursor: pointer !important;
   vertical-align: middle !important;
   position: relative !important;
@@ -512,21 +524,21 @@ button:focus-visible:not(:focus-within) {
   -webkit-tap-highlight-color: transparent !important;
 }
 .citation-link-btn:hover {
-  background-color: rgba(0, 0, 0, 0.06) !important;
+  background-color: rgba(0, 0, 0, 0.10) !important;
   color: #4b5563 !important;
 }
 .citation-link-btn.citation-link-btn--saved {
-  color: #9ca3af !important;
-  background-color: rgba(0, 0, 0, 0.03) !important;
+  color: #6b7280 !important;
+  background-color: rgba(0, 0, 0, 0.05) !important;
 }
 .citation-link-btn.citation-link-btn--saved:hover {
-  background-color: rgba(0, 0, 0, 0.06) !important;
-  color: #6b7280 !important;
+  background-color: rgba(0, 0, 0, 0.09) !important;
+  color: #5b6573 !important;
 }
 .citation-link-btn.citation-link-btn--selected {
   color: #4b5563 !important;
   background-color: #f3f4f6 !important;
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.08) !important;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.10) !important;
 }
 .citation-link-btn.citation-link-btn--selected:hover {
   background-color: #e5e7eb !important;
@@ -536,49 +548,49 @@ button:focus-visible:not(:focus-within) {
 
 /* Citation in document preview / response: same design, white context */
 [data-cited-text-block] .citation-link-btn {
-  background-color: rgba(0, 0, 0, 0.04) !important;
-  color: #6b7280 !important;
+  background-color: rgba(0, 0, 0, 0.06) !important;
+  color: #5b6573 !important;
   box-shadow: none !important;
 }
 [data-cited-text-block] .citation-link-btn:hover {
-  background-color: rgba(0, 0, 0, 0.06) !important;
+  background-color: rgba(0, 0, 0, 0.10) !important;
 }
 [data-cited-text-block] .citation-link-btn.citation-link-btn--saved {
-  background-color: rgba(0, 0, 0, 0.03) !important;
-  color: #9ca3af !important;
+  background-color: rgba(0, 0, 0, 0.05) !important;
+  color: #6b7280 !important;
 }
 [data-cited-text-block] .citation-link-btn.citation-link-btn--selected {
   background-color: #f3f4f6 !important;
   color: #4b5563 !important;
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.08) !important;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.10) !important;
 }
 
 /* Citation pills: same light design in dark mode (do not darken) */
 .dark .citation-link-btn,
 .dark-blue .citation-link-btn {
-  color: #6b7280 !important;
-  background-color: rgba(0, 0, 0, 0.04) !important;
+  color: #5b6573 !important;
+  background-color: rgba(0, 0, 0, 0.06) !important;
 }
 .dark .citation-link-btn:hover,
 .dark-blue .citation-link-btn:hover {
-  background-color: rgba(0, 0, 0, 0.06) !important;
+  background-color: rgba(0, 0, 0, 0.10) !important;
   color: #4b5563 !important;
 }
 .dark .citation-link-btn.citation-link-btn--saved,
 .dark-blue .citation-link-btn.citation-link-btn--saved {
-  color: #9ca3af !important;
-  background-color: rgba(0, 0, 0, 0.03) !important;
+  color: #6b7280 !important;
+  background-color: rgba(0, 0, 0, 0.05) !important;
 }
 .dark .citation-link-btn.citation-link-btn--saved:hover,
 .dark-blue .citation-link-btn.citation-link-btn--saved:hover {
-  background-color: rgba(0, 0, 0, 0.06) !important;
-  color: #6b7280 !important;
+  background-color: rgba(0, 0, 0, 0.09) !important;
+  color: #5b6573 !important;
 }
 .dark .citation-link-btn.citation-link-btn--selected,
 .dark-blue .citation-link-btn.citation-link-btn--selected {
   color: #4b5563 !important;
   background-color: #f3f4f6 !important;
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.08) !important;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.10) !important;
 }
 .dark .citation-link-btn.citation-link-btn--selected:hover,
 .dark-blue .citation-link-btn.citation-link-btn--selected:hover {
@@ -588,23 +600,23 @@ button:focus-visible:not(:focus-within) {
 }
 .dark [data-cited-text-block] .citation-link-btn,
 .dark-blue [data-cited-text-block] .citation-link-btn {
-  background-color: rgba(0, 0, 0, 0.04) !important;
-  color: #6b7280 !important;
+  background-color: rgba(0, 0, 0, 0.06) !important;
+  color: #5b6573 !important;
 }
 .dark [data-cited-text-block] .citation-link-btn:hover,
 .dark-blue [data-cited-text-block] .citation-link-btn:hover {
-  background-color: rgba(0, 0, 0, 0.06) !important;
+  background-color: rgba(0, 0, 0, 0.10) !important;
 }
 .dark [data-cited-text-block] .citation-link-btn.citation-link-btn--saved,
 .dark-blue [data-cited-text-block] .citation-link-btn.citation-link-btn--saved {
-  background-color: rgba(0, 0, 0, 0.03) !important;
-  color: #9ca3af !important;
+  background-color: rgba(0, 0, 0, 0.05) !important;
+  color: #6b7280 !important;
 }
 .dark [data-cited-text-block] .citation-link-btn.citation-link-btn--selected,
 .dark-blue [data-cited-text-block] .citation-link-btn.citation-link-btn--selected {
   background-color: #f3f4f6 !important;
   color: #4b5563 !important;
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.08) !important;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.10) !important;
 }
 
 /* Completely hidden scrollbar for tabs container - still scrollable */

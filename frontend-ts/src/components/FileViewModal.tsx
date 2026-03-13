@@ -176,6 +176,8 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
   const [isExiting, setIsExiting] = useState(false);
   const exitingDocRef = useRef<FileViewDocument | null>(null);
   const modalContainerRef = useRef<HTMLDivElement | null>(null);
+  const modalPanelRef = useRef<HTMLDivElement | null>(null);
+  const modalContentRef = useRef<HTMLDivElement | null>(null);
   const pipelineModalRef = useRef<HTMLDivElement | null>(null);
   const viewDocumentRef = useRef<HTMLAnchorElement | null>(null);
   const viewDocumentLinkRef = useRef<HTMLAnchorElement | null>(null);
@@ -630,20 +632,21 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
 
   const visible = isOpen || isExiting;
 
-  // Click-outside-to-close (allows hover to pass through to sidebar when overlay uses pointer-events: none)
-  // Clicks inside clickOutsideExcludeRef (e.g. FilingSidebar) do not close so user can switch documents
+  // Click-outside-to-close. Use modalPanelRef (entire panel incl. floating bar and chevrons) so
+  // clicks on prev/next page icons move pages rather than closing the preview.
   useEffect(() => {
     if (!visible) return;
     const handleDocumentClick = (e: MouseEvent) => {
       if (isExiting) return;
       const target = e.target as Node;
       if (clickOutsideExcludeRef?.current?.contains(target)) return;
-      if (modalContainerRef.current && !modalContainerRef.current.contains(target)) {
+      const panelEl = modalPanelRef.current ?? modalContentRef.current ?? modalContainerRef.current;
+      if (panelEl && !panelEl.contains(target)) {
         handleCloseRequest();
       }
     };
-    document.addEventListener('click', handleDocumentClick, true);
-    return () => document.removeEventListener('click', handleDocumentClick, true);
+    document.addEventListener('click', handleDocumentClick);
+    return () => document.removeEventListener('click', handleDocumentClick);
   }, [visible, isExiting, handleCloseRequest, clickOutsideExcludeRef]);
   const displayDoc = doc ?? exitingDocRef.current;
   if (!visible || !displayDoc) return null;
@@ -665,6 +668,7 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
         transition={{ duration: ANIM_DURATION, ease: 'easeOut' }}
       />
       <motion.div
+        ref={modalPanelRef}
         className="fixed left-1/2 top-1/2 flex flex-col items-center gap-3"
         style={{
           zIndex: 10001,
@@ -683,6 +687,7 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
         onClick={(e) => e.stopPropagation()}
       >
       <div
+        ref={modalContentRef}
         className="flex flex-col rounded-xl overflow-hidden shadow-2xl"
         style={{
           width: 'min(50vw, 540px)',
@@ -773,10 +778,10 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
         {/* Body: two panes - scrollable when content exceeds available space (e.g. small viewport) */}
         <div className="flex flex-1 min-h-0 overflow-y-auto" style={{ backgroundColor: 'hsl(var(--muted))' }}>
           {/* Left: Document preview - fixed aspect ratio so loading state matches document area size */}
-          <div className="flex flex-col flex-1 min-w-0 p-2" style={{ backgroundColor: 'hsl(var(--muted))' }}>
+          <div className="flex flex-col flex-1 min-w-0 p-2" style={{ backgroundColor: isDark ? 'hsl(var(--muted))' : '#F6F7F3' }}>
             <div
               ref={containerRef}
-              className={`w-full rounded-lg flex items-center justify-center overflow-hidden relative flex-1 min-h-0 ${isDark ? 'bg-white/5' : 'bg-black/5'}`}
+              className={`w-full rounded-none flex items-center justify-center overflow-hidden relative flex-1 min-h-0 ${isDark ? 'bg-white/5' : 'bg-black/5'}`}
               style={{ aspectRatio: '210/297' }}
             >
               {loading && !docxViewerUrl && (
@@ -794,7 +799,7 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
                 </div>
               )}
               {!loading && !error && pdfDocument && (
-                <canvas ref={canvasRef} className="w-full h-full object-contain" />
+                <canvas ref={canvasRef} className="w-full h-full object-cover" />
               )}
               {!loading && !error && !pdfDocument && previewUrl && (doc?.file_type || '').toLowerCase().includes('pdf') && (
                 <div className="absolute inset-0 flex items-center justify-center">
@@ -835,10 +840,7 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
               )}
             </div>
             {/* Footer: page counter + prev/next left, download right */}
-            <div
-              className="flex items-center justify-between gap-2 mt-1.5 px-2 py-1.5 rounded-lg"
-              style={{ backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)' }}
-            >
+            <div className="flex items-center justify-between gap-2 mt-1.5 px-2 py-1.5">
               <div className="flex items-center gap-2 ml-3">
                 <span
                   className={`text-xs tabular-nums min-w-[5.25rem] inline-block text-left ${isDark ? 'text-foreground' : 'text-gray-700'}`}
@@ -848,7 +850,10 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
                 </span>
                 <button
                   type="button"
-                  onClick={handlePrevPage}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handlePrevPage();
+                  }}
                   disabled={currentPage <= 1 || !pdfDocument}
                   className={`p-1 rounded disabled:opacity-40 disabled:pointer-events-none ${isDark ? 'text-foreground hover:bg-white/10' : 'text-gray-700 hover:bg-black/10'}`}
                   aria-label="Previous page"
@@ -857,7 +862,10 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
                 </button>
                 <button
                   type="button"
-                  onClick={handleNextPage}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleNextPage();
+                  }}
                   disabled={currentPage >= totalPages || !pdfDocument}
                   className={`p-1 rounded disabled:opacity-40 disabled:pointer-events-none ${isDark ? 'text-foreground hover:bg-white/10' : 'text-gray-700 hover:bg-black/10'}`}
                   aria-label="Next page"
@@ -879,7 +887,7 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
           {/* Right: Key facts - scrollable list */}
           <div
             className="w-56 shrink-0 flex flex-col min-h-0"
-            style={{ backgroundColor: 'hsl(var(--muted))' }}
+            style={{ backgroundColor: isDark ? 'hsl(var(--muted))' : '#F6F7F3' }}
           >
             <div className="flex-1 min-h-0 overflow-y-auto py-2 pl-2 pr-2">
               <div
@@ -981,7 +989,7 @@ export const FileViewModal: React.FC<FileViewModalProps> = ({
       <div
         className="flex gap-2 rounded-lg overflow-hidden shadow-lg"
         style={{
-          backgroundColor: 'hsl(var(--muted))',
+          backgroundColor: isDark ? 'hsl(var(--muted))' : '#F6F7F3',
           padding: '6px 10px',
           border: isDark ? '2px solid hsl(var(--border))' : '2px solid #E4E4E1',
           pointerEvents: 'auto',

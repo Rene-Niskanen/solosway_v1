@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import { Edit2, X, Check } from "lucide-react";
+import { useTheme } from "next-themes";
 
 interface EnhancedEditableFieldProps {
   value: string;
@@ -41,6 +42,8 @@ export const EnhancedEditableField: React.FC<EnhancedEditableFieldProps> = ({
   const inputRef = React.useRef<HTMLInputElement | HTMLTextAreaElement>(null);
   // Use a ref to store the value when entering edit mode to avoid async state issues
   const editValueRef = React.useRef<string>(value || '');
+  const { resolvedTheme } = useTheme();
+  const isDark = resolvedTheme !== 'light' && resolvedTheme !== undefined;
 
   // Sync editValue with value prop when not editing; when editing, never overwrite ref so user typing is preserved
   React.useEffect(() => {
@@ -284,17 +287,17 @@ export const EnhancedEditableField: React.FC<EnhancedEditableFieldProps> = ({
     display: 'flex',
     alignItems: 'center',
     gap: '12px',
-    padding: '10px 12px',
     cursor: 'pointer',
-    borderRadius: '8px',
-    border: '1px solid transparent',
     width: '100%',
     textAlign: 'left',
     font: 'inherit',
     appearance: 'none',
-    backgroundColor: staticDisplay ? (containerBackgroundColor ?? 'transparent') : (isHovered ? 'hsl(var(--muted))' : (containerBackgroundColor ?? 'transparent')),
     transition: staticDisplay ? 'none' : 'all 150ms ease',
   };
+
+  const textColor = isDark ? 'rgb(220, 220, 220)' : ((value && value.trim()) ? undefined : '#9ca3af');
+  const iconColor = isDark ? 'rgb(220, 220, 220)' : '#9ca3af';
+  const labelColor = isDark ? 'rgb(220, 220, 220)' : '#9ca3af';
 
   // Use div with role="button" instead of <button> to avoid any native form/link behavior
   // that could cause navigation or blank screen when used inside complex layouts (e.g. Settings > Profile).
@@ -319,29 +322,31 @@ export const EnhancedEditableField: React.FC<EnhancedEditableFieldProps> = ({
       onMouseEnter={staticDisplay ? undefined : () => setIsHovered(true)}
       onMouseLeave={staticDisplay ? undefined : () => setIsHovered(false)}
       style={displayStyles}
-      className="enhanced-editable-field-trigger"
+      className={`enhanced-editable-field-trigger rounded-sm border border-border bg-background px-3 py-1 text-xs font-medium focus:outline-none focus:ring-1 focus:ring-gray-300 focus:ring-offset-0 focus:border-border ${!staticDisplay ? 'hover:bg-muted' : ''}`}
     >
       {icon && (
-        <div style={{ display: 'flex', alignItems: 'center', flexShrink: 0, color: '#9ca3af' }}>
+        <div style={{ display: 'flex', alignItems: 'center', flexShrink: 0, color: iconColor }}>
           {icon}
         </div>
       )}
       <div style={{ flex: 1, minWidth: 0 }}>
         {label && (
-          <div style={{ fontSize: '11px', color: '#9ca3af', marginBottom: '2px', fontWeight: 500, lineHeight: '1.4' }}>
+          <div style={{ fontSize: '11px', color: labelColor, marginBottom: '2px', fontWeight: 500, lineHeight: '1.4' }}>
             {label}
           </div>
         )}
         <div style={{
           fontSize: '13px',
-          color: (value && value.trim()) ? '#1a1a1a' : '#9ca3af',
+          color: textColor ?? (value && value.trim() ? undefined : undefined),
           whiteSpace: multiline ? 'pre-wrap' : 'nowrap',
           overflow: multiline ? 'visible' : 'hidden',
           textOverflow: multiline ? 'clip' : 'ellipsis',
-          fontWeight: 450,
+          fontWeight: 500,
           lineHeight: '1.5',
           minHeight: '20px',
-        }}>
+        }}
+          className={!isDark && (value && value.trim()) ? 'text-foreground' : ''}
+        >
           {(value && value.trim()) ? value : (placeholder || 'Click to edit')}
         </div>
       </div>
@@ -351,12 +356,13 @@ export const EnhancedEditableField: React.FC<EnhancedEditableFieldProps> = ({
             opacity: isHovered || showSuccess ? 1 : 0,
             transition: 'opacity 150ms ease',
             flexShrink: 0,
+            color: iconColor,
           }}
         >
           {showSuccess ? (
             <Check className="w-4 h-4" style={{ color: '#22c55e' }} />
           ) : (
-            <Edit2 className="w-3.5 h-3.5" style={{ color: '#9ca3af' }} />
+            <Edit2 className="w-3.5 h-3.5" />
           )}
         </div>
       )}

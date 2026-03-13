@@ -281,8 +281,9 @@ export const ChatPanel = ({
                     className={`p-1.5 text-xs rounded-md transition-colors duration-75 ease-out ${
                       showArchived 
                         ? 'bg-amber-500/30 text-amber-800 hover:bg-amber-500/40' 
-                        : isDark ? 'bg-white/10 text-slate-200 hover:bg-white/15' : 'bg-black/8 text-[#374151] hover:bg-black/12'
+                        : isDark ? 'bg-white/10 hover:bg-white/15' : 'bg-black/8 text-[#374151] hover:bg-black/12'
                     }`}
+                    style={!showArchived && isDark ? { color: 'rgb(220, 220, 220)' } : undefined}
                   >
                     {showArchived ? <ArchiveRestore className="w-3.5 h-3.5" /> : <Archive className="w-3.5 h-3.5" />}
                   </motion.button>
@@ -311,7 +312,7 @@ export const ChatPanel = ({
                         aria-haspopup="true"
                         aria-expanded={optionsMenuOpen}
                       >
-                        <Trash2 className={`w-4 h-4 ${isDark ? 'text-slate-300 hover:text-slate-100' : 'text-[#6B7280] hover:text-[#374151]'}`} strokeWidth={1.25} />
+                        <Trash2 className={`w-4 h-4 ${!isDark ? 'text-[#6B7280] hover:text-[#374151]' : ''}`} style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined} strokeWidth={1.25} />
                       </button>
                     </PopoverTrigger>
                     <PopoverContent
@@ -382,7 +383,7 @@ export const ChatPanel = ({
                     title="Close Agent Sidebar"
                     type="button"
                   >
-                    <X className={`w-4 h-4 ${isDark ? 'text-slate-300 hover:text-slate-100' : 'text-[#6B7280] hover:text-[#374151]'}`} strokeWidth={1.75} />
+                    <X className={`w-4 h-4 ${!isDark ? 'text-[#6B7280] hover:text-[#374151]' : ''}`} style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined} strokeWidth={1.75} />
                   </button>
                 </div>
               </div>
@@ -403,8 +404,8 @@ export const ChatPanel = ({
                 className={`w-full flex items-center justify-center gap-1.5 px-2.5 py-1.5 border rounded-md transition-[border-color,background-color] duration-75 ease-out group ${isDark ? 'border-slate-500/60 hover:border-slate-400' : 'border-gray-300/80 hover:border-gray-400'}`}
                 style={{ backgroundColor: panelBg, opacity: 1, backdropFilter: 'none' }}
               >
-                <Plus className={`w-3.5 h-3.5 ${isDark ? 'text-slate-200' : 'text-slate-500'}`} />
-                <span className={`text-[13px] font-medium ${isDark ? 'text-slate-200' : 'text-slate-500'}`}>
+                <Plus className={`w-3.5 h-3.5 ${!isDark ? 'text-slate-500' : ''}`} style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined} />
+                <span className={`text-[13px] font-medium ${!isDark ? 'text-slate-500' : ''}`} style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}>
                   New Agent
                 </span>
               </motion.button>
@@ -419,7 +420,7 @@ export const ChatPanel = ({
                 {/* Agents Heading */}
                 {displayedChats.length > 0 && (
                   <div className="px-0 pt-2 pb-0.5 mb-0.5">
-                    <h2 className={`text-[12px] font-medium pl-2 ${isDark ? 'text-slate-300' : ''}`} style={!isDark ? { color: '#6B7280' } : undefined}>Agents</h2>
+                    <h2 className="text-[12px] font-medium pl-2" style={isDark ? { color: 'rgb(220, 220, 220)' } : { color: '#6B7280' }}>Agents</h2>
                   </div>
                 )}
                 <AnimatePresence mode="popLayout">
@@ -486,16 +487,16 @@ export const ChatPanel = ({
                         ) : (
                           <div className="flex flex-col w-full relative">
                             {/* Title row */}
-                            <div className={`flex items-center gap-1.5 text-[12px] font-normal truncate pr-5 ${isDark ? 'text-slate-200' : ''}`} style={!isDark ? { color: '#374151' } : undefined}>
+                            <div className="flex items-center gap-1.5 text-[12px] font-normal truncate pr-5" style={isDark ? { color: 'rgb(220, 220, 220)' } : { color: '#374151' }}>
                               {chat.status === 'loading' && (
-                                <Loader2 className={`w-3 h-3 animate-spin flex-shrink-0 ${isDark ? 'text-slate-400' : ''}`} style={!isDark ? { color: '#6B7280' } : undefined} />
+                                <Loader2 className="w-3 h-3 animate-spin flex-shrink-0" style={isDark ? { color: 'rgb(220, 220, 220)' } : { color: '#6B7280' }} />
                               )}
                               {chat.status === 'completed' && (
-                                <CircleCheck className={`w-3 h-3 flex-shrink-0 ${isDark ? 'text-slate-400' : ''}`} style={!isDark ? { color: '#6B7280' } : undefined} aria-hidden />
+                                <CircleCheck className="w-3 h-3 flex-shrink-0" style={isDark ? { color: 'rgb(220, 220, 220)' } : { color: '#6B7280' }} aria-hidden />
                               )}
                               <span
-                                className={`text-[12px] font-normal truncate cursor-pointer flex-1 min-w-0 hover:opacity-90 ${isDark ? 'text-slate-200' : ''}`}
-                                style={!isDark ? { color: '#374151', display: 'inline-block', padding: 0, margin: 0 } : { display: 'inline-block', padding: 0, margin: 0 }}
+                                className="text-[12px] font-normal truncate cursor-pointer flex-1 min-w-0 hover:opacity-90"
+                                style={isDark ? { color: 'rgb(220, 220, 220)', display: 'inline-block', padding: 0, margin: 0 } : { color: '#374151', display: 'inline-block', padding: 0, margin: 0 }}
                                 title="Click to edit chat name"
                               >
                                 {chat.title || 'New chat'}
@@ -503,7 +504,7 @@ export const ChatPanel = ({
                             </div>
                             
                             {/* Timestamp below title */}
-                            <div className={`text-[10px] mt-0.5 ${isDark ? 'text-slate-400' : ''}`} style={!isDark ? { color: '#9CA3AF' } : undefined}>
+                            <div className="text-[10px] mt-0.5" style={isDark ? { color: 'rgb(220, 220, 220)' } : { color: '#9CA3AF' }}>
                               {formatTimestamp(new Date(chat.timestamp))}
                             </div>
                             
@@ -513,7 +514,7 @@ export const ChatPanel = ({
                                 onClick={(e) => handleMenuToggle(e, chat.id)}
                                 className="opacity-0 group-hover:opacity-100 p-0.5 rounded transition-[opacity,transform] duration-75 ease-out transform hover:scale-110 active:scale-95"
                               >
-                                <MoreVertical className={`w-3.5 h-3.5 transition-colors duration-75 ease-out ${isDark ? 'text-slate-400' : ''}`} style={!isDark ? { color: '#9CA3AF' } : undefined} />
+                                <MoreVertical className="w-3.5 h-3.5 transition-colors duration-75 ease-out" style={isDark ? { color: 'rgb(220, 220, 220)' } : { color: '#9CA3AF' }} />
                               </button>
                               
                               {openMenuId === chat.id && (
@@ -565,12 +566,12 @@ export const ChatPanel = ({
               <div className="flex-1 min-h-0 flex items-center justify-center p-8" style={{ backgroundColor: panelBg }}>
                 <div className="text-center max-w-xs">
                   <div className={`w-20 h-20 rounded-3xl flex items-center justify-center mx-auto mb-6 border-2 ${isDark ? 'border-white/10' : 'border-black/10'}`} style={isDark ? { background: 'linear-gradient(to bottom right, rgba(255,255,255,0.06), rgba(255,255,255,0.02))' } : { background: 'linear-gradient(to bottom right, rgba(0,0,0,0.04), rgba(0,0,0,0.02))' }}>
-                    <MessageSquare className={`w-8 h-8 ${isDark ? 'text-slate-400' : ''}`} style={!isDark ? { color: '#9CA3AF' } : undefined} strokeWidth={1.5} />
+                    <MessageSquare className="w-8 h-8" style={isDark ? { color: 'rgb(220, 220, 220)' } : { color: '#9CA3AF' }} strokeWidth={1.5} />
                   </div>
-                  <h3 className={`font-semibold text-xl mb-3 tracking-tight ${isDark ? 'text-slate-200' : ''}`} style={!isDark ? { color: '#374151' } : undefined}>
+                  <h3 className="font-semibold text-xl mb-3 tracking-tight" style={isDark ? { color: 'rgb(220, 220, 220)' } : { color: '#374151' }}>
                     <span>Start a Conversation</span>
                   </h3>
-                  <p className={`text-sm leading-relaxed font-medium ${isDark ? 'text-slate-400' : ''}`} style={!isDark ? { color: '#6B7280' } : undefined}>
+                  <p className="text-sm leading-relaxed font-medium" style={isDark ? { color: 'rgb(220, 220, 220)' } : { color: '#6B7280' }}>
                     <span>Search for something to begin an intelligent conversation with AI</span>
                   </p>
                 </div>
