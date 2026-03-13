@@ -148,8 +148,34 @@ const DashboardLayoutContent = ({
         description: "Your plan has been updated successfully.",
         variant: "success",
       });
+      // Retry after 2s in case Stripe webhook was delayed
+      const t = setTimeout(() => {
+        refetchUsage();
+        window.dispatchEvent(new CustomEvent('usageShouldRefresh'));
+      }, 2000);
+      return () => clearTimeout(t);
     }
   }, [checkoutParam, setSearchParams, refetchUsage, showToast]);
+
+  // After Stripe Customer Portal return: refetch usage (plan may have changed)
+  const billingReturnParam = searchParams.get('billing_return');
+  React.useEffect(() => {
+    if (billingReturnParam === '1') {
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete('billing_return');
+        return next;
+      }, { replace: true });
+      refetchUsage();
+      window.dispatchEvent(new CustomEvent('usageShouldRefresh'));
+      // Retry after 2s in case Stripe webhook was delayed
+      const t = setTimeout(() => {
+        refetchUsage();
+        window.dispatchEvent(new CustomEvent('usageShouldRefresh'));
+      }, 2000);
+      return () => clearTimeout(t);
+    }
+  }, [billingReturnParam, setSearchParams, refetchUsage]);
 
   // Get background image URL based on selected background
   // Returns null for default-background (which uses solid color instead)

@@ -631,12 +631,12 @@ export const Sidebar = ({
                   onRestoreActiveChat?.();
                   onNewChat?.();
                 }}
-                className={`flex items-center rounded border border-transparent transition-colors ${isDark ? 'hover:bg-muted active:bg-card' : 'text-[#141413] hover:bg-white/60 active:bg-white/60'} ${isIconsOnly ? 'justify-center p-2 w-10 mt-6' : 'w-full gap-3 pl-2 pr-3 py-1.5'}`}
+                className={`flex items-center rounded border border-transparent transition-colors ${isDark ? 'hover:bg-muted active:bg-card' : 'text-[#141413] hover:bg-[#E8E8E5] active:bg-[#E5E5E2]'} ${isIconsOnly ? 'justify-center p-2 w-10 mt-6' : 'w-full gap-3 pl-2 pr-3 py-1.5'}`}
                 style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}
                 aria-label="New chat"
               >
-                <span className={`h-6 w-6 flex-shrink-0 rounded-full flex items-center justify-center ${isDark ? 'bg-card' : 'bg-white'}`} style={!isDark ? { boxShadow: '0 1px 2px rgba(0, 0, 0, 0.04)' } : undefined}>
-                  <Plus className="h-3.5 w-3.5 text-inherit" strokeWidth={2.5} />
+                <span className={`h-6 w-6 flex-shrink-0 rounded-full flex items-center justify-center ${isDark ? 'bg-card' : 'bg-[#EBEBE8]'}`} style={!isDark ? { boxShadow: '0 1px 2px rgba(0, 0, 0, 0.03)' } : undefined}>
+                  <Plus className="h-3.5 w-3.5 text-inherit" strokeWidth={2} />
                 </span>
                 {!isIconsOnly && <span className="text-[14px] font-normal flex-1 text-left text-inherit" style={{ marginLeft: '-2px' }}>New chat</span>}
               </button>
@@ -926,11 +926,11 @@ export const Sidebar = ({
               <div className="space-y-px mb-4">
                 <button
                   onClick={onNewChat}
-                  className={`w-full flex items-center gap-3 px-3 py-1.5 rounded-lg transition-colors border ${isDark ? 'bg-card hover:bg-muted border-border' : 'bg-white hover:bg-gray-50 border-gray-200/60 text-[#141413]'}`}
-                  style={{ ...(isDark ? { color: 'rgb(220, 220, 220)' } : {}), boxShadow: '0 1px 2px rgba(0, 0, 0, 0.04)' }}
+                  className={`w-full flex items-center gap-3 px-3 py-1.5 rounded-lg transition-colors border ${isDark ? 'bg-card hover:bg-muted border-border' : 'bg-[#EBEBE8] hover:bg-[#E8E8E5] border-[#E0E0DD] text-[#141413]'}`}
+                  style={{ ...(isDark ? { color: 'rgb(220, 220, 220)' } : {}), boxShadow: '0 1px 2px rgba(0, 0, 0, 0.03)' }}
                 >
-                  <span className={`h-6 w-6 flex-shrink-0 rounded-full flex items-center justify-center ${isDark ? 'bg-card' : 'bg-white'}`} style={!isDark ? { boxShadow: '0 1px 2px rgba(0, 0, 0, 0.04)' } : undefined}>
-                    <Plus className="h-3.5 w-3.5 text-inherit" strokeWidth={2.5} />
+                  <span className={`h-6 w-6 flex-shrink-0 rounded-full flex items-center justify-center ${isDark ? 'bg-card' : 'bg-[#E8E8E5]'}`} style={!isDark ? { boxShadow: '0 1px 2px rgba(0, 0, 0, 0.03)' } : undefined}>
+                    <Plus className="h-3.5 w-3.5 text-inherit" strokeWidth={2} />
                   </span>
                   <span className="text-inherit font-normal text-[14px] flex-1 text-left" style={{ marginLeft: '-2px' }}>New chat</span>
                 </button>
@@ -978,7 +978,7 @@ export const Sidebar = ({
                     onClick={() => setShowArchived(!showArchived)}
                     className={`p-1 rounded transition-colors ${
                       showArchived
-                        ? 'text-amber-600 hover:bg-amber-50'
+                        ? 'text-foreground hover:bg-muted'
                         : 'text-muted-foreground hover:text-foreground hover:bg-muted'
                     }`}
                   >

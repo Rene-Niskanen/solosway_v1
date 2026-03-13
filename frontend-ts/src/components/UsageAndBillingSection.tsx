@@ -136,7 +136,7 @@ export const UsageAndBillingSection: React.FC = () => {
           variant="outline"
           onClick={async () => {
             if (stripeEnabled === true) {
-              const returnUrl = typeof window !== 'undefined' ? `${window.location.origin}/dashboard` : '/dashboard';
+              const returnUrl = typeof window !== 'undefined' ? `${window.location.origin}/dashboard?billing_return=1` : '/dashboard';
               const res = await backendApi.createPortalSession(returnUrl);
               if (res.success && (res.data as { url?: string })?.url) {
                 window.location.href = (res.data as { url: string }).url;
@@ -166,17 +166,11 @@ export const UsageAndBillingSection: React.FC = () => {
             {(usage.pages_used ?? 0).toLocaleString()} / {(usage.monthly_limit ?? 0).toLocaleString()} pages
           </span>
         </div>
-        <div className="h-2 w-full rounded-full bg-gray-200 overflow-hidden flex">
-          {Array.from({ length: 32 }).map((_, i) => {
-            const fill = (i + 1) / 32 <= barFillRatio;
-            return (
-              <div
-                key={i}
-                className={`flex-1 min-w-0 ${fill ? "bg-gradient-to-r from-orange-500 to-orange-600" : "bg-gray-200"}`}
-                style={{ marginRight: i < 31 ? "2px" : 0 }}
-              />
-            );
-          })}
+        <div className={`h-2 w-full rounded-full overflow-hidden ${isDark ? 'bg-gray-700' : 'bg-gray-200'}`}>
+          <div
+            className="h-full rounded-full bg-gradient-to-r from-orange-500 to-orange-600 transition-[width] duration-200"
+            style={{ width: `${barFillRatio * 100}%` }}
+          />
         </div>
         <p className={`text-[13px] mt-2 ${!isDark ? 'text-gray-600' : ''}`} style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}>
           {overAllowance

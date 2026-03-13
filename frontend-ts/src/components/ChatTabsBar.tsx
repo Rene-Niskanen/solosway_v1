@@ -179,8 +179,8 @@ export const ChatTabsBar: React.FC<ChatTabsBarProps> = ({
                   <span
                     className={`text-[12.5px] font-normal block whitespace-nowrap overflow-hidden ${isSelected ? "truncate" : ""}`}
                     style={{
-                      color: "#374151",
-                      ...(!isSelected && (chat.title || "New chat").length > 16 && {
+                      color: isSelected ? "#374151" : "#6B7280",
+                      ...(!isSelected && {
                         maskImage: "linear-gradient(to right, black 75%, transparent 100%)",
                         WebkitMaskImage: "linear-gradient(to right, black 75%, transparent 100%)",
                       }),

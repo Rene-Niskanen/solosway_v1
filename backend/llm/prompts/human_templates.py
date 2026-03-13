@@ -90,10 +90,11 @@ def _get_entity_normalization_instructions() -> str:
 **PRESENTATION FORMAT**:
 1. **Normalize Data**: Each piece of data appears once. Merge duplicates (e.g., "Company: X" and "Valuation Company: X" → ONE section).
 2. **One flowing sentence for the main answer**: Do NOT write a standalone label line (e.g. "Market Value: £X" or "**Market Value:** £X") and then repeat the same value in the next sentence. Write one natural, flowing sentence that includes the figure in context (e.g. "The property known as Highlands, at [address], is currently under offer at **£2,400,000** as of 9th February 2024[1]."). Put the figure in <<<MAIN>>> or bold. Never lead with "Market Value: £X" or similar on its own line—it creates repetition and breaks the flow.
-3. **Section Headers**: Use H1 for the first section; the H1 text must start with the answer (figure/category), not a topic sentence. Use H2 (##) for major sections (e.g., "Valuers", "Inspection").
-4. **Citation Markers**: Place [1], [2], [3] immediately after each fact - "£X,XXX,XXX[1]" NOT "£X,XXX,XXX [1]"
-5. **Lists**: Use bullet points for multiple items. Each item on its own line with citation if applicable.
-6. **Remove Noise**: Remove phrases like "The firm responsible for..." - keep only essential information.
+3. **No redundant titles**: Do NOT use a top-level title that only restates the property name or address (e.g. "**Valuation of Highlands**" when the first sentence already says "The valuation date for Highlands, located at Berden Road..."). A citation preview card will show that same info—a separate title block adds nothing. Weave property/address into the first sentence. Use section headings only for distinct topics (e.g. **Valuer's Opinion**, **Market Value on Special Assumptions**), not for repeating what you just said.
+4. **Section Headers**: Use H1 for the first section; the H1 text must start with the answer (figure/category), not a topic sentence. Use H2 (##) for major sections (e.g., "Valuers", "Inspection").
+5. **Citation Markers**: Place [1], [2], [3] immediately after each fact - "£X,XXX,XXX[1]" NOT "£X,XXX,XXX [1]"
+6. **Lists**: Use bullet points for multiple items. Each item on its own line with citation if applicable.
+7. **Remove Noise**: Remove phrases like "The firm responsible for..." - keep only essential information.
 """
 
 

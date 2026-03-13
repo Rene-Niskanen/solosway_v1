@@ -104,7 +104,7 @@ interface ThinkingBlockProps {
   content: string;
   isStreaming: boolean;
   startTime?: number;
-  model?: 'gpt-4o-mini' | 'gpt-4o' | 'claude-sonnet' | 'claude-opus';
+  model?: 'gpt-4o-mini' | 'gpt-4o' | 'claude-sonnet' | 'claude-opus' | 'gemini-2.5-flash' | 'gemini-3.1-pro';
   searchTerm?: string; // User's search term to prioritize relevant key facts
   label?: string; // Optional label override (e.g. "Planning next moves")
 }
@@ -129,17 +129,19 @@ export const ThinkingBlock: React.FC<ThinkingBlockProps> = ({
   const contentRef = useRef<HTMLDivElement>(null);
   const userScrolledUpRef = useRef(false);
   
-  // Check if using Claude model
+  // Check if using Claude or Gemini model (both use thinking/structured output)
   const isClaudeModel = model === 'claude-sonnet' || model === 'claude-opus';
+  const isGeminiModel = model === 'gemini-2.5-flash' || model === 'gemini-3.1-pro';
+  const preserveBullets = isClaudeModel || isGeminiModel;
   
-  // Process content: remove bullet points for non-Claude models and extract key facts
+  // Process content: remove bullet points for models that don't use structured thinking output
   const processedContent = useMemo(() => {
     if (!content) return '';
     
     let processed = content;
     
-    // Remove bullet points for non-Claude models
-    if (!isClaudeModel) {
+    // Remove bullet points for models that don't use Claude/Gemini-style thinking
+    if (!preserveBullets) {
       // Remove leading "- " or "-" from lines
       processed = processed
         .split('\n')
@@ -158,7 +160,7 @@ export const ThinkingBlock: React.FC<ThinkingBlockProps> = ({
     }
     
     return processed;
-  }, [content, isClaudeModel]);
+  }, [content, preserveBullets]);
   
   // Extract key facts/figures from content (numbers, dates, amounts, etc.)
   // Prioritize facts that match the user's search term

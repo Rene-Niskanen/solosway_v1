@@ -1,7 +1,7 @@
 """
 Model Factory - Instantiate LLM based on user preference
 
-Maps frontend model IDs to actual LLM instances (OpenAI or Anthropic).
+Maps frontend model IDs to actual LLM instances (OpenAI, Anthropic, or Google).
 Used throughout the LLM pipeline to enable dynamic model selection.
 
 Includes automatic fallback logic when one provider is unavailable.
@@ -21,6 +21,8 @@ MODEL_MAPPING = {
     'gpt-4o': ('openai', 'gpt-4o'),
     'claude-sonnet': ('anthropic', 'claude-sonnet-4-20250514'),
     'claude-opus': ('anthropic', 'claude-opus-4-20250514'),
+    'gemini-2.5-flash': ('google', 'gemini-2.5-flash'),
+    'gemini-3.1-pro': ('google', 'gemini-3.1-pro-preview'),
 }
 
 # Fallback mapping when primary provider is unavailable
@@ -29,10 +31,12 @@ FALLBACK_MAPPING = {
     'gpt-4o': 'claude-sonnet',
     'claude-sonnet': 'gpt-4o-mini',
     'claude-opus': 'gpt-4o',
+    'gemini-2.5-flash': 'gpt-4o-mini',
+    'gemini-3.1-pro': 'claude-opus',
 }
 
 # Type for model preference
-ModelPreference = Literal['gpt-4o-mini', 'gpt-4o', 'claude-sonnet', 'claude-opus']
+ModelPreference = Literal['gpt-4o-mini', 'gpt-4o', 'claude-sonnet', 'claude-opus', 'gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-3.1-pro']
 
 
 def get_fallback_model_id(model_id: str) -> Optional[str]:
@@ -71,7 +75,28 @@ def get_llm(
     
     provider, model_name = mapping
     
-    if provider == 'anthropic':
+    if provider == 'google':
+        try:
+            from langchain_google_genai import ChatGoogleGenerativeAI
+        except ImportError:
+            if allow_fallback:
+                logger.warning("langchain-google-genai not installed, falling back to gpt-4o-mini")
+                return get_llm('gpt-4o-mini', temperature, max_tokens, allow_fallback=False, **kwargs)
+            raise ImportError("langchain-google-genai required for Gemini. Run: pip install langchain-google-genai")
+        if not config.gemini_api_key:
+            if allow_fallback:
+                logger.warning("GEMINI_API_KEY not set, falling back to gpt-4o-mini")
+                return get_llm('gpt-4o-mini', temperature, max_tokens, allow_fallback=False, **kwargs)
+            raise ValueError("GEMINI_API_KEY not configured")
+        logger.info(f"Using Google Gemini model: {model_name}")
+        return ChatGoogleGenerativeAI(
+            google_api_key=config.gemini_api_key,
+            model=model_name,
+            temperature=temperature,
+            **({"max_output_tokens": max_tokens} if max_tokens else {}),
+            **kwargs
+        )
+    elif provider == 'anthropic':
         if not config.anthropic_api_key:
             if allow_fallback:
                 logger.warning("ANTHROPIC_API_KEY not set, falling back to OpenAI")
@@ -190,6 +215,8 @@ def get_model_info(model_preference: Optional[str] = None) -> dict:
         'gpt-4o': 'GPT-4o',
         'claude-sonnet': 'Claude Sonnet 4',
         'claude-opus': 'Claude Opus 4',
+        'gemini-2.5-flash': 'Gemini 2.5 Flash',
+        'gemini-3.1-pro': 'Gemini 3.1 Pro',
     }
     
     return {

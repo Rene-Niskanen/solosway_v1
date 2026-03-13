@@ -562,7 +562,7 @@ const StepRenderer: React.FC<{
   shownDocumentsRef?: React.MutableRefObject<Set<string>>; // Track which documents have been shown
   allReadingComplete?: boolean; // All reading steps have completed
   hasResponseText?: boolean; // Stop animations when response text has started
-  model?: 'gpt-4o-mini' | 'gpt-4o' | 'claude-sonnet' | 'claude-opus';
+  model?: 'gpt-4o-mini' | 'gpt-4o' | 'claude-sonnet' | 'claude-opus' | 'gemini-2.5-flash' | 'gemini-3.1-pro';
   thoughtCompleted?: boolean; // When true, use faint font for "Analysing X documents:" and document names
   /** When provided, show document names below "Analysing N documents:" with reading animation */
   documentsDropdown?: { stepKey: string; readingSteps: ReasoningStep[]; isOpen: boolean; onOpenChange: (open: boolean) => void };

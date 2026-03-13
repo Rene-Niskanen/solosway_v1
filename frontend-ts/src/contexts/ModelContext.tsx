@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { createContext, useContext, useState, useEffect, useCallback } from 'react';
 
-export type LLMModel = 'gpt-4o-mini' | 'gpt-4o' | 'claude-sonnet' | 'claude-opus';
+export type LLMModel = 'gpt-4o-mini' | 'gpt-4o' | 'claude-sonnet' | 'claude-opus' | 'gemini-2.5-flash' | 'gemini-3.1-pro';
 
 interface ModelContextValue {
   model: LLMModel;
@@ -18,6 +18,8 @@ const MODEL_DISPLAY_NAMES: Record<LLMModel, string> = {
   'gpt-4o': 'GPT-4o',
   'claude-sonnet': 'Claude Sonnet 4',
   'claude-opus': 'Claude Opus 4',
+  'gemini-2.5-flash': 'Gemini 2.5 Flash',
+  'gemini-3.1-pro': 'Gemini 3.1 Pro',
 };
 
 export function ModelProvider({ children }: { children: React.ReactNode }) {

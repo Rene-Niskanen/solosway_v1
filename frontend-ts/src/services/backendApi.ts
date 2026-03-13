@@ -418,7 +418,7 @@ class BackendApiService {
     // AGENT MODE: Whether the user is in Agent mode (enables LLM tool-based actions)
     isAgentMode?: boolean,
     // MODEL SELECTION: User-selected LLM model
-    model?: 'gpt-4o-mini' | 'gpt-4o' | 'claude-sonnet' | 'claude-opus',
+    model?: 'gpt-4o-mini' | 'gpt-4o' | 'claude-sonnet' | 'claude-opus' | 'gemini-2.5-flash' | 'gemini-3.1-pro',
     // EXTENDED THINKING: Callback for streaming thinking chunks (Claude models)
     onThinkingChunk?: (chunk: string) => void,
     onThinkingComplete?: (fullThinking: string) => void,
@@ -468,7 +468,7 @@ class BackendApiService {
     };
     
     if (import.meta.env.DEV) {
-      console.log('🌐 backendApi.queryDocumentsStreamFetch: Sending request with documentIds:', documentIds, 'full body:', requestBody);
+      console.log('🌐 backendApi.queryDocumentsStreamFetch: Sending request with documentIds:', documentIds, 'model:', requestBody.model, 'full body:', requestBody);
     }
     
     try {

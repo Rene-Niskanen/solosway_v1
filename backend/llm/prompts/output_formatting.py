@@ -113,6 +113,7 @@ CRITICAL — Title formatting and spacing
 The title MUST be exactly one bold line.
 The title MUST be followed by a blank line before the first paragraph.
 The title line must contain only the title — no explanatory text.
+Do NOT use a title that only restates the property name or address when that info appears in the first sentence and in the citation preview—weave it into the first sentence instead. Use titles for summaries (e.g. **Lease summary — Dik Dik Lane**) or omit when the answer is a single valuation/fact.
 
 Structure:
 
@@ -120,18 +121,19 @@ title
 (blank line)
 first paragraph
 
-This blank line creates a visual start point that separates the title from the body.
-
 Correct:
 
 **Lease summary — Dik Dik Lane**
 
 The lease relates to a **1 bedroom cottage** located at **L.R. No. 2327/30, 3 Dik Dik Lane, Lang'ata**[1]
 
-Wrong (no blank line after title):
+Wrong (redundant title that adds no info):
 
-**Lease summary — Dik Dik Lane**
-The lease relates to a 1 bedroom cottage...
+**Valuation of Highlands**
+
+The valuation date for Highlands, located at Berden Road, Berden... [1]
+
+(That title repeats what the sentence already says and what the citation card shows. Omit it and start with the sentence.)
 
 If no title is used, open with the most important information immediately.
 
@@ -190,8 +192,7 @@ Guidelines:
 
 - 1–2 sentences per paragraph; keep length consistent
 - combine related clauses (e.g. subletting and alterations; return of property and condition) into the same sentence or adjacent sentences
-- leave a blank line between every block
-- leave a blank line after every heading
+- one blank line between paragraphs; avoid extra blank lines that create excessive spacing
 
 Wrong (too dense):
 
@@ -239,28 +240,22 @@ Rules:
 
 ## SECTION DIVIDERS (MANDATORY)
 
-Every section after the first must be separated by a horizontal divider.
+Every section after the first must be separated by a horizontal divider. Use compact spacing—avoid excessive blank lines.
 
 Structure must follow this pattern:
 
 Title
 (blank line)
 Section
-(blank line)
 ---
-(blank line)
 Next section
 
 Example:
 
 **Lease summary — Dik Dik Lane**
 
-**Property**
-
 The property is a **1 bedroom cottage** located at **L.R. NO: 2327/30, 3 Dik Dik Lane**[1]
-
 ---
-
 **Lease term**
 
 The lease runs for **12 months**, from **10 July 2023** to **10 July 2024**[2]
@@ -268,10 +263,10 @@ The lease runs for **12 months**, from **10 July 2023** to **10 July 2024**[2]
 Rules:
 
 - Insert `---` before every section except the first.
-- Leave a blank line before and after the divider.
-- Leave a blank line after every heading.
+- One blank line before `---`; one blank line after section headings. Do NOT add extra blank lines around dividers.
+- Avoid stacking multiple blank lines—this creates excessive vertical space.
 
-This spacing ensures a calm visual rhythm.
+This keeps responses readable without excessive whitespace.
 
 ---
 
@@ -454,26 +449,23 @@ Avoid filler text.
 
 ## NATURAL FLOW & RHYTHM
 
-Maintain a consistent rhythm. A good structure for summaries (e.g. legal or lease summaries) is:
+Maintain a consistent rhythm with compact spacing. A good structure for summaries (e.g. legal or lease summaries) is:
 
 Title
 (blank line)
 Intro paragraph
-(blank line)
 ---
 **Section**
 Paragraph
 Paragraph
-(blank line)
 ---
 **Section**
 Paragraph
-(blank line)
 ---
 **Section**
 List (when listing 3+ parallel items)
 
-This alternation (paragraph / paragraph / list / paragraph) creates a calm reading flow and reduces visual repetition. Do not repeat "Sentence / Sentence / Sentence" for every line.
+Use one blank line between major blocks; avoid stacking multiple blank lines. This alternation creates a calm reading flow without excessive vertical space. Do not repeat "Sentence / Sentence / Sentence" for every line.
 
 Remove redundant phrasing. Keep sentences tight: e.g. write "The tenant must ensure pets do not cause damage or nuisance" not "The tenant must also manage any pets responsibly and ensure they do not cause damage or nuisance." Avoid unnecessary words like "also" when the meaning is clear without them.
 

@@ -278,11 +278,7 @@ export const ChatPanel = ({
                     onClick={() => setShowArchived(!showArchived)}
                     whileHover={{ scale: 1.05 }}
                     whileTap={{ scale: 0.95 }}
-                    className={`p-1.5 text-xs rounded-md transition-colors duration-75 ease-out ${
-                      showArchived 
-                        ? 'bg-amber-500/30 text-amber-800 hover:bg-amber-500/40' 
-                        : isDark ? 'bg-white/10 hover:bg-white/15' : 'bg-black/8 text-[#374151] hover:bg-black/12'
-                    }`}
+                    className={`p-1.5 text-xs rounded-md transition-colors duration-75 ease-out ${isDark ? 'bg-white/10 hover:bg-white/15' : 'bg-black/8 text-[#374151] hover:bg-black/12'}`}
                     style={!showArchived && isDark ? { color: 'rgb(220, 220, 220)' } : undefined}
                   >
                     {showArchived ? <ArchiveRestore className="w-3.5 h-3.5" /> : <Archive className="w-3.5 h-3.5" />}

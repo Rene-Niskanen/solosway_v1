@@ -1024,9 +1024,10 @@ def query_documents_stream():
         response_mode = data.get('responseMode')  # NEW: Response mode for file attachments (fast/detailed/full)
         attachment_context = data.get('attachmentContext')  # NEW: Extracted text from attached files
         is_agent_mode = data.get('isAgentMode', True)  # AGENT MODE: Enable LLM tool-based actions (default to True for new architecture)
-        # MODEL SELECTION: User-selected LLM model (gpt-4o-mini, gpt-4o, claude-sonnet, claude-opus)
+        # MODEL SELECTION: User-selected LLM model (gpt-4o-mini, gpt-4o, claude-sonnet, claude-opus, gemini-*)
         model_preference = data.get('model') or 'gpt-4o-mini'
-        if model_preference not in ('gpt-4o-mini', 'gpt-4o', 'claude-sonnet', 'claude-opus'):
+        valid_models = ('gpt-4o-mini', 'gpt-4o', 'claude-sonnet', 'claude-opus', 'gemini-2.5-flash', 'gemini-3.1-pro')
+        if model_preference not in valid_models:
             model_preference = 'gpt-4o-mini'
         # Accept both keys: frontend agent-task stream sends web_search (snake_case)
         web_search_enabled = bool(data.get('web_search', data.get('webSearch', False)))  # WEB SEARCH: Exa integration
@@ -1073,6 +1074,7 @@ def query_documents_stream():
             f"Response Mode: {response_mode or 'None'}, "
             f"Attachment Context: {attachment_info}"
         )
+        logger.warning(f"🔵 [STREAM] Model: {model_preference}")
         
         # Allow empty query when user sent only attachments (e.g. "what does this say?" implied)
         has_attachment_content = (
