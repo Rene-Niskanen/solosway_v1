@@ -767,29 +767,18 @@ async def extract_citations_with_positions(
                 end_position = end_position + block_id_match.end()
         
         # Extract context for block matching: entire text before the citation
-        # so distinctive values (e.g. "56 D") earlier in the sentence are included
+        # so distinctive values (e.g. "56 D", "£2,300,000") are included for matching
         context_start = 0
         context_end = start_position
-        citation_context = llm_response[context_start:context_end].lower()
-        
-        # Extract the sentence containing the citation for better matching
-        # Find sentence boundaries around the citation
-        sentence_start = citation_context.rfind('.', 0, start_position - context_start)
-        sentence_end = citation_context.find('.', end_position - context_start)
-        if sentence_start == -1:
-            sentence_start = 0
-        else:
-            sentence_start += 1  # Skip the period
-        if sentence_end == -1:
-            sentence_end = len(citation_context)
-        else:
-            sentence_end += 1  # Include the period
-        
-        # Use the sentence containing the citation as the primary context
-        sentence_context = citation_context[sentence_start:sentence_end].strip()
-        # Cited text for block mapping: full sentence or full text before citation (no char limit)
-        # so distinctive values like "56 D" are always included for matching
-        cited_text_for_bbox = sentence_context if sentence_context else citation_context.strip()
+        citation_context_raw = llm_response[context_start:context_end]
+        citation_context = citation_context_raw.lower()
+
+        # Extract cited text for block mapping. Use full text before citation so we don't
+        # truncate at commas or periods (e.g. "£2,300,000" or "value."). Sentence-boundary
+        # extraction can incorrectly exclude monetary values when a period follows them.
+        # Take the last ~250 chars to capture the immediate cited phrase while avoiding noise.
+        full_before = citation_context_raw.strip()
+        cited_text_for_bbox = full_before[-250:].strip() if len(full_before) > 250 else full_before
 
         # Jan28th-style: resolve by block_id when present, but VALIDATE content first.
         # If the block content doesn't match the cited text, fall through to LLM selection.

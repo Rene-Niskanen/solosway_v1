@@ -23,7 +23,7 @@ import * as pdfjs from 'pdfjs-dist';
 import type { PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist';
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import citationIcon from '/citation.png';
-import { prepareResponseTextForDisplay, textForCopy, normalizeIdCitationsToBracket, stripBlockCiteIdFromDisplay } from '../utils/responseTextPreprocessing';
+import { prepareResponseTextForDisplay, textForCopy, normalizeIdCitationsToBracket, stripBlockCiteIdFromDisplay, mergeCitationOnlyLinesWithPrevious } from '../utils/responseTextPreprocessing';
 
 // Configure PDF.js worker globally (same as other components)
 pdfjs.GlobalWorkerOptions.workerSrc = pdfjsWorker;
@@ -2095,15 +2095,16 @@ const StreamingResponseText: React.FC<{
       const isFirstBlueForNum = wrapBlue && num != null && !blueHighlightFirstOccurrenceRef.current.has(num);
       if (wrapBlue && num != null && isFirstBlueForNum) blueHighlightFirstOccurrenceRef.current.add(num);
       const inHighlight = wrapGreen || wrapBlue || wrapOrange;
-      // Trim trailing space; strip leading space from the run and render it outside the highlight so the highlight doesn't cover it
+      // Trim trailing space only; strip leading space from the run and render it outside the highlight so the highlight doesn't cover it.
+      // Do NOT strip trailing comma or period - the highlight should cover the full cited text including punctuation.
       let pendingToUse = pending;
       let leadingSpace = '';
       if (inHighlight && pending.length > 0) {
         pendingToUse = [...pending];
         if (pendingToUse.length > 1 && typeof pendingToUse[pendingToUse.length - 1] === 'string') {
-          pendingToUse[pendingToUse.length - 1] = (pendingToUse[pendingToUse.length - 1] as string).trimEnd().replace(/,\s*$/, '');
+          pendingToUse[pendingToUse.length - 1] = (pendingToUse[pendingToUse.length - 1] as string).trimEnd();
         } else if (pendingToUse.length === 1 && typeof pendingToUse[0] === 'string') {
-          pendingToUse[0] = (pendingToUse[0] as string).trimEnd().replace(/,\s*$/, '');
+          pendingToUse[0] = (pendingToUse[0] as string).trimEnd();
         }
         if (typeof pendingToUse[0] === 'string') {
           const first = pendingToUse[0] as string;
@@ -2295,12 +2296,9 @@ const StreamingResponseText: React.FC<{
               const roundTop = !inHighlight || lastHighlightType !== currentHighlightType;
               const nextType = inHighlight ? nextHighlightTypeInParts(parts, idx + 1) : null;
               const roundBottom = !inHighlight || nextType !== currentHighlightType;
-              // When highlighted: strip leading space so it renders outside the highlight; trim trailing comma so it doesn't interfere with the highlight or citation
+              // When highlighted: strip leading space so it renders outside the highlight. Do NOT strip trailing comma or period - the highlight should cover the full cited text including punctuation before the citation.
               const leadingSpace = inHighlight && part ? (part.match(/^\s*/)?.[0] ?? '') : '';
               let segmentToRender = isBetweenCitations && /^[\s,]*$/.test(part) ? '' : (inHighlight ? part.slice(leadingSpace.length).trimEnd() : part);
-              if (inHighlight && segmentToRender && nextPart?.startsWith('%%CITATION_')) {
-                segmentToRender = segmentToRender.replace(/,\s*$/, '');
-              }
               const content = renderStringSegment(segmentToRender, `text-${idx}`);
               // Highlight wraps only the cited text; citation badge is rendered outside the highlight so it is not highlighted. Prefer blue over green when both apply.
               const citationNode = nextPart?.startsWith('%%CITATION_') ? renderCitationPlaceholder(nextPart, `cit-${idx + 1}-${nextPart}`) : null;
@@ -6804,39 +6802,17 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     }
     return s.slice(0, i);
   };
-  /** Word count up to and including the first citation. Raw stream may use [1], [ID: 1], or [ID: 1](BLOCK_CITE_ID_N). Match all. */
-  const getWordCountUpToFirstCitation = (raw: string): number | null => {
-    const placeholderMatch = raw.match(/%%CITATION_(?:SUPERSCRIPT|BRACKET|PENDING)_\d+%%/);
-    const bracketMatch = raw.match(/\[\d+\]/);
-    const idMatch = raw.match(/\[ID:\s*\d+\](?:\s*\(\s*BLOCK_CITE_ID_\d+\s*\))?/);
-    let endIndex: number | null = null;
-    const candidates: { end: number }[] = [];
-    if (placeholderMatch && placeholderMatch.index != null) {
-      candidates.push({ end: placeholderMatch.index + placeholderMatch[0].length });
-    }
-    if (bracketMatch && bracketMatch.index != null) {
-      candidates.push({ end: bracketMatch.index + bracketMatch[0].length });
-    }
-    if (idMatch && idMatch.index != null) {
-      candidates.push({ end: idMatch.index + idMatch[0].length });
-    }
-    if (candidates.length === 0) return null;
-    endIndex = Math.min(...candidates.map((c) => c.end));
-    const upTo = raw.slice(0, endIndex);
-    return upTo.trim().split(/\s+/).filter(Boolean).length;
-  };
   const perplexityRevealTick = React.useCallback(() => {
     const lid = perplexityLoadingIdRef.current;
     const raw = streamingAccumulatedTextRef.current;
     if (!lid || !raw) return;
-    const total = raw.trim().split(/\s+/).filter(Boolean).length;
-    const firstCitationWordCount = getWordCountUpToFirstCitation(raw);
-    const effectiveMax =
-      firstCitationWordCount != null && !firstCalloutUnveiledForStreamingRef.current
-        ? Math.min(perplexityRevealedCountRef.current + 2, firstCitationWordCount)
-        : Math.min(perplexityRevealedCountRef.current + 2, total);
+    // Merge citation-only lines (e.g. [2] on own line) so they stay inline - prevents truncation
+    const merged = mergeCitationOnlyLinesWithPrevious(raw);
+    const total = merged.trim().split(/\s+/).filter(Boolean).length;
+    // Always reveal up to total - removed first-citation cap which caused persistent truncation
+    const effectiveMax = Math.min(perplexityRevealedCountRef.current + 2, total);
     perplexityRevealedCountRef.current = effectiveMax;
-    const prefix = getPrefixUpToWordCount(raw, perplexityRevealedCountRef.current);
+    const prefix = getPrefixUpToWordCount(merged, perplexityRevealedCountRef.current);
     setChatMessages(prev => prev.map(msg => msg.id === lid ? { ...msg, text: prefix } : msg));
     if (perplexityStreamEndedRef.current && (perplexityRevealedCountRef.current >= total || total === 0)) {
       if (perplexityRevealIntervalRef.current != null) {
@@ -7066,6 +7042,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     cleaned = cleaned.replace(/\n\n[¹²³⁴⁵⁶⁷⁸⁹]\s+[^\n]+(?:\n[¹²³⁴⁵⁶⁷⁸⁹]\s+[^\n]+)*\s*$/g, '');
     // Also handle single newline case
     cleaned = cleaned.replace(/\n[¹²³⁴⁵⁶⁷⁸⁹]\s+[^\n]+(?:\n[¹²³⁴⁵⁶⁷⁸⁹]\s+[^\n]+)*\s*$/g, '');
+    
+    // Merge citation-only lines (e.g. [2] on own line) with previous - prevents truncation when LLM puts citations on new lines
+    cleaned = mergeCitationOnlyLinesWithPrevious(cleaned);
     
     return cleaned.trim();
   };

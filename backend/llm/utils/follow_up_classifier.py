@@ -30,6 +30,8 @@ Entity = property or document name. Attribute = value, condition, date, parties,
 
 **CRITICAL: "The property", "of the property", "this property" = reference to the SAME entity from the previous turn.** Do NOT treat these as NEW_QUESTION. Queries like "what is the flood risk of the property" or "what is the EPC of the property" are SAME_DOC—they ask about an attribute of the same entity. Only treat as NEW_QUESTION when the user names a *different* specific entity (e.g. "Nzohe lease", "the other property", "Banda Lane").
 
+**CRITICAL: Vague pronouns "it", "that", "this" = SAME entity from the previous turn.** "What does it discuss?", "What does that mean?", "Tell me more", "Expand on that" = SAME_DOC. The user is asking for more detail about what was just discussed. Do NOT treat these as NEW_QUESTION—they would trigger a fresh search across all documents and return irrelevant results.
+
 Decision checklist (follow in order):
 1. What entity was the previous answer about?
 2. Does current query name a *different* entity (different doc/file/property by name)? → NEW_QUESTION
@@ -315,11 +317,17 @@ async def classify_follow_up(
         logger.info("[FOLLOW_UP_CLASSIFIER] Heuristic: different doc mentioned → new_question")
         return "new_question"
 
-    # Obvious same-doc: reformat, expand, clarify, "the property" (anaphoric reference)
+    # Obvious same-doc: reformat, expand, clarify, "the property" (anaphoric reference),
+    # and vague anaphoric follow-ups like "what does it discuss?" (pronoun "it" = prior doc/entity)
     _SAME_DOC_PATTERNS = (
         r"^(format|reformat|list|expand|clarify|summarize|summarise|explain more)\b",
         r"^(what about|and|also|more)\s+(the|that|this)\b",
         r"\b(the|this|that)\s+(property|document|valuation|lease|report)\b",
+        # Vague anaphoric: "it"/"that"/"this" refer to the prior answer's subject
+        r"^(what does (it|that|this))\s+(discuss|say|mean|cover|include)",
+        r"^(what is|what are)\s+(it|that|this)\s+(about|saying)",
+        r"^(tell me more|explain that|expand on that|more detail)\b",
+        r"^(elaborate|go deeper)\b",
     )
     q_lower = query.lower().strip()
     if doc_names and any(re.search(p, q_lower) for p in _SAME_DOC_PATTERNS):

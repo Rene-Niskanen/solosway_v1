@@ -33,6 +33,12 @@ export function ChooseProjectModal({
   const [projects, setProjects] = React.useState<{ id: string; label: string; imageUrl?: string; documentCount?: number }[]>([]);
   const [isLoading, setIsLoading] = React.useState(false);
   const inputRef = React.useRef<HTMLInputElement>(null);
+  const justOpenedRef = React.useRef(false);
+
+  // Ignore first outside click after opening (prevents immediate close from trigger click)
+  React.useEffect(() => {
+    if (open) justOpenedRef.current = true;
+  }, [open]);
 
   // When modal opens: show cached list immediately (from dashboard preload), then fetch to refresh
   React.useEffect(() => {
@@ -94,13 +100,21 @@ export function ChooseProjectModal({
     onOpenChange(false);
   };
 
-  // When anchorRect is set (search bar view): center modal both horizontally and vertically over the search bar so it doesn't appear too high.
+  // When anchorRect is set (search bar view): center modal over the button. On dashboard (useViewportCenter),
+  // prefer viewport center so the modal stays visible and isn't clipped by overflow.
   // When no anchorRect (chat bar / bottom of screen): keep default bottom positioning.
+  const useViewportCenterForAnchor = alignWithSearchBar?.useViewportCenter === true;
   const anchorStyle =
-    anchorRect && typeof window !== "undefined"
+    anchorRect && typeof window !== "undefined" && !useViewportCenterForAnchor
       ? {
           left: anchorRect.left + anchorRect.width / 2,
           top: anchorRect.top + anchorRect.height / 2,
+          transform: "translate(-50%, -50%)",
+        }
+      : useViewportCenterForAnchor && typeof window !== "undefined"
+      ? {
+          left: "50%",
+          top: "50%",
           transform: "translate(-50%, -50%)",
         }
       : undefined;
@@ -127,7 +141,13 @@ export function ChooseProjectModal({
           ...(anchorStyle ?? leftStyle),
         }}
         overlayClassName="bg-transparent !z-[100100]"
-        onPointerDownOutside={() => onOpenChange(false)}
+        onPointerDownOutside={(e) => {
+          if (justOpenedRef.current) {
+            justOpenedRef.current = false;
+            return;
+          }
+          onOpenChange(false);
+        }}
         onEscapeKeyDown={() => onOpenChange(false)}
       >
         <div
