@@ -1790,6 +1790,11 @@ const StreamingResponseText: React.FC<{
     // Never return raw text when we might have [1] etc. — always replace with placeholders so we never flash "[1]" during streaming.
     // When citation data isn't available yet we use PENDING placeholders and render a pill; when it arrives we render CitationLink.
 
+    // Map original citation numbers to sequential display (1, 2, 3...) when backend sends gaps (e.g. 1, 3, 4)
+    const ordered = getOrderedCitationNumbersFromMessageText(text);
+    const originalToDisplay: Record<string, string> = {};
+    ordered.forEach((orig, i) => { originalToDisplay[orig] = String(i + 1); });
+
     // Map superscript characters to numbers
     const superscriptMap: Record<string, string> = {
       '¹': '1', '²': '2', '³': '3', '⁴': '4', '⁵': '5',
@@ -1807,12 +1812,13 @@ const StreamingResponseText: React.FC<{
       for (const char of match) {
         numStr += superscriptMap[char] || (/\d/.test(char) ? char : '');
       }
-      const citData = citations?.[numStr];
+      const displayNum = originalToDisplay[numStr] ?? numStr;
+      const citData = citations?.[displayNum];
       if (citData) {
-        return `%%CITATION_SUPERSCRIPT_${numStr}%%`;
+        return `%%CITATION_SUPERSCRIPT_${displayNum}%%`;
       }
       // Always use placeholder for consistent rendering (no visual shift when streaming ends)
-      return `%%CITATION_PENDING_${numStr}%%`;
+      return `%%CITATION_PENDING_${displayNum}%%`;
     });
     
     // Clean up periods that follow citations (both bracket and superscript) — NEVER show "." after a citation
@@ -1821,14 +1827,15 @@ const StreamingResponseText: React.FC<{
     // Remove period (and optional space) after superscript citations: ¹. or ¹ . -> ¹
     processedText = processedText.replace(/([¹²³⁴⁵⁶⁷⁸⁹]+(?:\d+)?)\s*\.(?=\s|$)/g, '$1');
     
-    // Process bracket citations
+    // Process bracket citations (use display num so we show 1, 2, 3 sequentially)
     processedText = processedText.replace(bracketPattern, (match, num) => {
-      const citData = citations?.[num];
+      const displayNum = originalToDisplay[num] ?? num;
+      const citData = citations?.[displayNum];
       if (citData) {
-        return `%%CITATION_BRACKET_${num}%%`;
+        return `%%CITATION_BRACKET_${displayNum}%%`;
       }
       // Always use placeholder for consistent rendering (no visual shift when streaming ends)
-      return `%%CITATION_PENDING_${num}%%`;
+      return `%%CITATION_PENDING_${displayNum}%%`;
     });
     
     // Collapse repeated citations: when the same citation appears multiple times within a contiguous
@@ -2531,14 +2538,16 @@ const StreamingResponseText: React.FC<{
     s.replace(/\s+/g, ' ').replace(/\s*,\s*/g, ' ').replace(/,+/g, ' ').trim();
 
   // Cited run per citation number (same text as GreenCitedTextHighlight) for showing in the preview container
+  // Use textWithCitationPlaceholders (with sequential placeholders) so lookup works after renumbering
   const citedExcerptByNumber = React.useMemo(() => {
     const acc: Record<string, string> = {};
-    if (!text || !citations) return acc;
+    if (!citations) return acc;
+    const textToUse = textWithCitationPlaceholders || text;
     for (const num of Object.keys(citations)) {
-      acc[num] = getCitedRunFromMessageText(text, num);
+      acc[num] = getCitedRunFromMessageText(textToUse, num);
     }
     return acc;
-  }, [text, citations]);
+  }, [text, textWithCitationPlaceholders, citations]);
 
   // Keep latest excerpt in a ref so markdownComponents can read it without being in deps — avoids remounting
   // CitationCallout (and re-running its entrance animation) on every stream chunk.
@@ -3672,6 +3681,26 @@ function getOrderedCitationNumbersForMessage(message: { text?: string; citations
   if (!citations || typeof citations !== 'object') return [];
   const keys = Object.keys(citations).filter((k) => /^\d+$/.test(k));
   return keys.sort((a, b) => parseInt(a, 10) - parseInt(b, 10));
+}
+
+/** Renumber citations to 1, 2, 3... when backend sends gaps (e.g. 1, 3, 4). Returns renumbered citations and ordered list. */
+function renumberCitationsSequentially(message: { text?: string; citations?: Record<string, any> }): {
+  citations: Record<string, any>;
+  orderedCitationNumbersForMessage: string[];
+} {
+  const ordered = getOrderedCitationNumbersForMessage(message);
+  const citations = message.citations ?? {};
+  if (ordered.length === 0) return { citations, orderedCitationNumbersForMessage: [] };
+  const isSequential = ordered.every((num, i) => parseInt(num, 10) === i + 1);
+  if (isSequential) return { citations, orderedCitationNumbersForMessage: ordered };
+  const renumbered: Record<string, any> = {};
+  const orderedSequential: string[] = [];
+  ordered.forEach((orig, i) => {
+    const disp = String(i + 1);
+    orderedSequential.push(disp);
+    if (citations[orig]) renumbered[disp] = citations[orig];
+  });
+  return { citations: renumbered, orderedCitationNumbersForMessage: orderedSequential };
 }
 
 /** Return citation numbers in first-appearance order from message text (for citation bar "X of N").
@@ -17900,10 +17929,13 @@ responseStartedAt: existingMessage?.responseStartedAt,
                 minHeight: '1px'
               }}
             >
+              {(() => {
+                const renumbered = renumberCitationsSequentially(message);
+                return (
               <StreamingResponseTextMemo
                 text={message.text}
                 isStreaming={message.isLoading || message.responseStreamComplete === false}
-                citations={message.citations}
+                citations={renumbered.citations}
                 handleCitationClick={(data: CitationDataType, anchorRect?: DOMRect, citationNumber?: string, highlightRect?: DOMRect | null) => handleUserCitationClick(data, anchorRect, highlightRect, message.text, finalKey, citationNumber)}
                 renderTextWithCitations={renderTextWithCitations}
                 onTextUpdate={isInjectedAgentResult ? undefined : () => scrollToBottom()}
@@ -17913,7 +17945,7 @@ responseStartedAt: existingMessage?.responseStartedAt,
                 orangeCitationNumbers={orangeCitationNumbersByMessage.get(message.id ?? finalKey)}
                 greenCitationNumbers={(() => {
                   if (citationReviewShowReviewNextOnly) return undefined;
-                  const orderedForReview = citationReviewMessageId === finalKey ? getOrderedCitationNumbersForMessage(message) : [];
+                  const orderedForReview = citationReviewMessageId === finalKey ? renumbered.orderedCitationNumbersForMessage : [];
                   const currentReviewCitationNum = citationReviewMessageId === finalKey && orderedForReview.length > 0 && citationReviewCurrentIndex >= 0 && citationReviewCurrentIndex < orderedForReview.length ? orderedForReview[citationReviewCurrentIndex] : null;
                   if (currentReviewCitationNum == null) return undefined;
                   const set = new Set<string>();
@@ -17981,33 +18013,25 @@ responseStartedAt: existingMessage?.responseStartedAt,
                 }}
                 citationViewedInDocument={citationViewedInDocument}
                 onCloseDocumentFromCallout={closeExpandedCardView}
-                orderedCitationNumbersForMessage={(() => { const o = getOrderedCitationNumbersForMessage(message); return o.length > 0 ? o : undefined; })()}
+                orderedCitationNumbersForMessage={renumbered.orderedCitationNumbersForMessage.length > 0 ? renumbered.orderedCitationNumbersForMessage : undefined}
                 isCitationBarActive={isLatestAssistantMessage && !shouldHideCitationCallouts}
                 currentCitationIndex={citationReviewMessageId === finalKey ? citationReviewCurrentIndex : 0}
                 acceptedCitationIndices={citationReviewMessageId === finalKey ? citationReviewAcceptedIndices : (citationAcceptedByMessageId[finalKey] ?? undefined)}
                 showReviewNextOnly={citationReviewMessageId === finalKey ? citationReviewShowReviewNextOnly : false}
-                showInResponseCitationCallouts={!shouldHideCitationCallouts && getOrderedCitationNumbersForMessage(message).length > 0}
+                showInResponseCitationCallouts={!shouldHideCitationCallouts && renumbered.orderedCitationNumbersForMessage.length > 0}
                 showCitationPreviewBar={showCitationPreviewBar && !citationPreviewClosedForMessageIds.has(finalKey)}
                 onCloseCitationPreviewBar={(id) => setCitationPreviewClosedWithPersist((prev) => new Set(prev).add(id))}
                 rejectedCitationNumbers={rejectedCitationNumbersByMessage.get(String(message.id ?? finalKey))}
                 showBlueCitationHighlight={showBlueCitationHighlight && !citationPreviewClosedForMessageIds.has(finalKey) && !(citationReviewMessageId === finalKey && citationReviewShowReviewNextOnly)}
-                onPrevCitation={(() => {
-                  const ordered = getOrderedCitationNumbersForMessage(message);
-                  if (ordered.length <= 1) return undefined;
-                  return () => {
-                    setCitationReviewMessageId(finalKey);
-                    setCitationReviewCurrentIndex((i) => Math.max(0, i - 1));
-                  };
-                })()}
-                onNextCitation={(() => {
-                  const ordered = getOrderedCitationNumbersForMessage(message);
-                  if (ordered.length <= 1) return undefined;
-                  return () => {
-                    setCitationReviewMessageId(finalKey);
-                    setCitationReviewCurrentIndex((i) => Math.min(ordered.length - 1, i + 1));
-                  };
-                })()}
-                onAcceptCurrentCitation={(citationReviewMessageId === finalKey || (isLatestAssistantMessage && !shouldHideCitationCallouts && getOrderedCitationNumbersForMessage(message).length > 0)) ? () => {
+                onPrevCitation={renumbered.orderedCitationNumbersForMessage.length <= 1 ? undefined : () => {
+                  setCitationReviewMessageId(finalKey);
+                  setCitationReviewCurrentIndex((i) => Math.max(0, i - 1));
+                }}
+                onNextCitation={renumbered.orderedCitationNumbersForMessage.length <= 1 ? undefined : () => {
+                  setCitationReviewMessageId(finalKey);
+                  setCitationReviewCurrentIndex((i) => Math.min(renumbered.orderedCitationNumbersForMessage.length - 1, i + 1));
+                }}
+                onAcceptCurrentCitation={(citationReviewMessageId === finalKey || (isLatestAssistantMessage && !shouldHideCitationCallouts && renumbered.orderedCitationNumbersForMessage.length > 0)) ? () => {
                   const effectiveIndex = citationReviewMessageId === finalKey ? citationReviewCurrentIndex : 0;
                   handleAcceptCitationInBar(finalKey, effectiveIndex);
                 } : undefined}
@@ -18020,6 +18044,8 @@ responseStartedAt: existingMessage?.responseStartedAt,
                   setCitationReviewJustRejected(false);
                 } : undefined}
               />
+                );
+              })()}
             </div>
           )}
           {/* No-results actions: only on the latest no-results message; earlier ones hide buttons */}

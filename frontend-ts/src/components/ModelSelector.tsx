@@ -260,11 +260,7 @@ export function ModelSelector({ className, compact = false }: ModelSelectorProps
                       </span>
                     </div>
                     <p className="text-[11px] text-gray-600 leading-relaxed">
-                      Access the latest AI models from<br />
-                      OpenAI, Anthropic (Claude), Google (Gemini) and more
-                    </p>
-                    <p className="text-[11px] text-gray-600 leading-relaxed">
-                      by{' '}
+                      Access the latest AI models from OpenAI, Anthropic (Claude), Google (Gemini) and more by{' '}
                       <button
                         type="button"
                         onClick={(e) => {

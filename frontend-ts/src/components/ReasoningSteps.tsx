@@ -2180,36 +2180,64 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
           ref={stepContentRef}
           key="reasoning-steps-static"
           style={{
+            position: 'relative',
             display: 'flex',
-            flexDirection: 'row',
-            flexWrap: 'wrap',
-            alignItems: 'center',
-            gap: '0 8px',
+            flexDirection: 'column',
+            alignItems: 'flex-start',
+            gap: 0,
+            paddingLeft: '20px',
             lineHeight: 1.2,
             minHeight: isStaggerMode && stepContainerMinHeight != null ? stepContainerMinHeight : undefined
           }}
         >
+          {/* Timeline vertical line - hide during streaming */}
+          {(!isLoading || hasResponseText) && (
+            <div
+              style={{
+                position: 'absolute',
+                left: '5px',
+                top: '10px',
+                bottom: '10px',
+                width: '1px',
+                backgroundColor: 'rgba(0, 0, 0, 0.1)',
+                pointerEvents: 'none'
+              }}
+            />
+          )}
           {effectiveDisplayItems.map((displayItem, itemIndex) => {
             if (displayItem.kind === 'group') {
               const groupKey = generateAnimatePresenceKey('ReasoningStep', displayItem.exploringStepIndex, displayItem.exploringStep.details?.doc_previews?.length ?? 0, 'exploring-group');
               return (
-                <React.Fragment key={groupKey}>
-                  {itemIndex > 0 && (
-                    <span style={{ color: DETAIL_COLOR, fontSize: '14px', flexShrink: 0 }}>•</span>
+                <div
+                  key={groupKey}
+                  style={{
+                    fontSize: '14px',
+                    color: DETAIL_COLOR,
+                    padding: '4px 0',
+                    lineHeight: 1.2,
+                    position: 'relative',
+                    minHeight: '28px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '10px',
+                  }}
+                >
+                  {(!isLoading || hasResponseText) && (
+                    <div
+                      style={{
+                        position: 'absolute',
+                        left: '-14.5px',
+                        top: '50%',
+                        transform: 'translate(-50%, -50%)',
+                        width: '4px',
+                        height: '4px',
+                        borderRadius: '50%',
+                        backgroundColor: 'rgba(0, 0, 0, 0.1)',
+                        flexShrink: 0,
+                      }}
+                    />
                   )}
-                  <div
-                    style={{
-                      fontSize: '14px',
-                      color: DETAIL_COLOR,
-                      padding: '0',
-                      lineHeight: 1.2,
-                      position: 'relative',
-                      minHeight: '28px',
-                      display: 'flex',
-                      alignItems: 'center',
-                      flexShrink: 0,
-                    }}
-                  >
+                  <div style={{ display: 'flex', alignItems: 'center', flexShrink: 0, flex: 1, minWidth: 0 }}>
                 <StepRenderer
                   step={displayItem.exploringStep}
                     allSteps={stepsForDisplay}
@@ -2233,7 +2261,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
                     documentsForResolution={documentsForResolution}
                   />
                 </div>
-              </React.Fragment>
+                </div>
               );
             }
 
@@ -2247,23 +2275,36 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
             const isLastReadingStep = isReadingStep && readingStepIndex === allReadingSteps.length - 1;
 
             return (
-              <React.Fragment key={finalStepKey}>
-                {itemIndex > 0 && (
-                  <span style={{ color: DETAIL_COLOR, fontSize: '14px', flexShrink: 0 }}>•</span>
+              <div
+                key={finalStepKey}
+                style={{
+                  fontSize: '14px',
+                  color: DETAIL_COLOR,
+                  padding: '4px 0',
+                  lineHeight: 1.2,
+                  position: 'relative',
+                  minHeight: '20px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '10px',
+                }}
+              >
+                {(!isLoading || hasResponseText) && (
+                  <div
+                    style={{
+                      position: 'absolute',
+                      left: '-14.5px',
+                      top: '50%',
+                      transform: 'translate(-50%, -50%)',
+                      width: '4px',
+                      height: '4px',
+                      borderRadius: '50%',
+                      backgroundColor: 'rgba(0, 0, 0, 0.1)',
+                      flexShrink: 0,
+                    }}
+                  />
                 )}
-                <div
-                  style={{
-                    fontSize: '14px',
-                    color: DETAIL_COLOR,
-                    padding: '0',
-                    lineHeight: 1.2,
-                    position: 'relative',
-                    minHeight: '20px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    flexShrink: 0,
-                  }}
-                >
+                <div style={{ display: 'flex', alignItems: 'center', flexShrink: 0, flex: 1, minWidth: 0 }}>
                   <StepRenderer
                     step={step}
                     allSteps={stepsForDisplay}
@@ -2281,7 +2322,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
                     documentsForResolution={documentsForResolution}
                   />
                 </div>
-              </React.Fragment>
+              </div>
             );
           })}
         </div>

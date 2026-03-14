@@ -1455,21 +1455,9 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
     // Expected chat width when doc preview is open (matches SideChatPanel's DOC_PREVIEW_CHAT_RATIO)
     const expectedChatWidth = Math.round((viewportWidth - sidebarWidth - agentSidebarWidth) * CHAT_PANEL_WIDTH.DOC_PREVIEW_CHAT_RATIO);
     const roundedProp = Math.round(chatPanelWidth);
-    // Set open time synchronously on first render for this doc so position is correct immediately (no jump when loading)
-    if (docId && !isFullscreen && docOpenTimeSetForRef.current !== docId) {
-      docOpenTimeRef.current = Date.now();
-      docOpenTimeSetForRef.current = docId;
-    }
-    const isWithinStaleWindow = docOpenTimeRef.current > 0 && Date.now() - docOpenTimeRef.current < DOC_OPEN_STALE_MS;
-    // Snap to expected ratio when within 2px to avoid 1px rounding jitter and glitchy re-renders
-    const isNearExpected = Math.abs(roundedProp - expectedChatWidth) <= 2;
-    // During open window: always use expected so the panel never moves when it loads (no jump after load)
-    const effectiveChatWidth =
-      isWithinStaleWindow
-        ? expectedChatWidth
-        : isNearExpected
-          ? expectedChatWidth
-          : roundedProp;
+    // Always use expected position when not resizing: prevents layout shift when chatPanelWidth
+    // updates late (streaming, content load). Only use actual width during user drag resize.
+    const effectiveChatWidth = isResizing ? roundedProp : expectedChatWidth;
     const roundedChatPanelWidth = effectiveChatWidth;
     
     // CORRECT LAYOUT: Sidebar (far left) | Chat Panel (left) | Document Preview (RIGHT)

@@ -1187,7 +1187,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
   };
 
   // Document thumbnail (PDF first page) or type icon - slightly bigger than w-5 h-5
-  const thumbSizeClass = "w-12 h-12 object-cover flex-shrink-0 rounded";
+  const thumbSizeClass = "w-10 h-10 object-cover flex-shrink-0 rounded";
   const docTypeIconSmallClass = "w-3 h-3 object-contain flex-shrink-0 rounded-[1px]";
   const getDocTypeIconSmall = (doc: Document) => {
     const filename = doc.original_filename.toLowerCase();
@@ -3506,7 +3506,7 @@ className={`flex items-center gap-0.5 px-2 py-1 ml-4 mr-8 w-full cursor-pointer 
                               className="flex items-center justify-center flex-shrink-0 p-0.5 hover:bg-gray-100 rounded bg-transparent border-0 focus:outline-none outline-none hover:opacity-70 transition-opacity cursor-pointer"
                               title="Stop upload"
                             >
-                              <Pause className="w-2.5 h-2.5 text-gray-500" strokeWidth={1.5} aria-hidden />
+                              <Pause className="w-2 h-2 text-gray-400" strokeWidth={1.5} aria-hidden />
                             </button>
                         </div>
                       );
@@ -3689,7 +3689,7 @@ className={`flex items-center gap-0.5 px-2 py-1 ml-4 mr-8 w-full cursor-pointer 
                                                   <div className="flex items-center justify-center w-3 h-3 flex-shrink-0">
                                                     <OrbitProgress color="#22c55e" size="small" dense text="" textColor="" speedPlus={1} style={{ fontSize: '2px' }} />
                                                   </div>
-                                                  <Pause className="w-2.5 h-2.5 text-gray-500 flex-shrink-0" strokeWidth={1.5} aria-hidden />
+                                                  <Pause className="w-2 h-2 text-gray-400 flex-shrink-0" strokeWidth={1.5} aria-hidden />
                                                 </div>
                                               ) : (
                                                 <span
@@ -3760,7 +3760,7 @@ className={`flex items-center gap-0.5 px-2 py-1 ml-4 mr-8 w-full cursor-pointer 
                           className="flex items-center justify-center flex-shrink-0 p-0.5 hover:bg-gray-100 rounded bg-transparent border-0 focus:outline-none outline-none hover:opacity-70 transition-opacity cursor-pointer"
                           title="Stop upload"
                         >
-                          <Pause className="w-2.5 h-2.5 text-gray-500" strokeWidth={1.5} aria-hidden />
+                          <Pause className="w-2 h-2 text-gray-400" strokeWidth={1.5} aria-hidden />
                         </button>
                       </div>
                     );
@@ -3882,7 +3882,7 @@ isSelectionMode
                                         <div className="flex items-center justify-center w-3 h-3 flex-shrink-0">
                                           <OrbitProgress color="#22c55e" size="small" dense text="" textColor="" speedPlus={1} style={{ fontSize: '2px' }} />
                                         </div>
-                                        <Pause className="w-2.5 h-2.5 text-gray-500 flex-shrink-0" strokeWidth={1.5} aria-hidden />
+                                        <Pause className="w-2 h-2 text-gray-400 flex-shrink-0" strokeWidth={1.5} aria-hidden />
                                       </div>
                                     ) : (
                                       <span
