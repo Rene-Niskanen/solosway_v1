@@ -26,13 +26,13 @@ import {
   Search,
   Upload,
   HelpCircle,
-  Info,
   CircleArrowUp,
   Monitor,
   Sun,
   Moon,
   Palette,
-  Check
+  Check,
+  Copy
 } from "lucide-react";
 import { useTheme } from "next-themes";
 import OrbitProgress from "react-loading-indicators/OrbitProgress";
@@ -46,6 +46,13 @@ import { backendApi } from "@/services/backendApi";
 import { getPlanBadgeInfo } from "@/config/billing";
 import { getProfilePictureSrc } from "@/utils/profilePicture";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from "@/components/ui/dialog";
 
 export interface SidebarProps {
   className?: string;
@@ -131,6 +138,7 @@ export const Sidebar = ({
   const themeSubmenuRef = React.useRef<HTMLDivElement>(null);
   const [iconsOnlyDropdownPosition, setIconsOnlyDropdownPosition] = React.useState<{ top: number; left: number } | null>(null);
   const [themeSubmenuPosition, setThemeSubmenuPosition] = React.useState<{ top: number; left: number } | null>(null);
+  const [showHelpDialog, setShowHelpDialog] = React.useState(false);
   const { isOpen: isFeedbackModalOpen } = useFeedbackModal();
   const contextUser = useAuthUser();
   // Seed from AuthContext so role/name is correct on first paint (no "User" → "Admin" flash)
@@ -600,7 +608,7 @@ export const Sidebar = ({
               <div className="relative flex-shrink-0" style={{ height: 52 }}>
                 <div className="absolute left-0 right-0 flex items-center px-3" style={{ top: -26, marginLeft: 14 }}>
                   <img
-                    src={isDark ? '/OpenFind-white.png' : '/OpenFind(1).png'}
+                    src={isDark ? '/(Grey)OpenFind.png' : '/OpenFind(1).png'}
                     alt="OpenFind"
                     className="h-6 object-contain object-left"
                     style={{ width: 'auto', maxWidth: '240px', filter: isDark ? undefined : 'invert(1) brightness(0.2)', opacity: isDark ? 1 : 0.8 }}
@@ -721,7 +729,10 @@ export const Sidebar = ({
                         <span className="text-[13px] font-normal">Settings</span>
                       </button>
                       <button
-                        onClick={() => setIsBrandDropdownOpen(false)}
+                        onClick={() => {
+                          setIsBrandDropdownOpen(false);
+                          setShowHelpDialog(true);
+                        }}
                         className="w-full flex items-center gap-3 px-2 py-2 rounded text-popover-foreground hover:bg-muted transition-colors text-left"
                       >
                         <HelpCircle className="h-5 w-5 flex-shrink-0" strokeWidth={1.25} />
@@ -748,14 +759,6 @@ export const Sidebar = ({
                       >
                         <CircleArrowUp className="h-5 w-5 flex-shrink-0" strokeWidth={1.25} />
                         <span className="text-[13px] font-normal">Upgrade plan</span>
-                      </button>
-                      <button
-                        onClick={() => setIsBrandDropdownOpen(false)}
-                        className="w-full flex items-center gap-3 px-2 py-2 rounded text-popover-foreground hover:bg-muted transition-colors text-left"
-                      >
-                        <Info className="h-5 w-5 flex-shrink-0" strokeWidth={1.25} />
-                        <span className="text-[13px] font-normal flex-1">Learn more</span>
-                        <ChevronRight className="h-5 w-5 flex-shrink-0 text-muted-foreground" strokeWidth={1.5} />
                       </button>
                       <div className="border-t border-border my-1" />
                       <button
@@ -799,7 +802,10 @@ export const Sidebar = ({
                         <span className="text-[13px] font-normal">Settings</span>
                       </button>
                       <button
-                        onClick={() => setIsBrandDropdownOpen(false)}
+                        onClick={() => {
+                          setIsBrandDropdownOpen(false);
+                          setShowHelpDialog(true);
+                        }}
                         className="w-full flex items-center gap-3 px-2 py-2 rounded text-popover-foreground hover:bg-muted transition-colors text-left"
                       >
                         <HelpCircle className="h-5 w-5 flex-shrink-0" strokeWidth={1.25} />
@@ -826,14 +832,6 @@ export const Sidebar = ({
                       >
                         <CircleArrowUp className="h-5 w-5 flex-shrink-0" strokeWidth={1.25} />
                         <span className="text-[13px] font-normal">Upgrade plan</span>
-                      </button>
-                      <button
-                        onClick={() => setIsBrandDropdownOpen(false)}
-                        className="w-full flex items-center gap-3 px-2 py-2 rounded text-popover-foreground hover:bg-muted transition-colors text-left"
-                      >
-                        <Info className="h-5 w-5 flex-shrink-0" strokeWidth={1.25} />
-                        <span className="text-[13px] font-normal flex-1">Learn more</span>
-                        <ChevronRight className="h-5 w-5 flex-shrink-0 text-muted-foreground" strokeWidth={1.5} />
                       </button>
                       <div className="border-t border-border my-1" />
                       <button
@@ -1107,7 +1105,10 @@ export const Sidebar = ({
                         <span className="text-[13px] font-normal">Settings</span>
                       </button>
                       <button
-                        onClick={() => setIsBrandDropdownOpen(false)}
+                        onClick={() => {
+                          setIsBrandDropdownOpen(false);
+                          setShowHelpDialog(true);
+                        }}
                         className="w-full flex items-center gap-3 px-2 py-2 rounded text-popover-foreground hover:bg-muted transition-colors text-left"
                       >
                         <HelpCircle className="h-5 w-5 flex-shrink-0" strokeWidth={1.25} />
@@ -1134,14 +1135,6 @@ export const Sidebar = ({
                       >
                         <CircleArrowUp className="h-5 w-5 flex-shrink-0" strokeWidth={1.25} />
                         <span className="text-[13px] font-normal">Upgrade plan</span>
-                      </button>
-                      <button
-                        onClick={() => setIsBrandDropdownOpen(false)}
-                        className="w-full flex items-center gap-3 px-2 py-2 rounded text-popover-foreground hover:bg-muted transition-colors text-left"
-                      >
-                        <Info className="h-5 w-5 flex-shrink-0" strokeWidth={1.25} />
-                        <span className="text-[13px] font-normal flex-1">Learn more</span>
-                        <ChevronRight className="h-5 w-5 flex-shrink-0 text-muted-foreground" strokeWidth={1.5} />
                       </button>
                       <div className="border-t border-border my-1" />
                       <button
@@ -1260,6 +1253,32 @@ export const Sidebar = ({
           </div>,
           document.body
         )}
+      <Dialog open={showHelpDialog} onOpenChange={setShowHelpDialog}>
+        <DialogContent className="sm:max-w-md !bg-white border-gray-200 shadow-xl">
+          <DialogHeader>
+            <DialogTitle className="text-gray-900 font-normal">Get help</DialogTitle>
+            <DialogDescription className="text-gray-600">
+              For support, contact us at:
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex items-center gap-3 rounded-xl border border-gray-200 bg-gray-50 px-4 py-3">
+            <a
+              href="mailto:connect@solosway.co"
+              className="text-[15px] font-medium text-blue-900 hover:text-blue-950 hover:underline flex-1 truncate"
+            >
+              connect@solosway.co
+            </a>
+            <button
+              type="button"
+              onClick={() => navigator.clipboard.writeText("connect@solosway.co")}
+              className="shrink-0 rounded-lg p-2 text-gray-500 hover:bg-gray-200 hover:text-gray-700 transition-colors"
+              title="Copy email"
+            >
+              <Copy className="h-4 w-4" strokeWidth={1.5} />
+            </button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </>
   );
 };

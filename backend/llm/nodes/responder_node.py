@@ -1175,6 +1175,56 @@ def _ensure_paragraph_break_after_first_citation(text: str) -> str:
     return text[:insert_pos].rstrip() + '\n\n' + rest
 
 
+def _bbox_key(c: Dict[str, Any]) -> tuple:
+    """Build a hashable key for bbox grouping. Citations with same doc+page+bbox are grouped."""
+    bbox = c.get('bbox')
+    if not bbox or not isinstance(bbox, dict):
+        return (str(c.get('doc_id', '')), c.get('page_number', 0), None)
+    left = bbox.get('left')
+    top = bbox.get('top')
+    width = bbox.get('width')
+    height = bbox.get('height')
+    if left is None or top is None:
+        return (str(c.get('doc_id', '')), c.get('page_number', 0), None)
+    page = bbox.get('page', c.get('page_number', 0))
+    coord = (round(float(left), 4), round(float(top), 4), round(float(width or 0), 4), round(float(height or 0), 4))
+    return (str(c.get('doc_id', '')), int(page) if page is not None else 0, coord)
+
+
+def _group_citations_by_bbox_use_first_number(
+    citations: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """
+    Group citations that share the same bbox. For each group, assign the first (by position)
+    citation number to all. E.g. [10], [11], [12] from same bbox all become [10].
+    Returns the same list with citation_number updated; all text replacements will use these numbers.
+    """
+    if not citations:
+        return citations
+    # Sort by position
+    sorted_cites = sorted(citations, key=lambda c: c.get('position', 0))
+    # Group by bbox key
+    groups: Dict[tuple, List[Dict[str, Any]]] = {}
+    for c in sorted_cites:
+        key = _bbox_key(c)
+        if key not in groups:
+            groups[key] = []
+        groups[key].append(c)
+    # For each group, set canonical = first citation_number
+    for group in groups.values():
+        if len(group) <= 1:
+            continue
+        canonical = min(c.get('citation_number', 0) for c in group)
+        for c in group:
+            if c.get('citation_number') != canonical:
+                logger.info(
+                    f"[CITATION_GROUP] Citation {c.get('citation_number')} same bbox as {canonical} "
+                    f"-> using [{canonical}] for all"
+                )
+            c['citation_number'] = canonical
+    return citations
+
+
 def format_citations_for_frontend(
     citations: List[Dict[str, Any]]
 ) -> List[Dict[str, Any]]:
@@ -1182,20 +1232,24 @@ def format_citations_for_frontend(
     Format citations for frontend consumption.
     
     Converts internal citation dictionaries to Citation TypedDict format expected by the frontend.
-    Keeps every citation (one payload per in-text [1], [2], [3]) so numbers match the response.
+    Deduplicates by citation_number (after bbox grouping) so frontend gets one entry per displayed number.
     
     Args:
-        citations: List of citation dictionaries (already with sequential citation_number 1,2,3...)
+        citations: List of citation dictionaries (with citation_number; may have duplicates after bbox grouping)
     
     Returns:
-        List of Citation dictionaries for frontend
+        List of Citation dictionaries for frontend (one per unique citation_number, first wins)
     """
     frontend_citations = []
-    # Sort by position so order matches the response text
-    sorted_citations = sorted(citations, key=lambda c: c.get('position', 0))
+    seen_numbers: Set[int] = set()
+    # Sort by position then citation_number so first occurrence of each number wins
+    sorted_citations = sorted(citations, key=lambda c: (c.get('position', 0), c.get('citation_number', 0)))
 
     for citation in sorted_citations:
         citation_number = citation.get('citation_number', 0)
+        if citation_number in seen_numbers:
+            continue
+        seen_numbers.add(citation_number)
         # Extract bbox data - only include if valid
         bbox_data = citation.get('bbox')
         bbox = None
@@ -2554,10 +2608,12 @@ async def generate_answer_with_direct_citations(
                     )
 
         # Step 4b: Assign sequential citation numbers 1, 2, 3... by order of appearance (position).
-        # This ensures UI shows [1], [2], [3] and we never collapse two in-text citations into one.
+        # Then group citations that share the same bbox and make them all refer to the first citation number.
+        # This ensures e.g. [10], [11], [12] when from same bbox all show [10] so the preview isn't confusing.
         citations.sort(key=lambda c: c.get('position', 0))
         for seq, citation in enumerate(citations, start=1):
             citation['citation_number'] = seq
+        citations = _group_citations_by_bbox_use_first_number(citations)
         
         # Step 5: Validate citations
         if not validate_citations(citations, short_id_lookup):

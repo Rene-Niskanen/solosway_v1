@@ -3483,23 +3483,27 @@ className={`flex items-center gap-0.5 px-2 py-1 ml-4 mr-8 w-full cursor-pointer 
                         return (
                           <div
                             key={p.id}
-                            className="flex items-center gap-1 px-2 py-1 ml-4 mr-8 bg-white rounded-md border-t border-x border-gray-100 last:border-b"
+                            className="flex items-center gap-0.5 pl-3 pr-2 py-1.5 ml-5 mr-8 bg-white rounded-md border-t border-x border-gray-100 last:border-b"
                           >
-                            <div className="flex-shrink-0 flex items-center justify-center">{getFileIcon(mockDoc)}</div>
-                            <div className="flex-1 min-w-0 max-w-[calc(100%-2rem)] flex flex-col min-h-[28px]">
-                              <span className="text-xs font-medium text-slate-600 truncate" style={{ fontFamily: "'DM Sans', system-ui, -apple-system, sans-serif" }}>
-                                {p.name}
-                              </span>
-                            <div className="flex items-center gap-1 flex-shrink-0 min-h-[14px]">
-                                <div className="flex items-center justify-center w-3 h-3 flex-shrink-0">
-                                  <OrbitProgress color="#22c55e" size="small" dense text="" textColor="" speedPlus={1} style={{ fontSize: '2px' }} />
+                            <div className="flex-shrink-0 flex items-center justify-center overflow-hidden rounded bg-white relative" style={{ width: 48, height: 48 }}>
+                              <div className="flex items-center justify-center" style={{ width: 48, height: 48 }}>
+                                <OrbitProgress color="#22c55e" size="small" dense text="" textColor="" speedPlus={1} style={{ fontSize: '6px' }} />
+                              </div>
+                            </div>
+                            <div className="flex-1 min-w-0 flex flex-col min-h-[36px] justify-center gap-0">
+                              <div className="flex flex-col gap-0.5 min-w-0 w-full">
+                                <div className="flex items-center gap-1.5 min-h-[14px] w-full min-w-0 ml-1">
+                                  <div className="flex-shrink-0">{getDocTypeIconSmall(mockDoc)}</div>
+                                  <span className="text-xs font-medium text-slate-600 truncate flex-1 min-w-0" style={{ fontFamily: "'DM Sans', system-ui, -apple-system, sans-serif" }}>
+                                    {p.name}
+                                  </span>
                                 </div>
                               </div>
                             </div>
                             <button
                               type="button"
                               onClick={() => handleStopSingleUpload(p.id, p.name)}
-                              className="flex items-center justify-center flex-shrink-0 p-0 mr-1.5 bg-transparent border-0 focus:outline-none outline-none hover:opacity-70 transition-opacity cursor-pointer"
+                              className="flex items-center justify-center flex-shrink-0 p-0.5 hover:bg-gray-100 rounded bg-transparent border-0 focus:outline-none outline-none hover:opacity-70 transition-opacity cursor-pointer"
                               title="Stop upload"
                             >
                               <Pause className="w-2.5 h-2.5 text-gray-500" strokeWidth={1.5} aria-hidden />
@@ -3733,23 +3737,27 @@ className={`flex items-center gap-0.5 px-2 py-1 ml-4 mr-8 w-full cursor-pointer 
                     return (
                       <div
                         key={p.id}
-                        className="flex items-center gap-1 px-2 py-1 mx-4 bg-white rounded-md border-t border-x border-gray-100 last:border-b"
+                        className="flex items-center gap-0.5 px-2 py-1 mx-4 bg-white rounded-md border-t border-x border-gray-100 last:border-b"
                       >
-                        <div className="flex-shrink-0 flex items-center justify-center">{getFileIcon(mockDoc)}</div>
-                        <div className="flex-1 min-w-0 max-w-[calc(100%-2rem)] flex flex-col min-h-[28px]">
-                          <span className="text-xs font-medium text-slate-600 truncate" style={{ fontFamily: "'DM Sans', system-ui, -apple-system, sans-serif" }}>
-                            {p.name}
-                          </span>
-                          <div className="flex items-center gap-1 flex-shrink-0 min-h-[14px]">
-                              <div className="flex items-center justify-center w-3 h-3 flex-shrink-0">
-                                <OrbitProgress color="#22c55e" size="small" dense text="" textColor="" speedPlus={1} style={{ fontSize: '2px' }} />
-                              </div>
+                        <div className="flex-shrink-0 flex items-center justify-center overflow-hidden rounded bg-white relative" style={{ width: 48, height: 48 }}>
+                          <div className="flex items-center justify-center" style={{ width: 48, height: 48 }}>
+                            <OrbitProgress color="#22c55e" size="small" dense text="" textColor="" speedPlus={1} style={{ fontSize: '6px' }} />
+                          </div>
+                        </div>
+                        <div className="flex-1 min-w-0 flex flex-col min-h-[36px] justify-center gap-0">
+                          <div className="flex flex-col gap-0.5 min-w-0 w-full">
+                            <div className="flex items-center gap-1.5 min-h-[14px] w-full min-w-0 ml-1">
+                              <div className="flex-shrink-0">{getDocTypeIconSmall(mockDoc)}</div>
+                              <span className="text-xs font-medium text-slate-600 truncate flex-1 min-w-0" style={{ fontFamily: "'DM Sans', system-ui, -apple-system, sans-serif" }}>
+                                {p.name}
+                              </span>
                             </div>
                           </div>
+                        </div>
                         <button
                           type="button"
                           onClick={() => handleStopSingleUpload(p.id, p.name)}
-                          className="flex items-center justify-center flex-shrink-0 p-0 mr-1.5 bg-transparent border-0 focus:outline-none outline-none hover:opacity-70 transition-opacity cursor-pointer"
+                          className="flex items-center justify-center flex-shrink-0 p-0.5 hover:bg-gray-100 rounded bg-transparent border-0 focus:outline-none outline-none hover:opacity-70 transition-opacity cursor-pointer"
                           title="Stop upload"
                         >
                           <Pause className="w-2.5 h-2.5 text-gray-500" strokeWidth={1.5} aria-hidden />

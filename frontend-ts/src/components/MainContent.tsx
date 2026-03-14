@@ -4516,7 +4516,7 @@ export const MainContent = ({
                           }}
                         >
                           <img
-                            src="/O.png"
+                            src="/OpenFind-AI.png"
                             alt="OpenFind"
                             // @ts-expect-error - use lowercase fetchpriority per React DOM warning; types still use fetchPriority
                             fetchpriority="high"

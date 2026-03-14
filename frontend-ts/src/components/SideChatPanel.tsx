@@ -1831,6 +1831,23 @@ const StreamingResponseText: React.FC<{
       return `%%CITATION_PENDING_${num}%%`;
     });
     
+    // Collapse repeated citations: when the same citation appears multiple times within a contiguous
+    // block (no period/newline between), keep only one at the end. E.g. "date [2] between X [2] (Owner) and Y [2] (Tenant)"
+    // → "date between X (Owner) and Y (Tenant) [2]"
+    let collapsed = processedText;
+    let changed = true;
+    while (changed) {
+      changed = false;
+      collapsed = collapsed.replace(
+        /(%%CITATION_(?:BRACKET|SUPERSCRIPT|PENDING)_\d+%%)([^.\n]*?)\1/g,
+        (_, _placeholder, middle) => {
+          changed = true;
+          return middle + _placeholder;
+        }
+      );
+    }
+    processedText = collapsed;
+    
     // Final pass: remove period that follows any run of citation placeholders (catches "... 11 12." and multi-citation ends)
     processedText = processedText.replace(/((?:%%CITATION_(?:SUPERSCRIPT|BRACKET|PENDING)_\d+%%\s*)+)\.(?=\s|$)/g, '$1');
     
@@ -4652,6 +4669,32 @@ const CitationCallout: React.FC<{
             <>
               {/* Document preview — click to focus chat input */}
               <div style={{ position: 'relative', width: '100%', height: 316, minHeight: 316, flexShrink: 0, boxSizing: 'border-box' }}>
+              {/* Citation number badge — same design as inline citation pills (.citation-link-btn) */}
+              <div
+                aria-hidden
+                style={{
+                  position: 'absolute',
+                  top: 8,
+                  left: 8,
+                  zIndex: 10,
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  minWidth: '1.25rem',
+                  height: '1.25rem',
+                  padding: '0 0.35rem',
+                  borderRadius: '0.625rem',
+                  backgroundColor: '#f3f4f6',
+                  border: '1px solid rgba(0, 0, 0, 0.12)',
+                  boxShadow: '0 0 0 14px white',
+                  color: '#5b6573',
+                  fontSize: '0.6875rem',
+                  fontWeight: 500,
+                  flexShrink: 0,
+                }}
+              >
+                {citationNumber}
+              </div>
               <div
                 ref={previewContainerRef}
                 role="button"
@@ -4955,8 +4998,33 @@ const CitationCallout: React.FC<{
               display: 'flex',
               flexDirection: 'column',
               gap: 8,
+              position: 'relative',
             }}
           >
+            {/* Citation number badge for web sources */}
+            <div
+              aria-hidden
+              style={{
+                position: 'absolute',
+                top: 12,
+                right: 16,
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                minWidth: '1.25rem',
+                height: '1.25rem',
+                padding: '0 0.35rem',
+                borderRadius: '0.625rem',
+                backgroundColor: '#f3f4f6',
+                border: '1px solid rgba(0, 0, 0, 0.12)',
+                boxShadow: '0 0 0 10px white',
+                color: '#5b6573',
+                fontSize: '0.6875rem',
+                fontWeight: 500,
+              }}
+            >
+              {citationNumber}
+            </div>
             <div style={{ fontSize: '14px', fontWeight: 600, color: '#111827' }}>
               {(citation as { title?: string }).title || 'Web source'}
             </div>
@@ -5012,6 +5080,32 @@ const CitationCallout: React.FC<{
                 justifyContent: 'center',
               }}
             >
+              {/* Citation number badge — same design as inline citation pills (.citation-link-btn) */}
+              <div
+                aria-hidden
+                style={{
+                  position: 'absolute',
+                  top: 8,
+                  left: 8,
+                  zIndex: 10,
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  minWidth: '1.25rem',
+                  height: '1.25rem',
+                  padding: '0 0.35rem',
+                  borderRadius: '0.625rem',
+                  backgroundColor: '#f3f4f6',
+                  border: '1px solid rgba(0, 0, 0, 0.12)',
+                  boxShadow: '0 0 0 10px white',
+                  color: '#5b6573',
+                  fontSize: '0.6875rem',
+                  fontWeight: 500,
+                  flexShrink: 0,
+                }}
+              >
+                {citationNumber}
+              </div>
               <CitationPagePreviewContent
                 cachedPageImage={cachedPageImage!}
                 transform={transform}
@@ -19569,7 +19663,7 @@ responseStartedAt: existingMessage?.responseStartedAt,
                       style={{ marginBottom: DASHBOARD_CHAT_LAYOUT.WELCOME_TO_BAR_GAP, flexWrap: 'wrap' }}
                     >
                       <img
-                        src="/O.png"
+                        src="/OpenFind-AI.png"
                         alt="OpenFind"
                         fetchPriority="high"
                         style={{
