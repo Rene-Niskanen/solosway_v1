@@ -16,7 +16,6 @@ import { usePreview, type CitationHighlight } from '../contexts/PreviewContext';
 import { useChatStateStore, useActiveChatDocumentPreview, type DocumentPreview } from '../contexts/ChatStateStore';
 import { usePropertySelection } from '../contexts/PropertySelectionContext';
 import { useDocumentSelection } from '../contexts/DocumentSelectionContext';
-import { useChooseProjectModal } from '../contexts/ChooseProjectModalContext';
 import { useFilingSidebar } from '../contexts/FilingSidebarContext';
 import { useChatPanel } from '../contexts/ChatPanelContext';
 import * as pdfjs from 'pdfjs-dist';
@@ -67,7 +66,7 @@ import { useCitationExportOptional } from '../contexts/CitationExportContext';
 import { buildDocxMarkdownWithCitationImages, cropPageImageToBbox } from '../utils/citationExport';
 import { convertMarkdownToDocx, downloadDocx } from '@mohtasham/md-to-docx';
 import { playCompletionSound } from '../utils/playCompletionSound';
-import { INPUT_BAR_SPACE_BELOW_PANEL, CHAT_INPUT_MAX_HEIGHT_PX, CHAT_BAR_MAX_WIDTH_PX, DASHBOARD_CHAT_LAYOUT, CHAT_BAR_BORDER, CHAT_BAR_BORDER_DRAG, CHAT_BAR_BOX_SHADOW } from '@/utils/inputBarPosition';
+import { INPUT_BAR_SPACE_BELOW_PANEL, CHAT_INPUT_MAX_HEIGHT_PX, CHAT_BAR_MAX_WIDTH_PX, CHAT_TABS_BAR_MAX_WIDTH_PX, CHAT_BAR_WRAPPER_STYLE, CHAT_BAR_DESIGN, CHAT_BAR_BORDER, CHAT_BAR_BORDER_DRAG, CHAT_BAR_BOX_SHADOW, getChatBarInnerStyle, getChatBarDragOverlayStyle, getChatBarAttachmentsRowStyle, getChatBarSegmentInputRowStyle, getChatBarButtonRowStyle, getChatBarSegmentInputStyle, SIDEBAR_TO_BAR_GAP_PX, DASHBOARD_BAR_PADDING_RIGHT_PX, DASHBOARD_CHAT_LAYOUT } from '@/utils/inputBarPosition';
 import { CHAT_PANEL_WIDTH, CHAT_TABS_VISIBLE } from './chatPanelConstants';
 
 /** Strip HTML/SVG tags from query string so submitted text never includes e.g. <svg /> from icons. */
@@ -6538,6 +6537,8 @@ interface SideChatPanelProps {
   selectedChatId?: string | null;
   /** Callback when user selects a chat from ChatTabsBar (same as ChatPanel onChatSelect). */
   onChatSelect?: (chatId: string) => void;
+  /** Ref to the chat messages area. When set, used as portal container for search/project modal so it centers in chat section (e.g. 50/50 split). */
+  chatModalContainerRef?: React.RefObject<HTMLDivElement | null>;
 }
 
 export interface SideChatPanelRef {
@@ -6546,6 +6547,8 @@ export interface SideChatPanelRef {
   isResizing: boolean;
   /** Accept current citation when document preview is open (same as Accept in citation callout bar). */
   handleAcceptCitationForDocPreview?: () => void;
+  /** Add a document from FilingSidebar/search modal (same payload format as drag). */
+  addFilingSidebarDocument?: (data: { documentId?: string; filename?: string; fileType?: string; s3Path?: string }) => void;
 }
 
 // Utility function for computing adjustments from diff (extracted for incremental diff)
@@ -6665,6 +6668,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   isTransitioningToChat = false,
   selectedChatId: selectedChatIdProp,
   onChatSelect,
+  chatModalContainerRef,
 }, ref) => {
   // Main navigation state:
   // - collapsed: icon-only sidebar (treat as "closed" for the purposes of showing open controls)
@@ -8463,6 +8467,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   // User can resize in both expanded and collapsed states
   const hasInitializedAttachmentsRef = React.useRef(false);
   const attachedFilesRef = React.useRef<FileAttachmentData[]>([]);
+  const addFilingSidebarDocumentRef = React.useRef<((data: { documentId?: string; filename?: string; fileType?: string; s3Path?: string }) => void) | null>(null);
   const abortControllerRef = React.useRef<AbortController | null>(null); // For cancelling streaming queries
   const [attachedFiles, setAttachedFiles] = React.useState<FileAttachmentData[]>(() => {
     const initial = initialAttachedFiles || [];
@@ -8528,7 +8533,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     },
     handleResizeStart,
     isResizing,
-    handleAcceptCitationForDocPreview: () => handleAcceptCitationForDocPreviewRef.current?.()
+    handleAcceptCitationForDocPreview: () => handleAcceptCitationForDocPreviewRef.current?.(),
+    addFilingSidebarDocument: (data: { documentId?: string; filename?: string; fileType?: string; s3Path?: string }) => {
+      addFilingSidebarDocumentRef.current?.(data);
+    },
   }), [handleResizeStart, isResizing]);
   
   // Restore attachments when initialAttachedFiles prop changes
@@ -9106,7 +9114,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     clearPropertyAttachments,
     addPropertyAttachment
   } = usePropertySelection();
-  const { openChooseProjectModal } = useChooseProjectModal();
 
   // Documents from current property/chat for ReasoningSteps filename resolution (when backend sends doc_id but no filename)
   const documentsForResolution = React.useMemo((): Array<{ id: string; original_filename?: string | null }> => {
@@ -15012,6 +15019,109 @@ responseStartedAt: existingMessage?.responseStartedAt,
     });
   }, [attachedFiles.length]);
 
+  // Add document from FilingSidebar/search modal (shared by drop handler and imperative handle)
+  const addFilingSidebarDocument = React.useCallback((data: { documentId?: string; filename?: string; fileType?: string; s3Path?: string }) => {
+    if (attachedFiles.length >= MAX_FILES) {
+      toast({
+        description: `Maximum of ${MAX_FILES} files allowed. Please remove a file before adding another.`,
+        duration: 3000,
+      });
+      return;
+    }
+    const displayName = data.filename ?? 'Document';
+    const attachmentId = `file-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    const placeholderFile = new File([], displayName, { type: data.fileType || 'application/pdf' });
+    const optimisticFileData: FileAttachmentData = {
+      id: attachmentId,
+      file: placeholderFile,
+      name: displayName,
+      type: data.fileType || 'application/pdf',
+      size: 0,
+      extractionStatus: 'extracting',
+    };
+    flushSync(() => {
+      setAttachedFiles(prev => {
+        const updated = [...prev, optimisticFileData];
+        attachedFilesRef.current = updated;
+        return updated;
+      });
+    });
+    (async () => {
+      try {
+        const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5001';
+        let downloadUrl: string;
+        if (data.s3Path) {
+          downloadUrl = `${backendUrl}/api/files/download?s3_path=${encodeURIComponent(data.s3Path)}`;
+        } else {
+          downloadUrl = `${backendUrl}/api/files/download?document_id=${data.documentId}`;
+        }
+        const response = await fetch(downloadUrl, { credentials: 'include' });
+        if (!response.ok) throw new Error('Failed to fetch document');
+        const blob = await response.blob();
+        const actualFile = new File([blob], displayName, { type: data.fileType || blob.type || 'application/pdf' });
+        setAttachedFiles(prev => {
+          const updated = prev.map(att => att.id === attachmentId ? { ...att, file: actualFile, size: actualFile.size } : att);
+          attachedFilesRef.current = updated;
+          return updated;
+        });
+        try {
+          const blobUrl = URL.createObjectURL(actualFile);
+          if (!(window as any).__preloadedAttachmentBlobs) (window as any).__preloadedAttachmentBlobs = {};
+          (window as any).__preloadedAttachmentBlobs[attachmentId] = blobUrl;
+        } catch (_) {}
+        const fileName = actualFile.name.toLowerCase();
+        const supportsExtraction = fileName.endsWith('.pdf') || fileName.endsWith('.docx') || fileName.endsWith('.doc')
+          || fileName.endsWith('.xlsx') || fileName.endsWith('.xls') || fileName.endsWith('.pptx') || fileName.endsWith('.ppt')
+          || fileName.endsWith('.txt');
+        if (supportsExtraction) {
+          try {
+            const result = await backendApi.quickExtractText(actualFile, true);
+            if (result.success) {
+              setAttachedFiles(prev => {
+                const updated = prev.map(att =>
+                  att.id === attachmentId ? { ...att, extractionStatus: 'complete' as const, extractedText: result.text, pageTexts: result.pageTexts, pageCount: result.pageCount, tempFileId: result.tempFileId } : att
+                );
+                attachedFilesRef.current = updated;
+                return updated;
+              });
+            } else {
+              setAttachedFiles(prev => {
+                const updated = prev.map(att =>
+                  att.id === attachmentId ? { ...att, extractionStatus: 'error' as const, extractionError: result.error } : att
+                );
+                attachedFilesRef.current = updated;
+                return updated;
+              });
+            }
+          } catch (extractError) {
+            setAttachedFiles(prev => {
+              const updated = prev.map(att =>
+                att.id === attachmentId ? { ...att, extractionStatus: 'error' as const, extractionError: extractError instanceof Error ? extractError.message : 'Extraction failed' } : att
+              );
+              attachedFilesRef.current = updated;
+              return updated;
+            });
+          }
+        } else {
+          setAttachedFiles(prev => {
+            const updated = prev.map(att => att.id === attachmentId ? { ...att, extractionStatus: undefined } : att);
+            attachedFilesRef.current = updated;
+            return updated;
+          });
+        }
+      } catch (error) {
+        console.error('❌ SideChatPanel: Error fetching document:', error);
+        setAttachedFiles(prev => {
+          const updated = prev.filter(att => att.id !== attachmentId);
+          attachedFilesRef.current = updated;
+          return updated;
+        });
+        toast({ description: 'Failed to load document. Please try again.', duration: 3000 });
+      }
+    })();
+  }, [attachedFiles.length]);
+  addFilingSidebarDocumentRef.current = addFilingSidebarDocument;
+
   // Handle drop: native files first for instant UI, then FilingSidebar documents
   const handleDrop = React.useCallback(async (e: React.DragEvent) => {
     e.preventDefault();
@@ -15044,146 +15154,7 @@ responseStartedAt: existingMessage?.responseStartedAt,
           data = {};
         }
         if (data.type === 'filing-sidebar-document') {
-          if (attachedFiles.length >= MAX_FILES) {
-            toast({
-              description: `Maximum of ${MAX_FILES} files allowed. Please remove a file before adding another.`,
-              duration: 3000,
-            });
-            return;
-          }
-
-          const displayName = data.filename ?? (data as { original_filename?: string }).original_filename ?? 'Document';
-          // Create optimistic attachment and add synchronously for instant UI update
-          const attachmentId = `file-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-          const placeholderFile = new File([], displayName, {
-            type: data.fileType || 'application/pdf',
-          });
-          const optimisticFileData: FileAttachmentData = {
-            id: attachmentId,
-            file: placeholderFile,
-            name: displayName,
-            type: data.fileType || 'application/pdf',
-            size: 0, // Will be updated when file is fetched
-            extractionStatus: 'extracting', // Show spinner while fetching (same feedback as chat bar)
-          };
-          flushSync(() => {
-            setAttachedFiles(prev => {
-              const updated = [...prev, optimisticFileData];
-              attachedFilesRef.current = updated;
-              return updated;
-            });
-          });
-          
-          // Fetch the actual file in the background
-          (async () => {
-            try {
-              const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5001';
-              let downloadUrl: string;
-              
-              if (data.s3Path) {
-                downloadUrl = `${backendUrl}/api/files/download?s3_path=${encodeURIComponent(data.s3Path)}`;
-              } else {
-                downloadUrl = `${backendUrl}/api/files/download?document_id=${data.documentId}`;
-              }
-              
-              const response = await fetch(downloadUrl, { credentials: 'include' });
-              if (!response.ok) {
-                throw new Error('Failed to fetch document');
-              }
-              
-              const blob = await response.blob();
-              const actualFile = new File([blob], displayName, {
-                type: data.fileType || blob.type || 'application/pdf',
-              });
-              
-              // Update the attachment with the actual file (keep extracting status while extraction runs)
-              setAttachedFiles(prev => {
-                const updated = prev.map(att => 
-                  att.id === attachmentId 
-                    ? { ...att, file: actualFile, size: actualFile.size }
-                    : att
-                );
-                attachedFilesRef.current = updated;
-                return updated;
-              });
-              
-              // Preload blob URL for preview
-              try {
-                const blobUrl = URL.createObjectURL(actualFile);
-                if (!(window as any).__preloadedAttachmentBlobs) {
-                  (window as any).__preloadedAttachmentBlobs = {};
-                }
-                (window as any).__preloadedAttachmentBlobs[attachmentId] = blobUrl;
-              } catch (preloadError) {
-                console.error('Error preloading blob URL:', preloadError);
-              }
-              
-              console.log('✅ SideChatPanel: Document fetched, starting extraction:', actualFile.name);
-              
-              // Run quick extraction so the file text is available for chat queries
-              const fileName = actualFile.name.toLowerCase();
-              const supportsExtraction = fileName.endsWith('.pdf') || fileName.endsWith('.docx') || fileName.endsWith('.doc')
-                || fileName.endsWith('.xlsx') || fileName.endsWith('.xls') || fileName.endsWith('.pptx') || fileName.endsWith('.ppt')
-                || fileName.endsWith('.txt');
-              
-              if (supportsExtraction) {
-                try {
-                  const result = await backendApi.quickExtractText(actualFile, true);
-                  if (result.success) {
-                    setAttachedFiles(prev => {
-                      const updated = prev.map(att =>
-                        att.id === attachmentId
-                          ? { ...att, extractionStatus: 'complete' as const, extractedText: result.text, pageTexts: result.pageTexts, pageCount: result.pageCount, tempFileId: result.tempFileId }
-                          : att
-                      );
-                      attachedFilesRef.current = updated;
-                      return updated;
-                    });
-                  } else {
-                    setAttachedFiles(prev => {
-                      const updated = prev.map(att =>
-                        att.id === attachmentId
-                          ? { ...att, extractionStatus: 'error' as const, extractionError: result.error }
-                          : att
-                      );
-                      attachedFilesRef.current = updated;
-                      return updated;
-                    });
-                  }
-                } catch (extractError) {
-                  setAttachedFiles(prev => {
-                    const updated = prev.map(att =>
-                      att.id === attachmentId
-                        ? { ...att, extractionStatus: 'error' as const, extractionError: extractError instanceof Error ? extractError.message : 'Extraction failed' }
-                        : att
-                    );
-                    attachedFilesRef.current = updated;
-                    return updated;
-                  });
-                }
-              } else {
-                setAttachedFiles(prev => {
-                  const updated = prev.map(att =>
-                    att.id === attachmentId ? { ...att, extractionStatus: undefined } : att
-                  );
-                  attachedFilesRef.current = updated;
-                  return updated;
-                });
-              }
-            } catch (error) {
-              console.error('❌ SideChatPanel: Error fetching document:', error);
-              // Remove the optimistic attachment on error
-              setAttachedFiles(prev => {
-                const updated = prev.filter(att => att.id !== attachmentId);
-                attachedFilesRef.current = updated;
-                return updated;
-              });
-              toast({
-                description: 'Failed to load document. Please try again.',
-                duration: 3000,
-              });
-            }
-          })();
+          addFilingSidebarDocument(data);
         }
       }
     } catch (error) {
@@ -15193,7 +15164,7 @@ responseStartedAt: existingMessage?.responseStartedAt,
         duration: 3000,
       });
     }
-  }, [handleFileUpload]);
+  }, [handleFileUpload, addFilingSidebarDocument]);
 
   const handleDragOver = React.useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -17982,29 +17953,6 @@ responseStartedAt: existingMessage?.responseStartedAt,
                 <Plus className="w-4 h-4 flex-shrink-0" strokeWidth={1.25} />
                 <span className="whitespace-nowrap">Files and sources</span>
               </button>
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                  openChooseProjectModal({ left: rect.left, top: rect.top, width: rect.width, height: rect.height });
-                }}
-                className="flex items-center justify-center gap-1.5 text-gray-700 transition-colors focus:outline-none outline-none rounded-md bg-black/[0.01] hover:bg-black/[0.05]"
-                style={{
-                  border: 'none',
-                  height: '26px',
-                  minHeight: '26px',
-                  paddingLeft: '6px',
-                  paddingRight: '6px',
-                  borderRadius: '6px',
-                  fontWeight: 400,
-                  fontSize: '14px',
-                }}
-              >
-                <FolderOpen className="w-4 h-4 flex-shrink-0" strokeWidth={1.25} />
-                <span className="whitespace-nowrap">Choose project</span>
-              </button>
             </div>
           )}
           {/* Feedback bar slot: reserve space as soon as stream ends so layout never jumps; bar fades in when reveal completes */}
@@ -18973,64 +18921,6 @@ responseStartedAt: existingMessage?.responseStartedAt,
                 flex: 1,
               }}
             >
-            {/* Cursor-like: show ChatTabsBar at top when agent sidebar is closed — position absolute so it overlays and does NOT affect chat bar / welcome layout (matches dashboard) */}
-            {useCenteredEmptyState && !isChatPanelOpen && onChatSelect && (
-              <div
-                className="pr-4 pl-6"
-                style={{
-                  position: 'absolute',
-                  top: 0,
-                  left: 0,
-                  right: 0,
-                  backgroundColor: '#FFFFFF',
-                  paddingTop: 18,
-                  paddingBottom: 8,
-                  zIndex: 10002,
-                  pointerEvents: 'auto',
-                }}
-                onClick={(e) => e.stopPropagation()}
-              >
-                <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 group min-h-[28px]">
-                  <div className="flex items-center space-x-2 min-w-0" data-view-dropdown-ignore>
-                    <div
-                      className="min-w-0 flex items-center overflow-x-auto place-self-center w-full"
-                      style={{
-                        maxWidth: '720px',
-                        paddingLeft: actualPanelWidth < 320 ? '20px' : '48px',
-                        paddingRight: actualPanelWidth < 320 ? '20px' : '48px',
-                        margin: 0,
-                      }}
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      <ChatTabsBar
-                        fullWidth
-                        chats={[...chatHistory.filter(c => !c.archived && !c.id.startsWith('property-')).slice(0, CHAT_TABS_VISIBLE)].reverse()}
-                        selectedChatId={currentChatId}
-                        onChatSelect={onChatSelect}
-                        onNewChat={() => onNewChat?.()}
-                        onUpdateChatTitle={updateChatTitle}
-                        onArchiveChat={archiveChat}
-                        onUnarchiveChat={unarchiveChat}
-                        onRemoveChat={removeChatFromHistory}
-                      />
-                    </div>
-                  </div>
-                  <div className="flex items-center justify-center px-4 min-w-0" />
-                  <div className="flex items-center space-x-2 min-w-0 justify-end">
-                    <button
-                      type="button"
-                      onClick={(e) => { e.stopPropagation(); openChatPanel(); }}
-                      className="w-8 h-8 flex items-center justify-center rounded-md hover:bg-gray-100 transition-colors"
-                      title="Agents Sidebar"
-                      aria-label="Open agents"
-                      style={{ position: 'relative', zIndex: 10001, pointerEvents: 'auto' }}
-                    >
-                      <PanelRight className="w-4 h-4 text-[#6B7280]" strokeWidth={1.5} />
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
             {/* Header - Hidden in centered empty state so layout matches dashboard exactly (no movement when switching) */}
             {!useCenteredEmptyState && (
             <div 
@@ -19133,9 +19023,9 @@ responseStartedAt: existingMessage?.responseStartedAt,
                     <div
                       className="min-w-0 flex items-center overflow-x-auto place-self-center w-full"
                       style={{
-                        maxWidth: '720px',
-                        paddingLeft: actualPanelWidth < 320 ? '20px' : '48px',
-                        paddingRight: actualPanelWidth < 320 ? '20px' : '48px',
+                        maxWidth: `${CHAT_TABS_BAR_MAX_WIDTH_PX}px`,
+                        paddingLeft: actualPanelWidth < 320 ? '20px' : `${SIDEBAR_TO_BAR_GAP_PX}px`,
+                        paddingRight: actualPanelWidth < 320 ? '20px' : `${SIDEBAR_TO_BAR_GAP_PX}px`,
                         margin: '0 auto',
                       }}
                       onClick={(e) => e.stopPropagation()}
@@ -19575,28 +19465,95 @@ responseStartedAt: existingMessage?.responseStartedAt,
             {/* When fullscreen (e.g. opened via New chat), use bottom input even when empty. Stable key so no unmount/remount = no jump. */}
             <div
               key="chat-content-area"
+              ref={chatModalContainerRef}
               style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', position: 'relative', width: '100%' }}
             >
             {useCenteredEmptyState ? (
-              /* Empty chat state - Content uses sidebar right edge; padding from sidebar for visual breathing room */
+              /* Empty chat state - Mirror dashboard structure exactly: outer p-8 lg:p-16, then max-w-5xl centered, then inner 24/16 padding */
               <div
-                key="empty-chat-layout-inner"
+                key="empty-chat-layout-outer"
                 ref={contentAreaRefWithWheel}
                 onClick={(e) => e.stopPropagation()}
-                className="flex-1"
+                className="flex-1 flex flex-col items-center w-full"
+                style={{
+                  paddingLeft: DASHBOARD_CHAT_LAYOUT.CONTENT_CONTAINER_PADDING,
+                  paddingRight: DASHBOARD_CHAT_LAYOUT.CONTENT_CONTAINER_PADDING,
+                  paddingTop: 0,
+                  paddingBottom: 0,
+                  minHeight: 0,
+                  position: 'relative',
+                  width: '100%',
+                  boxSizing: 'border-box'
+                }}
+              >
+                {/* ChatTabsBar – positioned absolutely so it does not affect welcome message / chat bar positioning */}
+                {!isChatPanelOpen && onChatSelect && (
+                  <div
+                    className="w-full"
+                    style={{
+                      position: 'absolute',
+                      top: 0,
+                      left: 0,
+                      right: 0,
+                      paddingTop: 18,
+                      paddingBottom: 8,
+                      zIndex: 10,
+                      pointerEvents: 'auto',
+                    }}
+                  >
+                    <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 group min-h-[28px] w-full max-w-[calc(100%-48px)] mx-auto">
+                      <div className="flex items-center min-w-0" data-view-dropdown-ignore>
+                        <div
+                          className="min-w-0 flex items-center overflow-x-auto w-full"
+                          style={{
+                            paddingLeft: actualPanelWidth < 320 ? '20px' : `${SIDEBAR_TO_BAR_GAP_PX}px`,
+                            paddingRight: actualPanelWidth < 320 ? '20px' : `${SIDEBAR_TO_BAR_GAP_PX}px`,
+                            margin: 0,
+                          }}
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <ChatTabsBar
+                            fullWidth
+                            chats={[...chatHistory.filter(c => !c.archived && !c.id.startsWith('property-')).slice(0, CHAT_TABS_VISIBLE)].reverse()}
+                            selectedChatId={currentChatId}
+                            onChatSelect={onChatSelect}
+                            onNewChat={() => onNewChat?.()}
+                            onUpdateChatTitle={updateChatTitle}
+                            onArchiveChat={archiveChat}
+                            onUnarchiveChat={unarchiveChat}
+                            onRemoveChat={removeChatFromHistory}
+                          />
+                        </div>
+                      </div>
+                      <div className="flex items-center flex-shrink-0">
+                        <button
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); openChatPanel(); }}
+                          className="w-8 h-8 flex items-center justify-center rounded-md hover:bg-gray-100 transition-colors"
+                          title="Agents Sidebar"
+                          aria-label="Open agents"
+                          style={{ position: 'relative', zIndex: 10001, pointerEvents: 'auto' }}
+                        >
+                          <PanelRight className="w-4 h-4 text-[#6B7280]" strokeWidth={1.5} />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              <div
+                key="empty-chat-layout-inner"
+                className="flex flex-col items-center w-full max-w-5xl mx-auto"
                 style={{
                   backgroundColor: '#FFFFFF',
-                  display: 'flex',
-                  flexDirection: 'column',
                   justifyContent: 'flex-start',
-                  alignItems: 'center',
                   paddingLeft: DASHBOARD_CHAT_LAYOUT.HORIZONTAL_PADDING_LEFT,
                   paddingRight: DASHBOARD_CHAT_LAYOUT.HORIZONTAL_PADDING,
                   paddingTop: 0,
                   paddingBottom: 0,
                   minWidth: DASHBOARD_CHAT_LAYOUT.LOGO_SECTION_MIN_WIDTH,
                   position: 'relative',
-                  overflowX: 'hidden'
+                  overflowX: 'hidden',
+                  flex: 1
                 }}
               >
                 {/* Top padding: match dashboard content container (p-8 lg:p-16) so welcome/bar align vertically */}
@@ -19614,11 +19571,13 @@ responseStartedAt: existingMessage?.responseStartedAt,
                       <img
                         src="/O.png"
                         alt="OpenFind"
+                        fetchPriority="high"
                         style={{
-                          height: 'clamp(1.5rem, 4vw, 2rem)',
+                          height: 'clamp(1.25rem, 3.5vw, 1.75rem)',
                           width: 'auto',
                           objectFit: 'contain',
                           flexShrink: 0,
+                          transform: 'translateY(-2px)',
                         }}
                       />
                       <h2
@@ -19640,15 +19599,10 @@ responseStartedAt: existingMessage?.responseStartedAt,
                     </div>
                   ) : null}
                 </div>
-                {/* Expanded Chat Input Container - drag handlers + ref for document-level drag detection */}
+                {/* Expanded Chat Input Container – shared CHAT_BAR_WRAPPER_STYLE so identical to dashboard */}
                 <div
                   ref={chatBarDropZoneRef}
-                  style={{ 
-                    width: `min(100%, ${CHAT_BAR_MAX_WIDTH_PX}px)`, 
-                    maxWidth: `${CHAT_BAR_MAX_WIDTH_PX}px`,
-                    minWidth: '200px',
-                    position: 'relative'
-                  }}
+                  style={CHAT_BAR_WRAPPER_STYLE}
                   onDragOver={handleDragOver}
                   onDragLeave={handleDragLeave}
                 >
@@ -19663,7 +19617,7 @@ responseStartedAt: existingMessage?.responseStartedAt,
                         transform: 'translateX(-50%)',
                         zIndex: 10000,
                         width: 'fit-content',
-                        maxWidth: '720px',
+                        maxWidth: `${CHAT_BAR_MAX_WIDTH_PX}px`,
                         display: 'flex',
                         justifyContent: 'center',
                         pointerEvents: 'auto',
@@ -19708,41 +19662,25 @@ responseStartedAt: existingMessage?.responseStartedAt,
                       onDragOver={handleDragOver}
                       onDragLeave={handleDragLeave}
                       onDrop={handleDrop}
-                      style={{
-                        background: '#ffffff',
-                        border: isDragOver ? CHAT_BAR_BORDER_DRAG : CHAT_BAR_BORDER,
-                        boxShadow: CHAT_BAR_BOX_SHADOW,
-                        position: 'relative',
-                        paddingTop: '16px',
-                        paddingBottom: '12px',
-                        paddingRight: '24px',
-                        paddingLeft: '16px',
-                        overflow: 'visible',
-                        width: '100%',
-                        height: 'auto',
-                        minHeight: '160px',
-                        boxSizing: 'border-box',
-                        borderRadius: '28px',
-                        transition: isDragOver ? 'border-color 0.08s ease-out' : 'border-color 0.2s ease-in-out',
-                      }}
+                      style={getChatBarInnerStyle(isDragOver)}
                     >
                       {isDragOver ? (
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', flex: 1, minHeight: '120px', pointerEvents: 'none' }}>
+                        <div style={getChatBarDragOverlayStyle()}>
                           <CloudUpload className="text-gray-400" size={36} strokeWidth={2} />
                         </div>
                       ) : (
                       <>
                       {/* Files and projects in one row so they can stack on the same line when there's space */}
                       <AnimatePresence mode="wait">
-                        {(attachedFiles.length > 0 || propertyAttachments.length > 0 || selectedDocumentsWithNames.length > 0) && (
-                          <motion.div
-                            key="attachments-empty"
-                            initial={false}
-                            animate={{ opacity: 1 }}
-                            exit={{ opacity: 0 }}
-                            transition={{ duration: 0.1, ease: "easeOut" }}
-                            style={{ height: 'auto', marginBottom: '16px' }}
-                            className="flex flex-wrap gap-2 justify-start"
+                      {(attachedFiles.length > 0 || propertyAttachments.length > 0 || selectedDocumentsWithNames.length > 0) && (
+                        <motion.div
+                          key="attachments-empty"
+                          initial={false}
+                          animate={{ opacity: 1 }}
+                          exit={{ opacity: 0 }}
+                          transition={{ duration: 0.1, ease: "easeOut" }}
+                          style={getChatBarAttachmentsRowStyle()}
+                          className="flex flex-wrap gap-2 justify-start"
                             layout={false}
                           >
                             {attachedFiles.map((file) => (
@@ -19808,11 +19746,11 @@ responseStartedAt: existingMessage?.responseStartedAt,
                       <div
                         ref={atMentionAnchorRef}
                         className="flex items-start w-full"
-                        style={{ minHeight: '100px', height: 'auto', width: '100%', marginBottom: '22px', flexShrink: 0 }}
+                        style={getChatBarSegmentInputRowStyle()}
                     >
                         <div
                           className="flex-1 relative flex items-start w-full"
-                          style={{ overflow: 'visible', minHeight: '100px', width: '100%', minWidth: '0', paddingRight: (segmentInput.getPlainText().trim() !== '' || propertyAttachments.length > 0 || atMentionDocumentChips.length > 0 || attachedFiles.length > 0 || selectedDocumentIds.size > 0) ? '56px' : 0 }}
+                          style={{ overflow: 'visible', minHeight: CHAT_BAR_DESIGN.SEGMENT_INPUT_ROW.MIN_HEIGHT, width: '100%', minWidth: '0', paddingRight: (segmentInput.getPlainText().trim() !== '' || propertyAttachments.length > 0 || atMentionDocumentChips.length > 0 || attachedFiles.length > 0 || selectedDocumentIds.size > 0) ? '56px' : 0 }}
                           onFocus={() => setIsFocused(true)}
                           onBlur={() => setIsFocused(false)}
                           onClick={(e) => e.stopPropagation()}
@@ -19867,18 +19805,9 @@ responseStartedAt: existingMessage?.responseStartedAt,
                             leadingPill={isWebSearchEnabled ? <WebSearchPill onDismiss={() => setIsWebSearchEnabled(false)} /> : undefined}
                             disabled={isSubmitted}
                             style={{
-                              width: '100%',
-                              minHeight: '100px',
+                              ...getChatBarSegmentInputStyle(),
                               maxHeight: `${CHAT_INPUT_MAX_HEIGHT_PX}px`,
-                              overflowY: 'auto',
-                              overflowX: 'hidden',
-                              lineHeight: '20px',
-                              paddingTop: '12px',
-                              paddingBottom: '4px',
-                              paddingRight: '16px',
-                              paddingLeft: '14px',
                               color: segmentInput.getPlainText() ? '#333333' : undefined,
-                              boxSizing: 'border-box',
                             }}
                             onKeyDown={(e) => {
                               if (atMentionOpen && e.key === 'Enter') return;
@@ -19929,11 +19858,8 @@ responseStartedAt: existingMessage?.responseStartedAt,
                             ref={emptyButtonRowRef}
                             className={`relative flex w-full ${isVeryNarrowEmpty ? 'flex-col gap-2' : 'items-center justify-between'}`}
                             style={{
-                              width: '100%',
-                              minWidth: '0',
-                              minHeight: isVeryNarrowEmpty ? 'auto' : '24px',
-                              overflow: 'hidden', // Prevent visual overflow while measuring
-                              marginTop: '-4px',
+                              ...getChatBarButtonRowStyle(true, isVeryNarrowEmpty),
+                              overflow: 'visible', // Allow plus/send buttons to render fully without clipping
                             }}
                           >
                             {/* Left: Files and sources + Choose project */}
@@ -19948,43 +19874,17 @@ responseStartedAt: existingMessage?.responseStartedAt,
                               />
                               <ChatBarAttachDropdown
                                 onAttachClick={() => fileInputRef.current?.click()}
+                                onChooseDocumentsClick={handleOpenDocumentSelection}
                                 compact={showAttachIconOnly}
-                                toolsItems={buttonCollapseLevel < 3 ? [
+                                toolsItems={[
                                   {
                                     id: 'web-search',
                                     icon: Globe,
                                     label: 'Web search',
                                     onClick: () => setIsWebSearchEnabled((prev) => !prev),
                                   },
-                                ] : []}
+                                ]}
                               />
-                              {buttonCollapseLevel < 3 && (
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.preventDefault();
-                                    e.stopPropagation();
-                                    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                                    openChooseProjectModal({ left: rect.left, top: rect.top, width: rect.width, height: rect.height });
-                                  }}
-                                  className="flex items-center justify-center gap-1.5 text-gray-700 transition-colors focus:outline-none outline-none rounded-md bg-black/[0.01] hover:bg-black/[0.05]"
-                                  style={{
-                                    border: 'none',
-                                    height: '26px',
-                                    minHeight: '26px',
-                                    paddingLeft: showAttachIconOnly ? '4px' : '6px',
-                                    paddingRight: showAttachIconOnly ? '4px' : '6px',
-                                    marginLeft: 0,
-                                    marginRight: '4px',
-                                    borderRadius: '6px',
-                                    fontWeight: 400,
-                                    fontSize: '14px',
-                                  }}
-                                >
-                                  <FolderOpen className="w-4 h-4 flex-shrink-0" strokeWidth={1.25} />
-                                  {!showAttachIconOnly && <span className="whitespace-nowrap">Choose project</span>}
-                                </button>
-                              )}
                             </div>
 
                             {/* Right: Mode, Model, Voice, WebSearchPill, Send */}
@@ -20033,7 +19933,9 @@ responseStartedAt: existingMessage?.responseStartedAt,
                                   borderRadius: '50%',
                                   border: 'none',
                                   flexShrink: 0,
-                                  alignSelf: 'center'
+                                  alignSelf: 'center',
+                                  position: 'relative',
+                                  zIndex: 10,
                                 }}
                                 disabled={isSubmitted}
                                 title="Send"
@@ -20060,8 +19962,9 @@ responseStartedAt: existingMessage?.responseStartedAt,
                     </>
                     )}
                     </div>
-                  </form>
+                    </form>
                 </div>
+              </div>
               </div>
             ) : (
               /* Normal chat state - Messages + bottom input */
@@ -20097,9 +20000,9 @@ responseStartedAt: existingMessage?.responseStartedAt,
                   {/* Centered content wrapper - ChatGPT-like centered layout */}
                   <div style={{ 
                     width: '100%', 
-                    maxWidth: '720px', // Match chat bar max width (680px inner + 40px padding = 720px)
-                    paddingLeft: actualPanelWidth < 320 ? '20px' : '48px',
-                    paddingRight: actualPanelWidth < 320 ? '20px' : '48px',
+                    maxWidth: `${CHAT_TABS_BAR_MAX_WIDTH_PX}px`,
+                    paddingLeft: actualPanelWidth < 320 ? '20px' : `${SIDEBAR_TO_BAR_GAP_PX}px`,
+                    paddingRight: actualPanelWidth < 320 ? '20px' : `${SIDEBAR_TO_BAR_GAP_PX}px`,
                     margin: '0 auto' // Center the content wrapper
                   }}>
                   <div ref={contentWrapperRef} className="flex flex-col" style={{ minHeight: '100%', gap: '16px', width: '100%' }}>
@@ -20449,6 +20352,7 @@ responseStartedAt: existingMessage?.responseStartedAt,
                 </div>
             
                 {/* Chat Input at Bottom - Condensed SearchBar design (only for non-empty chat). When citation panel open, transparent so overlay shows; only inner chat bar sits above overlay. */}
+                {/* Match dashboard exactly: max-w-5xl + 24/16 padding so bar gets same content width (984) and thus 680px */}
                 <div 
                   ref={chatInputContainerRef}
               onClick={(e) => e.stopPropagation()} // Prevent clicks from closing agent sidebar
@@ -20456,19 +20360,29 @@ responseStartedAt: existingMessage?.responseStartedAt,
                 backgroundColor: citationClickPanel ? 'transparent' : '#FFFFFF',
                 paddingTop: '12px', 
                 paddingBottom: `${INPUT_BAR_SPACE_BELOW_PANEL}px`, 
-                paddingLeft: '0', // Remove left padding - centering handled by form
-                paddingRight: '0', // Remove right padding - centering handled by form
+                paddingLeft: '0',
+                paddingRight: '0',
                 position: 'relative', 
                 overflow: 'visible', // Allow BotStatusOverlay to extend above
                 minWidth: '200px', // Allow narrower chat input container
                 flexShrink: 0, // Prevent flex shrinking
                 display: 'flex',
-                justifyContent: 'center', // Center the form
+                justifyContent: 'center', // Center inner wrapper
                 width: '100%',
                 zIndex: citationClickPanel ? 10051 : 5, // Above overlay when citation panel open; container bg transparent so overlay shows, only inner chat bar is opaque
                 pointerEvents: 'auto' // Ensure container can receive drag events
               }}
                 >
+                  {/* Same structure as dashboard: max-w-5xl + HORIZONTAL_PADDING_LEFT/ HORIZONTAL_PADDING so bar area = 984 when panel wide */}
+                  <div
+                    className="w-full max-w-5xl mx-auto"
+                    style={{
+                      paddingLeft: actualPanelWidth < 320 ? 20 : DASHBOARD_CHAT_LAYOUT.HORIZONTAL_PADDING_LEFT,
+                      paddingRight: actualPanelWidth < 320 ? 20 : DASHBOARD_CHAT_LAYOUT.HORIZONTAL_PADDING,
+                      width: '100%',
+                      boxSizing: 'border-box',
+                    }}
+                  >
                   {/* Scroll-to-bottom button - appears above the chat bar when user has scrolled up */}
                   {showScrollToBottom && (
                     <div
@@ -20522,7 +20436,7 @@ responseStartedAt: existingMessage?.responseStartedAt,
                     transform: 'translateX(-50%)', // Center the QuickStartBar
                         zIndex: 10000,
                     width: 'fit-content', // Let content determine width naturally
-                    maxWidth: '720px', // Fixed maxWidth to match chat bar - QuickStartBar should align with chat bar
+                    maxWidth: `${CHAT_BAR_MAX_WIDTH_PX}px`,
                     display: 'flex',
                     justifyContent: 'center',
                     pointerEvents: 'auto', // Ensure it's clickable
@@ -20558,26 +20472,19 @@ responseStartedAt: existingMessage?.responseStartedAt,
                   alignItems: 'center',
                   position: 'relative',
                   margin: '-10px',
-                  // 16px each so chat bar can reach CHAT_BAR_MAX_WIDTH_PX (680) and match SearchBar width
-                  paddingLeft: actualPanelWidth < 320 ? '20px' : '16px',
-                  paddingRight: actualPanelWidth < 320 ? '20px' : '16px',
+                  // No horizontal padding on form so bar can reach CHAT_BAR_MAX_WIDTH (680) when panel >= 680.
+                  // Dashboard bar has no padding reduction (content area 984), so chat bar must match.
                   pointerEvents: 'auto'
                 }}
                   onDragOver={handleDragOver}
                   onDragLeave={handleDragLeave}
                   onDrop={handleDrop}
                 >
-                  {/* Wrapper for chat bar + overlay - ref for document-level drag detection when in messages view */}
+                  {/* Wrapper for chat bar + overlay – shared CHAT_BAR_WRAPPER_STYLE so identical to dashboard */}
                 <div 
                   ref={chatBarDropZoneRef}
                   onClick={(e) => e.stopPropagation()} // Prevent clicks from closing agent sidebar
-                  style={{ 
-                    position: 'relative', 
-                    width: `min(100%, ${CHAT_BAR_MAX_WIDTH_PX}px)`, 
-                    minWidth: '200px', // Allow narrower wrapper
-                    maxWidth: `${CHAT_BAR_MAX_WIDTH_PX}px`,
-                    pointerEvents: 'auto', // Ensure wrapper can receive drag events
-                  }}
+                  style={{ ...CHAT_BAR_WRAPPER_STYLE, pointerEvents: 'auto' }}
                 >
                   {/* Bot Status Overlay - sits BEHIND the chat bar */}
                   <BotStatusOverlay
@@ -20586,23 +20493,20 @@ responseStartedAt: existingMessage?.responseStartedAt,
                     isPaused={isBotPaused}
                     onPauseToggle={handlePauseToggle}
                   />
-                  {/* Glow wrapper: soft pulse effect around chat bar */}
+                  {/* Glow wrapper: soft pulse effect – NO padding so bar width matches dashboard (padding was shrinking by 4px) */}
                   <div
                     style={{
                       position: 'relative',
-                      padding: showBarGlow ? 2 : 0,
-                      borderRadius: '28px',
-                      overflow: 'hidden',
                       width: '100%',
                       boxSizing: 'border-box',
-                      transition: 'padding 0.2s ease-out',
+                      overflow: 'visible',
                     }}
                   >
                     {showBarGlow && (
                       <div
                         style={{
                           position: 'absolute',
-                          inset: 0,
+                          inset: -2,
                           borderRadius: '28px',
                           background: 'linear-gradient(135deg, rgba(59, 130, 246, 0.5), rgba(34, 197, 94, 0.45))',
                           animation: 'chatBarGlowPulse 1.5s ease-in-out forwards',
@@ -20623,8 +20527,8 @@ responseStartedAt: existingMessage?.responseStartedAt,
                       border: showBarGlow ? '1px solid transparent' : (isDragOver ? CHAT_BAR_BORDER_DRAG : CHAT_BAR_BORDER),
                       boxShadow: CHAT_BAR_BOX_SHADOW,
                       position: 'relative',
-                      paddingTop: '16px',
-                      paddingBottom: '12px',
+                      paddingTop: '18px',
+                      paddingBottom: '14px',
                       paddingRight: '24px',
                       paddingLeft: '16px',
                       overflow: 'visible',
@@ -20643,12 +20547,12 @@ responseStartedAt: existingMessage?.responseStartedAt,
                     </div>
                   ) : (
                   <>
-                  {/* Input row - fixed height so bar bottom never moves when typing */}
+                  {/* Input row - fixed height so bar bottom never moves when typing; slightly taller than other bars */}
                   <div 
                     className="relative flex flex-col w-full" 
                     style={{ 
                       height: 'auto',
-                      minHeight: '28px',
+                      minHeight: '34px',
                       width: '100%',
                       minWidth: '0',
                       gap: '2px',
@@ -20665,7 +20569,7 @@ responseStartedAt: existingMessage?.responseStartedAt,
                           animate={{ opacity: 1 }}
                           exit={{ opacity: 0 }}
                           transition={{ duration: 0.1, ease: "easeOut" }}
-                          style={{ maxHeight: '80px', overflowY: 'auto', marginBottom: '16px', flexShrink: 0 }}
+                          style={{ maxHeight: '80px', overflowY: 'auto', marginBottom: '18px', flexShrink: 0 }}
                           className="flex flex-wrap gap-2 justify-start"
                           layout={false}
                         >
@@ -20736,12 +20640,12 @@ responseStartedAt: existingMessage?.responseStartedAt,
                     {/* SegmentInput + @ context - fixed height so bar bottom never moves */}
                     <div
                       className="flex items-start w-full"
-                      style={{ height: 'auto', minHeight: '28px', width: '100%', marginBottom: '6px', flexShrink: 0 }}
+                      style={{ height: 'auto', minHeight: '34px', width: '100%', marginBottom: '8px', flexShrink: 0 }}
                     >
                       <div
                         ref={atMentionAnchorRef}
                         className="flex-1 relative flex items-start w-full"
-                        style={{ overflow: 'visible', height: 'auto', minHeight: '28px', width: '100%', minWidth: '0', flexShrink: 0, paddingRight: (segmentInput.getPlainText().trim() !== '' || propertyAttachments.length > 0 || atMentionDocumentChips.length > 0 || attachedFiles.length > 0 || selectedDocumentIds.size > 0) ? '56px' : 0 }}
+                        style={{ overflow: 'visible', height: 'auto', minHeight: '34px', width: '100%', minWidth: '0', flexShrink: 0, paddingRight: (segmentInput.getPlainText().trim() !== '' || propertyAttachments.length > 0 || atMentionDocumentChips.length > 0 || attachedFiles.length > 0 || selectedDocumentIds.size > 0) ? '56px' : 0 }}
                         onFocus={() => setIsFocused(true)}
                         onBlur={() => setIsFocused(false)}
                         onClick={(e) => e.stopPropagation()}
@@ -20797,13 +20701,13 @@ responseStartedAt: existingMessage?.responseStartedAt,
                           disabled={isSubmitted}
                           style={{
                             width: '100%',
-                            minHeight: '28px',
+                            minHeight: '34px',
                             maxHeight: `${CHAT_INPUT_MAX_HEIGHT_PX}px`,
                             overflowY: 'auto',
                             overflowX: 'hidden',
                             lineHeight: '20px',
                             paddingTop: '12px',
-                            paddingBottom: '4px',
+                            paddingBottom: '6px',
                             paddingRight: '16px',
                             paddingLeft: '0px',
                             color: segmentInput.getPlainText() ? '#333333' : undefined,
@@ -20954,46 +20858,20 @@ responseStartedAt: existingMessage?.responseStartedAt,
                           }}
                         >
                           {/* Left: Files and sources + Choose project */}
-                          <div className={`flex items-center gap-0.5 ${isVeryNarrow ? 'justify-start' : ''}`} style={{ flexShrink: 1, minWidth: 0, overflow: 'hidden' }}>
+                          <div className={`flex items-center gap-0.5 ${isVeryNarrow ? 'justify-start' : ''}`} style={{ flexShrink: 1, minWidth: 0, overflow: 'visible' }}>
                             <ChatBarAttachDropdown
                               onAttachClick={() => fileInputRef.current?.click()}
+                              onChooseDocumentsClick={handleOpenDocumentSelection}
                               compact={showAttachIconOnly}
-                              toolsItems={buttonCollapseLevel < 3 ? [
+                              toolsItems={[
                                 {
                                   id: 'web-search',
                                   icon: Globe,
                                   label: 'Web search',
                                   onClick: () => setIsWebSearchEnabled((prev) => !prev),
                                 },
-                              ] : []}
+                              ]}
                             />
-                              {buttonCollapseLevel < 3 && (
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.preventDefault();
-                                    e.stopPropagation();
-                                    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                                    openChooseProjectModal({ left: rect.left, top: rect.top, width: rect.width, height: rect.height });
-                                  }}
-                                  className="flex items-center justify-center gap-1.5 text-gray-700 transition-colors focus:outline-none outline-none rounded-md bg-black/[0.01] hover:bg-black/[0.05]"
-                                  style={{
-                                    border: 'none',
-                                    height: '26px',
-                                    minHeight: '26px',
-                                    paddingLeft: showAttachIconOnly ? '4px' : '6px',
-                                    paddingRight: showAttachIconOnly ? '4px' : '6px',
-                                    marginLeft: 0,
-                                    marginRight: '4px',
-                                    borderRadius: '6px',
-                                    fontWeight: 400,
-                                    fontSize: '14px',
-                                  }}
-                                >
-                                  <FolderOpen className="w-4 h-4 flex-shrink-0" strokeWidth={1.25} />
-                                  {!showAttachIconOnly && <span className="whitespace-nowrap">Choose project</span>}
-                                </button>
-                              )}
                           </div>
 
                           {/* Right: Mode, Model, Voice, Document Selection, WebSearchPill, Send */}
@@ -21159,7 +21037,9 @@ responseStartedAt: existingMessage?.responseStartedAt,
                                     borderRadius: '50%',
                                     border: 'none',
                                     flexShrink: 0,
-                                    alignSelf: 'center'
+                                    alignSelf: 'center',
+                                    position: 'relative',
+                                    zIndex: 10,
                                   }}
                                   disabled={isSubmitted}
                                   title="Send"
@@ -21198,6 +21078,7 @@ responseStartedAt: existingMessage?.responseStartedAt,
                   </div>
                 </div>
               </form>
+                  </div>
                 </div>
               </div>
             )}

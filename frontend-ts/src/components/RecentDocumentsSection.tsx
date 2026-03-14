@@ -39,9 +39,9 @@ interface RecentDocumentsSectionProps {
 }
 
 const CARD_WIDTH_COMPACT = 128;
-const CARD_GAP = 20;
-const REGULAR_CARD_GAP = 28;
-const ALL_FILES_GRID_GAP = 24;
+const CARD_GAP = 10;
+const REGULAR_CARD_GAP = 14;
+const ALL_FILES_GRID_GAP = 14;
 const ALL_FILES_GRID_PADDING = 6;
 
 export const RecentDocumentsSection: React.FC<RecentDocumentsSectionProps> = ({

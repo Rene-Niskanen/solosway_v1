@@ -1,7 +1,8 @@
 "use client";
 
 import * as React from "react";
-import { X } from "lucide-react";
+import { motion } from "framer-motion";
+import { X, FolderClosed } from "lucide-react";
 
 export interface PropertyPillChipProps {
   label: string;
@@ -11,65 +12,114 @@ export interface PropertyPillChipProps {
   documentCount?: number;
 }
 
-const MAX_LABEL_LEN = 30;
+const MAX_LABEL_LEN = 35;
 
 function formatLabel(label: string): string {
   if (label.length <= MAX_LABEL_LEN) return label;
-  return `${label.substring(0, 27)}...`;
+  return `${label.substring(0, MAX_LABEL_LEN - 3)}...`;
 }
 
+/** Chat-style chip matching FileAttachment variant="chat" – light container, colored icon, hover-to-remove */
+const CHAT_BUBBLE_RADIUS = 10;
+const CHAT_ICON_SIZE = 18;
+const PROJECT_ICON_BG = "#217346";
+
 export function PropertyPillChip({ label, onRemove, title, documentCount }: PropertyPillChipProps) {
+  const [isHovered, setIsHovered] = React.useState(false);
+  const chatBubbleBg = "#F2F2EF";
+  const chatTextColor = "#374151";
+  const chatTextMuted = "#6B7280";
+  const chatRemoveBtn = { background: "rgba(0,0,0,0.06)", color: "#374151" };
+
   return (
-    <span
-      className="relative bg-white rounded-lg border border-gray-200 px-2.5 py-2 cursor-default hover:border-gray-300 transition-all duration-100"
-      style={{
-        width: "auto",
-        height: "auto",
-        maxWidth: "none",
-        minWidth: "auto",
-        display: "inline-flex",
-        flexShrink: 0,
-        flexGrow: 0,
-        alignItems: "center",
-        verticalAlign: "middle",
-      }}
+    <motion.span
+      initial={false}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.1, ease: "easeOut" }}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
       title={title ?? label}
+      style={{
+        backgroundColor: chatBubbleBg,
+        borderRadius: CHAT_BUBBLE_RADIUS,
+        padding: "12px 14px",
+        display: "inline-flex",
+        flexDirection: "column",
+        gap: "8px",
+        cursor: "default",
+        flexShrink: 0,
+        position: "relative",
+        alignItems: "flex-start",
+        width: "auto",
+      }}
     >
-      <div className="flex items-center gap-2" style={{ width: "auto", flexShrink: 0 }}>
-        <span className="flex h-6 w-6 shrink-0 items-center justify-center">
-          <img
-            src="/projectsfolder.png"
-            alt=""
-            className="w-full h-full object-contain pointer-events-none"
-            style={{ display: "block" }}
-            draggable={false}
-          />
-        </span>
-        <div className="flex flex-col" style={{ width: "auto", flexShrink: 0 }}>
-          <span className="text-xs font-medium text-black truncate" style={{ whiteSpace: "nowrap", maxWidth: "200px" }}>
-            {formatLabel(label)}
-          </span>
-          {documentCount != null && (
-            <span className="text-[10px] text-gray-500 font-normal">
-              {documentCount === 1 ? "1 doc" : `${documentCount} docs`}
-            </span>
-          )}
+      {onRemove && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            onRemove();
+          }}
+          style={{
+            position: "absolute",
+            top: 6,
+            right: 6,
+            width: 20,
+            height: 20,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            borderRadius: "50%",
+            border: "none",
+            ...chatRemoveBtn,
+            cursor: "pointer",
+            zIndex: 10,
+            opacity: isHovered ? 1 : 0,
+            transition: "opacity 0.15s ease",
+            pointerEvents: isHovered ? "auto" : "none",
+          }}
+          title="Remove"
+        >
+          <X className="w-3 h-3" strokeWidth={2.5} />
+        </button>
+      )}
+      <span
+        style={{
+          fontSize: "11px",
+          color: chatTextColor,
+          fontWeight: 500,
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+          maxWidth: "100%",
+          paddingRight: 28,
+        }}
+      >
+        {formatLabel(label)}
+      </span>
+      <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+        <div
+          style={{
+            width: CHAT_ICON_SIZE,
+            height: CHAT_ICON_SIZE,
+            borderRadius: 4,
+            backgroundColor: PROJECT_ICON_BG,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            flexShrink: 0,
+          }}
+        >
+          <FolderClosed className="w-3 h-3 text-white" strokeWidth={2.25} />
         </div>
-        {onRemove && (
-          <button
-            type="button"
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              onRemove();
-            }}
-            className="w-6 h-6 flex items-center justify-center flex-shrink-0 text-gray-400 hover:text-gray-600 transition-colors ml-2"
-            title="Remove"
-          >
-            <X className="w-4 h-4" strokeWidth={2.5} />
-          </button>
+        {documentCount != null && (
+          <span style={{ fontSize: "11px", color: chatTextMuted }}>
+            {documentCount === 1 ? "1 doc" : `${documentCount} docs`}
+          </span>
         )}
       </div>
-    </span>
+    </motion.span>
   );
 }

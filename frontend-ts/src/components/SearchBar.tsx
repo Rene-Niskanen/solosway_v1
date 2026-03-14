@@ -4,27 +4,21 @@ import * as React from "react";
 import { useState, useRef, useEffect, useLayoutEffect, useImperativeHandle, forwardRef, useCallback, useMemo } from "react";
 import { flushSync } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import { ChevronRight, Map, ArrowUp, LibraryBig, Mic, PanelRightOpen, SquareDashedMousePointer, Scan, Fullscreen, X, Brain, MoveDiagonal, MapPinHouse, MessageCircle, Upload, AudioLines, Globe, FolderOpen, CloudUpload } from "lucide-react";
-import { ImageUploadButton } from './ImageUploadButton';
-import { FileAttachment, FileAttachmentData } from './FileAttachment';
-import { PropertyPillChip } from './PropertyPillChip';
+import { X, Brain, SquareDashedMousePointer, Scan, MessageCircle, Globe } from "lucide-react";
+import { FileAttachmentData } from './FileAttachment';
 import { toast } from "@/hooks/use-toast";
 import { usePreview } from '../contexts/PreviewContext';
 import { usePropertySelection } from '../contexts/PropertySelectionContext';
-import { useChooseProjectModal } from '../contexts/ChooseProjectModalContext';
 import { useDocumentSelection } from '../contexts/DocumentSelectionContext';
 import { backendApi } from '../services/backendApi';
 import { QuickStartBar } from './QuickStartBar';
-import { ModeSelector } from './ModeSelector';
-import { ModelSelector } from './ModelSelector';
-import { ChatBarAttachDropdown } from './ChatBarAttachDropdown';
-import { WebSearchPill } from './SelectedModePill';
-import { AtMentionPopover, type AtMentionItem } from './AtMentionPopover';
+import { ChatBar } from './ChatBar';
 import { SegmentInput, type SegmentInputHandle } from './SegmentInput';
+import type { AtMentionItem } from './AtMentionPopover';
 import { getFilteredAtMentionItems, preloadAtMentionCache } from '@/services/atMentionCache';
 import { useSegmentInput, buildInitialSegments } from '@/hooks/useSegmentInput';
 import { isTextSegment, isChipSegment, type QueryContentSegment, type ChipSegment, type TextSegment } from '@/types/segmentInput';
-import { INPUT_BAR_SPACE_BELOW_DASHBOARD, CHAT_INPUT_MAX_HEIGHT_PX, CHAT_BAR_MAX_WIDTH_PX, CHAT_BAR_BORDER, CHAT_BAR_BORDER_DRAG, CHAT_BAR_BOX_SHADOW } from '@/utils/inputBarPosition';
+import { INPUT_BAR_SPACE_BELOW_DASHBOARD, CHAT_INPUT_MAX_HEIGHT_PX, CHAT_BAR_MAX_WIDTH_PX, CHAT_BAR_WRAPPER_STYLE, SEARCH_BAR_MAX_WIDTH_PX } from '@/utils/inputBarPosition';
 
 export interface SearchBarProps {
   className?: string;
@@ -236,8 +230,6 @@ export const SearchBar = forwardRef<{
     removePropertyAttachment,
     clearPropertyAttachments 
   } = usePropertySelection();
-  const { openChooseProjectModal } = useChooseProjectModal();
-  
   // Use document selection context (for document selection like SideChatPanel)
   const {
     selectedDocumentIds,
@@ -1425,7 +1417,7 @@ export const SearchBar = forwardRef<{
           ? "fixed bottom-5 left-1/2 transform -translate-x-1/2 z-40" 
           : isMapVisible 
             ? "w-full" // No padding in map view - parent container handles positioning
-            : "w-full flex justify-center" // No px-6 so bar width matches SideChatPanel (parent caps width)
+            : "w-full flex justify-center" // Responsive: fills parent up to 680px
       }`}
       style={{
         ...(contextConfig.position === "bottom" && !isMapVisible && { 
@@ -1440,7 +1432,10 @@ export const SearchBar = forwardRef<{
           minHeight: 'fit-content',
           alignItems: 'center',
           paddingTop: '0',
-          paddingBottom: '0'
+          paddingBottom: '0',
+          width: '100%', // Responsive: parent constrains to max 680px
+          maxWidth: `${CHAT_BAR_MAX_WIDTH_PX}px`,
+          flexShrink: 0,
         }),
         // When in map view, don't add fixed positioning - let parent container handle it
         ...(isMapVisible && {
@@ -1458,18 +1453,10 @@ export const SearchBar = forwardRef<{
       <div 
         ref={searchContainerRef}
         className={isMapVisible ? "w-full" : "w-full mx-auto"} 
-        style={{ 
-          // Match SideChatPanel positioning when dashboard: same width constraint and min width as panel chat bar wrapper
-          ...(isMapVisible
-            ? { maxWidth: '100%', minWidth: '0', width: '100%' }
-            : {
-                width: `min(100%, ${CHAT_BAR_MAX_WIDTH_PX}px)`,
-                minWidth: '200px',
-                maxWidth: `${CHAT_BAR_MAX_WIDTH_PX}px`,
-              }),
-          boxSizing: 'border-box',
-          position: 'relative',
-        }}
+        style={isMapVisible
+          ? { maxWidth: '100%', minWidth: '0', width: '100%', boxSizing: 'border-box', position: 'relative' }
+          : { ...CHAT_BAR_WRAPPER_STYLE, width: `min(100%, ${SEARCH_BAR_MAX_WIDTH_PX}px)`, maxWidth: `${SEARCH_BAR_MAX_WIDTH_PX}px` }
+        }
       >
         {/* QuickStartBar - appears above search bar in map view when button is clicked */}
         {isMapVisible && isQuickStartBarVisible && (
@@ -1508,506 +1495,96 @@ export const SearchBar = forwardRef<{
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
         >
-        <form 
-          ref={searchFormRef}
-          onSubmit={handleSubmit} 
-          className="relative"
-          data-search-bar="true"
-          style={{ overflow: 'visible', height: 'auto', width: '100%' }}
-          onDragOver={handleDragOver}
-          onDragLeave={handleDragLeave}
-          onDrop={handleDrop}
-        >
-            <div 
-            ref={searchBarDropZoneRef}
-            className={`relative flex flex-col ${isSubmitted && !isDragOver ? 'opacity-75' : ''}`}
+        <ChatBar
+            variant="dashboard"
+            compact={true}
+            isEmptyState={true}
+            onSubmit={handleSubmit}
+            isSubmitted={isSubmitted}
+            segmentInput={segmentInput}
+            attachedFiles={attachedFiles}
+            propertyAttachments={propertyAttachments}
+            selectedDocumentsWithNames={atMentionDocumentChips.map((c) => ({ id: c.id, name: c.label }))}
+            onRemoveFile={handleRemoveFile}
+            onRemoveProperty={removePropertyAttachment}
+            onToggleDocumentSelection={(id) => {
+              toggleDocumentSelection(id);
+              setAtMentionDocumentChips((prev) => prev.filter((d) => d.id !== id));
+            }}
+            onClearInput={() => {
+              segmentInput.setSegments([{ type: "text", value: "" }]);
+              setAtMentionDocumentChips([]);
+              clearPropertyAttachments();
+            }}
+            atMentionOpen={atMentionOpen}
+            atMentionAnchorRef={atMentionAnchorRef}
+            atAnchorRect={atAnchorRect}
+            atQuery={atQuery}
+            atItems={atItems}
+            atSelectedIndex={atSelectedIndex}
+            onAtSelect={handleAtSelect}
+            onAtSelectedIndexChange={setAtSelectedIndex}
+            onAtClose={() => { setAtMentionOpen(false); setAtItems([]); }}
+            placeholder={contextConfig.placeholder}
+            inputRef={inputRef}
+            restoreSelectionRef={restoreSelectionRef}
+            isDragOver={isDragOver}
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
             onDrop={handleDrop}
-                style={{
-                  background: '#ffffff',
-                  border: isDragOver ? CHAT_BAR_BORDER_DRAG : CHAT_BAR_BORDER,
-                  boxShadow: CHAT_BAR_BOX_SHADOW,
-                  position: 'relative',
-                  paddingTop: '16px',
-                  paddingBottom: '12px',
-                  paddingRight: '24px',
-                  paddingLeft: '16px',
-                  overflow: 'visible',
-                  width: '100%',
-                  height: 'auto',
-                  minHeight: '160px',
-                  boxSizing: 'border-box',
-                  borderRadius: '28px',
-                  transition: isDragOver ? 'border-color 0.08s ease-out' : 'border-color 0.2s ease-in-out',
-                }}
-            >
-            {isDragOver ? (
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', flex: 1, minHeight: '120px', pointerEvents: 'none' }}>
-                <CloudUpload className="text-gray-400" size={48} strokeWidth={2} />
-              </div>
-            ) : (
-            <>
-            {/* Input row - match SideChatPanel "Ask anything" bar height */}
-            <div 
-              className="relative flex flex-col w-full" 
-              style={{ 
-                height: 'auto',
-                minHeight: '100px',
-                width: '100%',
-                minWidth: '0',
-                gap: '2px',
-                flexShrink: 0,
-                overflow: 'visible',
-              }}
-            >
-            {/* Files and projects in one row so they can stack on the same line when there's space */}
-            <AnimatePresence mode="wait">
-              {(attachedFiles.length > 0 || propertyAttachments.length > 0) && (
-                <motion.div
-                  key="attachments-search"
-                  initial={false}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
-                  transition={{ duration: 0.1, ease: "easeOut" }}
-                  style={{ maxHeight: '80px', overflowY: 'auto', marginBottom: '16px', flexShrink: 0, position: 'relative', zIndex: 10, pointerEvents: 'auto' }}
-                  className="flex flex-wrap gap-2 justify-start"
-                  layout={false}
-                >
-                  {attachedFiles.map((file, idx) => {
-                    const fileKey = (file.id && String(file.id).length > 0)
-                      ? String(file.id)
-                      : `file-${idx}-${Math.random().toString(36).substr(2, 9)}`;
-                    return (
-                      <FileAttachment
-                        key={fileKey}
-                        attachment={file}
-                        onRemove={handleRemoveFile}
-                        onPreview={(file) => {
-                          addPreviewFile(file);
-                        }}
-                        variant="chat"
-                      />
-                    );
-                  })}
-                  {propertyAttachments.map((a) => (
-                    <PropertyPillChip
-                      key={a.id}
-                      label={a.address}
-                      title={a.address}
-                      documentCount={(a.property as { documentCount?: number; document_count?: number })?.documentCount ?? (a.property as { document_count?: number })?.document_count}
-                      onRemove={() => removePropertyAttachment(a.id)}
-                    />
-                  ))}
-                </motion.div>
-              )}
-            </AnimatePresence>
-            
-            {/* SegmentInput row - match SideChatPanel "Ask anything" bar */}
-              <div
-                className="flex items-start w-full"
-                style={{ height: 'auto', minHeight: '100px', width: '100%', marginBottom: '22px', flexShrink: 0 }}
-              >
-                <div
-                  ref={atMentionAnchorRef}
-                  className="flex-1 relative flex items-start w-full"
-                  style={{ overflow: 'visible', height: 'auto', minHeight: '100px', width: '100%', minWidth: '0', flexShrink: 0, paddingRight: segmentInput.getPlainText().trim() !== '' ? '56px' : 0 }}
-                  onFocus={() => setIsFocused(true)}
-                  onBlur={() => setIsFocused(false)}
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  {segmentInput.getPlainText().trim() !== '' && (
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        segmentInput.setSegments([{ type: "text", value: "" }]);
-                        setAtMentionDocumentChips([]);
-                        clearPropertyAttachments();
-                        inputRef.current?.focus();
-                      }}
-                      className="absolute right-2 top-[11px] -translate-y-1/2 flex items-center justify-center w-6 h-6 text-gray-400 hover:text-gray-600 transition-colors z-10"
-                      title="Clear text"
-                      aria-label="Clear text"
-                    >
-                      <X className="w-5 h-5" strokeWidth={2} />
-                    </button>
-                  )}
-                  <SegmentInput
-                    ref={inputRef}
-                    segments={segmentInput.segments}
-                    cursor={segmentInput.cursor}
-                    onCursorChange={(segmentIndex, offset) => segmentInput.setCursor({ segmentIndex, offset })}
-                    onInsertText={(char) => {
-                      if (char === '\n') {
-                        handleSubmit(null as any);
-                        return;
-                      }
-                      segmentInput.insertTextAtCursor(char);
-                    }}
-                    onBackspace={segmentInput.backspace}
-                    onDelete={segmentInput.deleteForward}
-                    onDeleteSegmentRange={segmentInput.removeSegmentRange}
-                    onMoveLeft={segmentInput.moveCursorLeft}
-                    onMoveRight={segmentInput.moveCursorRight}
-                    onRemovePropertyChip={removePropertyAttachment}
-                    onRemoveDocumentChip={(id) => {
-                      toggleDocumentSelection(id);
-                      setAtMentionDocumentChips((prev) => prev.filter((d) => d.id !== id));
-                    }}
-                    removeChipAtSegmentIndex={segmentInput.removeChipAtIndex}
-                    restoreSelectionRef={restoreSelectionRef}
-                    placeholder={contextConfig.placeholder}
-                    placeholderFontSize="16.38px"
-                    disabled={isSubmitted}
-                    style={{
-                      width: '100%',
-                      minHeight: '100px',
-                      maxHeight: contextConfig.position === "bottom" && !isMapVisible ? `${CHAT_INPUT_MAX_HEIGHT_PX}px` : isMapVisible ? '120px' : isDashboardView ? `${CHAT_INPUT_MAX_HEIGHT_PX}px` : `${CHAT_INPUT_MAX_HEIGHT_PX}px`,
-                      overflowY: 'auto',
-                      overflowX: 'hidden',
-                      lineHeight: '20px',
-                      paddingTop: '12px',
-                      paddingBottom: '4px',
-                      paddingRight: '16px',
-                      paddingLeft: '14px',
-                      color: segmentInput.getPlainText() ? '#333333' : undefined,
-                      boxSizing: 'border-box',
-                    }}
-                    scrollWrapperPaddingBottom={isMapVisible ? undefined : '14px'}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && !e.shiftKey) {
-                        e.preventDefault();
-                        handleSubmit(e);
-                      }
-                      if (e.key === 'Backspace' || e.key === 'Delete') {
-                        isDeletingRef.current = true;
-                        setTimeout(() => { isDeletingRef.current = false; }, 200);
-                      }
-                    }}
-                  />
-              </div>
-              <AtMentionPopover
-                open={atMentionOpen}
-                anchorRef={atMentionAnchorRef}
-                anchorRect={atAnchorRect}
-                query={atQuery}
-                placement={atPlacement}
-                items={atItems}
-                selectedIndex={atSelectedIndex}
-                onSelect={handleAtSelect}
-                onSelectedIndexChange={setAtSelectedIndex}
-                onClose={() => {
-                  setAtMentionOpen(false);
-                  setAtItems([]);
-                }}
-              />
-            </div>
-            </div>
-            {/* Button row - same structure as SideChatPanel (uses buttonCollapseLevel for responsive layout) */}
-            {(() => {
-                const isVeryNarrow = buttonCollapseLevel >= 3;
-                const showAttachIconOnly = buttonCollapseLevel >= 1;
-                return (
-                  <div
-                    ref={buttonRowRef}
-                    className={`relative flex w-full ${isVeryNarrow ? 'flex-col gap-2' : 'items-center justify-between'}`}
-                    style={{
-                      width: '100%',
-                      minWidth: '0',
-                      height: isVeryNarrow ? 'auto' : '36px',
-                      minHeight: isVeryNarrow ? 'auto' : '36px',
-                      flexShrink: 0,
-                      overflow: 'visible',
-                      marginTop: '-4px',
-                    }}
-                  >
-                    {/* Left: Files and sources + Choose project (matches SideChatPanel) */}
-                    <div className={`flex items-center gap-0.5 ${isVeryNarrow ? 'justify-start' : ''}`} style={{ flexShrink: 1, minWidth: 0, overflow: 'hidden' }}>
-                  {contextConfig.showMic && (
-                    <>
-                      <input
-                        ref={fileInputRef}
-                        type="file"
-                        multiple
-                        onChange={(e) => {
-                          const files = Array.from(e.target.files || []);
-                          files.forEach(file => handleFileUpload(file));
-                          if (fileInputRef.current) {
-                            fileInputRef.current.value = '';
-                          }
-                        }}
-                        className="hidden"
-                        accept="image/*,.pdf,.doc,.docx,.xlsx,.xls,.pptx,.ppt"
-                      />
-                      <ChatBarAttachDropdown
-                        onAttachClick={() => fileInputRef.current?.click()}
-                        compact={showAttachIconOnly}
-                        toolsItems={onMapToggle != null ? [
-                          ...(isMapVisible ? [{
-                            id: 'choose-project',
-                            icon: FolderOpen,
-                            label: 'Choose project',
-                            onClick: (e?: React.MouseEvent) => {
-                              const el = e?.currentTarget as HTMLElement | undefined;
-                              const rect = el?.getBoundingClientRect();
-                              openChooseProjectModal(rect ? { left: rect.left, top: rect.top, width: rect.width, height: rect.height } : undefined);
-                            },
-                          }] : []),
-                          {
-                            id: 'web-search',
-                            icon: Globe,
-                            label: 'Web search',
-                            onClick: () => setIsWebSearchEnabled((prev) => !prev),
-                          },
-                          ...(isMapVisible && onPanelToggle ? [{
-                            id: 'chat',
-                            icon: MessageCircle,
-                            label: 'Chat',
-                            onClick: () => onPanelToggle(),
-                          }] : []),
-                        ] : []}
-                      />
-                      {!isMapVisible && buttonCollapseLevel < 3 && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const el = searchFormRef.current;
-                            const rect = el?.getBoundingClientRect();
-                            openChooseProjectModal(rect ? { left: rect.left, top: rect.top, width: rect.width, height: rect.height } : undefined);
-                          }}
-                          className="flex items-center justify-center gap-1.5 text-gray-700 transition-colors focus:outline-none outline-none rounded-md bg-black/[0.01] hover:bg-black/[0.05]"
-                          style={{
-                            border: 'none',
-                            height: '26px',
-                            minHeight: '26px',
-                            paddingLeft: showAttachIconOnly ? '4px' : '6px',
-                            paddingRight: showAttachIconOnly ? '4px' : '6px',
-                            marginLeft: 0,
-                            marginRight: '4px',
-                            borderRadius: '6px',
-                            fontWeight: 400,
-                            fontSize: '14px',
-                          }}
-                        >
-                          <FolderOpen className="w-4 h-4 flex-shrink-0" strokeWidth={1.25} />
-                          {!showAttachIconOnly && <span className="whitespace-nowrap">Choose project</span>}
-                        </button>
-                      )}
-                    </>
-                  )}
-                    </div>
-
-                    {/* Right: Mode, Model, Voice, Panel Toggle, Document Selection, WebSearchPill, Send */}
-                    <div className={`flex items-center gap-1.5 flex-shrink-0 ${isVeryNarrow ? 'flex-wrap justify-end' : ''}`} style={{ marginRight: '0' }}>
-                      {/* Mode Selector, Model Selector, Voice */}
-                      {/* COMMENTED OUT - Agent selector (ModeSelector: Agent/Reader/Plan)
-                      <ModeSelector compact={true} className="mr-2" />
-                      */}
-                      <ModelSelector compact={true} />
-                      {contextConfig.showMic && (
-                        <button
-                          type="button"
-                          onClick={() => {}}
-                          className="flex items-center justify-center text-gray-900 transition-colors focus:outline-none outline-none"
-                          style={{
-                            backgroundColor: 'transparent',
-                            width: '32px',
-                            height: '32px',
-                            minWidth: '32px',
-                            minHeight: '32px',
-                            padding: '6px',
-                            marginLeft: '-4px'
-                          }}
-                          title="Voice input"
-                        >
-                          <AudioLines className="w-5 h-5 text-gray-900" strokeWidth={1.5} />
-                        </button>
-                      )}
-                      {/* Panel Toggle Button - In map view, Chat is in Tools dropdown; otherwise show "Expand chat" or "Analyse" */}
-                      {onPanelToggle && !isMapVisible && (
-                    isPropertyDetailsOpen ? (
-                    <button
-                      type="button"
-                      onClick={onPanelToggle}
-                        className="flex items-center justify-center focus:outline-none outline-none"
-                      style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '4px',
-                          padding: '4px 8px',
-                          backgroundColor: '#ffffff',
-                          color: '#111827',
-                          border: '1px solid rgba(229, 231, 235, 0.8)',
-                          borderRadius: '6px',
-                          fontSize: '11px',
-                          fontWeight: 500,
-                          cursor: 'pointer',
-                          transition: 'background-color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease',
-                          boxShadow: '0 1px 2px rgba(0, 0, 0, 0.05)',
-                          whiteSpace: 'nowrap',
-                          marginLeft: hasPreviousSession && isMapVisible ? '8px' : '4px',
-                          animation: 'none',
-                          height: '24px',
-                          minHeight: '24px'
-                        }}
-                        title="Open analyse mode"
-                        onMouseEnter={(e) => {
-                          e.currentTarget.style.backgroundColor = 'hsl(var(--muted))';
-                          e.currentTarget.style.borderColor = 'rgba(209, 213, 219, 0.8)';
-                          e.currentTarget.style.boxShadow = '0 2px 4px rgba(0, 0, 0, 0.08)';
-                        }}
-                        onMouseLeave={(e) => {
-                          e.currentTarget.style.backgroundColor = 'hsl(var(--background))';
-                          e.currentTarget.style.borderColor = 'rgba(229, 231, 235, 0.8)';
-                          e.currentTarget.style.boxShadow = '0 1px 2px rgba(0, 0, 0, 0.05)';
-                        }}
-                    >
-                        <Brain className="w-5 h-5" strokeWidth={2} style={{ animation: 'none' }} />
-                        <span style={{ animation: 'none' }}>Analyse</span>
-                    </button>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={onPanelToggle}
-                        className="flex items-center gap-1.5 px-2 py-1 text-gray-900 transition-colors focus:outline-none outline-none"
-                        style={{
-                          backgroundColor: '#F5F5F5',
-                          border: '1px solid rgba(229, 231, 235, 0.5)',
-                          borderRadius: '9999px',
-                          transition: 'background-color 0.2s ease',
-                          marginLeft: hasPreviousSession && isMapVisible ? '8px' : '4px',
-                          height: '24px',
-                          minHeight: '24px'
-                        }}
-                        onMouseEnter={(e) => {
-                          e.currentTarget.style.backgroundColor = '#EBEBEB';
-                        }}
-                        onMouseLeave={(e) => {
-                          e.currentTarget.style.backgroundColor = '#F5F5F5';
-                        }}
-                        title="Expand chat"
-                      >
-                        <MessageCircle className="w-5 h-5" strokeWidth={1.5} />
-                        <span className="text-xs font-medium">Chat</span>
-                      </button>
-                    )
-                      )}
-                {/* Document Selection Toggle Button - Only show when property details panel is open */}
+            fileInputRef={fileInputRef}
+            onFileSelect={(e) => {
+              const files = Array.from(e.target.files || []);
+              files.forEach((file) => handleFileUpload(file));
+              if (fileInputRef.current) fileInputRef.current.value = "";
+            }}
+            onAttachClick={() => fileInputRef.current?.click()}
+            onChooseDocumentsClick={toggleDocumentSelectionMode}
+            isWebSearchEnabled={isWebSearchEnabled}
+            onWebSearchToggle={() => setIsWebSearchEnabled((prev) => !prev)}
+            toolsItems={onMapToggle != null && isMapVisible && onPanelToggle ? [{ id: "chat", icon: MessageCircle, label: "Chat", onClick: () => onPanelToggle!() }] : []}
+            onPanelToggle={onPanelToggle}
+            isMapVisible={isMapVisible}
+            hasPerformedSearch={hasPerformedSearch}
+            isPropertyDetailsOpen={isPropertyDetailsOpen}
+            hasPreviousSession={hasPreviousSession}
+            selectedDocumentIds={selectedDocumentIds}
+            isDocumentSelectionMode={isDocumentSelectionMode}
+            onToggleDocumentSelectionMode={toggleDocumentSelectionMode}
+            onOpenDocumentSelection={toggleDocumentSelectionMode}
+            onClearSelectedDocuments={() => { clearSelectedDocuments(); setDocumentSelectionMode(false); }}
+            buttonCollapseLevel={buttonCollapseLevel}
+            onFilePreview={(file) => addPreviewFile(file)}
+            dataAttribute="data-search-bar"
+            formRef={searchFormRef}
+            dropZoneRef={searchBarDropZoneRef}
+            renderExtraRightButtons={() => (
+              <>
+                {onPanelToggle && !isMapVisible && (isPropertyDetailsOpen ? (
+                  <button type="button" onClick={onPanelToggle} className="flex items-center justify-center focus:outline-none outline-none" style={{ display: "flex", alignItems: "center", gap: "4px", padding: "4px 8px", backgroundColor: "#ffffff", color: "#111827", border: "1px solid rgba(229, 231, 235, 0.8)", borderRadius: "6px", fontSize: "11px", fontWeight: 500, cursor: "pointer", marginLeft: "4px", height: "24px", minHeight: "24px" }} title="Open analyse mode">
+                    <Brain className="w-5 h-5" strokeWidth={2} /><span>Analyse</span>
+                  </button>
+                ) : (
+                  <button type="button" onClick={onPanelToggle} className="flex items-center gap-1.5 px-2 py-1 text-gray-900 transition-colors focus:outline-none outline-none" style={{ backgroundColor: "#F5F5F5", border: "1px solid rgba(229, 231, 235, 0.5)", borderRadius: "9999px", marginLeft: "4px", height: "24px", minHeight: "24px" }} title="Expand chat">
+                    <MessageCircle className="w-5 h-5" strokeWidth={1.5} /><span className="text-xs font-medium">Chat</span>
+                  </button>
+                ))}
                 {isPropertyDetailsOpen && (
                   <div className="relative flex items-center">
-                    <button
-                      type="button"
-                        onClick={() => {
-                          console.log('🔘 SearchBar: Document selection button clicked, current mode:', isDocumentSelectionMode);
-                          toggleDocumentSelectionMode();
-                          console.log('🔘 SearchBar: After toggle, new mode should be:', !isDocumentSelectionMode);
-                        }}
-                        className={`p-1 transition-colors relative ${
-                          selectedDocumentIds.size > 0
-                          ? 'text-green-500 hover:text-green-600 bg-green-50 rounded'
-                            : isDocumentSelectionMode
-                            ? 'text-blue-600 hover:text-blue-700 bg-blue-50 rounded' 
-                            : 'text-slate-600 hover:text-green-500'
-                      }`}
-                      title={
-                          selectedDocumentIds.size > 0
-                            ? `${selectedDocumentIds.size} document${selectedDocumentIds.size > 1 ? 's' : ''} selected - Queries will search only these documents. Click to ${isDocumentSelectionMode ? 'exit' : 'enter'} selection mode.`
-                            : isDocumentSelectionMode
-                              ? "Document selection mode active - Click document cards to select"
-                              : "Select documents to search within"
-                      }
-                    >
-                        {selectedDocumentIds.size > 0 ? (
-                          <Scan className="w-5 h-5" strokeWidth={1.5} />
-                        ) : isDocumentSelectionMode ? (
-                        <Scan className="w-5 h-5" strokeWidth={1.5} />
-                      ) : (
-                        <SquareDashedMousePointer className="w-5 h-5" strokeWidth={1.5} />
-                      )}
-                      {selectedDocumentIds.size > 0 && (
-                        <span className="absolute -top-1 -right-1 w-4 h-4 bg-green-500 text-white text-[10px] font-semibold rounded-full flex items-center justify-center">
-                          {selectedDocumentIds.size}
-                        </span>
-                      )}
+                    <button type="button" onClick={() => toggleDocumentSelectionMode()} className={`p-1 transition-colors relative ${selectedDocumentIds.size > 0 ? "text-green-500 hover:text-green-600 bg-green-50 rounded" : isDocumentSelectionMode ? "text-blue-600 hover:text-blue-700 bg-blue-50 rounded" : "text-slate-600 hover:text-green-500"}`} title={selectedDocumentIds.size > 0 ? `${selectedDocumentIds.size} document(s) selected` : "Select documents to search within"}>
+                      {(selectedDocumentIds.size > 0 || isDocumentSelectionMode) ? <Scan className="w-5 h-5" strokeWidth={1.5} /> : <SquareDashedMousePointer className="w-5 h-5" strokeWidth={1.5} />}
+                      {selectedDocumentIds.size > 0 && <span className="absolute -top-1 -right-1 w-4 h-4 bg-green-500 text-white text-[10px] font-semibold rounded-full flex items-center justify-center">{selectedDocumentIds.size}</span>}
                     </button>
-                        {selectedDocumentIds.size > 0 && (
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              clearSelectedDocuments();
-                              setDocumentSelectionMode(false); // Exit selection mode and return to default state
-                            }}
-                            className="ml-1 p-0.5 text-gray-400 hover:text-red-500 transition-colors"
-                            title="Clear document selection"
-                          >
-                            <X className="w-5 h-5" strokeWidth={2} />
-                          </button>
-                        )}
-                      </div>
+                    {selectedDocumentIds.size > 0 && (
+                      <button type="button" onClick={(e) => { e.preventDefault(); e.stopPropagation(); clearSelectedDocuments(); setDocumentSelectionMode(false); }} className="ml-1 p-0.5 text-gray-400 hover:text-red-500 transition-colors" title="Clear document selection">
+                        <X className="w-5 h-5" strokeWidth={2} />
+                      </button>
                     )}
-                
-                  {/* WebSearchPill when on, Send */}
-                  {onMapToggle != null && isWebSearchEnabled && (
-                    <WebSearchPill onDismiss={() => setIsWebSearchEnabled(false)} />
-                  )}
-                
-                      <AnimatePresence>
-                  {(searchValue.trim() || attachedFiles.length > 0 || propertyAttachments.length > 0) && (
-                    <motion.button 
-                      key="send-button"
-                      type="submit" 
-                      onClick={handleSubmit} 
-                      initial={{ opacity: 1, scale: 1 }}
-                      animate={{ opacity: 1, scale: 1, backgroundColor: '#18181b' }}
-                      exit={{ opacity: 1, scale: 1 }}
-                      transition={{ duration: 0 }}
-                      className={`flex items-center justify-center relative focus:outline-none outline-none ${!isSubmitted ? '' : 'cursor-not-allowed'}`}
-                      style={{
-                        width: '30px',
-                        height: '30px',
-                        minWidth: '30px',
-                        minHeight: '30px',
-                        maxWidth: '30px',
-                        maxHeight: '30px',
-                        borderRadius: '50%',
-                        border: 'none',
-                        flexShrink: 0,
-                        alignSelf: 'center'
-                      }}
-                      disabled={isSubmitted}
-                      title="Send"
-                      tabIndex={0}
-                      whileHover={!isSubmitted ? { 
-                        scale: 1.05
-                      } : {}}
-                      whileTap={!isSubmitted ? { 
-                        scale: 0.95
-                      } : {}}
-                    >
-                      <motion.div
-                        key="arrow-up"
-                        initial={{ opacity: 1 }}
-                        animate={{ opacity: 1 }}
-                        className="absolute inset-0 flex items-center justify-center"
-                        style={{ pointerEvents: 'none' }}
-                      >
-                        <ArrowUp className="w-5 h-5" strokeWidth={2.5} style={{ color: '#ffffff' }} />
-                      </motion.div>
-                    </motion.button>
-                  )}
-                </AnimatePresence>
-                    </div>
                   </div>
-                );
-              })()}
-            </>
+                )}
+              </>
             )}
-            </div>
-        </form>
+          />
         </div>
       </div>
       {/* Document Preview Modal is now rendered at MainContent level using shared context */}

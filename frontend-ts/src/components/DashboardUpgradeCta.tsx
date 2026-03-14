@@ -59,6 +59,7 @@ export const DashboardUpgradeCta: React.FC = () => {
       onClick={handleClick}
       className="absolute left-1/2 -translate-x-1/2 flex items-center gap-1 rounded-full border px-2 py-0.5 transition-all duration-150 hover:bg-muted hover:border-border hover:shadow-md hover:scale-[1.02] focus:outline-none focus:ring-2 focus:ring-[#141413]/20"
       style={{
+        position: 'absolute',
         top: 24,
         zIndex: 1000,
         backgroundColor: "#FFFFFF",

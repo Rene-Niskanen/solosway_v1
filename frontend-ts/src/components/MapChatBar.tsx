@@ -65,7 +65,7 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
   const formRef = React.useRef<HTMLFormElement>(null);
 
   const { setSelectionModeActive, propertyAttachments, removePropertyAttachment, addPropertyAttachment, clearPropertyAttachments } = usePropertySelection();
-  const { toggleDocumentSelection } = useDocumentSelection();
+  const { toggleDocumentSelection, toggleDocumentSelectionMode } = useDocumentSelection();
 
   const initialSegments = React.useMemo(
     () =>
@@ -515,6 +515,7 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
                 />
                 <ChatBarAttachDropdown
                 onAttachClick={() => fileInputRef.current?.click()}
+                onChooseDocumentsClick={() => toggleDocumentSelectionMode()}
                 toolsItems={[
                   {
                     id: 'web-search',

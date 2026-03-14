@@ -3005,7 +3005,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                     {onNavigateToUsageBilling && (
                       <button
                         onClick={() => { closeSidebar(); onNavigateToUsageBilling(); }}
-                        className="w-full py-1 rounded text-[12px] font-medium text-gray-700 bg-gray-200 hover:bg-gray-300 transition-colors"
+                        className="w-full py-1 rounded text-[12px] font-medium text-white bg-orange-500 hover:bg-orange-600 transition-colors"
                       >
                         Go to Usage & Billing
                       </button>
@@ -3039,7 +3039,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                     {onNavigateToUsageBilling && (
                       <button
                         onClick={() => { closeSidebar(); onNavigateToUsageBilling(); }}
-                        className="w-full py-1 rounded text-[12px] font-medium text-gray-700 bg-gray-200 hover:bg-gray-300 transition-colors"
+                        className="w-full py-1 rounded text-[12px] font-medium text-white bg-orange-500 hover:bg-orange-600 transition-colors"
                       >
                         Go to Usage & Billing
                       </button>
@@ -3399,9 +3399,9 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
               </p>
             </div>
           ) : (
-            <div className="w-full py-0 pb-80 space-y-0" style={{ boxSizing: 'border-box' }}>
+            <div className="w-full pt-4 pb-80 space-y-0" style={{ boxSizing: 'border-box' }}>
               {/* Folders - same pr-8 as property cards for aligned right edge */}
-              <div className={viewMode === 'property' && !currentFolderId ? 'pr-8 w-full' : 'w-full'}>
+              <div className={`space-y-0 ${viewMode === 'property' && !currentFolderId ? 'pr-8 w-full' : 'w-full'}`}>
               {filteredItems.folders.map((folder) => {
                 const isSelected = selectedItems.has(folder.id);
                 return (
@@ -3557,7 +3557,7 @@ className={`flex items-center gap-0.5 px-2 py-1 ml-4 mr-8 w-full cursor-pointer 
                           )}
                         </div>
                       </div>
-                      {/* Documents in this property - ml-5 mr-8 matches property header width exactly (no layout change to list/header) */}
+                      {/* Documents in this property - ml-5 mr-8 matches property header width exactly; space-y-0 = compact gap between files */}
                       {isExpanded && (
                         <div className="py-0 w-full space-y-0" style={{ boxSizing: 'border-box' }}>
                           {propertyDocs.length === 0 ? (
@@ -3726,7 +3726,7 @@ className={`flex items-center gap-0.5 px-2 py-1 ml-4 mr-8 w-full cursor-pointer 
                 })}
                 </div>
               ) : (
-                // Flat list for global view or when inside a folder - uploading placeholders at top so they appear instantly
+                // Flat list for global view or when inside a folder - uploading placeholders at top; space-y-0 = compact gap between files
                 <div className="py-0 w-full space-y-0" style={{ boxSizing: 'border-box' }}>
                   {uploadingPlaceholders.length > 0 && uploadingPlaceholders.map((p) => {
                     const mockDoc: Document = { id: '', original_filename: p.name, file_type: '' };

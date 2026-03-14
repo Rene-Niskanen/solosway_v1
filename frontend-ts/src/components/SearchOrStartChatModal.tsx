@@ -32,16 +32,16 @@ export interface SearchOrStartChatModalProps {
   onOpenChange: (open: boolean) => void;
   /** When set, modal is portaled into this element and centered within it (e.g. main content flex-1 area). */
   container?: HTMLElement | null;
-  /** When 'projects', open directly into the Projects list view (e.g. from "Choose project" button) */
-  initialView?: 'search' | 'projects';
+  /** When 'projects' or 'files', open directly into that list view (e.g. from "Choose project" / "Choose files" buttons) */
+  initialView?: 'search' | 'projects' | 'files';
   onNewChat: () => void;
   onNewChatWithQuery?: (query: string) => void;
   onChatSelect: (chatId: string) => void;
   onNavigate: (view: string) => void;
   onOpenFiles: () => void;
   onUploadFile?: () => void;
-  onOpenFile?: (fileId: string, filename?: string) => void;
-  onProjectSelect?: (projectId: string) => void;
+  onOpenFile?: (fileId: string, filename?: string, fileType?: string) => void;
+  onProjectSelect?: (projectId: string, project?: { label: string; imageUrl?: string }) => void;
 }
 
 const RECENTS_MAX = 5;
@@ -86,7 +86,7 @@ export function SearchOrStartChatModal({
   const [showFilesView, setShowFilesView] = React.useState(false);
   const [showProjectsView, setShowProjectsView] = React.useState(false);
   const [projects, setProjects] = React.useState<{ id: string; label: string; imageUrl?: string }[]>([]);
-  const [documents, setDocuments] = React.useState<{ id: string; original_filename?: string; filename?: string; name?: string }[]>([]);
+  const [documents, setDocuments] = React.useState<{ id: string; original_filename?: string; filename?: string; name?: string; file_type?: string }[]>([]);
   const inputRef = React.useRef<HTMLInputElement>(null);
   const listRef = React.useRef<HTMLDivElement>(null);
 
@@ -269,13 +269,20 @@ export function SearchOrStartChatModal({
     }
   }, [open]);
 
-  // When opening with initialView='projects', show the projects list immediately
-  React.useEffect(() => {
+  // When opening with initialView='projects' or 'files', show that list immediately (useLayoutEffect so it runs before paint)
+  React.useLayoutEffect(() => {
     if (open && initialView === 'projects') {
       setShowProjectsView(true);
+      setShowFilesView(false);
+      setQuery("");
+    } else if (open && initialView === 'files') {
+      setShowFilesView(true);
+      setShowProjectsView(false);
       setQuery("");
     }
   }, [open, initialView]);
+
+  const isFilteredMode = initialView === 'projects' || initialView === 'files';
 
   React.useEffect(() => {
     if (open) {
@@ -364,7 +371,7 @@ export function SearchOrStartChatModal({
         onOpenFile?.(item.fileId, item.label);
         break;
       case "project":
-        onProjectSelect?.(item.projectId);
+        onProjectSelect?.(item.projectId, { label: item.label, imageUrl: item.imageUrl });
         break;
     }
     onOpenChange(false);
@@ -384,7 +391,7 @@ export function SearchOrStartChatModal({
       <DialogContent
         container={container ?? undefined}
         hideClose
-        className="p-0 gap-0 overflow-hidden border-0 bg-white shadow-xl max-h-[55vh] min-h-[280px] min-w-0 max-w-[840px] w-[min(840px,calc(100vw-32px))] rounded-xl flex flex-col !z-[100100] transition-[max-height] duration-300 ease-out"
+        className="p-0 gap-0 overflow-hidden border-0 bg-white shadow-xl max-h-[55vh] min-h-[280px] min-w-0 max-w-[840px] w-[min(840px,calc(100%-32px))] rounded-xl flex flex-col !z-[100100] transition-[max-height] duration-300 ease-out"
         style={{ boxShadow: "0 4px 24px rgba(0,0,0,0.08)" }}
         overlayClassName="bg-black/10 !z-[100100]"
         onPointerDownOutside={() => onOpenChange(false)}
@@ -423,14 +430,16 @@ export function SearchOrStartChatModal({
         >
           {showProjectsView ? (
             <>
-              <button
-                type="button"
-                onClick={() => setShowProjectsView(false)}
-                className="flex items-center gap-2 px-4 py-2 mb-2 text-[13px] text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg w-fit text-left"
-              >
-                <ChevronLeft className="h-4 w-4 shrink-0" />
-                Back
-              </button>
+              {!isFilteredMode && (
+                <button
+                  type="button"
+                  onClick={() => setShowProjectsView(false)}
+                  className="flex items-center gap-2 px-4 py-2 mb-2 text-[13px] text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg w-fit text-left"
+                >
+                  <ChevronLeft className="h-4 w-4 shrink-0" />
+                  Back
+                </button>
+              )}
               <p className="px-4 pt-1 pb-2 text-[11px] text-gray-500 font-medium">
                 Projects
               </p>
@@ -452,7 +461,7 @@ export function SearchOrStartChatModal({
                     type="button"
                     className="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-left transition-colors hover:bg-gray-100"
                     onClick={() => {
-                      onProjectSelect?.(p.id);
+                      onProjectSelect?.(p.id, { label: p.label, imageUrl: p.imageUrl });
                       onOpenChange(false);
                     }}
                   >
@@ -481,14 +490,16 @@ export function SearchOrStartChatModal({
             </>
           ) : showFilesView ? (
             <>
-              <button
-                type="button"
-                onClick={() => setShowFilesView(false)}
-                className="flex items-center gap-2 px-4 py-2 mb-2 text-[13px] text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg w-fit text-left"
-              >
-                <ChevronLeft className="h-4 w-4 shrink-0" />
-                Back
-              </button>
+              {!isFilteredMode && (
+                <button
+                  type="button"
+                  onClick={() => setShowFilesView(false)}
+                  className="flex items-center gap-2 px-4 py-2 mb-2 text-[13px] text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg w-fit text-left"
+                >
+                  <ChevronLeft className="h-4 w-4 shrink-0" />
+                  Back
+                </button>
+              )}
               <p className="px-4 pt-1 pb-2 text-[11px] text-gray-500 font-medium">
                 Files
               </p>
@@ -499,6 +510,7 @@ export function SearchOrStartChatModal({
               ) : (
                 filesViewList.map((d) => {
                   const label = d.original_filename || d.filename || d.name || "Document";
+                  const fileType = (d as { file_type?: string }).file_type;
                   return (
                     <button
                       key={d.id}
@@ -506,8 +518,8 @@ export function SearchOrStartChatModal({
                       title={label}
                       className="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-left transition-colors bg-white hover:bg-gray-100"
                       onClick={() => {
-                        const label = d.original_filename || d.filename || d.name || "Document";
-                        onOpenFile?.(d.id, label);
+                        const lbl = d.original_filename || d.filename || d.name || "Document";
+                        onOpenFile?.(d.id, lbl, fileType);
                         onOpenChange(false);
                       }}
                     >

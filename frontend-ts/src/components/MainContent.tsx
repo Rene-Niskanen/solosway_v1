@@ -54,6 +54,7 @@ import {
   DASHBOARD_CHAT_LAYOUT,
   getInputBarFixedContainerStyles,
   SIDEBAR_TO_BAR_GAP_PX,
+  DASHBOARD_BAR_PADDING_RIGHT_PX,
 } from '@/utils/inputBarPosition';
 import { useChatHistory } from './ChatHistoryContext';
 import { useBrowserFullscreen } from '../contexts/BrowserFullscreenContext';
@@ -2169,6 +2170,8 @@ export interface MainContentProps {
   onProjectDetailOpen?: (open: boolean) => void; // Notify when fullscreen project detail is open so sidebar can unselect Projects button
   /** Ref to the main content wrapper (flex-1 div). Used e.g. to portal/center the search modal inside it. */
   mainContentContainerRef?: React.RefObject<HTMLDivElement | null>;
+  /** Ref to the chat messages area. When set, modal is portaled there so it centers in chat section (e.g. 50/50 split). */
+  chatModalContainerRef?: React.RefObject<HTMLDivElement | null>;
 }
 export const MainContent = ({
   className,
@@ -2206,6 +2209,7 @@ export const MainContent = ({
   onRegisterClearProjectSelection,
   onProjectDetailOpen,
   mainContentContainerRef,
+  chatModalContainerRef,
 }: MainContentProps) => {
   const authUser = useAuthUser();
   const { addActivity } = useSystem();
@@ -4039,6 +4043,30 @@ export const MainContent = ({
     return () => window.removeEventListener('searchModalOpenFile', handler);
   }, [onNavigate, openExpandedCardView]);
 
+  // When user selects a file from search modal "Choose files" (attach mode): add to active chat bar
+  React.useEffect(() => {
+    const handler = (e: Event) => {
+      const { fileId, filename, fileType } = (e as CustomEvent<{ fileId: string; filename?: string; fileType?: string }>).detail;
+      if (!fileId) return;
+      const payload = {
+        type: 'filing-sidebar-document',
+        documentId: fileId,
+        filename: filename && filename.trim() ? filename : 'Document',
+        fileType: fileType || 'application/pdf',
+      };
+      // Route to active bar: chat visible → SideChatPanel; map visible → MapChatBar; else SearchBar
+      if (hasPerformedSearch && (isMapVisible || isInChatMode) && sideChatPanelRef.current?.addFilingSidebarDocument) {
+        sideChatPanelRef.current.addFilingSidebarDocument(payload);
+      } else if (isMapVisible && mapSearchBarRef.current?.addFilingSidebarDocument) {
+        mapSearchBarRef.current.addFilingSidebarDocument(payload);
+      } else if (searchBarRef.current?.addFilingSidebarDocument) {
+        searchBarRef.current.addFilingSidebarDocument(payload);
+      }
+    };
+    window.addEventListener('searchModalAttachFile', handler);
+    return () => window.removeEventListener('searchModalAttachFile', handler);
+  }, [hasPerformedSearch, isMapVisible, isInChatMode]);
+
   // When user submits a query from the dashboard search modal: navigate to chat and run the query.
   // Set hasPerformedSearch and transition ref immediately so the dashboard hides on the next paint;
   // then defer handleSearch so it runs after handleNewChat's clear has committed.
@@ -4437,7 +4465,7 @@ export const MainContent = ({
 
                   return (
                     <div 
-                      className="flex flex-col items-center w-full max-w-6xl mx-auto" 
+                      className="flex flex-col items-center w-full max-w-5xl mx-auto" 
                       style={{ 
                         paddingLeft: DASHBOARD_CHAT_LAYOUT.HORIZONTAL_PADDING_LEFT, // Gap from sidebar right edge (same as chat)
                         paddingRight: DASHBOARD_CHAT_LAYOUT.HORIZONTAL_PADDING,
@@ -4620,20 +4648,17 @@ export const MainContent = ({
                           ? (effectiveMapVisible ? 'left 0.3s ease-out' : 'all 0.3s ease-out')
                           : 'none';
                         
-                        // Cap dashboard wrapper so SearchBar matches SideChatPanel bar
-                        const DASHBOARD_BAR_PADDING_PX = 16; // Right-side padding; left is 0 to align with toggle rail
-                        const dashboardBarWrapperMaxPx = CHAT_BAR_MAX_WIDTH_PX + DASHBOARD_BAR_PADDING_PX; // No left padding
+                        // Same logic as SideChatPanel: flex center container, bar uses CHAT_BAR_WRAPPER_STYLE to constrain itself
                         return (
                           <div 
                             className={effectiveMapVisible ? "" : "w-full flex justify-center items-center"} 
                             style={{ 
-                              // Explicit display to override any className interference
                               display: (effectiveMapVisible || showNewPropertyWorkflow) ? 'block' : 'flex',
-                              alignItems: effectiveMapVisible ? 'center' : 'center', // Center content vertically
+                              alignItems: 'center',
                               marginTop: shouldPositionAtBottom ? 'auto' : (isVerySmall ? 'auto' : '0'),
                               marginBottom: shouldPositionAtBottom ? '0' : (isVerySmall ? 'auto' : '0'),
-                              paddingLeft: effectiveMapVisible ? `${EXTRA_HORIZONTAL_PADDING}px` : `${SIDEBAR_TO_BAR_GAP_PX}px`, // Gap from sidebar right edge (Chats view); map uses EXTRA_HORIZONTAL_PADDING
-                              paddingRight: effectiveMapVisible ? `${EXTRA_HORIZONTAL_PADDING}px` : `${DASHBOARD_BAR_PADDING_PX}px`,
+                              paddingLeft: effectiveMapVisible ? `${EXTRA_HORIZONTAL_PADDING}px` : 0,
+                              paddingRight: effectiveMapVisible ? `${EXTRA_HORIZONTAL_PADDING}px` : 0,
                               paddingBottom: shouldPositionAtBottom ? '0' : '0', // No extra padding so bar bottom = INPUT_BAR_SPACE_BELOW_DASHBOARD (matches panel, no jump)
                               paddingTop: shouldPositionAtBottom ? '16px' : '0', // Top padding when fixed at bottom (ChatGPT-style)
                               overflow: 'visible', // Ensure content is never clipped
@@ -4642,8 +4667,11 @@ export const MainContent = ({
                               left: mapViewLeft,
                               transform: mapViewTransform,
                               zIndex: Math.max(100002, effectiveMapVisible ? 50 : (shouldPositionAtBottom ? 100 : 10)), // Above FilingSidebar (100001) so bar receives drag when hovering with file
-                              width: effectiveMapVisible ? 'clamp(400px, 85vw, 650px)' : '100%', // Full width in dashboard, constrained in map view
-                              maxWidth: effectiveMapVisible ? 'clamp(400px, 85vw, 650px)' : (shouldPositionAtBottom ? 'none' : `${dashboardBarWrapperMaxPx}px`), // Cap dashboard so bar width matches SideChatPanel
+                              ...(effectiveMapVisible
+                                ? { width: 'clamp(400px, 85vw, 650px)', maxWidth: 'clamp(400px, 85vw, 650px)' }
+                                : shouldPositionAtBottom
+                                ? { width: '100%', maxWidth: 'none' }
+                                : { width: '100%' }), // Same as chat: container is full width, SearchBar constrains itself via CHAT_BAR_WRAPPER_STYLE
                               boxSizing: 'border-box', // Include padding in width calculation
                               backgroundColor: 'transparent', // Fully transparent - background shows through
                               background: 'transparent', // Fully transparent - background shows through
@@ -5845,6 +5873,7 @@ export const MainContent = ({
         restoreChatId={restoreChatId}
         selectedChatId={currentChatId}
         onChatSelect={onChatSelect}
+        chatModalContainerRef={chatModalContainerRef}
         newAgentTrigger={newAgentTrigger}
         initialAttachedFiles={
           pendingSideChatAttachmentsRef.current.length > 0 
@@ -6045,9 +6074,10 @@ export const MainContent = ({
                   : currentView === 'settings'
                     ? 'bg-background'
                     : (currentView === 'search' || currentView === 'home') ? '' : 'bg-background'
-      } ${isInChatMode ? 'p-0' : currentView === 'upload' ? 'p-8' : currentView === 'analytics' ? 'p-4' : currentView === 'profile' ? 'p-0' : currentView === 'notifications' ? 'p-0 m-0' : currentView === 'projects' ? 'p-0' : currentView === 'settings' ? 'p-0 overflow-hidden' : 'p-8 lg:p-16'}`} style={{ 
+      } ${(currentView === 'search' || currentView === 'home') ? 'p-8 lg:p-16' : isInChatMode ? 'p-0' : currentView === 'upload' ? 'p-8' : currentView === 'analytics' ? 'p-4' : currentView === 'profile' ? 'p-0' : currentView === 'notifications' ? 'p-0 m-0' : currentView === 'projects' ? 'p-0' : currentView === 'settings' ? 'p-0 overflow-hidden' : 'p-8 lg:p-16'}`} style={{ 
         backgroundColor: (currentView === 'search' || currentView === 'home') ? 'transparent' : undefined, 
         background: (currentView === 'search' || currentView === 'home') ? 'transparent' : undefined,
+        ...((currentView === 'search' || currentView === 'home') && { paddingBottom: INPUT_BAR_SPACE_BELOW_DASHBOARD }), // Match dashboard bar bottom clearance - avoid dock overlap (same as fixed bar)
         pointerEvents: currentView === 'settings' ? 'auto' : (MAP_ENABLED && (isMapVisible || externalIsMapVisible)) ? 'none' : 'auto', // Settings always receives clicks; otherwise block when map visible
         zIndex: currentView === 'settings' ? 1 : (MAP_ENABLED && (isMapVisible || externalIsMapVisible)) ? 0 : 1, // Settings always on top; below map when map visible otherwise
         transition: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked || isTransitioningToChat || isTransitioningToChatRef.current) ? 'none' : undefined, // Disable all transitions when transitioning to/from chat
@@ -6058,7 +6088,9 @@ export const MainContent = ({
           <DashboardUpgradeCta />
         )}
         <div className={`relative w-full ${
-          isInChatMode 
+          (currentView === 'search' || currentView === 'home')
+            ? 'max-w-5xl mx-auto'
+            : isInChatMode 
             ? 'h-full w-full' 
             : currentView === 'upload' ? 'h-full' 
             : currentView === 'analytics' ? 'h-full overflow-hidden'

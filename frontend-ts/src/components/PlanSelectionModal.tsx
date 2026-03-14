@@ -43,6 +43,7 @@ import {
   X,
   type LucideIcon,
 } from "lucide-react";
+import { StackedModelIcons } from "./StackedModelIcons";
 
 const TIER_ORDER: TierKey[] = ["personal", "professional", "business"];
 
@@ -137,7 +138,7 @@ function CurrencyDropdown({
 const SLOGANS: Record<TierKey, string> = {
   personal: "Get started with AI on your documents.",
   professional: "More access to advanced extraction.",
-  business: "Maximize your team's intelligence.",
+  business: "Maximum power for your documents.",
 };
 
 /** Feature lines per tier. Progression: explore/get started → more/solve → scale/maximize. */
@@ -151,17 +152,17 @@ const FEATURES_BASE: Record<TierKey, string[]> = {
   ],
   professional: [
     "2,000 pages per month",
-    "Choose your AI model—optimise for speed, depth, or cost",
+    "Choose your AI model – optimise for speed, depth, or cost",
     "More cloud storage for documents and history",
     "Priority processing",
     "Extended semantic search and chat across your full document set",
     "For freelancers, consultants, and solo professionals",
   ],
   business: [
-    "5,000 pages per month in a shared pool",
-    "Model selection for every team member",
-    "Largest cloud storage—team-wide",
-    "Multiple users, one allowance—use it where it matters",
+    "5,000 pages per month",
+    "Choose your AI model – optimise for speed, depth, or cost",
+    "Largest cloud storage for documents and history",
+    "Flexible allowance – use it where it matters",
     "Dedicated support agent",
     "2× faster processing speeds",
     "Extend your page limit",
@@ -332,10 +333,18 @@ function EnterpriseContactLink() {
 
 const iconClassName = "h-3.5 w-3.5 shrink-0 mt-0.5 text-gray-500";
 
-/** Renders the feature icon for a tier and index so Lucide Icon always receives a valid component. */
+/** Renders the feature icon for a tier and index so Lucide Icon always receives a valid component.
+ * For model-selection features (Cpu icon), shows stacked model icons (OpenAI, Gemini, Claude) like the
+ * file icons in SearchingSourcesCarousel. */
 function FeatureIcon({ tierId, index }: { tierId: TierKey; index: number }) {
   const Icon = FEATURE_ICONS[tierId]?.[index];
   if (!Icon) return <span className={iconClassName} aria-hidden />;
+  if (Icon === Cpu)
+    return (
+      <span className="mt-0.5 shrink-0 flex items-center">
+        <StackedModelIcons />
+      </span>
+    );
   return <Icon className={iconClassName} size={14} strokeWidth={2} aria-hidden />;
 }
 

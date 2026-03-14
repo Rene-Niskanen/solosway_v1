@@ -2542,8 +2542,8 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                 />
               </div>
             )}
-            {/* Single header row: Back | Search (icon expands to bar) | Select | Fullscreen? */}
-            <div className="px-6 pb-3 bg-white relative flex items-center gap-3" style={{ zIndex: 1, borderBottom: 'none', paddingTop: 17 }}>
+            {/* Single header row: Back | Search (icon expands to bar) | Select | Fullscreen? – aligned with SideChatPanel header (18px top, 19px bottom, 32px row) */}
+            <div className="px-6 bg-white relative flex items-center gap-3 min-h-[32px]" style={{ zIndex: 1, borderBottom: 'none', paddingTop: 18, paddingBottom: 19 }}>
               <button
                 onClick={(e) => {
                   e.stopPropagation();
@@ -2554,8 +2554,8 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                 type="button"
                 style={{
                   padding: '6px 10px',
-                  height: '34px',
-                  minHeight: '34px',
+                  height: '32px',
+                  minHeight: '32px',
                   backgroundColor: 'rgba(255, 255, 255, 0.92)',
                 }}
               >
@@ -2596,9 +2596,9 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                     title="Search documents"
                     style={{
                       padding: '6px 10px',
-                      height: '34px',
-                      minHeight: '34px',
-                      minWidth: '34px',
+                      height: '32px',
+                      minHeight: '32px',
+                      minWidth: '32px',
                       backgroundColor: 'rgba(255, 255, 255, 0.92)',
                     }}
                   >
@@ -2617,8 +2617,8 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                       type="button"
                       style={{
                         padding: '6px 10px',
-                        height: '34px',
-                        minHeight: '34px',
+                        height: '32px',
+                        minHeight: '32px',
                         backgroundColor: isLocalSelectionMode ? 'rgba(0, 0, 0, 0.04)' : 'rgba(255, 255, 255, 0.92)',
                       }}
                     >
@@ -2637,9 +2637,9 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                   title={isFullscreen ? "Exit Fullscreen" : "Enter Fullscreen"}
                   style={{
                     padding: '6px 10px',
-                    height: '34px',
-                    minHeight: '34px',
-                    minWidth: '34px',
+                    height: '32px',
+                    minHeight: '32px',
+                    minWidth: '32px',
                     backgroundColor: 'rgba(255, 255, 255, 0.92)',
                   }}
                 >
@@ -2676,7 +2676,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                     {/* Document Grid - Always rendered but hidden when preview is open */}
                     <div className={selectedCardIndex !== null ? 'hidden' : ''}>
                       <div 
-                          className="grid gap-6 pb-20" 
+                          className="grid gap-3 pb-20" 
                         style={{ 
                             gridTemplateColumns: 'repeat(auto-fill, 160px)',
                             justifyContent: 'flex-start'

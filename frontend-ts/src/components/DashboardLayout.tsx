@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { flushSync } from "react-dom";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Sidebar } from './Sidebar';
 import { MainContent } from './MainContent';
@@ -62,6 +63,7 @@ const DashboardLayoutContent = ({
   const [planChangeInProgress, setPlanChangeInProgress] = React.useState(false);
   const [planChangeTierId, setPlanChangeTierId] = React.useState<TierKey | null>(null);
   const [searchModalOpen, setSearchModalOpen] = React.useState(false);
+  const [searchModalInitialView, setSearchModalInitialView] = React.useState<'search' | 'projects' | 'files'>('search');
   const [chooseProjectModalOpen, setChooseProjectModalOpen] = React.useState(false);
   const [chooseProjectModalAnchorRect, setChooseProjectModalAnchorRect] = React.useState<{ left: number; top: number; width: number; height: number } | null>(null);
   const { addPropertyAttachment } = usePropertySelection();
@@ -124,9 +126,19 @@ const DashboardLayoutContent = ({
     };
   }, []);
 
-  // Open search modal when e.g. Cmd+K is pressed ("Choose project" uses openChooseProjectModal and ChooseProjectModal in MainContent)
+  // Open search modal when e.g. Cmd+K is pressed, or when "Choose project" / "Choose files" dispatches with initialView
   React.useEffect(() => {
-    const handler = () => setSearchModalOpen(true);
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent<{ initialView?: 'projects' | 'files' }>).detail;
+      const initialView = (detail?.initialView === 'projects' || detail?.initialView === 'files')
+        ? detail.initialView
+        : 'search';
+      // Use flushSync so both state updates apply before modal renders - prevents race where modal shows wrong view
+      flushSync(() => {
+        setSearchModalInitialView(initialView);
+        setSearchModalOpen(true);
+      });
+    };
     window.addEventListener('openSearchModal', handler);
     return () => window.removeEventListener('openSearchModal', handler);
   }, []);
@@ -528,6 +540,7 @@ const DashboardLayoutContent = ({
   // Ref to store MainContent's handler so we can call it
   const mainContentNewChatHandlerRef = React.useRef<(() => void) | null>(null);
   const mainContentContainerRef = React.useRef<HTMLDivElement | null>(null);
+  const chatModalContainerRef = React.useRef<HTMLDivElement | null>(null);
   
   const handleNewChat = React.useCallback(() => {
     // Check if current chat has a running query
@@ -1046,8 +1059,12 @@ const DashboardLayoutContent = ({
 
       <SearchOrStartChatModal
         open={searchModalOpen}
-        onOpenChange={setSearchModalOpen}
-        container={mainContentContainerRef.current}
+        onOpenChange={(open) => {
+          setSearchModalOpen(open);
+          if (!open) setSearchModalInitialView('search');
+        }}
+        container={chatModalContainerRef?.current ?? mainContentContainerRef.current}
+        initialView={searchModalInitialView}
         onNewChat={() => {
           handleRestoreActiveChat();
           handleNewChat();
@@ -1063,16 +1080,53 @@ const DashboardLayoutContent = ({
         onOpenFiles={openFilingSidebar}
         onUploadFile={() => {
           setSearchModalOpen(false);
+          setSearchModalInitialView('search');
           // Small delay so the modal closes before the file picker opens
           setTimeout(() => uploadFileInputRef.current?.click(), 100);
         }}
-        onOpenFile={(fileId, filename) => {
-          window.dispatchEvent(new CustomEvent('searchModalOpenFile', { detail: { fileId, filename: filename ?? 'Document' } }));
+        onOpenFile={(fileId, filename, fileType) => {
+          if (searchModalInitialView === 'files') {
+            setSearchModalOpen(false);
+            setSearchModalInitialView('search');
+            window.dispatchEvent(new CustomEvent('searchModalAttachFile', {
+              detail: { fileId, filename: filename ?? 'Document', fileType },
+            }));
+          } else {
+            window.dispatchEvent(new CustomEvent('searchModalOpenFile', { detail: { fileId, filename: filename ?? 'Document' } }));
+          }
         }}
-        onProjectSelect={(projectId) => {
+        onProjectSelect={(projectId, project) => {
           setSearchModalOpen(false);
+          setSearchModalInitialView('search');
           handleViewChange('search');
-          window.dispatchEvent(new CustomEvent('searchModalSelectProject', { detail: { propertyId: projectId } }));
+          // When from "Choose project" pop-up, add as context; otherwise open property details
+          if (searchModalInitialView === 'projects' && project) {
+            const minimalProperty = {
+              id: projectId as unknown as number,
+              address: project.label,
+              postcode: '',
+              property_type: '',
+              bedrooms: 0,
+              bathrooms: 0,
+              price: 0,
+              square_feet: 0,
+              days_on_market: 0,
+              latitude: 0,
+              longitude: 0,
+              summary: '',
+              features: '',
+              condition: 0,
+              similarity: 0,
+              image: project.imageUrl ?? '',
+              primary_image_url: project.imageUrl ?? '',
+              formatted_address: project.label,
+              normalized_address: project.label,
+              agent: { name: '', company: '' },
+            } as any;
+            addPropertyAttachment(minimalProperty);
+          } else {
+            window.dispatchEvent(new CustomEvent('searchModalSelectProject', { detail: { propertyId: projectId } }));
+          }
         }}
       />
 
@@ -1181,6 +1235,7 @@ const DashboardLayoutContent = ({
         onRegisterClearProjectSelection={(clear) => { clearProjectSelectionRef.current = clear; }}
         onProjectDetailOpen={setIsProjectDetailOpen}
         mainContentContainerRef={mainContentContainerRef}
+        chatModalContainerRef={chatModalContainerRef}
       />
     </div>
     </ChooseProjectModalProvider>

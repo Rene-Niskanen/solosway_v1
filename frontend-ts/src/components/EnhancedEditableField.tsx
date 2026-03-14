@@ -322,7 +322,7 @@ export const EnhancedEditableField: React.FC<EnhancedEditableFieldProps> = ({
       onMouseEnter={staticDisplay ? undefined : () => setIsHovered(true)}
       onMouseLeave={staticDisplay ? undefined : () => setIsHovered(false)}
       style={displayStyles}
-      className={`enhanced-editable-field-trigger rounded-sm border border-border bg-background px-3 py-1 text-xs font-medium focus:outline-none focus:ring-1 focus:ring-gray-300 focus:ring-offset-0 focus:border-border ${!staticDisplay ? 'hover:bg-muted' : ''}`}
+      className={`enhanced-editable-field-trigger rounded-sm border border-border/40 bg-background px-3 py-1 text-xs font-medium focus:outline-none focus:ring-1 focus:ring-gray-300 focus:ring-offset-0 focus:border-border ${!staticDisplay ? 'hover:bg-muted' : ''}`}
     >
       {icon && (
         <div style={{ display: 'flex', alignItems: 'center', flexShrink: 0, color: iconColor }}>
