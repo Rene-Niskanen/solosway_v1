@@ -2181,32 +2181,35 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
           key="reasoning-steps-static"
           style={{
             display: 'flex',
-            flexDirection: 'column',
-            gap: 0,
+            flexDirection: 'row',
+            flexWrap: 'wrap',
+            alignItems: 'center',
+            gap: '0 8px',
             lineHeight: 1.2,
-            alignItems: 'flex-start',
             minHeight: isStaggerMode && stepContainerMinHeight != null ? stepContainerMinHeight : undefined
           }}
         >
-          {effectiveDisplayItems.map((displayItem) => {
+          {effectiveDisplayItems.map((displayItem, itemIndex) => {
             if (displayItem.kind === 'group') {
               const groupKey = generateAnimatePresenceKey('ReasoningStep', displayItem.exploringStepIndex, displayItem.exploringStep.details?.doc_previews?.length ?? 0, 'exploring-group');
               return (
-                <div
-                  key={groupKey}
-                style={{
-                  fontSize: '14px',
-                  color: DETAIL_COLOR,
-                  padding: '0',
-                  lineHeight: 1.2,
-                  position: 'relative',
-                  marginBottom: 0,
-                  minHeight: '28px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  flexShrink: 0,
-                }}
-              >
+                <React.Fragment key={groupKey}>
+                  {itemIndex > 0 && (
+                    <span style={{ color: DETAIL_COLOR, fontSize: '14px', flexShrink: 0 }}>•</span>
+                  )}
+                  <div
+                    style={{
+                      fontSize: '14px',
+                      color: DETAIL_COLOR,
+                      padding: '0',
+                      lineHeight: 1.2,
+                      position: 'relative',
+                      minHeight: '28px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      flexShrink: 0,
+                    }}
+                  >
                 <StepRenderer
                   step={displayItem.exploringStep}
                     allSteps={stepsForDisplay}
@@ -2230,6 +2233,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
                     documentsForResolution={documentsForResolution}
                   />
                 </div>
+              </React.Fragment>
               );
             }
 
@@ -2243,36 +2247,41 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
             const isLastReadingStep = isReadingStep && readingStepIndex === allReadingSteps.length - 1;
 
             return (
-              <div
-                key={finalStepKey}
-                style={{
-                  fontSize: '14px',
-                  color: DETAIL_COLOR,
-                  padding: '0',
-                  lineHeight: 1.2,
-                  position: 'relative',
-                  marginBottom: 0,
-                  minHeight: '20px',
-                  flexShrink: 0,
-                }}
-              >
-                <StepRenderer
-                  step={step}
-                  allSteps={stepsForDisplay}
-                  stepIndex={idx}
-                  isLoading={isLoading}
-                  readingStepIndex={readingStepIndex}
-                  hasResponseText={hasResponseText}
-                  isLastReadingStep={isLastReadingStep}
-                  totalReadingSteps={allReadingSteps.length}
-                  onDocumentClick={onDocumentClick}
-                  shownDocumentsRef={shownDocumentsRef}
-                  allReadingComplete={allReadingComplete}
-                  model={model}
-                  thoughtCompleted={thoughtCompleted}
-                  documentsForResolution={documentsForResolution}
-                />
-              </div>
+              <React.Fragment key={finalStepKey}>
+                {itemIndex > 0 && (
+                  <span style={{ color: DETAIL_COLOR, fontSize: '14px', flexShrink: 0 }}>•</span>
+                )}
+                <div
+                  style={{
+                    fontSize: '14px',
+                    color: DETAIL_COLOR,
+                    padding: '0',
+                    lineHeight: 1.2,
+                    position: 'relative',
+                    minHeight: '20px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    flexShrink: 0,
+                  }}
+                >
+                  <StepRenderer
+                    step={step}
+                    allSteps={stepsForDisplay}
+                    stepIndex={idx}
+                    isLoading={isLoading}
+                    readingStepIndex={readingStepIndex}
+                    hasResponseText={hasResponseText}
+                    isLastReadingStep={isLastReadingStep}
+                    totalReadingSteps={allReadingSteps.length}
+                    onDocumentClick={onDocumentClick}
+                    shownDocumentsRef={shownDocumentsRef}
+                    allReadingComplete={allReadingComplete}
+                    model={model}
+                    thoughtCompleted={thoughtCompleted}
+                    documentsForResolution={documentsForResolution}
+                  />
+                </div>
+              </React.Fragment>
             );
           })}
         </div>

@@ -60,8 +60,8 @@ export const PlanReasoningSteps: React.FC<PlanReasoningStepsProps> = ({
         marginTop: '8px',
       }}
     >
-      {/* Steps with compact 2px gap - no header */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+      {/* Steps on same y - horizontal row with separators */}
+      <div style={{ display: 'flex', flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: '0 8px' }}>
         {steps.slice(0, visibleSteps).map((step, index) => {
           const isLastVisible = index === visibleSteps - 1;
           
@@ -71,20 +71,21 @@ export const PlanReasoningSteps: React.FC<PlanReasoningStepsProps> = ({
           const showSpinner = !isComplete && (step.isActive || (step.icon === 'planning' && isAnimating && isLastVisible));
           
           return (
-            <div
-              key={index}
-              style={{
-                display: 'flex',
-                alignItems: 'flex-start',
-                gap: '6px',
-                fontSize: '14px',
-                padding: '2px 0',
-                lineHeight: 1.2,
-                opacity: isLastVisible && isAnimating ? 0 : 1,
-                transform: isLastVisible && isAnimating ? 'translateY(2px)' : 'translateY(0)',
-                animation: isLastVisible && isAnimating ? 'fadeSlideIn 0.15s ease forwards' : 'none',
-              }}
-            >
+            <React.Fragment key={index}>
+              {index > 0 && (
+                <span style={{ color: '#9CA3AF', fontSize: '14px', flexShrink: 0 }}>•</span>
+              )}
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  fontSize: '14px',
+                  lineHeight: 1.2,
+                  opacity: isLastVisible && isAnimating ? 0 : 1,
+                  animation: isLastVisible && isAnimating ? 'fadeIn 0.15s ease forwards' : 'none',
+                }}
+              >
               {/* Icon: spinner when active (but not complete), check when complete */}
               {showSpinner ? (
                 <div 
@@ -116,52 +117,33 @@ export const PlanReasoningSteps: React.FC<PlanReasoningStepsProps> = ({
                     border: '1.5px solid #D1D5DB',
                     borderRadius: '50%',
                     flexShrink: 0,
-                    marginTop: '3px',
                     boxSizing: 'border-box',
                   }}
                 />
               )}
               
-              <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ minWidth: 0 }}>
                 {/* Message with shimmer when active (but not complete) */}
                 {showSpinner ? (
                   <span className="planning-shimmer-full">{step.message}</span>
                 ) : (
                   <span style={{ color: '#9CA3AF', fontWeight: 500, fontSize: '14px' }}>{step.message}</span>
                 )}
-                
-                {/* Detail text */}
                 {step.detail && (
-                  <div
-                    style={{
-                      fontSize: '11px',
-                      color: '#6B7280',
-                      marginTop: '2px',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
-                    }}
-                  >
-                    {step.detail}
-                  </div>
+                  <span style={{ fontSize: '11px', color: '#6B7280', marginLeft: '4px' }}>{step.detail}</span>
                 )}
               </div>
             </div>
+          </React.Fragment>
           );
         })}
       </div>
       
       {/* CSS for shimmer animations - matching ReasoningSteps.tsx */}
       <style>{`
-        @keyframes fadeSlideIn {
-          from {
-            opacity: 0;
-            transform: translateY(2px);
-          }
-          to {
-            opacity: 1;
-            transform: translateY(0);
-          }
+        @keyframes fadeIn {
+          from { opacity: 0; }
+          to { opacity: 1; }
         }
         
         @keyframes spin {
