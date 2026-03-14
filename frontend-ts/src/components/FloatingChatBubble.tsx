@@ -273,7 +273,8 @@ export const FloatingChatBubble: React.FC<FloatingChatBubbleProps> = ({
       return match;
     });
     
-    // Never show "." after citations: remove period (and optional space) after bracket citations
+    // Never show "." after citations: remove period (and optional space) after bracket citations. When period followed by letter, add space.
+    processedText = processedText.replace(/\[(\d+)\]\s*\.(?=[A-Za-z])/g, '[$1] ');
     processedText = processedText.replace(/\[(\d+)\]\s*\./g, '[$1]');
     
     processedText = processedText.replace(bracketPattern, (match, num) => {
@@ -291,7 +292,8 @@ export const FloatingChatBubble: React.FC<FloatingChatBubbleProps> = ({
       return match;
     });
     
-    // Never show "." after citations: remove period after any run of citation placeholders
+    // Never show "." after citations: remove period after any run of citation placeholders. When period followed by letter, add space.
+    processedText = processedText.replace(/((?:__CITATION_(?:SUPERSCRIPT|BRACKET)_\d+__\s*)+)\.(?=[A-Za-z])/g, '$1 ');
     processedText = processedText.replace(/((?:__CITATION_(?:SUPERSCRIPT|BRACKET)_\d+__\s*)+)\.(?=\s|$)/g, '$1');
     
     const parts = processedText.split(/(__CITATION_(?:SUPERSCRIPT|BRACKET)_\d+__)/g);

@@ -109,10 +109,11 @@ const PendingFileItem: React.FC<{
   isSelected?: boolean;
   showOutline?: boolean;
   isUploading?: boolean;
+  uploadProgress?: number;
   onSelect?: (index: number) => void;
   onRemove: (index: number) => void;
   getFileIcon: (doc: Document) => React.ReactNode;
-}> = ({ file, index, isSelected = false, showOutline = false, isUploading = false, onSelect, onRemove, getFileIcon }) => {
+}> = ({ file, index, isSelected = false, showOutline = false, isUploading = false, uploadProgress = 0, onSelect, onRemove, getFileIcon }) => {
   const isImage = file.type.startsWith('image/');
   const [imageUrl, setImageUrl] = React.useState<string | null>(null);
   
@@ -158,6 +159,14 @@ const PendingFileItem: React.FC<{
         <span className="text-xs font-medium text-slate-600 truncate" style={{ fontFamily: "'DM Sans', system-ui, -apple-system, sans-serif" }}>
           {file.name}
         </span>
+        {isUploading && (
+          <div className="w-full h-1.5 bg-gray-200 rounded-full mt-1 overflow-hidden">
+            <div
+              className="h-full bg-blue-500 rounded-full transition-all"
+              style={{ width: `${uploadProgress}%` }}
+            />
+          </div>
+        )}
       </div>
       {isUploading ? (
         <div className="flex-shrink-0 w-5 h-5 flex items-center justify-center">
@@ -2146,29 +2155,38 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
     return () => registerUploadFromChat(null);
   }, [openFilingSidebar, removeUploadingPlaceholder, registerUploadFromChat, viewMode, selectedPropertyId]);
 
-  // Handle uploading all pending files: clear drop zone immediately and show uploading state only in file list (at top so visible instantly)
+  // Handle uploading all pending files: keep files in pending section and show progress bars there (below dropdown)
   const handleUploadPendingFiles = async () => {
     if (pendingFiles.length === 0) return;
 
     const filesToUpload = [...pendingFiles];
-    const placeholders = filesToUpload.map((f, i) => ({ id: `pending-${Date.now()}-${i}-${f.name}`, name: f.name }));
+    const fileKeys = filesToUpload.map((f) => getPendingFileKey(f));
 
-    // (1) Clear drop zone and add placeholders in one flush so the list shows loading indicators immediately
-    flushSync(() => {
-      setUploadingPlaceholders((prev) => [...prev, ...placeholders]);
-      setPendingFiles([]);
-      setSelectedPendingFileIndex(null);
-      setOutlinedPendingFileIndex(null);
-      setShowPropertySelector(false);
-      setSelectedPropertyForUpload(null);
-    });
+    // (1) Mark as uploading — files stay in pending section with progress bars
+    setUploadingFileKeys((prev) => new Set([...prev, ...fileKeys]));
+    setShowPropertySelector(false);
+    setSelectedPropertyForUpload(null);
 
-    // (2) Process all uploads in parallel; each completion removes its placeholder from the list
+    // (2) Process all uploads in parallel; files remain in pending section with progress bars
     const uploadResults = await Promise.all(
-      filesToUpload.map((file, i) =>
-        handleFileUpload(file, placeholders[i].id).then(
-          (documentId) => ({ ok: true as const, documentId }),
-          () => ({ ok: false as const, documentId: undefined })
+      filesToUpload.map((file) =>
+        handleFileUpload(file).then(
+          (documentId) => {
+            setUploadingFileKeys((prev) => {
+              const next = new Set(prev);
+              next.delete(getPendingFileKey(file));
+              return next;
+            });
+            return { ok: true as const, documentId };
+          },
+          () => {
+            setUploadingFileKeys((prev) => {
+              const next = new Set(prev);
+              next.delete(getPendingFileKey(file));
+              return next;
+            });
+            return { ok: false as const, documentId: undefined };
+          }
         )
       )
     );
@@ -2683,7 +2701,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                 ${pendingFiles.length > 0 ? 'transition-none mb-0' : 'transition-all duration-150 ease-out mb-4'}
                 ${isDragOver ? 'opacity-90' : ''}`}
               style={{
-                borderRadius: pendingFiles.length > 0 ? '8px 8px 0 0' : '8px'
+                borderRadius: pendingFiles.length > 0 ? '8px 8px 0 0' : '8px',
               }}
             >
               <img
@@ -2694,7 +2712,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                   width: '100%',
                   height: 'auto',
                   display: 'block',
-                  transform: 'scale(1.05)',
+                  transform: 'scale(1.12)',
                   transformOrigin: 'center center',
                 }}
               />
@@ -2736,6 +2754,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                           isSelected={selectedPendingFileIndex === index}
                           showOutline={outlinedPendingFileIndex === index}
                           isUploading={isUploading}
+                          uploadProgress={uploadProgressByFileName[file.name] ?? 0}
                           onSelect={isUploading ? undefined : (idx) => {
                             setSelectedPendingFileIndex(idx);
                             setOutlinedPendingFileIndex(idx);
@@ -3005,7 +3024,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                     {onNavigateToUsageBilling && (
                       <button
                         onClick={() => { closeSidebar(); onNavigateToUsageBilling(); }}
-                        className="w-full py-1 rounded text-[12px] font-medium text-white bg-orange-500 hover:bg-orange-600 transition-colors"
+                        className="w-full py-1 rounded text-[12px] font-medium text-gray-700 bg-white border border-gray-200 hover:bg-gray-50 transition-colors"
                       >
                         Go to Usage & Billing
                       </button>
@@ -3039,7 +3058,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                     {onNavigateToUsageBilling && (
                       <button
                         onClick={() => { closeSidebar(); onNavigateToUsageBilling(); }}
-                        className="w-full py-1 rounded text-[12px] font-medium text-white bg-orange-500 hover:bg-orange-600 transition-colors"
+                        className="w-full py-1 rounded text-[12px] font-medium text-gray-700 bg-white border border-gray-200 hover:bg-gray-50 transition-colors"
                       >
                         Go to Usage & Billing
                       </button>
@@ -3275,7 +3294,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                   }}
                   className="w-full flex items-center gap-2 px-2.5 py-1.5 hover:bg-gray-50 transition-colors text-left"
                 >
-                  <CloudUpload className="w-3.5 h-3.5 text-gray-500 flex-shrink-0" strokeWidth={1.75} aria-hidden />
+                  <img src="/fileupload3.png" alt="Secure file uploads" className="block w-5 h-5 object-contain flex-shrink-0 pointer-events-none" style={{ width: 20, height: 20 }} />
                   <span className="text-xs font-medium text-gray-700">Upload file</span>
                 </button>
               </motion.div>
@@ -3497,6 +3516,12 @@ className={`flex items-center gap-0.5 px-2 py-1 ml-4 mr-8 w-full cursor-pointer 
                                   <span className="text-xs font-medium text-slate-600 truncate flex-1 min-w-0" style={{ fontFamily: "'DM Sans', system-ui, -apple-system, sans-serif" }}>
                                     {p.name}
                                   </span>
+                                </div>
+                                <div className="w-full h-1.5 bg-gray-200 rounded-full mt-1 overflow-hidden ml-1">
+                                  <div
+                                    className="h-full bg-blue-500 rounded-full transition-all"
+                                    style={{ width: `${uploadProgressByFileName[p.name] ?? 0}%` }}
+                                  />
                                 </div>
                               </div>
                             </div>
@@ -3751,6 +3776,12 @@ className={`flex items-center gap-0.5 px-2 py-1 ml-4 mr-8 w-full cursor-pointer 
                               <span className="text-xs font-medium text-slate-600 truncate flex-1 min-w-0" style={{ fontFamily: "'DM Sans', system-ui, -apple-system, sans-serif" }}>
                                 {p.name}
                               </span>
+                            </div>
+                            <div className="w-full h-1.5 bg-gray-200 rounded-full mt-1 overflow-hidden ml-1">
+                              <div
+                                className="h-full bg-blue-500 rounded-full transition-all"
+                                style={{ width: `${uploadProgressByFileName[p.name] ?? 0}%` }}
+                              />
                             </div>
                           </div>
                         </div>

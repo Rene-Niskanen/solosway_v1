@@ -7,7 +7,7 @@
 
 import * as React from "react";
 import { useState, useCallback, useRef } from "react";
-import { X, File, Loader2, ImagePlus } from "lucide-react";
+import { X, File, Loader2 } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { backendApi } from "@/services/backendApi";
 
@@ -26,12 +26,9 @@ const ImageThumbnail: React.FC<{ file: File; className?: string }> = ({ file, cl
   return <img src={url} alt="" className={className} />;
 };
 
-interface UploadedFile {
+interface PendingFile {
   id: string;
   file: File;
-  documentId?: string;
-  uploadProgress: number;
-  uploadStatus: "uploading" | "complete" | "error";
 }
 
 interface CreateProjectModalProps {
@@ -47,18 +44,24 @@ export const CreateProjectModal: React.FC<CreateProjectModalProps> = ({
   onProjectCreated,
 }) => {
   const [projectName, setProjectName] = useState("");
-  const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
+  const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
   const [isCreating, setIsCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
+  /** During Create: upload progress 0–100 by file id */
+  const [creatingProgress, setCreatingProgress] = useState<Record<string, number>>({});
+  /** During Create: document IDs after upload */
+  const [creatingDocumentIds, setCreatingDocumentIds] = useState<Record<string, string>>({});
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const resetState = useCallback(() => {
     setProjectName("");
-    setUploadedFiles([]);
+    setPendingFiles([]);
     setIsCreating(false);
     setError(null);
     setIsDragOver(false);
+    setCreatingProgress({});
+    setCreatingDocumentIds({});
   }, []);
 
   const handleClose = useCallback(() => {
@@ -66,73 +69,31 @@ export const CreateProjectModal: React.FC<CreateProjectModalProps> = ({
     onClose();
   }, [onClose, resetState]);
 
-  const handleFileAdd = useCallback(async (file: File) => {
+  /** Add file to pending list only — no upload until Create is clicked */
+  const handleFileAdd = useCallback((file: File) => {
     const fileId = `file-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-    const newFile: UploadedFile = {
-      id: fileId,
-      file,
-      uploadProgress: 0,
-      uploadStatus: "uploading",
-    };
-    setUploadedFiles((prev) => [...prev, newFile]);
-
-    try {
-      const response = await backendApi.uploadPropertyDocumentViaProxy(
-        file,
-        {
-          skip_processing: "true",
-          project_upload: "true",
-          silent: true,
-        },
-        (percent) => {
-          setUploadedFiles((prev) =>
-            prev.map((f) => (f.id === fileId ? { ...f, uploadProgress: percent } : f))
-          );
-        }
-      );
-
-      if (response.success) {
-        const documentId = (response.data as any)?.document_id || (response as any).document_id;
-        setUploadedFiles((prev) =>
-          prev.map((f) =>
-            f.id === fileId
-              ? { ...f, documentId, uploadStatus: "complete", uploadProgress: 100 }
-              : f
-          )
-        );
-      } else {
-        throw new Error(response.error || "Upload failed");
-      }
-    } catch (err) {
-      setUploadedFiles((prev) =>
-        prev.map((f) => (f.id === fileId ? { ...f, uploadStatus: "error" } : f))
-      );
-    }
+    setPendingFiles((prev) => [...prev, { id: fileId, file }]);
   }, []);
 
   const handleFileRemove = useCallback((fileId: string) => {
-    const file = uploadedFiles.find((f) => f.id === fileId);
-    if (file?.documentId) {
-      backendApi.deleteDocument(file.documentId).catch(console.error);
-    }
-    setUploadedFiles((prev) => prev.filter((f) => f.id !== fileId));
-  }, [uploadedFiles]);
+    setPendingFiles((prev) => prev.filter((f) => f.id !== fileId));
+  }, []);
 
   const handleDrop = useCallback(
-    async (e: React.DragEvent) => {
+    (e: React.DragEvent) => {
       e.preventDefault();
       e.stopPropagation();
       setIsDragOver(false);
       const droppedFiles = Array.from(e.dataTransfer.files);
-      await Promise.allSettled(droppedFiles.map((file) => handleFileAdd(file)));
+      droppedFiles.forEach((file) => handleFileAdd(file));
     },
     [handleFileAdd]
   );
 
   const handleFileSelect = useCallback(
-    async (e: React.ChangeEvent<HTMLInputElement>) => {
+    (e: React.ChangeEvent<HTMLInputElement>) => {
       const selectedFiles = Array.from(e.target.files || []);
-      await Promise.allSettled(selectedFiles.map((file) => handleFileAdd(file)));
+      selectedFiles.forEach((file) => handleFileAdd(file));
       if (fileInputRef.current) fileInputRef.current.value = "";
     },
     [handleFileAdd]
@@ -147,6 +108,8 @@ export const CreateProjectModal: React.FC<CreateProjectModalProps> = ({
 
     setIsCreating(true);
     setError(null);
+    setCreatingProgress({});
+    setCreatingDocumentIds({});
 
     try {
       // 1. Create property (backend requires lat/lng - use default UK coords)
@@ -162,12 +125,36 @@ export const CreateProjectModal: React.FC<CreateProjectModalProps> = ({
 
       const newPropertyId = (createResponse.data as any).property_id;
 
-      // 2. Link uploaded documents to the property
-      const filesWithDocs = uploadedFiles.filter((f) => f.documentId);
-      if (filesWithDocs.length > 0) {
+      // 2. Upload pending files (only when Create is pressed)
+      const docIds: string[] = [];
+      for (const pf of pendingFiles) {
+        setCreatingProgress((prev) => ({ ...prev, [pf.id]: 0 }));
+        const response = await backendApi.uploadPropertyDocumentViaProxy(
+          pf.file,
+          {
+            skip_processing: "true",
+            project_upload: "true",
+            silent: true,
+          },
+          (percent) => {
+            setCreatingProgress((prev) => ({ ...prev, [pf.id]: percent }));
+          }
+        );
+        if (response.success) {
+          const documentId = (response.data as any)?.document_id || (response as any).document_id;
+          if (documentId) {
+            docIds.push(documentId);
+            setCreatingDocumentIds((prev) => ({ ...prev, [pf.id]: documentId }));
+          }
+        }
+        setCreatingProgress((prev) => ({ ...prev, [pf.id]: 100 }));
+      }
+
+      // 3. Link uploaded documents to the property
+      if (docIds.length > 0) {
         await Promise.all(
-          filesWithDocs.map((f) =>
-            backendApi.linkDocumentToProperty(f.documentId!, newPropertyId)
+          docIds.map((documentId) =>
+            backendApi.linkDocumentToProperty(documentId, newPropertyId)
           )
         );
       }
@@ -178,8 +165,10 @@ export const CreateProjectModal: React.FC<CreateProjectModalProps> = ({
       setError(err instanceof Error ? err.message : "Failed to create project");
     } finally {
       setIsCreating(false);
+      setCreatingProgress({});
+      setCreatingDocumentIds({});
     }
-  }, [projectName, uploadedFiles, onProjectCreated, handleClose]);
+  }, [projectName, pendingFiles, onProjectCreated, handleClose]);
 
   const iconClass = "w-6 h-6 object-contain flex-shrink-0";
 
@@ -253,7 +242,7 @@ export const CreateProjectModal: React.FC<CreateProjectModalProps> = ({
                 value={projectName}
                 onChange={(e) => setProjectName(e.target.value)}
                 placeholder="e.g. Riverside Development"
-                className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-0 focus:border-gray-200"
+                className="w-full px-3 py-2 border border-gray-200 rounded-md text-sm focus:outline-none focus:ring-0 focus:border-gray-200"
                 disabled={isCreating}
               />
             </div>
@@ -278,8 +267,19 @@ export const CreateProjectModal: React.FC<CreateProjectModalProps> = ({
                   ${isDragOver ? "opacity-90" : ""}`}
                 style={{ borderRadius: "8px" }}
               >
-                <div className="flex items-center justify-center w-full py-10 pointer-events-none rounded-lg bg-gray-50/30">
-                  <ImagePlus className="w-20 h-20 text-gray-400" strokeWidth={1.5} />
+                <div className="relative flex items-center justify-center w-full py-2 pointer-events-none rounded-lg overflow-hidden">
+                  <img
+                    src="/fileupload3.png"
+                    alt="Add documents"
+                    className="block w-full h-auto"
+                    style={{ width: '100%', maxHeight: 320, objectFit: 'contain' }}
+                  />
+                  {/* Overlay to hide "file" and "+" text on the upload graphic (top portion only) */}
+                  <div
+                    className="absolute top-0 left-0 right-0 pointer-events-none rounded-t-lg"
+                    style={{ height: '25%', backgroundColor: '#FFFFFF' }}
+                    aria-hidden
+                  />
                 </div>
                 <input
                   ref={fileInputRef}
@@ -291,38 +291,40 @@ export const CreateProjectModal: React.FC<CreateProjectModalProps> = ({
               </div>
             </div>
 
-            {/* File list */}
-            {uploadedFiles.length > 0 && (
+            {/* File list — pending until Create is pressed */}
+            {pendingFiles.length > 0 && (
               <div className="space-y-2 max-h-32 overflow-y-auto">
-                {uploadedFiles.map((uf) => (
+                {pendingFiles.map((pf) => (
                   <div
-                    key={uf.id}
+                    key={pf.id}
                     className="flex items-center gap-2 py-2 px-3 rounded-lg bg-gray-50 border border-gray-100"
                   >
-                    {getFileIcon(uf.file)}
+                    {getFileIcon(pf.file)}
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-medium text-gray-800 truncate">
-                        {uf.file.name}
+                        {pf.file.name}
                       </p>
-                      {uf.uploadStatus === "uploading" && (
+                      {isCreating && (
                         <div className="w-full h-1.5 bg-gray-200 rounded-full mt-1 overflow-hidden">
                           <div
                             className="h-full bg-blue-500 rounded-full transition-all"
-                            style={{ width: `${uf.uploadProgress}%` }}
+                            style={{ width: `${creatingProgress[pf.id] ?? 0}%` }}
                           />
                         </div>
                       )}
                     </div>
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleFileRemove(uf.id);
-                      }}
-                      className="p-1 rounded text-gray-500"
-                    >
-                      <X className="w-4 h-4" />
-                    </button>
+                    {!isCreating && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleFileRemove(pf.id);
+                        }}
+                        className="p-1 rounded text-gray-500"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    )}
                   </div>
                 ))}
               </div>

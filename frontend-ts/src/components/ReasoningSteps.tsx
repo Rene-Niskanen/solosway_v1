@@ -1929,7 +1929,6 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
           style={{
             marginBottom: '6px',
             padding: '6px 10px 6px 0',
-            marginLeft: '4px',
             backgroundColor: 'transparent',
             borderRadius: '8px',
             border: 'none',
@@ -2150,7 +2149,6 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
     <div style={{
       marginBottom: '6px',
       padding: '6px 10px 6px 0', // No shorthand/longhand mix to avoid React style warning
-      marginLeft: '4px', // Align slightly right of query bubbles' left starting position
       backgroundColor: 'transparent',
       borderRadius: '8px',
       border: 'none',

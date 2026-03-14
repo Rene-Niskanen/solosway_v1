@@ -38,7 +38,7 @@ interface RecentDocumentsSectionProps {
   onCollapseSidebarToSmall?: () => void;
 }
 
-const CARD_WIDTH_COMPACT = 128;
+const CARD_WIDTH_COMPACT = 134;
 const CARD_GAP = 10;
 const REGULAR_CARD_GAP = 14;
 const ALL_FILES_GRID_GAP = 14;
@@ -130,8 +130,6 @@ export const RecentDocumentsSection: React.FC<RecentDocumentsSectionProps> = ({
           ...(scrollable && {
             scrollbarWidth: 'thin',
             scrollbarColor: 'rgba(255, 255, 255, 0.25) transparent',
-            maskImage: 'linear-gradient(to right, transparent 0, black 16px, black calc(100% - 20px), transparent 100%)',
-            WebkitMaskImage: 'linear-gradient(to right, transparent 0, black 16px, black calc(100% - 20px), transparent 100%)',
           }),
           width: '100%',
           minWidth: '100%',

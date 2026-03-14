@@ -60,13 +60,16 @@ function processAgentTaskCitations(text: string, citations: Record<string, Agent
     for (const char of match) numStr += superscriptMap[char] || (/\d/.test(char) ? char : '');
     return citations?.[numStr] ? `%%CITATION_SUPERSCRIPT_${numStr}%%` : `%%CITATION_PENDING_${numStr}%%`;
   });
-  // Period cleanup before brackets
+  // Period cleanup before brackets (when period followed by letter, add space)
+  processed = processed.replace(/\[(\d+)\]\s*\.(?=[A-Za-z])/g, '[$1] ');
   processed = processed.replace(/\[(\d+)\]\s*\.(?=\s|$)/g, '[$1]');
+  processed = processed.replace(/([¹²³⁴⁵⁶⁷⁸⁹]+(?:\d+)?)\s*\.(?=[A-Za-z])/g, '$1 ');
   processed = processed.replace(/([¹²³⁴⁵⁶⁷⁸⁹]+(?:\d+)?)\s*\.(?=\s|$)/g, '$1');
   // Brackets
   processed = processed.replace(/\[(\d+)\]/g, (_, num) =>
     citations?.[num] ? `%%CITATION_BRACKET_${num}%%` : `%%CITATION_PENDING_${num}%%`
   );
+  processed = processed.replace(/((?:%%CITATION_(?:SUPERSCRIPT|BRACKET|PENDING)_\d+%%\s*)+)\.(?=[A-Za-z])/g, '$1 ');
   processed = processed.replace(/((?:%%CITATION_(?:SUPERSCRIPT|BRACKET|PENDING)_\d+%%\s*)+)\.(?=\s|$)/g, '$1');
   return processed;
 }

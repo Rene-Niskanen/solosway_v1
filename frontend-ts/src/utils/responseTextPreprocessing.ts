@@ -69,9 +69,12 @@ export function normalizeCircledCitationsToBracket(text: string): string {
   return out;
 }
 
-/** Remove period (and optional space before it) after bracket citations so we NEVER show "." after a citation. [1]. -> [1], [1] . -> [1], [7]. Next -> [7] Next */
+/** Remove period (and optional space before it) after bracket citations so we NEVER show "." after a citation. [1]. -> [1], [1] . -> [1], [7]. Next -> [7] Next
+ * When period is immediately followed by a letter (e.g. [3].The), add a space so we don't lose spacing. */
 export function removePeriodAfterBracketCitations(text: string): string {
-  return text.replace(/\[(\d+)\]\s*\./g, '[$1]');
+  return text
+    .replace(/\[(\d+)\]\s*\.(?=[A-Za-z])/g, '[$1] ')
+    .replace(/\[(\d+)\]\s*\./g, '[$1]');
 }
 
 /** Strip internal BLOCK_CITE_ID markers so they never appear in the UI (e.g. "(BLOCK_CITE_ID_15)", "BLOCK_CITE_ID_99"). */

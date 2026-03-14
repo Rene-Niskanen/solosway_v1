@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { MessageSquare, Plus, MoreVertical, Archive, ArchiveRestore, X, Trash2, Loader2, CircleCheck } from "lucide-react";
+import { MessageSquare, Plus, MoreVertical, Archive, X, Trash2, Loader2, MessageCircleCheck, ChevronDown, ChevronUp } from "lucide-react";
 import { useChatHistory } from "./ChatHistoryContext";
 import { useChatPanel } from "../contexts/ChatPanelContext";
 import { useTheme } from "next-themes";
@@ -34,9 +34,9 @@ export const ChatPanel = ({
   closePanelRef.current = closePanel;
   console.log('ChatPanel rendering with isOpen:', isOpen, 'showChatHistory:', showChatHistory);
 
-  // Agent sidebar resize bounds (must match ChatPanelContext setWidth clamp): smaller and only slightly bigger than default (320)
-  const AGENT_SIDEBAR_MIN = 260;
-  const AGENT_SIDEBAR_MAX = 400;
+  // Agent sidebar resize bounds (must match ChatPanelContext setWidth clamp)
+  const AGENT_SIDEBAR_MIN = 240;
+  const AGENT_SIDEBAR_MAX = 360;
 
   const panelRef = React.useRef<HTMLDivElement>(null);
   const resizeStateRef = React.useRef<{ startX: number; startWidth: number } | null>(null);
@@ -99,7 +99,12 @@ export const ChatPanel = ({
   const [openMenuId, setOpenMenuId] = React.useState<string | null>(null);
   const [editingChatId, setEditingChatId] = React.useState<string | null>(null);
   const [editingTitle, setEditingTitle] = React.useState<string>('');
-  const [showArchived, setShowArchived] = React.useState<boolean>(false);
+  const [agentsExpanded, setAgentsExpanded] = React.useState<boolean>(true);
+  const [archivedExpanded, setArchivedExpanded] = React.useState<boolean>(true);
+  const INITIAL_CHAT_LIMIT = 10;
+  const MORE_CHUNK_SIZE = 5;
+  const [agentsVisibleCount, setAgentsVisibleCount] = React.useState(INITIAL_CHAT_LIMIT);
+  const [archivedVisibleCount, setArchivedVisibleCount] = React.useState(INITIAL_CHAT_LIMIT);
   const [searchQuery, setSearchQuery] = React.useState<string>('');
   const [pendingDeletion, setPendingDeletion] = React.useState<{
     chatId: string;
@@ -152,17 +157,75 @@ export const ChatPanel = ({
     unarchiveChat(chatId);
   };
 
+  const now = Date.now();
+  const ms1d = 24 * 60 * 60 * 1000;
+  const ms7d = 7 * 24 * 60 * 60 * 1000;
+  const ms30d = 30 * 24 * 60 * 60 * 1000;
+
+  type MilestoneBucket = { label: string; chats: typeof chatHistory };
+  const bucketByMilestones = (chats: typeof chatHistory): MilestoneBucket[] => {
+    const recent: typeof chatHistory = [];
+    const prev7d: typeof chatHistory = [];
+    const prev30d: typeof chatHistory = [];
+    const older: typeof chatHistory = [];
+    for (const c of chats) {
+      const t = new Date(c.timestamp).getTime();
+      const age = now - t;
+      if (age < ms1d) recent.push(c);
+      else if (age < ms7d) prev7d.push(c);
+      else if (age < ms30d) prev30d.push(c);
+      else older.push(c);
+    }
+    const buckets: MilestoneBucket[] = [];
+    if (recent.length) buckets.push({ label: '', chats: recent });
+    if (prev7d.length) buckets.push({ label: 'Previous 7 days', chats: prev7d });
+    if (prev30d.length) buckets.push({ label: 'Previous 30 days', chats: prev30d });
+    if (older.length) buckets.push({ label: 'Older', chats: older });
+    return buckets;
+  };
+
+  const limitBuckets = (buckets: MilestoneBucket[], limit: number): MilestoneBucket[] => {
+    let count = 0;
+    const out: MilestoneBucket[] = [];
+    for (const b of buckets) {
+      if (count >= limit) break;
+      const take = Math.min(b.chats.length, limit - count);
+      if (take > 0) out.push({ label: b.label, chats: b.chats.slice(0, take) });
+      count += take;
+    }
+    return out;
+  };
+
   // Filter chats based on archived status; hide property-scoped chats (they restore when re-opening the project)
   const activeChats = chatHistory.filter(chat => !chat.archived && !chat.id.startsWith('property-'));
   const archivedChats = chatHistory.filter(chat => chat.archived && !chat.id.startsWith('property-'));
-  const baseChats = showArchived ? archivedChats : activeChats;
   
-  // Filter by search query
-  const displayedChats = searchQuery.trim()
-    ? baseChats.filter(chat => 
-        chat.title.toLowerCase().includes(searchQuery.toLowerCase())
-      )
-    : baseChats;
+  // Filter by search query for each section
+  const searchLower = searchQuery.trim().toLowerCase();
+  const displayedAgentChats = searchLower
+    ? activeChats.filter(chat => chat.title.toLowerCase().includes(searchLower))
+    : activeChats;
+  const displayedArchivedChats = searchLower
+    ? archivedChats.filter(chat => chat.title.toLowerCase().includes(searchLower))
+    : archivedChats;
+
+  const hasMoreAgents = !searchLower && displayedAgentChats.length > INITIAL_CHAT_LIMIT;
+  const hasMoreArchived = !searchLower && displayedArchivedChats.length > INITIAL_CHAT_LIMIT;
+
+  const agentBuckets = searchLower
+    ? [{ label: '', chats: displayedAgentChats }]
+    : limitBuckets(
+        agentsVisibleCount > INITIAL_CHAT_LIMIT ? bucketByMilestones(displayedAgentChats) : [{ label: '', chats: displayedAgentChats }],
+        agentsVisibleCount
+      );
+  const archivedBuckets = searchLower
+    ? [{ label: '', chats: displayedArchivedChats }]
+    : limitBuckets(
+        archivedVisibleCount > INITIAL_CHAT_LIMIT ? bucketByMilestones(displayedArchivedChats) : [{ label: '', chats: displayedArchivedChats }],
+        archivedVisibleCount
+      );
+
+  const baseChats = [...activeChats, ...archivedChats];
   const handleDeleteChat = (e: React.MouseEvent, chatId: string) => {
     e.stopPropagation();
     setOpenMenuId(null);
@@ -272,19 +335,6 @@ export const ChatPanel = ({
                 paddingBottom: 19,
               }}
             >
-              {archivedChats.length > 0 && (
-                <div className="flex items-center justify-end mb-2">
-                  <motion.button
-                    onClick={() => setShowArchived(!showArchived)}
-                    whileHover={{ scale: 1.05 }}
-                    whileTap={{ scale: 0.95 }}
-                    className={`p-1.5 text-xs rounded-md transition-colors duration-75 ease-out ${isDark ? 'bg-white/10 hover:bg-white/15' : 'bg-black/8 text-[#374151] hover:bg-black/12'}`}
-                    style={!showArchived && isDark ? { color: 'rgb(220, 220, 220)' } : undefined}
-                  >
-                    {showArchived ? <ArchiveRestore className="w-3.5 h-3.5" /> : <Archive className="w-3.5 h-3.5" />}
-                  </motion.button>
-                </div>
-              )}
               {/* Search Input - 32px height to align with Response button in main chat header */}
               <div className="relative flex items-center mt-1" style={{ minHeight: 32, height: 32 }}>
                 <input
@@ -410,20 +460,36 @@ export const ChatPanel = ({
             {/* Chat List - sticky with panel: flex-1 + minHeight 0 so it fills and scrolls inside the sidebar */}
             {showChatHistory && (
               <div
-                className="flex-1 overflow-y-auto overflow-x-hidden px-3 pt-2 pb-3 scrollbar-thin scrollbar-track-transparent min-h-0"
+                className="flex-1 overflow-y-auto overflow-x-hidden pl-0 pr-1.5 pt-2 pb-3 scrollbar-thin scrollbar-track-transparent min-h-0"
                 style={{ backgroundColor: panelBg, scrollbarColor: 'rgba(0,0,0,0.2) transparent' }}
               >
-                {/* Agents Heading */}
-                {displayedChats.length > 0 && (
-                  <div className="px-0 pt-2 pb-0.5 mb-0.5">
-                    <h2 className="text-[12px] font-medium pl-2" style={isDark ? { color: 'rgb(220, 220, 220)' } : { color: '#6B7280' }}>Agents</h2>
-                  </div>
-                )}
-                <AnimatePresence mode="popLayout">
-                  {displayedChats
-                    .filter(chat => chat) // Filter out any null/undefined chats
-                    .map((chat, idx) => {
-                    // Ensure key is never empty
+                {/* Agents section - collapsible */}
+                <div className="px-0 pt-2 pb-0">
+                  <button
+                    type="button"
+                    onClick={() => setAgentsExpanded(!agentsExpanded)}
+                    className="group flex items-center gap-1 w-full py-1 pl-3 pr-2 rounded-md text-left"
+                  >
+                    <h2 className="text-[12px] font-medium" style={{ color: '#ADADAD' }}>Agents</h2>
+                    <span className="opacity-0 group-hover:opacity-100 transition-opacity duration-75 flex-shrink-0" style={{ color: '#ADADAD' }}>
+                      {agentsExpanded ? (
+                        <ChevronUp className="w-3.5 h-3.5" strokeWidth={2} />
+                      ) : (
+                        <ChevronDown className="w-3.5 h-3.5" strokeWidth={2} />
+                      )}
+                    </span>
+                  </button>
+                  {agentsExpanded && (
+                    <div className="mt-0.5">
+                      <AnimatePresence mode="popLayout">
+                        {agentBuckets.map((bucket, bucketIdx) => (
+                          <React.Fragment key={bucket.label || `agents-bucket-${bucketIdx}`}>
+                            {bucket.label ? (
+                              <div className="py-1.5 pl-2.5 mt-1 first:mt-0 text-[11px] font-medium" style={{ color: '#9CA3AF' }}>
+                                {bucket.label}
+                              </div>
+                            ) : null}
+                            {bucket.chats.filter(Boolean).map((chat, idx) => {
                     const chatKey = (chat.id && typeof chat.id === 'string' && chat.id.trim().length > 0)
                       ? chat.id
                       : `chat-item-${idx}`;
@@ -458,12 +524,12 @@ export const ChatPanel = ({
                           ease: [0.23, 1, 0.32, 1]
                         }} 
                         onClick={() => handleChatClick(chat.id)} 
-                        className={`group relative px-2.5 py-1.5 rounded-md cursor-pointer w-full mb-0.5 transition-[background-color] duration-75 ease-out ${
+                        className={`group relative px-0.5 py-2 rounded cursor-pointer w-full mb-0.5 transition-[background-color] duration-75 ease-out ${
                           selectedChatId === chat.id 
                             ? '' 
-                            : openMenuId ? '' : (isDark ? 'hover:bg-white/5' : 'hover:bg-black/[0.03]')
+                            : openMenuId ? '' : (isDark ? 'hover:bg-white/5' : 'hover:bg-[#F5F5F5]')
                         }`}
-                        style={selectedChatId === chat.id ? { backgroundColor: isDark ? 'hsl(var(--muted))' : '#F2F2EF' } : undefined}
+                        style={selectedChatId === chat.id ? { backgroundColor: isDark ? 'hsl(var(--muted))' : '#EBEBEB' } : undefined}
                       >
                         {isEditing ? (
                           <div className="flex items-center space-x-2" onClick={(e) => e.stopPropagation()}>
@@ -482,26 +548,24 @@ export const ChatPanel = ({
                           </div>
                         ) : (
                           <div className="flex flex-col w-full relative">
-                            {/* Title row */}
-                            <div className="flex items-center gap-1.5 text-[12px] font-normal truncate pr-5" style={isDark ? { color: 'rgb(220, 220, 220)' } : { color: '#374151' }}>
+                            {/* Title row with timestamp on right */}
+                            <div className="flex items-center gap-1.5 pl-2.5 text-[12px] font-normal truncate pr-5" style={isDark ? { color: 'rgb(220, 220, 220)' } : { color: selectedChatId === chat.id ? '#374151' : '#767676' }}>
                               {chat.status === 'loading' && (
-                                <Loader2 className="w-3 h-3 animate-spin flex-shrink-0" style={isDark ? { color: 'rgb(220, 220, 220)' } : { color: '#6B7280' }} />
+                                <Loader2 className="w-3 h-3 animate-spin flex-shrink-0" style={isDark ? { color: 'rgb(220, 220, 220)' } : { color: selectedChatId === chat.id ? '#6B7280' : '#767676' }} />
                               )}
                               {chat.status === 'completed' && (
-                                <CircleCheck className="w-3 h-3 flex-shrink-0" style={isDark ? { color: 'rgb(220, 220, 220)' } : { color: '#6B7280' }} aria-hidden />
+                                <MessageCircleCheck className="w-3 h-3 flex-shrink-0" style={isDark ? { color: 'rgb(220, 220, 220)' } : { color: selectedChatId === chat.id ? '#6B7280' : '#767676' }} aria-hidden />
                               )}
                               <span
                                 className="text-[12px] font-normal truncate cursor-pointer flex-1 min-w-0 hover:opacity-90"
-                                style={isDark ? { color: 'rgb(220, 220, 220)', display: 'inline-block', padding: 0, margin: 0 } : { color: '#374151', display: 'inline-block', padding: 0, margin: 0 }}
+                                style={isDark ? { color: 'rgb(220, 220, 220)', display: 'inline-block', padding: 0, margin: 0 } : { color: selectedChatId === chat.id ? '#374151' : '#767676', display: 'inline-block', padding: 0, margin: 0 }}
                                 title="Click to edit chat name"
                               >
                                 {chat.title || 'New chat'}
                               </span>
-                            </div>
-                            
-                            {/* Timestamp below title */}
-                            <div className="text-[10px] mt-0.5" style={isDark ? { color: 'rgb(220, 220, 220)' } : { color: '#9CA3AF' }}>
-                              {formatTimestamp(new Date(chat.timestamp))}
+                              <span className="text-[10px] flex-shrink-0 opacity-100 group-hover:opacity-0 transition-opacity duration-75" style={isDark ? { color: 'rgb(220, 220, 220)' } : { color: selectedChatId === chat.id ? '#9CA3AF' : '#767676' }}>
+                                {formatTimestamp(new Date(chat.timestamp))}
+                              </span>
                             </div>
                             
                             {/* Three dots menu - positioned top right */}
@@ -510,7 +574,7 @@ export const ChatPanel = ({
                                 onClick={(e) => handleMenuToggle(e, chat.id)}
                                 className="opacity-0 group-hover:opacity-100 p-0.5 rounded transition-[opacity,transform] duration-75 ease-out transform hover:scale-110 active:scale-95"
                               >
-                                <MoreVertical className="w-3.5 h-3.5 transition-colors duration-75 ease-out" style={isDark ? { color: 'rgb(220, 220, 220)' } : { color: '#9CA3AF' }} />
+                                <MoreVertical className="w-3.5 h-3.5 transition-colors duration-75 ease-out" style={isDark ? { color: 'rgb(220, 220, 220)' } : { color: selectedChatId === chat.id ? '#9CA3AF' : '#767676' }} />
                               </button>
                               
                               {openMenuId === chat.id && (
@@ -552,8 +616,154 @@ export const ChatPanel = ({
                         )}
                       </motion.div>
                     );
-                  })}
-                </AnimatePresence>
+                            })}
+                          </React.Fragment>
+                        ))}
+                      </AnimatePresence>
+                      {hasMoreAgents && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            agentsVisibleCount >= displayedAgentChats.length
+                              ? setAgentsVisibleCount(INITIAL_CHAT_LIMIT)
+                              : setAgentsVisibleCount((prev) => Math.min(prev + MORE_CHUNK_SIZE, displayedAgentChats.length))
+                          }
+                          className="flex items-center gap-1 py-1.5 pl-2.5 text-[12px] rounded-md w-full text-left hover:opacity-80 transition-opacity"
+                          style={{ color: '#9CA3AF' }}
+                        >
+                          <span>⋯</span>
+                          <span>{agentsVisibleCount >= displayedAgentChats.length ? 'Recent only' : 'More'}</span>
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* Archived section - collapsible (always visible below Agents) */}
+                <div className="px-0 pt-3 pb-0">
+                    <button
+                      type="button"
+                      onClick={() => setArchivedExpanded(!archivedExpanded)}
+                      className="group flex items-center gap-1 w-full py-1 pl-3 pr-2 rounded-md text-left"
+                    >
+                      <h2 className="text-[12px] font-medium" style={{ color: '#ADADAD' }}>Archived</h2>
+                      <span className="opacity-0 group-hover:opacity-100 transition-opacity duration-75 flex-shrink-0" style={{ color: '#ADADAD' }}>
+                        {archivedExpanded ? (
+                          <ChevronUp className="w-3.5 h-3.5" strokeWidth={2} />
+                        ) : (
+                          <ChevronDown className="w-3.5 h-3.5" strokeWidth={2} />
+                        )}
+                      </span>
+                    </button>
+                    {archivedExpanded && (
+                      <div className="mt-0.5">
+                        <AnimatePresence mode="popLayout">
+                          {archivedBuckets.map((bucket, bucketIdx) => (
+                            <React.Fragment key={bucket.label || `archived-bucket-${bucketIdx}`}>
+                              {bucket.label ? (
+                                <div className="py-1.5 pl-2.5 mt-1 first:mt-0 text-[11px] font-medium" style={{ color: '#9CA3AF' }}>
+                                  {bucket.label}
+                                </div>
+                              ) : null}
+                              {bucket.chats.filter(Boolean).map((chat, idx) => {
+                    const chatKey = (chat.id && typeof chat.id === 'string' && chat.id.trim().length > 0)
+                      ? chat.id
+                      : `chat-item-archived-${idx}`;
+                    const isEditing = editingChatId === chat.id;
+                    return (
+                      <motion.div
+                        key={chatKey}
+                        layout
+                        initial={{ opacity: 1, x: 0, scale: 1 }}
+                        animate={{ opacity: 1, x: 0, scale: 1 }}
+                        exit={{ opacity: 0, x: -20, scale: 0.95, height: 0, marginBottom: 0, paddingTop: 0, paddingBottom: 0 }}
+                        transition={{ duration: 0, delay: 0, ease: [0.23, 1, 0.32, 1] }}
+                        onClick={() => handleChatClick(chat.id)}
+                        className={`group relative px-0.5 py-2 rounded cursor-pointer w-full mb-0.5 transition-[background-color] duration-75 ease-out ${
+                          selectedChatId === chat.id ? '' : openMenuId ? '' : (isDark ? 'hover:bg-white/5' : 'hover:bg-[#F5F5F5]')
+                        }`}
+                        style={selectedChatId === chat.id ? { backgroundColor: isDark ? 'hsl(var(--muted))' : '#EBEBEB' } : undefined}
+                      >
+                        {isEditing ? (
+                          <div className="flex items-center space-x-2" onClick={(e) => e.stopPropagation()}>
+                            <input
+                              type="text"
+                              value={editingTitle}
+                              onChange={(e) => setEditingTitle(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') handleSaveRename(chat.id);
+                                if (e.key === 'Escape') handleCancelRename();
+                              }}
+                              onBlur={() => handleSaveRename(chat.id)}
+                              className="flex-1 px-2 py-1 text-xs border border-slate-300 rounded focus:outline-none focus:border-indigo-500"
+                              autoFocus
+                            />
+                          </div>
+                        ) : (
+                          <div className="flex flex-col w-full relative">
+                            <div className="flex items-center gap-1.5 pl-2.5 text-[12px] font-normal truncate pr-5" style={isDark ? { color: 'rgb(220, 220, 220)' } : { color: selectedChatId === chat.id ? '#374151' : '#767676' }}>
+                              <Archive className="w-3 h-3 flex-shrink-0" style={isDark ? { color: 'rgb(156, 163, 175)' } : { color: selectedChatId === chat.id ? '#9CA3AF' : '#767676' }} />
+                              <span
+                                className="text-[12px] font-normal truncate cursor-pointer flex-1 min-w-0 hover:opacity-90"
+                                style={isDark ? { color: 'rgb(220, 220, 220)', display: 'inline-block', padding: 0, margin: 0 } : { color: selectedChatId === chat.id ? '#374151' : '#767676', display: 'inline-block', padding: 0, margin: 0 }}
+                                title="Click to edit chat name"
+                              >
+                                {chat.title || 'New chat'}
+                              </span>
+                              <span className="text-[10px] flex-shrink-0 opacity-100 group-hover:opacity-0 transition-opacity duration-75" style={isDark ? { color: 'rgb(220, 220, 220)' } : { color: selectedChatId === chat.id ? '#9CA3AF' : '#767676' }}>
+                                {formatTimestamp(new Date(chat.timestamp))}
+                              </span>
+                            </div>
+                            <div className="absolute right-0 top-0">
+                              <button
+                                onClick={(e) => handleMenuToggle(e, chat.id)}
+                                className="opacity-0 group-hover:opacity-100 p-0.5 rounded transition-[opacity,transform] duration-75 ease-out transform hover:scale-110 active:scale-95"
+                              >
+                                <MoreVertical className="w-3.5 h-3.5 transition-colors duration-75 ease-out" style={isDark ? { color: 'rgb(220, 220, 220)' } : { color: selectedChatId === chat.id ? '#9CA3AF' : '#767676' }} />
+                              </button>
+                              {openMenuId === chat.id && (
+                                <motion.div
+                                  initial={{ opacity: 0, scale: 0.95, y: -4 }}
+                                  animate={{ opacity: 1, scale: 1, y: 0 }}
+                                  exit={{ opacity: 0, scale: 0.95, y: -4 }}
+                                  transition={{ duration: 0.12 }}
+                                  className="absolute right-0 top-8 w-28 rounded-lg p-1 z-[9999] border border-gray-200 shadow-lg"
+                                  style={{ backgroundColor: '#FFFFFF', isolation: 'isolate' }}
+                                  onClick={(e) => e.stopPropagation()}
+                                >
+                                  <button onClick={(e) => handleRename(e, chat.id, chat.title)} className="w-full px-2 py-1 text-left text-[11px] text-gray-800 hover:bg-gray-100 rounded transition-colors duration-75 ease-out">Rename</button>
+                                  <button onClick={(e) => handleUnarchiveChat(e, chat.id)} className="w-full px-2 py-1 text-left text-[11px] text-gray-800 hover:bg-gray-100 rounded transition-colors duration-75 ease-out">Unarchive</button>
+                                  <div className="h-px bg-gray-200 my-1 mx-1" />
+                                  <button onClick={(e) => handleDeleteChat(e, chat.id)} className="w-full px-2 py-1 text-left text-[11px] text-red-600 hover:bg-red-50 rounded transition-colors duration-75 ease-out">Delete</button>
+                                </motion.div>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                      </motion.div>
+                    );
+                              })}
+                            </React.Fragment>
+                          ))}
+                        </AnimatePresence>
+                        {hasMoreArchived && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              archivedVisibleCount >= displayedArchivedChats.length
+                                ? setArchivedVisibleCount(INITIAL_CHAT_LIMIT)
+                                : setArchivedVisibleCount((prev) => Math.min(prev + MORE_CHUNK_SIZE, displayedArchivedChats.length))
+                            }
+                            className="flex items-center gap-1 py-1.5 pl-2.5 text-[12px] rounded-md w-full text-left hover:opacity-80 transition-opacity"
+                            style={{ color: '#9CA3AF' }}
+                          >
+                            <span>⋯</span>
+                            <span>{archivedVisibleCount >= displayedArchivedChats.length ? 'Recent only' : 'More'}</span>
+                          </button>
+                        )}
+                      </div>
+                    )}
+                </div>
               </div>
             )}
 

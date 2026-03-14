@@ -1597,10 +1597,10 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
         <div className="flex items-center justify-between">
           {/* Left: Close button + PDF icon + Document name */}
           <div 
-            className="flex items-center gap-2 min-w-0 max-w-[36%]"
+            className="flex items-center gap-2 min-w-0 max-w-[18%]"
             style={{
               zIndex: 1,
-              borderBottom: '2px solid rgba(0, 0, 0, 0.25)',
+              borderBottom: '1px solid rgba(0, 0, 0, 0.2)',
               paddingBottom: '4px',
               width: 'fit-content'
             }}

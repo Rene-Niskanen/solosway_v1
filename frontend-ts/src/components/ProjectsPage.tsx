@@ -868,19 +868,16 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject: _on
             }}
           >
             <div
+              className="flex flex-col"
               style={{
-                borderRadius: showAllFiles ? '0' : '28px',
-                border: showAllFiles ? 'none' : '1px solid rgba(15, 23, 42, 0.05)',
-                background: '#FFFFFF',
-                boxShadow: showAllFiles ? 'none' : '0 10px 30px -26px rgba(15, 23, 42, 0.18)',
-                padding: showAllFiles ? 0 : '16px 16px 10px',
+                padding: showAllFiles ? 0 : '0 0 10px',
                 minWidth: 0,
               }}
             >
               <div
                 className="flex items-center justify-between gap-3"
                 style={{
-                  marginBottom: showAllFiles ? 10 : 12,
+                  marginBottom: showAllFiles ? 14 : 16,
                   paddingLeft: showAllFiles ? 0 : '4px',
                   paddingRight: showAllFiles ? 0 : '4px',
                 }}
@@ -888,7 +885,7 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject: _on
                 <div>
                   <p
                     style={{
-                      fontSize: '13px',
+                      fontSize: showAllFiles ? '17px' : '16px',
                       fontWeight: 600,
                       color: '#111827',
                       letterSpacing: '-0.01em',
@@ -898,8 +895,8 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject: _on
                   </p>
                   <p
                     style={{
-                      marginTop: '3px',
-                      fontSize: '12px',
+                      marginTop: '2px',
+                      fontSize: '14px',
                       color: '#6B7280',
                     }}
                   >

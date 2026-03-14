@@ -303,9 +303,9 @@ export const preloadDocumentThumbnails = (documents: DocumentData[], limit?: num
 
 // ==================== COMPONENT ====================
 const CARD_WIDTH = 180;
-const CARD_HEIGHT = 240;
-const COMPACT_WIDTH = 128;
-const COMPACT_HEIGHT = 168;
+const CARD_HEIGHT = 280;
+const COMPACT_WIDTH = 134;
+const COMPACT_HEIGHT = 196;
 
 export const RecentDocumentCard: React.FC<RecentDocumentCardProps> = React.memo(({ document, onClick, compact = false, priority = false }) => {
   const width = compact ? COMPACT_WIDTH : CARD_WIDTH;
@@ -410,8 +410,8 @@ export const RecentDocumentCard: React.FC<RecentDocumentCardProps> = React.memo(
     month: 'short',
     day: 'numeric',
   });
-  const surfaceRadius = compact ? '16px' : '18px';
-  const previewRadius = compact ? '12px' : '14px';
+  const surfaceRadius = compact ? '6px' : '8px';
+  const previewRadius = compact ? '4px' : '6px';
   const contentPadding = compact ? '10px' : '12px';
 
   return (
@@ -470,7 +470,7 @@ export const RecentDocumentCard: React.FC<RecentDocumentCardProps> = React.memo(
             title={document.original_filename}
             style={{
               marginTop: '8px',
-              marginBottom: '10px',
+              marginBottom: 0,
               color: '#0F172A',
               fontSize: compact ? '11px' : '12px',
               fontWeight: 600,
@@ -488,6 +488,7 @@ export const RecentDocumentCard: React.FC<RecentDocumentCardProps> = React.memo(
           <div
             className="relative flex-1 overflow-hidden"
             style={{
+              marginTop: '-4px',
               borderRadius: previewRadius,
               background: '#F8FAFC',
               border: '1px solid rgba(15, 23, 42, 0.07)',

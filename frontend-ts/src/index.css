@@ -516,7 +516,7 @@ button:focus-visible:not(:focus-within) {
   font-family: inherit !important;
   line-height: 1 !important;
   color: #5b6573 !important;
-  background-color: rgba(0, 0, 0, 0.06) !important;
+  background-color: #F2F2EF !important;
   border: none !important;
   border-radius: 0.5rem !important;  /* round pill */
   cursor: pointer !important;
@@ -552,7 +552,7 @@ button:focus-visible:not(:focus-within) {
 
 /* Citation in document preview / response: same design, white context */
 [data-cited-text-block] .citation-link-btn {
-  background-color: rgba(0, 0, 0, 0.06) !important;
+  background-color: #F2F2EF !important;
   color: #5b6573 !important;
   box-shadow: none !important;
 }
@@ -573,7 +573,7 @@ button:focus-visible:not(:focus-within) {
 .dark .citation-link-btn,
 .dark-blue .citation-link-btn {
   color: #5b6573 !important;
-  background-color: rgba(0, 0, 0, 0.06) !important;
+  background-color: #F2F2EF !important;
 }
 .dark .citation-link-btn:hover,
 .dark-blue .citation-link-btn:hover {
@@ -604,7 +604,7 @@ button:focus-visible:not(:focus-within) {
 }
 .dark [data-cited-text-block] .citation-link-btn,
 .dark-blue [data-cited-text-block] .citation-link-btn {
-  background-color: rgba(0, 0, 0, 0.06) !important;
+  background-color: #F2F2EF !important;
   color: #5b6573 !important;
 }
 .dark [data-cited-text-block] .citation-link-btn:hover,

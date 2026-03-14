@@ -23,5 +23,6 @@ export default defineConfig(({ mode }) => ({
   },
   optimizeDeps: {
     include: ['pdfjs-dist'],
+    exclude: ['lucide-react'],
   },
 }));

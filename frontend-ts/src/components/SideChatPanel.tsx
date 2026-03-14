@@ -1287,7 +1287,9 @@ const StreamingResponseText: React.FC<{
   onAcceptCitation?: (messageId: string, citationIndex: number) => void;
   /** Called when user clicks Close citation bar (in callout top right). Dismisses citation review for this message. */
   onCloseCitationBar?: (messageId: string) => void;
-}> = ({ text, isStreaming, citations, handleCitationClick, renderTextWithCitations, onTextUpdate, messageId, skipHighlight, showCitations = true, orangeCitationNumbers, greenCitationNumbers, selectedCitationNumber, selectedCitationMessageId, skipHighlightSwoop = false, skipRevealAnimation = false, onRevealComplete, onFirstCalloutUnveiled, savedCitationNumbersForMessage, onAskFollowUpFromCallout, onViewInDocumentFromCallout, citationViewedInDocument, onCloseDocumentFromCallout, orderedCitationNumbersForMessage, isCitationBarActive = true, currentCitationIndex = 0, acceptedCitationIndices, showReviewNextOnly = false, showInResponseCitationCallouts = true, showCitationPreviewBar = true, rejectedCitationNumbers, usePerplexityStyle = true, onCloseCitationPreviewBar, showBlueCitationHighlight = true, onPrevCitation, onNextCitation, onAcceptCurrentCitation, onAcceptCitation, onCloseCitationBar }) => {
+  /** Citation display numbers (e.g. "4", "5") that exist in citations but not in text — rendered as "See also" at end. */
+  orphanCitationNumbers?: string[];
+}> = ({ text, isStreaming, citations, handleCitationClick, renderTextWithCitations, onTextUpdate, messageId, skipHighlight, showCitations = true, orangeCitationNumbers, greenCitationNumbers, selectedCitationNumber, selectedCitationMessageId, skipHighlightSwoop = false, skipRevealAnimation = false, onRevealComplete, onFirstCalloutUnveiled, savedCitationNumbersForMessage, onAskFollowUpFromCallout, onViewInDocumentFromCallout, citationViewedInDocument, onCloseDocumentFromCallout, orderedCitationNumbersForMessage, isCitationBarActive = true, currentCitationIndex = 0, acceptedCitationIndices, showReviewNextOnly = false, showInResponseCitationCallouts = true, showCitationPreviewBar = true, rejectedCitationNumbers, usePerplexityStyle = true, onCloseCitationPreviewBar, showBlueCitationHighlight = true, onPrevCitation, onNextCitation, onAcceptCurrentCitation, onAcceptCitation, onCloseCitationBar, orphanCitationNumbers = [] }) => {
   const [shouldAnimate, setShouldAnimate] = React.useState(false);
   const hasAnimatedRef = React.useRef(false);
   const hasSwoopedBlueRef = React.useRef(false);
@@ -1822,9 +1824,11 @@ const StreamingResponseText: React.FC<{
     });
     
     // Clean up periods that follow citations (both bracket and superscript) — NEVER show "." after a citation
-    // Remove period (and optional space) after bracket citations: [1]. or [1] . -> [1]
+    // When period is immediately followed by a letter (e.g. [3].The), add space so we don't lose spacing
+    processedText = processedText.replace(/\[(\d+)\]\s*\.(?=[A-Za-z])/g, '[$1] ');
     processedText = processedText.replace(/\[(\d+)\]\s*\.(?=\s|$)/g, '[$1]');
-    // Remove period (and optional space) after superscript citations: ¹. or ¹ . -> ¹
+    // Same for superscript
+    processedText = processedText.replace(/([¹²³⁴⁵⁶⁷⁸⁹]+(?:\d+)?)\s*\.(?=[A-Za-z])/g, '$1 ');
     processedText = processedText.replace(/([¹²³⁴⁵⁶⁷⁸⁹]+(?:\d+)?)\s*\.(?=\s|$)/g, '$1');
     
     // Process bracket citations (use display num so we show 1, 2, 3 sequentially)
@@ -1856,6 +1860,8 @@ const StreamingResponseText: React.FC<{
     processedText = collapsed;
     
     // Final pass: remove period that follows any run of citation placeholders (catches "... 11 12." and multi-citation ends)
+    // When period is immediately followed by a letter, add space so we don't lose spacing
+    processedText = processedText.replace(/((?:%%CITATION_(?:SUPERSCRIPT|BRACKET|PENDING)_\d+%%\s*)+)\.(?=[A-Za-z])/g, '$1 ');
     processedText = processedText.replace(/((?:%%CITATION_(?:SUPERSCRIPT|BRACKET|PENDING)_\d+%%\s*)+)\.(?=\s|$)/g, '$1');
     
     return processedText;
@@ -3450,6 +3456,27 @@ const StreamingResponseText: React.FC<{
           >
             {textForMarkdown}
           </ReactMarkdown>
+          {orphanCitationNumbers.length > 0 && citations && (() => {
+            const isCitationSelectedStable = (num: string) =>
+              selectedCitationNumber != null && selectedCitationMessageId != null &&
+              selectedCitationMessageId === messageId && selectedCitationNumber === num;
+            return (
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 2, marginLeft: 2 }}>
+                {orphanCitationNumbers
+                  .filter((num) => citations[num] && !(rejectedCitationNumbers?.has(num) ?? false))
+                  .map((num) => (
+                    <CitationLink
+                      key={`orphan-${num}`}
+                      citationNumber={num}
+                      citationData={citations[num]}
+                      onClick={(data, anchorRect, citationNumber, highlightRect) => handleCitationClick(data, anchorRect, citationNumber ?? num, highlightRect)}
+                      isSelected={isCitationSelectedStable(num)}
+                      isSaved={false}
+                    />
+                  ))}
+              </span>
+            );
+          })()}
         </div>
         {!skipRevealAnimation && !usePerplexityStyle && showOverlay && lines.length > 0 && (
           <div style={{ position: 'absolute', left: 0, top: 0, right: 0, bottom: 0, pointerEvents: 'none' }}>
@@ -3513,6 +3540,10 @@ function streamingResponseTextAreEqual(
     (Array.isArray(prev.orderedCitationNumbersForMessage) && Array.isArray(next.orderedCitationNumbersForMessage) &&
       prev.orderedCitationNumbersForMessage.length === next.orderedCitationNumbersForMessage.length &&
       prev.orderedCitationNumbersForMessage.every((v, i) => next.orderedCitationNumbersForMessage![i] === v));
+  const orphanSame = (prev.orphanCitationNumbers === next.orphanCitationNumbers) ||
+    (Array.isArray(prev.orphanCitationNumbers) && Array.isArray(next.orphanCitationNumbers) &&
+      prev.orphanCitationNumbers.length === next.orphanCitationNumbers.length &&
+      prev.orphanCitationNumbers.every((v, i) => next.orphanCitationNumbers![i] === v));
   return (
     prev.text === next.text &&
     prev.isStreaming === next.isStreaming &&
@@ -3531,6 +3562,7 @@ function streamingResponseTextAreEqual(
     setsEqual(prev.savedCitationNumbersForMessage, next.savedCitationNumbersForMessage) &&
     viewedEqual &&
     orderedSame &&
+    orphanSame &&
     prev.currentCitationIndex === next.currentCitationIndex &&
     prev.isCitationBarActive === next.isCitationBarActive &&
     prev.showReviewNextOnly === next.showReviewNextOnly &&
@@ -3673,26 +3705,35 @@ function normalizeCitationDocId(cit: any): CitationDataType {
   return { ...cit, doc_id: cit.doc_id ?? cit.document_id };
 }
 
-/** Ordered citation numbers for a message: from text (first-appearance order) or from message.citations keys (agent tasks). */
+/** Ordered citation numbers for a message: from text (first-appearance order) or from message.citations keys (agent tasks).
+ * When text has citations, appends any "orphan" citation keys (in citations but not in text) so they appear in the bar and can be rendered. */
 function getOrderedCitationNumbersForMessage(message: { text?: string; citations?: Record<string, any> }): string[] {
   const fromText = getOrderedCitationNumbersFromMessageText(message.text ?? '');
-  if (fromText.length > 0) return fromText;
   const citations = message.citations;
-  if (!citations || typeof citations !== 'object') return [];
+  if (!citations || typeof citations !== 'object') return fromText.length > 0 ? fromText : [];
   const keys = Object.keys(citations).filter((k) => /^\d+$/.test(k));
-  return keys.sort((a, b) => parseInt(a, 10) - parseInt(b, 10));
+  if (fromText.length === 0) return keys.sort((a, b) => parseInt(a, 10) - parseInt(b, 10));
+  const inText = new Set(fromText);
+  const orphans = keys.filter((k) => !inText.has(k)).sort((a, b) => parseInt(a, 10) - parseInt(b, 10));
+  return orphans.length > 0 ? [...fromText, ...orphans] : fromText;
 }
 
-/** Renumber citations to 1, 2, 3... when backend sends gaps (e.g. 1, 3, 4). Returns renumbered citations and ordered list. */
+/** Renumber citations to 1, 2, 3... when backend sends gaps (e.g. 1, 3, 4). Returns renumbered citations, ordered list, and orphan display numbers (citations in data but not in text). */
 function renumberCitationsSequentially(message: { text?: string; citations?: Record<string, any> }): {
   citations: Record<string, any>;
   orderedCitationNumbersForMessage: string[];
+  orphanCitationNumbers: string[];
 } {
+  const fromText = getOrderedCitationNumbersFromMessageText(message.text ?? '');
   const ordered = getOrderedCitationNumbersForMessage(message);
   const citations = message.citations ?? {};
-  if (ordered.length === 0) return { citations, orderedCitationNumbersForMessage: [] };
+  const empty = { citations, orderedCitationNumbersForMessage: [] as string[], orphanCitationNumbers: [] as string[] };
+  if (ordered.length === 0) return empty;
   const isSequential = ordered.every((num, i) => parseInt(num, 10) === i + 1);
-  if (isSequential) return { citations, orderedCitationNumbersForMessage: ordered };
+  if (isSequential) {
+    const orphanCitationNumbers = fromText.length > 0 ? ordered.slice(fromText.length) : [];
+    return { citations, orderedCitationNumbersForMessage: ordered, orphanCitationNumbers };
+  }
   const renumbered: Record<string, any> = {};
   const orderedSequential: string[] = [];
   ordered.forEach((orig, i) => {
@@ -3700,7 +3741,8 @@ function renumberCitationsSequentially(message: { text?: string; citations?: Rec
     orderedSequential.push(disp);
     if (citations[orig]) renumbered[disp] = citations[orig];
   });
-  return { citations: renumbered, orderedCitationNumbersForMessage: orderedSequential };
+  const orphanCitationNumbers = orderedSequential.slice(fromText.length);
+  return { citations: renumbered, orderedCitationNumbersForMessage: orderedSequential, orphanCitationNumbers };
 }
 
 /** Return citation numbers in first-appearance order from message text (for citation bar "X of N").
@@ -5556,10 +5598,10 @@ const renderTextWithCitations = (
     return match; // Keep original if no citation found
   });
   
-  // Clean up periods that follow citations — NEVER show "." after a citation
-  // Remove period (and optional space) after bracket citations: [1]. or [1] . -> [1]
+  // Clean up periods that follow citations — NEVER show "." after a citation. When period followed by letter, add space.
+  processedText = processedText.replace(/\[(\d+)\]\s*\.(?=[A-Za-z])/g, '[$1] ');
   processedText = processedText.replace(/\[(\d+)\]\s*\.(?=\s|$)/g, '[$1]');
-  // Remove period (and optional space) after superscript citations: ¹. or ¹ . -> ¹
+  processedText = processedText.replace(/([¹²³⁴⁵⁶⁷⁸⁹]+(?:\d+)?)\s*\.(?=[A-Za-z])/g, '$1 ');
   processedText = processedText.replace(/([¹²³⁴⁵⁶⁷⁸⁹]+(?:\d+)?)\s*\.(?=\s|$)/g, '$1');
   
   // Process bracket citations
@@ -5614,7 +5656,8 @@ const renderTextWithCitations = (
     return match; // Keep original if no citation found
   });
   
-  // Never show "." after citations: remove period after any run of citation placeholders
+  // Never show "." after citations: remove period after any run of citation placeholders. When period followed by letter, add space.
+  processedText = processedText.replace(/((?:%%CITATION_(?:SUPERSCRIPT|BRACKET)_\d+%%\s*)+)\.(?=[A-Za-z])/g, '$1 ');
   processedText = processedText.replace(/((?:%%CITATION_(?:SUPERSCRIPT|BRACKET)_\d+%%\s*)+)\.(?=\s|$)/g, '$1');
   
   // Split by placeholders and render
@@ -18043,6 +18086,7 @@ responseStartedAt: existingMessage?.responseStartedAt,
                   setCitationReviewShowReviewNextOnly(false);
                   setCitationReviewJustRejected(false);
                 } : undefined}
+                orphanCitationNumbers={renumbered.orphanCitationNumbers}
               />
                 );
               })()}
@@ -18321,7 +18365,7 @@ responseStartedAt: existingMessage?.responseStartedAt,
                   display: 'flex' as const, alignItems: 'center' as const, gap: '5px',
                   padding: '2px 8px', border: '1px solid rgba(0,0,0,0.08)', cursor: 'pointer' as const,
                   borderRadius: '6px', backgroundColor: 'white',
-                  color: '#374151', fontSize: '12px',
+                  color: '#9CA3AF', fontSize: '12px',
                   marginLeft: '8px',
                 };
                 return (
@@ -18349,8 +18393,8 @@ responseStartedAt: existingMessage?.responseStartedAt,
                   title="Close citations bar"
                   style={sourcesButtonStyle}
                 >
-                  <CaptionsOff size={12} style={{ flexShrink: 0, color: '#374151', background: 'none' }} />
-                  <span style={{ background: 'none' }}>Close</span>
+                  <CaptionsOff size={12} style={{ flexShrink: 0, color: '#6b7280', background: 'none' }} />
+                  <span style={{ background: 'none', color: '#6b7280' }}>Close</span>
                 </button>
               )}
               {showOpen && (
@@ -18385,8 +18429,8 @@ responseStartedAt: existingMessage?.responseStartedAt,
                   title="Show citations bar"
                   style={sourcesButtonStyle}
                 >
-                  <Captions size={12} style={{ flexShrink: 0, color: '#374151', background: 'none' }} />
-                  <span style={{ background: 'none' }}>Open</span>
+                  <Captions size={12} style={{ flexShrink: 0, color: '#6b7280', background: 'none' }} />
+                  <span style={{ background: 'none', color: '#6b7280' }}>Open</span>
                 </button>
               )}
               <Popover open={isSourcesOpen} onOpenChange={(open) => setSourcesDropdownMessageId(open ? finalKey : null)}>
@@ -18396,9 +18440,9 @@ responseStartedAt: existingMessage?.responseStartedAt,
                     onClick={(e) => { e.stopPropagation(); setSourcesDropdownMessageId(isSourcesOpen ? null : finalKey); }}
                     style={{ ...sourcesButtonStyle, marginLeft: (citationBarVisible || showOpen) ? '4px' : '8px' }}
                   >
-                    <Link2 size={12} style={{ flexShrink: 0, color: '#374151', background: 'none' }} />
-                    <span style={{ background: 'none' }}>Sources</span>
-                    <ChevronDown size={14} style={{ flexShrink: 0, color: '#374151', transition: 'transform 0.15s ease', transform: isSourcesOpen ? 'rotate(180deg)' : 'rotate(0deg)', background: 'none' }} />
+                    <Link2 size={12} style={{ flexShrink: 0, color: '#6b7280', background: 'none' }} />
+                    <span style={{ background: 'none', color: '#6b7280' }}>Sources</span>
+                    <ChevronDown size={14} style={{ flexShrink: 0, color: '#6b7280', transition: 'transform 0.15s ease', transform: isSourcesOpen ? 'rotate(180deg)' : 'rotate(0deg)', background: 'none' }} />
                   </button>
                 </PopoverTrigger>
                 <PopoverContent className="p-0 bg-transparent border-0 shadow-none" align="start" sideOffset={4} style={{ width: '240px', borderRadius: '10px', zIndex: 1, background: 'transparent' }}>
@@ -19662,7 +19706,7 @@ responseStartedAt: existingMessage?.responseStartedAt,
                 )}
               <div
                 key="empty-chat-layout-inner"
-                className="flex flex-col items-center w-full max-w-5xl mx-auto"
+                className="flex flex-col items-center w-full max-w-4xl mx-auto"
                 style={{
                   backgroundColor: '#FFFFFF',
                   justifyContent: 'flex-start',
@@ -20102,7 +20146,7 @@ responseStartedAt: existingMessage?.responseStartedAt,
                   className="flex-1 overflow-y-auto sidechat-scroll" 
                   style={{ 
                     backgroundColor: '#FFFFFF',
-                    padding: '16px 0', // Simplified padding - content will be centered
+                    padding: actualPanelWidth < 320 ? '16px 20px' : '16px 24px',
                     marginRight: 0,
                     borderRight: 'none',
                     scrollbarWidth: 'thin',
@@ -20117,15 +20161,20 @@ responseStartedAt: existingMessage?.responseStartedAt,
                     overflowX: 'hidden'
                   }}
                 >
-                  {/* Centered content wrapper - ChatGPT-like centered layout */}
-                  <div style={{ 
-                    width: '100%', 
-                    maxWidth: `${CHAT_TABS_BAR_MAX_WIDTH_PX}px`,
-                    paddingLeft: actualPanelWidth < 320 ? '20px' : `${SIDEBAR_TO_BAR_GAP_PX}px`,
-                    paddingRight: actualPanelWidth < 320 ? '20px' : `${SIDEBAR_TO_BAR_GAP_PX}px`,
-                    margin: '0 auto' // Center the content wrapper
-                  }}>
-                  <div ref={contentWrapperRef} className="flex flex-col" style={{ minHeight: '100%', gap: '16px', width: '100%' }}>
+                  {/* Messages content: strictly 620px, centered via wrapper. minWidth:0 overrides flex default so maxWidth can shrink below content. */}
+                  <div style={{ width: '100%', maxWidth: 620, minWidth: 0, margin: '0 auto', flexShrink: 0 }}>
+                  <div
+                    ref={contentWrapperRef}
+                    className="flex flex-col"
+                    style={{
+                      minHeight: '100%',
+                      gap: '16px',
+                      width: '100%',
+                      maxWidth: 620,
+                      minWidth: 0,
+                      boxSizing: 'border-box',
+                    }}
+                  >
                     <AnimatePresence>
                       {renderedMessages}
                     </AnimatePresence>
@@ -20493,14 +20542,25 @@ responseStartedAt: existingMessage?.responseStartedAt,
                 pointerEvents: 'auto' // Ensure container can receive drag events
               }}
                 >
-                  {/* Same structure as dashboard: max-w-5xl + HORIZONTAL_PADDING_LEFT/ HORIZONTAL_PADDING so bar area = 984 when panel wide */}
+                  {/* Outer: 768px for alignment with messages; flex center like empty state */}
                   <div
-                    className="w-full max-w-5xl mx-auto"
+                    className="w-full mx-auto flex flex-col items-center"
                     style={{
+                      maxWidth: 768,
                       paddingLeft: actualPanelWidth < 320 ? 20 : DASHBOARD_CHAT_LAYOUT.HORIZONTAL_PADDING_LEFT,
                       paddingRight: actualPanelWidth < 320 ? 20 : DASHBOARD_CHAT_LAYOUT.HORIZONTAL_PADDING,
                       width: '100%',
                       boxSizing: 'border-box',
+                    }}
+                  >
+                  {/* Chat bar container: 720px; center within outer */}
+                  <div
+                    style={{
+                      width: '100%',
+                      maxWidth: 720,
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
                     }}
                   >
                   {/* Scroll-to-bottom button - appears above the chat bar when user has scrolled up */}
@@ -20600,11 +20660,11 @@ responseStartedAt: existingMessage?.responseStartedAt,
                   onDragLeave={handleDragLeave}
                   onDrop={handleDrop}
                 >
-                  {/* Wrapper for chat bar + overlay – shared CHAT_BAR_WRAPPER_STYLE so identical to dashboard */}
+                  {/* Wrapper for chat bar + overlay – 720px */}
                 <div 
                   ref={chatBarDropZoneRef}
                   onClick={(e) => e.stopPropagation()} // Prevent clicks from closing agent sidebar
-                  style={{ ...CHAT_BAR_WRAPPER_STYLE, pointerEvents: 'auto' }}
+                  style={{ ...CHAT_BAR_WRAPPER_STYLE, maxWidth: 720, pointerEvents: 'auto' }}
                 >
                   {/* Bot Status Overlay - sits BEHIND the chat bar */}
                   <BotStatusOverlay
@@ -21201,7 +21261,8 @@ responseStartedAt: existingMessage?.responseStartedAt,
                   </div>
                 </div>
               </div>
-            )}
+            </div>
+            ) }
             </div>
           </div>
           </div>
