@@ -1,13 +1,13 @@
 # Stripe billing setup for OpenFind
 
-OpenFind’s subscription tiers (Starter, Pro, Ultra) can be powered by Stripe. If Stripe is not configured, the app keeps using the existing “test” flow (PATCH plan with no payment).
+OpenFind’s subscription tiers (Starter, Pro, Plus) can be powered by Stripe. If Stripe is not configured, the app keeps using the existing “test” flow (PATCH plan with no payment).
 
 ## 1. Stripe Dashboard
 
 1. Create Products and recurring Prices for each tier (e.g. monthly):
    - **Starter** (personal) — e.g. $15/month  
    - **Pro** (professional) — e.g. $49/month  
-   - **Ultra** (business) — e.g. $129/month (or your BILLING_SPEC amounts)
+   - **Plus** (business) — e.g. $210/month (or your BILLING_SPEC amounts)
 
 2. Copy each Price ID (e.g. `price_xxx`).
 
@@ -27,7 +27,7 @@ STRIPE_SECRET_KEY=sk_live_xxx   # or sk_test_xxx for test mode
 STRIPE_WEBHOOK_SECRET=whsec_xxx
 STRIPE_PRICE_PERSONAL=price_xxx   # Starter
 STRIPE_PRICE_PROFESSIONAL=price_xxx   # Pro
-STRIPE_PRICE_BUSINESS=price_xxx   # Ultra
+STRIPE_PRICE_BUSINESS=price_xxx   # Plus
 ```
 
 If `STRIPE_SECRET_KEY` or the price IDs are missing, the app behaves as before: plan changes use PATCH only (no Stripe).

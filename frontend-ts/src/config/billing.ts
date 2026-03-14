@@ -7,7 +7,7 @@ export const TIERS = {
   personal: {
     id: 'personal',
     name: 'Starter',
-    price: 15,
+    price: 16,
     pageLimit: 500,
     overageRatePerPage: 0.05,
     seats: 1,
@@ -24,8 +24,8 @@ export const TIERS = {
   },
   business: {
     id: 'business',
-    name: 'Ultra',
-    price: 200,
+    name: 'Plus',
+    price: 210,
     pageLimit: 5000,
     overageRatePerPage: 0.04,
     seats: 10,
@@ -36,9 +36,9 @@ export const TIERS = {
 
 /** Supported display currencies with regional prices (UK-style rounded where applicable). */
 export const PRICES_BY_CURRENCY: Record<string, Record<TierKey, number>> = {
-  USD: { personal: 15, professional: 49, business: 200 },
+  USD: { personal: 16, professional: 49, business: 210 },
   GBP: { personal: 12, professional: 39, business: 159 },
-  EUR: { personal: 14, professional: 45, business: 179 },
+  EUR: { personal: 14, professional: 45, business: 183 },
 };
 
 /** Overage per page by currency (approximate). */
@@ -134,7 +134,7 @@ function normalizePlanToTier(plan: TierKey | string | null | undefined): TierKey
   const p = plan.toLowerCase().trim();
   if (p === 'pro' || p === 'professional') return 'professional';
   if (p === 'starter' || p === 'personal') return 'personal';
-  if (p === 'business' || p === 'ultra') return 'business';
+  if (p === 'business' || p === 'ultra' || p === 'plus') return 'business';
   return TIER_ORDER.includes(p as TierKey) ? (p as TierKey) : 'professional';
 }
 
@@ -210,11 +210,11 @@ export function usageMultiplierForBusiness(currentTier: string): number {
 }
 
 /**
- * Human-readable line for "upgrade to Ultra" copy, e.g. for the current-plan card.
+ * Human-readable line for "upgrade to Plus" copy, e.g. for the current-plan card.
  */
 export function upgradeToBusinessCopy(currentTier: string): string {
   const multiplier = usageMultiplierForBusiness(currentTier);
   const businessLimit = TIERS.business.pageLimit.toLocaleString();
-  if (multiplier <= 1) return `Upgrade to Ultra for ${businessLimit} pages/month.`;
-  return `Upgrade to Ultra for ${multiplier}× page allowance (${businessLimit} pages/month).`;
+  if (multiplier <= 1) return `Upgrade to Plus for ${businessLimit} pages/month.`;
+  return `Upgrade to Plus for ${multiplier}× page allowance (${businessLimit} pages/month).`;
 }

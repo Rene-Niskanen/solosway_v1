@@ -28,6 +28,7 @@ import { CurrencyProvider } from '../contexts/CurrencyContext';
 import { AgentOrchestrationProvider } from '../contexts/AgentOrchestrationContext';
 import { UsageProvider, useUsage } from '../contexts/UsageContext';
 import { PlanSelectionModal } from './PlanSelectionModal';
+import { UsageWarningBanner } from './UsageWarningBanner';
 import { useToast } from '@/hooks/use-toast';
 import { useTheme } from 'next-themes';
 import { Check } from 'lucide-react';
@@ -1190,6 +1191,10 @@ const DashboardLayoutContent = ({
         }}
       />
 
+      {/* Main content column: usage warning banner + MainContent */}
+      <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
+        <UsageWarningBanner />
+        <div className="flex-1 min-h-0 overflow-hidden">
       {/* Main Content - with higher z-index when map is visible */}
       <MainContent 
         currentView={currentView}
@@ -1237,6 +1242,8 @@ const DashboardLayoutContent = ({
         mainContentContainerRef={mainContentContainerRef}
         chatModalContainerRef={chatModalContainerRef}
       />
+        </div>
+      </div>
     </div>
     </ChooseProjectModalProvider>
   );

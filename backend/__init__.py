@@ -73,8 +73,19 @@ def create_app():
     load_dotenv() # Load environment variables from .env file
 
     app = Flask(__name__, template_folder='../frontend/public')
-    app.config['SECRET_KEY'] = 'hjshjhdjah kjshkjdhjs'
-    
+
+    # SECRET_KEY: use env, else Config fallback. In production, fail if missing or weak.
+    is_production = os.environ.get('FLASK_ENV') == 'production' or os.environ.get('ENVIRONMENT') == 'production'
+    INSECURE_KEYS = ('hjshjhdjah kjshkjdhjs', 'a-very-secret-key', 'your-secret-key-here', '')
+    secret_key = os.environ.get('SECRET_KEY') or Config.SECRET_KEY
+    sk = (secret_key or '').strip()
+    if is_production and (not sk or sk in INSECURE_KEYS):
+        raise RuntimeError(
+            "SECRET_KEY must be set to a strong random value in production. "
+            'Generate with: python -c "import secrets; print(secrets.token_hex(32))"'
+        )
+    app.config['SECRET_KEY'] = secret_key
+
     # CRITICAL: Prevent Flask debug mode from showing HTML error pages for API routes
     # This ensures our JSON error handlers are used instead
     app.config['PROPAGATE_EXCEPTIONS'] = True
@@ -95,7 +106,6 @@ def create_app():
     # Session cookie configuration for cross-origin requests
     # For localhost (HTTP), use Lax instead of None to avoid Secure requirement
     # In production (HTTPS), use None with Secure=True
-    is_production = os.environ.get('FLASK_ENV') == 'production' or os.environ.get('ENVIRONMENT') == 'production'
     if is_production:
         app.config['SESSION_COOKIE_SAMESITE'] = 'None'
         app.config['SESSION_COOKIE_SECURE'] = True  # Required for SameSite=None

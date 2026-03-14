@@ -455,7 +455,7 @@ function PlanModalContent({
                           : "flex items-center justify-center h-10 w-full px-4 py-2 text-sm font-medium rounded-full border border-gray-200 bg-white text-gray-900 hover:bg-[#FAFAF9] hover:border-[#E5E5E2] hover:shadow-md hover:scale-[1.02] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-400 focus-visible:ring-offset-0 transition-all duration-150 disabled:pointer-events-none disabled:opacity-50 mb-8"
                       }
                     >
-                      {isChangingPlan && changingToTierId === tierId ? "Updating plan…" : isBusiness ? "Upgrade to Ultra" : `Switch to ${tier.name}`}
+                      {isChangingPlan && changingToTierId === tierId ? "Updating plan…" : isBusiness ? "Upgrade to Plus" : `Switch to ${tier.name}`}
                     </button>
                   )}
 
