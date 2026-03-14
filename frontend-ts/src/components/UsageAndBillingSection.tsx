@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { Button } from "@/components/ui/button";
-import { TIERS, upgradeToBusinessCopy, getLocaleCurrency, getPriceForTier, formatPrice, type TierKey } from "@/config/billing";
+import { TIERS, upgradeToBusinessCopy, getLocaleCurrency, getPriceForTier, formatPrice, getUsageState, type TierKey } from "@/config/billing";
 import { usePlanModal } from "@/contexts/PlanModalContext";
 import { useUsage } from "@/contexts/UsageContext";
 import { useCurrencyOptional, CURRENCY_OPTIONS } from "@/contexts/CurrencyContext";
@@ -33,8 +33,8 @@ export const UsageAndBillingSection: React.FC = () => {
     return (
       <div className="space-y-6">
         <div>
-          <h3 className="text-[15px] font-medium" style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}>Usage & Billing</h3>
-          <p className={`text-[13px] mt-1.5 font-normal ${!isDark ? 'text-muted-foreground' : ''}`} style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}>
+          <h3 className="text-[15px] font-medium" style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}>Usage & Billing</h3>
+          <p className={`text-[13px] mt-1.5 font-normal ${!isDark ? 'text-muted-foreground' : ''}`} style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}>
             View your page usage and plan details.
           </p>
         </div>
@@ -51,8 +51,8 @@ export const UsageAndBillingSection: React.FC = () => {
     return (
       <div className="space-y-6">
         <div>
-          <h3 className="text-[15px] font-medium" style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}>Usage & Billing</h3>
-          <p className={`text-[13px] mt-1.5 font-normal ${!isDark ? 'text-muted-foreground' : ''}`} style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}>
+          <h3 className="text-[15px] font-medium" style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}>Usage & Billing</h3>
+          <p className={`text-[13px] mt-1.5 font-normal ${!isDark ? 'text-muted-foreground' : ''}`} style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}>
             View your page usage and plan details.
           </p>
         </div>
@@ -81,6 +81,15 @@ export const UsageAndBillingSection: React.FC = () => {
   const formattedPercent = usagePercent === 0 ? "0%" : `${usagePercent.toFixed(1)}%`;
   const displayPercentLabel = overAllowance ? "100%+" : formattedPercent;
   const barFillRatio = Math.min(usagePercent / 100, 1);
+  const usageState = getUsageState(usagePercent);
+  const barGradientClass =
+    usageState === 'limit' || usageState === 'urgent'
+      ? 'bg-gradient-to-r from-red-500 to-red-600'
+      : usageState === 'warning'
+        ? 'bg-gradient-to-r from-orange-500 to-orange-600'
+        : usagePercent >= 50
+          ? 'bg-gradient-to-r from-amber-400 to-amber-500'
+          : 'bg-gradient-to-r from-emerald-500 to-emerald-600';
   const usageSectionTitle = usage.billing_cycle_end ? "Usage this period" : "Usage this month";
   const periodEndFormatted = usage.billing_cycle_end
     ? new Date(usage.billing_cycle_end + "T12:00:00Z").toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })
@@ -90,13 +99,13 @@ export const UsageAndBillingSection: React.FC = () => {
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
-          <h3 className="text-[15px] font-medium" style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}>Usage & Billing</h3>
-          <p className={`text-[13px] mt-1.5 font-normal ${!isDark ? 'text-muted-foreground' : ''}`} style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}>
+          <h3 className="text-[15px] font-medium" style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}>Usage & Billing</h3>
+          <p className={`text-[13px] mt-1.5 font-normal ${!isDark ? 'text-muted-foreground' : ''}`} style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}>
             View your page usage and plan details.
           </p>
         </div>
         {currencyContext?.setCurrency && (
-          <label className={`flex items-center gap-2 text-[13px] ${!isDark ? 'text-foreground' : ''}`} style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}>
+          <label className={`flex items-center gap-2 text-[13px] ${!isDark ? 'text-foreground' : ''}`} style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}>
             <span>Currency</span>
             <Select value={currency} onValueChange={currencyContext.setCurrency}>
               <SelectTrigger className="flex h-6 w-[72px] items-center justify-between rounded-md border border-gray-200 bg-white py-0 pl-1.5 pr-0.5 gap-0.5 text-xs text-gray-900 focus:ring-1 focus:ring-gray-300 focus:ring-offset-0 [&_svg]:h-2.5 [&_svg]:w-2.5">
@@ -117,17 +126,17 @@ export const UsageAndBillingSection: React.FC = () => {
       {/* Current plan card — same shape/position as overlay, primary styling */}
       <div className={`w-full min-w-0 rounded-xl border p-6 shadow-sm ${isDark ? 'border-border' : 'border-gray-200'}`} style={{ backgroundColor: isDark ? 'hsl(var(--muted))' : '#F6F7F3' }}>
         <div className="flex flex-wrap items-baseline gap-2 mb-2">
-          <span className="text-[17px] font-normal" style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}>{planName}</span>
+          <span className="text-[17px] font-normal" style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}>{planName}</span>
           <span className="inline-flex items-center rounded-md bg-gray-600 px-1.5 py-px text-[10px] font-medium text-gray-200 leading-tight -translate-y-0.5">Current</span>
           {planPriceFormatted != null && (
-            <span className="text-[15px] font-normal" style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}>{planPriceFormatted}/mo.</span>
+            <span className="text-[15px] font-normal" style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}>{planPriceFormatted}/mo.</span>
           )}
         </div>
-        <p className={`text-[13px] mb-1 ${!isDark ? 'text-gray-600' : ''}`} style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}>
+        <p className={`text-[13px] mb-1 ${!isDark ? 'text-gray-600' : ''}`} style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}>
           {usage.monthly_limit.toLocaleString()} pages/month for {planDescription.toLowerCase()}.
         </p>
         {businessCopy && (
-          <p className={`text-[13px] mb-4 ${!isDark ? 'text-gray-600' : ''}`} style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}>
+          <p className={`text-[13px] mb-4 ${!isDark ? 'text-gray-600' : ''}`} style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}>
             {businessCopy}
           </p>
         )}
@@ -146,7 +155,7 @@ export const UsageAndBillingSection: React.FC = () => {
             openPlanModal(usage.plan, usage.billing_cycle_end);
           }}
           className={`rounded-sm border border-border bg-background px-3 py-1 h-auto text-xs font-medium mt-4 focus:ring-1 focus:ring-gray-300 focus:ring-offset-0 focus:border-border ${!isDark ? 'text-foreground' : ''}`}
-          style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}
+          style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}
         >
           Manage Subscription
         </Button>
@@ -154,25 +163,25 @@ export const UsageAndBillingSection: React.FC = () => {
 
       {/* Usage this period / month */}
       <div className={`rounded-lg border p-6 shadow-sm ${isDark ? 'border-border' : 'border-gray-200'}`} style={{ backgroundColor: isDark ? 'hsl(var(--muted))' : '#F6F7F3' }}>
-        <h4 className={`text-[14px] font-normal mb-3 ${!isDark ? 'text-gray-900' : ''}`} style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}>
+        <h4 className={`text-[14px] font-normal mb-3 ${!isDark ? 'text-gray-900' : ''}`} style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}>
           {usageSectionTitle}
           {periodEndFormatted && (
-            <span className={`text-[12px] font-normal ml-1.5 ${!isDark ? 'text-gray-500' : ''}`} style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}>(ends {periodEndFormatted})</span>
+            <span className={`text-[12px] font-normal ml-1.5 ${!isDark ? 'text-gray-500' : ''}`} style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}>(ends {periodEndFormatted})</span>
           )}
         </h4>
         <div className="flex items-center justify-between mb-2">
-          <span className={`text-[24px] font-normal ${!isDark ? 'text-gray-900' : ''}`} style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}>{displayPercentLabel}</span>
-          <span className={`text-[13px] ${!isDark ? 'text-gray-600' : ''}`} style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}>
+          <span className={`text-[24px] font-normal ${!isDark ? 'text-gray-900' : ''}`} style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}>{displayPercentLabel}</span>
+          <span className={`text-[13px] ${!isDark ? 'text-gray-600' : ''}`} style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}>
             {(usage.pages_used ?? 0).toLocaleString()} / {(usage.monthly_limit ?? 0).toLocaleString()} pages
           </span>
         </div>
         <div className={`h-2 w-full rounded-full overflow-hidden ${isDark ? 'bg-gray-700' : 'bg-gray-200'}`}>
           <div
-            className="h-full rounded-full bg-gradient-to-r from-orange-500 to-orange-600 transition-[width] duration-200"
+            className={`h-full rounded-full ${barGradientClass} transition-[width] duration-200`}
             style={{ width: `${barFillRatio * 100}%` }}
           />
         </div>
-        <p className={`text-[13px] mt-2 ${!isDark ? 'text-gray-600' : ''}`} style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}>
+        <p className={`text-[13px] mt-2 ${!isDark ? 'text-gray-600' : ''}`} style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}>
           {overAllowance
             ? `0 pages remaining · Over allowance for this period${periodEndFormatted ? ` until ${periodEndFormatted}` : ""}`
             : `${(usage.remaining ?? monthlyLimit).toLocaleString()} pages remaining · ${formattedPercent} of monthly allowance used`}

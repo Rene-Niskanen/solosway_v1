@@ -278,19 +278,21 @@ export function ChatHistoryProvider({
   }, []);
 
   const updateChatInHistory = React.useCallback((chatId: string, messages: any[]) => {
-    setChatHistory(prev => prev.map(chat => 
-      chat.id === chatId 
-        ? { 
-            ...chat,
-            messages,
-            title: chat.title || generateChatTitle(messages, chat.preview),
-            timestamp: new Date().toISOString(),
-            // Preserve sessionId and description when updating
-            sessionId: chat.sessionId,
-            description: chat.description
-          }
-        : chat
-    ));
+    setChatHistory(prev => prev.map(chat => {
+      if (chat.id !== chatId) return chat;
+      const prevCount = chat.messages?.length ?? 0;
+      const newCount = messages?.length ?? 0;
+      // Only update timestamp when messages actually increased (user sent new message)
+      const shouldUpdateTimestamp = newCount > prevCount;
+      return {
+        ...chat,
+        messages,
+        title: chat.title || generateChatTitle(messages, chat.preview),
+        ...(shouldUpdateTimestamp ? { timestamp: new Date().toISOString() } : {}),
+        sessionId: chat.sessionId,
+        description: chat.description
+      };
+    }));
   }, []);
 
   const removeChatFromHistory = React.useCallback((chatId: string) => {

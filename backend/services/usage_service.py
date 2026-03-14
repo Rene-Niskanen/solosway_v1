@@ -156,3 +156,50 @@ def get_usage_for_api(
         "billing_cycle_end": billing_cycle_end,
         "user_email": user_email,
     }
+
+
+def check_can_upload(
+    business_uuid: str,
+    additional_pages: int,
+    user_id: Any = None,
+    user_email: str | None = None,
+    plan_override: str | None = None,
+    billing_cycle_start_override: str | None = None,
+    billing_cycle_end_override: str | None = None,
+    period_start_utc_override: datetime | None = None,
+) -> Tuple[bool, str, Dict[str, Any]]:
+    """
+    Check if user can upload additional_pages without exceeding monthly limit.
+    Returns (can_upload, error_message, usage_info).
+    can_upload=False when pages_used + additional_pages > monthly_limit.
+    usage_info: {pages_used, monthly_limit, remaining, plan} for error response.
+    """
+    usage = get_usage_for_api(
+        business_uuid,
+        user_id=user_id,
+        user_email=user_email,
+        plan_override=plan_override,
+        billing_cycle_start_override=billing_cycle_start_override,
+        billing_cycle_end_override=billing_cycle_end_override,
+        period_start_utc_override=period_start_utc_override,
+    )
+    pages_used = usage["pages_used"]
+    monthly_limit = usage["monthly_limit"]
+
+    if pages_used + additional_pages > monthly_limit:
+        err_msg = (
+            f"You've reached your monthly page limit ({pages_used:,}/{monthly_limit:,} pages). "
+            "Upgrade your plan to upload more documents."
+        )
+        return False, err_msg, {
+            "pages_used": pages_used,
+            "monthly_limit": monthly_limit,
+            "remaining": max(0, monthly_limit - pages_used),
+            "plan": usage["plan"],
+        }
+    return True, "", {
+        "pages_used": pages_used,
+        "monthly_limit": monthly_limit,
+        "remaining": usage["remaining"],
+        "plan": usage["plan"],
+    }

@@ -73,7 +73,7 @@ export function computeCitationPreviewTransform(
   const logoHeight = 0.02 * imageHeight;
   const minBboxHeightPx = logoHeight;
   const baseBboxHeight = Math.max(originalBboxHeight, minBboxHeightPx);
-  const bboxPadding = 4;
+  const bboxPadding = 12;
   const finalBboxWidth = originalBboxWidth + bboxPadding * 2;
   const finalBboxHeight = baseBboxHeight === minBboxHeightPx ? minBboxHeightPx : baseBboxHeight + bboxPadding * 2;
   const bboxLeft = Math.max(0, centerX - finalBboxWidth / 2);
@@ -84,11 +84,11 @@ export function computeCitationPreviewTransform(
   const finalBboxTop = Math.max(0, constrainedTop);
 
   // Center the bbox in the viewport with even padding on all sides (tighter = more zoomed-in)
-  const previewPadding = 8;
+  const previewPadding = 16;
   const availableWidth = previewWidth - previewPadding * 2;
   const availableHeight = previewHeight - previewPadding * 2;
   // Uniform padding around bbox in image pixels so zoom fits bbox + padding (smaller = zoomed in closer)
-  const uniformBboxPaddingPx = Math.min(imageWidth, imageHeight) * 0.012;
+  const uniformBboxPaddingPx = Math.min(imageWidth, imageHeight) * 0.04;
   const contentWidth = Math.max(originalBboxWidth + uniformBboxPaddingPx * 2, 1);
   const contentHeight = Math.max(originalBboxHeight + uniformBboxPaddingPx * 2, 1);
   const zoomForWidth = availableWidth / contentWidth;

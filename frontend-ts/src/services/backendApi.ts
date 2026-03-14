@@ -1726,6 +1726,23 @@ class BackendApiService {
                 error: 'Failed to parse server response'
               });
             }
+          } else if (xhr.status === 402) {
+            // Usage limit reached (BILLING_SPEC §5.3)
+            try {
+              const errorResponse = JSON.parse(xhr.responseText);
+              const errorMessage = errorResponse.error || 'You\'ve reached your monthly page limit. Upgrade to continue uploading.';
+              resolve({
+                success: false,
+                error: errorMessage,
+                usageLimitReached: true,
+              });
+            } catch {
+              resolve({
+                success: false,
+                error: 'You\'ve reached your monthly page limit. Upgrade to continue uploading.',
+                usageLimitReached: true,
+              });
+            }
           } else {
             console.error(`❌ Upload failed with status: ${xhr.status}`);
             // Try to parse error response for more details
@@ -2041,6 +2058,33 @@ class BackendApiService {
               resolve({
                 success: false,
                 error: 'Failed to parse server response'
+              });
+            }
+          } else if (xhr.status === 402) {
+            // Usage limit reached (BILLING_SPEC §5.3)
+            try {
+              const errorResponse = JSON.parse(xhr.responseText);
+              const errorMessage = errorResponse.error || 'You\'ve reached your monthly page limit. Upgrade to continue uploading.';
+              if (!isSilent) {
+                window.dispatchEvent(new CustomEvent('upload-error', {
+                  detail: { fileName: file.name, error: errorMessage, usageLimitReached: true },
+                }));
+              }
+              resolve({
+                success: false,
+                error: errorMessage,
+                usageLimitReached: true,
+              });
+            } catch {
+              if (!isSilent) {
+                window.dispatchEvent(new CustomEvent('upload-error', {
+                  detail: { fileName: file.name, error: 'You\'ve reached your monthly page limit. Upgrade to continue uploading.', usageLimitReached: true },
+                }));
+              }
+              resolve({
+                success: false,
+                error: 'You\'ve reached your monthly page limit. Upgrade to continue uploading.',
+                usageLimitReached: true,
               });
             }
           } else {

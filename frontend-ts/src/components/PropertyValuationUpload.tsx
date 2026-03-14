@@ -5,7 +5,10 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Upload, FileText, X, Check, AlertCircle, Plus, Image, FileIcon, Camera, CheckCircle } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useSystem } from "@/contexts/SystemContext";
+import { useUsage } from "@/contexts/UsageContext";
+import { usePlanModalOptional } from "@/contexts/PlanModalContext";
 import { backendApi } from "@/services/backendApi";
+import { getUsageState } from "@/config/billing";
 export interface PropertyValuationUploadProps {
   className?: string;
   onUpload?: (file: File) => void;
@@ -50,9 +53,12 @@ export default function PropertyValuationUpload({
   const [steps, setSteps] = React.useState(uploadSteps);
   const [showCompletionTick, setShowCompletionTick] = React.useState(false);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
-  const {
-    toast
-  } = useToast();
+  const { toast } = useToast();
+  const { usage: usageData } = useUsage();
+  const planModal = usePlanModalOptional();
+  const usageState = getUsageState(usageData?.usage_percent ?? 0);
+  const isAtUploadLimit = usageState === 'limit';
+
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
     setIsDragOver(true);
@@ -66,10 +72,21 @@ export default function PropertyValuationUpload({
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setIsDragOver(false);
+    if (isAtUploadLimit) {
+      toast({ title: 'Page limit reached', description: "You've reached your monthly page limit. Upgrade to continue uploading.", variant: 'destructive', duration: 4000 });
+      planModal?.openPlanModal(usageData?.plan ?? 'professional', usageData?.billing_cycle_end ?? undefined);
+      return;
+    }
     const files = Array.from(e.dataTransfer.files);
     files.forEach(processFile);
   };
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (isAtUploadLimit) {
+      e.target.value = '';
+      toast({ title: 'Page limit reached', description: "You've reached your monthly page limit. Upgrade to continue uploading.", variant: 'destructive', duration: 4000 });
+      planModal?.openPlanModal(usageData?.plan ?? 'professional', usageData?.billing_cycle_end ?? undefined);
+      return;
+    }
     const files = Array.from(e.target.files || []);
     files.forEach(processFile);
     e.target.value = '';
@@ -204,6 +221,13 @@ export default function PropertyValuationUpload({
           className: "border-emerald-200 bg-gradient-to-r from-emerald-50 to-green-50"
         });
       } else {
+        const usageLimitReached = (response as { usageLimitReached?: boolean }).usageLimitReached;
+        if (usageLimitReached) {
+          setUploadedFiles(prev => prev.map(f => f.id === fileId ? { ...f, status: 'error' as const } : f));
+          toast({ title: 'Page limit reached', description: response.error || "You've reached your monthly page limit. Upgrade to continue uploading.", variant: 'destructive', duration: 5000 });
+          planModal?.openPlanModal(usageData?.plan ?? 'professional', usageData?.billing_cycle_end ?? undefined);
+          return;
+        }
         throw new Error(response.error || 'Upload failed');
       }
     } catch (error) {

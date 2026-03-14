@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { motion } from "framer-motion";
-import { X, FolderClosed } from "lucide-react";
+import { X } from "lucide-react";
 
 export interface PropertyPillChipProps {
   label: string;
@@ -21,8 +21,6 @@ function formatLabel(label: string): string {
 
 /** Chat-style chip matching FileAttachment variant="chat" – light container, colored icon, hover-to-remove */
 const CHAT_BUBBLE_RADIUS = 10;
-const CHAT_ICON_SIZE = 18;
-const PROJECT_ICON_BG = "#217346";
 
 export function PropertyPillChip({ label, onRemove, title, documentCount }: PropertyPillChipProps) {
   const [isHovered, setIsHovered] = React.useState(false);
@@ -101,18 +99,19 @@ export function PropertyPillChip({ label, onRemove, title, documentCount }: Prop
       </span>
       <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
         <div
+          className="relative overflow-hidden flex items-center justify-center flex-shrink-0"
           style={{
-            width: CHAT_ICON_SIZE,
-            height: CHAT_ICON_SIZE,
-            borderRadius: 4,
-            backgroundColor: PROJECT_ICON_BG,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            flexShrink: 0,
+            width: "32px",
+            height: "28px",
           }}
         >
-          <FolderClosed className="w-3 h-3 text-white" strokeWidth={2.25} />
+          <img
+            src="/projectsfolder.png"
+            alt=""
+            className="w-full h-full object-contain pointer-events-none"
+            style={{ display: "block" }}
+            draggable={false}
+          />
         </div>
         {documentCount != null && (
           <span style={{ fontSize: "11px", color: chatTextMuted }}>

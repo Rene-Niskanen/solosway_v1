@@ -324,6 +324,41 @@ export function mergeCitationOnlyLinesWithPrevious(text: string): string {
 }
 
 /**
+ * Merge lines that start with continuation punctuation (e.g. ", with", ", and the Tenant")
+ * with the previous non-empty line. Prevents malformed splits where a comma-phrase appears on its own line.
+ * Skips over blank lines to find the previous content line (e.g. after **Offer Details** + blank line).
+ */
+export function mergeContinuationLines(text: string): string {
+  const lines = text.split(/\n/);
+  // Lines that start with ", " or ", with" or " and " or " or " — continuation of previous sentence
+  const continuationStart = /^\s*(?:,\s+|and\s+|or\s+|—\s+)/i;
+  const markdownOrSection = /^\s*(\*\*|#+\s|[-*+]\s)/; // Don't merge list items or headings
+  const result: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmed = line.trim();
+    if (
+      trimmed !== '' &&
+      continuationStart.test(line) &&
+      !markdownOrSection.test(line) &&
+      result.length > 0
+    ) {
+      // Find previous non-empty line (skip blank lines)
+      let prevIdx = result.length - 1;
+      while (prevIdx >= 0 && result[prevIdx].trim() === '') prevIdx--;
+      if (prevIdx >= 0 && result[prevIdx].trim() !== '') {
+        result[prevIdx] = (result[prevIdx] + ' ' + trimmed).trimEnd();
+        // Remove any trailing blank lines we skipped (they were between prev and this continuation)
+        while (result.length > prevIdx + 1 && result[result.length - 1].trim() === '') result.pop();
+        continue;
+      }
+    }
+    result.push(line);
+  }
+  return result.join('\n');
+}
+
+/**
  * Convert inline " - " bullet runs into proper markdown list items so they render with indentation.
  * (1) "**Label:** - item" → "**Label:**\n- item" so the first bullet is a real list item.
  * (2) On the same line, further " - " that look like list separators (preceded by . or ; or ") ") become newlines.
@@ -384,7 +419,8 @@ export function prepareResponseTextForDisplay(text: string): string {
   const withMergedHeadings = mergeBoldHeadingWithNextLine(withListFormatting);
   const withMergedOrphans = mergeOrphanLines(withMergedHeadings);
   const withMergedCitations = mergeCitationOnlyLinesWithPrevious(withMergedOrphans);
-  const withMergedListItems = mergeConsecutiveListItemsAsOne(withMergedCitations);
+  const withMergedContinuations = mergeContinuationLines(withMergedCitations);
+  const withMergedListItems = mergeConsecutiveListItemsAsOne(withMergedContinuations);
   const withPromotedTitles = promoteBoldSectionLabelsFromListItems(withMergedListItems);
   const withBracketCitations = normalizeCircledCitationsToBracket(withPromotedTitles);
   const noPeriodAfterCite = removePeriodAfterBracketCitations(withBracketCitations);

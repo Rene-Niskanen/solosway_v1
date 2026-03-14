@@ -91,6 +91,16 @@ export const USAGE_THRESHOLDS = {
   limit: 1.0,
 } as const;
 
+export type UsageState = 'ok' | 'warning' | 'urgent' | 'limit';
+
+/** Get usage state from percentage (0-100+) for UI gating and styling. */
+export function getUsageState(usagePercent: number): UsageState {
+  if (usagePercent >= 100) return 'limit';
+  if (usagePercent >= 90) return 'urgent';
+  if (usagePercent >= 80) return 'warning';
+  return 'ok';
+}
+
 export type TierKey = keyof typeof TIERS;
 
 /** Order of tiers for upgrade progression (Starter → Pro → Business). */

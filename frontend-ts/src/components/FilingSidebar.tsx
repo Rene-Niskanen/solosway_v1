@@ -8,7 +8,9 @@ import { X, Search, Plus, Folder, FolderOpen, FolderSymlink, Files, FileText, Fi
 import OrbitProgress from 'react-loading-indicators/OrbitProgress';
 import { useFilingSidebar } from '../contexts/FilingSidebarContext';
 import { useUsage } from '../contexts/UsageContext';
+import { usePlanModalOptional } from '../contexts/PlanModalContext';
 import { backendApi } from '../services/backendApi';
+import { getUsageState } from '../config/billing';
 import { preloadDocumentBlobs } from '../services/documentBlobCache';
 import { preloadThumbnails, getThumbnailSrc, subscribeToThumbnailCache } from '../services/documentThumbnailCache';
 import { usePreview } from '../contexts/PreviewContext';
@@ -301,6 +303,9 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
 
   // Usage (billing) — bar + popup in place of doc stats (from UsageContext)
   const { usage: usageData, loading: usageLoading, error: usageError } = useUsage();
+  const planModal = usePlanModalOptional();
+  const usageState = getUsageState(usageData?.usage_percent ?? 0);
+  const isAtUploadLimit = usageState === 'limit';
   const [usagePopupOpen, setUsagePopupOpen] = useState(false);
   const usagePopupLeaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const usagePopupEnterTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1821,7 +1826,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
       pipelineLeaveTimeoutRef.current = null;
     }
     setPipelinePreviewPosition({ x: e.clientX, y: e.clientY });
-    const fileRow = (e.currentTarget as HTMLElement).closest('.rounded-md');
+    const fileRow = (e.currentTarget as HTMLElement).closest('.rounded-sm');
     if (fileRow) {
       const rect = fileRow.getBoundingClientRect();
       setPipelinePreviewBounds({
@@ -1990,6 +1995,13 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
     e.stopPropagation();
     setIsDragOver(false);
 
+    if (isAtUploadLimit) {
+      setError("You've reached your monthly page limit. Upgrade to continue uploading.");
+      planModal?.openPlanModal(usageData?.plan ?? 'professional', usageData?.billing_cycle_end ?? undefined);
+      toast({ title: 'Page limit reached', description: "You've reached your monthly page limit. Upgrade to continue uploading.", variant: 'destructive', duration: 4000 });
+      return;
+    }
+
     const droppedFiles = Array.from(e.dataTransfer.files).filter(isAcceptedFile);
     if (droppedFiles.length === 0) return;
     // Add files to pending state instead of uploading immediately
@@ -1997,6 +2009,13 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
   };
 
   const handleFileInputChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (isAtUploadLimit) {
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      setError("You've reached your monthly page limit. Upgrade to continue uploading.");
+      planModal?.openPlanModal(usageData?.plan ?? 'professional', usageData?.billing_cycle_end ?? undefined);
+      toast({ title: 'Page limit reached', description: "You've reached your monthly page limit. Upgrade to continue uploading.", variant: 'destructive', duration: 4000 });
+      return;
+    }
     const selectedFiles = Array.from(e.target.files || []);
     // Add files to pending state instead of uploading immediately
     setPendingFiles(prev => [...prev, ...selectedFiles]);
@@ -2007,6 +2026,12 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
   };
 
   const handleUploadAreaClick = () => {
+    if (isAtUploadLimit) {
+      setError("You've reached your monthly page limit. Upgrade to continue uploading.");
+      planModal?.openPlanModal(usageData?.plan ?? 'professional', usageData?.billing_cycle_end ?? undefined);
+      toast({ title: 'Page limit reached', description: "You've reached your monthly page limit. Upgrade to continue uploading.", variant: 'destructive', duration: 4000 });
+      return;
+    }
     fileInputRef.current?.click();
   };
 
@@ -2323,6 +2348,17 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
     try {
       setError(null);
 
+      // Upload limit enforcement (BILLING_SPEC §5.3)
+      if (isAtUploadLimit) {
+        const msg = "You've reached your monthly page limit. Upgrade to continue uploading.";
+        setError(msg);
+        planModal?.openPlanModal(usageData?.plan ?? 'professional', usageData?.billing_cycle_end ?? undefined);
+        uploadAbortControllersRef.current.delete(uploadKey);
+        if (placeholderId) removeUploadingPlaceholder(placeholderId);
+        toast({ title: 'Page limit reached', description: msg, variant: 'destructive', duration: 4000 });
+        return undefined;
+      }
+
       // Check access level if uploading to a property
       if (selectedPropertyForUpload?.type === 'property' && !canUploadToProperty()) {
         setError('You do not have permission to upload files. Only editors and owners can upload files to this property.');
@@ -2424,7 +2460,18 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
         return documentId;
       } else {
         if (placeholderId) removeUploadingPlaceholder(placeholderId);
-        if (result.error === 'Upload was aborted') {
+        const usageLimitReached = (result as { usageLimitReached?: boolean }).usageLimitReached;
+        if (usageLimitReached) {
+          uploadEvents.error(file.name, result.error || 'Page limit reached');
+          setError(result.error || "You've reached your monthly page limit. Upgrade to continue uploading.");
+          planModal?.openPlanModal(usageData?.plan ?? 'professional', usageData?.billing_cycle_end ?? undefined);
+          toast({
+            title: 'Page limit reached',
+            description: result.error || "You've reached your monthly page limit. Upgrade to continue uploading.",
+            variant: 'destructive',
+            duration: 5000,
+          });
+        } else if (result.error === 'Upload was aborted') {
           uploadEvents.error(file.name, 'Upload stopped');
           // Don't setError - handleStopUploads already showed toast
         } else if (result.error && (result.error.includes('already exists') || result.error.includes('duplicate'))) {
@@ -2679,7 +2726,8 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
             {!hideCloseButton ? (
               <button
                 onClick={closeSidebar}
-                className={`flex items-center justify-center p-1.5 rounded-sm transition-opacity duration-150 flex-shrink-0 hover:opacity-70 active:opacity-90 ${isDark ? 'text-slate-300' : 'text-[#374151]'}`}
+                className={`flex items-center justify-center p-1.5 rounded-sm transition-opacity duration-150 flex-shrink-0 hover:opacity-70 active:opacity-90 ${isDark ? '' : 'text-[#374151]'}`}
+                style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}
                 aria-label="Close Files"
                 title="Close Files"
                 type="button"
@@ -2689,6 +2737,13 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
             ) : null}
           </div>
 
+          {/* Upload limit banner (BILLING_SPEC §5.3) */}
+          {isAtUploadLimit && (
+            <div className="mx-4 mb-3 px-3 py-2 rounded-lg bg-amber-50 border border-amber-200 text-amber-800 text-sm">
+              You&apos;ve reached your monthly page limit. <button type="button" className="font-medium underline hover:no-underline" onClick={() => planModal?.openPlanModal(usageData?.plan ?? 'professional', usageData?.billing_cycle_end ?? undefined)}>Upgrade to continue uploading</button>
+            </div>
+          )}
+
           {/* Drag and Drop Upload Area */}
           <div className="px-4">
             <div
@@ -2696,8 +2751,8 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
               onDragLeave={handleDragLeave}
               onDrop={handleDrop}
               onClick={handleUploadAreaClick}
-              className={`relative cursor-pointer select-none w-full overflow-hidden
-                hover:bg-gray-50/40 active:scale-[0.99] active:opacity-95 active:bg-gray-100/50
+              className={`relative select-none w-full overflow-hidden
+                ${isAtUploadLimit ? 'cursor-not-allowed opacity-60' : 'cursor-pointer hover:bg-gray-50/40 active:scale-[0.99] active:opacity-95 active:bg-gray-100/50'}
                 ${pendingFiles.length > 0 ? 'transition-none mb-0' : 'transition-all duration-150 ease-out mb-4'}
                 ${isDragOver ? 'opacity-90' : ''}`}
               style={{
@@ -2933,7 +2988,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                   {/* Upload Button - flex-1 to fill remaining space (Link has fixed width when chosen) */}
                   <button
                     onClick={handleUploadPendingFiles}
-                    disabled={isLoading || uploadingFileKeys.size > 0}
+                    disabled={isLoading || uploadingFileKeys.size > 0 || isAtUploadLimit}
                     className="py-2.5 px-3 text-xs font-medium rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 flex-1 min-w-0 bg-white hover:bg-gray-50 text-slate-600 h-[40px]"
                   >
                     <CloudUpload className="w-3.5 h-3.5 flex-shrink-0" aria-hidden />
@@ -3080,7 +3135,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                   ) : null}
                 </div>
                 {usageData && (
-                  <span className="flex-shrink-0 text-[10px] font-medium text-gray-400 tabular-nums">
+                  <span className={`flex-shrink-0 text-[10px] font-medium tabular-nums ${isDark ? '' : 'text-gray-400'}`} style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}>
                     {((usageData.pages_used ?? 0) > (usageData.monthly_limit ?? 0) ? '100+' : Math.round(usageData.usage_percent ?? 0))}%
                   </span>
                 )}
@@ -3121,7 +3176,8 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
             <button
               type="button"
               onClick={() => { setSearchExpanded(true); setTimeout(() => searchInputRef.current?.focus(), 0); }}
-              className={`flex items-center justify-center flex-shrink-0 p-1 rounded-[3px] hover:opacity-80 transition-opacity ${isDark ? 'text-slate-300' : 'text-[#4B5563]'}`}
+              className={`flex items-center justify-center flex-shrink-0 p-1 rounded-[3px] hover:opacity-80 transition-opacity ${isDark ? '' : 'text-[#4B5563]'}`}
+              style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}
               title="Search documents"
             >
               <Search className="w-3.5 h-3.5" strokeWidth={1.5} aria-hidden />
@@ -3142,7 +3198,8 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                   onClick={() => { clearSelection(); setShowMoveDropdown(false); setMoveSearchQuery(''); }}
                   whileHover={{ scale: 1.01 }}
                   whileTap={{ scale: 0.99 }}
-                  className={`flex items-center justify-center px-1.5 py-0.5 rounded-[3px] flex-shrink-0 hover:opacity-80 transition-opacity ${isDark ? 'text-slate-300' : 'text-[#374151]'}`}
+                  className={`flex items-center justify-center px-1.5 py-0.5 rounded-[3px] flex-shrink-0 hover:opacity-80 transition-opacity ${isDark ? '' : 'text-[#374151]'}`}
+                  style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}
                   title="Cancel selection"
                 >
                   <span className="text-[12.5px] font-normal">Cancel</span>
@@ -3154,10 +3211,10 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                   onClick={() => setViewMode('global')}
                   className={`text-[12.5px] font-normal px-1.5 py-0.5 rounded-[3px] flex-shrink-0 ml-1 transition-all duration-75 ${
                     viewMode === 'global'
-                      ? isDark ? 'bg-card text-slate-100' : 'bg-white text-[#141413]'
-                      : isDark ? 'text-slate-300 hover:opacity-90' : 'text-[#4B5563] hover:opacity-90'
+                      ? isDark ? 'bg-card' : 'bg-white text-[#141413]'
+                      : isDark ? 'hover:opacity-90' : 'text-[#4B5563] hover:opacity-90'
                   }`}
-                  style={viewMode === 'global' ? { boxShadow: isDark ? undefined : '0 1px 2px rgba(0, 0, 0, 0.04)' } : undefined}
+                  style={viewMode === 'global' ? { boxShadow: isDark ? undefined : '0 1px 2px rgba(0, 0, 0, 0.04)', color: isDark ? 'rgb(195, 195, 195)' : undefined } : (isDark ? { color: 'rgb(195, 195, 195)' } : undefined)}
                 >
                   Files
                 </button>
@@ -3165,10 +3222,10 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                   onClick={() => setViewMode('property')}
                   className={`text-[12.5px] font-normal px-1.5 py-0.5 rounded-[3px] flex-shrink-0 transition-all duration-75 ${
                     viewMode === 'property'
-                      ? isDark ? 'bg-card text-slate-100' : 'bg-white text-[#141413]'
-                      : isDark ? 'text-slate-300 hover:opacity-90' : 'text-[#4B5563] hover:opacity-90'
+                      ? isDark ? 'bg-card' : 'bg-white text-[#141413]'
+                      : isDark ? 'hover:opacity-90' : 'text-[#4B5563] hover:opacity-90'
                   }`}
-                  style={viewMode === 'property' ? { boxShadow: isDark ? undefined : '0 1px 2px rgba(0, 0, 0, 0.04)' } : undefined}
+                  style={viewMode === 'property' ? { boxShadow: isDark ? undefined : '0 1px 2px rgba(0, 0, 0, 0.04)', color: isDark ? 'rgb(195, 195, 195)' : undefined } : (isDark ? { color: 'rgb(195, 195, 195)' } : undefined)}
                 >
                   Projects
                 </button>
@@ -3188,10 +3245,10 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                 }}
                 className={`flex items-center justify-center px-1.5 py-0.5 text-[12.5px] font-normal flex-shrink-0 min-w-0 rounded-[3px] transition-all duration-75 ${
                   isSelectionMode
-                    ? isDark ? 'bg-card text-slate-100' : 'bg-white text-[#141413]'
-                    : isDark ? 'text-slate-300 hover:opacity-90' : 'text-[#4B5563] hover:opacity-90'
+                    ? isDark ? 'bg-card' : 'bg-white text-[#141413]'
+                    : isDark ? 'hover:opacity-90' : 'text-[#4B5563] hover:opacity-90'
                 }`}
-                style={isSelectionMode ? { boxShadow: isDark ? undefined : '0 1px 2px rgba(0, 0, 0, 0.04)' } : undefined}
+                style={isSelectionMode ? { boxShadow: isDark ? undefined : '0 1px 2px rgba(0, 0, 0, 0.04)', color: isDark ? 'rgb(195, 195, 195)' : undefined } : (isDark ? { color: 'rgb(195, 195, 195)' } : undefined)}
                 title={isSelectionMode ? 'Cancel selection mode' : 'Select documents'}
               >
                 {isSelectionMode ? 'Done' : 'Select'}
@@ -3205,8 +3262,9 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                       setShowMoveDropdown(!showMoveDropdown);
                     }}
                     className={`flex items-center justify-center gap-1 px-1.5 py-0.5 text-[12.5px] font-normal min-w-0 rounded-[3px] transition-opacity ${
-                      showMoveDropdown ? 'text-blue-400' : isDark ? 'text-slate-300 hover:opacity-90' : 'text-[#4B5563] hover:opacity-90'
+                      showMoveDropdown ? 'text-blue-400' : isDark ? 'hover:opacity-90' : 'text-[#4B5563] hover:opacity-90'
                     }`}
+                    style={showMoveDropdown ? undefined : (isDark ? { color: 'rgb(195, 195, 195)' } : undefined)}
                     title="Move to project"
                   >
                     <span>Move</span>
@@ -3229,7 +3287,8 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                       setAddMenuPosition(null);
                     }
                   }}
-                  className={`flex items-center justify-center gap-1 px-1.5 py-0.5 text-[12.5px] font-normal min-w-0 rounded-[3px] hover:opacity-80 transition-opacity ${isDark ? 'text-slate-300' : 'text-[#4B5563]'}`}
+                  className={`flex items-center justify-center gap-1 px-1.5 py-0.5 text-[12.5px] font-normal min-w-0 rounded-[3px] hover:opacity-80 transition-opacity ${isDark ? '' : 'text-[#4B5563]'}`}
+                  style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}
                   title="Add"
                 >
                   <Plus className="w-3.5 h-3.5" strokeWidth={1.5} aria-hidden />
@@ -3269,7 +3328,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                     setAddMenuPosition(null);
                     await handleCreateFolder();
                   }}
-                  className="w-full flex items-center gap-2 px-2.5 py-1.5 hover:bg-gray-50 transition-colors text-left"
+                  className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-t-md hover:bg-gray-50 transition-colors text-left"
                 >
                   <Folder className="w-3.5 h-3.5 text-gray-500 flex-shrink-0" strokeWidth={1.75} aria-hidden />
                   <span className="text-xs font-medium text-gray-700">New folder</span>
@@ -3292,9 +3351,9 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                     };
                     input.click();
                   }}
-                  className="w-full flex items-center gap-2 px-2.5 py-1.5 hover:bg-gray-50 transition-colors text-left"
+                  className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-b-md hover:bg-gray-50 transition-colors text-left"
                 >
-                  <img src="/fileupload3.png" alt="Secure file uploads" className="block w-5 h-5 object-contain flex-shrink-0 pointer-events-none" style={{ width: 20, height: 20 }} />
+                  <CloudUpload className="w-3.5 h-3.5 text-gray-500 flex-shrink-0" strokeWidth={1.75} aria-hidden />
                   <span className="text-xs font-medium text-gray-700">Upload file</span>
                 </button>
               </motion.div>
@@ -3408,7 +3467,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
               <div className="text-red-500">{error}</div>
             </div>
           ) : filteredItems.folders.length === 0 && filteredItems.documents.length === 0 && uploadingPlaceholders.length === 0 && !(viewMode === 'property' && !currentFolderId && groupedDocumentsByProperty && groupedDocumentsByProperty.length > 0) ? (
-            <div className={`flex flex-col items-center justify-center h-full ml-8 mr-8 pt-4 ${isDark ? 'text-slate-300' : 'text-gray-400'}`}>
+            <div className={`flex flex-col items-center justify-center h-full ml-8 mr-8 pt-4 ${isDark ? '' : 'text-gray-400'}`} style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}>
               <Files className="w-10 h-10 mb-3 text-inherit" strokeWidth={1.5} aria-hidden />
               <p className="text-[13px] font-medium mb-1">
                 {viewMode === 'property' && !currentFolderId ? 'No projects' : 'No documents'}
@@ -3511,9 +3570,9 @@ className={`flex items-center gap-0.5 px-2 py-1 ml-4 mr-8 w-full cursor-pointer 
                             </div>
                             <div className="flex-1 min-w-0 flex flex-col min-h-[36px] justify-center gap-0">
                               <div className="flex flex-col gap-0.5 min-w-0 w-full">
-                                <div className="flex items-center gap-1.5 min-h-[14px] w-full min-w-0 ml-1">
+                                <div className="flex items-center gap-1.5 min-h-[14px] w-full min-w-0 ml-2">
                                   <div className="flex-shrink-0">{getDocTypeIconSmall(mockDoc)}</div>
-                                  <span className="text-xs font-medium text-slate-600 truncate flex-1 min-w-0" style={{ fontFamily: "'DM Sans', system-ui, -apple-system, sans-serif" }}>
+                                  <span className="text-xs font-medium text-slate-600 truncate flex-1 min-w-0 mr-1" style={{ fontFamily: "'DM Sans', system-ui, -apple-system, sans-serif" }}>
                                     {p.name}
                                   </span>
                                 </div>
@@ -3590,7 +3649,7 @@ className={`flex items-center gap-0.5 px-2 py-1 ml-4 mr-8 w-full cursor-pointer 
                       {isExpanded && (
                         <div className="py-0 w-full space-y-0" style={{ boxSizing: 'border-box' }}>
                           {propertyDocs.length === 0 ? (
-                            <div className={`flex flex-col items-center justify-center pt-10 pb-8 px-4 ml-8 mr-8 rounded-md ${isDark ? 'text-slate-300' : 'text-gray-400'}`}>
+                            <div className={`flex flex-col items-center justify-center pt-10 pb-8 px-4 ml-8 mr-8 rounded-md ${isDark ? '' : 'text-gray-400'}`} style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}>
                               <Files className="w-10 h-10 mb-3 text-inherit" strokeWidth={1.5} aria-hidden />
                               <p className="text-[13px] font-medium mb-1">No documents</p>
                               <p className="text-[12px] text-center">
@@ -3627,7 +3686,7 @@ className={`flex items-center gap-0.5 px-2 py-1 ml-4 mr-8 w-full cursor-pointer 
                                   setHoveredItemId(null);
                                   cancelHoverPreload();
                                 }}
-                                className={`flex items-center gap-0.5 pl-3 pr-2 py-1.5 ml-5 mr-8 cursor-pointer group rounded-md transition-all duration-100 active:scale-[0.99] outline-none focus:outline-none focus:ring-0 border-t border-x border-gray-100 last:border-b ${
+                                className={`flex items-center gap-0.5 pl-3 pr-2 py-1.5 ml-6 mr-8 cursor-pointer group rounded-sm transition-all duration-100 active:scale-[0.99] outline-none focus:outline-none focus:ring-0 border-t border-x border-gray-100 last:border-b ${
                                   isSelectionMode 
                                     ? (isSelected 
                                         ? 'bg-gray-200 ring-1 ring-gray-300 hover:bg-gray-200' 
@@ -3651,13 +3710,13 @@ className={`flex items-center gap-0.5 px-2 py-1 ml-4 mr-8 w-full cursor-pointer 
                                   }
                                 }}
                               >
-                                <div className="flex-shrink-0 flex items-center justify-center overflow-hidden rounded bg-gray-100 relative" style={{ width: 48, height: 48 }}>
+                                <div className="group/thumb flex-shrink-0 flex items-center justify-center overflow-hidden rounded bg-gray-100 relative -ml-1" style={{ width: 48, height: 48 }}>
                                   {isPdfForThumbnail(doc) ? (
                                     <>
                                       <img
                                         src={getThumbnailSrc(doc.id)}
                                         alt=""
-                                        className={`${thumbSizeClass} absolute inset-0 w-full h-full`}
+                                        className={`${thumbSizeClass} absolute inset-0 w-full h-full transition-opacity duration-150 group-hover/thumb:opacity-0`}
                                         loading="lazy"
                                         fetchPriority={propDocIndex < 6 ? 'high' : undefined}
                                         onError={(e) => {
@@ -3669,11 +3728,35 @@ className={`flex items-center gap-0.5 px-2 py-1 ml-4 mr-8 w-full cursor-pointer 
                                       <div className="hidden absolute inset-0 flex items-center justify-center bg-gray-50" style={{ display: 'none' }}>
                                         <img src="/PDF(1).png" alt="PDF" className="w-5 h-5 object-contain" />
                                       </div>
+                                      {!editingItemId && (
+                                        <button
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            handleContextMenuClick(e, doc.id);
+                                          }}
+                                          className="absolute inset-0 flex items-center justify-center bg-gray-100 opacity-0 group-hover/thumb:opacity-100 transition-opacity duration-150"
+                                        >
+                                          <MoreVertical className="w-3 h-3 text-gray-400" strokeWidth={1.5} aria-hidden />
+                                        </button>
+                                      )}
                                     </>
                                   ) : (
-                                    <div className="flex items-center justify-center" style={{ width: 48, height: 48 }}>
-                                      {getFileIcon(doc)}
-                                    </div>
+                                    <>
+                                      <div className="flex items-center justify-center transition-opacity duration-150 group-hover/thumb:opacity-0" style={{ width: 48, height: 48 }}>
+                                        {getFileIcon(doc)}
+                                      </div>
+                                      {!editingItemId && (
+                                        <button
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            handleContextMenuClick(e, doc.id);
+                                          }}
+                                          className="absolute inset-0 flex items-center justify-center bg-gray-100 opacity-0 group-hover/thumb:opacity-100 transition-opacity duration-150"
+                                        >
+                                          <MoreVertical className="w-3 h-3 text-gray-400" strokeWidth={1.5} aria-hidden />
+                                        </button>
+                                      )}
+                                    </>
                                   )}
                                 </div>
                                 <div className="flex-1 min-w-0 flex flex-col min-h-[36px] justify-center gap-0">
@@ -3698,16 +3781,16 @@ className={`flex items-center gap-0.5 px-2 py-1 ml-4 mr-8 w-full cursor-pointer 
                                     <>
                                       <div className="flex flex-col gap-0.5 min-w-0 w-full">
                                         {/* Doc type icon + name + status dot on right */}
-                                        <div className="flex items-center gap-1.5 min-h-[14px] w-full min-w-0 ml-1">
+                                        <div className="flex items-center gap-1.5 min-h-[14px] w-full min-w-0 ml-2">
                                           <div className="flex-shrink-0">{getDocTypeIconSmall(doc)}</div>
-                                          <span className="text-xs font-medium text-slate-600 truncate flex-1 min-w-0" style={{ fontFamily: "'DM Sans', system-ui, -apple-system, sans-serif" }}>
+                                          <span className="text-xs font-medium text-slate-600 truncate flex-1 min-w-0 mr-1" style={{ fontFamily: "'DM Sans', system-ui, -apple-system, sans-serif" }}>
                                             {doc.original_filename}
                                           </span>
                                           {(reprocessingDocs.has(doc.id) || doc.status === 'processing' || isRecentlyUploaded || showLoadingIndicator || reprocessedDocs.has(doc.id) || doc.status === 'completed' || showAsComplete) ? (
                                             <div
                                               onMouseEnter={(e) => handlePipelineTriggerMouseEnter(doc, e)}
                                               onMouseLeave={handlePipelineTriggerMouseLeave}
-                                              className="flex items-center flex-shrink-0 cursor-default relative z-10 overflow-visible"
+                                              className="flex items-center flex-shrink-0 cursor-default relative z-10 overflow-visible -ml-1"
                                             >
                                               {!showAsComplete && (reprocessingDocs.has(doc.id) || showLoadingIndicator) ? (
                                                 <div className="flex items-center gap-1 flex-shrink-0">
@@ -3725,9 +3808,9 @@ className={`flex items-center gap-0.5 px-2 py-1 ml-4 mr-8 w-full cursor-pointer 
                                               )}
                                             </div>
                                           ) : doc.status === 'failed' ? (
-                                            <span className="w-1.5 h-1.5 rounded-full bg-red-500 block flex-shrink-0" style={{ boxShadow: '0 0 0 1px rgba(239, 68, 68, 0.2)' }} title="Processing failed" aria-hidden />
+                                            <span className="w-1.5 h-1.5 rounded-full bg-red-500 block flex-shrink-0 -ml-1" style={{ boxShadow: '0 0 0 1px rgba(239, 68, 68, 0.2)' }} title="Processing failed" aria-hidden />
                                           ) : doc.status === 'uploaded' && (!doc.created_at || (Date.now() - new Date(doc.created_at).getTime() > 60000)) ? (
-                                            <span className="w-1.5 h-1.5 rounded-full bg-amber-500 block flex-shrink-0" style={{ boxShadow: '0 0 0 1px rgba(245, 158, 11, 0.2)' }} title="Not yet processed" aria-hidden />
+                                            <span className="w-1.5 h-1.5 rounded-full bg-amber-500 block flex-shrink-0 -ml-1" style={{ boxShadow: '0 0 0 1px rgba(245, 158, 11, 0.2)' }} title="Not yet processed" aria-hidden />
                                           ) : null}
                                         </div>
                                       </div>
@@ -3740,7 +3823,7 @@ className={`flex items-center gap-0.5 px-2 py-1 ml-4 mr-8 w-full cursor-pointer 
                                       e.stopPropagation();
                                       handleContextMenuClick(e, doc.id);
                                     }}
-                                    className="p-0.5 hover:bg-gray-100 rounded flex-shrink-0 opacity-0 group-hover:opacity-100 transition-all duration-150"
+                                    className="p-0.5 ml-0.5 hover:bg-gray-100 rounded flex-shrink-0 opacity-0 group-hover:opacity-100 transition-all duration-150"
                                   >
                                     <MoreVertical className="w-3 h-3 text-gray-400" strokeWidth={1.5} aria-hidden />
                                   </button>
@@ -3771,9 +3854,9 @@ className={`flex items-center gap-0.5 px-2 py-1 ml-4 mr-8 w-full cursor-pointer 
                         </div>
                         <div className="flex-1 min-w-0 flex flex-col min-h-[36px] justify-center gap-0">
                           <div className="flex flex-col gap-0.5 min-w-0 w-full">
-                            <div className="flex items-center gap-1.5 min-h-[14px] w-full min-w-0 ml-1">
+                            <div className="flex items-center gap-1.5 min-h-[14px] w-full min-w-0 ml-2">
                               <div className="flex-shrink-0">{getDocTypeIconSmall(mockDoc)}</div>
-                              <span className="text-xs font-medium text-slate-600 truncate flex-1 min-w-0" style={{ fontFamily: "'DM Sans', system-ui, -apple-system, sans-serif" }}>
+                              <span className="text-xs font-medium text-slate-600 truncate flex-1 min-w-0 mr-1" style={{ fontFamily: "'DM Sans', system-ui, -apple-system, sans-serif" }}>
                                 {p.name}
                               </span>
                             </div>
@@ -3826,7 +3909,7 @@ className={`flex items-center gap-0.5 px-2 py-1 ml-4 mr-8 w-full cursor-pointer 
                         setHoveredItemId(null);
                         cancelHoverPreload();
                       }}
-                      className={`flex items-center gap-0.5 px-2 py-1 mx-4 cursor-pointer group rounded-md transition-all duration-100 active:scale-[0.99] outline-none focus:outline-none focus:ring-0 border-t border-x border-gray-100 last:border-b ${
+                      className={`flex items-center gap-0.5 px-2 py-1 ml-5 mr-4 cursor-pointer group rounded-sm transition-all duration-100 active:scale-[0.99] outline-none focus:outline-none focus:ring-0 border-t border-x border-gray-100 last:border-b ${
 isSelectionMode 
                           ? (isSelected 
                               ? 'bg-gray-200 ring-1 ring-gray-300 hover:bg-gray-200'
@@ -3850,13 +3933,13 @@ isSelectionMode
                         }
                       }}
                     >
-                      <div className="flex-shrink-0 flex items-center justify-center overflow-hidden rounded bg-gray-100 relative" style={{ width: 48, height: 48 }}>
+                      <div className="group/thumb flex-shrink-0 flex items-center justify-center overflow-hidden rounded bg-gray-100 relative -ml-1" style={{ width: 48, height: 48 }}>
                       {isPdfForThumbnail(doc) ? (
                         <>
                           <img
                             src={getThumbnailSrc(doc.id)}
                             alt=""
-                            className={`${thumbSizeClass} absolute inset-0 w-full h-full`}
+                            className={`${thumbSizeClass} absolute inset-0 w-full h-full transition-opacity duration-150 group-hover/thumb:opacity-0`}
                             loading="lazy"
                             fetchPriority={flatIndex < 6 ? 'high' : undefined}
                             onError={(e) => {
@@ -3868,11 +3951,35 @@ isSelectionMode
                           <div className="hidden absolute inset-0 flex items-center justify-center bg-gray-50" style={{ display: 'none' }}>
                             <img src="/PDF(1).png" alt="PDF" className="w-5 h-5 object-contain" />
                           </div>
+                          {!editingItemId && (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleContextMenuClick(e, doc.id);
+                              }}
+                              className="absolute inset-0 flex items-center justify-center bg-gray-100 opacity-0 group-hover/thumb:opacity-100 transition-opacity duration-150"
+                            >
+                              <MoreVertical className="w-3 h-3 text-gray-400" strokeWidth={1.5} aria-hidden />
+                            </button>
+                          )}
                         </>
                       ) : (
-                        <div className="flex items-center justify-center" style={{ width: 48, height: 48 }}>
-                          {getFileIcon(doc)}
-                        </div>
+                        <>
+                          <div className="flex items-center justify-center transition-opacity duration-150 group-hover/thumb:opacity-0" style={{ width: 48, height: 48 }}>
+                            {getFileIcon(doc)}
+                          </div>
+                          {!editingItemId && (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleContextMenuClick(e, doc.id);
+                              }}
+                              className="absolute inset-0 flex items-center justify-center bg-gray-100 opacity-0 group-hover/thumb:opacity-100 transition-opacity duration-150"
+                            >
+                              <MoreVertical className="w-3 h-3 text-gray-400" strokeWidth={1.5} aria-hidden />
+                            </button>
+                          )}
+                        </>
                       )}
                     </div>
                       <div className="flex-1 min-w-0 flex flex-col min-h-[36px] justify-center gap-0">
@@ -3897,16 +4004,16 @@ isSelectionMode
                           <>
                             <div className="flex flex-col gap-0.5 min-w-0 w-full">
                               {/* Doc type icon + name + status dot on right */}
-                              <div className="flex items-center gap-1.5 min-h-[14px] w-full min-w-0 ml-1">
+                              <div className="flex items-center gap-1.5 min-h-[14px] w-full min-w-0 ml-2">
                                 <div className="flex-shrink-0">{getDocTypeIconSmall(doc)}</div>
-                                <span className="text-xs font-medium text-slate-600 truncate flex-1 min-w-0" style={{ fontFamily: "'DM Sans', system-ui, -apple-system, sans-serif" }}>
+                                <span className="text-xs font-medium text-slate-600 truncate flex-1 min-w-0 mr-1" style={{ fontFamily: "'DM Sans', system-ui, -apple-system, sans-serif" }}>
                                   {doc.original_filename}
                                 </span>
                                 {(reprocessingDocs.has(doc.id) || doc.status === 'processing' || isRecentlyUploadedFlat || showLoadingIndicatorFlat || reprocessedDocs.has(doc.id) || doc.status === 'completed' || showAsCompleteFlat) ? (
                                   <div
                                     onMouseEnter={(e) => handlePipelineTriggerMouseEnter(doc, e)}
                                     onMouseLeave={handlePipelineTriggerMouseLeave}
-                                    className="flex items-center flex-shrink-0 cursor-default relative z-10 overflow-visible"
+                                    className="flex items-center flex-shrink-0 cursor-default relative z-10 overflow-visible -ml-1"
                                   >
                                     {!showAsCompleteFlat && (reprocessingDocs.has(doc.id) || showLoadingIndicatorFlat) ? (
                                       <div className="flex items-center gap-1 flex-shrink-0">
@@ -3924,9 +4031,9 @@ isSelectionMode
                                     )}
                                   </div>
                                 ) : doc.status === 'failed' ? (
-                                  <span className="w-1.5 h-1.5 rounded-full bg-red-500 block flex-shrink-0" style={{ boxShadow: '0 0 0 1px rgba(239, 68, 68, 0.2)' }} title="Processing failed" aria-hidden />
+                                  <span className="w-1.5 h-1.5 rounded-full bg-red-500 block flex-shrink-0 -ml-1" style={{ boxShadow: '0 0 0 1px rgba(239, 68, 68, 0.2)' }} title="Processing failed" aria-hidden />
                                 ) : doc.status === 'uploaded' && (!doc.created_at || (Date.now() - new Date(doc.created_at).getTime() > 60000)) ? (
-                                  <span className="w-1.5 h-1.5 rounded-full bg-amber-500 block flex-shrink-0" style={{ boxShadow: '0 0 0 1px rgba(245, 158, 11, 0.2)' }} title="Not yet processed" aria-hidden />
+                                  <span className="w-1.5 h-1.5 rounded-full bg-amber-500 block flex-shrink-0 -ml-1" style={{ boxShadow: '0 0 0 1px rgba(245, 158, 11, 0.2)' }} title="Not yet processed" aria-hidden />
                                 ) : null}
                               </div>
                             </div>
@@ -3939,7 +4046,7 @@ isSelectionMode
                             e.stopPropagation();
                             handleContextMenuClick(e, doc.id);
                           }}
-                          className="p-0.5 hover:bg-gray-100 rounded flex-shrink-0 opacity-0 group-hover:opacity-100 transition-all duration-150"
+                          className="p-0.5 ml-0.5 hover:bg-gray-100 rounded flex-shrink-0 opacity-0 group-hover:opacity-100 transition-all duration-150"
                         >
                           <MoreVertical className="w-3 h-3 text-gray-400" strokeWidth={1.5} aria-hidden />
                         </button>

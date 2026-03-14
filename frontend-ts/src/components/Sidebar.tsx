@@ -470,7 +470,7 @@ export const Sidebar = ({
                 : isDark ? 'hover:bg-card/80 border-transparent active:bg-card' : 'text-[#141413] hover:bg-white/60 border-transparent active:bg-white/60'
           }`}
           style={{
-            ...(isDark ? { color: 'rgb(220, 220, 220)' } : {}),
+            ...(isDark ? { color: 'rgb(195, 195, 195)' } : {}),
             boxShadow: active ? '0 1px 2px rgba(0, 0, 0, 0.04)' : 'none',
             transition: 'none',
             boxSizing: 'border-box',
@@ -505,7 +505,7 @@ export const Sidebar = ({
             : isDark ? 'hover:bg-card/80 border-transparent active:bg-card' : 'text-[#141413] hover:bg-white/60 border-transparent active:bg-white/60'
         }`}
         style={{
-          ...(isDark ? { color: 'rgb(220, 220, 220)' } : {}),
+          ...(isDark ? { color: 'rgb(195, 195, 195)' } : {}),
           boxShadow: active ? '0 1px 1px rgba(0, 0, 0, 0.03)' : 'none',
           transition: 'none',
           boxSizing: 'border-box',
@@ -623,7 +623,7 @@ export const Sidebar = ({
                   type="button"
                   onClick={(e) => { e.stopPropagation(); onIconsOnlyToggle(); }}
                   className={`rounded border border-transparent transition-colors flex items-center justify-center shrink-0 p-1.5 ${isDark ? 'hover:bg-card/80 active:bg-card' : 'text-[#141413] hover:bg-white/60 active:bg-white/60'}`}
-                  style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}
+                  style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}
                   aria-label={isIconsOnly ? 'Expand sidebar' : 'Show only icons'}
                   title={isIconsOnly ? 'Expand sidebar' : 'Show only icons'}
                 >
@@ -640,7 +640,7 @@ export const Sidebar = ({
                   onNewChat?.();
                 }}
                 className={`flex items-center rounded border border-transparent transition-colors ${isDark ? 'hover:bg-muted active:bg-card' : 'text-[#141413] hover:bg-[#E8E8E5] active:bg-[#E5E5E2]'} ${isIconsOnly ? 'justify-center p-2 w-10 mt-6' : 'w-full gap-3 pl-2 pr-3 py-1.5'}`}
-                style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}
+                style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}
                 aria-label="New chat"
               >
                 <span className={`h-6 w-6 flex-shrink-0 rounded-full flex items-center justify-center ${isDark ? 'bg-card' : 'bg-[#EBEBE8]'}`} style={!isDark ? { boxShadow: '0 1px 2px rgba(0, 0, 0, 0.03)' } : undefined}>
@@ -657,7 +657,7 @@ export const Sidebar = ({
                       : isDark ? 'border-transparent hover:bg-muted active:bg-card' : 'border-transparent text-[#141413] hover:bg-white/60 active:bg-white/60'
                   } ${isIconsOnly ? 'justify-center p-2 w-10' : 'gap-3 px-3 py-1.5 w-full'}`}
                   style={{
-                    ...(isDark ? { color: 'rgb(220, 220, 220)' } : {}),
+                    ...(isDark ? { color: 'rgb(195, 195, 195)' } : {}),
                     boxShadow: isSearchButtonActive ? '0 1px 2px rgba(0, 0, 0, 0.04)' : 'none',
                   }}
                   aria-label="Search"
@@ -670,7 +670,7 @@ export const Sidebar = ({
                 <button
                   onClick={onUploadFile}
                   className={`flex items-center rounded border border-transparent transition-colors ${isDark ? 'hover:bg-muted active:bg-card' : 'text-[#141413] hover:bg-white/60 active:bg-white/60'} ${isIconsOnly ? 'justify-center p-2 w-10' : 'w-full gap-3 px-3 py-1.5'}`}
-                  style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}
+                  style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}
                   aria-label="Upload files"
                 >
                   <Upload className="h-5 w-5 flex-shrink-0 text-inherit" strokeWidth={1.5} />
@@ -714,16 +714,16 @@ export const Sidebar = ({
                     }}
                   >
                     <div className="px-3 pb-2">
-                      <p className={`text-[13px] font-normal truncate ${isDark ? 'text-muted-foreground' : 'text-gray-500'}`}>{userData?.email || userHandle}</p>
+                      <p className={`text-[13px] font-normal truncate ${isDark ? '' : 'text-gray-500'}`} style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}>{userData?.email || userHandle}</p>
                     </div>
-                    <div className="px-1">
+                    <div className="px-1" style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}>
                       <button
                         onClick={() => {
                           closeFilingSidebar();
                           setIsBrandDropdownOpen(false);
                           onNavigate?.('settings');
                         }}
-                        className="w-full flex items-center gap-3 px-2 py-2 rounded text-popover-foreground hover:bg-muted transition-colors text-left"
+                        className={`w-full flex items-center gap-3 px-2 py-2 rounded hover:bg-muted transition-colors text-left ${!isDark ? 'text-popover-foreground' : 'text-inherit'}`}
                       >
                         <Settings className="h-5 w-5 flex-shrink-0" strokeWidth={1.25} />
                         <span className="text-[13px] font-normal">Settings</span>
@@ -733,7 +733,7 @@ export const Sidebar = ({
                           setIsBrandDropdownOpen(false);
                           setShowHelpDialog(true);
                         }}
-                        className="w-full flex items-center gap-3 px-2 py-2 rounded text-popover-foreground hover:bg-muted transition-colors text-left"
+                        className={`w-full flex items-center gap-3 px-2 py-2 rounded hover:bg-muted transition-colors text-left ${!isDark ? 'text-popover-foreground' : 'text-inherit'}`}
                       >
                         <HelpCircle className="h-5 w-5 flex-shrink-0" strokeWidth={1.25} />
                         <span className="text-[13px] font-normal">Get help</span>
@@ -742,7 +742,7 @@ export const Sidebar = ({
                         <button
                           ref={themeButtonRef}
                           onClick={() => setIsThemeSubmenuOpen(!isThemeSubmenuOpen)}
-                          className="w-full flex items-center gap-3 px-2 py-2 rounded text-popover-foreground hover:bg-muted transition-colors text-left"
+                          className={`w-full flex items-center gap-3 px-2 py-2 rounded hover:bg-muted transition-colors text-left ${!isDark ? 'text-popover-foreground' : 'text-inherit'}`}
                         >
                           <Monitor className="h-5 w-5 flex-shrink-0" strokeWidth={1.25} />
                           <span className="text-[13px] font-normal flex-1">Theme</span>
@@ -755,7 +755,7 @@ export const Sidebar = ({
                           setIsBrandDropdownOpen(false);
                           openPlanModal(usageData?.plan ?? "professional", usageData?.billing_cycle_end);
                         }}
-                        className="w-full flex items-center gap-3 px-2 py-2 rounded text-popover-foreground hover:bg-muted transition-colors text-left"
+                        className={`w-full flex items-center gap-3 px-2 py-2 rounded hover:bg-muted transition-colors text-left ${!isDark ? 'text-popover-foreground' : 'text-inherit'}`}
                       >
                         <CircleArrowUp className="h-5 w-5 flex-shrink-0" strokeWidth={1.25} />
                         <span className="text-[13px] font-normal">Upgrade plan</span>
@@ -766,7 +766,7 @@ export const Sidebar = ({
                           setIsBrandDropdownOpen(false);
                           onSignOut?.();
                         }}
-                        className="w-full flex items-center gap-3 px-2 py-2 rounded text-popover-foreground hover:bg-muted transition-colors text-left"
+                        className={`w-full flex items-center gap-3 px-2 py-2 rounded hover:bg-muted transition-colors text-left ${!isDark ? 'text-popover-foreground' : 'text-inherit'}`}
                       >
                         <LogOut className="h-5 w-5 flex-shrink-0" strokeWidth={1.25} />
                         <span className="text-[13px] font-normal">Log out</span>
@@ -787,16 +787,16 @@ export const Sidebar = ({
                     style={{ boxShadow: '0 4px 16px rgba(0,0,0,0.08), 0 0 0 1px rgba(0,0,0,0.03)' }}
                   >
                     <div className="px-3 pb-2">
-                      <p className={`text-[13px] font-normal truncate ${isDark ? 'text-muted-foreground' : 'text-gray-500'}`}>{userData?.email || userHandle}</p>
+                      <p className={`text-[13px] font-normal truncate ${isDark ? '' : 'text-gray-500'}`} style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}>{userData?.email || userHandle}</p>
                     </div>
-                    <div className="px-1">
+                    <div className="px-1" style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}>
                       <button
                         onClick={() => {
                           closeFilingSidebar();
                           setIsBrandDropdownOpen(false);
                           onNavigate?.('settings');
                         }}
-                        className="w-full flex items-center gap-3 px-2 py-2 rounded text-popover-foreground hover:bg-muted transition-colors text-left"
+                        className={`w-full flex items-center gap-3 px-2 py-2 rounded hover:bg-muted transition-colors text-left ${!isDark ? 'text-popover-foreground' : 'text-inherit'}`}
                       >
                         <Settings className="h-5 w-5 flex-shrink-0" strokeWidth={1.25} />
                         <span className="text-[13px] font-normal">Settings</span>
@@ -806,7 +806,7 @@ export const Sidebar = ({
                           setIsBrandDropdownOpen(false);
                           setShowHelpDialog(true);
                         }}
-                        className="w-full flex items-center gap-3 px-2 py-2 rounded text-popover-foreground hover:bg-muted transition-colors text-left"
+                        className={`w-full flex items-center gap-3 px-2 py-2 rounded hover:bg-muted transition-colors text-left ${!isDark ? 'text-popover-foreground' : 'text-inherit'}`}
                       >
                         <HelpCircle className="h-5 w-5 flex-shrink-0" strokeWidth={1.25} />
                         <span className="text-[13px] font-normal">Get help</span>
@@ -815,7 +815,7 @@ export const Sidebar = ({
                         <button
                           ref={themeButtonRef}
                           onClick={() => setIsThemeSubmenuOpen(!isThemeSubmenuOpen)}
-                          className="w-full flex items-center gap-3 px-2 py-2 rounded text-popover-foreground hover:bg-muted transition-colors text-left"
+                          className={`w-full flex items-center gap-3 px-2 py-2 rounded hover:bg-muted transition-colors text-left ${!isDark ? 'text-popover-foreground' : 'text-inherit'}`}
                         >
                           <Monitor className="h-5 w-5 flex-shrink-0" strokeWidth={1.25} />
                           <span className="text-[13px] font-normal flex-1">Theme</span>
@@ -828,7 +828,7 @@ export const Sidebar = ({
                           setIsBrandDropdownOpen(false);
                           openPlanModal(usageData?.plan ?? "professional", usageData?.billing_cycle_end);
                         }}
-                        className="w-full flex items-center gap-3 px-2 py-2 rounded text-popover-foreground hover:bg-muted transition-colors text-left"
+                        className={`w-full flex items-center gap-3 px-2 py-2 rounded hover:bg-muted transition-colors text-left ${!isDark ? 'text-popover-foreground' : 'text-inherit'}`}
                       >
                         <CircleArrowUp className="h-5 w-5 flex-shrink-0" strokeWidth={1.25} />
                         <span className="text-[13px] font-normal">Upgrade plan</span>
@@ -839,7 +839,7 @@ export const Sidebar = ({
                           setIsBrandDropdownOpen(false);
                           onSignOut?.();
                         }}
-                        className="w-full flex items-center gap-3 px-2 py-2 rounded text-popover-foreground hover:bg-muted transition-colors text-left"
+                        className={`w-full flex items-center gap-3 px-2 py-2 rounded hover:bg-muted transition-colors text-left ${!isDark ? 'text-popover-foreground' : 'text-inherit'}`}
                       >
                         <LogOut className="h-5 w-5 flex-shrink-0" strokeWidth={1.25} />
                         <span className="text-[13px] font-normal">Log out</span>
@@ -873,7 +873,7 @@ export const Sidebar = ({
                   </Avatar>
                   {!isIconsOnly && (
                     <div className="min-w-0 flex-1 text-left flex flex-col gap-1 pl-1">
-                      <p className={`text-[13px] font-semibold truncate leading-tight ${isDark ? 'text-muted-foreground' : 'text-gray-600'}`}>{userName}</p>
+                      <p className={`text-[13px] font-semibold truncate leading-tight ${!isDark ? 'text-gray-600' : ''}`} style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}>{userName}</p>
                       <span
                         className={`rounded-full px-2 py-0.5 text-[10px] font-semibold leading-none w-fit -ml-1 ${isDark ? 'bg-card' : 'bg-white'}`}
                         style={{ color: isDark ? planBadgeInfo.badgeColorDark : planBadgeInfo.badgeColor }}
@@ -925,7 +925,7 @@ export const Sidebar = ({
                 <button
                   onClick={onNewChat}
                   className={`w-full flex items-center gap-3 px-3 py-1.5 rounded-lg transition-colors border ${isDark ? 'bg-card hover:bg-muted border-border' : 'bg-[#EBEBE8] hover:bg-[#E8E8E5] border-[#E0E0DD] text-[#141413]'}`}
-                  style={{ ...(isDark ? { color: 'rgb(220, 220, 220)' } : {}), boxShadow: '0 1px 2px rgba(0, 0, 0, 0.03)' }}
+                  style={{ ...(isDark ? { color: 'rgb(195, 195, 195)' } : {}), boxShadow: '0 1px 2px rgba(0, 0, 0, 0.03)' }}
                 >
                   <span className={`h-6 w-6 flex-shrink-0 rounded-full flex items-center justify-center ${isDark ? 'bg-card' : 'bg-[#E8E8E5]'}`} style={!isDark ? { boxShadow: '0 1px 2px rgba(0, 0, 0, 0.03)' } : undefined}>
                     <Plus className="h-3.5 w-3.5 text-inherit" strokeWidth={2} />
@@ -941,7 +941,7 @@ export const Sidebar = ({
                         : isDark ? 'border-transparent hover:bg-muted active:bg-card' : 'border-transparent text-[#141413] hover:bg-white/60 active:bg-white/60'
                     }`}
                     style={{
-                      ...(isDark ? { color: 'rgb(220, 220, 220)' } : {}),
+                      ...(isDark ? { color: 'rgb(195, 195, 195)' } : {}),
                       boxShadow: isSearchButtonActive ? '0 1px 2px rgba(0, 0, 0, 0.04)' : 'none',
                     }}
                     aria-label="Search"
@@ -954,7 +954,7 @@ export const Sidebar = ({
                   <button
                     onClick={onUploadFile}
                     className={`w-full flex items-center gap-3 px-3 py-1.5 rounded border border-transparent transition-colors ${isDark ? 'hover:bg-muted active:bg-card' : 'text-[#141413] hover:bg-white/60 active:bg-white/60'}`}
-                    style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}
+                    style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}
                     aria-label="Upload files"
                   >
                     <Upload className="h-5 w-5 flex-shrink-0 text-inherit" strokeWidth={1.5} />
@@ -1090,16 +1090,16 @@ export const Sidebar = ({
                     style={{ boxShadow: '0 4px 16px rgba(0,0,0,0.08), 0 0 0 1px rgba(0,0,0,0.03)' }}
                   >
                     <div className="px-3 pb-2">
-                      <p className={`text-[13px] font-normal truncate ${isDark ? 'text-muted-foreground' : 'text-gray-500'}`}>{userData?.email || userHandle}</p>
+                      <p className={`text-[13px] font-normal truncate ${isDark ? '' : 'text-gray-500'}`} style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}>{userData?.email || userHandle}</p>
                     </div>
-                    <div className="px-1">
+                    <div className="px-1" style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}>
                       <button
                         onClick={() => {
                           closeFilingSidebar();
                           setIsBrandDropdownOpen(false);
                           onNavigate?.('settings');
                         }}
-                        className="w-full flex items-center gap-3 px-2 py-2 rounded text-popover-foreground hover:bg-muted transition-colors text-left"
+                        className={`w-full flex items-center gap-3 px-2 py-2 rounded hover:bg-muted transition-colors text-left ${!isDark ? 'text-popover-foreground' : 'text-inherit'}`}
                       >
                         <Settings className="h-5 w-5 flex-shrink-0" strokeWidth={1.25} />
                         <span className="text-[13px] font-normal">Settings</span>
@@ -1109,7 +1109,7 @@ export const Sidebar = ({
                           setIsBrandDropdownOpen(false);
                           setShowHelpDialog(true);
                         }}
-                        className="w-full flex items-center gap-3 px-2 py-2 rounded text-popover-foreground hover:bg-muted transition-colors text-left"
+                        className={`w-full flex items-center gap-3 px-2 py-2 rounded hover:bg-muted transition-colors text-left ${!isDark ? 'text-popover-foreground' : 'text-inherit'}`}
                       >
                         <HelpCircle className="h-5 w-5 flex-shrink-0" strokeWidth={1.25} />
                         <span className="text-[13px] font-normal">Get help</span>
@@ -1118,7 +1118,7 @@ export const Sidebar = ({
                         <button
                           ref={themeButtonRef}
                           onClick={() => setIsThemeSubmenuOpen(!isThemeSubmenuOpen)}
-                          className="w-full flex items-center gap-3 px-2 py-2 rounded text-popover-foreground hover:bg-muted transition-colors text-left"
+                          className={`w-full flex items-center gap-3 px-2 py-2 rounded hover:bg-muted transition-colors text-left ${!isDark ? 'text-popover-foreground' : 'text-inherit'}`}
                         >
                           <Monitor className="h-5 w-5 flex-shrink-0" strokeWidth={1.25} />
                           <span className="text-[13px] font-normal flex-1">Theme</span>
@@ -1131,7 +1131,7 @@ export const Sidebar = ({
                           setIsBrandDropdownOpen(false);
                           openPlanModal(usageData?.plan ?? "professional", usageData?.billing_cycle_end);
                         }}
-                        className="w-full flex items-center gap-3 px-2 py-2 rounded text-popover-foreground hover:bg-muted transition-colors text-left"
+                        className={`w-full flex items-center gap-3 px-2 py-2 rounded hover:bg-muted transition-colors text-left ${!isDark ? 'text-popover-foreground' : 'text-inherit'}`}
                       >
                         <CircleArrowUp className="h-5 w-5 flex-shrink-0" strokeWidth={1.25} />
                         <span className="text-[13px] font-normal">Upgrade plan</span>
@@ -1142,7 +1142,7 @@ export const Sidebar = ({
                           setIsBrandDropdownOpen(false);
                           onSignOut?.();
                         }}
-                        className="w-full flex items-center gap-3 px-2 py-2 rounded text-popover-foreground hover:bg-muted transition-colors text-left"
+                        className={`w-full flex items-center gap-3 px-2 py-2 rounded hover:bg-muted transition-colors text-left ${!isDark ? 'text-popover-foreground' : 'text-inherit'}`}
                       >
                         <LogOut className="h-5 w-5 flex-shrink-0" strokeWidth={1.25} />
                         <span className="text-[13px] font-normal">Log out</span>
@@ -1165,7 +1165,7 @@ export const Sidebar = ({
                     </AvatarFallback>
                   </Avatar>
                   <div className="min-w-0 flex-1 text-left flex flex-col gap-1 pl-1">
-                    <p className="text-[13px] font-semibold text-muted-foreground truncate leading-tight">{userName}</p>
+                    <p className={`text-[13px] font-semibold truncate leading-tight ${!isDark ? 'text-muted-foreground' : ''}`} style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}>{userName}</p>
                     <span
                       className="rounded-full px-2 py-0.5 text-[10px] font-semibold leading-none bg-card w-fit -ml-1"
                       style={{ color: isDark ? planBadgeInfo.badgeColorDark : planBadgeInfo.badgeColor }}
@@ -1235,17 +1235,17 @@ export const Sidebar = ({
               boxShadow: '0 4px 16px rgba(0,0,0,0.08), 0 0 0 1px rgba(0,0,0,0.03)',
             }}
           >
-            <button onClick={() => { setTheme('light'); setIsThemeSubmenuOpen(false); }} className="w-full flex items-center gap-2 px-3 py-2 text-[13px] text-popover-foreground hover:bg-muted text-left">
+            <button onClick={() => { setTheme('light'); setIsThemeSubmenuOpen(false); }} className={`w-full flex items-center gap-2 px-3 py-2 text-[13px] hover:bg-muted text-left ${!isDark ? 'text-popover-foreground' : 'text-inherit'}`} style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}>
               {theme === 'light' && <Check className="h-3.5 w-3.5 text-primary" />}
               {theme !== 'light' && <span className="w-3.5" />}
               <Sun className="h-3.5 w-3.5" /> Light
             </button>
-            <button onClick={() => { setTheme('dark'); setIsThemeSubmenuOpen(false); }} className="w-full flex items-center gap-2 px-3 py-2 text-[13px] text-popover-foreground hover:bg-muted text-left">
+            <button onClick={() => { setTheme('dark'); setIsThemeSubmenuOpen(false); }} className={`w-full flex items-center gap-2 px-3 py-2 text-[13px] hover:bg-muted text-left ${!isDark ? 'text-popover-foreground' : 'text-inherit'}`} style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}>
               {theme === 'dark' && <Check className="h-3.5 w-3.5 text-primary" />}
               {theme !== 'dark' && <span className="w-3.5" />}
               <Moon className="h-3.5 w-3.5" /> Dark
             </button>
-            <button onClick={() => { setTheme('dark-blue'); setIsThemeSubmenuOpen(false); }} className="w-full flex items-center gap-2 px-3 py-2 text-[13px] text-popover-foreground hover:bg-muted text-left">
+            <button onClick={() => { setTheme('dark-blue'); setIsThemeSubmenuOpen(false); }} className={`w-full flex items-center gap-2 px-3 py-2 text-[13px] hover:bg-muted text-left ${!isDark ? 'text-popover-foreground' : 'text-inherit'}`} style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}>
               {theme === 'dark-blue' && <Check className="h-3.5 w-3.5 text-primary" />}
               {theme !== 'dark-blue' && <span className="w-3.5" />}
               <Palette className="h-3.5 w-3.5" /> Dark Blue

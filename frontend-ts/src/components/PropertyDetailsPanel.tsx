@@ -16,6 +16,9 @@ import { useFilingSidebar } from '../contexts/FilingSidebarContext';
 import { useChatPanel } from '../contexts/ChatPanelContext';
 import { CitationActionMenu } from './CitationActionMenu';
 import { usePropertyAccess } from '../hooks/usePropertyAccess';
+import { useUsage } from '../contexts/UsageContext';
+import { usePlanModalOptional } from '../contexts/PlanModalContext';
+import { getUsageState } from '../config/billing';
 import { preloadDocumentCovers as preloadDocumentCoversUtil } from '../utils/preloadDocumentCovers';
 
 // PDF.js for canvas-based PDF rendering with precise highlight positioning
@@ -850,7 +853,7 @@ const ExpandedCardView: React.FC<{
                               // Assume logo is roughly square or slightly wider (adjust aspect ratio as needed)
                               const logoWidth = logoHeight; // Square logo, adjust if needed
                               // Calculate BBOX dimensions with centered padding
-                              const padding = 8; // Equal padding on all sides
+                              const padding = 12; // Equal padding on all sides
                               const originalBboxWidth = highlightCitation.bbox.width * pageDimensions.width;
                               const originalBboxHeight = highlightCitation.bbox.height * pageDimensions.height;
                               const originalBboxLeft = highlightCitation.bbox.left * pageDimensions.width;
@@ -1064,6 +1067,10 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
   
   // Property access control
   const { accessLevel, canUpload, canDelete, isLoading: isLoadingAccess } = usePropertyAccess(property?.id);
+  const { usage: usageData } = useUsage();
+  const planModal = usePlanModalOptional();
+  const usageState = getUsageState(usageData?.usage_percent ?? 0);
+  const isAtUploadLimit = usageState === 'limit';
   
   // Calculate the left position for property details panel
   // Property details should start where the chat panel ends
@@ -2285,6 +2292,13 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
       return;
     }
 
+    // Upload limit enforcement (BILLING_SPEC §5.3)
+    if (isAtUploadLimit) {
+      setUploadError("You've reached your monthly page limit. Upgrade to continue uploading.");
+      planModal?.openPlanModal(usageData?.plan ?? 'professional', usageData?.billing_cycle_end ?? undefined);
+      return;
+    }
+
     // Check access level
     if (!canUpload()) {
       setUploadError('You do not have permission to upload files. Only editors and owners can upload files to this property.');
@@ -2382,10 +2396,14 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
           setUploading(false);
         }
       } else {
+        const usageLimitReached = (response as { usageLimitReached?: boolean }).usageLimitReached;
         const errorMessage = response.error || 'Upload failed';
         window.dispatchEvent(new CustomEvent('upload-error', { 
           detail: { fileName: file.name, error: errorMessage } 
         }));
+        if (usageLimitReached) {
+          planModal?.openPlanModal(usageData?.plan ?? 'professional', usageData?.billing_cycle_end ?? undefined);
+        }
         setUploadError(null); // Clear local error, let UploadProgressBar handle it
         setUploading(false);
       }
@@ -2701,6 +2719,11 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                           transition={{ type: 'spring', stiffness: 400, damping: 25 }}
                           onClick={() => {
                             if (isLoadingAccess) return;
+                            if (isAtUploadLimit) {
+                              planModal?.openPlanModal(usageData?.plan ?? 'professional', usageData?.billing_cycle_end ?? undefined);
+                              setUploadError("You've reached your monthly page limit. Upgrade to continue uploading.");
+                              return;
+                            }
                             if (!canUpload()) {
                               alert('You do not have permission to upload files. Only editors and owners can upload files to this property.');
                               return;

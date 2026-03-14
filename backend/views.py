@@ -259,6 +259,45 @@ def _normalize_uuid_str(value):
         return None
 
 
+def _get_usage_check_params():
+    """Build params for check_can_upload from current user. Updates period if needed."""
+    from .services.usage_service import ALLOWED_TIERS, DEFAULT_TIER
+    user_email = getattr(current_user, 'email', None) or None
+    stored = getattr(current_user, 'subscription_tier', None)
+    plan = stored if (stored and stored in ALLOWED_TIERS) else DEFAULT_TIER
+    billing_cycle_start_override = None
+    billing_cycle_end_override = None
+    period_start_utc_override = None
+    period_end = getattr(current_user, 'subscription_period_ends_at', None)
+    period_started_at = getattr(current_user, 'subscription_period_started_at', None)
+    today_utc = datetime.now(timezone.utc).date()
+    now_utc = datetime.now(timezone.utc)
+    if not period_end:
+        period_end = today_utc + timedelta(days=30)
+        current_user.subscription_period_ends_at = period_end
+        current_user.subscription_period_started_at = now_utc
+        db.session.commit()
+    elif period_end < today_utc:
+        period_end = today_utc + timedelta(days=30)
+        current_user.subscription_period_ends_at = period_end
+        current_user.subscription_period_started_at = now_utc
+        db.session.commit()
+    if period_end:
+        billing_cycle_end_override = period_end.strftime("%Y-%m-%d")
+        if period_started_at is not None:
+            period_start_utc_override = period_started_at
+        else:
+            start = period_end - timedelta(days=30)
+            billing_cycle_start_override = start.strftime("%Y-%m-%d")
+    return {
+        "user_email": user_email,
+        "plan_override": plan,
+        "billing_cycle_start_override": billing_cycle_start_override,
+        "billing_cycle_end_override": billing_cycle_end_override,
+        "period_start_utc_override": period_start_utc_override,
+    }
+
+
 views = Blueprint('views', __name__)
 
 # Set up logging
@@ -5736,6 +5775,29 @@ def proxy_upload():
         file.seek(0)
         file_content = file.read()
 
+        # Upload limit enforcement (BILLING_SPEC §5.3)
+        from .services.page_count_service import estimate_page_count_from_file
+        from .services.usage_service import check_can_upload
+        estimated_pages = estimate_page_count_from_file(file_content, filename)
+        params = _get_usage_check_params()
+        can_upload, err_msg, usage_info = check_can_upload(
+            business_uuid_str,
+            estimated_pages,
+            user_id=current_user.id,
+            user_email=params["user_email"],
+            plan_override=params["plan_override"],
+            billing_cycle_start_override=params["billing_cycle_start_override"],
+            billing_cycle_end_override=params["billing_cycle_end_override"],
+            period_start_utc_override=params["period_start_utc_override"],
+        )
+        if not can_upload:
+            return jsonify({
+                "success": False,
+                "error": err_msg,
+                "usage_limit_reached": True,
+                **usage_info,
+            }), 402
+
         s3_client = boto3.client(
             's3',
             aws_access_key_id=os.environ['AWS_ACCESS_KEY_ID'],
@@ -6337,6 +6399,29 @@ def upload_document():
         
         file.seek(0)
         file_content = file.read()
+
+        # Upload limit enforcement (BILLING_SPEC §5.3)
+        from .services.page_count_service import estimate_page_count_from_file
+        from .services.usage_service import check_can_upload
+        estimated_pages = estimate_page_count_from_file(file_content, filename)
+        params = _get_usage_check_params()
+        can_upload, err_msg, usage_info = check_can_upload(
+            business_uuid_str,
+            estimated_pages,
+            user_id=current_user.id,
+            user_email=params["user_email"],
+            plan_override=params["plan_override"],
+            billing_cycle_start_override=params["billing_cycle_start_override"],
+            billing_cycle_end_override=params["billing_cycle_end_override"],
+            period_start_utc_override=params["period_start_utc_override"],
+        )
+        if not can_upload:
+            return jsonify({
+                "success": False,
+                "error": err_msg,
+                "usage_limit_reached": True,
+                **usage_info,
+            }), 402
 
         s3_client = boto3.client(
             's3',
@@ -8197,6 +8282,30 @@ def upload_file_to_gateway():
             'error': f'A document with the filename "{filename}" already exists in your account. Please rename the file or delete the existing document first.',
             'existing_document_id': str(existing_document.id)
         }), 409  # 409 Conflict
+
+    # 2.6. Upload limit enforcement (BILLING_SPEC §5.3)
+    file_content = file.read()
+    from .services.page_count_service import estimate_page_count_from_file
+    from .services.usage_service import check_can_upload
+    estimated_pages = estimate_page_count_from_file(file_content, filename)
+    params = _get_usage_check_params()
+    can_upload, err_msg, usage_info = check_can_upload(
+        business_uuid_str,
+        estimated_pages,
+        user_id=current_user.id,
+        user_email=params["user_email"],
+        plan_override=params["plan_override"],
+        billing_cycle_start_override=params["billing_cycle_start_override"],
+        billing_cycle_end_override=params["billing_cycle_end_override"],
+        period_start_utc_override=params["period_start_utc_override"],
+    )
+    if not can_upload:
+        return jsonify({
+            "success": False,
+            "error": err_msg,
+            "usage_limit_reached": True,
+            **usage_info,
+        }), 402
     
     # 3. Create and save the Document record BEFORE uploading
     try:
@@ -8226,9 +8335,7 @@ def upload_file_to_gateway():
         # AWS V4 signing for the request
         auth = AWS4Auth(aws_access_key, aws_secret_key, aws_region, 's3')
         
-        # Read file content once
-        file_content = file.read()
-        
+        # file_content already read for usage check above
         # Make the PUT request
         response = requests.put(final_url, data=file_content, auth=auth)
         response.raise_for_status() # Raise an exception for bad status codes

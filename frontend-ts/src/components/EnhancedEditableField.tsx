@@ -295,9 +295,9 @@ export const EnhancedEditableField: React.FC<EnhancedEditableFieldProps> = ({
     transition: staticDisplay ? 'none' : 'all 150ms ease',
   };
 
-  const textColor = isDark ? 'rgb(220, 220, 220)' : ((value && value.trim()) ? undefined : '#9ca3af');
-  const iconColor = isDark ? 'rgb(220, 220, 220)' : '#9ca3af';
-  const labelColor = isDark ? 'rgb(220, 220, 220)' : '#9ca3af';
+  const textColor = isDark ? 'rgb(195, 195, 195)' : ((value && value.trim()) ? undefined : '#9ca3af');
+  const iconColor = isDark ? 'rgb(195, 195, 195)' : '#9ca3af';
+  const labelColor = isDark ? 'rgb(195, 195, 195)' : '#9ca3af';
 
   // Use div with role="button" instead of <button> to avoid any native form/link behavior
   // that could cause navigation or blank screen when used inside complex layouts (e.g. Settings > Profile).

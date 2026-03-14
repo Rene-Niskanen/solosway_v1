@@ -480,7 +480,7 @@ export function ChatBar({
                     className="flex items-center gap-1.5 text-gray-600 transition-colors focus:outline-none outline-none hover:bg-black/[0.05]"
                     style={{
                       backgroundColor: "transparent",
-                      padding: "6px 8px",
+                      padding: "6px 10px 6px 4px",
                       borderRadius: "8px",
                       border: "none",
                     }}

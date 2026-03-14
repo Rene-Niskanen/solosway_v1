@@ -358,14 +358,14 @@ export const ChatPanel = ({
                         aria-haspopup="true"
                         aria-expanded={optionsMenuOpen}
                       >
-                        <Trash2 className={`w-4 h-4 ${!isDark ? 'text-[#6B7280] hover:text-[#374151]' : ''}`} style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined} strokeWidth={1.25} />
+                        <Trash2 className={`w-3 h-3 ${!isDark ? 'text-red-500 hover:text-red-600' : ''}`} style={isDark ? { color: 'rgb(239, 68, 68)' } : undefined} strokeWidth={1.25} />
                       </button>
                     </PopoverTrigger>
                     <PopoverContent
                       align="end"
                       side="bottom"
                       sideOffset={4}
-                      className={`z-[10001] min-w-[200px] w-auto rounded-lg border p-2 shadow-md ${popoverClass}`}
+                      className={`z-[10001] min-w-[200px] w-auto rounded-lg border p-1.5 shadow-md ${popoverClass}`}
                       onOpenAutoFocus={(e) => e.preventDefault()}
                       onClick={(e) => e.stopPropagation()}
                     >
@@ -408,9 +408,9 @@ export const ChatPanel = ({
                               e.stopPropagation();
                               setShowClearConfirm(true);
                             }}
-                            className="flex items-center gap-1 w-full rounded-sm px-1.5 py-0.5 text-left hover:bg-[#f5f5f5] text-[11px] text-[#374151] transition-colors duration-75 ease-out min-h-0"
+                            className="flex items-center gap-2.5 w-full rounded-sm px-1.5 py-0.5 text-left hover:bg-[#f5f5f5] text-[11px] text-[#374151] transition-colors duration-75 ease-out min-h-0"
                           >
-                            <Trash2 className="w-4 h-4 text-[#666] flex-shrink-0" strokeWidth={1.25} />
+                            <Trash2 className="w-3 h-3 text-red-500 flex-shrink-0" strokeWidth={1.25} />
                             Clear all chats
                           </button>
                         ) : (
@@ -429,7 +429,7 @@ export const ChatPanel = ({
                     title="Close Agent Sidebar"
                     type="button"
                   >
-                    <X className={`w-4 h-4 ${!isDark ? 'text-[#6B7280] hover:text-[#374151]' : ''}`} style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined} strokeWidth={1.75} />
+                    <X className={`w-4 h-4 ${!isDark ? 'text-[#6B7280] hover:text-[#374151]' : ''}`} style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined} strokeWidth={1.75} />
                   </button>
                 </div>
               </div>
@@ -450,8 +450,8 @@ export const ChatPanel = ({
                 className={`w-full flex items-center justify-center gap-1.5 px-2.5 py-1.5 border rounded-md transition-[border-color,background-color] duration-75 ease-out group ${isDark ? 'border-slate-500/60 hover:border-slate-400' : 'border-gray-300/80 hover:border-gray-400'}`}
                 style={{ backgroundColor: panelBg, opacity: 1, backdropFilter: 'none' }}
               >
-                <Plus className={`w-3.5 h-3.5 ${!isDark ? 'text-slate-500' : ''}`} style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined} />
-                <span className={`text-[13px] font-medium ${!isDark ? 'text-slate-500' : ''}`} style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}>
+                <Plus className={`w-3.5 h-3.5 ${!isDark ? 'text-slate-500' : ''}`} style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined} />
+                <span className={`text-[13px] font-medium ${!isDark ? 'text-slate-500' : ''}`} style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}>
                   New Agent
                 </span>
               </motion.button>
@@ -460,7 +460,7 @@ export const ChatPanel = ({
             {/* Chat List - sticky with panel: flex-1 + minHeight 0 so it fills and scrolls inside the sidebar */}
             {showChatHistory && (
               <div
-                className="flex-1 overflow-y-auto overflow-x-hidden pl-0 pr-1.5 pt-2 pb-3 scrollbar-thin scrollbar-track-transparent min-h-0"
+                className="flex-1 overflow-y-auto overflow-x-hidden pl-0 pr-3 pt-2 pb-3 scrollbar-thin scrollbar-track-transparent min-h-0"
                 style={{ backgroundColor: panelBg, scrollbarColor: 'rgba(0,0,0,0.2) transparent' }}
               >
                 {/* Agents section - collapsible */}
@@ -548,35 +548,34 @@ export const ChatPanel = ({
                           </div>
                         ) : (
                           <div className="flex flex-col w-full relative">
-                            {/* Title row with timestamp on right */}
-                            <div className="flex items-center gap-1.5 pl-2.5 text-[12px] font-normal truncate pr-5" style={isDark ? { color: 'rgb(220, 220, 220)' } : { color: selectedChatId === chat.id ? '#374151' : '#767676' }}>
+                            {/* Title row: icon, text, timestamp, three dots - all centered */}
+                            <div className="flex items-center gap-1.5 pl-2.5 pr-3 text-[12px] font-normal truncate" style={isDark ? { color: 'rgb(195, 195, 195)' } : { color: selectedChatId === chat.id ? '#374151' : '#767676' }}>
                               {chat.status === 'loading' && (
-                                <Loader2 className="w-3 h-3 animate-spin flex-shrink-0" style={isDark ? { color: 'rgb(220, 220, 220)' } : { color: selectedChatId === chat.id ? '#6B7280' : '#767676' }} />
+                                <Loader2 className="w-3 h-3 animate-spin flex-shrink-0" style={isDark ? { color: 'rgb(195, 195, 195)' } : { color: selectedChatId === chat.id ? '#6B7280' : '#767676' }} />
                               )}
                               {chat.status === 'completed' && (
-                                <MessageCircleCheck className="w-3 h-3 flex-shrink-0" style={isDark ? { color: 'rgb(220, 220, 220)' } : { color: selectedChatId === chat.id ? '#6B7280' : '#767676' }} aria-hidden />
+                                <MessageCircleCheck className="w-3 h-3 flex-shrink-0" style={isDark ? { color: 'rgb(195, 195, 195)' } : { color: selectedChatId === chat.id ? '#6B7280' : '#767676' }} aria-hidden />
                               )}
                               <span
                                 className="text-[12px] font-normal truncate cursor-pointer flex-1 min-w-0 hover:opacity-90"
-                                style={isDark ? { color: 'rgb(220, 220, 220)', display: 'inline-block', padding: 0, margin: 0 } : { color: selectedChatId === chat.id ? '#374151' : '#767676', display: 'inline-block', padding: 0, margin: 0 }}
+                                style={isDark ? { color: 'rgb(195, 195, 195)', display: 'inline-block', padding: 0, margin: 0 } : { color: selectedChatId === chat.id ? '#374151' : '#767676', display: 'inline-block', padding: 0, margin: 0 }}
                                 title="Click to edit chat name"
                               >
                                 {chat.title || 'New chat'}
                               </span>
-                              <span className="text-[10px] flex-shrink-0 opacity-100 group-hover:opacity-0 transition-opacity duration-75" style={isDark ? { color: 'rgb(220, 220, 220)' } : { color: selectedChatId === chat.id ? '#9CA3AF' : '#767676' }}>
+                              <span className="text-[10px] flex-shrink-0 opacity-100 group-hover:opacity-0 transition-opacity duration-75 -ml-6" style={isDark ? { color: 'rgb(195, 195, 195)' } : { color: selectedChatId === chat.id ? '#9CA3AF' : '#767676' }}>
                                 {formatTimestamp(new Date(chat.timestamp))}
                               </span>
-                            </div>
-                            
-                            {/* Three dots menu - positioned top right */}
-                            <div className="absolute right-0 top-0">
                               <button
                                 onClick={(e) => handleMenuToggle(e, chat.id)}
-                                className="opacity-0 group-hover:opacity-100 p-0.5 rounded transition-[opacity,transform] duration-75 ease-out transform hover:scale-110 active:scale-95"
+                                className="opacity-0 group-hover:opacity-100 p-0.5 rounded flex-shrink-0 flex items-center justify-center -ml-8 transition-[opacity,transform] duration-75 ease-out transform hover:scale-110 active:scale-95"
                               >
-                                <MoreVertical className="w-3.5 h-3.5 transition-colors duration-75 ease-out" style={isDark ? { color: 'rgb(220, 220, 220)' } : { color: selectedChatId === chat.id ? '#9CA3AF' : '#767676' }} />
+                                <MoreVertical className="w-3.5 h-3.5 transition-colors duration-75 ease-out" style={isDark ? { color: 'rgb(195, 195, 195)' } : { color: selectedChatId === chat.id ? '#9CA3AF' : '#767676' }} />
                               </button>
-                              
+                            </div>
+                            
+                            {/* Menu popover - absolutely positioned */}
+                            <div className="absolute right-0 top-0">
                               {openMenuId === chat.id && (
                                 <motion.div
                                   initial={{ opacity: 0, scale: 0.95, y: -4 }}
@@ -602,7 +601,6 @@ export const ChatPanel = ({
                                   >
                                     {chat.archived ? 'Unarchive' : 'Archive'}
                                   </button>
-                                  <div className="h-px bg-gray-200 my-1 mx-1" />
                                   <button
                                     onClick={(e) => handleDeleteChat(e, chat.id)}
                                     className="w-full px-2 py-1 text-left text-[11px] text-red-600 hover:bg-red-50 rounded transition-colors duration-75 ease-out"
@@ -701,26 +699,26 @@ export const ChatPanel = ({
                           </div>
                         ) : (
                           <div className="flex flex-col w-full relative">
-                            <div className="flex items-center gap-1.5 pl-2.5 text-[12px] font-normal truncate pr-5" style={isDark ? { color: 'rgb(220, 220, 220)' } : { color: selectedChatId === chat.id ? '#374151' : '#767676' }}>
+                            <div className="flex items-center gap-1.5 pl-2.5 pr-3 text-[12px] font-normal truncate" style={isDark ? { color: 'rgb(195, 195, 195)' } : { color: selectedChatId === chat.id ? '#374151' : '#767676' }}>
                               <Archive className="w-3 h-3 flex-shrink-0" style={isDark ? { color: 'rgb(156, 163, 175)' } : { color: selectedChatId === chat.id ? '#9CA3AF' : '#767676' }} />
                               <span
                                 className="text-[12px] font-normal truncate cursor-pointer flex-1 min-w-0 hover:opacity-90"
-                                style={isDark ? { color: 'rgb(220, 220, 220)', display: 'inline-block', padding: 0, margin: 0 } : { color: selectedChatId === chat.id ? '#374151' : '#767676', display: 'inline-block', padding: 0, margin: 0 }}
+                                style={isDark ? { color: 'rgb(195, 195, 195)', display: 'inline-block', padding: 0, margin: 0 } : { color: selectedChatId === chat.id ? '#374151' : '#767676', display: 'inline-block', padding: 0, margin: 0 }}
                                 title="Click to edit chat name"
                               >
                                 {chat.title || 'New chat'}
                               </span>
-                              <span className="text-[10px] flex-shrink-0 opacity-100 group-hover:opacity-0 transition-opacity duration-75" style={isDark ? { color: 'rgb(220, 220, 220)' } : { color: selectedChatId === chat.id ? '#9CA3AF' : '#767676' }}>
+                              <span className="text-[10px] flex-shrink-0 opacity-100 group-hover:opacity-0 transition-opacity duration-75 -ml-6" style={isDark ? { color: 'rgb(195, 195, 195)' } : { color: selectedChatId === chat.id ? '#9CA3AF' : '#767676' }}>
                                 {formatTimestamp(new Date(chat.timestamp))}
                               </span>
-                            </div>
-                            <div className="absolute right-0 top-0">
                               <button
                                 onClick={(e) => handleMenuToggle(e, chat.id)}
-                                className="opacity-0 group-hover:opacity-100 p-0.5 rounded transition-[opacity,transform] duration-75 ease-out transform hover:scale-110 active:scale-95"
+                                className="opacity-0 group-hover:opacity-100 p-0.5 rounded flex-shrink-0 flex items-center justify-center -ml-8 transition-[opacity,transform] duration-75 ease-out transform hover:scale-110 active:scale-95"
                               >
-                                <MoreVertical className="w-3.5 h-3.5 transition-colors duration-75 ease-out" style={isDark ? { color: 'rgb(220, 220, 220)' } : { color: selectedChatId === chat.id ? '#9CA3AF' : '#767676' }} />
+                                <MoreVertical className="w-3.5 h-3.5 transition-colors duration-75 ease-out" style={isDark ? { color: 'rgb(195, 195, 195)' } : { color: selectedChatId === chat.id ? '#9CA3AF' : '#767676' }} />
                               </button>
+                            </div>
+                            <div className="absolute right-0 top-0">
                               {openMenuId === chat.id && (
                                 <motion.div
                                   initial={{ opacity: 0, scale: 0.95, y: -4 }}
@@ -733,7 +731,6 @@ export const ChatPanel = ({
                                 >
                                   <button onClick={(e) => handleRename(e, chat.id, chat.title)} className="w-full px-2 py-1 text-left text-[11px] text-gray-800 hover:bg-gray-100 rounded transition-colors duration-75 ease-out">Rename</button>
                                   <button onClick={(e) => handleUnarchiveChat(e, chat.id)} className="w-full px-2 py-1 text-left text-[11px] text-gray-800 hover:bg-gray-100 rounded transition-colors duration-75 ease-out">Unarchive</button>
-                                  <div className="h-px bg-gray-200 my-1 mx-1" />
                                   <button onClick={(e) => handleDeleteChat(e, chat.id)} className="w-full px-2 py-1 text-left text-[11px] text-red-600 hover:bg-red-50 rounded transition-colors duration-75 ease-out">Delete</button>
                                 </motion.div>
                               )}
@@ -772,12 +769,12 @@ export const ChatPanel = ({
               <div className="flex-1 min-h-0 flex items-center justify-center p-8" style={{ backgroundColor: panelBg }}>
                 <div className="text-center max-w-xs">
                   <div className={`w-20 h-20 rounded-3xl flex items-center justify-center mx-auto mb-6 border-2 ${isDark ? 'border-white/10' : 'border-black/10'}`} style={isDark ? { background: 'linear-gradient(to bottom right, rgba(255,255,255,0.06), rgba(255,255,255,0.02))' } : { background: 'linear-gradient(to bottom right, rgba(0,0,0,0.04), rgba(0,0,0,0.02))' }}>
-                    <MessageSquare className="w-8 h-8" style={isDark ? { color: 'rgb(220, 220, 220)' } : { color: '#9CA3AF' }} strokeWidth={1.5} />
+                    <MessageSquare className="w-8 h-8" style={isDark ? { color: 'rgb(195, 195, 195)' } : { color: '#9CA3AF' }} strokeWidth={1.5} />
                   </div>
-                  <h3 className="font-semibold text-xl mb-3 tracking-tight" style={isDark ? { color: 'rgb(220, 220, 220)' } : { color: '#374151' }}>
+                  <h3 className="font-semibold text-xl mb-3 tracking-tight" style={isDark ? { color: 'rgb(195, 195, 195)' } : { color: '#374151' }}>
                     <span>Start a Conversation</span>
                   </h3>
-                  <p className="text-sm leading-relaxed font-medium" style={isDark ? { color: 'rgb(220, 220, 220)' } : { color: '#6B7280' }}>
+                  <p className="text-sm leading-relaxed font-medium" style={isDark ? { color: 'rgb(195, 195, 195)' } : { color: '#6B7280' }}>
                     <span>Search for something to begin an intelligent conversation with AI</span>
                   </p>
                 </div>

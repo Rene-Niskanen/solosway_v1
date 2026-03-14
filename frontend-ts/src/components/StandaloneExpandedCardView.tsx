@@ -1652,8 +1652,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
                       display: 'flex',
                       padding: 4,
                       border: 'none',
-                      background: 'rgba(255,255,255,0.95)',
-                      backdropFilter: 'blur(6px)',
+                      background: '#ffffff',
                       borderRadius: 6,
                       cursor: sortedCitations.length <= 1 || currentCitationIndex <= 0 ? 'default' : 'pointer',
                       color: sortedCitations.length <= 1 || currentCitationIndex <= 0 ? '#9ca3af' : '#666666',
@@ -1674,8 +1673,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
                       display: 'flex',
                       padding: 4,
                       border: 'none',
-                      background: 'rgba(255,255,255,0.95)',
-                      backdropFilter: 'blur(6px)',
+                      background: '#ffffff',
                       borderRadius: 6,
                       cursor: sortedCitations.length <= 1 || currentCitationIndex >= sortedCitations.length - 1 ? 'default' : 'pointer',
                       color: sortedCitations.length <= 1 || currentCitationIndex >= sortedCitations.length - 1 ? '#9ca3af' : '#666666',
@@ -1721,7 +1719,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
                     onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#f5f5f5'; }}
                     onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#ffffff'; }}
                   >
-                    Close ⌘V
+                    Close{' '}<span style={{ fontSize: '9px', color: '#9ca3af', fontWeight: 500 }}>⌘V</span>
                   </button>
                 )}
                 {onAcceptCitation && (
@@ -1755,7 +1753,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
                     onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#e0e8d4'; }}
                     onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#EBF1DE'; }}
                   >
-                    Accept ⌘⏎
+                    Accept{' '}<span style={{ fontSize: '9px', color: '#9ca3af', fontWeight: 500 }}>⌘⏎</span>
                   </button>
                 )}
                 </div>
@@ -1928,7 +1926,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
                       // For now, using 1:1 ratio (square) - adjust if needed based on actual logo dimensions
                       const logoWidth = logoHeight; // Square logo, adjust if needed
                       // Calculate BBOX dimensions with centered padding
-                      const padding = 8; // Equal padding on all sides
+                      const padding = 12; // Equal padding on all sides
                       const originalBboxWidth = highlight.bbox.width * dimensions.width;
                       const originalBboxHeight = highlight.bbox.height * dimensions.height;
                       const originalBboxLeft = highlight.bbox.left * dimensions.width;

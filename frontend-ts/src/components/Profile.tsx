@@ -449,12 +449,12 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate, embeddedInSettings, initi
             {/* Left Sidebar / Profile form — when embedded: flat form layout (no cards) */}
             {embeddedInSettings ? (
               <div className="max-w-2xl space-y-6">
-                <h2 className="text-xl font-semibold text-foreground">Profile</h2>
+                <h2 className={`text-xl font-semibold ${!isDark ? 'text-foreground' : ''}`} style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}>Profile</h2>
 
                 {/* Full name (avatar left) + Title in one row */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   <div className="space-y-1.5">
-                    <label className="block text-sm font-normal text-foreground">Full name</label>
+                    <label className={`block text-sm font-normal ${!isDark ? 'text-foreground' : ''}`} style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}>Full name</label>
                     <div className="flex items-center gap-3">
                       <div className="flex flex-col items-start gap-1">
                         <div
@@ -509,7 +509,7 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate, embeddedInSettings, initi
                     </div>
                   </div>
                   <div className="space-y-1.5">
-                    <label className="block text-sm font-normal text-foreground">Title</label>
+                    <label className={`block text-sm font-normal ${!isDark ? 'text-foreground' : ''}`} style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}>Title</label>
                     <EnhancedEditableField
                       containerBackgroundColor="#F3F1EF"
                       staticDisplay
@@ -527,7 +527,7 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate, embeddedInSettings, initi
 
                 {/* Location */}
                 <div className="space-y-1.5">
-                  <label className="block text-sm font-normal text-foreground">Location</label>
+                  <label className={`block text-sm font-normal ${!isDark ? 'text-foreground' : ''}`} style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}>Location</label>
                   <EnhancedEditableField
                     containerBackgroundColor="#F3F1EF"
                     staticDisplay
@@ -544,7 +544,7 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate, embeddedInSettings, initi
 
                 {/* Email */}
                 <div className="space-y-1.5">
-                  <label className="block text-sm font-normal text-foreground">Email</label>
+                  <label className={`block text-sm font-normal ${!isDark ? 'text-foreground' : ''}`} style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}>Email</label>
                   <EnhancedEditableField
                     containerBackgroundColor="#F3F1EF"
                     staticDisplay
@@ -562,7 +562,7 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate, embeddedInSettings, initi
 
                 {/* Phone */}
                 <div className="space-y-1.5">
-                  <label className="block text-sm font-normal text-foreground">Phone</label>
+                  <label className={`block text-sm font-normal ${!isDark ? 'text-foreground' : ''}`} style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}>Phone</label>
                   <EnhancedEditableField
                     containerBackgroundColor="#F3F1EF"
                     staticDisplay
@@ -579,7 +579,7 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate, embeddedInSettings, initi
 
                 {/* Company */}
                 <div className="space-y-1.5">
-                  <label className="block text-sm font-normal text-foreground">Company</label>
+                  <label className={`block text-sm font-normal ${!isDark ? 'text-foreground' : 'text-[rgb(195,195,195)]'}`}>Company</label>
                   <EnhancedEditableField
                     containerBackgroundColor="#F3F1EF"
                     staticDisplay
@@ -613,13 +613,13 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate, embeddedInSettings, initi
 
                 {/* Troubleshooting — clear caches when docs show 404s or stale thumbnails */}
                 <div className={`pt-6 mt-6 border-t ${isDark ? 'border-border' : 'border-gray-200'}`}>
-                  <div className={`text-[11px] mb-1 font-semibold uppercase tracking-wider ${!isDark ? 'text-muted-foreground' : ''}`} style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}>Troubleshooting</div>
-                  <p className={`text-sm mb-2 ${!isDark ? 'text-muted-foreground' : ''}`} style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}>If documents show incorrect thumbnails or 404 errors, clearing the cache may help.</p>
+                  <div className={`text-[11px] mb-1 font-semibold uppercase tracking-wider ${!isDark ? 'text-muted-foreground' : ''}`} style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}>Troubleshooting</div>
+                  <p className={`text-sm mb-2 ${!isDark ? 'text-muted-foreground' : ''}`} style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}>If documents show incorrect thumbnails or 404 errors, clearing the cache may help.</p>
                   <Button
                     variant="outline"
                     size="sm"
                     className={`h-auto rounded-sm border border-border bg-background px-3 py-1 text-xs font-medium focus:ring-1 focus:ring-gray-300 focus:ring-offset-0 focus:border-border ${!isDark ? 'text-foreground' : ''}`}
-                    style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}
+                    style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}
                     onClick={async () => {
                       await clearDocumentCache();
                       toast({ title: 'Cache cleared', description: 'Refreshing…' });

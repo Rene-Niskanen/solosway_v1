@@ -1534,8 +1534,8 @@ const BackgroundSettings: React.FC = () => {
   return (
     <div className="space-y-6">
       <div>
-        <h3 className="text-[15px] font-medium" style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}>Background</h3>
-        <p className={`text-[13px] mt-1.5 font-normal ${!isDark ? 'text-muted-foreground' : ''}`} style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}>
+        <h3 className="text-[15px] font-medium" style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}>Background</h3>
+        <p className={`text-[13px] mt-1.5 font-normal ${!isDark ? 'text-muted-foreground' : ''}`} style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}>
           Choose your dashboard background.
         </p>
       </div>
@@ -1664,22 +1664,22 @@ const NotificationsSettingsContent: React.FC = () => {
   return (
     <div className="space-y-6">
       <div>
-        <h3 className="text-[15px] font-medium" style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}>Notifications</h3>
-        <p className={`text-[13px] mt-1.5 font-normal ${!isDark ? 'text-muted-foreground' : ''}`} style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}>
+        <h3 className="text-[15px] font-medium" style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}>Notifications</h3>
+        <p className={`text-[13px] mt-1.5 font-normal ${!isDark ? 'text-muted-foreground' : ''}`} style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}>
           Control when and how you get notified.
         </p>
       </div>
       <div className={`w-full min-w-0 rounded-xl border p-6 shadow-sm ${isDark ? 'border-border' : 'border-gray-200'}`} style={{ backgroundColor: isDark ? 'hsl(var(--muted))' : '#F6F7F3' }}>
         <div className="flex flex-wrap items-baseline gap-2 mb-2">
-          <span className="text-[17px] font-normal" style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}>Response completion sound</span>
+          <span className="text-[17px] font-normal" style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}>Response completion sound</span>
         </div>
-        <p className={`text-[13px] mb-4 ${!isDark ? 'text-muted-foreground' : ''}`} style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}>
+        <p className={`text-[13px] mb-4 ${!isDark ? 'text-muted-foreground' : ''}`} style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}>
           Play a short sound when OpenFind finishes a response. Adjust volume and choose a sound.
         </p>
 
         {/* Volume: Spotify-style — speaker icon + horizontal slider */}
         <div className="flex items-center gap-3 mb-5">
-          <Volume2 className="h-3.5 w-3.5 shrink-0" style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined} aria-hidden />
+          <Volume2 className="h-3.5 w-3.5 shrink-0" style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined} aria-hidden />
           <Slider
             value={[volume]}
             onValueChange={([v]) => setVolume(v)}
@@ -1689,7 +1689,7 @@ const NotificationsSettingsContent: React.FC = () => {
             aria-label="Notification sound volume"
             className="flex-1 min-w-0 max-w-[240px] [&_.bg-primary]:!bg-gray-600 [&_.bg-secondary]:!bg-gray-200 [&_.border-primary]:!border-gray-400 [&_.border-primary]:!bg-background"
           />
-          <span className={`text-[12px] w-7 tabular-nums ${!isDark ? 'text-muted-foreground' : ''}`} style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}>{volume}%</span>
+          <span className={`text-[12px] w-7 tabular-nums ${!isDark ? 'text-muted-foreground' : ''}`} style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}>{volume}%</span>
         </div>
 
         {/* Sound selector + Test */}
@@ -1698,7 +1698,7 @@ const NotificationsSettingsContent: React.FC = () => {
             <SelectTrigger
               aria-label="Response completion sound"
               className={`h-auto min-w-[130px] w-[130px] shrink-0 rounded-sm border border-border bg-background px-3 py-1 text-xs font-medium focus:ring-1 focus:ring-gray-300 focus:ring-offset-0 focus:border-border ${!isDark ? 'text-foreground [&_svg]:text-muted-foreground' : ''}`}
-              style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}
+              style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}
             >
               <SelectValue />
             </SelectTrigger>
@@ -1723,7 +1723,7 @@ const NotificationsSettingsContent: React.FC = () => {
             onClick={() => playCompletionSound()}
             disabled={!soundEnabled}
             className={`rounded-sm px-3 py-1 h-auto text-xs font-medium bg-background border border-border hover:bg-muted hover:text-foreground ${!isDark ? 'text-foreground' : ''}`}
-            style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}
+            style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}
           >
             Test sound
           </Button>
@@ -1860,8 +1860,8 @@ const SettingsView: React.FC<{
         return (
           <div className="space-y-6">
             <div>
-              <h3 className="text-[15px] font-medium" style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}>General</h3>
-              <p className={`text-[13px] mt-1.5 font-normal ${!isDark ? 'text-muted-foreground' : ''}`} style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}>Profile and general preferences.</p>
+              <h3 className="text-[15px] font-medium" style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}>General</h3>
+              <p className={`text-[13px] mt-1.5 font-normal ${!isDark ? 'text-muted-foreground' : ''}`} style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}>Profile and general preferences.</p>
             </div>
             <Profile onNavigate={onNavigate} embeddedInSettings initialUserData={prefetchedUser} />
           </div>
@@ -1881,8 +1881,8 @@ const SettingsView: React.FC<{
         return (
           <div className="space-y-6">
             <div>
-              <h3 className="text-[15px] font-medium" style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}>Privacy</h3>
-              <p className={`text-[13px] mt-1.5 font-normal ${!isDark ? 'text-muted-foreground' : ''}`} style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}>
+              <h3 className="text-[15px] font-medium" style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}>Privacy</h3>
+              <p className={`text-[13px] mt-1.5 font-normal ${!isDark ? 'text-muted-foreground' : ''}`} style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}>
                 Control your privacy and data settings.
               </p>
             </div>
@@ -1890,10 +1890,10 @@ const SettingsView: React.FC<{
               <div className="flex flex-wrap items-start justify-between gap-4">
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
-                    <Lock className="h-3.5 w-3.5 shrink-0" style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined} aria-hidden />
-                    <span className="text-[15px] font-medium" style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}>Privacy Mode</span>
+                    <Lock className="h-3.5 w-3.5 shrink-0" style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined} aria-hidden />
+                    <span className="text-[15px] font-medium" style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}>Privacy Mode</span>
                   </div>
-                  <p className="text-[13px] mt-1" style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}>
+                  <p className="text-[13px] mt-1" style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}>
                     Your code data will not be trained on or used to improve the product. We will not store your code.
                   </p>
                 </div>
@@ -1934,7 +1934,7 @@ const SettingsView: React.FC<{
               </div>
               <div className="border-t border-border my-4" />
               <div className="flex flex-wrap items-center gap-2">
-                <span className="text-[13px]" style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}>
+                <span className="text-[13px]" style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}>
                   {privacyMode === 'privacy'
                     ? 'Privacy Mode is enabled. Background Agent and some features not available.'
                     : 'Share Data is enabled. Your data helps improve OpenFind for everyone.'}
@@ -1958,7 +1958,7 @@ const SettingsView: React.FC<{
               size="sm"
               onClick={handleLogout}
               className={`-mt-2 rounded-sm border border-border bg-background px-3 py-1 h-auto text-xs font-medium focus:ring-1 focus:ring-gray-300 focus:ring-offset-0 focus:border-border ${!isDark ? 'text-foreground' : ''}`}
-              style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}
+              style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}
             >
               Log Out
             </Button>
@@ -1974,8 +1974,8 @@ const SettingsView: React.FC<{
       {/* Settings Sidebar - Sleek Design */}
       <div className="w-64 shrink-0 bg-background">
         <div className="p-6">
-          <h2 className={`text-[15px] font-medium ${!isDark ? 'text-foreground' : ''}`} style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}>Settings</h2>
-          <p className={`text-[13px] mt-1.5 font-normal ${!isDark ? 'text-muted-foreground' : ''}`} style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}>Manage your preferences</p>
+          <h2 className={`text-[15px] font-medium ${!isDark ? 'text-foreground' : ''}`} style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}>Settings</h2>
+          <p className={`text-[13px] mt-1.5 font-normal ${!isDark ? 'text-muted-foreground' : ''}`} style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}>Manage your preferences</p>
         </div>
         <nav className="px-3 py-3 space-y-1">
           {settingsCategories.map((category) => {
@@ -1989,7 +1989,7 @@ const SettingsView: React.FC<{
                     ? isDark ? 'bg-muted' : 'bg-gray-100 text-[#141413]'
                     : isDark ? 'hover:bg-muted/60' : 'text-[#141413] hover:bg-gray-100'
                 }`}
-                style={isDark ? { color: 'rgb(220, 220, 220)' } : undefined}
+                style={isDark ? { color: 'rgb(195, 195, 195)' } : undefined}
                 aria-label={category.label}
               >
                 <span className="text-left">
